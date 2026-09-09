@@ -13,6 +13,8 @@ import {
   SETUP_CHANNEL_ID,
   SETUP_HERO,
   SETUP_HERO_RETURNING,
+  hasRunWelcomeSetup,
+  markWelcomeSetupRun,
   SETUP_ROW_ID,
   setupCompanies,
   setupCompanyActionLabel,
@@ -292,5 +294,31 @@ describe("setup roster helpers", () => {
         createRequested: true,
       }),
     ).toEqual(messages);
+  });
+});
+
+describe("welcome-first boot persistence", () => {
+  it("is off until Run Setup is used, then sticks", () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    };
+    expect(hasRunWelcomeSetup(storage)).toBe(false);
+    markWelcomeSetupRun(storage);
+    expect(hasRunWelcomeSetup(storage)).toBe(true);
+  });
+
+  it("tolerates unavailable storage", () => {
+    const broken = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    expect(hasRunWelcomeSetup(broken)).toBe(false);
+    expect(() => markWelcomeSetupRun(broken)).not.toThrow();
   });
 });

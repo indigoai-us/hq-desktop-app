@@ -45,7 +45,9 @@
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import {
+    hasRunWelcomeSetup,
     isSetupChannel,
+    markWelcomeSetupRun,
     SETUP_CHANNEL_ID,
     setupCompanies,
     setupRosterLoading,
@@ -2458,6 +2460,25 @@
    * company and hides the seeded create_company card.
    */
   const rosterCompanies = $derived(setupCompanies(companies));
+  /**
+   * Boot lands on #welcome until Run Setup has been used on this machine
+   * (persisted; see `hasRunWelcomeSetup`). Flips in-session the moment the
+   * person starts setup so a later re-open goes to the company channel.
+   */
+  let welcomeSetupRun = $state(hasRunWelcomeSetup());
+  /**
+   * An explicit conversation deep link (`?channel=` / `?person=`) is a
+   * stronger intent than first landing: it must never be swallowed by the
+   * welcome-first boot pick.
+   */
+  const bootDeepLink = conversationDeepLinkFromLocation();
+  const hasBootDeepLink = Boolean(
+    bootDeepLink.channelId?.trim() || bootDeepLink.personUid?.trim(),
+  );
+  function recordWelcomeSetupRun(): void {
+    markWelcomeSetupRun();
+    welcomeSetupRun = true;
+  }
   const hasRosterCompany = $derived(rosterCompanies.length > 0);
   /** The user explicitly asked for another company this session. */
   let createCompanyRequested = $state(false);
@@ -4212,6 +4233,7 @@
           oncreateagent={canRunEntryPoints ? addAgentEntry : null}
           onrows={(rows) => (railRows = rows)}
           {bootTimeoutMs}
+          welcomeFirst={!welcomeSetupRun && !hasBootDeepLink && !initialRow}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
@@ -4781,6 +4803,7 @@
                     oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
                     {rosterStatus}
                     {onretryroster}
+                    onsetupstarted={recordWelcomeSetupRun}
                   />
                 {/snippet}
                 {#snippet companyHeader()}

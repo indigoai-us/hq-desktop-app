@@ -13,6 +13,7 @@ import {
   SETUP_HERO,
   SETUP_HERO_RETURNING,
   SETUP_ROW_ID,
+  WELCOME_SETUP_RUN_KEY,
 } from "../chat/setup-channel.js";
 import type { Workspace } from "../chat/workspaces.js";
 
@@ -166,13 +167,17 @@ describe("DesktopApp synthetic #setup channel", () => {
       },
     });
     await selectSetupRow();
-    const button = host.querySelector<HTMLButtonElement>('[data-testid="setup-open-sessions"]');
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]');
     expect(button).toBeTruthy();
+    expect(button?.textContent).toContain("Run Setup");
+    expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBeNull();
     button!.click();
     await settle();
     expect(param).toHaveBeenCalledOnce();
     expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("new?draft=welcome-test");
     expect(sendChannelMessage).not.toHaveBeenCalled();
+    // Running setup is what graduates boot from #welcome to the company channel.
+    expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
   });
   it("pins #setup in the sidebar and routes selection to the setup intro", async () => {
     await mountApp();

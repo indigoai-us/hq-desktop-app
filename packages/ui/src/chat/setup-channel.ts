@@ -163,8 +163,53 @@ export const SETUP_HERO = {
 export const SETUP_HERO_RETURNING = {
   eyebrow: "Welcome to HQ",
   title: "Your company is ready.",
-  body: "Open it to pick up where you left off. We'll finish any remaining setup steps from your team's channel. Need a second company? You can add one below.",
+  body: "Run Setup connects this Mac to your company and finishes the last steps in HQ Sessions. It takes about a minute.",
 } as const;
+
+/** The one primary action on #welcome. */
+export const SETUP_RUN_LABEL = "Run Setup";
+/** Disclosure that holds every other way in (separate coding tools, more companies, hosted agents). */
+export const SETUP_ADVANCED_LABEL = "Advanced";
+export const SETUP_ADVANCED_TOOLS_NOTE = "Open setup in a separate coding tool instead of HQ Sessions:";
+export const SETUP_HOSTED_AGENT_NOTE =
+  "Hosted agents: open your company channel and choose Add agent, then send it a direct message. Hosted agents require a paid plan; local setup does not.";
+
+/**
+ * Boot lands on #welcome until Run Setup (or one of its advanced launches)
+ * has been used once on this machine. Persisted locally, not per session:
+ * a new person who quits and relaunches before running setup must land on
+ * #welcome again, not in a company channel with nothing connected.
+ */
+export const WELCOME_SETUP_RUN_KEY = "hq.welcome.setup-run.v1";
+
+type StorageLike = Pick<Storage, "getItem" | "setItem">;
+
+function welcomeStorage(storage?: StorageLike | null): StorageLike | null {
+  if (storage) return storage;
+  try {
+    return typeof window !== "undefined" ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True once setup has been run from #welcome on this machine. */
+export function hasRunWelcomeSetup(storage?: StorageLike | null): boolean {
+  try {
+    return welcomeStorage(storage)?.getItem(WELCOME_SETUP_RUN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Record that setup was run from #welcome; later boots open the company channel. */
+export function markWelcomeSetupRun(storage?: StorageLike | null): void {
+  try {
+    welcomeStorage(storage)?.setItem(WELCOME_SETUP_RUN_KEY, "1");
+  } catch {
+    // Storage unavailable (private mode, test env): boot simply prefers #welcome again.
+  }
+}
 
 /**
  * Hero copy while the shell is still fetching the roster for this session.

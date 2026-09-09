@@ -43,12 +43,12 @@ afterEach(async () => {
   host?.remove();
 });
 
-async function mountIntro(onopenurl = vi.fn(), onopensessions?: () => void) {
+async function mountIntro(onopenurl = vi.fn(), onopensessions?: () => void, onsetupstarted?: () => void) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(SetupChannelIntro, {
     target: host,
-    props: { settings, shell, onopenurl, onopensessions } as never,
+    props: { settings, shell, onopenurl, onopensessions, onsetupstarted } as never,
   });
   await tick();
   await tick();
@@ -95,22 +95,43 @@ describe("setup welcome copy model", () => {
 });
 
 describe("SetupChannelIntro welcome experience", () => {
-  it("shows local setup without hiding its actions and explains optional hosted agents", async () => {
+  it("leads with one Run Setup button and folds every other way in under Advanced", async () => {
     await mountIntro();
     expect(SETUP_HERO.body).not.toContain("/setup");
     expect(host.textContent).toContain("Create or choose a company below");
-    expect(host.querySelector('[data-testid="setup-launch-codex"]')?.closest("details")).toBeNull();
+    // Exactly one primary action above the fold.
+    const primaries = host.querySelectorAll(".hero-copy .launch-btn.primary");
+    expect(primaries).toHaveLength(1);
+    expect(primaries[0]?.getAttribute("data-testid")).toBe("setup-run");
+    expect(primaries[0]?.textContent).toContain("Run Setup");
+    // Separate coding tools and the hosted-agent note live under Advanced, closed by default.
+    const advanced = host.querySelector<HTMLDetailsElement>('[data-testid="setup-advanced"]');
+    expect(advanced).toBeTruthy();
+    expect(advanced?.open).toBe(false);
+    expect(advanced?.querySelector("summary")?.textContent).toContain("Advanced");
+    for (const key of ["claude", "codex", "grok"]) {
+      expect(host.querySelector(`[data-testid="setup-launch-${key}"]`)?.closest("details")).toBe(advanced);
+    }
+    expect(host.querySelector('[data-testid="setup-hosted-agent-guidance"]')?.closest("details")).toBe(advanced);
     expect(host.textContent).toContain("Hosted agents require a paid plan");
-    expect(host.querySelector('[data-testid="setup-open-sessions"]')).toBeNull();
   });
-  it("opens the host's Sessions draft without launching an external tool", async () => {
+  it("Run Setup opens the host's Sessions draft without launching an external tool", async () => {
     const openSessions = vi.fn();
-    await mountIntro(vi.fn(), openSessions);
-    const before = shell.launchCodexWorkspace.mock.calls.length;
-    host.querySelector<HTMLButtonElement>('[data-testid="setup-open-sessions"]')!.click();
+    const onsetupstarted = vi.fn();
+    await mountIntro(vi.fn(), openSessions, onsetupstarted);
+    const before = shell.launchCodexWorkspace.mock.calls.length + shell.launchClaudeCode.mock.calls.length;
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
     expect(openSessions).toHaveBeenCalledOnce();
-    expect(shell.launchCodexWorkspace.mock.calls.length).toBe(before);
-    expect(host.textContent).toContain("/setup");
+    expect(onsetupstarted).toHaveBeenCalledOnce();
+    expect(shell.launchCodexWorkspace.mock.calls.length + shell.launchClaudeCode.mock.calls.length).toBe(before);
+  });
+  it("Run Setup falls back to Claude Code when the host has no in-app Sessions", async () => {
+    const onsetupstarted = vi.fn();
+    await mountIntro(vi.fn(), undefined, onsetupstarted);
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!;
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    button.click();
+    await vi.waitFor(() => expect(onsetupstarted).toHaveBeenCalledOnce());
   });
   it("renders the hero, every resource link, the support note, and the launch buttons", async () => {
     await mountIntro();

@@ -28,9 +28,13 @@
     type LaunchKey,
   } from "../settings/launch-actions";
   import {
+    SETUP_ADVANCED_LABEL,
+    SETUP_ADVANCED_TOOLS_NOTE,
     SETUP_DEEP_LINK_PROMPT,
+    SETUP_HOSTED_AGENT_NOTE,
     SETUP_LAUNCH_COMMANDS,
     SETUP_RESOURCES,
+    SETUP_RUN_LABEL,
     SETUP_ROSTER_FAILED,
     SETUP_SUPPORT_NOTE,
     setupCompanies,
@@ -82,6 +86,12 @@
     rosterStatus?: SetupRosterStatus | null;
     /** Re-run the roster fetch after a `failed` status. */
     onretryroster?: () => void;
+    /**
+     * Fired when setup is started from this pane (Run Setup or one of the
+     * advanced launches). The shell records it so later boots land in the
+     * company channel instead of #welcome.
+     */
+    onsetupstarted?: () => void;
   }
 
   let {
@@ -94,6 +104,7 @@
     oncreatecompany = null,
     rosterStatus = null,
     onretryroster,
+    onsetupstarted,
   }: Props = $props();
 
   const rosterCompanies = $derived(setupCompanies(companies));
@@ -153,8 +164,23 @@
     launchErrors = { ...launchErrors, [key]: message ?? undefined };
   }
 
+  /**
+   * The one primary action: open the host's Sessions draft with `/setup`
+   * prefilled. Hosts without in-app Sessions fall back to Claude Code.
+   */
+  function runSetup(): void {
+    if (onopensessions) {
+      onsetupstarted?.();
+      onopensessions();
+      return;
+    }
+    // runLaunch reports onsetupstarted itself.
+    void runLaunch("claude");
+  }
+
   async function runLaunch(key: LaunchKey): Promise<void> {
     if (!canLaunch || launching) return;
+    onsetupstarted?.();
     setLaunchError(key, null);
     launching = key;
     try {
@@ -175,7 +201,7 @@
     label: string;
     primary: boolean;
   }[] = [
-    { key: "claude", label: "Open setup in Claude Code", primary: true },
+    { key: "claude", label: "Open setup in Claude Code", primary: false },
     { key: "codex", label: "Open setup in Codex", primary: false },
     { key: "grok", label: "Open setup in Grok Build", primary: false },
   ];
@@ -254,84 +280,95 @@
         </p>
       {/if}
 
-      {#if hasCompany}
-        <div
-          class="hero-actions company-actions"
-          role="group"
-          aria-label="Your companies"
-          data-testid="setup-company-actions"
+      <div class="hero-actions" role="group" aria-label="Set up this Mac">
+        <button
+          type="button"
+          class="launch-btn primary"
+          data-testid="setup-run"
+          disabled={!onopensessions && (!canLaunch || launching !== null)}
+          aria-busy={!onopensessions && launching === "claude"}
+          onclick={runSetup}
         >
-          {#each rosterCompanies as company (company.cloudUid ?? company.slug)}
-            <button
-              type="button"
-              class="launch-btn primary"
-              data-testid={`setup-open-company-${company.slug}`}
-              data-company-uid={company.cloudUid ?? ""}
-              onclick={() => onopencompany?.(company)}
-            >
-              {setupCompanyActionLabel(company)}
-            </button>
-          {/each}
-        </div>
-        {#if oncreatecompany}
-          <div class="setup-action">
-            <button
-              type="button"
-              class="quiet-btn"
-              data-testid="setup-create-another-company"
-              aria-busy={createAnotherBusy}
-              disabled={createAnotherBusy}
-              onclick={() => void createAnotherCompany()}
-            >
-              {createAnotherBusy ? "Opening…" : "Create another company"}
-            </button>
-            {#if createAnotherError}
-              <p
-                class="launch-error"
-                role="alert"
-                data-testid="setup-create-another-company-error"
-              >
-                {createAnotherError}
-              </p>
-            {/if}
-          </div>
-        {/if}
+          {SETUP_RUN_LABEL}
+        </button>
+      </div>
+      {#if !onopensessions && launchErrors.claude}
+        <p class="launch-error" role="alert">{launchErrors.claude}</p>
       {/if}
 
-      <div class="optional-tools">
-      <p>Work with AI on your computer</p>
-      {#if onopensessions}
-        <button type="button" class="launch-btn primary" data-testid="setup-open-sessions" onclick={onopensessions}>Open HQ Sessions</button>
-        <p>Choose Claude Code or Codex, then send <code>/setup</code> to connect your local workspace.</p>
-      {/if}
-      <p>Or open setup in a separate coding tool:</p>
-      <div class="hero-actions" role="group" aria-label="Open setup">
-        {#each LAUNCHES as launch (launch.key)}
-          <div class="setup-action">
-            <button
-              type="button"
-              class="launch-btn"
-              class:primary={launch.primary}
-              data-testid={`setup-launch-${launch.key}`}
-              disabled={!canLaunch || launching !== null}
-              aria-busy={launching === launch.key}
-              onclick={() => void runLaunch(launch.key)}
-            >
-              {launching === launch.key ? "Opening…" : launch.label}
-            </button>
-            {#if launchErrors[launch.key]}
-              <p class="launch-error" role="alert">
-                {launchErrors[launch.key]}
-              </p>
-            {/if}
+      <details class="advanced" data-testid="setup-advanced">
+        <summary>{SETUP_ADVANCED_LABEL}</summary>
+        <div class="advanced-body">
+          <p>{SETUP_ADVANCED_TOOLS_NOTE}</p>
+          <div class="hero-actions" role="group" aria-label="Open setup in a separate tool">
+            {#each LAUNCHES as launch (launch.key)}
+              <div class="setup-action">
+                <button
+                  type="button"
+                  class="launch-btn"
+                  data-testid={`setup-launch-${launch.key}`}
+                  disabled={!canLaunch || launching !== null}
+                  aria-busy={launching === launch.key}
+                  onclick={() => void runLaunch(launch.key)}
+                >
+                  {launching === launch.key ? "Opening…" : launch.label}
+                </button>
+                {#if launchErrors[launch.key]}
+                  <p class="launch-error" role="alert">
+                    {launchErrors[launch.key]}
+                  </p>
+                {/if}
+              </div>
+            {/each}
           </div>
-        {/each}
-      </div>
-      </div>
-      <div class="optional-tools" data-testid="setup-hosted-agent-guidance">
-        <p>Optional: work with a hosted agent</p>
-        <p>Open your company channel and choose Add agent. Once it is ready, send it a direct message. Hosted agents require a paid plan; local setup does not require one.</p>
-      </div>
+
+          {#if hasCompany}
+            <div
+              class="hero-actions company-actions"
+              role="group"
+              aria-label="Your companies"
+              data-testid="setup-company-actions"
+            >
+              {#each rosterCompanies as company (company.cloudUid ?? company.slug)}
+                <button
+                  type="button"
+                  class="launch-btn"
+                  data-testid={`setup-open-company-${company.slug}`}
+                  data-company-uid={company.cloudUid ?? ""}
+                  onclick={() => onopencompany?.(company)}
+                >
+                  {setupCompanyActionLabel(company)}
+                </button>
+              {/each}
+            </div>
+            {#if oncreatecompany}
+              <div class="setup-action">
+                <button
+                  type="button"
+                  class="quiet-btn"
+                  data-testid="setup-create-another-company"
+                  aria-busy={createAnotherBusy}
+                  disabled={createAnotherBusy}
+                  onclick={() => void createAnotherCompany()}
+                >
+                  {createAnotherBusy ? "Opening…" : "Create another company"}
+                </button>
+                {#if createAnotherError}
+                  <p
+                    class="launch-error"
+                    role="alert"
+                    data-testid="setup-create-another-company-error"
+                  >
+                    {createAnotherError}
+                  </p>
+                {/if}
+              </div>
+            {/if}
+          {/if}
+
+          <p data-testid="setup-hosted-agent-guidance">{SETUP_HOSTED_AGENT_NOTE}</p>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -390,8 +427,31 @@
 </section>
 
 <style>
-  .optional-tools { margin-top: 16px; font-size: 13px; }
-  .optional-tools p { margin: 0 0 8px; line-height: 1.5; }
+  .advanced {
+    margin-top: 14px;
+    font-size: 13px;
+  }
+  .advanced summary {
+    cursor: pointer;
+    width: fit-content;
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+  }
+  .advanced summary:hover {
+    color: #ffffff;
+  }
+  .advanced-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .advanced-body p {
+    margin: 0;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.72);
+  }
   .setup-intro {
     flex: 0 0 auto;
     overflow: visible;

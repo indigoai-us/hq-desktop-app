@@ -182,6 +182,60 @@ describe("ChatSidebar auto-opens #setup after a failed/empty first paint", () =>
   });
 });
 
+describe("ChatSidebar boot before setup has run on this machine", () => {
+  it("lands on #welcome even though a live company channel exists", async () => {
+    const onselect = vi.fn();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          fetchChannelDirectory: async () => ({
+            snapshot: true,
+            cursor: "cur_1",
+            cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            rows: [liveRow],
+          }),
+        }),
+        seedDirectory: [liveRow],
+        companies: [ACME],
+        welcomeFirst: true,
+        onselect,
+        bootTimeoutMs: 5_000,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(onselect).toHaveBeenCalled();
+    });
+    expect(onselect.mock.calls[0]?.[0]?.id).toBe(SETUP_ROW_ID);
+  });
+
+  it("opens the live channel as before once setup has run", async () => {
+    const onselect = vi.fn();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          fetchChannelDirectory: async () => ({
+            snapshot: true,
+            cursor: "cur_1",
+            cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            rows: [liveRow],
+          }),
+        }),
+        seedDirectory: [liveRow],
+        companies: [ACME],
+        welcomeFirst: false,
+        onselect,
+        bootTimeoutMs: 5_000,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(onselect).toHaveBeenCalled();
+    });
+    expect(onselect.mock.calls[0]?.[0]?.id).toBe("ch:chn_proj");
+  });
+});
+
 describe("ChatSidebar boot when the roster already has a company", () => {
   it("opens the company's channel once it hydrates instead of racing into #setup", async () => {
     const onselect = vi.fn();

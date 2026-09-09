@@ -102,6 +102,7 @@
     takeRailConversations,
     pickAutoOpenConversation,
     pickSettledBootConversation,
+    pickWelcomeFirstConversation,
     railRowScopeLabel,
     togglePin,
     type CompanyScope,
@@ -199,6 +200,11 @@
      */
     bootTimeoutMs?: number;
     /**
+     * Land on #welcome at boot even when live channels exist (setup has not
+     * been run on this machine yet). See `hasRunWelcomeSetup`.
+     */
+    welcomeFirst?: boolean;
+    /**
      * Phone-width shells keep this mounted while it is closed — it is what
      * loads the roster and falls back to #setup — and move it off screen
      * instead of unmounting it.
@@ -244,6 +250,7 @@
     oncreateagent = null,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    welcomeFirst = false,
     offscreen = false,
     onShellReady,
     projectHasPresence = () => false,
@@ -701,6 +708,17 @@
       return;
     }
     if (autoOpenRequestedId) return;
+    // Until setup has been run on this machine, #welcome wins the boot pick:
+    // the person needs Run Setup before a company channel is useful.
+    if (welcomeFirst) {
+      const welcome = pickWelcomeFirstConversation(filteredRows, selectedId);
+      if (welcome) {
+        autoOpenRequestedId = welcome.id;
+        sidebarLog("auto-open-welcome-first", { id: welcome.id });
+        void openRow(welcome, undefined, true);
+        return;
+      }
+    }
     // Real conversations auto-open immediately. #setup exists from first
     // paint, so it must not win the empty-selection race against deep links
     // and rows that hydrate a beat later — but once the first fetch has
