@@ -1496,6 +1496,7 @@ This final paragraph verifies spacing after a thematic break.
   agent_session_list: () => [
     {
       sessionId: SESSION_ID,
+      requestedModel: null,
       tool: 'claude',
       phase: 'working',
       company: 'indigo',
