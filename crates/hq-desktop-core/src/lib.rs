@@ -14,6 +14,8 @@ pub mod client_info;
 pub mod cognito;
 pub mod config;
 pub mod conflicts;
+pub mod continuation_custody;
+pub mod continuation_endpoints;
 pub mod cpu_throttle;
 pub mod daemon;
 pub mod deep_link;
