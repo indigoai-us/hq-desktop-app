@@ -66,8 +66,12 @@ export interface ChatSidebarApi {
    */
   createChannel?(args: {
     name: string;
-    scope: "personal" | "company";
+    scope: "personal" | "company" | "project";
     companyUid?: string;
+    /** Required for `scope: "project"`: the project the channel belongs to. */
+    projectId?: string;
+    /** Project channels are invite-only on the server. */
+    visibility?: "invite" | "company";
   }): Promise<{ channelId: string }>;
   /** POST /v1/notify/channels/{id}/members — add a participant. */
   addChannelMember?(channelId: string, toPersonUid: string): Promise<void>;

@@ -862,9 +862,18 @@
     closeAllOverlays();
     createOpen = true;
   }
+  /** The "+" button: a plain channel; the host resets the kind on its own opens. */
+  function openCreateFromButton(): void {
+    createKind = "channel";
+    openCreate();
+  }
+
+  /** What the create modal makes inside a company when opened by the host. */
+  let createKind = $state<"channel" | "project">("channel");
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
-  export function openCreateChannel(): void {
+  export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
+    createKind = options.kind ?? "channel";
     openCreate();
   }
 
@@ -1911,7 +1920,7 @@
           : "New message or channel"}
         aria-haspopup="dialog"
         aria-expanded={createOpen}
-        onclick={openCreate}
+        onclick={openCreateFromButton}
       >
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path
@@ -2625,6 +2634,7 @@
       {oncreatecompany}
       {oncreateagent}
       {agentCompanies}
+      initialKind={createKind}
     />
   {/if}
 </aside>

@@ -2508,7 +2508,7 @@
 
   // --- #welcome first moves ---------------------------------------------------
   /** The sidebar instance, for host entry points such as "New project channel". */
-  let sidebarRef = $state<{ openCreateChannel: () => void } | null>(null);
+  let sidebarRef = $state<{ openCreateChannel: (options?: { kind?: "channel" | "project" }) => void } | null>(null);
   let firstMovesDone = $state<ReadonlySet<FirstMoveId>>(readFirstMovesDone());
   const hasProjectChannel = $derived(
     railRows.some(
@@ -2533,7 +2533,7 @@
   async function performFirstMove(id: FirstMoveId): Promise<string | null | void> {
     if (id === "project-channel") {
       if (!sidebarRef) return "The sidebar is not ready yet.";
-      sidebarRef.openCreateChannel();
+      sidebarRef.openCreateChannel({ kind: "project" });
       // Ticks itself when the project channel appears in the rail.
       return null;
     }
