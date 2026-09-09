@@ -44,3 +44,32 @@ test('drawer slides both ways and the reopened session retains context and prove
   await page.getByTestId('session-source').click();
   await expect(page.getByTestId('session-transcript')).toContainText('Original planning session history');
 });
+
+test('back and forward restore sessions without start or send', async ({ page }) => {
+  await page.goto('/desktop-alt.html?window=desktop-alt&persona=indigo');
+  await page.getByRole('button', { name: 'New session', exact: true }).first().click();
+  await page.getByTestId('sessions-drawer-toggle').click();
+  await page.getByTestId('session-live-row').first().click();
+  await expect(page.getByTestId('session-transcript')).toContainText('Inherited planning context');
+  await page.getByTestId('session-source').click();
+  await expect(page.getByTestId('session-transcript')).toContainText('Original planning session history');
+
+  const before = await page.evaluate(() => (window as Window & { __hqInvokeCounts?: Record<string, number> }).__hqInvokeCounts ?? {});
+  await page.getByTestId('titlebar-back').click();
+  await expect(page.getByTestId('session-transcript')).toContainText('Inherited planning context');
+  await page.getByTestId('titlebar-forward').click();
+  await expect(page.getByTestId('session-transcript')).toContainText('Original planning session history');
+  const after = await page.evaluate(() => (window as Window & { __hqInvokeCounts?: Record<string, number> }).__hqInvokeCounts ?? {});
+  expect(after.agent_session_start ?? 0).toBe(before.agent_session_start ?? 0);
+  expect(after.agent_session_send ?? 0).toBe(before.agent_session_send ?? 0);
+});
+
+test('unsent draft text survives leaving and returning via Back', async ({ page }) => {
+  await page.goto('/desktop-alt.html?window=desktop-alt&persona=indigo');
+  await page.getByRole('button', { name: 'New session', exact: true }).first().click();
+  const composer = page.getByTestId('session-composer-input');
+  await composer.fill('keep this draft through back');
+  await page.getByRole('button', { name: 'New session', exact: true }).first().click();
+  await page.getByTestId('titlebar-back').click();
+  await expect(page.getByTestId('session-composer-input')).toHaveValue('keep this draft through back');
+});

@@ -12,19 +12,31 @@
   import { dispatchEmbeddedNavigation } from '@hq/ui';
   import SessionsPage from './SessionsPage.svelte';
   import SharedSessionPage from './SharedSessionPage.svelte';
-  import { parseSessionsParam } from './sessions-route-param';
+  import {
+    parseSessionsParam,
+    sessionDraftStorageKey,
+    sessionNavigateMode,
+    sessionRestorePath,
+  } from './sessions-route-param';
   import type { AgentSession } from '../lib/sessions';
 
   interface Props {
     /** The shell's opaque selection — here, the routed session id. */
     param?: string | null;
     /** Report the session the user opened back to the shell. */
-    onnavigate?: (param: string | null) => void;
+    onnavigate?: (param: string | null, options?: { mode?: 'push' | 'replace' }) => void;
   }
 
   let { param = null, onnavigate }: Props = $props();
 
   const route = $derived(parseSessionsParam(param));
+  const restorePath = $derived(sessionRestorePath(route));
+  const draftKey = $derived(sessionDraftStorageKey(param));
+
+  function openSession(id: string | null, options?: { replace?: boolean }): void {
+    const next = id || null;
+    onnavigate?.(next, { mode: sessionNavigateMode(options) });
+  }
   const historySession = $derived<AgentSession | null>(
     route.kind === 'history'
       ? {
@@ -59,7 +71,9 @@
   initialCompany={route.kind === 'new' ? route.company : null}
   initialProject={route.kind === 'new' ? route.project : null}
   initialChannelId={route.kind === 'new' ? route.channelId : undefined}
-  onopensession={(id) => onnavigate?.(id || null)}
+  restorePath={restorePath === 'open' || restorePath === 'openHistory' ? restorePath : undefined}
+  {draftKey}
+  onopensession={openSession}
   onopenchannel={(channelId) => dispatchEmbeddedNavigation({ kind: 'channel', channelId })}
 />
 {/if}

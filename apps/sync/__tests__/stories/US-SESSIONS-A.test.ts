@@ -901,7 +901,7 @@ describe('company / project start-work — the first send orients the session', 
     expect(body).toContain('planFirstSend(wire, { company, project }, startworkEnabled)');
     const planAt = body.indexOf('const first = planFirstSend(');
     const wordsAt = body.indexOf('started = await liveSessionStore.startAndSend(');
-    const routeAt = body.indexOf('onopensession?.(started);', wordsAt);
+    const routeAt = body.indexOf('onopensession?.(started', wordsAt);
     expect(planAt).toBeGreaterThan(-1);
     expect(wordsAt).toBeGreaterThan(planAt);
     expect(routeAt).toBeGreaterThan(wordsAt);

@@ -500,7 +500,10 @@
         createAction?: { label: string; param: () => string | null };
         component: Component<{
           param?: string | null;
-          onnavigate?: (param: string | null) => void;
+          onnavigate?: (
+            param: string | null,
+            options?: { mode?: "push" | "replace" },
+          ) => void;
         }>;
       }
     >;
@@ -4551,13 +4554,19 @@
             {#key `${extraPageId}:${extraPageParam ?? ""}`}
               <Page
                 param={extraPageParam}
-                onnavigate={(next: string | null) => {
+                onnavigate={(
+                  next: string | null,
+                  options?: { mode?: NavigationMode },
+                ) => {
                   if (!extraPageId) return;
-                  void navigate({
-                    kind: "extra",
-                    page: extraPageId,
-                    param: next,
-                  });
+                  void navigate(
+                    {
+                      kind: "extra",
+                      page: extraPageId,
+                      param: next,
+                    },
+                    options?.mode ?? "push",
+                  );
                 }}
               />
             {/key}

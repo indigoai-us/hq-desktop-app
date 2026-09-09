@@ -168,7 +168,8 @@ describe('US-SESSIONS-B — the wrapper adapts the shell contract', () => {
     expect(WRAPPER).toContain("sessionId={route.kind === 'session' || route.kind === 'history' ? route.sessionId : undefined}");
     expect(WRAPPER).toContain('initialHistorySession={historySession}');
     expect(WRAPPER).not.toContain('sessionId={param');
-    expect(WRAPPER).toContain('onopensession={(id) => onnavigate?.(id || null)}');
+    expect(WRAPPER).toContain('onopensession={openSession}');
+    expect(WRAPPER).toContain('onnavigate?.(next, { mode: sessionNavigateMode(options) })');
   });
 
   it('keeps Tauri out of the shared UI package', () => {

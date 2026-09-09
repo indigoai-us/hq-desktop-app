@@ -646,11 +646,12 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "extra-page-onnavigate",
     file: SHARED_SHELL_FILE,
-    needle: "onnavigate={(next: string | null) => {",
+    needle: "options?.mode ?? \"push\"",
     destinationKind: "extra",
     history: "push",
     host: "shared-shell",
     inScope: true,
+    notes: "Default push; extra pages may pass { mode: 'replace' } (session first-send).",
   },
   {
     id: "meetings-page",
@@ -1365,11 +1366,12 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "sessions-open-session",
     file: SESSIONS_EXTRA_FILE,
-    needle: "onopensession={(id) => onnavigate?.(id || null)}",
+    needle: "onnavigate?.(next, { mode: sessionNavigateMode(options) });",
     destinationKind: "extra",
     history: "push",
     host: "sessions-extra",
     inScope: true,
+    notes: "First send on a new draft passes replace so Back cannot recreate it.",
   },
   {
     id: "sessions-open-channel",

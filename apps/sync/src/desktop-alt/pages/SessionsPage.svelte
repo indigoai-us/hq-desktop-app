@@ -108,6 +108,7 @@
     type TurnOverrides,
   } from '../lib/live-session-store.svelte';
   import type { AgentSession } from '../lib/sessions';
+  import { encodeHistorySessionParam } from './sessions-route-param';
   import { sessionsStore } from '../lib/sessions-store.svelte';
   import ProjectCreatedCard from '../../components/sessions/ProjectCreatedCard.svelte';
   import { projectLinksStore } from '../lib/project-links-store.svelte';
@@ -123,7 +124,7 @@
     /** Route-selected session. Absent → a fresh chat that starts on first send. */
     sessionId?: string;
     /** Navigate to `sessions:<id>` (the page never touches the router itself). */
-    onopensession?: (sessionId: string) => void;
+    onopensession?: (sessionId: string, options?: { replace?: boolean }) => void;
     /** Open a channel by id after a share — the shell's own route mechanism. */
     onopenchannel?: (channelId: string) => void;
     /** A fresh chat pre-bound to this company (the sidebar's "New session"). */
@@ -133,6 +134,10 @@
     initialChannelId?: string;
     /** Durable metadata supplied by a nested project-session route. */
     initialHistorySession?: AgentSession | null;
+    /** Restore via open vs openHistory. Absent on new drafts (nothing to restore). */
+    restorePath?: 'open' | 'openHistory';
+    /** Unique unsent-draft identity for composer persistence. */
+    draftKey?: string | null;
   }
 
   let {
@@ -143,6 +148,8 @@
     initialProject = null,
     initialChannelId,
     initialHistorySession = null,
+    restorePath,
+    draftKey = null,
   }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
@@ -250,6 +257,7 @@
 
   async function openRoutedSession(next: string) {
     if (routedId !== next) return;
+    // Restore is open / openHistory only. Never start, send, or fork.
 
     // Project-channel links already carry the authoritative provider history
     // metadata. Open them immediately instead of blocking the transcript on
@@ -269,18 +277,20 @@
 
     // Resolve the inexpensive in-memory registry first. A live session must
     // not wait for a scan of every provider transcript before replaying.
-    await liveSessionStore.refreshList();
-    if (routedId !== next) return;
+    if (restorePath !== 'openHistory') {
+      await liveSessionStore.refreshList();
+      if (routedId !== next) return;
 
-    const appOwned = liveSessionStore.sessions.some((session) => session.sessionId === next);
-    if (appOwned) {
-      await liveSessionStore.open(next);
-      return;
+      const appOwned = liveSessionStore.sessions.some((session) => session.sessionId === next);
+      if (appOwned) {
+        await liveSessionStore.open(next);
+        return;
+      }
     }
     await sessionsStore.refresh();
     if (routedId !== next) return;
     const providerHistory = sessionsStore.sessions.find((session) => session.id === next);
-    if (providerHistory && !appOwned) {
+    if (providerHistory) {
       tool = providerHistory.tool;
       model = null;
       effort = null;
@@ -291,6 +301,7 @@
       await liveSessionStore.openHistory(providerHistory);
       return;
     }
+    if (restorePath === 'openHistory') return;
     await liveSessionStore.open(next);
   }
 
@@ -1056,7 +1067,7 @@
       // is what made a follow-up accidentally start another conversation.
       if (started) {
         openedId = started;
-        onopensession?.(started);
+        onopensession?.(started, sessionId ? undefined : { replace: true });
       }
     }
     if (started && messageAccepted) await onmentionsend(started, text, mentions);
@@ -1103,7 +1114,7 @@
       rememberEffort(tool, null);
       await liveSessionStore.openHistory(session);
       openedId = session.id;
-      onopensession?.(session.id);
+      onopensession?.(encodeHistorySessionParam(session));
       return true;
     } catch (err) {
       actionError = err instanceof Error ? err.message : String(err);
@@ -1367,6 +1378,7 @@
       {hqFolder}
       {mentionCandidates}
       {mentionStatus}
+      {draftKey}
       onsend={(text, images, mentions, context) => void handleSend(text, images, mentions, context)}
       onstop={() => void liveSessionStore.interrupt()}
       oncompany={chooseCompany}

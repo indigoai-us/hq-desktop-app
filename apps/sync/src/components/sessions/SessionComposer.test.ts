@@ -17,6 +17,10 @@ vi.mock('svelte', async () => {
 import { flushSync, mount, tick, unmount } from 'svelte';
 import SessionComposer from './SessionComposer.svelte';
 import { CODEX_EFFORT_OPTIONS, readSessionModels } from './session-models';
+import {
+  resetSessionComposerDraftsForTests,
+  saveSessionComposerDraft,
+} from './session-composer-drafts';
 
 /** The exact shape the CLI handshake sends. */
 const CATALOG = readSessionModels([
@@ -91,6 +95,7 @@ afterEach(() => {
   if (component) unmount(component);
   component = null;
   host.remove();
+  resetSessionComposerDraftsForTests();
 });
 
 describe('two rows: text on top, every control underneath', () => {
@@ -621,5 +626,24 @@ describe('reset — a fresh draft for a new session', () => {
     expect(at('session-composer-attachments')).toBeNull();
     // The company pill is a prop: it stays.
     expect(must('session-pill-company').textContent).toContain('Indigo');
+  });
+});
+
+describe('unsent draft persistence', () => {
+  it('restores text and images after remount for the same draft key', async () => {
+    const key = 'sessions:new?draft=persist-1';
+    saveSessionComposerDraft(key, {
+      text: 'half a thought',
+      images: [{ mediaType: 'image/png', base64: 'QQ==', name: 'shot.png' }],
+    });
+    render({ draftKey: key });
+    expect((must('session-composer-input') as HTMLTextAreaElement).value).toBe('half a thought');
+    expect(must('session-composer-attachments').textContent).toContain('shot.png');
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+    render({ draftKey: key });
+    expect((must('session-composer-input') as HTMLTextAreaElement).value).toBe('half a thought');
+    expect(must('session-composer-attachments').textContent).toContain('shot.png');
   });
 });

@@ -12,6 +12,7 @@ const nativeListeners = vi.hoisted(
   () => new Map<string, (event: { payload: unknown }) => void>(),
 );
 const openExternal = vi.hoisted(() => vi.fn(async () => {}));
+const tauriCommands = vi.hoisted(() => [] as string[]);
 
 vi.mock('svelte', async () => {
   // @ts-expect-error the client entry is intentionally used by happy-dom.
@@ -19,7 +20,103 @@ vi.mock('svelte', async () => {
 });
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn(async () => {
+  invoke: vi.fn(async (command: string) => {
+    tauriCommands.push(command);
+    if (command === 'agent_session_start' || command === 'agent_session_send') {
+      throw new Error(`unexpected ${command}`);
+    }
+    if (command === 'agent_session_preflight') {
+      return {
+        hqRoot: '/tmp/HQ',
+        hooksReady: true,
+        hooksError: null,
+        claudeAvailable: true,
+        claudeLoggedIn: true,
+        codexAvailable: true,
+        codexLoggedIn: true,
+        companies: [{ slug: 'indigo', displayName: 'Indigo' }],
+      };
+    }
+    if (command === 'agent_session_list') {
+      return [
+        {
+          sessionId: 'ses_b',
+          tool: 'claude',
+          phase: 'idle',
+          company: 'indigo',
+          model: null,
+          requestedModel: null,
+          effort: null,
+          permissionMode: 'prompt',
+          cwd: '',
+          startedAt: '2026-09-02T14:00:00Z',
+          lastActivityAt: '2026-09-02T14:06:00Z',
+          lastSeq: 1,
+          pendingCount: 0,
+        },
+      ];
+    }
+    if (command === 'agent_session_replay') {
+      return {
+        events: [
+          {
+            seq: 0,
+            receivedAtMs: 1,
+            event: { kind: 'userMessage', text: 'Session B transcript', imageCount: 0 },
+          },
+        ],
+        nextSeq: 1,
+        truncated: false,
+      };
+    }
+    if (command === 'agent_session_history_page') {
+      return {
+        before: null,
+        events: [
+          {
+            receivedAtMs: 1,
+            event: { kind: 'userMessage', text: 'Source C transcript', imageCount: 0 },
+          },
+        ],
+      };
+    }
+    if (command === 'agent_session_context') {
+      return {
+        sourceSessionId: 'ses_c',
+        sourceTitle: 'Source C',
+        startedBy: 'ada@example.test',
+        history: { before: null, events: [] },
+      };
+    }
+    if (command === 'list_agent_sessions') {
+      return {
+        sessions: [
+          {
+            id: 'ses_c',
+            tool: 'claude',
+            origin: 'local',
+            cwd: '',
+            project: '',
+            company: 'indigo',
+            model: '',
+            status: 'ended',
+            startedAt: '2026-09-02T12:00:00Z',
+            lastActivityAt: '2026-09-02T13:00:00Z',
+            source: 'claude-jsonl',
+          },
+        ],
+        history: [],
+        outpost: null,
+      };
+    }
+    if (command === 'hq_skill_catalog') return { workers: [], skills: [] };
+    if (
+      command === 'agent_session_slash_commands' ||
+      command === 'hq_company_projects' ||
+      command === 'session_mention_candidates'
+    ) {
+      return command === 'agent_session_slash_commands' ? { commands: [], models: [] } : [];
+    }
     throw new Error('tests inject invokeFn');
   }),
 }));
@@ -287,6 +384,7 @@ afterEach(async () => {
   host?.remove();
   nativeListeners.clear();
   openExternal.mockClear();
+  tauriCommands.length = 0;
 });
 
 describe('embedded Work navigation and lifecycle', () => {
@@ -1278,5 +1376,46 @@ describe('embedded Work navigation and lifecycle', () => {
     await flush(64);
 
     expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
+  });
+
+  it('restores channel → session → source through open/history without start or send', async () => {
+    await mountShell();
+    warmRoute('hqwork://open?channel=chn_engineering');
+    await flush();
+    warmRoute('sessions:ses_b');
+    await flush(64);
+    expect(host.querySelector('[data-testid="sessions-page"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="session-transcript"]')?.textContent).toContain(
+      'Session B transcript',
+    );
+
+    warmRoute('sessions:history?id=ses_c&tool=claude');
+    await flush(64);
+    expect(host.querySelector('[data-testid="session-transcript"]')?.textContent).toContain(
+      'Source C transcript',
+    );
+
+    const startBefore = tauriCommands.filter((command) => command === 'agent_session_start').length;
+    const sendBefore = tauriCommands.filter((command) => command === 'agent_session_send').length;
+    (host.querySelector('[data-testid="titlebar-back"]') as HTMLButtonElement).click();
+    await flush(64);
+    expect(host.querySelector('[data-testid="session-transcript"]')?.textContent).toContain(
+      'Session B transcript',
+    );
+    (host.querySelector('[data-testid="titlebar-back"]') as HTMLButtonElement).click();
+    await flush(64);
+    (host.querySelector('[data-testid="titlebar-forward"]') as HTMLButtonElement).click();
+    await flush(64);
+    expect(host.querySelector('[data-testid="session-transcript"]')?.textContent).toContain(
+      'Session B transcript',
+    );
+    expect(tauriCommands.filter((command) => command === 'agent_session_start')).toHaveLength(
+      startBefore,
+    );
+    expect(tauriCommands.filter((command) => command === 'agent_session_send')).toHaveLength(
+      sendBefore,
+    );
+    expect(startBefore).toBe(0);
+    expect(sendBefore).toBe(0);
   });
 });

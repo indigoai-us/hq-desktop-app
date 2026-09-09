@@ -22,6 +22,12 @@ export type SessionsRoute =
 
 export const NEW_SESSION_PREFIX = 'new?';
 export const HISTORY_SESSION_PREFIX = 'history?';
+export const SHARED_SESSION_PREFIX = 'shared?';
+
+/** How restoring this extra-page param must reopen the session. Never start/send/fork. */
+export type SessionRestorePath = 'none' | 'open' | 'openHistory' | 'shared-view';
+
+export type SessionNavigateMode = 'push' | 'replace';
 
 function clean(value: string | null): string | null {
   const trimmed = value?.trim() ?? '';
@@ -65,4 +71,64 @@ export function parseSessionsParam(param: string | null | undefined): SessionsRo
     };
   }
   return { kind: 'session', sessionId: raw };
+}
+
+export function sessionRestorePath(route: SessionsRoute): SessionRestorePath {
+  switch (route.kind) {
+    case 'shared':
+      return 'shared-view';
+    case 'history':
+      return 'openHistory';
+    case 'session':
+      return 'open';
+    case 'new':
+    case 'empty':
+      return 'none';
+  }
+}
+
+export function isNewDraftRoute(route: SessionsRoute): boolean {
+  return route.kind === 'new' || route.kind === 'empty';
+}
+
+/**
+ * First successful send on a new draft replaces that draft identity so Back
+ * cannot recreate the sent composer. Opening another session from a draft
+ * (drawer, source, history) still pushes.
+ */
+export function sessionNavigateMode(options?: { replace?: boolean }): SessionNavigateMode {
+  return options?.replace ? 'replace' : 'push';
+}
+
+/** Composer-draft persistence key. Null for live/history/shared (not unsent drafts). */
+export function sessionDraftStorageKey(param: string | null | undefined): string | null {
+  const route = parseSessionsParam(param);
+  if (!isNewDraftRoute(route)) return null;
+  const raw = param?.trim() ?? '';
+  return `sessions:${raw || 'new'}`;
+}
+
+export function encodeHistorySessionParam(session: {
+  id: string;
+  tool: 'claude' | 'codex';
+  company?: string;
+  project?: string;
+  title?: string;
+  startedAt?: string;
+}): string {
+  const query = new URLSearchParams();
+  query.set('id', session.id);
+  query.set('tool', session.tool === 'codex' ? 'codex' : 'claude');
+  if (session.company?.trim()) query.set('company', session.company.trim());
+  if (session.project?.trim()) query.set('project', session.project.trim());
+  if (session.title?.trim()) query.set('title', session.title.trim());
+  if (session.startedAt?.trim()) query.set('startedAt', session.startedAt.trim());
+  return `${HISTORY_SESSION_PREFIX}${query.toString()}`;
+}
+
+export function encodeSharedSessionParam(sessionId: string, channelId: string): string {
+  return `${SHARED_SESSION_PREFIX}${new URLSearchParams({
+    id: sessionId,
+    channel: channelId,
+  }).toString()}`;
 }
