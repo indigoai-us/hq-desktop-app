@@ -12,6 +12,14 @@
   const now = () => performance.now() - start;
   const finite = value => typeof value === 'number' && Number.isFinite(value);
   const candidate = value => ['host', 'srflx', 'prflx', 'relay'].includes(value) ? value : 'unknown';
+  function audioChecksum(value) {
+    let crc = 0xffff;
+    for (const byte of [value >>> 8, value & 255]) {
+      crc ^= byte << 8;
+      for (let bit = 0; bit < 8; bit++) crc = ((crc << 1) ^ (crc & 0x8000 ? 0x1021 : 0)) & 65535;
+    }
+    return crc;
+  }
   function render() {
     const c = canvas.getContext('2d');
     sequence = Math.floor(now() / 500) % 65536;
@@ -25,11 +33,11 @@
     c.fillStyle = '#a22'; c.fillRect(Math.floor(now() / 10) % 1200, 680, 50, 30);
     c.fillStyle = '#111'; c.font = '14pt Arial';
     globalThis.__hqMeetProbe.screenLines.forEach((line, i) => c.fillText(line, 30, 90 + i * 34));
-    // Distinct public frequency marker mixed with the public speech fixture.
-    // Four independent frequency banks encode all 16 sequence bits. Unlike a
-    // single modulo-16 tone this stays unambiguous across a one-hour run.
+    // Independent 16-bit sequence plus CRC-16/CCITT-FALSE in eight banks.
+    // CRC-invalid transition/interference observations remain explicit gaps.
+    const audioFrame = sequence | (audioChecksum(sequence) << 16);
     oscillators.forEach((oscillator, bank) => oscillator.frequency.setValueAtTime(
-      700 + bank * 3000 + ((sequence >> (bank * 4)) & 15) * 150, context.currentTime));
+      500 + bank * 900 + ((audioFrame >>> (bank * 4)) & 15) * 50, context.currentTime));
     if (sequence !== lastEmittedSequence) {
       emitted.push({ atMs: now(), sequence, audioContextSeconds: context.currentTime });
       lastEmittedSequence = sequence;
@@ -41,7 +49,7 @@
     const stream = new MediaStream([track]);
     if (track.kind === 'audio') {
       const source = context.createMediaStreamSource(stream);
-      const analyser = context.createAnalyser(); analyser.fftSize = 2048;
+      const analyser = context.createAnalyser(); analyser.fftSize = 8192;
       // Markers change frequency: averaging old spectra mixes sequence banks
       // and attenuates the current symbol below the unchanged detection floor.
       analyser.smoothingTimeConstant = 0;
@@ -152,21 +160,25 @@
     const atMs = now();
     const value = { peerId: id, atMs, connectionState: peer.pc.connectionState,
       receivedAudioMarkers: peer.audioCount, receivedVideoMarkers: peer.videoCount,
-      audioMarker: null, audioGapMs: atMs - peer.lastAudioProgressMs, videoMarker: null, sentFile: peer.sentFile || null, receivedFile: peer.receivedFile || null, rtc: [], errors: [...peer.errors] };
+      audioDecode: { status: 'unavailable' }, audioMarker: null, audioGapMs: atMs - peer.lastAudioProgressMs, videoMarker: null, sentFile: peer.sentFile || null, receivedFile: peer.receivedFile || null, rtc: [], errors: [...peer.errors] };
     if (peer.audio) {
       const bins = new Float32Array(peer.audio.frequencyBinCount); peer.audio.getFloatFrequencyData(bins);
       let marker = 0, levelDb = Infinity, complete = true;
-      for (let bank = 0; bank < 4; bank++) {
+      for (let bank = 0; bank < 8; bank++) {
         let best = -Infinity, nibble = -1;
         for (let n = 0; n < 16; n++) {
-          const bin = Math.round((700 + bank * 3000 + n * 150) * peer.audio.fftSize / context.sampleRate);
+          const bin = Math.round((500 + bank * 900 + n * 50) * peer.audio.fftSize / context.sampleRate);
           const power = Math.max(bins[bin - 1], bins[bin], bins[bin + 1]);
           if (power > best) { best = power; nibble = n; }
         }
         if (!(best > -45)) { complete = false; break; }
         marker |= nibble << (bank * 4); levelDb = Math.min(levelDb, best);
       }
-      if (complete) {
+      const decodedSequence = marker & 65535, receivedChecksum = marker >>> 16;
+      value.audioDecode = { status: complete ? (audioChecksum(decodedSequence) === receivedChecksum ? 'valid' : 'checksum-mismatch') : 'below-floor',
+        candidateSequence: decodedSequence, receivedChecksum, levelDb: Number.isFinite(levelDb) ? levelDb : null };
+      if (complete && audioChecksum(decodedSequence) === receivedChecksum) {
+        marker = decodedSequence;
         value.audioMarker = { sequence: marker, levelDb };
         if (marker !== peer.lastAudioMarker) {
           peer.lastAudioMarker = marker;
@@ -265,10 +277,11 @@
       const buffer = await context.decodeAudioData(bytes.buffer);
       if (buffer.duration < 5 || buffer.duration > 120) throw new Error('speech fixture must span 5..120 seconds');
       const speech = context.createBufferSource(); speech.buffer = buffer; speech.loop = true;
-      speech.connect(destination); speech.start();
-      if (context.sampleRate < 32000) throw new Error('full sequence markers require at least 32 kHz audio');
-      oscillators = Array.from({ length: 4 }, () => {
-        const oscillator = context.createOscillator(), gain = context.createGain(); gain.gain.value = 0.04;
+      const speechGain = context.createGain(); speechGain.gain.value = 0.25;
+      speech.connect(speechGain); speechGain.connect(destination); speech.start();
+      if (context.sampleRate < 32000) throw new Error('framed sequence markers require at least 32 kHz audio');
+      oscillators = Array.from({ length: 8 }, () => {
+        const oscillator = context.createOscillator(), gain = context.createGain(); gain.gain.value = 0.07;
         oscillator.connect(gain); gain.connect(destination); oscillator.start(); return oscillator;
       });
       fixtureAudio = destination.stream;

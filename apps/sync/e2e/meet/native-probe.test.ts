@@ -5,9 +5,10 @@ import { describe, expect, it } from 'vitest';
 async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {}) {
   let button: any, gesture = false;
   const timers = new Map<number, () => void>();
+  let injectedAudioFrame: number | undefined;
   let frameCallback: () => void = () => {}, frameInterval = Infinity;
   let observationCallback: () => void = () => {};
-  let time = 0, video = 1, audio = 1, silent = false, ticking = false;
+  let time = 0, video = 1, audio = 1, silent = false, ticking = false, corrupt = false;
   const pcs: any[] = [];
   const analysers: any[] = [];
   const track = { id: 'camera', stop() {} };
@@ -22,10 +23,12 @@ async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {
     state = options.suspended ? 'suspended' : 'running'; onstatechange?: () => void; currentTime = 0; sampleRate = 48000;
     resume = async () => { if (!options.suspended || gesture) { this.state = 'running'; this.onstatechange?.(); } }; close = async () => {};
     createMediaStreamSource = node;
-    createAnalyser() { const analyser = { smoothingTimeConstant: 0.8, fftSize: 2048, frequencyBinCount: 1024,
+    createAnalyser() { const analyser = { smoothingTimeConstant: 0.8, fftSize: 2048, get frequencyBinCount() { return this.fftSize / 2; },
       getFloatFrequencyData(bins: Float32Array) {
         bins.fill(-Infinity);
-        if (!silent) for (let bank = 0; bank < 4; bank++) bins[Math.round((700 + bank * 3000 + ((audio >> (bank * 4)) & 15) * 150) * 2048 / 48000)] = -20;
+        const checksums: Record<number,number>={0: 7439, 1: 3374, 2: 15693, 15: 60640, 16: 3902, 20: 20410, 21: 24475, 99: 16842};
+        const frame = injectedAudioFrame ?? (audio | ((checksums[audio] ^ (corrupt ? 1 : 0)) << 16));
+        if (!silent) for (let bank = 0; bank < 8; bank++) bins[Math.round((500 + bank * 900 + ((frame >>> (bank * 4)) & 15) * 50) * this.fftSize / 48000)] = -20;
       } }; analysers.push(analyser); return analyser; }
     createMediaStreamDestination = () => ({ stream });
     decodeAudioData = async () => ({ duration: 10 });
@@ -63,6 +66,8 @@ async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {
   const probe = world.__hqMeetProbe;
   const result = { probe, world, pcs, analysers,
     tickClock: () => { ticking=true; },
+    rawAudioFrame: (value: number | undefined) => { injectedAudioFrame=value; },
+    corrupt: (value: boolean) => { corrupt=value; },
     signal: (v: number, a: number) => { video=v; audio=a; },
     observe: (t: number) => { time=t; observationCallback(); },
     frameInterval: () => frameInterval, frame: (t: number) => { time=t; frameCallback(); },
@@ -180,5 +185,35 @@ it('timestamps the drain after its initial native observation with a moving cloc
   const s=await f.probe.snapshot();
   expect(s.peers[0].observations).toHaveLength(1);
   expect(s.peers[0].observations[0].atMs).toBeLessThanOrEqual(s.atMs);
+  await f.probe.stop();
+});
+
+it('records invalid audio checksums without guessing a marker or erasing the observation', async () => {
+  const f=await fixture();f.set(100,15,15);
+  expect((await f.sample()).audioMarker.sequence).toBe(15);
+  f.corrupt(true);f.set(600,16,16);
+  const bad=await f.sample();
+  expect(bad.audioMarker).toBeNull();
+  expect(bad.audioDecode.status).toBe('checksum-mismatch');
+  expect(bad.observations.at(-1).audioDecode).toEqual(bad.audioDecode);
+  expect(bad.receivedAudioMarkers).toBe(1);
+  f.corrupt(false);f.set(1100,16,16);
+  expect((await f.sample()).audioMarker.sequence).toBe(16);
+  await f.probe.stop();
+});
+
+it('rejects every single-bit corrupted frame and never invents a sequence during adjacent-symbol overlap', async () => {
+  const f=await fixture();const valid=1|(3374<<16);let t=100;
+  for(let bit=0;bit<32;bit++){
+    f.rawAudioFrame(valid^(1<<bit));f.set(t+=100,1,1);
+    const s=await f.sample();expect(s.audioMarker).toBeNull();expect(s.audioDecode.status).toBe('checksum-mismatch');
+  }
+  const before=15|(60640<<16),after=16|(3902<<16);
+  for(let mask=0;mask<256;mask++){
+    let mixed=0;for(let bank=0;bank<8;bank++) mixed|=(((mask&(1<<bank)?after:before) >>> (4*bank))&15)<<(4*bank);
+    f.rawAudioFrame(mixed);f.set(t+=100,1,1);const s=await f.sample();
+    if(s.audioMarker)expect([15,16]).toContain(s.audioMarker.sequence);
+    else expect(s.audioDecode.status).toBe('checksum-mismatch');
+  }
   await f.probe.stop();
 });
