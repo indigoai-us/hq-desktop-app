@@ -94,6 +94,19 @@ export interface VerifiedIdentity {
 
 /** The native commands this module drives. */
 export interface ContinuationBridge {
+  /**
+   * May this machine start an attempt at all?
+   *
+   * `null` means yes; a string is the refusal code. This is asked *before* the
+   * `started` receipt is written, and that ordering is the entire point. The
+   * five refusals — already signed in, just signed out, a login already in
+   * flight, an update being applied, not a first launch — are facts about this
+   * installation, not outcomes of an attempt. Discovering them after the
+   * receipt would mean every ineligible app open emitted a started/failed pair
+   * and the funnel this work exists to repair would read as a flood of
+   * failures.
+   */
+  mayStart(): Promise<string | null>;
   /** Begin an attempt. Resolves with the attempt id once the browser is open. */
   start(input: { installAttemptId: string; sessionId: string }): Promise<{ attemptId: string }>;
   /** Wait for the callback, exchange, and server-side verification. */
@@ -402,6 +415,25 @@ export async function beginContinuation(
     // exactly as the app does today, and a progress row nobody in the control
     // arm can produce would make the two arms trivially distinguishable in the
     // data for reasons that have nothing to do with the experiment.
+    const state: ContinuationState = { phase: 'fallback', errorKind: 'unavailable' };
+    onState(state);
+    return state;
+  }
+
+  // Eligibility is not an outcome. A machine that is already signed in, that
+  // just signed out, that is mid-update, that has a login in flight, or that
+  // is simply not on its first launch never had an attempt to fail — so it
+  // falls back exactly as the disabled arm does, silently and with no receipt.
+  // The native side enforces this again at `start`; this call exists so the
+  // refusal happens before anything is written down.
+  let refusal: string | null;
+  try {
+    refusal = await deps.bridge.mayStart();
+  } catch {
+    // Unanswerable is not permission.
+    refusal = 'CONTINUATION_REFUSED_UNKNOWN';
+  }
+  if (refusal !== null) {
     const state: ContinuationState = { phase: 'fallback', errorKind: 'unavailable' };
     onState(state);
     return state;

@@ -56,6 +56,7 @@ function harness(overrides: Partial<ContinuationDeps> = {}): Harness {
 
   const deps: ContinuationDeps = {
     bridge: {
+      mayStart: vi.fn(async () => null as string | null),
       start: vi.fn(async () => ({ attemptId: 'attempt-1' })),
       awaitIdentity: vi.fn(async () => IDENTITY),
       confirm: vi.fn(async () => undefined),
@@ -524,5 +525,63 @@ describe('error classification is a closed set', () => {
     ]) {
       expect(closed.has(classifyContinuationError(input))).toBe(true);
     }
+  });
+});
+
+describe('a machine that must not start an attempt', () => {
+  it.each([
+    ['is already signed in', 'CONTINUATION_REFUSED_SIGNED_IN'],
+    ['just signed out on purpose', 'CONTINUATION_REFUSED_SIGNED_OUT'],
+    ['already has a login in flight', 'CONTINUATION_REFUSED_IN_FLIGHT'],
+    ['is applying an update', 'CONTINUATION_REFUSED_UPDATING'],
+    ['is not on its first launch', 'CONTINUATION_REFUSED_NOT_FIRST_LAUNCH'],
+  ])('falls back silently when it %s', async (_label, code) => {
+    const { deps, delivered } = harness();
+    deps.bridge.mayStart = vi.fn(async () => code);
+    const states: ContinuationState[] = [];
+
+    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, (next) =>
+      states.push(next),
+    );
+
+    expect(final).toEqual({ phase: 'fallback', errorKind: 'unavailable' });
+    // Nothing is armed and nothing is written down. Eligibility is a fact
+    // about the installation, not the outcome of an attempt — a started/failed
+    // pair here would report every ineligible app open as a failure and bury
+    // the signal this work exists to produce.
+    expect(deps.bridge.start).not.toHaveBeenCalled();
+    expect(delivered).toEqual([]);
+    expect(states).toEqual([{ phase: 'fallback', errorKind: 'unavailable' }]);
+  });
+
+  it('treats an unanswerable eligibility check as a refusal', async () => {
+    const { deps, delivered } = harness();
+    deps.bridge.mayStart = vi.fn(async () => {
+      throw new Error('bridge unavailable');
+    });
+
+    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, () => {});
+
+    expect(final).toEqual({ phase: 'fallback', errorKind: 'unavailable' });
+    expect(deps.bridge.start).not.toHaveBeenCalled();
+    expect(delivered).toEqual([]);
+  });
+
+  it('asks before it writes, not after', async () => {
+    const order: string[] = [];
+    const { deps } = harness();
+    deps.bridge.mayStart = vi.fn(async () => {
+      order.push('mayStart');
+      return null;
+    });
+    const deliver = deps.deliver;
+    deps.deliver = vi.fn(async (receipt) => {
+      order.push(`deliver:${receipt.body.outcome ?? 'launch'}`);
+      return deliver(receipt);
+    });
+
+    await beginContinuation(deps, { enabled: true, config: enabledConfig() }, () => {});
+
+    expect(order[0]).toBe('mayStart');
   });
 });

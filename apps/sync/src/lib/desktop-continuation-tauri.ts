@@ -96,6 +96,8 @@ export async function loadContinuationContext(
 
 function bridge(call: InvokeFn): ContinuationBridge {
   return {
+    mayStart: async () =>
+      (await call('desktop_continuation_may_start')) as string | null,
     start: async () => {
       // The renderer passes no state, verifier, or nonce — it never had any.
       // Those exist only in native memory for the life of one attempt.

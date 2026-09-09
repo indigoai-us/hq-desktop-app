@@ -559,6 +559,7 @@ fn main() {
             commands::desktop_auth::desktop_continuation_context,
             commands::desktop_auth::desktop_continuation_config,
             commands::desktop_auth::desktop_continuation_deliver,
+            commands::desktop_auth::desktop_continuation_may_start,
             commands::desktop_auth::desktop_continuation_start,
             commands::desktop_auth::desktop_continuation_await_identity,
             commands::desktop_auth::desktop_continuation_confirm,

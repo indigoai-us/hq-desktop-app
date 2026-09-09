@@ -71,6 +71,16 @@ describe('an attempt cannot start on a machine that must not have one', () => {
     expect(context).toMatch(/LaunchKind::FirstRun[\s\S]*\.unwrap_or\(false\)/);
   });
 
+  it('offers the same verdict before anything is written down', () => {
+    // The renderer asks this before the `started` receipt. Without it, every
+    // ineligible app open would emit a started/failed pair and the funnel this
+    // work exists to repair would read as a flood of failures.
+    const may = rustFunction(desktopAuth, 'desktop_continuation_may_start');
+    expect(may).toContain('may_start(launch_context(&app).await');
+    expect(main).toContain('commands::desktop_auth::desktop_continuation_may_start,');
+    expect(adapter).toContain("call('desktop_continuation_may_start')");
+  });
+
   it('latches an explicit sign-out for the life of the process', () => {
     const note = rustFunction(desktopAuth, 'note_auth_transition');
     expect(note).toContain('AttemptEnd::SignedOut');

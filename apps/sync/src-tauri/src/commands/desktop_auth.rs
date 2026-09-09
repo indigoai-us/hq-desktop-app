@@ -228,6 +228,20 @@ pub struct ContinuationStarted {
     pub attempt_id: String,
 }
 
+/// May this machine start an attempt? `None` is yes; `Some` is the refusal.
+///
+/// Asked by the renderer before it writes a `started` receipt, because none of
+/// these five refusals is an outcome of an attempt — they are facts about the
+/// installation, and reporting them as failures would drown the funnel this
+/// work exists to repair. `desktop_continuation_start` checks the same thing
+/// again; a caller that skips this one gets an error instead of a browser.
+#[tauri::command]
+pub async fn desktop_continuation_may_start(app: AppHandle) -> Option<String> {
+    may_start(launch_context(&app).await, RolloutDecision::Continue)
+        .err()
+        .map(|refusal| start_refusal_code(refusal).to_string())
+}
+
 /// Begin an attempt: arm the loopback listener and open the system browser.
 ///
 /// Returns as soon as the browser is open. Waiting for the callback is a
