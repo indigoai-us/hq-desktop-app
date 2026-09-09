@@ -1036,10 +1036,30 @@ pub async fn agent_session_slash_commands(
 ) -> Result<claude::CommandCatalog, String> {
     ensure_in_app_sessions_allowed()?;
     let hq_root = resolve_hq_folder_path()?;
-    match tool {
+    let started = std::time::Instant::now();
+    let outcome = match tool {
         SessionTool::Claude => claude::probe_command_catalog(hq_root).await,
         SessionTool::Codex => codex::probe_command_catalog(hq_root).await,
+    };
+    // The #welcome Run Setup pre-check and the composer's model menu both hang
+    // off this probe; a value-free line makes a silent fallback diagnosable.
+    match &outcome {
+        Ok(catalog) => log(
+            "agent-session",
+            &format!(
+                "catalog probe tool={tool:?} ok commands={} models={} has_setup={} elapsed_ms={}",
+                catalog.commands.len(),
+                catalog.models.len(),
+                catalog.commands.iter().any(|c| c.name == "setup"),
+                started.elapsed().as_millis()
+            ),
+        ),
+        Err(err) => log(
+            "agent-session",
+            &format!("catalog probe tool={tool:?} FAILED elapsed_ms={} err={err}", started.elapsed().as_millis()),
+        ),
     }
+    outcome
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

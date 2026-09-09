@@ -58,11 +58,14 @@ export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunAp
     if (!candidate) return 'needs-sessions-page';
     // `/setup` missing from the CLI's own catalog means HQ's skills are not
     // where the CLI reads them — the Sessions page's repair offer handles it.
+    // A probe that fails or times out proves nothing about the skills, and
+    // preflight already vouched for the HQ layer: run natively rather than
+    // bouncing the person to a page where the same probe would fail again.
     try {
       const catalog = await store.slashCommands(candidate);
       if (!catalog.commands.some((command) => command.name === SETUP_COMMAND)) return 'needs-sessions-page';
-    } catch {
-      return 'needs-sessions-page';
+    } catch (err) {
+      console.warn('[setup-run] command probe failed; starting natively on preflight alone', err);
     }
     tool = candidate;
     return 'ready';

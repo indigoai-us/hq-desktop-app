@@ -72,6 +72,8 @@ interface Backend {
   list: SessionSummary[];
   preflight: Preflight;
   commands: string[];
+  /** When set, the command probe rejects with this instead of answering. */
+  commandsError?: Error;
 }
 
 function mockBackend(backend: Backend) {
@@ -80,6 +82,7 @@ function mockBackend(backend: Backend) {
       case 'agent_session_preflight':
         return Promise.resolve(backend.preflight);
       case 'agent_session_slash_commands':
+        if (backend.commandsError) return Promise.reject(backend.commandsError);
         return Promise.resolve({ commands: backend.commands.map((name) => ({ name, description: name })), models: [{}] });
       case 'agent_session_list':
         return Promise.resolve(backend.list);
@@ -140,9 +143,18 @@ describe('createSetupRunApi', () => {
     expect(await api.preflight()).toBe('needs-sessions-page');
   });
 
-  it('preflight reports needs-sessions-page when the probe itself fails', async () => {
+  it('preflight reports needs-sessions-page when the machine check itself fails', async () => {
     invoke.mockRejectedValue(new Error('bridge down'));
     expect(await createSetupRunApi().preflight()).toBe('needs-sessions-page');
+  });
+
+  it('preflight stays ready when only the command probe fails: the HQ layer is vouched for', async () => {
+    const backend = mockBackend({ list: [], preflight: preflight(), commands: ['setup'] });
+    backend.commandsError = new Error('Claude did not answer the command probe');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await createSetupRunApi().preflight()).toBe('ready');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('start launches a fresh session with the preflighted tool and sends the prompt', async () => {
