@@ -1,6 +1,6 @@
 /** Synthetic raw boundary regressions only, never native certification. */
 import { describe, expect, it } from 'vitest';
-import { calibrateClock, normalizeMarkers, verifySessionBindings, normalizeBoundDiagnostics, type SessionBinding } from './observation-normalizer';
+import { calibrateClock, normalizeDiagnostics, normalizeMarkers, verifySessionBindings, normalizeBoundDiagnostics, type SessionBinding } from './observation-normalizer';
 import { hashHostIdentity } from './host-collector';
 const clock = { offsetMs: 100, uncertaintyMs: 2 };
 const emissions = [{ atMs: 0, sequence: 0 }, { atMs: 500, sequence: 1 }, { atMs: 1000, sequence: 2 }];
@@ -80,4 +80,18 @@ it('binds eight fixed-port host listeners through distinct controller tunnels an
   expect(()=>verifySessionBindings(hosts,probes,expected,mappings.map((m,i)=>i ? m : {...m,hostLocalWebdriverUrl:'http://127.0.0.1:4446'}))).toThrow('mapping mismatch');
   expect(()=>verifySessionBindings(hosts,probes,expected,mappings.map((m,i)=>i ? m : {...m,controllerWebdriverUrl:probes[1].webdriverUrl}))).toThrow('mismatch');
   expect(()=>verifySessionBindings(hosts,probes.map((p,i)=>i ? p : {...p,probeNonce:'f'.repeat(64)}),expected,mappings)).toThrow('mismatch');
+});
+
+it('uses every locally sampled observation despite slow RPC drains and still rejects real local holes', () => {
+  const endpoints=['a','b'].map(id=>({id,samples:[0,1500,3000].map((t,i)=>({
+    requestStartedMs:t+1400,responseReceivedMs:t+1404,snapshot:{atMs:t+1400,
+      emissions:[{atMs:t,sequence:i}],peers:[{peerId:id==='a'?'b':'a',...observation(t+1400,i),
+      observations:Array.from({length:15},(_,n)=>observation(t+n*100,i))}]}}))}));
+  const d={endpoints} as unknown as import('./webdriver-driver').NativeDiagnostic;
+  expect(normalizeDiagnostics(d).directions[0].samples).toHaveLength(45);
+  endpoints[1].samples[0].snapshot.peers[0].observations[0].atMs=1401;
+  expect(()=>normalizeDiagnostics(d)).toThrow('newer than its drain');
+  endpoints[1].samples[0].snapshot.peers[0].observations[0].atMs=0;
+  endpoints[1].samples[1].snapshot.peers[0].observations.splice(0,11);
+  expect(()=>normalizeDiagnostics(d)).toThrow('missing or unordered');
 });

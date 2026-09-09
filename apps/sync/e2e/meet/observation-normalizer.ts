@@ -101,18 +101,23 @@ export function normalizeDiagnostics(diagnostic: import('./webdriver-driver').Na
   if (![2,4,8].includes(endpoints.length) || new Set(endpoints.map(e => e.id)).size !== endpoints.length) throw new Error('invalid endpoint set');
   const raw = endpoints.map(endpoint => {
     const samples = endpoint.samples as { requestStartedMs?: number; responseReceivedMs: number; snapshot: {
-      atMs: number; emissions: Emission[]; peers: (Observation & { peerId: string })[] } }[];
+      atMs: number; emissions: Emission[]; peers: (Observation & { peerId: string; observations?: Observation[] })[] } }[];
     const regular = samples.filter(s => s.requestStartedMs !== undefined);
     const clock = calibrateClock(regular.map(s => ({ requestStartedMs: s.requestStartedMs!, responseReceivedMs: s.responseReceivedMs, remoteAtMs: s.snapshot.atMs })));
-    return { id: endpoint.id, clock, emissions: regular.flatMap(s => s.snapshot.emissions), samples: regular };
+    return { id: endpoint.id, clock, emissions: samples.flatMap(s => s.snapshot.emissions), samples };
   });
   const directions = raw.flatMap(source => raw.filter(receiver => receiver !== source).map(receiver => ({
     from: source.id, to: receiver.id,
     samples: normalizeMarkers({ sourceClock: source.clock, receiverClock: receiver.clock, emissions: source.emissions,
-      observations: receiver.samples.map(s => {
+      observations: receiver.samples.flatMap(s => {
         const peers = s.snapshot.peers.filter(p => p.peerId === source.id);
         if (peers.length !== 1) throw new Error('missing or duplicate receiver direction');
-        return peers[0];
+        if (peers[0].observations !== undefined) {
+          if (!Array.isArray(peers[0].observations) || peers[0].observations.length > 600) throw new Error('invalid native observation batch');
+          if (peers[0].observations.some(o => o.atMs > s.snapshot.atMs)) throw new Error('native observation is newer than its drain');
+          return peers[0].observations;
+        }
+        return s.requestStartedMs !== undefined ? [peers[0]] : [];
       }) }),
   })));
   return { provenance: 'normalized-unattested-diagnostic' as const, clocks: raw.map(r => ({ id: r.id, ...r.clock })), directions };

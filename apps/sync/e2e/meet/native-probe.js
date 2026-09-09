@@ -7,7 +7,7 @@
   if (globalThis.__hqMeetProbe) throw new Error('probe already installed');
   let context, camera, fixtureAudio, screenStream, canvas, timer;
   let oscillators = [];
-  let surface, mask, watchdog, probeNonce, cancelAudioUnlock;
+  let surface, mask, watchdog, probeNonce, cancelAudioUnlock, observationTimer, observationFailure;
   let start = 0, stopped = false, sequence = 0, lastEmittedSequence, emitted = [], peers = new Map();
   const now = () => performance.now() - start;
   const finite = value => typeof value === 'number' && Number.isFinite(value);
@@ -129,7 +129,7 @@
     const pc = new RTCPeerConnection(configuration);
     const peer = { pc, elements: [], errors: [], remoteScreenTrackId: remote?.screenTrackId,
       iceCandidates: [], iceCandidateCount: 0, remoteCandidateCount: 0,
-      audioCount: 0, videoCount: 0, lastAudioProgressMs: now(), samples: [], decodedCanvas: document.createElement('canvas') };
+      observations: [], observationCount: 0, audioCount: 0, videoCount: 0, lastAudioProgressMs: now(), samples: [], decodedCanvas: document.createElement('canvas') };
     peer.decodedCanvas.width = 1280; peer.decodedCanvas.height = 720;
     peers.set(id, peer);
     pc.onicecandidate = event => {
@@ -148,7 +148,7 @@
     } else await pc.setLocalDescription(await pc.createOffer());
     return { description: pc.localDescription.toJSON(), screenTrackId: screenStream?.getVideoTracks()[0]?.id };
   }
-  async function sample(id, peer) {
+  function observe(id, peer) {
     const atMs = now();
     const value = { peerId: id, atMs, connectionState: peer.pc.connectionState,
       receivedAudioMarkers: peer.audioCount, receivedVideoMarkers: peer.videoCount,
@@ -191,6 +191,18 @@
         value.receivedVideoMarkers = ++peer.videoCount;
       }
     }
+    return value;
+  }
+  function recordObservation(id, peer) {
+    if (peer.latestObservation && now() <= peer.latestObservation.atMs) return;
+    if (peer.observations.length >= 600 || peer.observationCount >= 36001) throw new Error('native observation buffer exhausted');
+    const observation = observe(id, peer);
+    peer.latestObservation = observation; peer.observations.push(observation); peer.observationCount++;
+  }
+  async function sample(id, peer) {
+    if (!peer.latestObservation) throw new Error('native observation missing');
+    const value = { ...peer.latestObservation, rtc: [] };
+    value.observations = peer.observations.splice(0);
     const stats = await peer.pc.getStats();
     stats.forEach(s => {
       if (s.type === 'transport' && s.selectedCandidatePairId) {
@@ -264,6 +276,13 @@
       canvas.style.width = '640px'; surface.append(canvas);
       camera = canvas.captureStream(15);
       if (options.shareScreen) screenStream = canvas.captureStream(15); render(); timer = setInterval(render, 1000 / 15);
+      observationTimer = setInterval(() => {
+        for (const [id, peer] of peers) {
+          if (peer.pc.connectionState !== 'connected') continue;
+          try { recordObservation(id, peer); }
+          catch (error) { observationFailure = error.message === 'native observation buffer exhausted' ? error.message : 'native observation failed'; clearInterval(observationTimer); return; }
+        }
+      }, 100);
       return { provenance: 'native-probe-unattested', physicalCaptureTested: false, captureSource: 'generated-public-fixtures', wallTimeMs: Date.now(), monotonicMs: performance.now(),
         audioState: context.state, screenTrack: Boolean(screenStream?.getVideoTracks().length) };
     },
@@ -299,12 +318,14 @@
     },
     async snapshot() {
       if (!context || stopped) throw new Error('probe is not running');
+      if (observationFailure) throw new Error(observationFailure);
       if (now() > 3600000) { await this.stop(); throw new Error('probe duration exceeded'); }
+      for (const [id, peer] of peers) if (!peer.latestObservation) recordObservation(id, peer);
       return { provenance: 'native-probe-unattested', physicalCaptureTested: false, captureSource: 'generated-public-fixtures', atMs: now(), wallTimeMs: Date.now(),
         emissions: emitted.splice(0), peers: await Promise.all([...peers].map(([id, peer]) => sample(id, peer))) };
     },
     async stop() {
-      stopped = true; cancelAudioUnlock?.(); clearInterval(timer); clearTimeout(watchdog);
+      stopped = true; cancelAudioUnlock?.(); clearInterval(timer); clearInterval(observationTimer); clearTimeout(watchdog);
       for (const peer of peers.values()) { peer.pc.close(); peer.elements.forEach(element => element.remove()); }
       for (const stream of [camera, fixtureAudio, screenStream]) stream?.getTracks()?.forEach(track => track.stop());
       oscillators.forEach(oscillator => oscillator.stop()); if (context) await context.close(); canvas?.remove(); surface?.remove(); mask?.remove(); peers.clear();

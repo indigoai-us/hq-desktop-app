@@ -6,7 +6,8 @@ async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {
   let button: any, gesture = false;
   const timers = new Map<number, () => void>();
   let frameCallback: () => void = () => {}, frameInterval = Infinity;
-  let time = 0, video = 1, audio = 1, silent = false;
+  let observationCallback: () => void = () => {};
+  let time = 0, video = 1, audio = 1, silent = false, ticking = false;
   const pcs: any[] = [];
   const analysers: any[] = [];
   const track = { id: 'camera', stop() {} };
@@ -52,8 +53,8 @@ async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {
       ['audio', { type: 'inbound-rtp', kind: 'audio', totalSamplesReceived: time * 48 }],
     ]);
   }
-  const world: any = { performance: { now: () => time }, Date, Float32Array, Uint8Array,
-    setTimeout: (callback: () => void, ms: number) => { timers.set(ms, callback); return ms; }, clearTimeout(ms: number) { timers.delete(ms); }, setInterval: (callback: () => void, ms: number) => { frameCallback=callback; frameInterval=ms; return 2; }, clearInterval() {},
+  const world: any = { performance: { now: () => ticking ? time++ : time }, Date, Float32Array, Uint8Array,
+    setTimeout: (callback: () => void, ms: number) => { timers.set(ms, callback); return ms; }, clearTimeout(ms: number) { timers.delete(ms); }, setInterval: (callback: () => void, ms: number) => { if(ms===100) observationCallback=callback; else { frameCallback=callback; frameInterval=ms; } return ms; }, clearInterval() {},
     atob: () => '', AudioContext, RTCPeerConnection: Peer,
     MediaStream: class { constructor(_: unknown) {} },
     document: { createElement: (tag: string) => { const el = element(); if(tag==='button') button=el; return el; }, head: { append() {} }, body: { append() {} } },
@@ -61,10 +62,13 @@ async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {
   runInNewContext(readFileSync(new URL('./native-probe.js', import.meta.url), 'utf8'), world);
   const probe = world.__hqMeetProbe;
   const result = { probe, world, pcs, analysers,
+    tickClock: () => { ticking=true; },
+    signal: (v: number, a: number) => { video=v; audio=a; },
+    observe: (t: number) => { time=t; observationCallback(); },
     frameInterval: () => frameInterval, frame: (t: number) => { time=t; frameCallback(); },
     start: () => probe.start({ speechBase64: '', screenLines: ['a','b','c','d','e'], durationMs: 30000 }),
     activate: () => { gesture = true; button.onclick(); }, expireAudio: () => timers.get(10000)!(),
-    set(t: number, v: number, a: number, quiet = false) { time = t; video = v; audio = a; silent = quiet; },
+    set(t: number, v: number, a: number, quiet = false) { time = t; video = v; audio = a; silent = quiet; observationCallback(); },
     sample: async () => (await probe.snapshot()).peers[0] };
   if (options.skipStart || options.suspended) return result;
   await result.start();
@@ -154,5 +158,27 @@ it('reads current audio frequency banks without averaging prior marker sequences
   expect(f.analysers[0].smoothingTimeConstant).toBe(0);
   f.set(100, 15, 15); expect((await f.sample()).audioMarker.sequence).toBe(15);
   f.set(600, 16, 16); expect((await f.sample()).audioMarker.sequence).toBe(16);
+  await f.probe.stop();
+});
+
+it('buffers actual local observations across slow controller polls and drains once', async () => {
+  const f=await fixture();
+  f.observe(100); f.observe(100); f.observe(200); f.observe(300);
+  const s=await f.sample();
+  expect(s.observations.map((o: any)=>o.atMs)).toEqual([100,200,300]);
+  f.signal(99,99);
+  const poll=await f.sample();
+  expect(poll.observations).toEqual([]);
+  expect(poll.audioMarker.sequence).toBe(1);
+  for(let i=0;i<601;i++) f.observe(400+i*100);
+  await expect(f.sample()).rejects.toThrow('observation buffer exhausted');
+  await f.probe.stop();
+});
+
+it('timestamps the drain after its initial native observation with a moving clock', async () => {
+  const f=await fixture();f.tickClock();
+  const s=await f.probe.snapshot();
+  expect(s.peers[0].observations).toHaveLength(1);
+  expect(s.peers[0].observations[0].atMs).toBeLessThanOrEqual(s.atMs);
   await f.probe.stop();
 });
