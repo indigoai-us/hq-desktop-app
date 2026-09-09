@@ -872,6 +872,10 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
             "478e3736ac567ec3",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.33"),
+            "e7573451a374149d",
+        );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
@@ -906,6 +910,14 @@ mod tests {
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
+        );
+        // The journal fingerprint-baseline bump (hq-cloud#513): 6.16.33
+        // SATISFIES `~6.16.26`, so a desktop that already resolved 6.16.26
+        // would retain its full cloned write baseline on semver admission
+        // alone. Moving the requested spec is what releases that runner heap.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.33"),
         );
     }
 
