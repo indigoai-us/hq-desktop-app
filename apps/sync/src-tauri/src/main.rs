@@ -535,6 +535,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::quit_app,
+            commands::app::frontend_log,
             commands::app::bring_main_window_to_front,
             commands::app::hide_main_window,
             commands::app::open_settings_window,

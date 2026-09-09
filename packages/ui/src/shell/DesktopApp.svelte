@@ -1410,6 +1410,29 @@
   });
 
   /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
+  $effect(() => {
+    const hqLog = (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog;
+    if (!hqLog || !selectedRow || !isSetupChannel(selectedRow.channelId)) return;
+    hqLog(
+      "setup-state",
+      JSON.stringify({
+        selected: selectedRow?.channelId ?? null,
+        isSetup: selectedRow ? isSetupChannel(selectedRow.channelId) : null,
+        companies: (companies ?? []).map((c) => `${c.kind}:${c.slug}:${c.state}`),
+        rosterCompanies: rosterCompanies.map((c) => c.slug),
+        rosterStatus: rosterStatus ?? null,
+        hasRosterCompany,
+        createCompanyRequested,
+        timeline: timeline.length,
+        shown: timelineWithActivity.length,
+        kinds: timeline.map((m) => {
+          const ev = (m as { systemEvent?: { type?: string; kind?: string } }).systemEvent;
+          return ev ? `${ev.type}/${ev.kind}` : "msg";
+        }),
+      }),
+    );
+  });
+
   const timelineWithActivity = $derived.by(() => {
     const merged =
       projectActivityRows.length > 0

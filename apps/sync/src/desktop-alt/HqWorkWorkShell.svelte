@@ -113,6 +113,10 @@
   let notificationWakeSeq = $state(0);
   let hydration = $state(0);
   let authGeneration = $state(0);
+  // Diagnostic bridge for the shared shell: writes to ~/.hq/logs/hq-sync.log.
+  (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog = (tag, message) => {
+    void invokeFn('frontend_log', { tag, message }).catch(() => undefined);
+  };
   let authAccountId = $state<string | null>(null);
   let revalidationPending = false;
   let detachNavigation: (() => void) | null = null;
