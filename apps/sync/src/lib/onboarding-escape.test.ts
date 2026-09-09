@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { escapeForLaunch, SETUP_NEEDS_PASS } from './onboarding-escape';
+import { COMPLETE_SETUP, escapeForLaunch } from './onboarding-escape';
 
 const SCREENSHOT_ERROR =
   'HQ folder is not ready for Claude Code Desktop setup repair (core/core.yaml (valid hq-core schema), companies/manifest.yaml) — re-tether in Settings or finish onboarding';
@@ -40,8 +40,9 @@ describe('onboarding escape paths', () => {
     );
   });
 
-  it('keeps the incomplete-setup caution free of error language', () => {
-    expect(SETUP_NEEDS_PASS.body.toLowerCase()).not.toMatch(/error|failed|could not/);
-    expect(SETUP_NEEDS_PASS.body).toMatch(/\/setup/);
+  it('keeps the default ready handoff independent of recorded setup failures', () => {
+    expect(COMPLETE_SETUP.title).toBe('Complete setup in your AI tool');
+    expect(COMPLETE_SETUP.body).toBe('Open the HQ folder and run /setup.');
+    expect(JSON.stringify(COMPLETE_SETUP)).not.toMatch(/failed|attention|retry/i);
   });
 });

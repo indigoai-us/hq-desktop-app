@@ -7,6 +7,7 @@ vi.mock('@tauri-apps/plugin-http', () => ({
 import {
   __INTERNALS__,
   createOnboardingStepTelemetry,
+  desktopPropertiesForOnboardingStep,
   type InstallerStepPingPayload,
   type OnboardingStepEvent,
 } from './onboarding-step-telemetry';
@@ -103,6 +104,100 @@ describe('onboarding step telemetry', () => {
     expect(emitted).toMatchObject([
       { properties: { step: 'setup', action: 'entered' } },
       { properties: { step: 'setup', action: 'failed' } },
+    ]);
+  });
+
+  it('keeps failed-run dependency, category, stages, and run identifier in telemetry', () => {
+    const depsFailure = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        failedDependency: 'node',
+        errorCategory: 'network',
+        setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(depsFailure).toMatchObject({
+      component: 'deps',
+      failedDependency: 'node',
+      errorCategory: 'network',
+      setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+
+    const nonDepsFailure = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'git-init',
+        failedDependency: 'private-package' as never,
+        errorCategory: '/Users/example/HQ/error' as never,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(nonDepsFailure).toMatchObject({ errorCategory: 'unknown' });
+    expect(nonDepsFailure).not.toHaveProperty('failedDependency');
+
+    const completion = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'completed',
+        outcome: 'completed_with_failures',
+        failedStages: ['content', 'deps', 'deps', 'indexing'] as never,
+        setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(completion.failedStages).toEqual(['content', 'deps', 'indexing']);
+    expect(completion.setupRunId).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  });
+
+  it('keeps an opaque setup run identifier across its events and changes it for a new run', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => '11111111-1111-4111-8111-111111111111',
+    });
+    telemetry.record({
+      properties: {
+        step: 'setup',
+        action: 'started',
+        component: 'deps',
+        setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      },
+    });
+    telemetry.record({
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        failedDependency: 'qmd',
+        errorCategory: 'timeout',
+      },
+    });
+    telemetry.record({
+      properties: {
+        step: 'setup',
+        action: 'started',
+        component: 'deps',
+        setupRunId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      },
+    });
+
+    await telemetry.flush();
+    expect(emitted.map((event) => event.properties.setupRunId)).toEqual([
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     ]);
   });
 
