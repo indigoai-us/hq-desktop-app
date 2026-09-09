@@ -6,22 +6,25 @@
     selected: SessionToolId;
     claudeAvailable: boolean;
     codexAvailable: boolean;
+    grokAvailable: boolean;
     claudeConnected: boolean;
     codexConnected: boolean;
+    grokConnected: boolean;
     onconnected: (tool: SessionToolId) => void;
     onchoose: (tool: SessionToolId) => void;
     onrefresh?: () => Promise<void>;
   }
-  let { selected, claudeAvailable, codexAvailable, claudeConnected, codexConnected, onconnected, onchoose, onrefresh }: Props = $props();
+  let { selected, claudeAvailable, codexAvailable, grokAvailable, claudeConnected, codexConnected, grokConnected, onconnected, onchoose, onrefresh }: Props = $props();
   let active = $state<SessionToolId | null>(null);
   let loginState = $state<ProviderLoginState['state']>('disconnected');
   let message = $state('');
   let busy = $state(false);
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const name = (tool: SessionToolId) => tool === 'claude' ? 'Claude Code' : 'Codex';
-  const available = (tool: SessionToolId) => tool === 'claude' ? claudeAvailable : codexAvailable;
-  const connected = (tool: SessionToolId) => available(tool) && (tool === 'claude' ? claudeConnected : codexConnected);
+  const name = (tool: SessionToolId) => tool === 'claude' ? 'Claude Code' : tool === 'grok' ? 'Grok' : 'Codex';
+  const available = (tool: SessionToolId) => tool === 'claude' ? claudeAvailable : tool === 'grok' ? grokAvailable : codexAvailable;
+  const connected = (tool: SessionToolId) => available(tool) && (tool === 'claude' ? claudeConnected : tool === 'grok' ? grokConnected : codexConnected);
+  const connectLabel = (tool: SessionToolId) => tool === 'claude' ? 'Claude' : tool === 'grok' ? 'Grok' : 'Codex';
   function stopPolling() { clearTimeout(timer); timer = undefined; }
   function apply(result: ProviderLoginState, tool: SessionToolId, token: number) {
     if (token !== generation) return;
@@ -64,16 +67,16 @@
 <section class="connect" aria-label="Connect an agent" data-testid="provider-connect">
   <div class="eyebrow">Your agents, inside HQ</div>
   <h2>Connect an agent to continue.</h2>
-  <p>Use your Claude or ChatGPT account. You only need one to get started.</p>
+  <p>Use your Claude, ChatGPT, or Grok account. You only need one to get started.</p>
   <div class="providers">
-    {#each ['claude', 'codex'] as id}
+    {#each ['claude', 'codex', 'grok'] as id}
       {@const tool = id as SessionToolId}
       <div class="provider">
         <div class="identity"><strong>{name(tool)}</strong><span>{connected(tool) ? 'Connected on this device' : available(tool) ? 'Not connected on this device' : 'Not installed on this device'}</span></div>
         {#if connected(tool)}
           <button disabled={busy || loginState === 'waiting'} onclick={() => onchoose(tool)}>Use {name(tool)}</button>
         {:else if available(tool)}
-          <button class:primary={tool === selected} disabled={busy || loginState === 'waiting'} onclick={() => void start(tool)}>{busy && active === tool ? 'Opening sign-in…' : `Connect ${tool === 'claude' ? 'Claude' : 'Codex'}`}</button>
+          <button class:primary={tool === selected} disabled={busy || loginState === 'waiting'} onclick={() => void start(tool)}>{busy && active === tool ? 'Opening sign-in…' : `Connect ${connectLabel(tool)}`}</button>
         {:else}
           <span class="install-note">Install {name(tool)}, then check again.</span>
         {/if}

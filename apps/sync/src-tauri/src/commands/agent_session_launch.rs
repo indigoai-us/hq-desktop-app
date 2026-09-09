@@ -69,11 +69,10 @@ pub fn agent_session_open_in_app(
     })
 }
 
-/// Only the two tools that have a resume surface. `grok` is in the launcher
-/// allowlist but has no documented resume, so it is rejected here.
+/// Tools that have a resume surface. Grok's is `grok --resume <id>`.
 fn resume_binary(tool: &str) -> Result<&'static str, String> {
     match tool {
-        "claude" | "codex" => cli_binary_for(tool),
+        "claude" | "codex" | "grok" => cli_binary_for(tool),
         other => Err(format!("Unsupported CLI tool for resume: {other}")),
     }
 }
@@ -84,6 +83,7 @@ fn resume_args(tool: &str, session_id: &str) -> Result<Vec<String>, String> {
     match tool {
         "claude" => Ok(vec!["--resume".to_string(), session_id.to_string()]),
         "codex" => Ok(vec!["resume".to_string(), session_id.to_string()]),
+        "grok" => Ok(vec!["--resume".to_string(), session_id.to_string()]),
         other => Err(format!("Unsupported CLI tool for resume: {other}")),
     }
 }
@@ -263,8 +263,7 @@ mod tests {
     fn resume_binary_uses_the_launcher_allowlist() {
         assert_eq!(resume_binary("claude").unwrap(), "claude");
         assert_eq!(resume_binary("codex").unwrap(), "codex");
-        // In the launcher allowlist but with no documented resume surface.
-        assert!(resume_binary("grok").is_err());
+        assert_eq!(resume_binary("grok").unwrap(), "grok");
         for bad in ["", "Claude", "claude.exe", "bash", "claude; rm -rf ~"] {
             assert!(resume_binary(bad).is_err(), "should reject: {bad}");
         }
@@ -275,6 +274,6 @@ mod tests {
         let id = "006601d4-d91b-4c39-af7b-ff52e8ec73a4";
         assert_eq!(resume_args("claude", id).unwrap(), vec!["--resume", id]);
         assert_eq!(resume_args("codex", id).unwrap(), vec!["resume", id]);
-        assert!(resume_args("grok", id).is_err());
+        assert_eq!(resume_args("grok", id).unwrap(), vec!["--resume", id]);
     }
 }

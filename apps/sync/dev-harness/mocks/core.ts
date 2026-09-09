@@ -1430,6 +1430,8 @@ This final paragraph verifies spacing after a thematic break.
     claudeLoggedIn: true,
     codexAvailable: true,
     codexLoggedIn: true,
+    grokAvailable: true,
+    grokLoggedIn: true,
     companies: [
       { slug: 'indigo', displayName: 'Indigo', cloudUid: 'cmp_indigo' },
       { slug: 'ridge', displayName: 'Ridge' },

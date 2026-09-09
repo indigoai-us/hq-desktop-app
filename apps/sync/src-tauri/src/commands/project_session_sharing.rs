@@ -138,7 +138,7 @@ pub async fn prepare(app: &tauri::AppHandle, spec: &SessionSpec, channel_id: Opt
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let hq = hq_desktop_core::workspaces::resolve_hq_folder_path()?;
     let Some(company_uid) = super::session_share_channel::company_cloud_uid(&hq, company) else { return Ok(()); };
-    let tool = match spec.tool { hq_desktop_core::agent_session::types::SessionTool::Claude => "claude", _ => "codex" };
+    let tool = spec.tool.as_str();
     let state = if let Some(resume) = spec.resume.as_deref() {
         std::fs::read_dir(&dir).map_err(|e| e.to_string())?.filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|e| e == "json"))

@@ -174,6 +174,8 @@
     tool?: SessionToolId;
     /** Preflight says the Codex CLI is on this machine. */
     codexAvailable?: boolean;
+    /** Preflight says the Grok CLI is on this machine. */
+    grokAvailable?: boolean;
 
     /** The COMPANY pill now describes a different session than the live one. */
     newSessionPending?: boolean;
@@ -250,6 +252,7 @@
     permissionMode = 'prompt',
     tool = 'claude',
     codexAvailable = false,
+    grokAvailable = false,
     newSessionPending = false,
     overridesDeferred = false,
     modelNote = '',
@@ -1066,7 +1069,7 @@
                   aria-checked={option.value === tool}
                   class="menu-item"
                   class:selected={option.value === tool}
-                  disabled={option.value === 'codex' && !codexAvailable}
+                  disabled={(option.value === 'codex' && !codexAvailable) || (option.value === 'grok' && !grokAvailable)}
                   onclick={() => {
                     ontool?.(option.value);
                     closeMenus();
@@ -1076,7 +1079,7 @@
                     <span class="glyph" aria-hidden="true">{option.glyph}</span>
                     {option.label}
                   </span>
-                  {#if option.value === 'codex' && !codexAvailable}
+                  {#if (option.value === 'codex' && !codexAvailable) || (option.value === 'grok' && !grokAvailable)}
                     <span class="menu-sub">not installed</span>
                   {/if}
                 </button>

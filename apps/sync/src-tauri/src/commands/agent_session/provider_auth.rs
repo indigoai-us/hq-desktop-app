@@ -39,10 +39,7 @@ fn attempts() -> &'static Attempts {
     ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 fn key(tool: SessionTool) -> &'static str {
-    match tool {
-        SessionTool::Claude => "claude",
-        SessionTool::Codex => "codex",
-    }
+    tool.as_str()
 }
 async fn program(tool: SessionTool) -> Result<String, String> {
     tokio::time::timeout(
@@ -50,6 +47,7 @@ async fn program(tool: SessionTool) -> Result<String, String> {
         tauri::async_runtime::spawn_blocking(move || match tool {
             SessionTool::Claude => paths::resolve_bin("claude"),
             SessionTool::Codex => super::codex::codex_program(),
+            SessionTool::Grok => super::grok::grok_program(),
         }),
     )
     .await
@@ -95,6 +93,7 @@ async fn probe(tool: SessionTool, program: &str) -> Result<bool, ()> {
     let args: &[&str] = match tool {
         SessionTool::Claude => &["auth", "status", "--json"],
         SessionTool::Codex => &["login", "status"],
+        SessionTool::Grok => &["models"],
     };
     let mut child = command(program, args)
         .await?
@@ -136,6 +135,7 @@ async fn probe(tool: SessionTool, program: &str) -> Result<bool, ()> {
                     Err(())
                 }
             }
+            SessionTool::Grok => super::grok::login_status_succeeded(success, &out, &err),
         }
     })
     .await;
@@ -163,6 +163,7 @@ async fn run_login(
     let args: &[&str] = match tool {
         SessionTool::Claude => &["auth", "login"],
         SessionTool::Codex => &["login"],
+        SessionTool::Grok => &["login"],
     };
     let mut command = match command(&program, args).await {
         Ok(command) => command,
@@ -287,12 +288,14 @@ mod tests {
         let signed_in = match tool {
             SessionTool::Claude => "printf '{\"loggedIn\":true}'",
             SessionTool::Codex => "printf 'Logged in using ChatGPT\\n' >&2",
+            SessionTool::Grok => "printf 'You are logged in with grok.com.\\n'",
         };
         let signed_out = match tool {
             SessionTool::Claude => "printf '{\"loggedIn\":false}'; exit 1",
             SessionTool::Codex => "printf 'Not logged in\\n' >&2; exit 1",
+            SessionTool::Grok => "printf 'Not logged in. Run `grok login`.\\n' >&2; exit 1",
         };
-        std::fs::write(&path, format!("#!/bin/sh\ncd '{}'\ncase \"$*\" in\n'auth status --json'|'login status')\nif [ -f connected ]; then {signed_in}; else {signed_out}; fi;;\n'auth login'|'login')\nprintf 'login\\n' >> calls\n{login};;\n*) exit 9;;\nesac\n", dir.path().display())).unwrap();
+        std::fs::write(&path, format!("#!/bin/sh\ncd '{}'\ncase \"$*\" in\n'auth status --json'|'login status'|'models')\nif [ -f connected ]; then {signed_in}; else {signed_out}; fi;;\n'auth login'|'login')\nprintf 'login\\n' >> calls\n{login};;\n*) exit 9;;\nesac\n", dir.path().display())).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         (dir, path.to_string_lossy().into_owned())
     }
@@ -319,7 +322,7 @@ mod tests {
     }
     #[tokio::test]
     async fn both_providers_use_their_vendor_status_and_login_commands() {
-        for tool in [SessionTool::Claude, SessionTool::Codex] {
+        for tool in [SessionTool::Claude, SessionTool::Codex, SessionTool::Grok] {
             let (_dir, program) = fake(tool, "touch connected; exit 0");
             let attempts = Attempts::default();
             assert!(!probe(tool, &program).await.unwrap());

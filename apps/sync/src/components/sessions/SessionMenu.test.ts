@@ -69,6 +69,10 @@ describe('SessionMenu', () => {
     mountMenu({ tool: 'codex' });
     click(must('session-menu-trigger'));
     expect(must('session-menu-open-in-app').textContent?.trim()).toBe('Open in Codex');
+
+    mountMenu({ tool: 'grok' });
+    click(must('session-menu-trigger'));
+    expect(must('session-menu-open-in-app').textContent?.trim()).toBe('Open in Grok');
   });
 
   it('offers share and end beneath it', () => {

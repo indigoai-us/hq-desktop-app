@@ -21,6 +21,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod grok;
 mod history_replay;
 pub mod notify;
 pub mod provider_auth;
@@ -34,6 +35,7 @@ use hq_desktop_core::agent_session::claude_wire::{
     set_permission_mode_request_line, user_message_line, user_message_line_with_images,
 };
 use hq_desktop_core::agent_session::codex_wire::{approval_reply, user_input, user_input_reply};
+use hq_desktop_core::agent_session::grok_wire::prompt_blocks;
 use hq_desktop_core::agent_session::registry::{
     LiveSession, PendingRequest, Replay, SessionRegistry, SessionSummary,
 };
@@ -123,6 +125,10 @@ enum Spawned {
         hq_desktop_core::stdio::StdioChild,
         Box<codex::CodexHandshake>,
     ),
+    Grok(
+        hq_desktop_core::stdio::StdioChild,
+        Box<grok::GrokHandshake>,
+    ),
 }
 
 /// Which CLI a live session is driving.
@@ -193,6 +199,9 @@ pub struct Preflight {
     /// signed-out CLI starts fine and then fails at the model call — so this
     /// is a preflight signal for the same reason `claude_logged_in` is.
     pub codex_logged_in: bool,
+    pub grok_available: bool,
+    /// The Grok CLI signs in separately from grok.com in the browser.
+    pub grok_logged_in: bool,
     pub companies: Vec<CompanyOption>,
 }
 
@@ -262,9 +271,10 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
         std::time::Duration::from_secs(8),
     ).await?;
     // Ask each provider, not stale account markers left behind after sign-out.
-    let (claude_logged_in, codex_logged_in) = tokio::join!(
+    let (claude_logged_in, codex_logged_in, grok_logged_in) = tokio::join!(
         async { tools.claude_cli && provider_auth::logged_in(SessionTool::Claude).await },
         async { tools.codex_cli && provider_auth::logged_in(SessionTool::Codex).await },
+        async { tools.grok_cli && provider_auth::logged_in(SessionTool::Grok).await },
     );
     let companies = entries
         .into_iter()
@@ -286,6 +296,8 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
         claude_logged_in,
         codex_available: tools.codex_cli,
         codex_logged_in,
+        grok_available: tools.grok_cli,
+        grok_logged_in,
         companies,
     })
 }
@@ -376,6 +388,18 @@ pub async fn agent_session_start(
             },
             Err(e) => Err(e),
         },
+        SessionTool::Grok => match grok::spawn_grok(hq_root.clone()).await {
+            Ok(mut child) => match grok::handshake(&mut child, &spec).await {
+                Ok(handshake) => Ok(Spawned::Grok(child, Box::new(handshake))),
+                Err(e) => {
+                    child
+                        .shutdown_with_reap(hq_desktop_core::stdio::child::REAP_TIMEOUT)
+                        .await;
+                    Err(e)
+                }
+            },
+            Err(e) => Err(e),
+        },
     };
     let spawned = match spawned {
         Ok(spawned) => spawned,
@@ -401,6 +425,7 @@ pub async fn agent_session_start(
     let cli_session_id = match &spawned {
         Spawned::Claude(_) => None,
         Spawned::Codex(_, handshake) => Some(handshake.thread_id.clone()),
+        Spawned::Grok(_, handshake) => Some(handshake.session_id.clone()),
     };
     if let Err(e) = write_session_meta(
         &hq_root,
@@ -438,6 +463,20 @@ pub async fn agent_session_start(
                 session.cli_session_id = Some(handshake.thread_id.clone());
             }
             tokio::spawn(codex::run_session_loop(
+                child,
+                session_id.clone(),
+                spec.clone(),
+                *handshake,
+                state.clone(),
+                sink,
+                rx,
+            ));
+        }
+        Spawned::Grok(child, handshake) => {
+            if let Some(session) = state.lock().await.registry.get_mut(&session_id) {
+                session.cli_session_id = Some(handshake.session_id.clone());
+            }
+            tokio::spawn(grok::run_session_loop(
                 child,
                 session_id.clone(),
                 spec.clone(),
@@ -488,7 +527,7 @@ pub async fn agent_session_send(
     // would make the session list — and the strip's title — name a model that
     // is not answering. The UI tells that operator their choice lands on their
     // next session instead.
-    if let (Some(overrides), SessionTool::Codex) = (overrides, tool) {
+    if let (Some(overrides), SessionTool::Codex | SessionTool::Grok) = (overrides, tool) {
         if let Some(session) = guard.registry.get_mut(&session_id) {
             session.apply_turn_overrides(&overrides);
         }
@@ -504,6 +543,7 @@ pub async fn agent_session_send(
         // Codex takes the turn's `input` array; JSON keeps the attachments
         // intact across the string-shaped outbound channel.
         SessionTool::Codex => user_input(&text, &attachments).to_string(),
+        SessionTool::Grok => prompt_blocks(&text, &attachments).to_string(),
     };
     let result = record_and_queue_user_turn(
         &mut guard,
@@ -633,6 +673,12 @@ pub async fn agent_session_respond_permission(
             request_id: request_id.clone(),
             result: approval_reply(!matches!(decision, PermissionDecision::Deny { .. })),
         },
+        SessionTool::Grok => Outbound::Reply {
+            request_id: request_id.clone(),
+            result: serde_json::to_value(&decision).unwrap_or_else(|_| {
+                serde_json::json!({ "kind": "deny", "message": "Could not encode the decision." })
+            }),
+        },
     };
 
     guard.send(&session_id, message)?;
@@ -678,6 +724,12 @@ pub async fn agent_session_answer_question(
         SessionTool::Codex => Outbound::Reply {
             request_id: request_id.clone(),
             result: user_input_reply(questions, &answers),
+        },
+        // Grok ACP has no AskUserQuestion; answering a parked request that
+        // should not exist is still a reply so the agent is never left blocked.
+        SessionTool::Grok => Outbound::Reply {
+            request_id: request_id.clone(),
+            result: serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
         },
     };
     guard.send(&session_id, message)?;
@@ -729,7 +781,7 @@ pub async fn agent_session_set_permission_mode(
             &format!("perm_{}", uuid::Uuid::new_v4()),
             mode,
         )),
-        SessionTool::Codex => Outbound::SetPermissionMode(mode),
+        SessionTool::Codex | SessionTool::Grok => Outbound::SetPermissionMode(mode),
     };
     guard.send(&session_id, message)
 }
@@ -875,6 +927,7 @@ pub async fn agent_session_slash_commands(
     match tool {
         SessionTool::Claude => claude::probe_command_catalog(hq_root).await,
         SessionTool::Codex => codex::probe_command_catalog(hq_root).await,
+        SessionTool::Grok => grok::probe_command_catalog(hq_root).await,
     }
 }
 
@@ -1025,10 +1078,7 @@ fn write_session_meta(
             .map(str::to_owned),
         started_at: now_iso(),
         title: None,
-        tool: match tool {
-            SessionTool::Claude => "claude".into(),
-            SessionTool::Codex => "codex".into(),
-        },
+        tool: tool.as_str().to_owned(),
         cli_session_id: cli_session_id
             .map(str::trim)
             .filter(|id| !id.is_empty())

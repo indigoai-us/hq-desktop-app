@@ -49,6 +49,9 @@ pub(super) fn load_resume_history_before(
     let path = match tool {
         SessionTool::Claude => find_claude_transcript(session_id),
         SessionTool::Codex => find_codex_rollout(session_id),
+        // Grok's on-disk ACP transcripts are not yet mapped into the in-app
+        // event contract; resume still restores model context via session/load.
+        SessionTool::Grok => None,
     };
     let Some(path) = path else {
         return empty_page();
@@ -232,6 +235,7 @@ fn parse_history_line(
     let event = match tool {
         SessionTool::Claude => parse_claude_message(&value),
         SessionTool::Codex => parse_codex_message(&value),
+        SessionTool::Grok => None,
     }?;
     Some(HistoricalEvent {
         received_at_ms: timestamp,

@@ -1,5 +1,5 @@
 //! Pure session model types: the spec used to launch an agent CLI, and the
-//! normalized [`SessionEvent`] stream every tool (Claude today, Codex next) is
+//! normalized [`SessionEvent`] stream every tool (Claude, Codex, Grok) is
 //! reduced to.
 //!
 //! Wire contract: every type is `camelCase` on the wire and every enum that
@@ -16,6 +16,18 @@ use serde_json::Value;
 pub enum SessionTool {
     Claude,
     Codex,
+    Grok,
+}
+
+impl SessionTool {
+    /// The camelCase wire spelling (`claude` / `codex` / `grok`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionTool::Claude => "claude",
+            SessionTool::Codex => "codex",
+            SessionTool::Grok => "grok",
+        }
+    }
 }
 
 /// How tool-permission requests are handled for a session.
@@ -81,9 +93,10 @@ pub struct SessionSpec {
 ///
 /// Absolute, not a patch: a missing field is the user choosing the CLI's own
 /// default ("Default" / "Auto"), which is a real choice and must be able to
-/// clear a previous one. Only Codex can honour these mid-session (`turn/start`
-/// takes `model` and `effort` per turn); Claude's driver drops them, because a
-/// running `claude --print` cannot change either.
+/// clear a previous one. Codex honours these mid-session (`turn/start` takes
+/// `model` and `effort` per turn) and Grok does too (`session/set_model` plus
+/// `thought_level`). Claude's driver drops them, because a running
+/// `claude --print` cannot change either.
 ///
 /// Changing a model or an effort NEVER forks the chat — only a company change
 /// does, because a company is what binds the session's context.
@@ -562,6 +575,8 @@ mod tests {
     fn unit_enums_are_camel_case_scalars() {
         assert_eq!(serde_json::to_value(SessionTool::Claude).unwrap(), "claude");
         assert_eq!(serde_json::to_value(SessionTool::Codex).unwrap(), "codex");
+        assert_eq!(serde_json::to_value(SessionTool::Grok).unwrap(), "grok");
+        assert_eq!(SessionTool::Grok.as_str(), "grok");
         assert_eq!(
             serde_json::to_value(PermissionMode::BypassAll).unwrap(),
             "bypassAll"

@@ -83,6 +83,15 @@ const CODEX_CATALOG = [
   { value: 'gpt-5.6-codex', displayName: 'GPT-5.6-Codex' },
 ];
 
+const GROK_CATALOG = [
+  {
+    value: 'grok-4.6',
+    displayName: 'Grok 4.6',
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh'],
+  },
+  { value: 'grok-4.5', displayName: 'Grok 4.5' },
+];
+
 const PREFLIGHT = {
   hqRoot: '/Users/x/HQ',
   hooksReady: true,
@@ -91,6 +100,8 @@ const PREFLIGHT = {
   claudeLoggedIn: true,
   codexAvailable: true,
   codexLoggedIn: true,
+  grokAvailable: true,
+  grokLoggedIn: true,
   companies: [{ slug: 'indigo', displayName: 'indigo' }],
 };
 
@@ -135,6 +146,7 @@ function mockBackend() {
         return Promise.resolve(backend.preflight);
       case 'agent_session_slash_commands': {
         if (args?.tool === 'codex') return Promise.resolve({ commands: [], models: CODEX_CATALOG });
+        if (args?.tool === 'grok') return Promise.resolve({ commands: [], models: GROK_CATALOG });
         if (backend.claudeCatalog) return backend.claudeCatalog.promise;
         return Promise.resolve({ commands: [], models: CLAUDE_CATALOG });
       }
@@ -202,7 +214,7 @@ function pickMenuRow(menu: string, label: string) {
   click(hit);
 }
 
-function chooseTool(label: 'Claude' | 'Codex') {
+function chooseTool(label: 'Claude' | 'Codex' | 'Grok') {
   click(must('session-pill-tool'));
   pickMenuRow('session-menu-tool', label);
 }
@@ -287,6 +299,33 @@ describe('provider readiness', () => {
     await settle();
     expect(backend.starts).toHaveLength(1);
     expect(backend.starts[0].tool).toBe('codex');
+  });
+
+  it('starts Grok without Claude and sends the Grok model id', async () => {
+    backend.preflight.claudeAvailable = false;
+    backend.preflight.claudeLoggedIn = false;
+    remember(LAST_TOOL_KEY, 'grok');
+    remember(lastModelKey('grok'), 'grok-4.6');
+    render();
+    await settle();
+    expect(pill('session-pill-tool')).toBe('Grok');
+    send('start grok');
+    await settle();
+    expect(backend.starts).toHaveLength(1);
+    expect(backend.starts[0]).toMatchObject({ tool: 'grok', model: 'grok-4.6' });
+  });
+
+  it.each([
+    ['grokAvailable', 'Install Grok, then check again.'],
+    ['grokLoggedIn', 'Connect Grok'],
+  ] as const)('blocks Grok when %s is false', async (field, message) => {
+    backend.preflight[field] = false;
+    remember(LAST_TOOL_KEY, 'grok');
+    render();
+    await settle();
+    expect(host.textContent).toContain(message);
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+    expect(backend.starts).toHaveLength(0);
   });
 
   it.each([

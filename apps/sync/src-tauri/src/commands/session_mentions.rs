@@ -242,6 +242,7 @@ fn tool_label(tool: Option<&str>) -> &'static str {
     match tool.map(|t| t.trim().to_ascii_lowercase()).as_deref() {
         Some("claude") => "Claude",
         Some("codex") => "Codex",
+        Some("grok") => "Grok",
         _ => "agent",
     }
 }

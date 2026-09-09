@@ -11,8 +11,8 @@ import ProviderConnect from './ProviderConnect.svelte';
 let component: ReturnType<typeof mount>;
 const onconnected = vi.fn(), onchoose = vi.fn();
 function render(extra = {}) { component = mount(ProviderConnect, { target: document.body, props: {
-  selected: 'claude', claudeAvailable: true, codexAvailable: true,
-  claudeConnected: false, codexConnected: false, onconnected, onchoose, ...extra,
+  selected: 'claude', claudeAvailable: true, codexAvailable: true, grokAvailable: true,
+  claudeConnected: false, codexConnected: false, grokConnected: false, onconnected, onchoose, ...extra,
 } }); flushSync(); }
 function click(label: string) { const button = [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === label); expect(button).toBeTruthy(); button!.click(); flushSync(); }
 async function settle() { for (let i=0;i<8;i++) { await Promise.resolve(); flushSync(); } }
@@ -48,6 +48,11 @@ describe('provider connection', () => {
     render({codexConnected:true}); click('Use Codex'); await settle();
     expect(onchoose).toHaveBeenCalledWith('codex');
     expect(api.providerLoginStart).not.toHaveBeenCalled();
+  });
+  it('starts Grok login the same way as Claude and Codex', async () => {
+    render(); click('Connect Grok'); await settle();
+    expect(api.providerLoginStart).toHaveBeenCalledWith('grok');
+    expect(document.body.textContent).toContain('Waiting for browser sign-in');
   });
   it('discards results after navigating away', async () => {
     let resolve!: (v:unknown)=>void;

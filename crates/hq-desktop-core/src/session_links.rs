@@ -167,10 +167,7 @@ pub fn channel_for_project<'a>(
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn tool_tag(tool: SessionTool) -> &'static str {
-    match tool {
-        SessionTool::Claude => "claude",
-        SessionTool::Codex => "codex",
-    }
+    tool.as_str()
 }
 
 fn phase_tag(phase: SessionPhase) -> &'static str {

@@ -67,9 +67,22 @@ export const FALLBACK_MODELS: SessionModel[] = [
  */
 export const FALLBACK_CODEX_MODELS: SessionModel[] = [{ value: null, label: 'Default' }];
 
+/**
+ * Grok has live `grok models` output; this courtesy list is only for a failed
+ * probe. Ids are current Grok Build aliases (4.6 / 4.5), not a picker of last
+ * resort the CLI would reject.
+ */
+export const FALLBACK_GROK_MODELS: SessionModel[] = [
+  { value: null, label: 'Default' },
+  { value: 'grok-4.6', label: 'Grok 4.6' },
+  { value: 'grok-4.5', label: 'Grok 4.5' },
+];
+
 /** The catalog to offer when the probe for `tool` fails. */
 export function fallbackModelsFor(tool: SessionToolId): SessionModel[] {
-  return tool === 'codex' ? [...FALLBACK_CODEX_MODELS] : [...FALLBACK_MODELS];
+  if (tool === 'codex') return [...FALLBACK_CODEX_MODELS];
+  if (tool === 'grok') return [...FALLBACK_GROK_MODELS];
+  return [...FALLBACK_MODELS];
 }
 
 /**
@@ -213,9 +226,21 @@ export const CODEX_EFFORT_OPTIONS: EffortOption[] = [
   { value: 'ultra', label: 'Ultra' },
 ];
 
+/**
+ * Grok's ladder. 4.6 adds `xhigh`; there is no Codex `ultra` and no Claude
+ * `max`. A Claude `max` sent to Grok is rejected.
+ */
+export const GROK_EFFORT_OPTIONS: EffortOption[] = [
+  { value: null, label: 'Auto' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra high' },
+];
+
 /** A person's word for an effort id, for a rung the static ladders lack. */
 export function effortLabel(value: string): string {
-  const known = [...CLAUDE_EFFORT_OPTIONS, ...CODEX_EFFORT_OPTIONS].find(
+  const known = [...CLAUDE_EFFORT_OPTIONS, ...CODEX_EFFORT_OPTIONS, ...GROK_EFFORT_OPTIONS].find(
     (option) => option.value === value,
   );
   if (known) return known.label;
@@ -242,7 +267,9 @@ export function effortOptionsFor(
   if (declared.length > 0) {
     return [{ value: null, label: 'Auto' }, ...declared.map((value) => ({ value, label: effortLabel(value) }))];
   }
-  return tool === 'codex' ? [...CODEX_EFFORT_OPTIONS] : [...CLAUDE_EFFORT_OPTIONS];
+  if (tool === 'codex') return [...CODEX_EFFORT_OPTIONS];
+  if (tool === 'grok') return [...GROK_EFFORT_OPTIONS];
+  return [...CLAUDE_EFFORT_OPTIONS];
 }
 
 /** Keep an effort only when the offered ladder has that rung; else Auto. */
@@ -354,6 +381,7 @@ export function plausibleModelForTool(value: string | null, tool: SessionToolId)
   const id = value.trim();
   if (id.length === 0) return false;
   if (tool === 'codex') return /^gpt-/i.test(id) || /^o\d/i.test(id);
+  if (tool === 'grok') return /^grok-/i.test(id);
   if (/^(?:default|opus|sonnet|haiku|fable)(?:\[\d+m\])?$/i.test(id)) return true;
   return /^(?:(?:us|eu|apac|global)\.)?(?:anthropic\.)?claude[-.]/i.test(id);
 }
@@ -411,7 +439,7 @@ export function pickModel(
 // ---------------------------------------------------------------------------
 
 /** Which agent CLI a session drives. Mirrors the store's `SessionTool`. */
-export type SessionToolId = 'claude' | 'codex';
+export type SessionToolId = 'claude' | 'codex' | 'grok';
 
 /** The tool pill's vocabulary. The glyphs are text, so there is no icon dep. */
 export const TOOL_OPTIONS: ReadonlyArray<{
@@ -421,13 +449,21 @@ export const TOOL_OPTIONS: ReadonlyArray<{
 }> = [
   { value: 'claude', label: 'Claude', glyph: '✳' },
   { value: 'codex', label: 'Codex', glyph: '⌁' },
+  { value: 'grok', label: 'Grok', glyph: '✦' },
 ];
 
 export const LAST_TOOL_KEY = 'hq.sessions.lastTool';
 
+const SESSION_TOOLS = new Set<SessionToolId>(TOOL_OPTIONS.map((option) => option.value));
+
 /** The remembered tool, defended down to the only tool that always exists. */
 export function readRememberedTool(): SessionToolId {
-  return readRemembered(LAST_TOOL_KEY) === 'codex' ? 'codex' : 'claude';
+  const value = readRemembered(LAST_TOOL_KEY);
+  return value && SESSION_TOOLS.has(value as SessionToolId) ? (value as SessionToolId) : 'claude';
+}
+
+export function toolLabel(tool: SessionToolId): string {
+  return TOOL_OPTIONS.find((option) => option.value === tool)?.label ?? 'Claude';
 }
 
 /** Families whose name is an acronym rather than a word. */
@@ -550,7 +586,7 @@ export function modelRowLabel(
   entry: SessionModel,
   tool: SessionToolId = 'claude',
 ): string {
-  if (tool === 'codex') {
+  if (tool === 'codex' || tool === 'grok') {
     const display = shortenModelLabel(entry.label);
     if (display && display !== entry.value) return display;
   }

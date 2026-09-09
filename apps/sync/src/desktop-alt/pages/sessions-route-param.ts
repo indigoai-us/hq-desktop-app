@@ -12,7 +12,7 @@ export type SessionsRoute =
   | {
       kind: 'history';
       sessionId: string;
-      tool: 'claude' | 'codex';
+      tool: 'claude' | 'codex' | 'grok';
       company: string;
       project: string;
       title: string;
@@ -41,7 +41,8 @@ export function parseSessionsParam(param: string | null | undefined): SessionsRo
   if (raw.startsWith(HISTORY_SESSION_PREFIX)) {
     const query = new URLSearchParams(raw.slice(HISTORY_SESSION_PREFIX.length));
     const sessionId = clean(query.get('id'));
-    const tool = query.get('tool') === 'codex' ? 'codex' : 'claude';
+    const rawTool = query.get('tool');
+    const tool = rawTool === 'codex' || rawTool === 'grok' ? rawTool : 'claude';
     if (sessionId) {
       return {
         kind: 'history',
