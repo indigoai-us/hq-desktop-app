@@ -125,7 +125,58 @@ describe("DesktopApp native setup run wiring", () => {
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBeNull();
   });
 
-  it("Show details opens the session on the Sessions page by id", async () => {
+  it("the Setup Agent talks in the channel and the composer replies to it", async () => {
+    const api = fakeSetupRun();
+    await mountApp(api);
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await settle();
+    api.emit({ kind: "assistantMessage", text: "[hq-setup] step=tools status=running\nChecking what's already in place on this Mac." });
+    await settle();
+    const messages = Array.from(host.querySelectorAll('[data-testid="conversation-message"]'));
+    const agentMessage = messages.find((el) => el.textContent?.includes("Checking what's already in place"));
+    expect(agentMessage).toBeTruthy();
+    expect(agentMessage?.textContent).toContain("Setup Agent");
+    expect(agentMessage?.textContent).not.toContain("[hq-setup]");
+    expect(host.querySelector('[data-testid="setup-agent-working"]')).toBeTruthy();
+
+    // A structured question shows as the prompt under the messages.
+    api.emit(
+      { kind: "questionRequest", requestId: "req-1", questions: [{ id: "q1", text: "What's your name?", options: [{ label: "Skip for now" }] }] },
+      "needsYou",
+    );
+    await settle();
+    const prompt = host.querySelector('[data-testid="setup-agent-prompt"]');
+    expect(prompt?.querySelector('[data-testid="setup-run-choice"]')?.textContent).toContain("Skip for now");
+    expect(host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]')?.placeholder).toContain("Setup Agent");
+
+    // Typing in the normal composer answers it — nothing is posted to the channel.
+    const composer = host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]')!;
+    composer.value = "Jacob";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="composer-send"]')!.click();
+    await settle();
+    expect(api.answerQuestion).toHaveBeenCalledWith("sess-42", "req-1", [{ questionId: "q1", values: ["Jacob"] }]);
+  });
+
+  it("finishing offers Open in Sessions, Claude Code, and Codex under the last message", async () => {
+    const api = fakeSetupRun();
+    await mountApp(api);
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await settle();
+    api.emit({ kind: "assistantMessage", text: "You're all set — here's your welcome page (private to you): https://x.example/w" });
+    api.emit({ kind: "turnDone", status: "success" }, "idle");
+    await settle();
+    const finish = host.querySelector('[data-testid="setup-agent-finish"]');
+    expect(finish).toBeTruthy();
+    expect(host.querySelector('[data-testid="setup-agent-open-claude"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="setup-agent-open-codex"]')).toBeTruthy();
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-sessions"]')!.click();
+    await settle();
+    expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("sess-42");
+  });
+
+  it("Open setup chat opens the session on the Sessions page by id", async () => {
     const api = fakeSetupRun();
     await mountApp(api);
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();

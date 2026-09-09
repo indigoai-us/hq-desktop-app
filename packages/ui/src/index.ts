@@ -26,6 +26,7 @@ export * from "./chat/reply-layout.js";
 export * from "./chat/channels.js";
 export * from "./chat/setup-channel.js";
 export * from "./chat/setup-run.js";
+export * from "./chat/setup-agent.svelte.js";
 // Agent "thinking" indicator state machine. Explicit list: `isAgentUid` is
 // intentionally NOT re-exported here — the barrel already ships the
 // mesh-overlay `isAgentUid`; import the agent-thinking one from the module

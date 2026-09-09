@@ -39,7 +39,6 @@
     SETUP_ADVANCED_TOOLS_NOTE,
     SETUP_DEEP_LINK_PROMPT,
     SETUP_HOSTED_AGENT_NOTE,
-    SETUP_GUIDED_PROMPT,
     SETUP_LAUNCH_COMMANDS,
     SETUP_RESOURCES,
     SETUP_RUN_LABEL,
@@ -55,17 +54,9 @@
   import { SETUP_HERO_ART } from "./setup-welcome-art";
   import FirstMoves from "./FirstMoves.svelte";
   import type { FirstMove, FirstMoveId } from "./first-moves";
-  import SetupRunCard, { type SetupRunCardMode } from "./SetupRunCard.svelte";
-  import {
-    interpretSetupRun,
-    loadSetupRunRecord,
-    SETUP_RUN_STEPS,
-    saveSetupRunRecord,
-    type SetupRunApi,
-    type SetupRunPermissionDecision,
-    type SetupRunSnapshot,
-    type SetupSecretCard,
-  } from "./setup-run";
+  import SetupRunCard from "./SetupRunCard.svelte";
+  import { SETUP_RUN_STEPS } from "./setup-run";
+  import type { SetupAgent } from "./setup-agent.svelte";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
 
@@ -131,14 +122,18 @@
      * page is still the fallback when the host's preflight says the provider
      * or HQ on this Mac is not ready (its Connect / self-heal UI lives there).
      */
-    setupRun?: SetupRunApi | null;
+    /**
+     * The host's Setup Agent (see `setup-agent.svelte.ts`). With it, Run Setup
+     * starts the guided run that talks in this channel; the hero shows its
+     * stepper. Without it, Run Setup opens the host's Sessions draft.
+     */
+    agent?: SetupAgent | null;
     /** "Show details": open the underlying session on the Sessions page. */
     onopensessiondetails?: (sessionId: string) => void;
     /**
      * Fired once the native run reaches its finish. The shell records it so
      * later boots land in the company channel instead of #welcome.
      */
-    onsetupfinished?: () => void;
   }
 
   let {
@@ -155,9 +150,8 @@
     firstMoves = null,
     onfirstmove,
     onfirstmovedone,
-    setupRun = null,
+    agent = null,
     onopensessiondetails,
-    onsetupfinished,
   }: Props = $props();
 
   /** First-moves "Use HQ from your coding tools": the Advanced launch cascade, recorded as done. */
@@ -238,11 +232,18 @@
    * prefilled; hosts without in-app Sessions fall back to Claude Code.
    */
   function runSetup(): void {
-    if (setupRun) {
-      void startNativeRun();
+    if (agent?.api) {
+      void startAgent();
       return;
     }
     openSessionsForSetup();
+  }
+
+  /** The Setup Agent runs here; only a not-ready host hands off to Sessions. */
+  async function startAgent(): Promise<void> {
+    if (!agent) return;
+    const outcome = await agent.start();
+    if (outcome === "needs-sessions-page") openSessionsForSetup();
   }
 
   function openSessionsForSetup(): void {
@@ -255,168 +256,10 @@
     void runLaunch("claude");
   }
 
-  // --- native setup run ------------------------------------------------------
-
-  type RunMode = "idle" | "starting" | SetupRunCardMode;
-  let runMode = $state<RunMode>("idle");
-  let runSessionId = $state<string | null>(null);
-  let runSnapshot = $state<SetupRunSnapshot | null>(null);
-  let runResumeStep = $state(0);
-  let runBusy = $state(false);
-  let runError = $state<string | null>(null);
-  let runFinished = false;
-  let unsubscribeRun: (() => void) | null = null;
-
-  const runState = $derived(
-    runSnapshot
-      ? interpretSetupRun(runSnapshot.events, runSnapshot.phase, runSnapshot.resolvedRequestIds ?? [])
-      : null,
-  );
-  const runActive = $derived(Boolean(setupRun) && runMode !== "idle");
-
-  // Coming back to #welcome (or relaunching) lands here with the run
-  // remembered: a finished run keeps its "Setup complete" card, a run that
-  // ended early keeps "Setup paused", and a run still going re-attaches.
-  if (setupRun) {
-    const record = loadSetupRunRecord();
-    if (record) {
-      runSessionId = record.sessionId;
-      runResumeStep = record.step;
-      runMode = record.status === "done" ? "done" : record.status === "ended" ? "stopped" : "resume";
-      if (record.status === "done") runFinished = true;
-      // Still running: pick it straight back up. If the session is gone
-      // (a relaunch), attach fails and the card offers Run Setup again.
-      if (record.status === "running") void continueRun();
-    }
-  }
-
-  function watchRun(sessionId: string): void {
-    if (!setupRun) return;
-    unsubscribeRun?.();
-    unsubscribeRun = setupRun.subscribe(sessionId, (snapshot) => {
-      if (snapshot.sessionId !== runSessionId) return;
-      runSnapshot = snapshot;
-    });
-  }
-
-  // Keep the resume record current, and finish / stop with the session.
-  $effect(() => {
-    const state = runState;
-    const sessionId = runSessionId;
-    if (!state || !sessionId || runMode !== "live") return;
-    if (state.done) {
-      if (!runFinished) {
-        runFinished = true;
-        saveSetupRunRecord({ sessionId, step: SETUP_RUN_STEPS.length - 1, status: "done" });
-        onsetupfinished?.();
-      }
-      return;
-    }
-    if (state.ended) {
-      saveSetupRunRecord({ sessionId, step: state.step, status: "ended" });
-      return;
-    }
-    saveSetupRunRecord({ sessionId, step: state.step, status: "running" });
-  });
-
-  $effect(() => () => unsubscribeRun?.());
-
-  async function startNativeRun(): Promise<void> {
-    if (!setupRun || runBusy) return;
-    runBusy = true;
-    runError = null;
-    try {
-      const readiness = await setupRun.preflight();
-      if (readiness !== "ready") {
-        // The Sessions page owns Connect / self-heal; never duplicate it here.
-        openSessionsForSetup();
-        return;
-      }
-      runMode = "starting";
-      const sessionId = await setupRun.start(SETUP_GUIDED_PROMPT);
-      runFinished = false;
-      runSessionId = sessionId;
-      runSnapshot = { sessionId, events: [], phase: "starting" };
-      saveSetupRunRecord({ sessionId, step: 0, status: "running" });
-      watchRun(sessionId);
-      runMode = "live";
-    } catch (err) {
-      runError = err instanceof Error ? err.message : String(err);
-      if (runMode === "starting") runMode = "idle";
-    } finally {
-      runBusy = false;
-    }
-  }
-
-  async function continueRun(): Promise<void> {
-    if (!setupRun || runBusy || !runSessionId) return;
-    runBusy = true;
-    runError = null;
-    try {
-      const attached = await setupRun.attach(runSessionId);
-      if (!attached) {
-        saveSetupRunRecord({ sessionId: runSessionId, step: runResumeStep, status: "ended" });
-        runMode = "stopped";
-        return;
-      }
-      runFinished = false;
-      watchRun(runSessionId);
-      runMode = "live";
-    } catch (err) {
-      runError = err instanceof Error ? err.message : String(err);
-    } finally {
-      runBusy = false;
-    }
-  }
-
-  function runAgain(): void {
-    unsubscribeRun?.();
-    unsubscribeRun = null;
-    runSnapshot = null;
-    runSessionId = null;
-    runMode = "idle";
-    void startNativeRun();
-  }
-
-  async function withRun(action: () => Promise<void>): Promise<void> {
-    if (!setupRun || runBusy) return;
-    runBusy = true;
-    runError = null;
-    try {
-      await action();
-    } catch (err) {
-      runError = err instanceof Error ? err.message : String(err);
-    } finally {
-      runBusy = false;
-    }
-  }
-
-  /** Secret card → vault, never the session. Errors surface in the card. */
-  async function storeSecret(card: SetupSecretCard, value: string): Promise<void> {
-    if (!setupRun?.storeSecret) throw new Error("This host cannot store secrets.");
-    await setupRun.storeSecret(card, value);
-  }
-
-  function answerChoice(requestId: string, questionId: string, values: string[]): void {
-    const sessionId = runSessionId;
-    if (!sessionId) return;
-    void withRun(() => setupRun!.answerQuestion(sessionId, requestId, [{ questionId, values }]));
-  }
-
-  function answerPermission(requestId: string, decision: SetupRunPermissionDecision): void {
-    const sessionId = runSessionId;
-    if (!sessionId) return;
-    void withRun(() => setupRun!.respondPermission(sessionId, requestId, decision));
-  }
-
-  function answerText(text: string): void {
-    const sessionId = runSessionId;
-    if (!sessionId) return;
-    void withRun(() => setupRun!.send(sessionId, text));
-  }
+  const runActive = $derived(Boolean(agent?.active));
 
   function showRunDetails(): void {
-    if (runSessionId) onopensessiondetails?.(runSessionId);
+    if (agent?.sessionId) onopensessiondetails?.(agent.sessionId);
   }
 
   async function runLaunch(key: LaunchKey): Promise<void> {
@@ -470,10 +313,10 @@
   data-testid="setup-channel-intro"
   data-setup-threads="none"
   data-setup-has-company={hasCompany ? "true" : "false"}
-  data-setup-run={runActive ? runMode : "idle"}
+  data-setup-run={runActive ? agent!.mode : "idle"}
   data-setup-roster-status={rosterStatus ?? "ready"}
 >
-  <div class="hero" class:hero--compact={runActive && runMode !== "idle"} data-testid="setup-hero">
+  <div class="hero" data-testid="setup-hero">
     <img
       class="hero-art hero-art--light"
       src={SETUP_HERO_ART.light}
@@ -491,11 +334,16 @@
       draggable="false"
     />
     <div class="hero-scrim" aria-hidden="true"></div>
-    {#if runActive && runMode !== "idle"}
+    {#if runActive && agent}
       <div class="hero-copy hero-copy--run">
-        <span class="eyebrow">{hero.eyebrow}</span>
-        <h2 class="hero-title">Setting up this Mac</h2>
-        <p class="hero-body">Answer the questions below as they come up. It takes about a minute.</p>
+        <SetupRunCard
+          variant="steps"
+          mode={agent.mode === "starting" ? "live" : agent.mode === "idle" ? "live" : agent.mode}
+          run={agent.state}
+          resumeStep={agent.resumeStep}
+          busy={agent.busy}
+          onshowdetails={onopensessiondetails && agent.sessionId ? showRunDetails : undefined}
+        />
       </div>
     {:else}
     <div class="hero-copy">
@@ -513,7 +361,7 @@
       {:else}
         <p class="hero-body">{hero.body}</p>
       {/if}
-      {#if setupRun}
+      {#if agent?.api}
         <!-- What Run Setup will do, visible before the first click. -->
         <ol class="steps-preview" aria-label="Setup steps" data-testid="setup-steps-preview">
           {#each SETUP_RUN_STEPS as step, index (step.id)}
@@ -545,18 +393,18 @@
           type="button"
           class="launch-btn primary"
           data-testid="setup-run"
-          disabled={runBusy || (!setupRun && !onopensessions && (!canLaunch || launching !== null))}
-          aria-busy={runBusy || (!onopensessions && launching === "claude")}
+          disabled={Boolean(agent?.busy) || (!agent?.api && !onopensessions && (!canLaunch || launching !== null))}
+          aria-busy={Boolean(agent?.busy) || (!onopensessions && launching === "claude")}
           onclick={runSetup}
         >
-          {runBusy ? "Starting…" : SETUP_RUN_LABEL}
+          {agent?.busy ? "Starting…" : SETUP_RUN_LABEL}
         </button>
       </div>
       {#if !onopensessions && launchErrors.claude}
         <p class="launch-error" role="alert">{launchErrors.claude}</p>
       {/if}
-      {#if runError && runMode === "idle"}
-        <p class="launch-error" role="alert" data-testid="setup-run-start-error">{runError}</p>
+      {#if agent?.error && agent.mode === "idle"}
+        <p class="launch-error" role="alert" data-testid="setup-run-start-error">{agent?.error}</p>
       {/if}
 
       <details class="advanced" data-testid="setup-advanced">
@@ -672,24 +520,6 @@
     {/if}
   </div>
 
-  {#if runActive && runMode !== "idle"}
-    <div class="run-panel" data-testid="setup-run-panel">
-      <SetupRunCard
-        mode={runMode === "starting" ? "live" : runMode}
-        run={runState}
-        resumeStep={runResumeStep}
-        busy={runBusy || runMode === "starting"}
-        error={runError}
-        onanswer={answerChoice}
-        onpermission={answerPermission}
-        onsend={answerText}
-        onshowdetails={onopensessiondetails && runSessionId ? showRunDetails : undefined}
-        oncontinue={() => void continueRun()}
-        onrunagain={runAgain}
-        onstoresecret={setupRun?.storeSecret ? storeSecret : undefined}
-      />
-    </div>
-  {/if}
 
   {#if firstMoves && firstMoves.length > 0}
     <FirstMoves
@@ -841,13 +671,6 @@
     min-height: 168px;
   }
 
-  /* The live run: a solid panel on the shell surface, under the art. */
-  .run-panel {
-    padding: 16px 18px 18px;
-    border: 1px solid var(--panel-border, var(--border, rgba(127, 127, 127, 0.25)));
-    border-radius: 12px;
-    background: var(--panel-bg, var(--raised, rgba(127, 127, 127, 0.06)));
-  }
 
   .eyebrow {
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);

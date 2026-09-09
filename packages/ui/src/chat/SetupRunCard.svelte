@@ -28,8 +28,16 @@
   /** `done` is the remembered outcome after a finished run (no live session). */
   export type SetupRunCardMode = "live" | "resume" | "stopped" | "done";
 
+  /**
+   * `panel`: stepper + question (the original card). `steps`: stepper only,
+   * for the hero. `prompt`: the question / cards / actions only, for the
+   * channel's reply area while the Setup Agent talks in the chat.
+   */
+  export type SetupRunCardVariant = "panel" | "steps" | "prompt";
+
   interface Props {
     mode: SetupRunCardMode;
+    variant?: SetupRunCardVariant;
     /** Interpreted session state; required for `live`. */
     run?: SetupRunState | null;
     /** Last known step for the `resume` face (before re-attaching). */
@@ -54,6 +62,7 @@
 
   let {
     mode,
+    variant = "panel",
     run = null,
     resumeStep = 0,
     busy = false,
@@ -193,19 +202,23 @@
   class="run-card"
   data-testid="setup-run-card"
   data-setup-run-mode={done ? "done" : stopped ? "stopped" : mode}
+  data-setup-run-variant={variant}
   data-setup-run-step={currentStep}
   aria-live="polite"
 >
-  <span class="eyebrow">{eyebrow}</span>
+  {#if variant !== "prompt"}
+    <span class="eyebrow">{eyebrow}</span>
+  {/if}
 
-  {#if done}
+  {#if done && variant !== "steps"}
     <h3 class="run-title" data-testid="setup-run-done-title">{SETUP_RUN_DONE.title}</h3>
     <p class="run-body" data-testid="setup-run-summary">{run?.summary || SETUP_RUN_DONE.summary}</p>
-  {:else if stopped}
+  {:else if stopped && variant !== "steps"}
     <h3 class="run-title" data-testid="setup-run-stopped-title">{SETUP_RUN_STOPPED.title}</h3>
     <p class="run-body">{SETUP_RUN_STOPPED.body}</p>
   {/if}
 
+  {#if variant !== "prompt"}
   <ol class="steps" aria-label="Setup steps" data-testid="setup-run-steps">
     {#each SETUP_RUN_STEPS as step, index (step.id)}
       {@const status = done ? "done" : statusOf(index)}
@@ -233,6 +246,9 @@
   {#if !done && !stopped && mode === "live" && run?.statusLine && !question}
     <p class="run-status" data-testid="setup-run-status">{run.statusLine}</p>
   {/if}
+  {/if}
+
+  {#if variant !== "steps"}
 
   {#if question}
     <div class="question" data-testid="setup-run-question" data-question-kind={question.kind}>
@@ -383,6 +399,7 @@
             Send
           </button>
         {/if}
+        {#if variant !== "prompt"}
         <form class="answer answer--other" onsubmit={sendText}>
           <input
             class="answer-input"
@@ -403,6 +420,7 @@
             Send
           </button>
         </form>
+        {/if}
       {:else if question.kind === "permission"}
         <div class="choices" role="group" aria-label="Your answer">
           <button
@@ -433,6 +451,8 @@
             {SETUP_RUN_PERMISSION.deny}
           </button>
         </div>
+      {:else if variant === "prompt"}
+        <p class="reply-hint" data-testid="setup-run-reply-hint">Reply in the message box below.</p>
       {:else}
         <form class="answer" onsubmit={sendText}>
           <input
@@ -501,6 +521,12 @@
       </button>
     {/if}
   </div>
+  {/if}
+  {#if variant === "steps" && onshowdetails && mode !== "resume"}
+    <button type="button" class="quiet-btn" data-testid="setup-run-details" onclick={() => onshowdetails?.()}>
+      Open setup chat
+    </button>
+  {/if}
 </div>
 
 <style>
@@ -511,6 +537,19 @@
     flex-direction: column;
     gap: 14px;
     color: var(--text-1, inherit);
+  }
+
+  /* Over the hero art the stepper is always on dark wallpaper. */
+  .run-card[data-setup-run-variant="steps"] {
+    --text-1: #ffffff;
+    --text-2: rgba(255, 255, 255, 0.82);
+    --text-3: rgba(255, 255, 255, 0.6);
+    --border: rgba(255, 255, 255, 0.35);
+    gap: 10px;
+  }
+  .run-card[data-setup-run-variant="steps"] .steps {
+    border-bottom: 0;
+    padding-bottom: 0;
   }
 
   .eyebrow {
@@ -887,6 +926,12 @@
     text-decoration: underline;
     text-underline-offset: 0.16em;
     cursor: pointer;
+  }
+
+  .reply-hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-3, rgba(127, 127, 127, 0.9));
   }
 
   .run-error {

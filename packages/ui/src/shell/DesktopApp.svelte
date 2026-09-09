@@ -44,7 +44,10 @@
     isAgentUid as isAgentTaskUid,
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
+  import SetupRunCard from "../chat/SetupRunCard.svelte";
   import type { SetupRunApi } from "../chat/setup-run.js";
+  import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
+  import { createLaunchActions } from "../settings/launch-actions";
   import {
     firstMovesFor,
     markFirstMoveDone,
@@ -993,10 +996,63 @@
   );
 
   /** Real ChannelView composer placeholder (verbatim from the desktop source). */
+  /**
+   * The Setup Agent: the guided `/setup` run as a conversation in #welcome.
+   * Its turns stream into the channel timeline as messages, the composer
+   * replies to it while it is listening, and the prompt under the messages
+   * carries choices / cards / the finish buttons. The hero shows its stepper.
+   */
+  // Starting is not finishing: a relaunch mid-run must still land on
+  // #welcome, so only the finish graduates welcome-first boot.
+  const setupAgent = new SetupAgent(extraPages?.sessions?.setupRun ?? null, {
+    onfinished: recordWelcomeSetupRun,
+  });
+  $effect(() => () => setupAgent.dispose());
+  const inSetupChannelWithAgent = $derived(
+    Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupAgent.active),
+  );
+  /** First-seen wall clock per session: synthetic turns need stable, ordered timestamps. */
+  const setupAgentClock = new Map<string, number>();
+  const setupAgentWires = $derived.by((): ConversationMessageWire[] => {
+    const sessionId = setupAgent.sessionId;
+    if (!setupAgent.active || !sessionId) return [];
+    let base = setupAgentClock.get(sessionId);
+    if (base === undefined) {
+      base = Date.now();
+      setupAgentClock.set(sessionId, base);
+    }
+    const start = base;
+    return setupAgent.transcript.map((turn) => ({
+      eventId: turn.id,
+      fromPersonUid: turn.role === "agent" ? SETUP_AGENT_UID : (self?.uid ?? null),
+      fromDisplayName: turn.role === "agent" ? SETUP_AGENT_NAME : (self?.displayName ?? "You"),
+      body: turn.text,
+      createdAt: new Date(start + turn.seq * 1000).toISOString(),
+      direction: turn.role === "agent" ? "in" : "out",
+      replyCount: 0,
+    }));
+  });
+  let setupLaunchError = $state<string | null>(null);
+  /** The finish buttons: open the HQ folder in a coding tool, ready for `/startwork`. */
+  async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
+    setupLaunchError = null;
+    const res = await adapter.settings.getSetupStatus();
+    const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
+    if (!folder) {
+      setupLaunchError = "HQ folder is not ready yet.";
+      return;
+    }
+    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt: "/startwork" });
+    const error = key === "claude" ? await actions.launchClaude() : await actions.launchCodex();
+    if (error) setupLaunchError = error;
+  }
+
   const composerPlaceholder = $derived(
-    isAgentChannel && provisioning.state === "pending"
-      ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
-      : composerPlaceholderFor(selectedRow, headerTitle),
+    inSetupChannelWithAgent && setupAgent.listening
+      ? "Reply to Setup Agent…"
+      : isAgentChannel && provisioning.state === "pending"
+        ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
+        : composerPlaceholderFor(selectedRow, headerTitle),
   );
   const composerLocked = $derived(
     isAgentChannel && provisioning.state === "pending",
@@ -1469,13 +1525,16 @@
     if (!selectedRow || !isSetupChannel(selectedRow.channelId)) return merged;
     // #welcome must not lead with "Create a company" for an account whose
     // roster already holds one (created on the website / another machine).
-    return withoutCompaniesSummaryCards(
+    const welcome = withoutCompaniesSummaryCards(
       withoutSeededCreateCompanyCards(merged, {
         hasCompany: hasRosterCompany,
         createRequested: createCompanyRequested,
         rosterLoading: setupRosterLoading(companies, rosterStatus),
       }),
     );
+    // The Setup Agent's turns are local to this Mac: they render in the
+    // channel but are never posted to it.
+    return setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
   });
 
   /**
@@ -3503,6 +3562,12 @@
     if (!row || (!body.trim() && files.length === 0)) {
       throw new Error("Nothing to send");
     }
+    // While the Setup Agent is listening, the composer is its reply box.
+    if (isSetupChannel(row.channelId) && setupAgent.listening && files.length === 0) {
+      await setupAgent.reply(body.trim());
+      if (setupAgent.error) throw new Error(setupAgent.error);
+      return;
+    }
     try {
       let attachments:
         Awaited<ReturnType<typeof uploadChatAttachments>> | undefined;
@@ -4835,6 +4900,55 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if inSetupChannelWithAgent}
+                    {@const agentState = setupAgent.state}
+                    {@const agentDone = setupAgent.mode === "done" || Boolean(agentState?.done)}
+                    <div class="setup-agent-prompt" data-testid="setup-agent-prompt">
+                      {#if setupAgent.mode === "live" && agentState && !agentState.done && !agentState.ended && !agentState.question}
+                        <p class="setup-agent-working" data-testid="setup-agent-working">
+                          <span class="setup-agent-pulse" aria-hidden="true"></span>
+                          {SETUP_AGENT_NAME} is working{agentState.statusLine ? ` — ${agentState.statusLine}` : "…"}
+                        </p>
+                      {/if}
+                      <SetupRunCard
+                        variant="prompt"
+                        mode={setupAgent.mode === "starting" || setupAgent.mode === "idle" ? "live" : setupAgent.mode}
+                        run={agentState}
+                        resumeStep={setupAgent.resumeStep}
+                        busy={setupAgent.busy || setupAgent.mode === "starting"}
+                        error={setupAgent.error}
+                        onanswer={(requestId, questionId, values) => void setupAgent.answerChoice(requestId, questionId, values)}
+                        onpermission={(requestId, decision) => void setupAgent.answerPermission(requestId, decision)}
+                        onsend={(text) => void setupAgent.send(text)}
+                        oncontinue={() => void setupAgent.continueRun()}
+                        onrunagain={() => void setupAgent.runAgain()}
+                        onstoresecret={setupAgent.canStoreSecrets ? (card, value) => setupAgent.storeSecret(card, value) : undefined}
+                      />
+                      {#if agentDone}
+                        <div class="setup-agent-finish" data-testid="setup-agent-finish" role="group" aria-label="Keep going">
+                          {#if extraPages?.sessions && setupAgent.sessionId}
+                            <button
+                              type="button"
+                              class="setup-agent-btn primary"
+                              data-testid="setup-agent-open-sessions"
+                              onclick={() => openExtraPage("sessions", setupAgent.sessionId)}
+                            >
+                              Open in Sessions
+                            </button>
+                          {/if}
+                          <button type="button" class="setup-agent-btn" data-testid="setup-agent-open-claude" onclick={() => void launchSetupIn("claude")}>
+                            Open in Claude Code
+                          </button>
+                          <button type="button" class="setup-agent-btn" data-testid="setup-agent-open-codex" onclick={() => void launchSetupIn("codex")}>
+                            Open in Codex
+                          </button>
+                        </div>
+                        {#if setupLaunchError}
+                          <p class="setup-agent-error" role="alert">{setupLaunchError}</p>
+                        {/if}
+                      {/if}
+                    </div>
+                  {/if}
                   {#if isAgentChannel && provisioning.state}
                     <div
                       class="agent-provision-status"
@@ -4886,11 +5000,10 @@
                     {firstMoves}
                     onfirstmove={performFirstMove}
                     onfirstmovedone={recordFirstMoveDone}
-                    setupRun={extraPages?.sessions?.setupRun ?? null}
+                    agent={setupAgent}
                     onopensessiondetails={extraPages?.sessions
                       ? (sessionId) => openExtraPage("sessions", sessionId)
                       : undefined}
-                    onsetupfinished={recordWelcomeSetupRun}
                   />
                 {/snippet}
                 {#snippet companyHeader()}
@@ -5611,5 +5724,69 @@
     position: relative;
     z-index: 21;
     flex: 0 0 auto;
+  }
+  /* ---- Setup Agent prompt (under the #welcome messages) ---------------- */
+  .setup-agent-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 760px;
+    margin: 4px 0 8px;
+    padding: 14px 16px;
+    border: 1px solid var(--panel-border, var(--border, rgba(127, 127, 127, 0.25)));
+    border-radius: 12px;
+    background: var(--panel-bg, var(--raised, rgba(127, 127, 127, 0.06)));
+  }
+  .setup-agent-prompt:empty {
+    display: none;
+  }
+  .setup-agent-working {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-2, inherit);
+  }
+  .setup-agent-pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--accent, #22c55e);
+    animation: setup-agent-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes setup-agent-pulse {
+    0%, 100% { opacity: 0.35; transform: scale(0.85); }
+    50% { opacity: 1; transform: scale(1); }
+  }
+  .setup-agent-finish {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .setup-agent-btn {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    min-height: 34px;
+    padding: 0 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+    background: transparent;
+    color: var(--text-1, inherit);
+    cursor: pointer;
+  }
+  .setup-agent-btn.primary {
+    border-color: transparent;
+    background: var(--text-1, #111);
+    color: var(--bg, #fff);
+  }
+  .setup-agent-error {
+    margin: 0;
+    font-size: 13px;
+    color: var(--danger, #d9534f);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .setup-agent-pulse { animation: none; }
   }
 </style>
