@@ -209,11 +209,13 @@ describe('manual runner-exit attribution — shared classifier source', () => {
     // build instead of silently merging a mismatch.
     // ~6.16.24 (unrouted-key overflow, hq-cloud#499), ~6.16.25 (the root-`bin/`
     // personal-vault exclusion, hq-cloud#501), ~6.16.26 (the area-collision
-    // heal, hq-cloud#502), and ~6.16.33 (the journal fingerprint baseline,
-    // hq-cloud#513) were each re-derived against both tags and add no identity,
-    // so the vocabulary is unchanged and only the source-version marker moves
-    // with the pin.
-    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.33"');
+    // heal, hq-cloud#502), ~6.16.33 (the journal fingerprint baseline,
+    // hq-cloud#513), and ~6.16.34 (terminal cross-tenant push denial,
+    // hq-cloud#514) were each re-derived against both tags. 6.16.34 adds an
+    // internal named error, but it is caught before runner-event serialization,
+    // so the desktop vocabulary is unchanged and only the source-version marker
+    // moves with the pin.
+    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.34"');
     expect(shapeSource).toMatch(/const _: \(\) = assert!\(\s*const_str_eq\(/);
 
     // (5) The new filesystem errno CLASSES (sync_outcome), added as new variants so

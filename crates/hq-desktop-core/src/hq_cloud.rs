@@ -553,7 +553,19 @@
 /// A desktop holding a cached 6.16.26 satisfies `~6.16.26` forever and would
 /// retain that duplicate baseline; changing this requested spec is what moves
 /// npm's cache key and delivers the heap reduction.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.33";
+///
+/// `~6.16.33` -> `~6.16.34`: floors the runner at the release that recognizes
+/// the server's `403` `cross-tenant-push-rejected` response as terminal for
+/// that company scope (hq-cloud#514). It records the scope as forbidden and
+/// stops publishing realtime events for it, instead of retrying the same
+/// refused file forever. This is runner-internal retry control, not a desktop
+/// behavior contract, so it deliberately does not add another
+/// `*_MIN_HQ_CLOUD` floor constant.
+///
+/// A desktop holding a cached 6.16.33 satisfies `~6.16.33` forever and would
+/// keep retrying the denied scope; changing this requested spec is what moves
+/// npm's cache key and delivers the terminal classification.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.34";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -681,7 +693,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.33");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.34");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
