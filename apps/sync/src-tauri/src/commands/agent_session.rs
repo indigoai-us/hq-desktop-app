@@ -266,6 +266,21 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
         async { tools.claude_cli && provider_auth::logged_in(SessionTool::Claude).await },
         async { tools.codex_cli && provider_auth::logged_in(SessionTool::Codex).await },
     );
+    // One line per preflight so a support log answers "why did Sessions say
+    // Claude Code is not installed" without a debug build.
+    log(
+        LOG_TAG,
+        &format!(
+            "preflight claude_cli={} claude_desktop={} claude_logged_in={} codex_cli={} codex_desktop={} codex_logged_in={} hooks_ready={}",
+            tools.claude_cli,
+            tools.claude_desktop,
+            claude_logged_in,
+            tools.codex_cli,
+            tools.codex_desktop,
+            codex_logged_in,
+            hooks_error.is_none()
+        ),
+    );
     let companies = entries
         .into_iter()
         .map(|entry| CompanyOption {
