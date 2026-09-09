@@ -87,6 +87,17 @@ export interface NavigationHistory {
   clear(): void;
 }
 
+/** Neighbor used by title-bar hover labels. Does not move the cursor. */
+export function historyNeighbor(
+  snapshot: NavigationHistorySnapshot,
+  direction: "back" | "forward",
+): NavigationEntry | null {
+  const index =
+    direction === "back" ? snapshot.index - 1 : snapshot.index + 1;
+  if (index < 0 || index >= snapshot.entries.length) return null;
+  return snapshot.entries[index] ?? null;
+}
+
 const CHANNEL_TABS = new Set<ChannelSurfaceTab>(["chat", "board", "files"]);
 const AGENT_SURFACES = new Set<AgentSurfaceTab>(["chat", "details"]);
 const COMPANY_TABS = new Set<CompanyChannelTabId>([

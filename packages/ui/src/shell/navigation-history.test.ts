@@ -11,6 +11,7 @@ import {
   createNavigationHistory,
   destinationLabel,
   destinationsEqual,
+  historyNeighbor,
   NAVIGATION_HISTORY_CAP,
   type NavigationDestination,
   type NavigationEntry,
@@ -247,6 +248,18 @@ describe("navigation history stack", () => {
       expect.objectContaining({ param: "ses_d" }),
     );
     expect(history.snapshot().entries).toHaveLength(2);
+
+    const labeled = createNavigationHistory();
+    labeled.push(a);
+    labeled.push(b);
+    expect(historyNeighbor(labeled.snapshot(), "back")?.destination).toEqual(
+      expect.objectContaining({ channelId: "chn_a" }),
+    );
+    expect(historyNeighbor(labeled.snapshot(), "forward")).toBeNull();
+    labeled.back();
+    expect(historyNeighbor(labeled.snapshot(), "forward")?.destination).toEqual(
+      expect.objectContaining({ channelId: "chn_b" }),
+    );
 
     for (let i = 0; i < 120; i += 1) {
       history.push(entry({ kind: "channel", channelId: `chn_${i}` }));

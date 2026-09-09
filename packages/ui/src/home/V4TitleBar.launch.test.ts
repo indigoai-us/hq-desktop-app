@@ -351,3 +351,90 @@ describe("V4TitleBar Launch menu", () => {
     ).toBeTruthy();
   });
 });
+
+describe("V4TitleBar back/forward controls", () => {
+  it("places compact buttons beside the date, outside the drag region", async () => {
+    await mountBar(makeAdapter({}));
+    const date = host.querySelector('[data-testid="titlebar-day-date"]');
+    const cluster = host.querySelector('[data-testid="titlebar-history"]');
+    const back = host.querySelector<HTMLButtonElement>(
+      '[data-testid="titlebar-back"]',
+    );
+    const forward = host.querySelector<HTMLButtonElement>(
+      '[data-testid="titlebar-forward"]',
+    );
+    expect(date).toBeTruthy();
+    expect(cluster).toBeTruthy();
+    expect(back).toBeTruthy();
+    expect(forward).toBeTruthy();
+    expect(
+      date!.compareDocumentPosition(cluster!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(cluster?.getAttribute("data-tauri-drag-region")).toBe("false");
+    expect(cluster?.hasAttribute("data-no-drag")).toBe(true);
+    expect(back?.closest("[data-no-drag]")).toBe(cluster);
+  });
+
+  it("disables both endpoints with accessible names and destination hover labels", async () => {
+    const onback = vi.fn();
+    const onforward = vi.fn();
+    await mountBar(makeAdapter({}), {
+      canGoBack: false,
+      canGoForward: false,
+      onback,
+      onforward,
+    });
+    const back = host.querySelector<HTMLButtonElement>(
+      '[data-testid="titlebar-back"]',
+    );
+    const forward = host.querySelector<HTMLButtonElement>(
+      '[data-testid="titlebar-forward"]',
+    );
+    expect(back?.disabled).toBe(true);
+    expect(forward?.disabled).toBe(true);
+    expect(back?.getAttribute("aria-label")).toBe("Back");
+    expect(forward?.getAttribute("aria-label")).toBe("Forward");
+    expect(back?.getAttribute("title")).toBe("Back");
+    expect(forward?.getAttribute("title")).toBe("Forward");
+    back?.click();
+    forward?.click();
+    expect(onback).not.toHaveBeenCalled();
+    expect(onforward).not.toHaveBeenCalled();
+  });
+
+  it("clicks Back then Forward and shows destination hover labels", async () => {
+    const onback = vi.fn();
+    const onforward = vi.fn();
+    await mountBar(makeAdapter({}), {
+      canGoBack: true,
+      canGoForward: true,
+      backLabel: "Channel",
+      forwardLabel: "Meetings",
+      onback,
+      onforward,
+    });
+    const back = host.querySelector<HTMLButtonElement>(
+      '[data-testid="titlebar-back"]',
+    );
+    const forward = host.querySelector<HTMLButtonElement>(
+      '[data-testid="titlebar-forward"]',
+    );
+    expect(back?.disabled).toBe(false);
+    expect(forward?.disabled).toBe(false);
+    expect(back?.getAttribute("title")).toBe("Channel");
+    expect(forward?.getAttribute("title")).toBe("Meetings");
+    back?.click();
+    forward?.click();
+    expect(onback).toHaveBeenCalledTimes(1);
+    expect(onforward).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps history buttons flex-fixed so they survive minimum width", async () => {
+    await mountBar(makeAdapter({}));
+    const cluster = host.querySelector<HTMLElement>(
+      '[data-testid="titlebar-history"]',
+    );
+    expect(cluster).toBeTruthy();
+    expect(getComputedStyle(cluster!).flexShrink).toBe("0");
+  });
+});

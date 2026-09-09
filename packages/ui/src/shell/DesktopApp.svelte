@@ -151,6 +151,8 @@
     createNavigationEntry,
     createNavigationHistory,
     destinationFromEmbeddedTarget,
+    destinationLabel,
+    historyNeighbor,
     type NavigationDestination,
     type NavigationEntry,
   } from "./navigation-history.js";
@@ -160,6 +162,7 @@
     type NavigationMode,
     type NavigationResolveOutcome,
   } from "./navigation-controller.js";
+  import { consumeNavigationShortcut } from "./navigation-shortcuts.js";
   import { onDestroy, onMount, untrack, type Component } from "svelte";
   import {
     applyColorTheme,
@@ -666,6 +669,9 @@
     reason: string;
   } | null>(null);
   let navigationCanGoBack = $state(false);
+  let navigationCanGoForward = $state(false);
+  let navigationBackLabel = $state("");
+  let navigationForwardLabel = $state("");
   let tab = $state<ChannelTab>("chat");
   let companyTab = $state<CompanyChannelTabId>("chat");
   let companyTabData = $state<CompanyTabModel | null>(null);
@@ -2978,8 +2984,20 @@
 
   const navigationHistory = createNavigationHistory();
 
-  function applyCommittedNavigation(applied: AppliedNavigation): void {
+  function syncNavigationChrome(): void {
+    const snap = navigationHistory.snapshot();
     navigationCanGoBack = navigationHistory.canGoBack();
+    navigationCanGoForward = navigationHistory.canGoForward();
+    const back = historyNeighbor(snap, "back");
+    const forward = historyNeighbor(snap, "forward");
+    navigationBackLabel = back ? destinationLabel(back.destination) : "";
+    navigationForwardLabel = forward
+      ? destinationLabel(forward.destination)
+      : "";
+  }
+
+  function applyCommittedNavigation(applied: AppliedNavigation): void {
+    syncNavigationChrome();
     paletteOpen = false;
     membersOpen = false;
     projectAboutOpen = false;
@@ -3130,6 +3148,15 @@
 
   function goBack() {
     return navigation.back();
+  }
+
+  function goForward() {
+    return navigation.forward();
+  }
+
+  function leaveCurrentDestination() {
+    if (navigationHistory.canGoBack()) return goBack();
+    return navigate({ kind: "messages" });
   }
 
   $effect(() => {
@@ -4007,7 +4034,7 @@
   }
 
   function closeSettings(): void {
-    void navigate({ kind: "messages" });
+    void leaveCurrentDestination();
   }
 
   /** Apply a host route after DesktopApp's event listeners have mounted. */
@@ -4094,6 +4121,19 @@
     });
 
     function onKey(event: KeyboardEvent) {
+      if (
+        consumeNavigationShortcut(event, {
+          onBack: () => {
+            if (navigationHistory.canGoBack()) void goBack();
+          },
+          onForward: () => {
+            if (navigationHistory.canGoForward()) void goForward();
+          },
+        })
+      ) {
+        goChord.reset();
+        return;
+      }
       const meta = event.metaKey || event.ctrlKey;
       if (meta) {
         const key = event.key.toLowerCase();
@@ -4240,6 +4280,12 @@
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
     {onopenurl}
+    canGoBack={navigationCanGoBack}
+    canGoForward={navigationCanGoForward}
+    backLabel={navigationBackLabel}
+    forwardLabel={navigationForwardLabel}
+    onback={() => void goBack()}
+    onforward={() => void goForward()}
   />
 
   {#if recommendBanner}
@@ -4407,7 +4453,7 @@
             wakeSeq={notificationWakeSeq}
             signedIn={Boolean(self)}
             onback={() => {
-              void navigate({ kind: "messages" });
+              void leaveCurrentDestination();
             }}
             onunreadchange={(n) => (unreadCount = n)}
             onopen={openNotification}
@@ -4417,7 +4463,7 @@
           <SharedFilesOverlay
             {adapter}
             onback={() => {
-              void navigate({ kind: "messages" });
+              void leaveCurrentDestination();
             }}
           />
         {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
@@ -4444,7 +4490,7 @@
             storage={tenantStorage}
             sessionGeneration={tenantGeneration}
             onback={() => {
-              void navigate({ kind: "messages" });
+              void leaveCurrentDestination();
             }}
             openExternal={onopenurl}
             focusRequest={meetingFocusRequest}
@@ -4462,7 +4508,7 @@
               openMigrateSession(sessionId, atlasCompanyUid)}
             migratingSessionId={migratingSessionId}
             onback={() => {
-              void navigate({ kind: "messages" });
+              void leaveCurrentDestination();
             }}
           />
         {:else if view === "conversation" && selectedRow}
@@ -5149,7 +5195,7 @@
       tab={libraryTab}
       {packagesEvents}
       onback={() => {
-        void navigate({ kind: "messages" });
+        void leaveCurrentDestination();
       }}
       onnavigatetab={(next) => (libraryTab = next)}
     />

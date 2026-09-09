@@ -75,7 +75,7 @@ export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
 export const HQ_WORK_SHELL_NAVIGATE_COUNT = 7;
 
 export const DESKTOP_APP_FUNCTION_RE =
-  /(?:async )?function (open[A-Z]\w*|close[A-Z]\w*|apply[A-Z]\w*|toggle[A-Z]\w*|navigate[A-Z]\w*|handle[A-Z]\w*|changeTenantCompany|onOpenChannel|onMessagePerson|onOpenSettingsEvent|onEmbeddedNavigation|onKey|navigate|resolveDestination|commitDestination)\b/g;
+  /(?:async )?function (open[A-Z]\w*|close[A-Z]\w*|apply[A-Z]\w*|toggle[A-Z]\w*|navigate[A-Z]\w*|handle[A-Z]\w*|leave[A-Z]\w*|changeTenantCompany|onOpenChannel|onMessagePerson|onOpenSettingsEvent|onEmbeddedNavigation|onKey|navigate|resolveDestination|commitDestination|goBack|goForward)\b/g;
 
 /**
  * Every DesktopApp function matching DESKTOP_APP_FUNCTION_RE must appear here.
@@ -87,6 +87,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   navigate: "push",
   resolveDestination: "none",
   commitDestination: "push",
+  goBack: "replace",
+  goForward: "replace",
+  leaveCurrentDestination: "replace",
   handleRecommendedUpdateNow: "none",
   applyFetchedTimeline: "none",
   openMemberProfile: "none",
@@ -119,7 +122,7 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   toggleNotifications: "push",
   openSettings: "push",
   openExtraPage: "push",
-  closeSettings: "push",
+  closeSettings: "replace",
   applyEmbeddedNavigation: "push",
   onKey: "push",
   onOpenChannel: "push",
@@ -512,11 +515,56 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
   },
   {
+    id: "titlebar-back",
+    file: SHARED_SHELL_FILE,
+    needle: "onback={() => void goBack()}",
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "titlebar-forward",
+    file: SHARED_SHELL_FILE,
+    needle: "onforward={() => void goForward()}",
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "keydown-history-back-forward",
+    file: SHARED_SHELL_FILE,
+    needle: "consumeNavigationShortcut(event, {",
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "shortcut-macos-cmd-bracket",
+    file: "packages/ui/src/shell/navigation-shortcuts.ts",
+    needle: 'event.key === "[" || event.code === "BracketLeft"',
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "shortcut-windows-alt-arrow",
+    file: "packages/ui/src/shell/navigation-shortcuts.ts",
+    needle: 'if (event.key === "ArrowLeft") return "back";',
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
     id: "settings-onback",
     file: SHARED_SHELL_FILE,
     needle: "onback={closeSettings}",
-    destinationKind: "messages",
-    history: "push",
+    destinationKind: "passthrough",
+    history: "replace",
     host: "shared-shell",
     inScope: true,
   },
