@@ -641,8 +641,17 @@ export function classifyNotificationsError(
  * console router, so we resolve that onto a DM thread or a files hint.
  */
 export type NotificationDestination =
-  | { kind: "dm"; personUid: string; title: string }
-  | { kind: "channel"; channelId: string }
+  | {
+      kind: "dm";
+      personUid: string;
+      title: string;
+      replyRootEventId?: string | null;
+    }
+  | {
+      kind: "channel";
+      channelId: string;
+      replyRootEventId?: string | null;
+    }
   | { kind: "files" }
   | { kind: "none" };
 
@@ -650,6 +659,22 @@ export function personUidFromTargetRef(ref: string | null): string | null {
   if (!ref) return null;
   const match = ref.trim().match(/^\/messages\/(prs_[A-Za-z0-9]+)\b/);
   return match?.[1] ?? null;
+}
+
+/** Thread root from `/replies/evt_*` or `reply=` / `rootEventId=` query params. */
+export function replyRootFromTargetRef(ref: string | null): string | null {
+  if (!ref) return null;
+  const trimmed = ref.trim();
+  const path = trimmed.match(/\/replies\/(evt_[A-Za-z0-9_-]+)\b/);
+  if (path?.[1]) return path[1];
+  const query = trimmed.match(/[?&](?:reply|rootEventId|root)=([^&]+)/i);
+  if (!query?.[1]) return null;
+  try {
+    const value = decodeURIComponent(query[1]).trim();
+    return value.startsWith("evt_") ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 export function notificationDestination(
@@ -665,12 +690,14 @@ export function notificationDestination(
     target === "/files" ||
     target.startsWith("/files/");
   const channelMatch = target.match(/^\/channels\/(chn_[A-Za-z0-9_-]+)\b/);
+  const replyRootEventId = replyRootFromTargetRef(target);
 
   if (isDm && uid) {
     return {
       kind: "dm",
       personUid: uid,
       title: item.actorName || "Direct message",
+      ...(replyRootEventId ? { replyRootEventId } : {}),
     };
   }
   if (isShare && uid) {
@@ -681,7 +708,13 @@ export function notificationDestination(
     };
   }
   if (isShare) return { kind: "files" };
-  if (channelMatch) return { kind: "channel", channelId: channelMatch[1] };
+  if (channelMatch) {
+    return {
+      kind: "channel",
+      channelId: channelMatch[1],
+      ...(replyRootEventId ? { replyRootEventId } : {}),
+    };
+  }
   return { kind: "none" };
 }
 

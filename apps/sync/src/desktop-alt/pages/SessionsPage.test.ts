@@ -226,6 +226,22 @@ async function settle() {
   flushSync();
 }
 
+function installMemoryLocalStorage(): void {
+  const data = new Map<string, string>();
+  const storage = {
+    get length() {
+      return data.size;
+    },
+    clear: () => data.clear(),
+    getItem: (key: string) => data.get(key) ?? null,
+    key: (index: number) => Array.from(data.keys())[index] ?? null,
+    removeItem: (key: string) => void data.delete(key),
+    setItem: (key: string, value: string) => void data.set(key, String(value)),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: storage });
+}
+
 function send(message: string) {
   const input = must('session-composer-input') as HTMLTextAreaElement;
   input.value = message;
@@ -236,7 +252,7 @@ function send(message: string) {
 
 beforeEach(() => {
   vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ matches: query.includes('prefers-reduced-motion'), media: query, addEventListener() {}, removeEventListener() {} } as unknown as MediaQueryList));
-  localStorage.clear();
+  installMemoryLocalStorage();
   handlers.clear();
   invoke.mockReset();
   resetLiveSessionStore();
@@ -250,7 +266,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
-  host.remove();
+  host?.remove();
   resetLiveSessionStore();
   resetProbeCaches();
   stopSessionsStore();
@@ -640,7 +656,7 @@ describe('first-message orientation', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('/startwork indigo'));
     expect(host.textContent).toContain('Show me the launch plan');
     expect(backend.sends).toHaveLength(1);
-    expect(onopensession).toHaveBeenCalledWith('sess-1');
+    expect(onopensession).toHaveBeenCalledWith('sess-1', { replace: true });
     expect(at('session-composer-notice')).toBeNull();
   });
 
@@ -813,7 +829,11 @@ describe('resuming history', () => {
     await vi.waitFor(() => expect(at('session-resume')).not.toBeNull());
     click(must('session-resume'));
 
-    await vi.waitFor(() => expect(onopensession).toHaveBeenCalledWith('claude-history-1'));
+    await vi.waitFor(() =>
+      expect(onopensession).toHaveBeenCalledWith(
+        expect.stringMatching(/^history\?id=claude-history-1/),
+      ),
+    );
     expect(backend.starts).toHaveLength(0);
     expect(invoke).toHaveBeenCalledWith('agent_session_history_page', {
       sessionId: 'claude-history-1',
@@ -863,7 +883,9 @@ describe('resuming history', () => {
     }));
     expect(backend.starts).toHaveLength(0);
     await vi.waitFor(() =>
-      expect(onopensession).toHaveBeenCalledWith('01a0640a-0c86-7a31-baad-f9d5cbfd379a'),
+      expect(onopensession).toHaveBeenCalledWith(
+        expect.stringMatching(/^history\?id=01a0640a-0c86-7a31-baad-f9d5cbfd379a/),
+      ),
     );
     expect(invoke).not.toHaveBeenCalledWith('agent_session_start', {
       spec: expect.objectContaining({

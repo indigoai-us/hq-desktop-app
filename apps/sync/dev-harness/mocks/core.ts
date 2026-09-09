@@ -1578,6 +1578,11 @@ This final paragraph verifies spacing after a thematic break.
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (typeof window !== 'undefined') {
+    const counts = ((window as Window & { __hqInvokeCounts?: Record<string, number> })
+      .__hqInvokeCounts ??= {});
+    counts[cmd] = (counts[cmd] ?? 0) + 1;
+  }
   if (new URLSearchParams(window.location.search).has('loadingTest')) {
     if (cmd === 'session_project_links') await new Promise(resolve => setTimeout(resolve, 1200));
     if (cmd === 'hq_pro_fetch' && args?.url === '/v1/profile') {

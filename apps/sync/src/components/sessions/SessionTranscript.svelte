@@ -21,6 +21,13 @@
    * Presentation-pure: blocks in, decisions out as callbacks. Nothing invokes.
    */
   import { tick } from 'svelte';
+  import {
+    isScrollNearBottom,
+    restoreNavigationScroll,
+    NAVIGATION_SCROLL_RETRY_LIMIT,
+    NAVIGATION_SCROLL_RETRY_MS,
+    type NavigationScrollState,
+  } from '@hq/ui';
   import { readQuestionReplies } from './question-replies';
   import PermissionCard from './PermissionCard.svelte';
   import QuestionCard from './QuestionCard.svelte';
@@ -63,6 +70,7 @@
      * offer the fix.
      */
     onchoosemodel?: () => void;
+    restoreScroll?: NavigationScrollState | null;
   }
 
   let {
@@ -80,6 +88,7 @@
     ondenypermission,
     onanswerquestion,
     onchoosemodel,
+    restoreScroll = null,
   }: Props = $props();
 
   let scroller = $state<HTMLDivElement | null>(null);
@@ -115,7 +124,8 @@
     Boolean(status) && blocks[blocks.length - 1]?.type !== 'thinking',
   );
   /** The reader has scrolled up: stop following the stream until they return. */
-  let pinned = $state(true);
+  let pinned = $state(!restoreScroll || isScrollNearBottom(restoreScroll));
+  let restoreScrollPending = $state(restoreScroll != null);
 
   /**
    * Rendered bodies, keyed by the text itself. A streaming turn re-renders on
@@ -173,8 +183,35 @@
     const tail = blocks[blocks.length - 1];
     void blocks.length;
     void (tail && 'text' in tail ? tail.text : '');
+    if (restoreScrollPending) return;
     if (!pinned) return;
     scrollToBottom();
+  });
+
+  $effect(() => {
+    const target = restoreScroll;
+    const el = scroller;
+    if (!target || !el) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tryRestore = (): void => {
+      if (cancelled) return;
+      if (restoreNavigationScroll(el, target)) {
+        pinned = isScrollNearBottom(target, el);
+        restoreScrollPending = false;
+        return;
+      }
+      attempts += 1;
+      if (attempts >= NAVIGATION_SCROLL_RETRY_LIMIT) {
+        restoreScrollPending = false;
+        return;
+      }
+      setTimeout(tryRestore, NAVIGATION_SCROLL_RETRY_MS);
+    };
+    void tick().then(tryRestore);
+    return () => {
+      cancelled = true;
+    };
   });
 
   const isEmpty = $derived(blocks.length === 0);
@@ -207,6 +244,7 @@
         </button>
       {/if}
       {#each blocks as block (block.id)}
+        <div data-event-id={block.id}>
         {#if block.type === 'userBubble'}
           {@const replies = readQuestionReplies(block.text)}
           <div class="user-row">
@@ -314,6 +352,7 @@
             <span>{block.label}</span>
           </div>
         {/if}
+        </div>
       {/each}
       {#if showStatus}
         <p

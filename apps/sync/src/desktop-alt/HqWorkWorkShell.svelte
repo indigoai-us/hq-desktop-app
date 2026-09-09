@@ -25,6 +25,7 @@
     toSelfIdentity,
     workspacesFromMembershipRows,
     type ConversationRow,
+    type EmbeddedNavigationTarget,
     type RowExtrasResolver,
     type SelfIdentity,
     type Workspace,
@@ -42,8 +43,14 @@
   } from './hq-work-host';
   import { startDesktopMeshPresence } from './mesh-presence';
   import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
-  import { parseSessionsParam } from './pages/sessions-route-param';
+  import {
+    encodeHistorySessionParam,
+    encodeLiveSessionParam,
+    parseSessionsParam,
+  } from './pages/sessions-route-param';
+  import { liveSessionStore } from './lib/live-session-store.svelte';
   import { configureSessionStarterCache } from '../components/sessions/session-starter';
+  import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
   import { projectLinksStore } from './lib/project-links-store.svelte';
   import {
     newSessionParam,
@@ -148,6 +155,57 @@
     return Object.entries(byCompany).find(([, links]) => links.includes(link))?.[0] ?? null;
   }
 
+  async function stampSessionsExtra(
+    target: EmbeddedNavigationTarget,
+  ): Promise<EmbeddedNavigationTarget> {
+    if (
+      target.kind !== 'extra' ||
+      target.page !== 'sessions' ||
+      target.companyUid ||
+      !target.param
+    ) {
+      return target;
+    }
+    const route = parseSessionsParam(target.param);
+    let company =
+      (route.kind === 'session' ? route.company : null) ||
+      (route.kind === 'history' ? route.company : null) ||
+      (route.kind === 'new' ? route.company : null) ||
+      (route.kind === 'session' || route.kind === 'history'
+        ? liveSessionStore.companyOf(route.sessionId)
+        : null);
+    if (
+      !company &&
+      (route.kind === 'session' || route.kind === 'history')
+    ) {
+      await liveSessionStore.refreshList();
+      company = liveSessionStore.companyOf(route.sessionId);
+    }
+    if (!company) return target;
+    if (route.kind === 'session') {
+      return {
+        ...target,
+        companyUid: company,
+        param: encodeLiveSessionParam(route.sessionId, company),
+      };
+    }
+    if (route.kind === 'history') {
+      return {
+        ...target,
+        companyUid: company,
+        param: encodeHistorySessionParam({
+          id: route.sessionId,
+          tool: route.tool,
+          company,
+          project: route.project,
+          title: route.title,
+          startedAt: route.startedAt,
+        }),
+      };
+    }
+    return { ...target, companyUid: company };
+  }
+
   const rowExtras = $derived.by<RowExtrasResolver | null>(() => {
     if (lifecycle !== 'ready') return null;
     const byCompany = projectLinksStore.byCompany;
@@ -168,6 +226,7 @@
             kind: 'extra',
             page: 'sessions',
             param: newSessionParam(company, link.project, link.channelId),
+            companyUid: row.companyUid ?? company,
           });
         },
         (_link, session) => {
@@ -177,6 +236,7 @@
             kind: 'extra',
             page: 'sessions',
             param: historySessionParam(company, _link.project, session),
+            companyUid: row.companyUid ?? company,
           });
         },
         selectedSessionId,
@@ -264,6 +324,7 @@
     authGeneration = next.generation;
     authAccountId = next.accountId;
     configureSessionStarterCache(next.status === 'active' ? next.accountId : null);
+    setSessionComposerDraftAccount(next.status === 'active' ? next.accountId : null);
     hydration += 1;
     detachNavigation?.();
     detachNavigation = null;
@@ -273,6 +334,7 @@
     workspaceError = null;
     identityError = null;
     signOutError = null;
+    navigation.clear();
 
     if (next.status === 'credentials_absent') {
       signedOutReason = 'signed-out';
@@ -432,6 +494,7 @@
       authGeneration += 1;
       authAccountId = null;
       configureSessionStarterCache(null);
+      setSessionComposerDraftAccount(null);
       self = null;
       companies = null;
       capabilities = null;
@@ -837,8 +900,12 @@
         }}
         onembeddednavigationready={() => {
           detachNavigation?.();
+          // Pending-route bridge only: the shared shell converts `target`
+          // through destinationFromEmbeddedTarget and commits via navigate().
           const detach = navigation.attach((target) => {
-            dispatchEmbeddedNavigation(target);
+            void stampSessionsExtra(target).then((next) => {
+              dispatchEmbeddedNavigation(next);
+            });
           });
           detachNavigation = detach;
           return () => {

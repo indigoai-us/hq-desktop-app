@@ -901,7 +901,7 @@ describe('company / project start-work — the first send orients the session', 
     expect(body).toContain('planFirstSend(wire, { company, project }, startworkEnabled)');
     const planAt = body.indexOf('const first = planFirstSend(');
     const wordsAt = body.indexOf('started = await liveSessionStore.startAndSend(');
-    const routeAt = body.indexOf('onopensession?.(started);', wordsAt);
+    const routeAt = body.indexOf('onopensession?.(started', wordsAt);
     expect(planAt).toBeGreaterThan(-1);
     expect(wordsAt).toBeGreaterThan(planAt);
     expect(routeAt).toBeGreaterThan(wordsAt);
@@ -1151,7 +1151,7 @@ describe('the "⋯" session menu — open in Claude Code / Codex, share to chann
     expect(PAGE).toContain('onopenchannel?: (channelId: string) => void;');
     // HQ Work shell: the same `{ kind: 'channel' }` an hqwork://open?channel=
     // deep link resolves to in hq-work-host's routeTarget.
-    expect(EXTRA).toContain("import { dispatchEmbeddedNavigation } from '@hq/ui';");
+    expect(EXTRA).toContain("import { dispatchEmbeddedNavigation, type NavigationScrollState } from '@hq/ui';");
     expect(EXTRA).toContain("dispatchEmbeddedNavigation({ kind: 'channel', channelId })");
     expect(read('src/desktop-alt/hq-work-host.ts')).toContain("kind: 'channel',");
     // Classic shell: Messages, whose native shell has no open-by-id.

@@ -9,7 +9,10 @@
    */
   interface Props {
     param?: string | null;
-    onnavigate?: (param: string | null) => void;
+    onnavigate?: (
+      param: string | null,
+      options?: { mode?: "push" | "replace" },
+    ) => void;
   }
 
   let { param = null, onnavigate }: Props = $props();
@@ -23,5 +26,12 @@
     onclick={() => onnavigate?.("chosen-by-page")}
   >
     Open one
+  </button>
+  <button
+    type="button"
+    data-testid="extra-page-probe-replace"
+    onclick={() => onnavigate?.("replaced-by-page", { mode: "replace" })}
+  >
+    Replace
   </button>
 </div>

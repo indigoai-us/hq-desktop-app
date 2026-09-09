@@ -27,7 +27,7 @@
    * strip, drawer, transcript and composer read it, the cards call back into
    * it, and every `agent_session_*` invoke lives inside it.
    */
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy } from 'svelte';
   import SessionListPanel from '../panels/SessionListPanel.svelte';
   import SessionComposer from '../../components/sessions/SessionComposer.svelte';
   import SessionTranscript from '../../components/sessions/SessionTranscript.svelte';
@@ -108,6 +108,7 @@
     type TurnOverrides,
   } from '../lib/live-session-store.svelte';
   import type { AgentSession } from '../lib/sessions';
+  import { encodeHistorySessionParam } from './sessions-route-param';
   import { sessionsStore } from '../lib/sessions-store.svelte';
   import ProjectCreatedCard from '../../components/sessions/ProjectCreatedCard.svelte';
   import { projectLinksStore } from '../lib/project-links-store.svelte';
@@ -123,7 +124,7 @@
     /** Route-selected session. Absent → a fresh chat that starts on first send. */
     sessionId?: string;
     /** Navigate to `sessions:<id>` (the page never touches the router itself). */
-    onopensession?: (sessionId: string) => void;
+    onopensession?: (sessionId: string, options?: { replace?: boolean }) => void;
     /** Open a channel by id after a share — the shell's own route mechanism. */
     onopenchannel?: (channelId: string) => void;
     /** A fresh chat pre-bound to this company (the sidebar's "New session"). */
@@ -133,6 +134,11 @@
     initialChannelId?: string;
     /** Durable metadata supplied by a nested project-session route. */
     initialHistorySession?: AgentSession | null;
+    /** Restore via open vs openHistory. Absent on new drafts (nothing to restore). */
+    restorePath?: 'open' | 'openHistory';
+    /** Unique unsent-draft identity for composer persistence. */
+    draftKey?: string | null;
+    restoreScroll?: import('@hq/ui').NavigationScrollState | null;
   }
 
   let {
@@ -143,11 +149,15 @@
     initialProject = null,
     initialChannelId,
     initialHistorySession = null,
+    restorePath,
+    draftKey = null,
+    restoreScroll = null,
   }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
   let preflightLoading = $state(false);
   let actionError = $state('');
+  let sessionUnavailable = $state(false);
   let starting = $state(false);
   let busyRequestId = $state<string | null>(null);
   let probeCommands = $state<SessionCommand[]>([]);
@@ -250,12 +260,14 @@
 
   async function openRoutedSession(next: string) {
     if (routedId !== next) return;
+    // Restore is open / openHistory only. Never start, send, or fork.
 
     // Project-channel links already carry the authoritative provider history
     // metadata. Open them immediately instead of blocking the transcript on
     // the slower global session catalogs, which briefly rendered a generic
     // blank session after every click or app restart.
     if (initialHistorySession?.id === next) {
+      if (companyMembershipDenied(initialHistorySession.company)) return;
       tool = initialHistorySession.tool;
       model = null;
       effort = null;
@@ -269,18 +281,22 @@
 
     // Resolve the inexpensive in-memory registry first. A live session must
     // not wait for a scan of every provider transcript before replaying.
-    await liveSessionStore.refreshList();
-    if (routedId !== next) return;
+    if (restorePath !== 'openHistory') {
+      await liveSessionStore.refreshList();
+      if (routedId !== next) return;
 
-    const appOwned = liveSessionStore.sessions.some((session) => session.sessionId === next);
-    if (appOwned) {
-      await liveSessionStore.open(next);
-      return;
+      const appOwned = liveSessionStore.sessions.some((session) => session.sessionId === next);
+      if (appOwned) {
+        if (companyMembershipDenied(liveSessionStore.companyOf(next))) return;
+        await liveSessionStore.open(next);
+        return;
+      }
     }
     await sessionsStore.refresh();
     if (routedId !== next) return;
     const providerHistory = sessionsStore.sessions.find((session) => session.id === next);
-    if (providerHistory && !appOwned) {
+    if (providerHistory) {
+      if (companyMembershipDenied(providerHistory.company)) return;
       tool = providerHistory.tool;
       model = null;
       effort = null;
@@ -291,25 +307,79 @@
       await liveSessionStore.openHistory(providerHistory);
       return;
     }
+    if (restorePath === 'open' || restorePath === 'openHistory') {
+      sessionUnavailable = true;
+      actionError = 'This session is no longer available.';
+      return;
+    }
+    if (companyMembershipDenied(liveSessionStore.companyOf(next))) return;
     await liveSessionStore.open(next);
   }
 
-  // Open / close the routed session. Runs on mount and whenever the route's id
-  // changes; the previous session's buffer is dropped so a long transcript does
-  // not sit in memory behind a session the user left.
+  function sessionCompanyIsAccessible(
+    companyKey: string | null | undefined,
+  ): boolean {
+    const key = companyKey?.trim() ?? '';
+    if (!key) return true;
+    const offered = preflight?.companies;
+    if (!offered) return false;
+    return offered.some(
+      (entry) => entry.slug === key || (entry.cloudUid ?? '').trim() === key,
+    );
+  }
+
+  function companyMembershipDenied(
+    companyKey: string | null | undefined,
+  ): boolean {
+    const key = companyKey?.trim() ?? '';
+    if (!key || !preflight) return false;
+    if (sessionCompanyIsAccessible(key)) return false;
+    sessionUnavailable = true;
+    actionError = 'This session is no longer available.';
+    return true;
+  }
+
+  async function restoreRoutedSession(next: string): Promise<void> {
+    if (routedId !== next) return;
+    const bound =
+      (initialHistorySession?.id === next ? initialHistorySession.company : null) ||
+      liveSessionStore.companyOf(next) ||
+      initialCompany;
+    if (companyMembershipDenied(bound)) return;
+    if (liveSessionStore.isOpen(next)) {
+      liveSessionStore.activate(next);
+      return;
+    }
+    await openRoutedSession(next);
+  }
+
+  // Open the routed session. Background buffers stay resident while this view
+  // unmounts so Back can restore without tearing the agent down.
   $effect(() => {
     const next = sessionId ?? null;
     if (next === routedId) return;
-    const previous = untrack(() => openedId);
     routedId = next;
     openedId = next;
-    if (previous && previous !== next) liveSessionStore.close(previous);
-    if (next) void openRoutedSession(next);
+    sessionUnavailable = false;
+    if (!next) return;
+    void restoreRoutedSession(next);
+  });
+
+  $effect(() => {
+    const offered = preflight?.companies;
+    if (!offered) return;
+    const next = sessionId ?? null;
+    const bound =
+      (next && initialHistorySession?.id === next
+        ? initialHistorySession.company
+        : null) ||
+      (next ? liveSessionStore.companyOf(next) : null) ||
+      initialCompany;
+    if (bound) companyMembershipDenied(bound);
   });
 
   onDestroy(() => {
     routedId = null;
-    if (openedId) liveSessionStore.close(openedId);
   });
 
   /** Preflight: wanted once per page, best-effort. */
@@ -1056,7 +1126,7 @@
       // is what made a follow-up accidentally start another conversation.
       if (started) {
         openedId = started;
-        onopensession?.(started);
+        onopensession?.(started, sessionId ? undefined : { replace: true });
       }
     }
     if (started && messageAccepted) await onmentionsend(started, text, mentions);
@@ -1103,7 +1173,7 @@
       rememberEffort(tool, null);
       await liveSessionStore.openHistory(session);
       openedId = session.id;
-      onopensession?.(session.id);
+      onopensession?.(encodeHistorySessionParam(session));
       return true;
     } catch (err) {
       actionError = err instanceof Error ? err.message : String(err);
@@ -1199,6 +1269,15 @@
 <svelte:window onkeydown={onPageKeydown} />
 
 <div class="sessions" data-testid="sessions-page" bind:this={pageEl}>
+  {#if sessionUnavailable}
+    <div
+      class="session-note"
+      data-testid="session-unavailable"
+      role="alert"
+    >
+      This session is no longer available.
+    </div>
+  {:else}
   <SessionsStrip
     {title}
     startedBy={liveSessionStore.context?.startedBy}
@@ -1268,6 +1347,7 @@
     </div>
   {/if}
   <SessionTranscript
+    restoreScroll={restoreScroll}
     blocks={transcript.blocks}
     status={workStatus}
     loading={Boolean(sessionId) && liveSessionStore.loading}
@@ -1367,6 +1447,7 @@
       {hqFolder}
       {mentionCandidates}
       {mentionStatus}
+      {draftKey}
       onsend={(text, images, mentions, context) => void handleSend(text, images, mentions, context)}
       onstop={() => void liveSessionStore.interrupt()}
       oncompany={chooseCompany}
@@ -1379,6 +1460,7 @@
       onpermission={choosePermission}
     />
   </div>
+  {/if}
 </div>
 
 <style>

@@ -162,7 +162,10 @@
         detail?: string;
         component: Component<{
           param?: string | null;
-          onnavigate?: (param: string | null) => void;
+          onnavigate?: (
+            param: string | null,
+            options?: { mode?: "push" | "replace" },
+          ) => void;
         }>;
       }
     >;
