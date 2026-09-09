@@ -406,9 +406,14 @@ where
         if by_slug.contains_key(&entity.slug) {
             continue;
         }
+        // The name the owner typed lives on the membership row when the
+        // entity carries none; only humanize the slug as a last resort
+        // ("HQTestCo" must not render as "Hqtestco").
         let display_name = entity
             .name
             .clone()
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| mem.company_name.clone().filter(|name| !name.trim().is_empty()))
             .or_else(|| {
                 local_by_slug
                     .get(entity.slug.as_str())
@@ -1801,6 +1806,22 @@ mod tests {
             assemble_workspaces(tmp.path(), Some(&p), &[mem], &entities, &[], true, |_| None);
         assert_eq!(result[1].state, WorkspaceState::CloudOnly);
         assert_eq!(result[1].membership_status.as_deref(), Some("pending"));
+    }
+
+    /// Regression: a website-created company whose entity carries no name
+    /// rendered as "Hqtestco" on the welcome screen; the owner typed
+    /// "HQTestCo", which the membership row still carries.
+    #[test]
+    fn cloud_only_row_uses_the_membership_company_name_before_the_slug() {
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let mut mem = membership("mem_1", "prs_x", "cmp_t", "active");
+        mem.company_name = Some("HQTestCo".to_string());
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_t".to_string(), company_entity("cmp_t", "hqtestco", None));
+        let result =
+            assemble_workspaces(tmp.path(), Some(&p), &[mem], &entities, &[], true, |_| None);
+        assert_eq!(result[1].display_name, "HQTestCo");
     }
 
     #[test]
