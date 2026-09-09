@@ -13,6 +13,7 @@ import {
   canonicalizeDestination,
   createNavigationEntry,
   createNavigationHistory,
+  destinationCompanyKey,
   entriesEqual,
   entryCompanyIsAccessible,
   type NavigationDestination,
@@ -221,6 +222,17 @@ export function createNavigationController(
     );
   }
 
+  function scopeForDestination(
+    destination: NavigationDestination,
+  ): NavigationScope {
+    const scope = scopeNow();
+    const fromDestination = destinationCompanyKey(destination);
+    return {
+      accountId: scope.accountId,
+      companyUid: fromDestination ?? scope.companyUid,
+    };
+  }
+
   function commitDestination(
     outcome: Extract<
       NavigationResolveOutcome,
@@ -230,7 +242,7 @@ export function createNavigationController(
     generation: number,
   ): boolean {
     if (generation !== currentGeneration) return false;
-    const scope = scopeNow();
+    const scope = scopeForDestination(outcome.destination);
     const entry = createNavigationEntry(outcome.destination, scope);
     seedCurrentIfNeeded(entry);
     if (mode === "replace") history.replace(entry);
@@ -366,9 +378,12 @@ export function createNavigationController(
   function filterAccessible(
     accessibleCompanyUids: ReadonlySet<string> | null,
   ): void {
+    const before = history.snapshot().entries.length;
     history.filter((entry) =>
       entryCompanyIsAccessible(entry, accessibleCompanyUids),
     );
+    const after = history.snapshot().entries.length;
+    if (after !== before) currentGeneration += 1;
     if (lastCommit && !entryCompanyIsAccessible(lastCommit, accessibleCompanyUids)) {
       lastCommit = history.current();
       lastAvailability = lastCommit ? lastAvailability : null;

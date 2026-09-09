@@ -245,6 +245,7 @@ export function newSessionParam(company: string, project: string | null, channel
   query.set('company', company);
   if (project?.trim()) query.set('project', project.trim());
   if (channelId && project?.trim()) query.set('channel', channelId);
+  query.set('draft', crypto.randomUUID());
   return `new?${query.toString()}`;
 }
 

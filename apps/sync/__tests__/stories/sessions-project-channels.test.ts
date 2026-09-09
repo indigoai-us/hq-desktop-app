@@ -132,8 +132,9 @@ describe('expand a project channel → its nested sessions', () => {
 describe('spawn a session from a channel, bound to that project', () => {
   it('the "New session" action navigates to a pre-bound fresh chat the page decodes', () => {
     const param = newSessionParam('indigo', 'launch', 'chn_launch');
-    expect(param).toBe('new?company=indigo&project=launch&channel=chn_launch');
     expect(parseSessionsParam(param)).toEqual({ kind: 'new', company: 'indigo', project: 'launch', channelId: 'chn_launch' });
+    expect(param.startsWith('new?company=indigo&project=launch&channel=chn_launch')).toBe(true);
+    expect(param).toContain('draft=');
     expect(SHELL).toContain('param: newSessionParam(company, link.project, link.channelId)');
     expect(EXTRA).toContain('parseSessionsParam(param)');
     expect(EXTRA).toContain("initialCompany={route.kind === 'new' ? route.company : null}");

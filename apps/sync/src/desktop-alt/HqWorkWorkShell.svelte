@@ -44,6 +44,7 @@
   import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
   import { parseSessionsParam } from './pages/sessions-route-param';
   import { configureSessionStarterCache } from '../components/sessions/session-starter';
+  import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
   import { projectLinksStore } from './lib/project-links-store.svelte';
   import {
     newSessionParam,
@@ -168,6 +169,7 @@
             kind: 'extra',
             page: 'sessions',
             param: newSessionParam(company, link.project, link.channelId),
+            companyUid: row.companyUid ?? company,
           });
         },
         (_link, session) => {
@@ -177,6 +179,7 @@
             kind: 'extra',
             page: 'sessions',
             param: historySessionParam(company, _link.project, session),
+            companyUid: row.companyUid ?? company,
           });
         },
         selectedSessionId,
@@ -264,6 +267,7 @@
     authGeneration = next.generation;
     authAccountId = next.accountId;
     configureSessionStarterCache(next.status === 'active' ? next.accountId : null);
+    setSessionComposerDraftAccount(next.status === 'active' ? next.accountId : null);
     hydration += 1;
     detachNavigation?.();
     detachNavigation = null;
@@ -433,6 +437,7 @@
       authGeneration += 1;
       authAccountId = null;
       configureSessionStarterCache(null);
+      setSessionComposerDraftAccount(null);
       self = null;
       companies = null;
       capabilities = null;

@@ -5,6 +5,7 @@ import {
   loadSessionComposerDraft,
   resetSessionComposerDraftsForTests,
   saveSessionComposerDraft,
+  setSessionComposerDraftAccount,
 } from './session-composer-drafts';
 
 afterEach(() => {
@@ -25,6 +26,28 @@ describe('session composer drafts', () => {
       images: [{ mediaType: 'image/png', base64: 'QQ==', name: 'shot.png' }],
     });
     clearSessionComposerDraft(key);
+    expect(loadSessionComposerDraft(key)).toEqual({ text: '', images: [] });
+  });
+
+  it('namespaces drafts by account and clears them on sign-out or switch', () => {
+    const key = 'sessions:new?draft=shared';
+    setSessionComposerDraftAccount('acct_ada');
+    expect(
+      saveSessionComposerDraft(key, { text: 'ada secret', images: [] }),
+    ).toBe(true);
+    expect(loadSessionComposerDraft(key).text).toBe('ada secret');
+
+    setSessionComposerDraftAccount('acct_bea');
+    expect(loadSessionComposerDraft(key)).toEqual({ text: '', images: [] });
+    expect(saveSessionComposerDraft(key, { text: 'bea draft', images: [] })).toBe(true);
+    expect(loadSessionComposerDraft(key).text).toBe('bea draft');
+
+    setSessionComposerDraftAccount('acct_ada');
+    expect(loadSessionComposerDraft(key)).toEqual({ text: '', images: [] });
+
+    setSessionComposerDraftAccount('acct_bea');
+    expect(saveSessionComposerDraft(key, { text: 'bea again', images: [] })).toBe(true);
+    setSessionComposerDraftAccount(null);
     expect(loadSessionComposerDraft(key)).toEqual({ text: '', images: [] });
   });
 });

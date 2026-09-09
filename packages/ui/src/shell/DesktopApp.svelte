@@ -150,8 +150,10 @@
   import {
     createNavigationEntry,
     createNavigationHistory,
+    destinationCompanyKey,
     destinationFromEmbeddedTarget,
     destinationLabel,
+    extraParamCompanyKey,
     historyNeighbor,
     type NavigationDestination,
     type NavigationEntry,
@@ -2940,13 +2942,7 @@
       case "shared-files":
         return { kind: "shared-files" };
       case "extra":
-        if (extraPageId) {
-          return {
-            kind: "extra",
-            page: extraPageId,
-            param: extraPageParam,
-          };
-        }
+        if (extraPageId) return extraDestination(extraPageId, extraPageParam);
         return { kind: "messages" };
       default:
         if (selectedRow) {
@@ -2981,11 +2977,41 @@
     cancelScrollRestore = null;
   }
 
+  function companyAccess(
+    companyKey: string | null | undefined,
+  ): "ok" | "unknown" | "denied" {
+    const key = companyKey?.trim() ?? "";
+    if (!key) return "ok";
+    if (companies == null) return "unknown";
+    return companies.some((company) => {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      return uid === key || slug === key;
+    })
+      ? "ok"
+      : "denied";
+  }
+
   function companyIsAccessible(companyUid: string | null | undefined): boolean {
-    const uid = companyUid?.trim() ?? "";
-    if (!uid) return true;
-    if (!companies) return true;
-    return companies.some((company) => (company.cloudUid ?? "").trim() === uid);
+    return companyAccess(companyUid) === "ok";
+  }
+
+  function accessOutcome(
+    destination: NavigationDestination,
+    companyKey: string | null | undefined,
+  ): NavigationResolveOutcome | null {
+    const access = companyAccess(companyKey);
+    if (access === "unknown") {
+      return { status: "transient-failure", error: "Directory still loading" };
+    }
+    if (access === "denied") {
+      return {
+        status: "unavailable",
+        destination,
+        reason: DESTINATION_UNAVAILABLE,
+      };
+    }
+    return null;
   }
 
   function rowForDestination(
@@ -3033,41 +3059,29 @@
           reason: `Unknown destination: ${destination.page}`,
         };
       }
+      const extraCompany =
+        destination.companyUid ?? extraParamCompanyKey(destination.param);
+      const extraDenied = accessOutcome(destination, extraCompany);
+      if (extraDenied) return extraDenied;
       return { status: "ready", destination };
     }
-    if (
-      context.companyUid &&
-      !companyIsAccessible(context.companyUid)
-    ) {
-      return {
-        status: "unavailable",
-        destination,
-        reason: DESTINATION_UNAVAILABLE,
-      };
-    }
+    const scopedDenied = accessOutcome(destination, context.companyUid);
+    if (scopedDenied) return scopedDenied;
     if (destination.kind === "channel" || destination.kind === "dm") {
       const row = rowForDestination(destination);
       if (row) {
-        if (!companyIsAccessible(row.companyUid)) {
-          return {
-            status: "unavailable",
-            destination,
-            reason: DESTINATION_UNAVAILABLE,
-          };
-        }
+        const rowDenied = accessOutcome(destination, row.companyUid);
+        if (rowDenied) return rowDenied;
         return { status: "ready", destination };
       }
       return waitForDestinationRow(destination, context);
     }
-    if (
-      destination.kind === "setup-checkout" &&
-      !companyIsAccessible(destination.companyUid)
-    ) {
-      return {
-        status: "unavailable",
+    if (destination.kind === "setup-checkout") {
+      const checkoutDenied = accessOutcome(
         destination,
-        reason: DESTINATION_UNAVAILABLE,
-      };
+        destination.companyUid,
+      );
+      if (checkoutDenied) return checkoutDenied;
     }
     return { status: "ready", destination };
   }
@@ -3087,12 +3101,9 @@
         }
         const row = rowForDestination(destination);
         if (row) {
-          if (!companyIsAccessible(row.companyUid)) {
-            resolve({
-              status: "unavailable",
-              destination,
-              reason: DESTINATION_UNAVAILABLE,
-            });
+          const rowDenied = accessOutcome(destination, row.companyUid);
+          if (rowDenied) {
+            resolve(rowDenied);
             return;
           }
           resolve({ status: "ready", destination });
@@ -3336,10 +3347,20 @@
   });
 
   $effect(() => {
-    void companies;
+    if (companies == null) return;
+    const allowed = new Set<string>();
+    for (const company of companies) {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      if (uid) allowed.add(uid);
+      if (slug) allowed.add(slug);
+    }
+    navigation.filterAccessible(allowed);
     const current = navigationHistory.current();
-    if (!current?.companyUid) return;
-    if (companyIsAccessible(current.companyUid)) return;
+    if (!current) return;
+    const key =
+      current.companyUid ?? destinationCompanyKey(current.destination);
+    if (!key || allowed.has(key)) return;
     if (navigationUnavailable) return;
     navigationUnavailable = {
       destination: current.destination,
@@ -4226,8 +4247,36 @@
     void navigate({ kind: "settings", section });
   }
 
+  function extraDestination(
+    page: string,
+    param: string | null,
+  ): NavigationDestination {
+    const fromParam = extraParamCompanyKey(param);
+    let inherited: string | null = null;
+    if (
+      !fromParam &&
+      page === extraPageId &&
+      param &&
+      param !== "new" &&
+      !param.startsWith("new?")
+    ) {
+      const current = navigationHistory.current();
+      inherited =
+        extraParamCompanyKey(extraPageParam) ??
+        (current?.destination.kind === "extra"
+          ? (current.destination.companyUid ?? null)
+          : null) ??
+        current?.companyUid ??
+        null;
+    }
+    const companyUid = fromParam ?? inherited;
+    return companyUid
+      ? { kind: "extra", page, param, companyUid }
+      : { kind: "extra", page, param };
+  }
+
   function openExtraPage(id: string, param: string | null = null): void {
-    void navigate({ kind: "extra", page: id, param });
+    void navigate(extraDestination(id, param));
   }
 
   function onShellLinkEvent(event: Event): void {
@@ -4688,11 +4737,7 @@
                 ) => {
                   if (!extraPageId) return;
                   void navigate(
-                    {
-                      kind: "extra",
-                      page: extraPageId,
-                      param: next,
-                    },
+                    extraDestination(extraPageId, next),
                     options?.mode ?? "push",
                   );
                 }}

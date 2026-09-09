@@ -13,7 +13,11 @@ it('uses a read-only route and filters the owner cloud twin', () => {
 });
 it('passes exact channel authority only in the project launch route', () => {
   expect(parseSessionsParam(newSessionParam('indigo', 'launch', 'chn_project'))).toEqual({ kind: 'new', company: 'indigo', project: 'launch', channelId: 'chn_project' });
-  expect(newSessionParam('indigo', null, 'chn_project')).toBe('new?company=indigo');
+  const unbound = newSessionParam('indigo', null, 'chn_project');
+  expect(parseSessionsParam(unbound)).toEqual({ kind: 'new', company: 'indigo', project: null });
+  expect(unbound.startsWith('new?company=indigo')).toBe(true);
+  expect(unbound).toContain('draft=');
+  expect(unbound).not.toContain('channel=');
 });
 it('loads all list pages and rejects repeated cursors', async () => {
   invoke.mockResolvedValueOnce({ sessions: [row], nextCursor: 'cursor' }).mockResolvedValueOnce({ sessions: [{ ...row, sessionId: 'shared-2' }], nextCursor: null });

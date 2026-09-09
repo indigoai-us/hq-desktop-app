@@ -7,11 +7,15 @@ import {
   applyNavigationCommit,
   assertSerializableNavigationEntry,
   canonicalDestinationKey,
+  canonicalizeDestination,
   createNavigationEntry,
   createNavigationHistory,
+  destinationCompanyKey,
   destinationLabel,
   destinationsEqual,
   entriesEqual,
+  entryCompanyIsAccessible,
+  extraParamCompanyKey,
   historyNeighbor,
   NAVIGATION_HISTORY_CAP,
   type NavigationDestination,
@@ -222,6 +226,44 @@ describe("destination equality and labels", () => {
     expect(
       destinationLabel({ kind: "extra", page: "sessions", param: "new?draft=1" }),
     ).toBe("New session");
+    expect(extraParamCompanyKey("new?company=indigo&draft=1")).toBe("indigo");
+    expect(
+      extraParamCompanyKey("history?id=h&tool=claude&company=cmp_gone"),
+    ).toBe("cmp_gone");
+    expect(extraParamCompanyKey("ses_live")).toBeNull();
+    expect(
+      destinationCompanyKey({
+        kind: "extra",
+        page: "sessions",
+        param: "new?company=gone",
+      }),
+    ).toBe("gone");
+    expect(
+      canonicalizeDestination({
+        kind: "extra",
+        page: "sessions",
+        param: "new?company=cmp_gone&draft=1",
+      }),
+    ).toEqual({
+      kind: "extra",
+      page: "sessions",
+      param: "new?company=cmp_gone&draft=1",
+      companyUid: "cmp_gone",
+    });
+    const extraGone = createNavigationEntry(
+      {
+        kind: "extra",
+        page: "sessions",
+        param: "new?company=cmp_gone&draft=1",
+      },
+      { accountId: "acct_ada", companyUid: null },
+    );
+    expect(
+      entryCompanyIsAccessible(extraGone, new Set(["cmp_acme"])),
+    ).toBe(false);
+    expect(
+      entryCompanyIsAccessible(extraGone, new Set(["cmp_gone", "gone"])),
+    ).toBe(true);
     expect(
       destinationLabel({ kind: "channel", channelId: "chn_alpha" }),
     ).toBe("Channel");

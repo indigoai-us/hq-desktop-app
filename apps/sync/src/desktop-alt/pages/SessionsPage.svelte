@@ -267,6 +267,8 @@
     // the slower global session catalogs, which briefly rendered a generic
     // blank session after every click or app restart.
     if (initialHistorySession?.id === next) {
+      if (await denyLostCompany(initialHistorySession.company)) return;
+      if (routedId !== next) return;
       tool = initialHistorySession.tool;
       model = null;
       effort = null;
@@ -286,6 +288,8 @@
 
       const appOwned = liveSessionStore.sessions.some((session) => session.sessionId === next);
       if (appOwned) {
+        if (await denyLostCompany(liveSessionStore.companyOf(next))) return;
+        if (routedId !== next) return;
         await liveSessionStore.open(next);
         return;
       }
@@ -294,6 +298,8 @@
     if (routedId !== next) return;
     const providerHistory = sessionsStore.sessions.find((session) => session.id === next);
     if (providerHistory) {
+      if (await denyLostCompany(providerHistory.company)) return;
+      if (routedId !== next) return;
       tool = providerHistory.tool;
       model = null;
       effort = null;
@@ -309,7 +315,55 @@
       actionError = 'This session is no longer available.';
       return;
     }
+    if (await denyLostCompany(liveSessionStore.companyOf(next))) return;
+    if (routedId !== next) return;
     await liveSessionStore.open(next);
+  }
+
+  function sessionCompanyIsAccessible(
+    companyKey: string | null | undefined,
+  ): boolean {
+    const key = companyKey?.trim() ?? '';
+    if (!key) return true;
+    const offered = preflight?.companies;
+    if (!offered) return false;
+    return offered.some(
+      (entry) => entry.slug === key || (entry.cloudUid ?? '').trim() === key,
+    );
+  }
+
+  async function denyLostCompany(
+    companyKey: string | null | undefined,
+  ): Promise<boolean> {
+    const key = companyKey?.trim() ?? '';
+    if (!key) return false;
+    if (!preflight) {
+      try {
+        preflight = await liveSessionStore.preflight();
+      } catch {
+        sessionUnavailable = true;
+        actionError = 'This session is no longer available.';
+        return true;
+      }
+    }
+    if (sessionCompanyIsAccessible(key)) return false;
+    sessionUnavailable = true;
+    actionError = 'This session is no longer available.';
+    return true;
+  }
+
+  async function restoreRoutedSession(next: string): Promise<void> {
+    if (routedId !== next) return;
+    const bound =
+      (initialHistorySession?.id === next ? initialHistorySession.company : null) ||
+      liveSessionStore.companyOf(next);
+    if (await denyLostCompany(bound)) return;
+    if (routedId !== next) return;
+    if (liveSessionStore.isOpen(next)) {
+      liveSessionStore.activate(next);
+      return;
+    }
+    await openRoutedSession(next);
   }
 
   // Open the routed session. Background buffers stay resident while this view
@@ -320,12 +374,11 @@
     routedId = next;
     openedId = next;
     sessionUnavailable = false;
-    if (!next) return;
-    if (liveSessionStore.isOpen(next)) {
-      liveSessionStore.activate(next);
+    if (!next) {
+      if (initialCompany) void denyLostCompany(initialCompany);
       return;
     }
-    void openRoutedSession(next);
+    void restoreRoutedSession(next);
   });
 
   onDestroy(() => {
@@ -1219,6 +1272,15 @@
 <svelte:window onkeydown={onPageKeydown} />
 
 <div class="sessions" data-testid="sessions-page" bind:this={pageEl}>
+  {#if sessionUnavailable}
+    <div
+      class="session-note"
+      data-testid="session-unavailable"
+      role="alert"
+    >
+      This session is no longer available.
+    </div>
+  {:else}
   <SessionsStrip
     {title}
     startedBy={liveSessionStore.context?.startedBy}
@@ -1270,16 +1332,6 @@
         onopenchannel?.(channelId);
       }}
     />
-  {/if}
-
-  {#if sessionUnavailable}
-    <div
-      class="session-note"
-      data-testid="session-unavailable"
-      role="alert"
-    >
-      This session is no longer available.
-    </div>
   {/if}
 
   {#if liveSessionStore.truncated}
@@ -1411,6 +1463,7 @@
       onpermission={choosePermission}
     />
   </div>
+  {/if}
 </div>
 
 <style>

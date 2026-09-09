@@ -279,9 +279,19 @@ describe('badge + extras', () => {
 
 describe('newSessionParam', () => {
   it('encodes company and project as a query the page can parse', () => {
-    expect(newSessionParam('indigo', 'launch')).toBe('new?company=indigo&project=launch');
-    expect(newSessionParam('indigo', null)).toBe('new?company=indigo');
-    expect(newSessionParam('indigo', '  ')).toBe('new?company=indigo');
-    expect(newSessionParam('indigo', 'Launch Q3')).toBe('new?company=indigo&project=Launch+Q3');
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('11111111-1111-4111-8111-111111111111');
+    expect(newSessionParam('indigo', 'launch')).toBe(
+      'new?company=indigo&project=launch&draft=11111111-1111-4111-8111-111111111111',
+    );
+    expect(newSessionParam('indigo', null)).toBe(
+      'new?company=indigo&draft=11111111-1111-4111-8111-111111111111',
+    );
+    expect(newSessionParam('indigo', '  ')).toBe(
+      'new?company=indigo&draft=11111111-1111-4111-8111-111111111111',
+    );
+    expect(newSessionParam('indigo', 'Launch Q3')).toBe(
+      'new?company=indigo&project=Launch+Q3&draft=11111111-1111-4111-8111-111111111111',
+    );
+    vi.restoreAllMocks();
   });
 });

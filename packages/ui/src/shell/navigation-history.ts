@@ -61,7 +61,13 @@ export type NavigationDestination =
   | { kind: "library"; tab: LibraryTab; itemId?: string | null }
   | { kind: "settings"; section?: EmbeddedSettingsSection | null }
   | { kind: "shared-files" }
-  | { kind: "extra"; page: string; param?: string | null }
+  | {
+      kind: "extra";
+      page: string;
+      param?: string | null;
+      /** Membership uid or slug when the extra page is company-scoped. */
+      companyUid?: string | null;
+    }
   | { kind: "setup-checkout"; companyUid: string; checkout?: string | null };
 
 export interface NavigationEntry {
@@ -275,12 +281,16 @@ export function canonicalizeDestination(
         kind: "settings",
         section: asSettingsSection(destination.section),
       };
-    case "extra":
+    case "extra": {
+      const companyUid =
+        trimId(destination.companyUid) ?? extraParamCompanyKey(destination.param);
       return {
         kind: "extra",
         page: requireId(destination.page, "page"),
         param: trimId(destination.param),
+        ...(companyUid ? { companyUid } : {}),
       };
+    }
     case "setup-checkout":
       return {
         kind: "setup-checkout",
@@ -349,7 +359,7 @@ export function canonicalDestinationKey(
     case "settings":
       return `settings:${dest.section ?? ""}`;
     case "extra":
-      return `extra:${dest.page}:${dest.param ?? ""}`;
+      return `extra:${dest.page}:${dest.param ?? ""}:${dest.companyUid ?? ""}`;
     case "setup-checkout":
       return `setup-checkout:${dest.companyUid}:${dest.checkout ?? ""}`;
   }
@@ -438,12 +448,40 @@ export function createNavigationEntry(
 }
 
 /** Keep destinations whose company is still in the signed-in membership. */
+export function extraParamCompanyKey(
+  param: string | null | undefined,
+): string | null {
+  const raw = param?.trim() ?? "";
+  const q = raw.indexOf("?");
+  if (q < 0) return null;
+  try {
+    return trimId(new URLSearchParams(raw.slice(q + 1)).get("company"));
+  } catch {
+    return null;
+  }
+}
+
+export function destinationCompanyKey(
+  destination: NavigationDestination,
+): string | null {
+  if (destination.kind === "setup-checkout") {
+    return trimId(destination.companyUid);
+  }
+  if (destination.kind === "extra") {
+    return (
+      trimId(destination.companyUid) ?? extraParamCompanyKey(destination.param)
+    );
+  }
+  return null;
+}
+
 export function entryCompanyIsAccessible(
   entry: NavigationEntry,
   accessibleCompanyUids: ReadonlySet<string> | null,
 ): boolean {
   if (!accessibleCompanyUids) return true;
-  const uid = trimId(entry.companyUid);
+  const uid =
+    trimId(entry.companyUid) ?? destinationCompanyKey(entry.destination);
   if (!uid) return true;
   return accessibleCompanyUids.has(uid);
 }
@@ -622,12 +660,16 @@ export function destinationFromEmbeddedTarget(
         personUid: target.personUid,
         replyRootEventId: target.replyRootEventId ?? null,
       };
-    case "extra":
+    case "extra": {
+      const companyUid =
+        trimId(target.companyUid) ?? extraParamCompanyKey(target.param ?? null);
       return {
         kind: "extra",
         page: target.page,
         param: target.param ?? null,
+        ...(companyUid ? { companyUid } : {}),
       };
+    }
     case "unsupported":
       return null;
   }

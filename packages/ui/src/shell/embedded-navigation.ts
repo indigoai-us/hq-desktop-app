@@ -54,7 +54,7 @@ export type EmbeddedNavigationTarget =
    * `param` is the page's own opaque selection (for example a record id).
    * Unknown ids surface the shell's navigation error rather than a blank view.
    */
-  | { kind: 'extra'; page: string; param?: string | null }
+  | { kind: 'extra'; page: string; param?: string | null; companyUid?: string | null }
   | { kind: 'unsupported'; route: string; reason: string };
 
 /** Deliver a target only after the mounted DesktopApp has registered its listener. */

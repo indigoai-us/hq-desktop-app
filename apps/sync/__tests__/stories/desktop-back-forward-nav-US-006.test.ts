@@ -10,12 +10,19 @@ import { describe, expect, it } from "vitest";
 
 import { createNavigationController } from "../../../../packages/ui/src/shell/navigation-controller";
 import {
+  canonicalizeDestination,
   createNavigationEntry,
   createNavigationHistory,
   entryCompanyIsAccessible,
   type NavigationDestination,
   type NavigationScrollState,
 } from "../../../../packages/ui/src/shell/navigation-history";
+import {
+  loadSessionComposerDraft,
+  resetSessionComposerDraftsForTests,
+  saveSessionComposerDraft,
+  setSessionComposerDraftAccount,
+} from "../../src/components/sessions/session-composer-drafts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../../../..");
@@ -186,5 +193,109 @@ describe("US-006: Restore scroll, lifecycle, and tenant isolation", () => {
     expect(shell).toContain('data-testid="navigation-unavailable"');
     const page = readRepo("apps/sync/src/desktop-alt/pages/SessionsPage.svelte");
     expect(page).toContain('data-testid="session-unavailable"');
+    expect(page).toContain("sessionCompanyIsAccessible");
+    expect(page).toContain("liveSessionStore.companyOf");
+    expect(page).toContain("denyLostCompany");
+    expect(page).toContain("if (liveSessionStore.isOpen(next))");
+    expect(page).toContain("liveSessionStore.activate(next)");
+  });
+
+  it("Given an extra destination for a company the user can no longer access, when it is restored, then it is unavailable", () => {
+    const allowed = new Set(["cmp_acme"]);
+    const extraGone = canonicalizeDestination({
+      kind: "extra",
+      page: "sessions",
+      param: "new?company=cmp_gone&draft=1",
+    });
+    expect(extraGone).toMatchObject({ companyUid: "cmp_gone" });
+    const hidden = createNavigationEntry(extraGone, {
+      accountId: "acct_ada",
+      companyUid: null,
+    });
+    expect(entryCompanyIsAccessible(hidden, allowed)).toBe(false);
+
+    const applied: Array<{ availability: string; page?: string }> = [];
+    const history = createNavigationHistory();
+    history.push(
+      createNavigationEntry(channelA, {
+        accountId: "acct_ada",
+        companyUid: "cmp_acme",
+      }),
+    );
+    history.push(hidden);
+    history.back();
+    const restoring = createNavigationController({
+      history,
+      getScope: () => ({ accountId: "acct_ada", companyUid: "cmp_gone" }),
+      resolve: (destination, context) => {
+        const company =
+          destination.kind === "extra"
+            ? (destination.companyUid ?? context.companyUid)
+            : context.companyUid;
+        if (company && !allowed.has(company)) {
+          return {
+            status: "unavailable",
+            destination,
+            reason: "This destination is no longer available.",
+          };
+        }
+        return { status: "ready", destination };
+      },
+      apply: (next) => {
+        applied.push({
+          availability: next.availability,
+          page:
+            next.entry.destination.kind === "extra"
+              ? next.entry.destination.page
+              : undefined,
+        });
+      },
+    });
+    const result = restoring.forward();
+    expect(result).toMatchObject({ status: "unavailable", committed: true });
+    expect(applied.at(-1)).toEqual({
+      availability: "unavailable",
+      page: "sessions",
+    });
+
+    restoring.filterAccessible(allowed);
+    expect(
+      restoring.history
+        .snapshot()
+        .entries.some((entry) => entry.destination.kind === "extra"),
+    ).toBe(false);
+
+    const shell = readRepo("packages/ui/src/shell/DesktopApp.svelte");
+    expect(shell).toContain("extraParamCompanyKey");
+    expect(shell).toContain("navigation.filterAccessible(allowed)");
+    expect(shell).toContain("extraDestination(");
+    const host = readRepo("apps/sync/src/desktop-alt/HqWorkWorkShell.svelte");
+    expect(host).toContain("companyUid: row.companyUid ?? company");
+  });
+
+  it("Given unsent drafts, when the account changes, then prior-account drafts are not restorable", () => {
+    resetSessionComposerDraftsForTests();
+    const key = "sessions:new?draft=shared";
+    setSessionComposerDraftAccount("acct_ada");
+    saveSessionComposerDraft(key, { text: "ada secret", images: [] });
+    setSessionComposerDraftAccount("acct_bea");
+    expect(loadSessionComposerDraft(key)).toEqual({ text: "", images: [] });
+    saveSessionComposerDraft(key, { text: "bea draft", images: [] });
+    setSessionComposerDraftAccount("acct_ada");
+    expect(loadSessionComposerDraft(key)).toEqual({ text: "", images: [] });
+    setSessionComposerDraftAccount(null);
+    expect(loadSessionComposerDraft(key)).toEqual({ text: "", images: [] });
+    resetSessionComposerDraftsForTests();
+
+    const host = readRepo("apps/sync/src/desktop-alt/HqWorkWorkShell.svelte");
+    expect(host).toContain("setSessionComposerDraftAccount");
+    expect(host).toMatch(
+      /configureSessionStarterCache\(null\);\s*setSessionComposerDraftAccount\(null\);/,
+    );
+    const drafts = readRepo(
+      "apps/sync/src/components/sessions/session-composer-drafts.ts",
+    );
+    expect(drafts).toContain("function scopedKey");
+    expect(drafts).toContain("drafts.clear()");
   });
 });

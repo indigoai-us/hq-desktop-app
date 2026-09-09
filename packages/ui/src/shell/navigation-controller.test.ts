@@ -295,6 +295,25 @@ describe("navigation controller commit boundary", () => {
     expect(controller.lastCommitted()?.accountId).toBe("acct_bea");
     expect(controller.lastCommitted()?.destination).toEqual({ kind: "messages" });
   });
+
+  it("drops extra destinations whose company left the membership", () => {
+    const { controller } = controllerWith((destination) => ({
+      status: "ready",
+      destination,
+    }));
+    controller.navigate(dest("messages"));
+    controller.navigate({
+      kind: "extra",
+      page: "sessions",
+      param: "new?company=cmp_gone&draft=1",
+    });
+    controller.navigate(dest("channel", "home"));
+    expect(controller.history.snapshot().entries).toHaveLength(3);
+    controller.filterAccessible(new Set(["cmp_acme"]));
+    expect(
+      controller.history.snapshot().entries.map((entry) => entry.destination.kind),
+    ).toEqual(["messages", "channel"]);
+  });
 });
 
 describe("native/host destination conversion", () => {
@@ -312,6 +331,31 @@ describe("native/host destination conversion", () => {
         param: "ses_1",
       }),
     ).toEqual({ kind: "extra", page: "sessions", param: "ses_1" });
+    expect(
+      destinationFromEmbeddedTarget({
+        kind: "extra",
+        page: "sessions",
+        param: "new?company=indigo&draft=1",
+      }),
+    ).toEqual({
+      kind: "extra",
+      page: "sessions",
+      param: "new?company=indigo&draft=1",
+      companyUid: "indigo",
+    });
+    expect(
+      destinationFromEmbeddedTarget({
+        kind: "extra",
+        page: "sessions",
+        param: "ses_1",
+        companyUid: "cmp_acme",
+      }),
+    ).toEqual({
+      kind: "extra",
+      page: "sessions",
+      param: "ses_1",
+      companyUid: "cmp_acme",
+    });
     expect(
       destinationFromEmbeddedTarget({
         kind: "unsupported",
