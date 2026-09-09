@@ -102,7 +102,8 @@
     if (busy || !text || !question) return;
     if (question.kind === "text") {
       onsend?.(text);
-    } else if (question.kind === "choice" && question.options.length === 0) {
+    } else if (question.kind === "choice") {
+      // A typed answer always counts, options or not (the CLI's "Other").
       onanswer?.(question.requestId, question.questionId, [text]);
     }
   }
@@ -192,6 +193,26 @@
             Send
           </button>
         {/if}
+        <form class="answer answer--other" onsubmit={sendText}>
+          <input
+            class="answer-input"
+            type="text"
+            autocomplete="off"
+            aria-label={`Your own answer: ${question.text}`}
+            placeholder="Or type your own answer"
+            data-testid="setup-run-answer"
+            bind:value={answerText}
+            disabled={busy}
+          />
+          <button
+            type="submit"
+            class="launch-btn"
+            data-testid="setup-run-send"
+            disabled={busy || answerText.trim().length === 0}
+          >
+            Send
+          </button>
+        </form>
       {:else if question.kind === "permission"}
         <div class="choices" role="group" aria-label="Your answer">
           <button
@@ -461,6 +482,10 @@
     font-size: var(--text-micro, 11px);
     font-weight: 400;
     color: rgba(255, 255, 255, 0.72);
+  }
+
+  .answer--other {
+    margin-top: 8px;
   }
 
   .answer {

@@ -76,9 +76,38 @@ describe("SetupRunCard", () => {
     expect(question?.textContent).toContain("What do you want help with first?");
     const choices = host.querySelectorAll<HTMLButtonElement>('[data-testid="setup-run-choice"]');
     expect(choices).toHaveLength(2);
-    expect(host.querySelector('[data-testid="setup-run-answer"]')).toBeNull();
     choices[1]!.click();
     expect(onanswer).toHaveBeenCalledWith("req-1", "q1", ["Engineering"]);
+  });
+
+  it("a choice question still takes a typed answer, like the CLI's Other row", async () => {
+    const onanswer = vi.fn();
+    const run = interpretSetupRun(
+      [
+        {
+          kind: "questionRequest",
+          requestId: "req-1",
+          questions: [
+            {
+              id: "q1",
+              text: "What's your name?",
+              options: [{ label: "Type it in" }, { label: "Skip for now" }],
+            },
+          ],
+        },
+      ],
+      "needsYou",
+    );
+    await mountCard({ mode: "live", run, onanswer });
+    const input = host.querySelector<HTMLInputElement>('[data-testid="setup-run-answer"]');
+    expect(input).not.toBeNull();
+    input!.value = "Jacob";
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    const send = host.querySelector<HTMLButtonElement>('[data-testid="setup-run-send"]');
+    expect(send?.disabled).toBe(false);
+    send!.click();
+    expect(onanswer).toHaveBeenCalledWith("req-1", "q1", ["Jacob"]);
   });
 
   it("collects a multi-select choice and sends the picked labels together", async () => {
