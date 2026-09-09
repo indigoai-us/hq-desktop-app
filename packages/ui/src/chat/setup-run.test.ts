@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  parseSetupCard,
   SETUP_RUN_DONE,
   SETUP_RUN_SESSION_KEY,
   SETUP_RUN_STEPS,
@@ -28,11 +29,13 @@ const turnDone: SetupRunEvent = { kind: "turnDone", status: "success", error: nu
 const user = (text: string): SetupRunEvent => ({ kind: "userMessage", text });
 
 describe("step labels", () => {
-  it("are exactly Tools · HQ Cloud · About you · Your first moves, in order", () => {
+  it("are exactly Tools · HQ Cloud · About you · Import · Connect · Your first moves, in order", () => {
     expect(SETUP_RUN_STEPS.map((step) => step.label)).toEqual([
       "Tools",
       "HQ Cloud",
+      "Import",
       "About you",
+      "Connect",
       "Your first moves",
     ]);
   });
@@ -62,11 +65,13 @@ describe("interpretSetupRun — steps", () => {
       turnDone,
     ];
     const state = interpretSetupRun(events, "idle");
-    expect(state.step).toBe(2);
+    expect(state.step).toBe(3);
     expect(state.stepStatuses).toEqual({
       tools: "done",
       cloud: "done",
+      import: "done",
       you: "running",
+      connect: "pending",
       moves: "pending",
     });
   });
@@ -78,7 +83,7 @@ describe("interpretSetupRun — steps", () => {
       say("By the way, the installer also updated one tool earlier."),
     ];
     const state = interpretSetupRun(events);
-    expect(state.step).toBe(2);
+    expect(state.step).toBe(3);
     expect(state.stepStatuses.tools).toBe("done");
     expect(state.stepStatuses.you).toBe("running");
   });
@@ -91,7 +96,7 @@ describe("interpretSetupRun — steps", () => {
     const state = interpretSetupRun(events);
     expect(state.stepStatuses.tools).toBe("done");
     expect(state.stepStatuses.cloud).toBe("done");
-    expect(state.stepStatuses.you).toBe("running");
+    expect(state.stepStatuses.import).toBe("running");
     expect(state.step).toBe(2);
   });
 
@@ -154,6 +159,7 @@ describe("interpretSetupRun — questions", () => {
     const state = interpretSetupRun(events, "needsYou");
     expect(state.question).toEqual({
       kind: "choice",
+      header: "Scope",
       requestId: "req-1",
       questionId: "q1",
       text: "What do you mostly want help with first?",
@@ -246,14 +252,14 @@ describe("interpretSetupRun — finish and stop", () => {
     expect(state.done).toBe(true);
     expect(state.ended).toBe(false);
     expect(state.question).toBeNull();
-    expect(Object.values(state.stepStatuses)).toEqual(["done", "done", "done", "done"]);
+    expect(Object.values(state.stepStatuses)).toEqual(["done", "done", "done", "done", "done", "done"]);
     expect(state.summary).toBe(SETUP_RUN_DONE.summary);
   });
 
   it("finishes on the explicit moves=done marker", () => {
     const state = interpretSetupRun([say("[hq-setup] step=moves status=done")]);
     expect(state.stepStatuses.moves).toBe("done");
-    expect(state.step).toBe(3);
+    expect(state.step).toBe(5);
   });
 
   it("reports a session that exited before finishing as ended, not done", () => {
@@ -296,7 +302,7 @@ describe("resume record", () => {
 
   it("clamps a bad step and rejects garbage", () => {
     window.localStorage.setItem(SETUP_RUN_SESSION_KEY, JSON.stringify({ sessionId: "s", step: 99 }));
-    expect(loadSetupRunRecord()).toEqual({ sessionId: "s", step: 3, status: "running" });
+    expect(loadSetupRunRecord()).toEqual({ sessionId: "s", step: 5, status: "running" });
     window.localStorage.setItem(SETUP_RUN_SESSION_KEY, "{not json");
     expect(loadSetupRunRecord()).toBeNull();
     window.localStorage.setItem(SETUP_RUN_SESSION_KEY, JSON.stringify({ step: 1 }));
@@ -320,9 +326,81 @@ describe("resume record", () => {
     expect(() => clearSetupRunRecord(broken)).not.toThrow();
   });
 
-  it("labels the resume affordance N of 4", () => {
-    expect(setupRunContinueLabel(0)).toBe("Continue setup (1 of 4)");
-    expect(setupRunContinueLabel(2)).toBe("Continue setup (3 of 4)");
-    expect(setupRunContinueLabel(9)).toBe("Continue setup (4 of 4)");
+  it("labels the resume affordance N of 6", () => {
+    expect(setupRunContinueLabel(0)).toBe("Continue setup (1 of 6)");
+    expect(setupRunContinueLabel(2)).toBe("Continue setup (3 of 6)");
+    expect(setupRunContinueLabel(9)).toBe("Continue setup (6 of 6)");
+  });
+});
+
+describe("guided cards", () => {
+  const say = (text: string) => ({ kind: "assistantMessage", text }) as const;
+  const ask = (requestId: string, header: string, options: string[], multiSelect = false) =>
+    ({
+      kind: "questionRequest",
+      requestId,
+      questions: [{ id: "q1", header, text: `${header}?`, options: options.map((label) => ({ label })), multiSelect }],
+    }) as const;
+
+  it("parses the three card kinds and rejects malformed ones", () => {
+    expect(parseSetupCard('{"kind":"found","items":[{"label":"Claude Code sessions","count":12},{"label":"Plans","detail":"3 files"}]}')).toEqual({
+      kind: "found",
+      title: undefined,
+      items: [
+        { label: "Claude Code sessions", count: 12, detail: null },
+        { label: "Plans", count: null, detail: "3 files" },
+      ],
+    });
+    expect(parseSetupCard('{"kind":"integrations","items":[{"name":"Linear","auth":"oauth"},{"name":"GitHub","status":"connected"}]}')).toMatchObject({
+      kind: "integrations",
+      items: [
+        { name: "Linear", auth: "oauth", status: "available" },
+        { name: "GitHub", status: "connected" },
+      ],
+    });
+    expect(parseSetupCard('{"kind":"secret","name":"DATABASE_URL","label":"Postgres","scope":"company","company":"hqtestco"}')).toEqual({
+      kind: "secret",
+      name: "DATABASE_URL",
+      label: "Postgres",
+      hint: null,
+      scope: "company",
+      company: "hqtestco",
+    });
+    expect(parseSetupCard('{"kind":"secret","name":"--token"}')).toBeNull();
+    expect(parseSetupCard('{"kind":"integrations","items":[]}')).toBeNull();
+    expect(parseSetupCard("not json")).toBeNull();
+    expect(parseSetupCard('{"kind":"other"}')).toBeNull();
+  });
+
+  it("a card marker rides with the next question and carries its header", () => {
+    const state = interpretSetupRun(
+      [
+        say('[hq-setup] step=import status=running\nQuick check for prior work.\n[hq-setup] card={"kind":"found","items":[{"label":"Claude Code sessions","count":12}]}'),
+        ask("req-1", "Import", ["Import now", "Preview first", "Skip"]),
+      ],
+      "needsYou",
+    );
+    expect(state.step).toBe(2);
+    expect(state.stepStatuses.import).toBe("running");
+    expect(state.question).toMatchObject({ kind: "choice", header: "Import", requestId: "req-1" });
+    expect(state.card).toMatchObject({ kind: "found", items: [{ label: "Claude Code sessions", count: 12 }] });
+    // The marker line is never the status sentence.
+    expect(state.statusLine).toBe("Quick check for prior work.");
+  });
+
+  it("the card clears once the question is answered and work resumes", () => {
+    const events = [
+      say('[hq-setup] card={"kind":"secret","name":"DATABASE_URL"}'),
+      ask("req-1", "Secret", ["Done", "Skip"]),
+    ];
+    expect(interpretSetupRun(events, "needsYou").card).toMatchObject({ kind: "secret" });
+    expect(interpretSetupRun(events, "needsYou", ["req-1"]).card).toBeNull();
+    expect(interpretSetupRun([...events, { kind: "toolCall", id: "t1" }], "working").card).toBeNull();
+    expect(interpretSetupRun([...events, { kind: "userMessage", text: "skip" }], "working").card).toBeNull();
+  });
+
+  it("connect and import steps are recognised from prose too", () => {
+    expect(interpretSetupRun([say("Looks like there may be some prior Claude usage on disk. I can mine past artifacts.")]).step).toBe(2);
+    expect(interpretSetupRun([say("For each system of record with a credential, let's connect it now.")]).step).toBe(4);
   });
 });

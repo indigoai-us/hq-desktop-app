@@ -236,4 +236,20 @@ describe('createSetupRunApi', () => {
     });
     expect(liveSessionStore.resolvedRequestIdsOf(SETUP)).toEqual(['perm-1', 'perm-2']);
   });
+
+  it('storeSecret hands the value to the Rust side only, never to the session', async () => {
+    mockBackend({ list: [summary(SETUP)], preflight: preflight(), commands: ['setup'] });
+    const api = createSetupRunApi();
+    await api.attach(SETUP);
+    await api.storeSecret!({ kind: 'secret', name: 'DATABASE_URL', scope: 'company', company: 'hqtestco' }, 'postgres://x');
+    expect(calls('setup_store_secret')[0]).toEqual({
+      name: 'DATABASE_URL',
+      scope: 'company',
+      company: 'hqtestco',
+      value: 'postgres://x',
+    });
+    expect(calls('agent_session_send')).toHaveLength(0);
+    await api.storeSecret!({ kind: 'secret', name: 'TOKEN', scope: 'personal' }, 'abc');
+    expect(calls('setup_store_secret')[1]).toMatchObject({ scope: 'personal', company: null });
+  });
 });

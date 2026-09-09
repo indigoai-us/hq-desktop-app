@@ -18,8 +18,10 @@
     SETUP_RUN_STEPS,
     SETUP_RUN_STOPPED,
     setupRunContinueLabel,
+    type SetupCard,
     type SetupRunPermissionDecision,
     type SetupRunState,
+    type SetupSecretCard,
   } from "./setup-run";
 
   /** Which face the card shows. `live` reads the rest from `state`. */
@@ -42,6 +44,12 @@
     onshowdetails?: () => void;
     oncontinue?: () => void;
     onrunagain?: () => void;
+    /**
+     * Store a credential from the secret card into the vault. Resolves when
+     * stored; rejects with a plain message otherwise. Without it the secret
+     * card is not offered and the plain question shows.
+     */
+    onstoresecret?: (card: SetupSecretCard, value: string) => Promise<void> | void;
   }
 
   let {
@@ -56,7 +64,17 @@
     onshowdetails,
     oncontinue,
     onrunagain,
+    onstoresecret,
   }: Props = $props();
+
+  /** The guided component paired with the open question, when the host can serve it. */
+  const card = $derived.by((): SetupCard | null => {
+    if (!question || question.kind !== "choice") return null;
+    const next = run?.card ?? null;
+    if (!next) return null;
+    if (next.kind === "secret" && !onstoresecret) return null;
+    return next;
+  });
 
   const done = $derived(mode === "done" || (mode === "live" && Boolean(run?.done)));
   const stopped = $derived(mode === "stopped" || (mode === "live" && Boolean(run?.ended)));
@@ -94,6 +112,64 @@
   function sendPicked(): void {
     if (busy || !question || question.kind !== "choice" || picked.length === 0) return;
     onanswer?.(question.requestId, question.questionId, picked);
+  }
+
+  // --- secret card -----------------------------------------------------------
+  let secretValue = $state("");
+  let secretBusy = $state(false);
+  let secretError = $state<string | null>(null);
+  $effect(() => {
+    void question?.text;
+    secretValue = "";
+    secretError = null;
+  });
+
+  /** The option that means "it's in the vault", by label, else a literal Done. */
+  function doneLabel(): string {
+    if (!question || question.kind !== "choice") return "Done";
+    const hit = question.options.find((option) => /^(done|stored|saved|connected)$/i.test(option.label.trim()));
+    return hit?.label ?? "Done";
+  }
+
+  /** Options the card does not already stand for (e.g. Skip) stay as quiet buttons. */
+  const spareOptions = $derived.by(() => {
+    if (!question || question.kind !== "choice" || !card) return [];
+    if (card.kind === "secret") {
+      return question.options.filter((option) => !/^(done|stored|saved|connected)$/i.test(option.label.trim()));
+    }
+    if (card.kind === "integrations") {
+      const names = new Set(card.items.map((item) => item.name.toLowerCase()));
+      return question.options.filter((option) => !names.has(option.label.trim().toLowerCase()));
+    }
+    return [];
+  });
+
+  async function storeSecret(event?: Event): Promise<void> {
+    event?.preventDefault();
+    const value = secretValue;
+    if (busy || secretBusy || !card || card.kind !== "secret" || !question || question.kind !== "choice") return;
+    if (!value.trim()) return;
+    secretBusy = true;
+    secretError = null;
+    try {
+      await onstoresecret?.(card, value);
+      secretValue = "";
+      onanswer?.(question.requestId, question.questionId, [doneLabel()]);
+    } catch (err) {
+      secretError = err instanceof Error ? err.message : String(err);
+    } finally {
+      secretBusy = false;
+    }
+  }
+
+  // --- integrations card -----------------------------------------------------
+  function toggleIntegration(name: string): void {
+    if (busy || !question || question.kind !== "choice") return;
+    if (!question.multiSelect) {
+      onanswer?.(question.requestId, question.questionId, [name]);
+      return;
+    }
+    picked = picked.includes(name) ? picked.filter((entry) => entry !== name) : [...picked, name];
   }
 
   function sendText(event?: Event): void {
@@ -163,7 +239,118 @@
   {#if question}
     <div class="question" data-testid="setup-run-question" data-question-kind={question.kind}>
       <p class="question-text">{question.text}</p>
-      {#if question.kind === "choice" && question.options.length > 0}
+      {#if card?.kind === "found" && card.items.length > 0}
+        <div class="found" data-testid="setup-run-found">
+          <span class="found-title">{card.title || "Here’s what I found"}</span>
+          <ul class="found-list">
+            {#each card.items as item (item.label)}
+              <li class="found-item">
+                {#if item.count !== null && item.count !== undefined}
+                  <span class="found-count">{item.count}</span>
+                {/if}
+                <span class="found-label">{item.label}</span>
+                {#if item.detail}<span class="found-detail">{item.detail}</span>{/if}
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+      {#if card?.kind === "secret" && question.kind === "choice"}
+        <form class="secret" data-testid="setup-run-secret" onsubmit={storeSecret}>
+          <label class="secret-label" for="setup-run-secret-input">
+            {card.label || card.name}
+            <span class="secret-name">{card.name} · {card.scope === "company" ? (card.company ? `${card.company} vault` : "company vault") : "your personal vault"}</span>
+          </label>
+          <div class="secret-row">
+            <input
+              id="setup-run-secret-input"
+              class="answer-input"
+              type="password"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="Paste it here"
+              data-testid="setup-run-secret-input"
+              bind:value={secretValue}
+              disabled={busy || secretBusy}
+            />
+            <button
+              type="submit"
+              class="launch-btn primary"
+              data-testid="setup-run-secret-store"
+              disabled={busy || secretBusy || secretValue.trim().length === 0}
+              aria-busy={secretBusy}
+            >
+              {secretBusy ? "Storing…" : "Store securely"}
+            </button>
+          </div>
+          <p class="secret-hint">
+            {card.hint || "Stored in your HQ vault on save. It never goes into the chat."}
+          </p>
+          {#if secretError}
+            <p class="run-error" role="alert" data-testid="setup-run-secret-error">{secretError}</p>
+          {/if}
+          {#if spareOptions.length > 0}
+            <div class="choices" role="group" aria-label="Other choices">
+              {#each spareOptions as option (option.label)}
+                <button type="button" class="quiet-btn" data-testid="setup-run-choice" disabled={busy || secretBusy} onclick={() => choose(option.label)}>
+                  {option.label}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </form>
+      {:else if card?.kind === "integrations" && question.kind === "choice"}
+        <div class="apps" role="group" aria-label="Apps to connect" data-testid="setup-run-integrations">
+          {#each card.items as item (item.name)}
+            {@const connected = item.status === "connected"}
+            {@const on = picked.includes(item.name)}
+            <button
+              type="button"
+              class="app"
+              class:app--connected={connected}
+              class:app--picked={on}
+              data-testid="setup-run-app"
+              data-app-status={connected ? "connected" : on ? "picked" : "available"}
+              aria-pressed={connected ? undefined : on}
+              disabled={busy || connected}
+              onclick={() => toggleIntegration(item.name)}
+            >
+              <span class="app-mark" aria-hidden="true">
+                {#if connected || on}
+                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
+                  </svg>
+                {/if}
+              </span>
+              <span class="app-text">
+                <span class="app-name">{item.name}</span>
+                <span class="app-desc">
+                  {#if connected}Connected{:else if item.description}{item.description}{:else if item.auth === "oauth"}Sign in with your account{:else if item.auth === "key"}Uses an API key{:else}Ready to connect{/if}
+                </span>
+              </span>
+            </button>
+          {/each}
+        </div>
+        <div class="choices" role="group" aria-label="Your answer">
+          {#if question.multiSelect}
+            <button
+              type="button"
+              class="launch-btn primary"
+              data-testid="setup-run-send-choices"
+              disabled={busy || picked.length === 0}
+              onclick={sendPicked}
+            >
+              {picked.length > 1 ? `Connect ${picked.length} apps` : "Connect"}
+            </button>
+          {/if}
+          {#each spareOptions as option (option.label)}
+            <button type="button" class="quiet-btn" data-testid="setup-run-choice" disabled={busy} onclick={() => choose(option.label)}>
+              {option.label}
+            </button>
+          {/each}
+        </div>
+      {:else if question.kind === "choice" && question.options.length > 0}
         <div class="choices" role="group" aria-label="Your answer">
           {#each question.options as option (option.label)}
             <button
@@ -441,6 +628,134 @@
     flex-direction: column;
     gap: var(--space-2, 8px);
     padding-top: 2px;
+  }
+
+  .found {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+  }
+  .found-title {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.7);
+  }
+  .found-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .found-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 13px;
+  }
+  .found-count {
+    min-width: 2ch;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+  .found-detail {
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 12px;
+  }
+
+  .secret {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .secret-label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 13px;
+    font-weight: 550;
+  }
+  .secret-name {
+    font-weight: 400;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.62);
+  }
+  .secret-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .secret-hint {
+    margin: 0;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.62);
+  }
+
+  .apps {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+  }
+  .app {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.06);
+    cursor: pointer;
+  }
+  .app:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.12);
+  }
+  .app--picked {
+    border-color: rgba(255, 255, 255, 0.85);
+    background: rgba(255, 255, 255, 0.16);
+  }
+  .app--connected {
+    cursor: default;
+    opacity: 0.85;
+  }
+  .app-mark {
+    display: inline-flex;
+    width: 18px;
+    height: 18px;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    margin-top: 1px;
+  }
+  .app--picked .app-mark,
+  .app--connected .app-mark {
+    border-color: transparent;
+    background: var(--accent, #22c55e);
+    color: #fff;
+  }
+  .app-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .app-name {
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .app-desc {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.66);
   }
 
   .question-text {

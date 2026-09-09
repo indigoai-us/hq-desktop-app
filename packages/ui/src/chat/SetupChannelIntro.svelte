@@ -39,6 +39,7 @@
     SETUP_ADVANCED_TOOLS_NOTE,
     SETUP_DEEP_LINK_PROMPT,
     SETUP_HOSTED_AGENT_NOTE,
+    SETUP_GUIDED_PROMPT,
     SETUP_LAUNCH_COMMANDS,
     SETUP_RESOURCES,
     SETUP_RUN_LABEL,
@@ -63,6 +64,7 @@
     type SetupRunApi,
     type SetupRunPermissionDecision,
     type SetupRunSnapshot,
+    type SetupSecretCard,
   } from "./setup-run";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
@@ -331,7 +333,7 @@
         return;
       }
       runMode = "starting";
-      const sessionId = await setupRun.start(SETUP_LAUNCH_COMMANDS.claude.prompt);
+      const sessionId = await setupRun.start(SETUP_GUIDED_PROMPT);
       runFinished = false;
       runSessionId = sessionId;
       runSnapshot = { sessionId, events: [], phase: "starting" };
@@ -387,6 +389,12 @@
     } finally {
       runBusy = false;
     }
+  }
+
+  /** Secret card → vault, never the session. Errors surface in the card. */
+  async function storeSecret(card: SetupSecretCard, value: string): Promise<void> {
+    if (!setupRun?.storeSecret) throw new Error("This host cannot store secrets.");
+    await setupRun.storeSecret(card, value);
   }
 
   function answerChoice(requestId: string, questionId: string, values: string[]): void {
@@ -497,6 +505,7 @@
           onshowdetails={onopensessiondetails && runSessionId ? showRunDetails : undefined}
           oncontinue={() => void continueRun()}
           onrunagain={runAgain}
+          onstoresecret={setupRun?.storeSecret ? storeSecret : undefined}
         />
       </div>
     {:else}

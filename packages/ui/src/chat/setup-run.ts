@@ -21,7 +21,7 @@
 // Steps
 // ---------------------------------------------------------------------------
 
-export type SetupRunStepId = "tools" | "cloud" | "you" | "moves";
+export type SetupRunStepId = "tools" | "cloud" | "import" | "you" | "connect" | "moves";
 
 export interface SetupRunStep {
   id: SetupRunStepId;
@@ -32,7 +32,9 @@ export interface SetupRunStep {
 export const SETUP_RUN_STEPS: readonly SetupRunStep[] = [
   { id: "tools", label: "Tools" },
   { id: "cloud", label: "HQ Cloud" },
+  { id: "import", label: "Import" },
   { id: "you", label: "About you" },
+  { id: "connect", label: "Connect" },
   { id: "moves", label: "Your first moves" },
 ];
 
@@ -91,6 +93,8 @@ export type SetupRunQuestion =
       kind: "choice";
       requestId: string;
       questionId: string;
+      /** The skill's short header ("Import", "Integrations", "Secret"), when given. */
+      header?: string;
       text: string;
       options: SetupRunQuestionOption[];
       multiSelect: boolean;
@@ -109,6 +113,8 @@ export interface SetupRunState {
   /** One plain sentence under the current step; empty while nothing has been said. */
   statusLine: string;
   question: SetupRunQuestion | null;
+  /** The guided component the skill asked for alongside the open question, if any. */
+  card: SetupCard | null;
   /** Setup finished: the agent said so, or the last step was marked done. */
   done: boolean;
   /** The session stopped (exited / errored / ended phase) before finishing. */
@@ -117,7 +123,7 @@ export interface SetupRunState {
   summary: string;
 }
 
-const STEP_INDEX: Record<SetupRunStepId, number> = { tools: 0, cloud: 1, you: 2, moves: 3 };
+const STEP_INDEX: Record<SetupRunStepId, number> = { tools: 0, cloud: 1, import: 2, you: 3, connect: 4, moves: 5 };
 
 /**
  * Prose → step. Ordered from the LAST step to the first so a sentence that
@@ -127,11 +133,13 @@ const STEP_INDEX: Record<SetupRunStepId, number> = { tools: 0, cloud: 1, you: 2,
  */
 const STEP_PATTERNS: readonly { id: SetupRunStepId; pattern: RegExp }[] = [
   { id: "moves", pattern: /welcome page|first moves?|first move:|you're all set|you are all set|handoff habit/i },
+  { id: "connect", pattern: /connect (an? |your )?(app|system|integration)|systems? of record|hq integrations|api key|credential/i },
   {
     id: "you",
     pattern:
       /get to know you|about you|what'?s your name|what do you do|your goals for using hq|biggest challenges|systems of record|who you are/i,
   },
+  { id: "import", pattern: /prior (ai|claude) (work|footprint|usage|artifacts)|import(ing)? (your|prior|existing)|import-context|import-claude|mine (your )?past/i },
   {
     id: "cloud",
     pattern: /hq cloud|signed in as|sign in to hq cloud|synced|sync(ing)? (is|has|your)|claim(ed|ing)? invites?|membership/i,
@@ -144,7 +152,14 @@ const STEP_PATTERNS: readonly { id: SetupRunStepId; pattern: RegExp }[] = [
 ];
 
 /** `[hq-setup] step=<id> status=<running|done>` — the explicit marker the skill may emit. */
-const MARKER = /\[hq-setup\]\s+step=(tools|cloud|you|moves)(?:\s+status=(running|done))?/gi;
+const MARKER = /\[hq-setup\]\s+step=(tools|cloud|you|import|connect|moves)(?:\s+status=(running|done))?/gi;
+
+/**
+ * `[hq-setup] card=<json>` — a guided component the skill asks the desktop
+ * to render for its next question. Everything after `card=` to the end of
+ * the line is the JSON object (the skill writes it on its own line).
+ */
+const CARD_MARKER = /\[hq-setup\]\s+card=(\{.*\})\s*$/gim;
 
 const DONE_PATTERNS =
   /you'?re (all )?set\b|you are (all )?set\b|setup (is )?(done|complete|finished)|all set — here'?s your welcome page|hq is (now )?set up|setup complete/i;
@@ -176,7 +191,109 @@ export function setupRunContinueLabel(step: number): string {
 }
 
 function emptyStatuses(): Record<SetupRunStepId, SetupRunStepStatus> {
-  return { tools: "pending", cloud: "pending", you: "pending", moves: "pending" };
+  return { tools: "pending", cloud: "pending", import: "pending", you: "pending", connect: "pending", moves: "pending" };
+}
+
+// ---------------------------------------------------------------------------
+// Guided cards — what the skill asks the desktop to draw for a question
+// ---------------------------------------------------------------------------
+
+/** "Here's what I found": counts the import scan turned up, shown with the Import question. */
+export interface SetupFoundCard {
+  kind: "found";
+  title?: string;
+  items: { label: string; count?: number | null; detail?: string | null }[];
+}
+
+export type SetupIntegrationAuth = "oauth" | "key" | "none";
+
+/** Connectable apps, one tile each; the paired question is multi-select by app name. */
+export interface SetupIntegrationsCard {
+  kind: "integrations";
+  items: {
+    /** Catalog slug / entry id — informational; answers go back by `name`. */
+    id?: string;
+    name: string;
+    description?: string | null;
+    auth?: SetupIntegrationAuth;
+    status?: "connected" | "available";
+  }[];
+}
+
+/**
+ * One credential to store. The desktop writes it straight into the vault
+ * (`hq secrets set --from-stdin`) and answers the paired question "Done";
+ * the value never enters the session.
+ */
+export interface SetupSecretCard {
+  kind: "secret";
+  /** Vault secret name, e.g. `DATABASE_URL`. */
+  name: string;
+  /** Plain label, e.g. "Postgres connection string". */
+  label?: string | null;
+  hint?: string | null;
+  scope?: "personal" | "company";
+  company?: string | null;
+}
+
+export type SetupCard = SetupFoundCard | SetupIntegrationsCard | SetupSecretCard;
+
+/** Parse one `card=` payload; anything malformed is ignored (the plain question still shows). */
+export function parseSetupCard(raw: string): SetupCard | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const card = value as Record<string, unknown>;
+  const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+  switch (card.kind) {
+    case "found": {
+      const items = Array.isArray(card.items) ? card.items : [];
+      const parsed = items
+        .map((item) => {
+          const entry = (item ?? {}) as Record<string, unknown>;
+          const label = str(entry.label);
+          if (!label) return null;
+          const count = typeof entry.count === "number" && Number.isFinite(entry.count) ? entry.count : null;
+          return { label, count, detail: str(entry.detail) || null };
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null);
+      return { kind: "found", title: str(card.title) || undefined, items: parsed };
+    }
+    case "integrations": {
+      const items = Array.isArray(card.items) ? card.items : [];
+      const parsed = items
+        .map((item) => {
+          const entry = (item ?? {}) as Record<string, unknown>;
+          const name = str(entry.name);
+          if (!name) return null;
+          const auth = entry.auth === "oauth" || entry.auth === "key" || entry.auth === "none" ? entry.auth : undefined;
+          const status = entry.status === "connected" ? "connected" : "available";
+          return { id: str(entry.id) || undefined, name, description: str(entry.description) || null, auth, status } as const;
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null);
+      if (parsed.length === 0) return null;
+      return { kind: "integrations", items: parsed };
+    }
+    case "secret": {
+      const name = str(card.name);
+      if (!/^[A-Za-z][A-Za-z0-9_./-]{0,127}$/.test(name)) return null;
+      const scope = card.scope === "company" ? "company" : "personal";
+      return {
+        kind: "secret",
+        name,
+        label: str(card.label) || null,
+        hint: str(card.hint) || null,
+        scope,
+        company: str(card.company) || null,
+      };
+    }
+    default:
+      return null;
+  }
 }
 
 /** Strip markdown emphasis, code ticks, headings, and bullets from one line. */
@@ -252,6 +369,8 @@ export function interpretSetupRun(
     | { kind: "permission"; requestId: string }
     | null = null;
   let lastAssistant: string | null = null;
+  /** The latest card marker; it rides with the next request and clears once work resumes. */
+  let card: SetupCard | null = null;
   /** Did anything happen after the last assistant message? A user turn clears a text question. */
   let assistantIsLatest = false;
   /** The turn ended after the latest assistant words — the agent is waiting on the person. */
@@ -286,6 +405,11 @@ export function interpretSetupRun(
         assistantIsLatest = true;
         turnDoneSinceAssistant = false;
         pendingRequest = null;
+
+        for (const match of text.matchAll(CARD_MARKER)) {
+          const parsed = parseSetupCard(match[1]!);
+          if (parsed) card = parsed;
+        }
 
         let marked = false;
         for (const match of text.matchAll(MARKER)) {
@@ -326,12 +450,14 @@ export function interpretSetupRun(
       case "userMessage":
         assistantIsLatest = false;
         pendingRequest = null;
+        card = null;
         break;
       case "toolCall":
       case "toolResult":
         // Work resumed: whatever was asked has been answered.
         assistantIsLatest = false;
         pendingRequest = null;
+        card = null;
         if (!touched) advanceTo("tools", "running");
         break;
       case "turnDone": {
@@ -369,6 +495,7 @@ export function interpretSetupRun(
           kind: "choice",
           requestId: pendingRequest.requestId,
           questionId: String(first.id ?? ""),
+          header: String(first.header ?? "").trim() || undefined,
           text: plainLine(String(first.text ?? first.header ?? "")),
           options: first.options.map((option) => ({
             label: String(option.label ?? ""),
@@ -400,11 +527,16 @@ export function interpretSetupRun(
     }
   }
 
+  // A card only means something while the agent is waiting on the person;
+  // an answered secret / import card must not linger over the next step.
+  const cardShown = !done && !ended && question !== null && question.kind !== "permission" ? card : null;
+
   return {
     step,
     stepStatuses: statuses,
     statusLine: done ? SETUP_RUN_DONE.summary : statusLine,
     question,
+    card: cardShown,
     done,
     ended,
     summary: done ? SETUP_RUN_DONE.summary : "",
@@ -517,4 +649,11 @@ export interface SetupRunApi {
   respondPermission(sessionId: string, requestId: string, decision: SetupRunPermissionDecision): Promise<void>;
   /** Send a plain user turn (a free-text answer). */
   send(sessionId: string, text: string): Promise<void>;
+  /**
+   * Store a credential the secret card collected, straight into the vault.
+   * The value goes from the field to `hq secrets set --from-stdin` and is
+   * never sent to the session. Optional: hosts without it show the plain
+   * question instead of the card.
+   */
+  storeSecret?(card: SetupSecretCard, value: string): Promise<void>;
 }

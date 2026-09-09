@@ -922,7 +922,8 @@ describe('company / project start-work — the first send orients the session', 
     );
     const fn = PAGE.slice(PAGE.indexOf('async function handleSend('));
     const body = fn.slice(0, fn.indexOf('\n  }\n'));
-    expect(body).toContain('planFirstSend(wire, { company, project }, startworkEnabled)');
+    // A setup chat is never oriented, so the page passes the effective flag.
+    expect(body).toContain('planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)');
     const planAt = body.indexOf('const first = planFirstSend(');
     const wordsAt = body.indexOf('started = await liveSessionStore.startAndSend(');
     const routeAt = body.indexOf('onopensession?.(started);', wordsAt);

@@ -156,7 +156,7 @@ describe("SetupChannelIntro native setup run", () => {
     await clickRunSetup();
 
     expect(api.preflight).toHaveBeenCalledOnce();
-    expect(api.start).toHaveBeenCalledWith("/setup");
+    expect(api.start).toHaveBeenCalledWith("/setup --guided");
     expect(onopensessions).not.toHaveBeenCalled();
     expect(onsetupstarted).not.toHaveBeenCalled();
     expect(q('[data-testid="setup-run-card"]')?.dataset.setupRunMode).toBe("live");
@@ -246,7 +246,7 @@ describe("SetupChannelIntro native setup run", () => {
     expect(q('[data-testid="setup-run-done-title"]')?.textContent).toBe("You’re set up");
     expect(onsetupfinished).toHaveBeenCalledOnce();
     expect(onsetupstarted).not.toHaveBeenCalled();
-    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 3, status: "done" });
+    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 5, status: "done" });
     api.emit("sess-1", { kind: "exited", code: 0 }, "ended");
     await settle();
     expect(onsetupfinished).toHaveBeenCalledOnce();
@@ -362,11 +362,11 @@ describe("SetupChannelIntro remembers the setup outcome", () => {
 });
 
 describe("SetupChannelIntro before the first click", () => {
-  it("shows the four setup steps under Run Setup so the plan is visible up front", async () => {
+  it("shows the six setup steps under Run Setup so the plan is visible up front", async () => {
     await mountIntro({ setupRun: fakeSetupRun() });
     const preview = q('[data-testid="setup-steps-preview"]');
     expect(preview).not.toBeNull();
-    expect(preview?.querySelectorAll("li").length).toBe(4);
+    expect(preview?.querySelectorAll("li").length).toBe(6);
     expect(preview?.textContent).toContain("HQ Cloud");
     expect(q('[data-testid="setup-run"]')).not.toBeNull();
   });

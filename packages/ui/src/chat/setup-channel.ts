@@ -495,3 +495,11 @@ export function withSetupPin(
   if (dismissed) return pins.filter((id) => id !== SETUP_ROW_ID);
   return pins.includes(SETUP_ROW_ID) ? pins.slice() : [SETUP_ROW_ID, ...pins];
 }
+
+/**
+ * What the #welcome native run sends. `--guided` tells the /setup skill it is
+ * driving the desktop card: emit step markers and the guided cards (found /
+ * integrations / secret) instead of the terminal-only flows (e.g. a one-time
+ * secret link). Terminal launches keep the plain prompt above.
+ */
+export const SETUP_GUIDED_PROMPT = "/setup --guided";

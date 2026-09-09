@@ -117,7 +117,7 @@ describe("DesktopApp native setup run wiring", () => {
     expect(button?.textContent).toContain("Run Setup");
     button!.click();
     await settle();
-    expect(api.start).toHaveBeenCalledWith("/setup");
+    expect(api.start).toHaveBeenCalledWith("/setup --guided");
     expect(setupParam).not.toHaveBeenCalled();
     expect(host.querySelector('[data-testid="extra-page-probe"]')).toBeNull();
     expect(host.querySelector('[data-testid="setup-run-card"]')).toBeTruthy();

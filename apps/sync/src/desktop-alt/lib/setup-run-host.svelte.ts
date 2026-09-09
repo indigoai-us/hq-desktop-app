@@ -11,7 +11,8 @@
 // a person who opens "Show details" and then browses another session on the
 // Sessions page does not have the card start narrating that one instead.
 
-import type { SetupRunAnswer, SetupRunApi, SetupRunPermissionDecision, SetupRunReadiness, SetupRunSnapshot } from '@hq/ui';
+import type { SetupRunAnswer, SetupRunApi, SetupRunPermissionDecision, SetupRunReadiness, SetupRunSnapshot, SetupSecretCard } from '@hq/ui';
+import { invoke } from '@tauri-apps/api/core';
 import {
   liveSessionStore,
   type Preflight,
@@ -38,6 +39,8 @@ export function setupRunTool(preflight: Preflight): SessionTool | null {
 export interface SetupRunHostOptions {
   /** Injected for tests; defaults to the singleton store. */
   store?: typeof liveSessionStore;
+  /** Injected for tests; defaults to Tauri's invoke. */
+  invoke?: typeof invoke;
 }
 
 export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunApi {
@@ -135,5 +138,18 @@ export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunAp
     await store.send(text);
   }
 
-  return { preflight, start, attach, subscribe, answerQuestion, respondPermission, send };
+  /**
+   * The secret card's value goes straight to `hq secrets set --from-stdin`
+   * via the Rust side. It is never sent to the session or logged.
+   */
+  async function storeSecret(card: SetupSecretCard, value: string): Promise<void> {
+    await (options.invoke ?? invoke)('setup_store_secret', {
+      name: card.name,
+      scope: card.scope ?? 'personal',
+      company: card.scope === 'company' ? (card.company ?? null) : null,
+      value,
+    });
+  }
+
+  return { preflight, start, attach, subscribe, answerQuestion, respondPermission, send, storeSecret };
 }
