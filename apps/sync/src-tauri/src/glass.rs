@@ -233,7 +233,9 @@ pub fn window_material_capability() -> &'static str {
     {
         use objc2::runtime::AnyClass;
         let glass = AnyClass::get(c"NSGlassEffectView").is_some();
-        material_capability_from(glass, true)
+        let material = material_capability_from(glass, true);
+        crate::util::logfile::log("ui", &format!("liquid-glass: window material reported to UI = {material}"));
+        material
     }
     #[cfg(not(target_os = "macos"))]
     {
