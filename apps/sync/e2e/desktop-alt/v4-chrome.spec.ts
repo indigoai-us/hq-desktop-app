@@ -145,6 +145,28 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(desktopApp).not.toContain('canGoBack=');
   });
 
+  it('shared-shell title bar places Back/Forward immediately after the day-date', () => {
+    const sharedTitleBar = readRepoFile('../../packages/ui/src/home/V4TitleBar.svelte');
+    const sharedShell = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
+    const dateNeedle = 'data-testid="titlebar-day-date"';
+    const historyNeedle = 'data-testid="titlebar-history"';
+    const date = sharedTitleBar.indexOf(dateNeedle);
+    const history = sharedTitleBar.indexOf(historyNeedle);
+    expect(date).toBeGreaterThan(-1);
+    expect(history).toBeGreaterThan(date);
+    expect(sharedTitleBar.slice(date + dateNeedle.length, history)).not.toMatch(
+      /data-testid="titlebar-/,
+    );
+    expect(sharedTitleBar).toContain('data-tauri-drag-region="false"');
+    expect(sharedTitleBar).toContain('data-testid="titlebar-back"');
+    expect(sharedTitleBar).toContain('data-testid="titlebar-forward"');
+    expect(sharedShell).toContain('canGoBack={navigationCanGoBack}');
+    expect(sharedShell).toContain('canGoForward={navigationCanGoForward}');
+    expect(sharedShell).toContain('onback={() => void goBack()}');
+    expect(sharedShell).toContain('onforward={() => void goForward()}');
+    expect(sharedShell).toContain('consumeNavigationShortcut(event, {');
+  });
+
   it('the sidebar renders all companies directly instead of using an overflow row', () => {
     const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
     const harnessMocks = readRepoFile('dev-harness/mocks/core.ts');

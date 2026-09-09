@@ -91,3 +91,73 @@ Canonical combined-app notes: [hq-work-embedded-rollout.md](hq-work-embedded-rol
 This window always mounts `@hq/ui` DesktopApp. The retired `hqWorkHandoff`
 menubar key is stripped on launch so upgraded installs cannot keep a classic
 chat shell. Historical two-app notes remain in [hq-work-handoff.md](hq-work-handoff.md).
+
+## In-app back/forward
+
+The shared shell (`packages/ui/src/shell`) owns one in-memory history stack.
+Every semantic destination goes through `navigate` → `resolveDestination` →
+`commitDestination`. This is not `window.history`, not a general web router,
+and not the pending-route bridge (`EmbeddedNavigationController` in
+`hq-work-host.ts`). Legacy `src/desktop-alt/DesktopApp.svelte` DesktopRoute
+navigation is out of scope; `desktop-alt/main.ts` mounts `HqWorkWorkShell`
+only.
+
+### History model
+
+- Destinations are a discriminated union of stable IDs and serializable
+  params: channels and DMs (reply thread, company/agent tab, file preview),
+  notifications, meetings, Atlas, library tab/item, settings section, shared
+  files, extra pages (sessions), and setup checkout.
+- Each entry also stores account ID, company scope, and an optional scroll
+  anchor (message/event/file identity with a pixel fallback). History never
+  stores component instances, adapter handles, presigned URLs, cached
+  content, or prompt text.
+- A successful user navigation pushes one entry. Duplicate destinations do
+  not push. Navigating after Back truncates the forward branch. Capacity is
+  100 entries.
+- Hydration, polling, live session phase updates, background roster changes,
+  and cosmetic sidebar writes are not navigation and must not push.
+- Company switching is navigation within one signed-in account. Sign-out or
+  account change clears the stack. The stack is not persisted across app
+  restart.
+
+### Keyboard shortcuts
+
+- macOS: Cmd+[ Back, Cmd+] Forward.
+- Windows: Alt+Left Back, Alt+Right Forward.
+- Both chords go through `consumeNavigationShortcut` on the shared shell.
+  They are not stolen from text editing, IME composition, or a focused
+  embedded web editor (Monaco, CodeMirror, ProseMirror, iframe/webview).
+- Escape still dismisses ephemeral menus and dialogs first. Title-bar Back,
+  settings close, and in-page detail Back use the same resolver when they
+  mean navigation. Page-internal wizard steps stay owned by the wizard.
+
+Title-bar Back/Forward sit immediately after the day-date in
+`packages/ui/src/home/V4TitleBar.svelte`, outside the macOS drag region,
+with accessible names and disabled states at the stack endpoints. Hover
+labels show the destination. Unsupported hosts (legacy desktop-alt
+`DesktopApp.svelte`) omit the callbacks so that chrome stays unchanged.
+
+### Restore rules
+
+- Back and Forward restore selection, active tab, reply target, and scroll
+  without refetching unnecessarily, but still re-run access checks. Visibility
+  is never inferred from cached history.
+- Session restore uses open / openHistory / shared-view only. Traversing
+  history must not call `agent_session_start` or send.
+- First successful send replaces a temporary new-draft identity with the
+  created session ID so Back cannot recreate the sent draft. Unsent drafts
+  keep identity and content via existing draft persistence.
+- A transient resolve failure does not consume a history step. A confirmed
+  unavailable destination commits an explicit unavailable view with content
+  concealed; Back remains usable; the app never silently opens a different
+  conversation.
+- Returning to a long transcript restores its stored anchor. New background
+  messages do not steal that offset. Background sessions stay alive while
+  views unmount.
+- Latest navigation wins during async races. Cursor changes wait for a
+  successful commit.
+
+Manual live steps, measured latency, native preview, and Windows keyboard
+status live in
+`companies/indigo/projects/hq-desktop-back-forward-nav/acceptance-notes.md`.

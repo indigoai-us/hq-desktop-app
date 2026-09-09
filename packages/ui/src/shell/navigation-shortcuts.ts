@@ -39,20 +39,29 @@ const EMBEDDED_EDITOR_SELECTOR = [
   "[data-slate-editor]",
 ].join(", ");
 
+function platformFromMarker(value: string): NavigationShortcutPlatform {
+  return /\bwin/.test(value.toLowerCase()) ? "windows" : "macos";
+}
+
 export function detectNavigationShortcutPlatform(
   hint?: string | null,
 ): NavigationShortcutPlatform {
-  const sources = [
-    hint,
+  if (hint && hint.trim()) return platformFromMarker(hint);
+  const stamped =
     typeof document !== "undefined"
       ? document.documentElement.getAttribute("data-platform")
-      : null,
+      : null;
+  if (stamped && stamped.trim()) {
+    // Native desktop-alt stamps `windows` or `other`. An explicit non-Windows
+    // marker must win over a Playwright/Chromium Desktop Chrome UA that
+    // contains "Windows NT".
+    return platformFromMarker(stamped);
+  }
+  const nav =
     typeof navigator !== "undefined"
-      ? `${navigator.platform} ${navigator.userAgent}`
-      : null,
-  ];
-  const blob = sources.filter(Boolean).join(" ").toLowerCase();
-  if (/\bwin/.test(blob)) return "windows";
+      ? `${navigator.platform} ${navigator.userAgent}`.toLowerCase()
+      : "";
+  if (/\bwin/.test(nav)) return "windows";
   return "macos";
 }
 

@@ -157,4 +157,13 @@ describe("navigation shortcuts", () => {
     expect(detectNavigationShortcutPlatform()).toBe("windows");
     document.documentElement.removeAttribute("data-platform");
   });
+
+  it("lets an explicit macos/other marker win over a Windows user agent", () => {
+    document.documentElement.setAttribute("data-platform", "macos");
+    expect(detectNavigationShortcutPlatform()).toBe("macos");
+    document.documentElement.setAttribute("data-platform", "other");
+    expect(detectNavigationShortcutPlatform()).toBe("macos");
+    expect(detectNavigationShortcutPlatform("macos")).toBe("macos");
+    document.documentElement.removeAttribute("data-platform");
+  });
 });
