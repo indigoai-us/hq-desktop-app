@@ -214,7 +214,8 @@
      * in that project is online via the presence store — never from timestamps.
      */
     projectHasPresence?: (row: ConversationRow) => boolean;
-    /** Host decoration per row: badge, hover card, context-menu actions. */
+    /** Host decoration per row: badge, hover card, context-menu actions.
+     *  Session metadata may still be loading — never hide the rail for it. */
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
@@ -455,7 +456,11 @@
   let loadError = $state<string | null>(null);
   /** First directory/contacts attempt has settled or timed out. */
   let bootAttempted = $state(false);
-  let firstRefreshSettled = $state(false);
+  let firstRefreshSettled = $state(
+    (loadConversationCache(storage)?.channels?.length ?? 0) > 0 ||
+      (loadConversationCache(storage)?.contacts?.length ?? 0) > 0 ||
+      (seedDirectory?.length ?? 0) > 0,
+  );
   let reportedShellReady = false;
   let scopeMenuEl: HTMLDivElement | null = $state(null);
   let filterWrapEl: HTMLDivElement | null = $state(null);
@@ -1158,8 +1163,8 @@
     if (firstPaint) loading = true;
     loadError = null;
     // Channels reconcile through the directory feed; contacts + requests keep
-    // their existing reads. All three settle (or time out) before the loading
-    // gate clears so first paint cannot wait forever.
+    // their existing reads. Paint cache/seed immediately — do not wait for
+    // the directory (or session extras) before showing rows.
     const directory = directoryReconciler.reconcile("manual").catch(() => {}); // onError already surfaced it
     try {
       const [contactsResp, requestsResp] = await Promise.all([
@@ -1209,11 +1214,11 @@
       });
       console.error("chat-sidebar: refresh failed", err);
     } finally {
-      await directory;
       bootAttempted = true;
       loading = false;
       firstRefreshSettled = true;
       maybeReportShellReady();
+      void directory.finally(() => maybeReportShellReady());
     }
   }
 
@@ -2080,10 +2085,10 @@
     </div>
   </header>
 
-  <div class="chat-scroll" data-testid="chat-conversation-list" aria-busy={!firstRefreshSettled || rowExtrasLoading}>
-    {#if !firstRefreshSettled || rowExtrasLoading}
-      <div class="sidebar-skeleton" role="status" aria-label="Loading conversations and sessions" data-testid="sidebar-loading">
-        <span class="sr-only">Loading conversations and sessions…</span>
+  <div class="chat-scroll" data-testid="chat-conversation-list" aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}>
+    {#if allRows.length === 0 && (!firstRefreshSettled || loading)}
+      <div class="sidebar-skeleton" role="status" aria-label="Loading conversations" data-testid="sidebar-loading">
+        <span class="sr-only">Loading conversations…</span>
         {#each Array(10) as _, index}
           <div class="skeleton-row" aria-hidden="true"><span class="skeleton-icon"></span><span class="skeleton-line" style:width={`${45 + (index % 3) * 15}%`}></span></div>
         {/each}

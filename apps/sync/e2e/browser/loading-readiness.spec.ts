@@ -17,10 +17,8 @@ async function waitForConversationRail(page: Page) {
   await expect(conversationTitles(page).first()).toBeVisible({ timeout: readyTimeout });
 }
 
-test('cold sidebar stays a skeleton until project sessions are ready', async ({ page }) => {
+test('cold sidebar paints conversation rows without waiting for project sessions', async ({ page }) => {
   await page.goto(url);
-  await expect(page.getByTestId('sidebar-loading')).toBeVisible();
-  await expect(conversationTitles(page)).toHaveCount(0);
   await waitForConversationRail(page);
   await expect(page.getByTestId('sidebar-loading')).toHaveCount(0);
 });

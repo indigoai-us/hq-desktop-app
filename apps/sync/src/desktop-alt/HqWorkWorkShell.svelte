@@ -29,7 +29,7 @@
     type SelfIdentity,
     type Workspace,
   } from '@hq/ui';
-  import { flushSync, onMount, tick, type ComponentProps } from 'svelte';
+  import { flushSync, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
@@ -193,7 +193,9 @@
     const slugs = (companies ?? [])
       .filter((company) => company.kind === 'company' && company.slug !== 'personal')
       .map((company) => company.slug);
-    projectLinksStore.start(slugs);
+    // untrack: start() reads/writes store runes. Tracking those from this
+    // effect re-ran start → stop → start until effect_update_depth_exceeded.
+    untrack(() => projectLinksStore.start(slugs));
     return () => projectLinksStore.stop();
   });
 

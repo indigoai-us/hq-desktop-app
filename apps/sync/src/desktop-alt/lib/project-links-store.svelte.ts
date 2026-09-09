@@ -8,6 +8,7 @@
 // render first; bounded background requests enrich channel labels. A failed
 // cloud lookup never gates first paint or removes saved local sessions.
 
+import { untrack } from 'svelte';
 import { listen } from '@tauri-apps/api/event';
 
 import { safeUnlisten } from '../../lib/listener-registry';
@@ -24,12 +25,45 @@ import {
 const PHASE_EVENT = 'agent-session:phase';
 
 export const LINKS_REFRESH_MS = 30_000;
+export const LINKS_CACHE_KEY = 'hq.session-project-links.v1';
+
+function browserStorage(): Storage | null {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadCachedLinks(): Record<string, ProjectLink[]> {
+  const storage = browserStorage();
+  if (!storage) return {};
+  try {
+    const raw = storage.getItem(LINKS_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as { byCompany?: Record<string, ProjectLink[]> };
+    if (!parsed?.byCompany || typeof parsed.byCompany !== 'object') return {};
+    return parsed.byCompany;
+  } catch {
+    return {};
+  }
+}
+
+function persistLinks(next: Record<string, ProjectLink[]>): void {
+  const storage = browserStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(LINKS_CACHE_KEY, JSON.stringify({ byCompany: next, cachedAt: Date.now() }));
+  } catch {
+    // best-effort
+  }
+}
 
 let settledCompanies = $state<string[]>([]);
 let bootTimer: ReturnType<typeof setTimeout> | null = null;
 let watchedCompanies = $state<string[]>([]);
 let failedCompanies = $state<string[]>([]);
-let byCompany = $state<Record<string, ProjectLink[]>>({});
+let byCompany = $state<Record<string, ProjectLink[]>>(loadCachedLinks());
 let watched: string[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
 let unlisteners: Array<() => void> = [];
@@ -54,9 +88,9 @@ function refreshShared(company: string, links: ProjectLink[], mine: number): voi
         if (mine !== generation || !watched.includes(company) || !visibleSharedChannels.has(channelId)) return;
         const sessions = await loadSharedRows(link).catch(() => []);
         if (mine !== generation || !watched.includes(company) || !visibleSharedChannels.has(channelId)) return;
-        byCompany = { ...byCompany, [company]: (byCompany[company] ?? []).map(row => row.channelId !== channelId ? row : {
+        setCompanyLinks(company, (byCompany[company] ?? []).map(row => row.channelId !== channelId ? row : {
           ...row, sessions: [...row.sessions.filter(session => !session.sharedChannelId), ...sessions],
-        }) };
+        }));
       } finally {
         if (mine === generation) sharedRequests.delete(channelId);
       }
@@ -71,6 +105,11 @@ function watchSharedChannel(company: string, link: ProjectLink, visible: boolean
   if (visibleSharedChannels.has(link.channelId)) return;
   visibleSharedChannels.add(link.channelId);
   refreshShared(company, [link], generation);
+}
+
+function setCompanyLinks(company: string, links: ProjectLink[]): void {
+  byCompany = { ...byCompany, [company]: links };
+  persistLinks(byCompany);
 }
 
 function drainRemote(): void {
@@ -99,14 +138,14 @@ function enrich(company: string, mine: number): void {
       const current = byCompany[company] ?? [];
       // An intervening phase refresh owns membership/status. A slow network
       // response can enrich labels but cannot roll that newer state back.
-      byCompany = { ...byCompany, [company]: revision === revisions.get(company) ? [
+      setCompanyLinks(company, revision === revisions.get(company) ? [
         ...links.map(link => ({ ...link, sessions: [...link.sessions,
           ...(current.find(row => row.channelId === link.channelId)?.sessions.filter(session => session.sharedChannelId) ?? []),
         ] })),
         ...current.filter((link) => !links.some((row) => row.project === link.project)),
       ] : [
         ...mergeLocalProjectLinks(current, links),
-      ] };
+      ]);
       refreshShared(company, byCompany[company], mine);
     } catch {
       if (mine === generation && !failedCompanies.includes(company)) failedCompanies = [...failedCompanies, company];
@@ -136,7 +175,7 @@ async function refresh(): Promise<void> {
         if (mine !== generation || !watched.includes(company)) return;
         revisions.set(company, (revisions.get(company) ?? 0) + 1);
         const previous = byCompany[company] ?? [];
-        byCompany = { ...byCompany, [company]: mergeLocalProjectLinks(links, previous) };
+        setCompanyLinks(company, mergeLocalProjectLinks(links, previous));
       } catch {
         if (mine === generation && !failedCompanies.includes(company)) failedCompanies = [...failedCompanies, company];
         // Keep the last known links: the flag may be off, or hq-pro away.
@@ -183,6 +222,17 @@ function start(companies: string[]): void {
   const changed = next.length !== watched.length || next.some((c) => !watched.includes(c));
   watched = next;
   watchedCompanies = next;
+  const cached = loadCachedLinks();
+  const currentByCompany = untrack(() => byCompany);
+  const currentSettled = untrack(() => settledCompanies);
+  if (Object.keys(cached).length > 0) {
+    byCompany = { ...cached, ...currentByCompany };
+  }
+  const merged = untrack(() => byCompany);
+  const alreadyCached = next.filter((company) => (merged[company]?.length ?? 0) > 0 || company in merged);
+  if (alreadyCached.length > 0) {
+    settledCompanies = [...new Set([...currentSettled, ...alreadyCached])];
+  }
   if (changed || timer === null) {
     if (bootTimer !== null) clearTimeout(bootTimer);
     bootTimer = setTimeout(() => {
