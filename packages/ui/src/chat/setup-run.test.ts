@@ -261,6 +261,11 @@ describe("interpretSetupRun — finish and stop", () => {
     const state = interpretSetupRun([say("[hq-setup] step=moves status=done")]);
     expect(state.stepStatuses.moves).toBe("done");
     expect(state.step).toBe(5);
+    expect(state.done).toBe(true);
+    // Back-ticked markers (how the agent sometimes writes them) count too, and
+    // so does "you're done" in prose.
+    expect(interpretSetupRun([say("`[hq-setup] step=moves status=done`\n\nAll set — you're done. Here's where you landed.")]).done).toBe(true);
+    expect(interpretSetupRun([say("All set — you're done.")]).done).toBe(true);
   });
 
   it("reports a session that exited before finishing as ended, not done", () => {

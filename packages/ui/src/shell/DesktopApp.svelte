@@ -1041,7 +1041,10 @@
   const setupThinking = $derived.by((): ThinkingEntry | null => {
     if (!inSetupChannelWithAgent || setupAgent.mode !== "live") return null;
     const state = setupAgent.state;
-    if (!state || state.done || state.ended || state.question) {
+    const phase = setupAgent.snapshot?.phase;
+    // Thinking is only while the engine is actually working on a turn — not
+    // while it waits for the person, and not once it has finished or stopped.
+    if (!state || state.done || state.ended || state.question || (phase !== "working" && phase !== "starting")) {
       setupThinkingSince = 0;
       return null;
     }

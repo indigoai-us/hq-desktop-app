@@ -202,7 +202,7 @@ const MARKER = /\[hq-setup\]\s+step=(tools|cloud|you|import|connect|moves)(?:\s+
 const CARD_MARKER = /\[hq-setup\]\s+card=(\{.*\})\s*$/gim;
 
 const DONE_PATTERNS =
-  /you'?re (all )?set\b|you are (all )?set\b|setup (is )?(done|complete|finished)|all set — here'?s your welcome page|hq is (now )?set up|setup complete/i;
+  /you'?re (all )?set\b|you are (all )?set\b|you'?re done\b|setup (is )?(done|complete|finished)|all set — here'?s your welcome page|hq is (now )?set up|setup complete/i;
 
 /** Copy for the done card. */
 export const SETUP_RUN_DONE = {
@@ -456,7 +456,11 @@ export function interpretSetupRun(
         let marked = false;
         for (const match of text.matchAll(MARKER)) {
           marked = true;
-          advanceTo(match[1]!.toLowerCase() as SetupRunStepId, match[2]?.toLowerCase() === "done" ? "done" : "running");
+          const id = match[1]!.toLowerCase() as SetupRunStepId;
+          const status = match[2]?.toLowerCase() === "done" ? "done" : "running";
+          advanceTo(id, status);
+          // The last step ticked off by the skill itself: that is the finish.
+          if (id === "moves" && status === "done") done = true;
         }
         if (!marked) {
           const hit = STEP_PATTERNS.find((entry) => entry.pattern.test(text));

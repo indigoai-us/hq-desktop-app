@@ -216,8 +216,9 @@
   );
 
   onMount(async () => {
-    const res = await settings.getSetupStatus();
-    if (res.ok) {
+    // Hosts without a settings surface (some shells, tests) just get no folder path.
+    const res = await settings?.getSetupStatus?.();
+    if (res?.ok) {
       const status = res.value as { hqFolderPath?: string } | null;
       hqFolderPath = status?.hqFolderPath?.trim() ?? "";
     }

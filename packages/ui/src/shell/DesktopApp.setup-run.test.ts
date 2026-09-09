@@ -191,6 +191,30 @@ describe("DesktopApp native setup run wiring", () => {
     expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-stopped-title"]')).toBeNull();
   });
 
+  it("the thinking row goes away when the turn ends, and the finish buttons appear on the skill's last marker", async () => {
+    const api = fakeSetupRun();
+    await mountApp(api);
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await settle();
+    api.emit({ kind: "assistantMessage", text: "Let me finish the last bit of housekeeping." });
+    await settle();
+    expect(host.querySelector('[data-testid="agent-thinking-row"]')).toBeTruthy();
+    api.emit({ kind: "turnDone", status: "success", error: null }, "idle");
+    await settle();
+    expect(host.querySelector('[data-testid="agent-thinking-row"]')).toBeNull();
+    expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeNull();
+
+    api.emit({ kind: "assistantMessage", text: "`[hq-setup] step=moves status=done`\n\nAll set — you're done. Here's where you landed.\n\n**Everything's working:**\n- Tools healthy." });
+    api.emit({ kind: "turnDone", status: "success", error: null }, "idle");
+    await settle();
+    expect(host.querySelector('[data-testid="agent-thinking-row"]')).toBeNull();
+    expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeTruthy();
+    const last = Array.from(host.querySelectorAll('[data-testid="conversation-message"]')).pop();
+    expect(last?.textContent).toContain("All set — you're done");
+    expect(last?.textContent).not.toContain("[hq-setup]");
+    expect(last?.querySelector("strong")?.textContent).toBe("Everything's working:");
+  });
+
   it("a usage-limit stop names the reason and offers the other agent right there", async () => {
     const api = fakeSetupRun();
     api.providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: true, codexAvailable: true, codexLoggedIn: true }));
