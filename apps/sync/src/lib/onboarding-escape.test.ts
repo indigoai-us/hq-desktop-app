@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { escapeForLaunch, SETUP_NEEDS_PASS } from './onboarding-escape';
+import { escapeForLaunch, setupFailureEscape } from './onboarding-escape';
 
 const SCREENSHOT_ERROR =
   'HQ folder is not ready for Claude Code Desktop setup repair (core/core.yaml (valid hq-core schema), companies/manifest.yaml) — re-tether in Settings or finish onboarding';
@@ -40,8 +40,15 @@ describe('onboarding escape paths', () => {
     );
   });
 
-  it('keeps the incomplete-setup caution free of error language', () => {
-    expect(SETUP_NEEDS_PASS.body.toLowerCase()).not.toMatch(/error|failed|could not/);
-    expect(SETUP_NEEDS_PASS.body).toMatch(/\/setup/);
+  it('names every failed setup stage and uses an accurate plural count', () => {
+    const caution = setupFailureEscape([
+      { label: 'Installing dependencies' },
+      { label: 'Registering for search' },
+    ]);
+
+    expect(caution.title).toBe('2 installer steps need attention');
+    expect(caution.body).toContain('Installing dependencies, Registering for search');
+    expect(caution.body).toContain('Retry the failed steps');
+    expect(caution.body).not.toContain('One installer step');
   });
 });
