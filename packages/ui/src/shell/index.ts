@@ -3,6 +3,7 @@ export { default as DesktopApp } from "./DesktopApp.svelte";
 export { default as PageHeader } from "./PageHeader.svelte";
 export * from "./embedded-navigation.js";
 export * from "./navigation-history.js";
+export * from "./navigation-controller.js";
 export * from "./navigation-handler-matrix.js";
 export {
   FIXTURE_COMPANIES,

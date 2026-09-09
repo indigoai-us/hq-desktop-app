@@ -10,7 +10,8 @@
  * is out of scope — desktop-alt/main.ts mounts HqWorkWorkShell only.
  *
  * EmbeddedNavigationController is a pending-route delivery bridge, not a
- * history stack. US-002 will route in-scope rows through navigate().
+ * history stack. US-002 routes in-scope semantic handlers through
+ * navigate() → resolveDestination() → commitDestination().
  */
 
 import type {
@@ -67,14 +68,14 @@ export const NAVIGATION_INVENTORY_FILES = [
 
 /** Assignments of `view` in DesktopApp.svelte. Comparisons (`view ===`) are excluded. */
 export const DESKTOP_APP_VIEW_ASSIGN_RE = /\bview = (?:view ===|"[^"]+")/g;
-export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 26;
+export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 12;
 
 /** Direct `navigation.navigate(` calls in HqWorkWorkShell (native/host seams). */
 export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
 export const HQ_WORK_SHELL_NAVIGATE_COUNT = 7;
 
 export const DESKTOP_APP_FUNCTION_RE =
-  /(?:async )?function (open[A-Z]\w*|close[A-Z]\w*|apply[A-Z]\w*|toggle[A-Z]\w*|navigate[A-Z]\w*|handle[A-Z]\w*|changeTenantCompany|onOpenChannel|onMessagePerson|onOpenSettingsEvent|onEmbeddedNavigation|onKey)\b/g;
+  /(?:async )?function (open[A-Z]\w*|close[A-Z]\w*|apply[A-Z]\w*|toggle[A-Z]\w*|navigate[A-Z]\w*|handle[A-Z]\w*|changeTenantCompany|onOpenChannel|onMessagePerson|onOpenSettingsEvent|onEmbeddedNavigation|onKey|navigate|resolveDestination|commitDestination)\b/g;
 
 /**
  * Every DesktopApp function matching DESKTOP_APP_FUNCTION_RE must appear here.
@@ -82,6 +83,10 @@ export const DESKTOP_APP_FUNCTION_RE =
  * pushing history later.
  */
 export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
+  applyCommittedNavigation: "push",
+  navigate: "push",
+  resolveDestination: "none",
+  commitDestination: "push",
   handleRecommendedUpdateNow: "none",
   applyFetchedTimeline: "none",
   openMemberProfile: "none",
@@ -1199,6 +1204,16 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     history: "none",
     host: "hq-work-host",
     inScope: true,
+  },
+  {
+    id: "host-destination-from-route",
+    file: HQ_WORK_HOST_FILE,
+    needle: "export function navigationDestinationFromRoute(",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Converts native/host route strings onto the shared destination union.",
   },
   {
     id: "host-deliver-immediately",

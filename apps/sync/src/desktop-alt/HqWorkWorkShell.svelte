@@ -837,6 +837,8 @@
         }}
         onembeddednavigationready={() => {
           detachNavigation?.();
+          // Pending-route bridge only: the shared shell converts `target`
+          // through destinationFromEmbeddedTarget and commits via navigate().
           const detach = navigation.attach((target) => {
             dispatchEmbeddedNavigation(target);
           });

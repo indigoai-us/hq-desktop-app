@@ -6,7 +6,10 @@
  * pending-route bridge in `embedded-navigation.ts`.
  */
 
-import type { EmbeddedSettingsSection } from "./embedded-navigation.js";
+import type {
+  EmbeddedNavigationTarget,
+  EmbeddedSettingsSection,
+} from "./embedded-navigation.js";
 import type { LibraryTab } from "../library/library-overlay-model.js";
 import type { CompanyChannelTabId } from "../chat/tabs/tab-model.js";
 
@@ -479,4 +482,56 @@ export function isNonNavigationReason(
     value === "background-roster" ||
     value === "cosmetic-sidebar"
   );
+}
+
+/**
+ * Native/host pending-route payloads use `EmbeddedNavigationTarget`. Convert
+ * them onto the history union at the shared-shell boundary. `home` aliases
+ * messages and `inbox` aliases notifications. Unsupported targets stay
+ * `null` so they cannot consume a history step.
+ */
+export function destinationFromEmbeddedTarget(
+  target: EmbeddedNavigationTarget,
+): NavigationDestination | null {
+  switch (target.kind) {
+    case "home":
+    case "messages":
+      return { kind: "messages" };
+    case "inbox":
+      return { kind: "notifications" };
+    case "setup-checkout":
+      return {
+        kind: "setup-checkout",
+        companyUid: target.companyUid,
+        checkout: target.checkout ?? null,
+      };
+    case "meetings":
+      return { kind: "meetings", meetingId: target.meetingId ?? null };
+    case "atlas":
+      return { kind: "atlas" };
+    case "library":
+      return { kind: "library", tab: target.tab };
+    case "settings":
+      return { kind: "settings", section: target.section ?? null };
+    case "channel":
+      return {
+        kind: "channel",
+        channelId: target.channelId,
+        replyRootEventId: target.replyRootEventId ?? null,
+      };
+    case "dm":
+      return {
+        kind: "dm",
+        personUid: target.personUid,
+        replyRootEventId: target.replyRootEventId ?? null,
+      };
+    case "extra":
+      return {
+        kind: "extra",
+        page: target.page,
+        param: target.param ?? null,
+      };
+    case "unsupported":
+      return null;
+  }
 }
