@@ -2409,7 +2409,7 @@
                       : 'btn-ghost'}"
                     type="button"
                     data-testid="onboarding-install-{slot.kind}"
-                    disabled={needsAttention || finishing}
+                    disabled={finishing}
                     aria-busy={launching === 'watching' && slot.kind === 'claude'}
                     onclick={() => void handleInstallTool(slot.kind)}
                   >

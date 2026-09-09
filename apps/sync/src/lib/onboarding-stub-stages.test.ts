@@ -85,6 +85,7 @@ describe('honest onboarding stage reporting', () => {
     expect(wizard).toContain('if (finishing || needsAttention) return false;');
     expect(wizard).toContain('if (needsAttention) return;');
     expect(wizard).toContain('disabled={needsAttention || finishing');
+    expect(wizard).toContain('data-testid="onboarding-install-{slot.kind}"\n                    disabled={finishing}');
     expect(wizard).toContain(
       'if (!result.needsAttention) {\n        await journalInstallComplete();\n      }',
     );

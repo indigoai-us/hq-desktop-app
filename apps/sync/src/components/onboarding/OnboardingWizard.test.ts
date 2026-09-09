@@ -275,6 +275,49 @@ describe('onboarding launch handoff', () => {
     expect(primaryButton().textContent).toBe('Install Claude Code');
   });
 
+  it('keeps manual tool installs available after a required setup failure', async () => {
+    const claudeDesktopOnly = {
+      ...NO_AI_TOOLS,
+      claude_desktop: true,
+      any: true,
+    };
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return claudeDesktopOnly;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish: vi.fn() },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-setup-failures"]')));
+
+    expect(host.querySelector('[data-testid="onboarding-launch-download"]')).toBeNull();
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-launch-claude"]')?.disabled,
+    ).toBe(true);
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-install-codex"]')?.disabled,
+    ).toBe(false);
+  });
+
   it('shows Codex as installed when only the ChatGPT-bundled desktop app is present', async () => {
     // Desktop Codex ships inside ChatGPT.app; the detector reports that as
     // codex_desktop, and the Ready screen must offer to launch it rather than
