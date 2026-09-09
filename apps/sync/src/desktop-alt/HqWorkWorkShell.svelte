@@ -429,6 +429,7 @@
       navigation.clear();
       authGeneration += 1;
       authAccountId = null;
+      configureSessionStarterCache(null);
       self = null;
       companies = null;
       capabilities = null;

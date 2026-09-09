@@ -55,3 +55,11 @@ it('persists decoded thumbnail bytes instead of an expiring remote URL', async (
   configureSessionStarterCache(null);
   vi.unstubAllGlobals();
 });
+
+it('clears the in-memory starter cache from the host sign-out path', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { dirname, resolve } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const shell = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../desktop-alt/HqWorkWorkShell.svelte'), 'utf8');
+  expect(shell).toMatch(/authAccountId = null;\s*configureSessionStarterCache\(null\);/);
+});
