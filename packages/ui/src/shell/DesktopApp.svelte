@@ -3374,16 +3374,20 @@
             param: extraPageParam,
           }
         : null;
+    const currentIsShownExtra = Boolean(
+      shownExtra &&
+        current?.destination.kind === "extra" &&
+        current.destination.page === shownExtra.page &&
+        (current.destination.param ?? null) === shownExtra.param,
+    );
     const shownKey = shownExtra
       ? extraParamCompanyKey(shownExtra.param) ??
-        (current?.destination.kind === "extra"
-          ? destinationCompanyKey(current.destination)
-          : null) ??
-        current?.companyUid ??
-        null
+        (currentIsShownExtra && current
+          ? (destinationCompanyKey(current.destination) ?? current.companyUid)
+          : null)
       : (current?.companyUid ??
         (current ? destinationCompanyKey(current.destination) : null));
-    const extraPruned = Boolean(shownExtra && !current);
+    const extraPruned = Boolean(shownExtra && !currentIsShownExtra);
     const lostCompany = Boolean(shownKey && !allowed.has(shownKey));
     if (!extraPruned && !lostCompany) return;
     if (navigationUnavailable && !extraPruned && !lostCompany) return;

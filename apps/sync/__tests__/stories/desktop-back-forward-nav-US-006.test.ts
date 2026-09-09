@@ -268,6 +268,8 @@ describe("US-006: Restore scroll, lifecycle, and tenant isolation", () => {
     const shell = readRepo("packages/ui/src/shell/DesktopApp.svelte");
     expect(shell).toContain("extraParamCompanyKey");
     expect(shell).toContain("navigation.filterAccessible(allowed)");
+    expect(shell).toContain("currentIsShownExtra");
+    expect(shell).toContain("shownExtra && !currentIsShownExtra");
     expect(shell).toContain("extraDestination(");
     const host = readRepo("apps/sync/src/desktop-alt/HqWorkWorkShell.svelte");
     expect(host).toContain("companyUid: row.companyUid ?? company");
