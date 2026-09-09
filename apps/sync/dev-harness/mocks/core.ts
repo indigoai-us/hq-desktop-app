@@ -1496,7 +1496,7 @@ This final paragraph verifies spacing after a thematic break.
   agent_session_context: (args) => ({
     sourceSessionId: args?.sessionId === SESSION_ID ? 'session-event-sync' : null,
     sourceTitle: 'Original planning session',
-    startedBy: 'alex@example.test',
+    startedBy: new URLSearchParams(window.location.search).has('loadingTest') ? (harnessPersona()?.whoami.email ?? 'ada@getindigo.ai') : 'alex@example.test',
     history: { before: null, events: args?.sessionId === SESSION_ID ? [{ receivedAtMs: AGENT_SESSION_T0 - 60000, event: { kind: 'userMessage', text: 'Inherited planning context', imageCount: 0 } }] : [] },
   }),
   agent_session_history_page: () => ({ before: null, events: [{ receivedAtMs: AGENT_SESSION_T0 - 60000, event: { kind: 'userMessage', text: 'Original planning session history', imageCount: 0 } }] }),
@@ -1538,6 +1538,15 @@ This final paragraph verifies spacing after a thematic break.
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (new URLSearchParams(window.location.search).has('loadingTest')) {
+    if (cmd === 'session_project_links') await new Promise(resolve => setTimeout(resolve, 1200));
+    if (cmd === 'hq_pro_fetch' && args?.url === '/v1/profile') {
+      const state = window as unknown as { profileReads?: number };
+      state.profileReads = (state.profileReads ?? 0) + 1;
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return { status: 200, body: JSON.stringify({ profile: { displayName: 'Preview Person', avatarUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6uT8AAAAASUVORK5CYII=' } }) } as T;
+    }
+  }
   const handler = handlers[cmd];
   if (handler) return handler(args) as T;
   // Unknown command: log once and resolve null so mount paths don't throw.

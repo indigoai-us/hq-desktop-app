@@ -43,6 +43,7 @@
   import { startDesktopMeshPresence } from './mesh-presence';
   import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
   import { parseSessionsParam } from './pages/sessions-route-param';
+  import { configureSessionStarterCache } from '../components/sessions/session-starter';
   import { projectLinksStore } from './lib/project-links-store.svelte';
   import {
     newSessionParam,
@@ -260,6 +261,7 @@
     }
     authGeneration = next.generation;
     authAccountId = next.accountId;
+    configureSessionStarterCache(next.status === 'active' ? next.accountId : null);
     hydration += 1;
     detachNavigation?.();
     detachNavigation = null;
@@ -427,6 +429,7 @@
       navigation.clear();
       authGeneration += 1;
       authAccountId = null;
+      configureSessionStarterCache(null);
       self = null;
       companies = null;
       capabilities = null;
@@ -824,6 +827,8 @@
         onactivethreadchange={setActiveReplyThread}
         {extraPages}
         {rowExtras}
+        rowExtrasLoading={(companies === null && !workspaceError) || projectLinksStore.loading}
+        rowExtrasError={Boolean(workspaceError) || projectLinksStore.initialError}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');

@@ -11,7 +11,7 @@
    *
    * Presentation-pure: props in, callbacks out.
    */
-  import { loadSessionStarter, type SessionStarter } from './session-starter';
+  import { loadSessionStarter, cachedSessionStarter, type SessionStarter } from './session-starter';
   import PoliciesChip from './PoliciesChip.svelte';
   import SessionMenu from './SessionMenu.svelte';
   import type { HandoffState } from './hook-notices';
@@ -74,14 +74,17 @@
     onend,
   }: Props = $props();
   let starter = $state<SessionStarter | null>(null);
+  let starterLoading = $state(false);
   let failedAvatar = $state(false);
   $effect(() => {
     const identity = startedBy;
-    starter = null;
+    const cached = cachedSessionStarter(identity);
+    starter = cached;
+    starterLoading = Boolean(identity && !cached);
     failedAvatar = false;
     let cancelled = false;
     if (identity) void loadSessionStarter(identity).then(value => {
-      if (!cancelled) starter = value;
+      if (!cancelled) { starter = value; starterLoading = false; }
     });
     return () => { cancelled = true; };
   });
@@ -110,7 +113,7 @@
       {#if starter?.avatarUrl && !failedAvatar}
         <img src={starter.avatarUrl} alt="" onerror={() => failedAvatar = true} />
       {:else}
-        <span aria-hidden="true">{initials}</span>
+        <span class:avatar-loading={starterLoading} aria-hidden="true">{starterLoading ? '' : initials}</span>
       {/if}
       <span class="starter-tooltip" role="tooltip">{starterDetails}</span>
     </button>
@@ -209,6 +212,7 @@
   }
 
   .starter-avatar { position: relative; flex: none; width: 24px; height: 24px; border: 0; border-radius: 50%; padding: 0; background: var(--v4-active-row); color: var(--v4-text-2); font: 10px var(--font-sans); cursor: default; }
+  .avatar-loading { display: block; width: 100%; height: 100%; border-radius: 50%; background: var(--v4-hairline); }
   .starter-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
   .starter-tooltip { display: none; position: absolute; top: calc(100% + 8px); left: 0; z-index: 50; width: max-content; max-width: 280px; padding: 8px 10px; border: 1px solid var(--v4-hairline); border-radius: 6px; background: var(--v4-bg, #182127); color: var(--v4-text-1); text-align: left; white-space: pre-line; font-size: 12px; line-height: 1.5; box-shadow: 0 4px 16px #0004; pointer-events: none; }
   .starter-avatar:hover .starter-tooltip, .starter-avatar:focus-visible .starter-tooltip { display: block; }

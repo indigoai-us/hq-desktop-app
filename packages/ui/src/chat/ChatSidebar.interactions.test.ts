@@ -912,3 +912,24 @@ describe("conversation search keyboard navigation", () => {
     expect(document.activeElement).toBe(trigger);
   });
 });
+
+it('keeps partial rows behind a skeleton until directory and session metadata settle', async () => {
+  let resolveDirectory!: (value: any) => void;
+  const directory = new Promise<any>(resolve => { resolveDirectory = resolve; });
+  component = mount(ChatSidebar, { target: host, props: { api: stubApi({ fetchChannelDirectory: () => directory }), seedDirectory: [seedRow] } });
+  await tick();
+  expect(host.querySelector('[data-testid="sidebar-loading"]')).not.toBeNull();
+  expect(host.querySelector('.chat-row-title')).toBeNull();
+  resolveDirectory({ snapshot: true, cursor: 'ready', rows: [seedRow] });
+  await vi.waitFor(() => expect(host.querySelector('[data-testid="sidebar-loading"]')).toBeNull());
+  expect(host.textContent).toContain('launch');
+});
+
+it('does not make a populated rail clickable while project-session metadata is pending', async () => {
+  component = mount(ChatSidebar, { target: host, props: { api: stubApi(), seedDirectory: [seedRow], rowExtrasLoading: true } });
+  await tick();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await tick();
+  expect(host.querySelector('[data-testid="sidebar-loading"]')).not.toBeNull();
+  expect(host.querySelector('.chat-row-title')).toBeNull();
+});
