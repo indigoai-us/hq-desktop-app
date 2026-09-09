@@ -44,6 +44,7 @@
     type ReplyThreadScope,
     type RosterStatus,
     type RowExtrasResolver,
+    type SetupRunApi,
     type Workspace,
     type WorkMeshThread,
     conversationDeepLinkFromLocation,
@@ -164,6 +165,8 @@
         createAction?: { label: string; param: () => string | null };
         /** #welcome "Run Setup" destination (see DesktopApp extraPages). */
         setupAction?: { label: string; param: () => string | null };
+        /** #welcome native guided run (see DesktopApp extraPages). */
+        setupRun?: SetupRunApi;
         detail?: string;
         component: Component<{
           param?: string | null;

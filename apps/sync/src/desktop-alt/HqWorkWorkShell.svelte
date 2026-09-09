@@ -46,6 +46,7 @@
   import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
   import { parseSessionsParam, setupSessionParam } from './pages/sessions-route-param';
   import { SETUP_PROMPT } from './lib/setup-launch';
+  import { createSetupRunApi } from './lib/setup-run-host.svelte';
   import { projectLinksStore } from './lib/project-links-store.svelte';
   import {
     newSessionParam,
@@ -124,6 +125,7 @@
   let updateWakeSeq = $state(0);
   // Sessions are generally available, independent of legacy machine preferences.
   type HostExtraPages = NonNullable<ComponentProps<typeof WorkShell>['extraPages']>;
+  const setupRun = createSetupRunApi();
   const extraPages = $derived<HostExtraPages>({
     sessions: {
       label: 'Sessions',
@@ -134,6 +136,10 @@
       // #welcome's Run Setup: a fresh session that sends /setup itself once
       // Claude Code (or Codex) is connected and HQ is set up on this Mac.
       setupAction: { label: 'Run Setup', param: () => setupSessionParam(SETUP_PROMPT) },
+      // The native run: /setup drives a stepper + question cards inside the
+      // #welcome hero; `setupAction` stays the fallback when preflight says
+      // this page's Connect / self-heal UI must go first.
+      setupRun,
       component: SessionsExtraPage,
     },
   });

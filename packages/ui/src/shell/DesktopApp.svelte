@@ -44,6 +44,7 @@
     isAgentUid as isAgentTaskUid,
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
+  import type { SetupRunApi } from "../chat/setup-run.js";
   import {
     hasRunWelcomeSetup,
     isSetupChannel,
@@ -506,6 +507,14 @@
          * it as soon as the provider is ready. Falls back to `createAction`.
          */
         setupAction?: { label: string; param: () => string | null };
+        /**
+         * Optional host guided-run API. When present, #welcome's Run Setup
+         * runs `/setup` natively inside the hero (stepper + question cards)
+         * and only falls back to `setupAction` when the host's preflight says
+         * the Sessions page must go first. "Show details" opens the session
+         * on this page with its id as the param.
+         */
+        setupRun?: SetupRunApi;
         component: Component<{
           param?: string | null;
           onnavigate?: (param: string | null) => void;
@@ -4817,6 +4826,11 @@
                     {rosterStatus}
                     {onretryroster}
                     onsetupstarted={recordWelcomeSetupRun}
+                    setupRun={extraPages?.sessions?.setupRun ?? null}
+                    onopensessiondetails={extraPages?.sessions
+                      ? (sessionId) => openExtraPage("sessions", sessionId)
+                      : undefined}
+                    onsetupfinished={recordWelcomeSetupRun}
                   />
                 {/snippet}
                 {#snippet companyHeader()}

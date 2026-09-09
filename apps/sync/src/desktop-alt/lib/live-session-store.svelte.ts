@@ -1483,6 +1483,27 @@ export const liveSessionStore = {
   get isHistorical(): boolean {
     return activeEntry()?.history !== null && activeEntry()?.history !== undefined;
   },
+  /**
+   * Per-session reads for a surface that watches ONE session regardless of
+   * which one the Sessions page has active (#welcome's native setup run).
+   * Empty / `idle` for a session this store has not opened.
+   */
+  eventsOf(sessionId: string): SessionEvent[] {
+    void revision;
+    return entries[sessionId]?.events ?? [];
+  },
+  phaseOf(sessionId: string): SessionPhase {
+    return entries[sessionId]?.phase ?? 'idle';
+  },
+  /** Request ids this client already answered on `sessionId`. */
+  resolvedRequestIdsOf(sessionId: string): string[] {
+    void revision;
+    return Object.keys(entries[sessionId]?.resolutions ?? {});
+  },
+  /** Whether the store currently holds an entry for `sessionId`. */
+  hasOpen(sessionId: string): boolean {
+    return Boolean(entries[sessionId]);
+  },
   open,
   openHistory,
   close,
