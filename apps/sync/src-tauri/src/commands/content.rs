@@ -45,6 +45,9 @@ use tar::EntryType;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::install_directory::resolve_hq_path;
+use crate::commands::install_stages::{
+    clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
+};
 use crate::util::client_info::client_headers;
 use crate::util::logfile::log;
 
@@ -227,6 +230,16 @@ fn content_cancelled_error() -> String {
     "Template setup was cancelled.".to_string()
 }
 
+fn content_error_category(error: &reqwest::Error) -> OnboardingErrorCategory {
+    if error.is_timeout() {
+        OnboardingErrorCategory::Timeout
+    } else if error.is_connect() {
+        OnboardingErrorCategory::Network
+    } else {
+        OnboardingErrorCategory::Unknown
+    }
+}
+
 fn read_staging_source_from(path: &Path) -> bool {
     let Ok(text) = fs::read_to_string(path) else {
         return false;
@@ -338,7 +351,10 @@ async fn latest_release(
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("network error listing releases: {e}"))?;
+        .map_err(|error| {
+            record_onboarding_failure_detail("content", None, content_error_category(&error));
+            format!("network error listing releases: {error}")
+        })?;
     if !resp.status().is_success() {
         let api_err = format!(
             "GitHub API error {} listing releases for {repo}",
@@ -357,12 +373,24 @@ async fn latest_release(
                 Err(e) => return Err(format!("{api_err}; API-free fallback also failed: {e}")),
             }
         }
+        record_onboarding_failure_detail(
+            "content",
+            None,
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                OnboardingErrorCategory::NotFound
+            } else {
+                OnboardingErrorCategory::Unknown
+            },
+        );
         return Err(api_err);
     }
     let releases: Vec<ReleaseInfo> = resp
         .json()
         .await
-        .map_err(|e| format!("failed to parse releases response: {e}"))?;
+        .map_err(|error| {
+            record_onboarding_failure_detail("content", None, content_error_category(&error));
+            format!("failed to parse releases response: {error}")
+        })?;
     Ok(releases.into_iter().find(|r| !r.prerelease && !r.draft))
 }
 
@@ -383,7 +411,10 @@ async fn latest_release_via_redirect(repo: &str) -> Result<Option<ReleaseInfo>, 
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("network error resolving {url}: {e}"))?;
+        .map_err(|error| {
+            record_onboarding_failure_detail("content", None, content_error_category(&error));
+            format!("network error resolving {url}: {error}")
+        })?;
     let location = resp
         .headers()
         .get(reqwest::header::LOCATION)
@@ -502,8 +533,12 @@ async fn download_tarball_with_progress(
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("network error downloading template: {e}"))?;
+        .map_err(|error| {
+            record_onboarding_failure_detail("content", None, content_error_category(&error));
+            format!("network error downloading template: {error}")
+        })?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        record_onboarding_failure_detail("content", None, OnboardingErrorCategory::NotFound);
         return Err(format!("template tarball not found (404): {url}"));
     }
     if !resp.status().is_success() {
@@ -547,7 +582,14 @@ async fn download_tarball_with_progress(
                     );
                 }
             }
-            Ok(Some(Err(e))) => return Err(format!("stream error downloading template: {e}")),
+            Ok(Some(Err(error))) => {
+                record_onboarding_failure_detail(
+                    "content",
+                    None,
+                    content_error_category(&error),
+                );
+                return Err(format!("stream error downloading template: {error}"));
+            }
             Ok(None) => break,
             Err(_) => {
                 if let Some(progress) = progress {
@@ -576,8 +618,13 @@ async fn download_tarball_with_progress(
                             );
                         }
                     }
-                    Ok(Some(Err(e))) => {
-                        return Err(format!("stream error downloading template: {e}"))
+                    Ok(Some(Err(error))) => {
+                        record_onboarding_failure_detail(
+                            "content",
+                            None,
+                            content_error_category(&error),
+                        );
+                        return Err(format!("stream error downloading template: {error}"));
                     }
                     Ok(None) => break,
                     Err(_) => {
@@ -591,6 +638,11 @@ async fn download_tarball_with_progress(
                                 "Template download stalled",
                             );
                         }
+                        record_onboarding_failure_detail(
+                            "content",
+                            None,
+                            OnboardingErrorCategory::Timeout,
+                        );
                         return Err(
                             "Template download stalled before receiving more data.".to_string()
                         );
@@ -1141,6 +1193,7 @@ pub async fn fetch_and_extract_template(
     app: AppHandle,
     handle: Option<String>,
 ) -> Result<String, String> {
+    clear_onboarding_failure_detail("content");
     let hq_root = resolve_hq_path()?;
     let source = template_source_for_staging_source(staging_source_enabled());
     let token = if matches!(source.channel, TemplateChannel::StagingMain) {

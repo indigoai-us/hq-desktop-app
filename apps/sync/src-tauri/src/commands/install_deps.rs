@@ -48,6 +48,10 @@ use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, R
 #[cfg(windows)]
 use winreg::{RegKey, RegValue};
 
+use crate::commands::install_stages::{
+    clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
+};
+
 mod which {
     use std::env;
     use std::ffi::{OsStr, OsString};
@@ -3700,42 +3704,53 @@ fn write_user_path_value(env: &RegKey, value: &UserPathValue) -> Result<(), Stri
 
 #[cfg(windows)]
 pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
-    let dir_str = new_dir.to_string_lossy().to_string();
+    let result = (|| {
+        let dir_str = new_dir.to_string_lossy().to_string();
 
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let env = hkcu
-        .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
-        .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let env = hkcu
+            .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
+            .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
 
-    let mut current_value = read_user_path_value(&env)?;
-    let current = current_value.value.clone();
+        let mut current_value = read_user_path_value(&env)?;
+        let current = current_value.value.clone();
 
-    let already_present = current
-        .split(';')
-        .any(|entry| entry.eq_ignore_ascii_case(&dir_str));
-    if already_present {
+        let already_present = current
+            .split(';')
+            .any(|entry| entry.eq_ignore_ascii_case(&dir_str));
+        if already_present {
+            debug_log(&format!(
+                "append_user_path: '{dir_str}' already on PATH, skipping"
+            ));
+            return Ok(());
+        }
+
+        let updated = if current.is_empty() {
+            dir_str.clone()
+        } else if current.ends_with(';') {
+            format!("{current}{dir_str}")
+        } else {
+            format!("{current};{dir_str}")
+        };
+
+        current_value.value = updated;
+        write_user_path_value(&env, &current_value)?;
+
+        broadcast_environment_change();
         debug_log(&format!(
-            "append_user_path: '{dir_str}' already on PATH, skipping"
+            "append_user_path: added '{dir_str}', broadcast sent"
         ));
-        return Ok(());
+        Ok(())
+    })();
+
+    if result.is_err() {
+        record_onboarding_failure_detail(
+            "deps",
+            Some("path-write"),
+            OnboardingErrorCategory::Unknown,
+        );
     }
-
-    let updated = if current.is_empty() {
-        dir_str.clone()
-    } else if current.ends_with(';') {
-        format!("{current}{dir_str}")
-    } else {
-        format!("{current};{dir_str}")
-    };
-
-    current_value.value = updated;
-    write_user_path_value(&env, &current_value)?;
-
-    broadcast_environment_change();
-    debug_log(&format!(
-        "append_user_path: added '{dir_str}', broadcast sent"
-    ));
-    Ok(())
+    result
 }
 
 /// Remove `dir` from the user's persistent PATH. Idempotent.
@@ -5455,6 +5470,7 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
 
 #[tauri::command]
 pub async fn install_deps(app: AppHandle) -> Result<(), String> {
+    clear_onboarding_failure_detail("deps");
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);
     let mut ok_set: HashSet<&'static str> = HashSet::new();
@@ -5526,6 +5542,19 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
     if failures.is_empty() {
         Ok(())
     } else {
+        if let Some(failed_dependency) = deps.iter().find_map(|dep| {
+            let result = result_by_id.get(dep.id)?;
+            (!dep.optional && result.status == DepInstallStatus::Failed).then_some(dep.id)
+        }) {
+            // Individual installers currently return their rendered errors, so
+            // no typed source remains at this aggregation point. Preserve the
+            // exact dependency but record the category as the closed fallback.
+            record_onboarding_failure_detail(
+                "deps",
+                Some(failed_dependency),
+                OnboardingErrorCategory::Unknown,
+            );
+        }
         Err(format!(
             "Dependency install failed: {}",
             failures.join("; ")

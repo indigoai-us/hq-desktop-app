@@ -9,6 +9,34 @@ export type StageId =
   | 'indexing'
   | 'menubar';
 
+export const FAILED_DEPENDENCIES = [
+  'node',
+  'yq',
+  'jq',
+  'git',
+  'qmd',
+  'hq-cli',
+  'path-write',
+  'unknown',
+] as const;
+
+export type FailedDependency = (typeof FAILED_DEPENDENCIES)[number];
+
+export const ERROR_CATEGORIES = [
+  'network',
+  'checksum',
+  'permission',
+  'not-found',
+  'timeout',
+  'spawn-failed',
+  'exit-nonzero',
+  'unsupported-platform',
+  'disk',
+  'unknown',
+] as const;
+
+export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
+
 export const STAGE_ORDER: StageId[] = [
   'content',
   'deps',
@@ -20,6 +48,60 @@ export const STAGE_ORDER: StageId[] = [
   'indexing',
   'menubar',
 ];
+
+export function normalizeFailedDependency(value: unknown): FailedDependency {
+  return typeof value === 'string' && FAILED_DEPENDENCIES.includes(value as FailedDependency)
+    ? (value as FailedDependency)
+    : 'unknown';
+}
+
+export function normalizeErrorCategory(value: unknown): ErrorCategory {
+  return typeof value === 'string' && ERROR_CATEGORIES.includes(value as ErrorCategory)
+    ? (value as ErrorCategory)
+    : 'unknown';
+}
+
+export function normalizeFailedStageIds(values: Iterable<unknown>): StageId[] {
+  const normalized: StageId[] = [];
+  for (const value of values) {
+    if (
+      typeof value === 'string' &&
+      (STAGE_ORDER as string[]).includes(value) &&
+      !normalized.includes(value as StageId)
+    ) {
+      normalized.push(value as StageId);
+    }
+    if (normalized.length === STAGE_ORDER.length) break;
+  }
+  return normalized;
+}
+
+export interface SetupFailureTelemetryDetails {
+  errorCategory: ErrorCategory;
+  failedDependency?: FailedDependency;
+}
+
+export function setupFailureTelemetryDetails(input: {
+  stageId: StageId;
+  errorCategory?: unknown;
+  failedDependency?: unknown;
+}): SetupFailureTelemetryDetails {
+  const errorCategory = normalizeErrorCategory(input.errorCategory);
+  return input.stageId === 'deps'
+    ? {
+        errorCategory,
+        failedDependency: normalizeFailedDependency(input.failedDependency),
+      }
+    : { errorCategory };
+}
+
+export function createSetupRunId(randomUuid: () => string = () => crypto.randomUUID()): string {
+  const value = randomUuid();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    return value;
+  }
+  return crypto.randomUUID();
+}
 
 export const STAGE_LABELS: Record<StageId, string> = {
   content: 'Downloading HQ template',

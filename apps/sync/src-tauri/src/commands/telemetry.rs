@@ -796,42 +796,110 @@ fn is_safe_label_value(value: &str) -> bool {
             .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.'))
 }
 
+const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
+    "provider",
+    "surface",
+    "source",
+    "result",
+    "errorKind",
+    "channel",
+    "desktopVersion",
+    "localCoreVersion",
+    "targetCoreVersion",
+    "autoUpdateEnabled",
+    "eligible",
+    "versionBehind",
+    "durationMs",
+    "exitCode",
+    "skipReason",
+    "enabled",
+    "companiesAttempted",
+    "filesDownloaded",
+    "bytesDownloaded",
+    "filesSkipped",
+    "errorCount",
+    "stageCount",
+    "failedStageCount",
+    "failedStages",
+    "detectedToolCount",
+    "step",
+    "component",
+    "action",
+    "flow",
+    "outcome",
+    "platform",
+    "attemptCount",
+    "failedDependency",
+    "errorCategory",
+    "setupRunId",
+];
+
+const FAILED_DEPENDENCY_VALUES: &[&str] = &[
+    "node",
+    "yq",
+    "jq",
+    "git",
+    "qmd",
+    "hq-cli",
+    "path-write",
+    "unknown",
+];
+
+const ERROR_CATEGORY_VALUES: &[&str] = &[
+    "network",
+    "checksum",
+    "permission",
+    "not-found",
+    "timeout",
+    "spawn-failed",
+    "exit-nonzero",
+    "unsupported-platform",
+    "disk",
+    "unknown",
+];
+
+const ONBOARDING_STAGE_IDS: &[&str] = &[
+    "content",
+    "deps",
+    "initial-sync",
+    "packages",
+    "git-init",
+    "personalize",
+    "import",
+    "indexing",
+    "menubar",
+];
+
+const MAX_FAILED_STAGES: usize = ONBOARDING_STAGE_IDS.len();
+
 fn allowed_desktop_property_key(key: &str) -> bool {
-    matches!(
-        key,
-        "provider"
-            | "surface"
-            | "source"
-            | "result"
-            | "errorKind"
-            | "channel"
-            | "desktopVersion"
-            | "localCoreVersion"
-            | "targetCoreVersion"
-            | "autoUpdateEnabled"
-            | "eligible"
-            | "versionBehind"
-            | "durationMs"
-            | "exitCode"
-            | "skipReason"
-            | "enabled"
-            | "companiesAttempted"
-            | "filesDownloaded"
-            | "bytesDownloaded"
-            | "filesSkipped"
-            | "errorCount"
-            | "stageCount"
-            | "failedStageCount"
-            | "detectedToolCount"
-            | "step"
-            | "component"
-            | "action"
-            | "flow"
-            | "outcome"
-            | "platform"
-            | "durationMs"
-            | "attemptCount"
-    )
+    ALLOWED_DESKTOP_PROPERTY_KEYS.contains(&key)
+}
+
+fn normalize_closed_label(value: &str, vocabulary: &[&str]) -> String {
+    if vocabulary.contains(&value) {
+        value.to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn normalize_failed_stages(values: &[Value]) -> Vec<Value> {
+    let mut stages = Vec::new();
+    for value in values {
+        let Some(stage) = value.as_str() else {
+            continue;
+        };
+        if ONBOARDING_STAGE_IDS.contains(&stage)
+            && !stages.iter().any(|value: &Value| value.as_str() == Some(stage))
+        {
+            stages.push(Value::String(stage.to_string()));
+        }
+        if stages.len() == MAX_FAILED_STAGES {
+            break;
+        }
+    }
+    stages
 }
 
 fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
@@ -846,16 +914,31 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
             continue;
         }
 
-        let keep = match &value {
-            Value::Bool(_) => matches!(
+        let sanitized_value = match (key.as_str(), &value) {
+            ("failedDependency", Value::String(value)) => {
+                Some(Value::String(normalize_closed_label(
+                    &value,
+                    FAILED_DEPENDENCY_VALUES,
+                )))
+            }
+            ("errorCategory", Value::String(value)) => Some(Value::String(
+                normalize_closed_label(&value, ERROR_CATEGORY_VALUES),
+            )),
+            ("failedStages", Value::Array(values)) => {
+                Some(Value::Array(normalize_failed_stages(&values)))
+            }
+            (_, Value::Bool(_)) => matches!(
                 key.as_str(),
                 "enabled" | "autoUpdateEnabled" | "eligible" | "versionBehind"
-            ),
-            Value::Number(n) => n.as_i64().is_some() || n.as_u64().is_some(),
-            Value::String(s) => is_safe_label_value(s),
-            _ => false,
+            )
+            .then_some(value),
+            (_, Value::Number(n)) => {
+                (n.as_i64().is_some() || n.as_u64().is_some()).then_some(value)
+            }
+            (_, Value::String(s)) => is_safe_label_value(s).then_some(value),
+            _ => None,
         };
-        if keep {
+        if let Some(value) = sanitized_value {
             out.insert(key, value);
         }
     }
@@ -2243,6 +2326,98 @@ mod codex_telemetry_tests {
         assert_eq!(sanitized["skipReason"], "automatic_updates_disabled");
         assert!(sanitized.get("logPath").is_none());
         assert!(sanitized.get("error").is_none());
+    }
+
+    #[test]
+    fn desktop_property_allowlist_keeps_all_existing_and_setup_failure_keys() {
+        assert_eq!(
+            ALLOWED_DESKTOP_PROPERTY_KEYS,
+            &[
+                "provider",
+                "surface",
+                "source",
+                "result",
+                "errorKind",
+                "channel",
+                "desktopVersion",
+                "localCoreVersion",
+                "targetCoreVersion",
+                "autoUpdateEnabled",
+                "eligible",
+                "versionBehind",
+                "durationMs",
+                "exitCode",
+                "skipReason",
+                "enabled",
+                "companiesAttempted",
+                "filesDownloaded",
+                "bytesDownloaded",
+                "filesSkipped",
+                "errorCount",
+                "stageCount",
+                "failedStageCount",
+                "failedStages",
+                "detectedToolCount",
+                "step",
+                "component",
+                "action",
+                "flow",
+                "outcome",
+                "platform",
+                "attemptCount",
+                "failedDependency",
+                "errorCategory",
+                "setupRunId",
+            ]
+        );
+        for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
+            assert!(allowed_desktop_property_key(key));
+        }
+    }
+
+    #[test]
+    fn setup_failure_labels_survive_only_when_in_the_closed_vocabularies() {
+        for dependency in FAILED_DEPENDENCY_VALUES {
+            let sanitized = sanitize_desktop_properties(Some(json!({
+                "failedDependency": dependency,
+            })));
+            assert_eq!(sanitized["failedDependency"], *dependency);
+        }
+        for category in ERROR_CATEGORY_VALUES {
+            let sanitized = sanitize_desktop_properties(Some(json!({
+                "errorCategory": category,
+            })));
+            assert_eq!(sanitized["errorCategory"], *category);
+        }
+
+        let sanitized = sanitize_desktop_properties(Some(json!({
+            "failedDependency": "private-package",
+            "errorCategory": "C:\\\\Users\\\\alice\\\\HQ\\\\error.txt",
+        })));
+        assert_eq!(sanitized["failedDependency"], "unknown");
+        assert_eq!(sanitized["errorCategory"], "unknown");
+        assert!(!sanitized.to_string().contains("alice"));
+    }
+
+    #[test]
+    fn setup_failure_properties_drop_raw_errors_and_bound_failed_stages() {
+        let sanitized = sanitize_desktop_properties(Some(json!({
+            "failedStages": [
+                "content",
+                "deps",
+                "deps",
+                "indexing",
+                "not-a-stage",
+                "/Users/alice/HQ",
+            ],
+            "error": "permission denied at /Users/alice/HQ",
+            "logPath": "/Users/alice/HQ/logs/setup.log",
+        })));
+        assert_eq!(sanitized["failedStages"], json!(["content", "deps", "indexing"]));
+        assert!(sanitized["failedStages"].as_array().unwrap().len() <= MAX_FAILED_STAGES);
+        assert!(sanitized.get("error").is_none());
+        assert!(sanitized.get("logPath").is_none());
+        assert!(!sanitized.to_string().contains("alice"));
     }
 
     // ── Test helpers ─────────────────────────────────────────────────────────

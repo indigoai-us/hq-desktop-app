@@ -7,7 +7,14 @@ import {
   isInstallerPersonUid,
   pingInstallerStep,
 } from './installer-step-telemetry';
-import type { StageId } from './onboarding-setup';
+import {
+  normalizeErrorCategory,
+  normalizeFailedDependency,
+  normalizeFailedStageIds,
+  type ErrorCategory,
+  type FailedDependency,
+  type StageId,
+} from './onboarding-setup';
 import type { WizardStepId } from './onboarding-wizard';
 
 const SCHEMA_VERSION = 3;
@@ -39,6 +46,10 @@ export interface OnboardingStepProperties {
   attemptCount?: number;
   detectedToolCount?: number;
   failedStageCount?: number;
+  failedStages?: StageId[];
+  failedDependency?: FailedDependency;
+  errorCategory?: ErrorCategory;
+  setupRunId?: string;
 }
 
 export interface OnboardingStepEvent {
@@ -200,7 +211,9 @@ export function createOnboardingStepTelemetry(
   };
 }
 
-async function emitOnboardingStep(event: OnboardingStepEvent): Promise<void> {
+export function desktopPropertiesForOnboardingStep(
+  event: OnboardingStepEvent,
+): DesktopTelemetryProperties {
   const properties: DesktopTelemetryProperties = {
     step: event.properties.step,
     action: event.properties.action,
@@ -220,6 +233,23 @@ async function emitOnboardingStep(event: OnboardingStepEvent): Promise<void> {
     const value = event.properties[key];
     if (value !== undefined) properties[key] = value;
   }
+  if (event.properties.setupRunId !== undefined) {
+    properties.setupRunId = event.properties.setupRunId;
+  }
+  if (event.properties.action === 'failed') {
+    properties.errorCategory = normalizeErrorCategory(event.properties.errorCategory);
+    if (event.properties.component === 'deps') {
+      properties.failedDependency = normalizeFailedDependency(event.properties.failedDependency);
+    }
+  }
+  if (event.properties.outcome === 'completed_with_failures') {
+    properties.failedStages = normalizeFailedStageIds(event.properties.failedStages ?? []);
+  }
+  return properties;
+}
+
+async function emitOnboardingStep(event: OnboardingStepEvent): Promise<void> {
+  const properties = desktopPropertiesForOnboardingStep(event);
   await emitDesktopOperationalTelemetryStrict({
     eventName: 'desktop_onboarding_step',
     properties,

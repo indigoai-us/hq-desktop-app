@@ -38,7 +38,9 @@
     allSettled,
     buildInitialStages,
     buildStagesFromManifest,
+    createSetupRunId,
     friendlySetupBands,
+    normalizeFailedStageIds,
     resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
@@ -46,6 +48,7 @@
     setupStageRecoveryAction,
     stageCommandInvocations,
     stageTimeoutMs,
+    setupFailureTelemetryDetails,
     StageTimeoutError,
     STAGE_ORDER,
     withTimeout,
@@ -207,6 +210,7 @@
   let stageCreep = $state(0);
   let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
+  let currentSetupRunId = '';
   let setupCancelled = false;
   let unlistenInstallProgress: UnlistenFn | null = null;
   let unlistenContentProgress: UnlistenFn | null = null;
@@ -660,6 +664,7 @@
 
   function beginSetupRun(): number {
     currentRunId += 1;
+    currentSetupRunId = createSetupRunId();
     setupCancelled = false;
     activeInstallHandles.clear();
     activeContentHandles.clear();
@@ -822,6 +827,30 @@
 
   type StageRunOutcome = 'ok' | 'failed' | 'cancelled';
 
+  type NativeStageFailureDetail = {
+    failedDependency?: unknown;
+    errorCategory?: unknown;
+  };
+
+  async function stageFailureTelemetryDetails(id: StageId, error: unknown) {
+    const timeoutCategory = error instanceof StageTimeoutError ? 'timeout' : undefined;
+    let nativeDetail: NativeStageFailureDetail | undefined;
+    try {
+      nativeDetail = await invokeCommand<NativeStageFailureDetail | undefined>(
+        'take_onboarding_failure_detail',
+        { stage: id },
+      );
+    } catch {
+      // Failure-detail telemetry must not affect setup recovery or its copy.
+      console.warn('[onboarding] setup failure detail was unavailable');
+    }
+    return setupFailureTelemetryDetails({
+      stageId: id,
+      errorCategory: timeoutCategory ?? nativeDetail?.errorCategory,
+      failedDependency: nativeDetail?.failedDependency,
+    });
+  }
+
   async function runStage(
     id: StageId,
     runId: number,
@@ -829,7 +858,11 @@
   ): Promise<StageRunOutcome> {
     if (!isCurrentRun(runId)) return 'cancelled';
     const startedAt = Date.now();
-    recordStep(SETUP_STEP_INDEX, 'started', { component: id, attemptCount });
+    recordStep(SETUP_STEP_INDEX, 'started', {
+      component: id,
+      attemptCount,
+      setupRunId: currentSetupRunId,
+    });
     stages = setStageStatus(stages, id, 'running');
     await journalStageStart(id);
 
@@ -844,6 +877,7 @@
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'cancelled',
+        setupRunId: currentSetupRunId,
       });
       return 'cancelled';
     }
@@ -855,6 +889,7 @@
         component: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
+        setupRunId: currentSetupRunId,
       });
       return 'ok';
     }
@@ -862,11 +897,15 @@
       const message = errorMessage(result.err);
       stages = setStageStatus(stages, id, 'failed', message);
       await journalStageFailure(id, message);
+      const failureDetails = await stageFailureTelemetryDetails(id, result.err);
+      if (!isCurrentRun(runId)) return 'cancelled';
       recordStep(SETUP_STEP_INDEX, 'failed', {
         component: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'stage_command_failed',
+        setupRunId: currentSetupRunId,
+        ...failureDetails,
       });
       return 'failed';
     }
@@ -915,11 +954,14 @@
       setupCompleted = true;
       const result = setupCompletionResult(stages);
       setupFailures = result.failedStages;
+      const failedStages = normalizeFailedStageIds(setupFailures.map((stage) => stage.id));
       markSetupStepCompleted();
       await journalInstallComplete();
       setupCompletionMetrics = {
         stageCount: stages.length,
         failedStageCount: setupFailures.length,
+        failedStages,
+        setupRunId: currentSetupRunId,
         detectedToolCount: aiTools
           ? [
               aiTools.claude_cli,
@@ -939,6 +981,8 @@
       // Consent precedes the optional connector-import step and final handoff.
       advanceTo(CONSENT_STEP_INDEX, 'completed', {
         failedStageCount: setupFailures.length,
+        failedStages,
+        setupRunId: currentSetupRunId,
         outcome: setupFailures.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
       });
     }
@@ -947,6 +991,8 @@
   interface SetupCompletionMetrics {
     stageCount: number;
     failedStageCount: number;
+    failedStages: StageId[];
+    setupRunId: string;
     detectedToolCount: number;
   }
   let setupCompletionMetrics = $state<SetupCompletionMetrics | null>(null);
