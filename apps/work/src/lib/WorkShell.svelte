@@ -42,6 +42,7 @@
     type ChatSidebarApi,
     type PackagesEvents,
     type ReplyThreadScope,
+    type RosterStatus,
     type RowExtrasResolver,
     type Workspace,
     type WorkMeshThread,
@@ -328,6 +329,14 @@
       authed: false,
     }),
   );
+  /**
+   * Where this session is in loading `companies`: `loading` until the first
+   * fetch settles, then `ready` (applied) or `failed` (retry budget spent).
+   * #welcome must not lead with "Create a company" while this is `loading`.
+   */
+  let rosterStatus = $state<RosterStatus>("loading");
+  /** True once `whoami` has replaced the host's account identity this tenant. */
+  let selfHydrated = false;
   let workThreads = $state<WorkMeshThread[]>([]);
   let projectMetaTick = $state(0);
   const projectMeta = createProjectMetaCache({
@@ -385,8 +394,10 @@
     projectMeta.invalidateAll();
     projectMetaTick += 1;
     self = null;
+    selfHydrated = false;
     shallow = readShallowCache("");
     companies = resolveShellCompanies({ authed: false });
+    rosterStatus = "loading";
     workThreads = [];
     selectedCompanyUid = null;
   }
@@ -444,24 +455,50 @@
 
   // A failed roster fetch used to leave `companies` empty for the whole
   // session; the sync runner's company events never re-fetched it either.
-  // Both paths now go through one bounded refresher.
+  // Both paths now go through one bounded refresher. Self hydration rides
+  // the same load: on a clean-VM first sign-in a null `whoami` used to end
+  // the bootstrap silently, with no retry, so #welcome offered "Create a
+  // company" to an owner whose company the backend already had.
   const rosterRefresher = createRosterRefresher({
-    load: () => {
-      if (!self) return Promise.resolve(true);
-      return loadRoster(tenantGeneration, tenantHydration);
+    load: async () => {
+      const generation = tenantGeneration;
+      const hydration = tenantHydration;
+      if (!selfHydrated) {
+        // A hosted page with no session has nothing to hydrate or fetch.
+        if (adapter.kind === "web" && !hostSelf) return true;
+        const hydratedSelf = await hydrateDesktopSelf(hostSelf, adapter);
+        if (!ownsTenant(generation, hydration)) return true;
+        if (!hydratedSelf) return false;
+        self = hydratedSelf;
+        selfHydrated = true;
+      }
+      return loadRoster(generation, hydration);
+    },
+    onSettled: (outcome) => {
+      if (outcome === "applied") rosterStatus = "ready";
+      // A later refresh that gives up keeps the last good roster and its
+      // `ready` status; only a session that never loaded reads as failed.
+      else if (outcome === "exhausted" && rosterStatus === "loading") {
+        rosterStatus = "failed";
+      }
     },
     delaysMs: rosterRetryDelaysMs,
   });
 
   async function bootstrapTenant(expectedGeneration: number): Promise<void> {
-    const hydration = ++tenantHydration;
-    const [hydratedSelf] = await Promise.all([
-      hydrateDesktopSelf(hostSelf, adapter),
-    ]);
-    if (!ownsTenant(expectedGeneration, hydration)) return;
-    self = hydratedSelf;
-    if (!self) return;
+    tenantHydration += 1;
+    if (!ownsTenant(expectedGeneration, tenantHydration)) return;
+    rosterRefresher.cancel();
+    selfHydrated = false;
+    rosterStatus = "loading";
     await rosterRefresher.refresh();
+  }
+
+  /** #welcome's "Couldn't load your companies — Retry": a fresh retry budget. */
+  function retryRoster(): void {
+    rosterRefresher.cancel();
+    rosterStatus = "loading";
+    void rosterRefresher.refresh();
   }
 
   function acceptAuthSession(
@@ -529,7 +566,6 @@
     const unsubscribe =
       adapter.kind === "desktop"
         ? subscribeRosterRefreshEvents(nativeListen, () => {
-            if (!self) return;
             void rosterRefresher.refresh();
           })
         : () => {};
@@ -768,6 +804,8 @@
       onopenurl={hostOpenUrl ?? openUrl}
       {wakes}
       {companies}
+      {rosterStatus}
+      onretryroster={retryRoster}
       {self}
       tenantAccountId={effectiveTenantAccountId}
       tenantGeneration={effectiveTenantGeneration}

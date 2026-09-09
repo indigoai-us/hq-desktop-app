@@ -26,6 +26,16 @@ export const ROSTER_REFRESH_EVENTS = [
 
 export type RosterRefreshEvent = (typeof ROSTER_REFRESH_EVENTS)[number];
 
+/**
+ * Outcome of one load that was still current when it finished:
+ * `applied` — the roster landed; `retrying` — it failed and a backoff retry
+ * is armed; `exhausted` — it failed and the retry budget is spent.
+ */
+export type RosterSettledOutcome = "applied" | "retrying" | "exhausted";
+
+/** Where the shell is in loading the roster for the current session. */
+export type RosterStatus = "loading" | "ready" | "failed";
+
 export interface RosterRefresher {
   /**
    * Fetch now. Resolves `true` when the load applied (or was superseded by a
@@ -44,6 +54,12 @@ export interface RosterRefresher {
 export interface RosterRefresherOptions {
   /** Fetch + apply. `false` or a throw means "failed, retry if budget remains". */
   load: () => Promise<boolean>;
+  /**
+   * Observes every load that was still current when it settled. Loads
+   * superseded by `cancel()` / `dispose()` are never reported. Lets a shell
+   * drive a loading → ready | failed status without polling `retryPending`.
+   */
+  onSettled?: (outcome: RosterSettledOutcome) => void;
   delaysMs?: readonly number[];
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   clearTimeoutFn?: (handle: unknown) => void;
@@ -99,9 +115,11 @@ export function createRosterRefresher(
     if (disposed || myEpoch !== epoch) return true;
     if (applied) {
       attempt = 0;
+      options.onSettled?.("applied");
       return true;
     }
-    scheduleRetry();
+    const retrying = scheduleRetry();
+    options.onSettled?.(retrying ? "retrying" : "exhausted");
     return false;
   }
 

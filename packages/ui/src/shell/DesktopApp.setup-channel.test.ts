@@ -365,3 +365,83 @@ describe("DesktopApp #setup leads with an existing company", () => {
     ).toBeNull();
   });
 });
+
+describe("DesktopApp #setup waits for the company roster", () => {
+  it("shows a quiet loading line and no create card or create copy while the roster loads", async () => {
+    await mountApp(setupChannelWithSeed(), undefined, {
+      companies: [],
+      rosterStatus: "loading",
+    });
+    await selectSetupRow();
+    await settle(10);
+
+    const intro = host.querySelector('[data-testid="setup-channel-intro"]');
+    expect(intro?.getAttribute("data-setup-roster-status")).toBe("loading");
+    expect(
+      host.querySelector('[data-testid="setup-roster-loading"]')?.textContent,
+    ).toMatch(/Loading your workspace/);
+    expect(intro?.textContent).not.toContain(SETUP_HERO.body);
+    expect(intro?.textContent).not.toContain(SETUP_HERO_RETURNING.title);
+    expect(
+      host.querySelector('[data-testid="lifecycle-card"][data-card-kind="create_company"]'),
+      "seeded create_company card must wait for the roster",
+    ).toBeNull();
+    expect(host.querySelector('[data-testid="setup-roster-failed"]')).toBeNull();
+  });
+
+  it("shows the create flow once the roster is ready with zero companies", async () => {
+    await mountApp(setupChannelWithSeed(), undefined, {
+      companies: [],
+      rosterStatus: "ready",
+    });
+    await selectSetupRow();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="lifecycle-card"][data-card-kind="create_company"]'),
+      ).toBeTruthy();
+    });
+    const intro = host.querySelector('[data-testid="setup-channel-intro"]');
+    expect(intro?.getAttribute("data-setup-roster-status")).toBe("ready");
+    expect(intro?.textContent).toContain(SETUP_HERO.body);
+    expect(host.querySelector('[data-testid="setup-roster-loading"]')).toBeNull();
+    expect(host.querySelector('[data-testid="setup-roster-failed"]')).toBeNull();
+  });
+
+  it("shows the create flow plus a Retry line when the roster failed, and Retry re-runs the fetch", async () => {
+    const onretryroster = vi.fn();
+    await mountApp(setupChannelWithSeed(), undefined, {
+      companies: [],
+      rosterStatus: "failed",
+      onretryroster,
+    });
+    await selectSetupRow();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="lifecycle-card"][data-card-kind="create_company"]'),
+      ).toBeTruthy();
+    });
+    const intro = host.querySelector('[data-testid="setup-channel-intro"]');
+    expect(intro?.getAttribute("data-setup-roster-status")).toBe("failed");
+    expect(intro?.textContent).toContain(SETUP_HERO.body);
+    const failed = host.querySelector('[data-testid="setup-roster-failed"]');
+    expect(failed?.textContent).toMatch(/Couldn.t load your companies/);
+    const retry = host.querySelector<HTMLButtonElement>('[data-testid="setup-roster-retry"]');
+    expect(retry?.textContent?.trim()).toBe("Retry");
+    retry!.click();
+    await settle();
+    expect(onretryroster).toHaveBeenCalledOnce();
+  });
+
+  it("leads with the company even while a later roster refresh is in flight", async () => {
+    await mountApp(setupChannelWithSeed(), undefined, {
+      companies: [ACME],
+      rosterStatus: "loading",
+    });
+    await selectSetupRow();
+    await settle(10);
+    const intro = host.querySelector('[data-testid="setup-channel-intro"]');
+    expect(intro?.textContent).toContain(SETUP_HERO_RETURNING.title);
+    expect(host.querySelector('[data-testid="setup-open-company-acme"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="setup-roster-loading"]')).toBeNull();
+  });
+});

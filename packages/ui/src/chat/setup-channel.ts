@@ -166,11 +166,47 @@ export const SETUP_HERO_RETURNING = {
   body: "Open it to pick up where you left off. We'll finish any remaining setup steps from your team's channel. Need a second company? You can add one below.",
 } as const;
 
+/**
+ * Hero copy while the shell is still fetching the roster for this session.
+ * Leading with "Create or choose a company" before the roster has loaded
+ * once is exactly how a brand-new owner was told their website-created
+ * company did not exist.
+ */
+export const SETUP_HERO_LOADING = {
+  eyebrow: SETUP_HERO.eyebrow,
+  title: SETUP_HERO.title,
+  body: "Loading your workspace…",
+} as const;
+
+/** Where the shell is in loading the company roster for this session. */
+export type SetupRosterStatus = "loading" | "ready" | "failed";
+
+/** Copy for the roster-failed line under the hero. */
+export const SETUP_ROSTER_FAILED = {
+  body: "Couldn’t load your companies.",
+  retry: "Retry",
+} as const;
+
+/**
+ * True while the roster has not loaded once for this session. A roster that
+ * already holds a company (from an earlier load) is never "loading" here — a
+ * later refresh must not flip the hero back to a spinner. A host that does
+ * not report a status (fixtures, classic surfaces) is treated as ready.
+ */
+export function setupRosterLoading(
+  companies: readonly Workspace[] | null | undefined,
+  status: SetupRosterStatus | null | undefined,
+): boolean {
+  return status === "loading" && setupCompanies(companies).length === 0;
+}
+
 /** Pick the hero copy for the roster the shell currently knows about. */
 export function setupHeroFor(
   companies: readonly Workspace[] | null | undefined,
-): typeof SETUP_HERO | typeof SETUP_HERO_RETURNING {
-  return setupCompanies(companies).length > 0 ? SETUP_HERO_RETURNING : SETUP_HERO;
+  status: SetupRosterStatus | null | undefined = null,
+): typeof SETUP_HERO | typeof SETUP_HERO_RETURNING | typeof SETUP_HERO_LOADING {
+  if (setupCompanies(companies).length > 0) return SETUP_HERO_RETURNING;
+  return setupRosterLoading(companies, status) ? SETUP_HERO_LOADING : SETUP_HERO;
 }
 
 /**
@@ -222,9 +258,15 @@ export function withoutSeededCreateCompanyCards<
   T extends { systemEvent?: unknown },
 >(
   messages: readonly T[],
-  options: { hasCompany: boolean; createRequested: boolean },
+  options: {
+    hasCompany: boolean;
+    createRequested: boolean;
+    /** Roster not loaded once yet: the seeded card must wait for it. */
+    rosterLoading?: boolean;
+  },
 ): T[] {
-  if (!options.hasCompany || options.createRequested) return messages.slice();
+  if (options.createRequested) return messages.slice();
+  if (!options.hasCompany && !options.rosterLoading) return messages.slice();
   return messages.filter((message) => !isCreateCompanyCard(message.systemEvent));
 }
 

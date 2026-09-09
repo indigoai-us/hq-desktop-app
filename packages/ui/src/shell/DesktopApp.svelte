@@ -48,6 +48,7 @@
     isSetupChannel,
     SETUP_CHANNEL_ID,
     setupCompanies,
+    setupRosterLoading,
     withoutSeededCreateCompanyCards,
   } from "../chat/setup-channel.js";
   import {
@@ -330,6 +331,7 @@
     type SelfIdentity,
   } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
+  import type { RosterStatus } from "../identity/roster-refresh.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
   import "../chat/messaging/messaging-tokens.css";
@@ -365,6 +367,14 @@
     wakes?: ChatWakeBus | null;
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
+    /**
+     * Where the host is in loading `companies` for this session. #setup
+     * hides the seeded "Create a company" card and the create hero copy
+     * until the roster has loaded once (`ready` | `failed`). Omitted = ready.
+     */
+    rosterStatus?: RosterStatus | null;
+    /** Re-run the host's roster fetch after `rosterStatus === "failed"`. */
+    onretryroster?: () => void;
     /**
      * Verified signed-in principal (host-supplied: web = Cognito session,
      * desktop = its auth source). Drives "you" tagging + admin gating in the
@@ -512,6 +522,8 @@
     oncardaction,
     wakes = null,
     companies = null,
+    rosterStatus = null,
+    onretryroster,
     self = null,
     tenantAccountId = null,
     tenantGeneration = 0,
@@ -1409,6 +1421,7 @@
     return withoutSeededCreateCompanyCards(merged, {
       hasCompany: hasRosterCompany,
       createRequested: createCompanyRequested,
+      rosterLoading: setupRosterLoading(companies, rosterStatus),
     });
   });
 
@@ -4740,6 +4753,8 @@
                     companies={rosterCompanies}
                     onopencompany={openCompanyFromSetup}
                     oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+                    {rosterStatus}
+                    {onretryroster}
                   />
                 {/snippet}
                 {#snippet companyHeader()}

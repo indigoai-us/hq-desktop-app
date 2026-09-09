@@ -639,7 +639,20 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     .await;
 
     let (cloud_reachable, error, person, memberships, entities) = match cloud_outcome {
-        Ok((p, m, e)) => (true, None, p, m, e),
+        Ok((p, m, e)) => {
+            // Answer "did the app see my company" from the support log.
+            let slugs: Vec<String> = e.values().map(|entity| entity.slug.clone()).collect();
+            log(
+                "workspaces",
+                &format!(
+                    "cloud roster: person={} memberships={} companies={:?}",
+                    p.as_ref().map(|person| person.uid.as_str()).unwrap_or("none"),
+                    m.len(),
+                    slugs
+                ),
+            );
+            (true, None, p, m, e)
+        }
         Err(e) => {
             // Surface cloud errors to the persistent log alongside the UI
             // tooltip — the menubar's "Cloud unreachable" notice gives the

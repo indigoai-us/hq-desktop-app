@@ -189,3 +189,44 @@ describe("subscribeRosterRefreshEvents", () => {
     expect(() => teardown()).not.toThrow();
   });
 });
+
+describe("createRosterRefresher onSettled", () => {
+  it("reports applied, retrying, then exhausted so a shell can show a failed state", async () => {
+    const onSettled = vi.fn();
+    const load = vi.fn(async () => false);
+    const refresher = createRosterRefresher({ load, delaysMs: [10, 20], onSettled });
+
+    await refresher.refresh();
+    expect(onSettled).toHaveBeenLastCalledWith("retrying");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(onSettled).toHaveBeenLastCalledWith("retrying");
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onSettled).toHaveBeenLastCalledWith("exhausted");
+    expect(load).toHaveBeenCalledTimes(3);
+
+    load.mockResolvedValue(true);
+    await refresher.refresh();
+    expect(onSettled).toHaveBeenLastCalledWith("applied");
+  });
+
+  it("stays silent for loads superseded by cancel() or dispose()", async () => {
+    const onSettled = vi.fn();
+    let release: (value: boolean) => void = () => {};
+    const load = vi.fn(
+      () => new Promise<boolean>((resolve) => { release = resolve; }),
+    );
+    const refresher = createRosterRefresher({ load, delaysMs: [10], onSettled });
+
+    const first = refresher.refresh();
+    refresher.cancel();
+    release(false);
+    await first;
+    expect(onSettled).not.toHaveBeenCalled();
+
+    const second = refresher.refresh();
+    refresher.dispose();
+    release(true);
+    await second;
+    expect(onSettled).not.toHaveBeenCalled();
+  });
+});

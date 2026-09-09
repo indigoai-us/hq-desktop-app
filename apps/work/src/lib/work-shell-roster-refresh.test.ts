@@ -64,17 +64,30 @@ function capturedCompanies(): Workspace[] {
   return desktopAppProps.current.companies as Workspace[];
 }
 
-function makeHost(rosterResponses: Array<() => unknown>) {
+function capturedRosterStatus(): string {
+  if (!desktopAppProps.current) throw new Error("DesktopApp did not mount");
+  return desktopAppProps.current.rosterStatus as string;
+}
+
+function makeHost(
+  rosterResponses: Array<() => unknown>,
+  whoamiResponses: Array<() => unknown> = [],
+) {
   const handlers = new Map<string, NativeHandler[]>();
   const listCalls = { count: 0 };
+  const whoamiCalls = { count: 0 };
   const invoke = vi.fn(async (command: string) => {
     switch (command) {
       case "get_auth_session":
         return { accountId: "acct_ada", generation: 1, status: "active" };
       case "get_auth_state":
         return { authenticated: true, accountId: "acct_ada", email: "ada@example.com" };
-      case "whoami":
+      case "whoami": {
+        whoamiCalls.count += 1;
+        const scripted = whoamiResponses.shift();
+        if (scripted) return scripted();
         return { personUid: "prs_ada", email: "ada@example.com", displayName: "Ada" };
+      }
       case "list_syncable_workspaces": {
         listCalls.count += 1;
         // The last scripted response is sticky, so a retry after the script
@@ -96,7 +109,7 @@ function makeHost(rosterResponses: Array<() => unknown>) {
   function emit(event: string, payload: unknown): void {
     for (const handler of handlers.get(event) ?? []) handler({ payload });
   }
-  return { invoke, listen, emit, listCalls, handlers };
+  return { invoke, listen, emit, listCalls, whoamiCalls, handlers };
 }
 
 function mountDesktopShell(native: ReturnType<typeof makeHost>): void {
@@ -200,5 +213,103 @@ describe("WorkShell company roster refresh (desktop)", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(capturedCompanies().map((c) => c.cloudUid)).toEqual(["cmp_acme"]);
+  });
+});
+
+/**
+ * Regression (clean-VM first sign-in): a brand-new owner signed in for the
+ * first time and #welcome showed the seeded "Name your company" card even
+ * though the backend had the company; a relaunch fixed it. Two silent bails
+ * caused it: a null self hydration ended the bootstrap with no retry, and a
+ * cloud-unreachable roster envelope read as a successful empty roster. Both
+ * must retry, and the shell must say where the roster is (loading → ready |
+ * failed) so #welcome never leads with "Create a company" prematurely.
+ */
+describe("WorkShell first sign-in roster status (desktop)", () => {
+  it("reports loading, then ready once the roster lands", async () => {
+    const native = makeHost([() => ({ workspaces: [ACME_ROW] })]);
+    mountDesktopShell(native);
+    await vi.waitFor(() => {
+      expect(desktopAppProps.current).not.toBeNull();
+    });
+    expect(capturedRosterStatus()).toBe("loading");
+    await vi.waitFor(() => {
+      expect(capturedRosterStatus()).toBe("ready");
+      expect(capturedCompanies().map((c) => c.cloudUid)).toEqual(["cmp_acme"]);
+    });
+  });
+
+  it("retries a transient null self hydration instead of bailing with an empty roster", async () => {
+    const native = makeHost(
+      [() => ({ workspaces: [ACME_ROW] })],
+      [
+        () => {
+          throw new Error("whoami: connection reset");
+        },
+      ],
+    );
+    mountDesktopShell(native);
+
+    await vi.waitFor(() => {
+      expect(native.whoamiCalls.count).toBeGreaterThanOrEqual(2);
+    });
+    await vi.waitFor(() => {
+      expect(capturedRosterStatus()).toBe("ready");
+      expect(capturedCompanies().map((c) => c.cloudUid)).toEqual(["cmp_acme"]);
+    });
+    expect((desktopAppProps.current?.self as { uid: string } | null)?.uid).toBe("prs_ada");
+  });
+
+  it("treats a cloud-unreachable roster envelope as a failed fetch and retries", async () => {
+    const native = makeHost([
+      () => ({ workspaces: [], cloudReachable: false, error: "vault unreachable" }),
+      () => ({ workspaces: [ACME_ROW], cloudReachable: true, error: null }),
+    ]);
+    mountDesktopShell(native);
+
+    await vi.waitFor(() => {
+      expect(native.listCalls.count).toBeGreaterThanOrEqual(2);
+    });
+    await vi.waitFor(() => {
+      expect(capturedRosterStatus()).toBe("ready");
+      expect(capturedCompanies().map((c) => c.cloudUid)).toEqual(["cmp_acme"]);
+    });
+  });
+
+  it("reports failed once the retry budget is spent, and Retry re-runs the fetch", async () => {
+    const native = makeHost([
+      () => {
+        throw new Error("vault unreachable");
+      },
+    ]);
+    mountDesktopShell(native);
+
+    await vi.waitFor(() => {
+      expect(native.listCalls.count).toBe(4);
+    });
+    await vi.waitFor(() => {
+      expect(capturedRosterStatus()).toBe("failed");
+    });
+    expect(capturedCompanies()).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(native.listCalls.count).toBe(4);
+
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "list_syncable_workspaces") {
+        native.listCalls.count += 1;
+        return { workspaces: [ACME_ROW] };
+      }
+      if (command === "whoami") {
+        return { personUid: "prs_ada", email: "ada@example.com", displayName: "Ada" };
+      }
+      return null;
+    });
+    const retry = desktopAppProps.current?.onretryroster as (() => void) | undefined;
+    expect(typeof retry).toBe("function");
+    retry!();
+    await vi.waitFor(() => {
+      expect(capturedRosterStatus()).toBe("ready");
+      expect(capturedCompanies().map((c) => c.cloudUid)).toEqual(["cmp_acme"]);
+    });
   });
 });

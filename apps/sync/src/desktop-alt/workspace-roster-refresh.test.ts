@@ -190,6 +190,35 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
   });
 
+  it('treats a cloud-unreachable roster envelope as a failed fetch and retries it', async () => {
+    // `list_syncable_workspaces` resolves (never rejects) with an empty
+    // roster + `cloudReachable: false` when the cloud branch fails. On a
+    // clean-VM first sign-in that read as "no companies" and stuck there.
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn, calls } = mockInvoke([
+      () => ({ workspaces: [], cloudReachable: false, error: 'vault unreachable' }),
+      () => ({ workspaces: [ACME], cloudReachable: true, error: null }),
+    ]);
+    component = mount(HqWorkWorkShell, {
+      target: host,
+      props: { invokeFn, rosterRetryDelaysMs: [5, 5, 5] },
+    });
+    await flush();
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).toContain(
+        'vault unreachable',
+      );
+    });
+    await vi.waitFor(() => {
+      expect(rosterCalls(calls)).toBe(2);
+    });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+    });
+  });
+
   it('stops listening once unmounted', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);

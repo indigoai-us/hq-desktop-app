@@ -31,11 +31,14 @@
     SETUP_DEEP_LINK_PROMPT,
     SETUP_LAUNCH_COMMANDS,
     SETUP_RESOURCES,
+    SETUP_ROSTER_FAILED,
     SETUP_SUPPORT_NOTE,
     setupCompanies,
     setupCompanyActionLabel,
     setupHeroFor,
+    setupRosterLoading,
     type SetupResourceKind,
+    type SetupRosterStatus,
   } from "./setup-channel";
   import { SETUP_HERO_ART } from "./setup-welcome-art";
   import type { EntryPointResult } from "./lifecycle-entry-points";
@@ -70,6 +73,15 @@
      * renders inline where the control was.
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
+    /**
+     * Where the shell is in loading `companies` for this session. While
+     * `loading` (and no company is known yet) the hero shows a quiet
+     * "Loading your workspace…" line instead of the create prompt; `failed`
+     * adds a one-line retry under the create prompt. Omitted = ready.
+     */
+    rosterStatus?: SetupRosterStatus | null;
+    /** Re-run the roster fetch after a `failed` status. */
+    onretryroster?: () => void;
   }
 
   let {
@@ -80,11 +92,15 @@
     companies = null,
     onopencompany,
     oncreatecompany = null,
+    rosterStatus = null,
+    onretryroster,
   }: Props = $props();
 
   const rosterCompanies = $derived(setupCompanies(companies));
   const hasCompany = $derived(rosterCompanies.length > 0);
-  const hero = $derived(setupHeroFor(companies));
+  const rosterLoading = $derived(setupRosterLoading(companies, rosterStatus));
+  const rosterFailed = $derived(rosterStatus === "failed" && !hasCompany);
+  const hero = $derived(setupHeroFor(companies, rosterStatus));
 
   let createAnotherBusy = $state(false);
   let createAnotherError = $state<string | null>(null);
@@ -187,6 +203,7 @@
   data-testid="setup-channel-intro"
   data-setup-threads="none"
   data-setup-has-company={hasCompany ? "true" : "false"}
+  data-setup-roster-status={rosterStatus ?? "ready"}
 >
   <div class="hero" data-testid="setup-hero">
     <img
@@ -209,7 +226,33 @@
     <div class="hero-copy">
       <span class="eyebrow">{hero.eyebrow}</span>
       <h2 class="hero-title">{hero.title}</h2>
-      <p class="hero-body">{hero.body}</p>
+      {#if rosterLoading}
+        <p
+          class="hero-body roster-loading"
+          role="status"
+          aria-live="polite"
+          data-testid="setup-roster-loading"
+        >
+          {hero.body}
+        </p>
+      {:else}
+        <p class="hero-body">{hero.body}</p>
+      {/if}
+      {#if rosterFailed}
+        <p class="roster-failed" role="alert" data-testid="setup-roster-failed">
+          <span>{SETUP_ROSTER_FAILED.body}</span>
+          {#if onretryroster}
+            <button
+              type="button"
+              class="quiet-btn"
+              data-testid="setup-roster-retry"
+              onclick={() => onretryroster?.()}
+            >
+              {SETUP_ROSTER_FAILED.retry}
+            </button>
+          {/if}
+        </p>
+      {/if}
 
       {#if hasCompany}
         <div
@@ -462,6 +505,21 @@
     font-size: var(--text-base, 13px);
     line-height: 1.55;
     color: rgba(255, 255, 255, 0.74);
+  }
+
+  .roster-loading {
+    color: rgba(255, 255, 255, 0.62);
+  }
+
+  .roster-failed {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: var(--text-base, 13px);
+    line-height: 1.4;
+    color: rgba(255, 255, 255, 0.85);
   }
 
   .hero-actions {

@@ -119,6 +119,8 @@ export {
   type RosterListenFn,
   type RosterRefresher,
   type RosterRefreshEvent,
+  type RosterSettledOutcome,
+  type RosterStatus,
 } from "./identity/roster-refresh.js";
 export { createTenantStorage } from "./identity/tenant-storage.js";
 
