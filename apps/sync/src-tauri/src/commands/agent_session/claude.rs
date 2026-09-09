@@ -690,7 +690,9 @@ pub async fn probe_command_catalog(cwd: PathBuf) -> Result<CommandCatalog, Strin
         resume: None,
         permission_mode: hq_desktop_core::agent_session::types::PermissionMode::Prompt,
     };
-    let mut launch = claude_launch(paths::resolve_bin("claude"), &spec, cwd);
+    // Same resolution as a real session: PATH first, then the Claude Desktop
+    // bundled CLI. A PATH-only lookup fails on a Mac that only has the app.
+    let mut launch = claude_launch(claude_program(), &spec, cwd);
     launch.args.extend(catalog_probe_args());
     let mut child = StdioChild::spawn(&launch).await
         .map_err(|e| format!("Could not start Claude model discovery: {e}"))?;

@@ -388,6 +388,28 @@ describe("guided cards", () => {
     expect(state.statusLine).toBe("Quick check for prior work.");
   });
 
+  it("the card survives the AskUserQuestion tool call that carries its question", () => {
+    const state = interpretSetupRun(
+      [
+        say('I found a little prior history.\n\n[hq-setup] card={"kind":"found","items":[{"label":"Claude Code sessions","count":5}]}'),
+        { kind: "toolCall", id: "t1", name: "AskUserQuestion" },
+        ask("req-1", "Import", ["Import now", "Skip"]),
+      ],
+      "needsYou",
+    );
+    expect(state.card).toMatchObject({ kind: "found", items: [{ label: "Claude Code sessions", count: 5 }] });
+    // Any other tool call means the agent moved on.
+    const moved = interpretSetupRun(
+      [
+        say('[hq-setup] card={"kind":"found","items":[{"label":"Plans","count":1}]}'),
+        { kind: "toolCall", id: "t2", name: "Bash" },
+        ask("req-2", "Import", ["Import now", "Skip"]),
+      ],
+      "needsYou",
+    );
+    expect(moved.card).toBeNull();
+  });
+
   it("the card clears once the question is answered and work resumes", () => {
     const events = [
       say('[hq-setup] card={"kind":"secret","name":"DATABASE_URL"}'),

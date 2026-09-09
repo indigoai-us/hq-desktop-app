@@ -76,6 +76,8 @@ describe("SetupRunCard", () => {
     expect(question?.textContent).toContain("What do you want help with first?");
     const choices = host.querySelectorAll<HTMLButtonElement>('[data-testid="setup-run-choice"]');
     expect(choices).toHaveLength(2);
+    // An option with a description turns the row into a stacked list.
+    expect(choices[0]!.parentElement?.classList.contains("choices--stacked")).toBe(true);
     choices[1]!.click();
     expect(onanswer).toHaveBeenCalledWith("req-1", "q1", ["Engineering"]);
   });

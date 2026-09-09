@@ -351,7 +351,12 @@
           {/each}
         </div>
       {:else if question.kind === "choice" && question.options.length > 0}
-        <div class="choices" role="group" aria-label="Your answer">
+        <div
+          class="choices"
+          class:choices--stacked={question.options.some((option) => Boolean(option.description))}
+          role="group"
+          aria-label="Your answer"
+        >
           {#each question.options as option (option.label)}
             <button
               type="button"
@@ -782,6 +787,24 @@
     white-space: normal;
     text-align: left;
     max-width: 22rem;
+    min-width: 0;
+  }
+  /* Options with descriptions read as a list: one full-width row each, text
+     wrapping inside — never a chip whose description runs past its edge. */
+  .choices--stacked {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .choices--stacked .choice {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    padding: 8px 12px;
+  }
+  .choices--stacked .choice-desc,
+  .choices--stacked .choice-label {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .choice--picked {

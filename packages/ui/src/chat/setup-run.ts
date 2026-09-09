@@ -453,13 +453,18 @@ export function interpretSetupRun(
         card = null;
         break;
       case "toolCall":
-      case "toolResult":
+      case "toolResult": {
         // Work resumed: whatever was asked has been answered.
         assistantIsLatest = false;
         pendingRequest = null;
-        card = null;
+        // The question itself arrives as a tool call (AskUserQuestion) right
+        // after the card marker — that is the card's own question, not work
+        // resuming, so the card must survive it.
+        const toolName = String((event as { name?: unknown }).name ?? "");
+        if (event.kind !== "toolCall" || !/askuserquestion/i.test(toolName)) card = null;
         if (!touched) advanceTo("tools", "running");
         break;
+      }
       case "turnDone": {
         const status = (event as { status?: unknown }).status;
         if (status === "error") errored = true;
