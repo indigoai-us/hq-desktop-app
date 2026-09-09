@@ -117,13 +117,17 @@ export interface SetupRunFailure {
   message: string;
 }
 
-const AUTH_FAILURE = /oauth|authenticat|not logged in|sign(ed)?[- ]in|log ?in\b|session expired|token|credential|api key/i;
+// Deliberately narrow: "you're signed in to HQ Cloud" in a summary is not a failure.
+const AUTH_FAILURE =
+  /oauth|authenticat|not logged in|not signed in|sign in again|please (sign|log) in|sign-in (expired|failed|required)|session expired|token (expired|refresh)|refresh (the )?token|invalid api key|credential/i;
+/** Longer than this and the text is a reply, not an error the engine surfaced. */
+const FAILURE_TEXT_MAX = 400;
 const LIMIT_FAILURE = /usage[_ ]limit|rate[_ ]limit|quota|credits|too many requests|spend control/i;
 
 /** Classify an error the engine surfaced (an `error` event or the agent's last words before exiting). */
 export function classifySetupFailure(message: string): SetupRunFailure | null {
   const text = message.trim();
-  if (!text) return null;
+  if (!text || text.length > FAILURE_TEXT_MAX) return null;
   const kind = LIMIT_FAILURE.test(text) ? "limit" : AUTH_FAILURE.test(text) ? "auth" : "other";
   return { kind, message: text };
 }
@@ -545,7 +549,9 @@ export function interpretSetupRun(
 
   const ended = !done && (exited || phase === "ended" || (errored && phase !== "working"));
   // An agent that exits right after reporting a problem in prose: that prose is the reason.
-  const failure = ended ? classifySetupFailure(lastError || (errored || exited ? (lastAssistant ?? "") : "")) : null;
+  const failure = ended
+    ? (classifySetupFailure(lastError || (errored || exited ? (lastAssistant ?? "") : "")) ?? { kind: "other", message: "" })
+    : null;
 
   let question: SetupRunQuestion | null = null;
   if (!done && !ended) {
@@ -626,6 +632,13 @@ export interface SetupRunRecord {
   step: number;
   /** Defaults to `running` for records written before outcomes were kept. */
   status: SetupRunRecordStatus;
+  /** Why an `ended` run stopped, when the engine said. */
+  failure?: SetupRunFailure;
+}
+
+/** Does this reply read as the finish? (The same words the interpreter uses.) */
+export function isSetupDoneText(text: string): boolean {
+  return DONE_PATTERNS.test(text) || /\[hq-setup\]\s+step=moves\s+status=done/i.test(text);
 }
 
 type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -643,16 +656,21 @@ export function loadSetupRunRecord(storage?: StorageLike | null): SetupRunRecord
   try {
     const raw = storageOf(storage)?.getItem(SETUP_RUN_SESSION_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { sessionId?: unknown; step?: unknown; status?: unknown };
+    const parsed = JSON.parse(raw) as { sessionId?: unknown; step?: unknown; status?: unknown; failure?: unknown };
     if (typeof parsed?.sessionId !== "string" || !parsed.sessionId.trim()) return null;
     const step = typeof parsed.step === "number" && Number.isFinite(parsed.step) ? parsed.step : 0;
     const status: SetupRunRecordStatus =
       parsed.status === "done" || parsed.status === "ended" ? parsed.status : "running";
-    return {
+    const record: SetupRunRecord = {
       sessionId: parsed.sessionId,
       step: Math.min(Math.max(Math.floor(step), 0), SETUP_RUN_STEPS.length - 1),
       status,
     };
+    const failure = parsed.failure as { kind?: unknown; message?: unknown } | undefined;
+    if (status === "ended" && failure && (failure.kind === "auth" || failure.kind === "limit" || failure.kind === "other")) {
+      record.failure = { kind: failure.kind, message: typeof failure.message === "string" ? failure.message : "" };
+    }
+    return record;
   } catch {
     return null;
   }

@@ -16,7 +16,7 @@ import {
   saveSetupRunRecord,
   SETUP_RUN_STEPS,
   SETUP_FAILURE_COPY,
-  classifySetupFailure,
+  isSetupDoneText,
   setupProvidersReady,
   type SetupProviderStatus,
   type SetupProviderTool,
@@ -170,15 +170,15 @@ export function withFailureLine(
   return [...turns, { id: `setup:${sessionId}:failure`, role: "agent", text: friendly, seq }];
 }
 
-/**
- * What a remembered early stop can still tell us when the engine no longer
- * has the session: the last thing the agent said, if it reads as a sign-in
- * problem, else just "it stopped".
- */
-export function cachedSetupFailure(turns: SetupAgentTurn[]): SetupRunFailure {
+/** A remembered early stop whose session the engine has forgotten: the reason the record kept, else just "it stopped". */
+export function cachedSetupFailure(record: { failure?: SetupRunFailure } | null): SetupRunFailure {
+  return record?.failure ?? { kind: "other", message: "" };
+}
+
+/** Did the cached conversation actually end on the finish? (Older builds did not mark it.) */
+export function cachedSetupDone(turns: SetupAgentTurn[]): boolean {
   const last = [...turns].reverse().find((turn) => turn.role === "agent");
-  const classified = last ? classifySetupFailure(last.text) : null;
-  return classified && classified.kind !== "other" ? classified : { kind: "other", message: "" };
+  return last ? isSetupDoneText(last.text) : false;
 }
 
 export class SetupAgent {
@@ -202,6 +202,8 @@ export class SetupAgent {
   answers = $state<Map<string, string>>(new Map());
   /** What the channel showed last time, when the engine no longer has the session. */
   private cachedTurns = $state<SetupAgentTurn[]>([]);
+  /** Why the remembered run stopped, from the record. */
+  private recordFailure = $state<SetupRunFailure | null>(null);
 
   readonly state: SetupRunState | null;
   /** A run exists (live, remembered, or finished): the hero shows the stepper, the channel the agent. */
@@ -232,7 +234,7 @@ export class SetupAgent {
     this.failure = $derived.by(() => {
       if (this.state) return this.state.ended ? (this.state.failure ?? null) : null;
       // Remembered as stopped, and the engine no longer has the session.
-      if (this.mode === "stopped" && this.sessionId) return cachedSetupFailure(this.cachedTurns);
+      if (this.mode === "stopped" && this.sessionId) return this.recordFailure ?? { kind: "other", message: "" };
       return null;
     });
     this.transcript = $derived.by(() => {
@@ -257,10 +259,16 @@ export class SetupAgent {
     if (record) {
       this.sessionId = record.sessionId;
       this.resumeStep = record.step;
-      this.mode = record.status === "done" ? "done" : record.status === "ended" ? "stopped" : "resume";
       this.cachedTurns = loadTranscriptCache(record.sessionId);
-      if (record.status === "done") this.finished = true;
-      if (record.status === "ended") {
+      // A run that reached the finish is done even if the record missed it.
+      const done = record.status === "done" || (record.status === "ended" && cachedSetupDone(this.cachedTurns));
+      this.mode = done ? "done" : record.status === "ended" ? "stopped" : "resume";
+      if (done) {
+        this.finished = true;
+        if (record.status !== "done") saveSetupRunRecord({ sessionId: record.sessionId, step: SETUP_RUN_STEPS.length - 1, status: "done" });
+      }
+      if (record.status === "ended" && !done) {
+        this.recordFailure = cachedSetupFailure(record);
         // Find out afresh which agents are signed in: the channel offers them.
         this.providersRefreshedForFailure = true;
         void this.refreshProviders(true);
@@ -325,7 +333,7 @@ export class SetupAgent {
       return;
     }
     if (state.ended) {
-      saveSetupRunRecord({ sessionId, step: state.step, status: "ended" });
+      saveSetupRunRecord({ sessionId, step: state.step, status: "ended", ...(state.failure ? { failure: state.failure } : {}) });
       return;
     }
     saveSetupRunRecord({ sessionId, step: state.step, status: "running" });

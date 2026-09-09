@@ -310,6 +310,10 @@ describe("interpretSetupRun — finish and stop", () => {
     expect(classifySetupFailure("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage")?.kind).toBe("limit");
     expect(classifySetupFailure("rate_limit_exceeded: retry later")?.kind).toBe("limit");
     expect(classifySetupFailure("Something else broke")?.kind).toBe("other");
+    // A finished summary that mentions being signed in is not a failure, and
+    // a reply-length text is never an error the engine surfaced.
+    expect(classifySetupFailure("All set — you're done. You're signed in to HQ Cloud as x@y.com.")?.kind).toBe("other");
+    expect(classifySetupFailure("All set — you're done. ".repeat(30))).toBeNull();
     expect(classifySetupFailure("   ")).toBeNull();
   });
 });
@@ -326,6 +330,13 @@ describe("resume record", () => {
     expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 2, status: "running" });
     clearSetupRunRecord();
     expect(loadSetupRunRecord()).toBeNull();
+  });
+
+  it("keeps why an ended run stopped, and drops it for other outcomes", () => {
+    saveSetupRunRecord({ sessionId: "s1", step: 2, status: "ended", failure: { kind: "auth", message: "OAuth session expired" } });
+    expect(loadSetupRunRecord()?.failure).toEqual({ kind: "auth", message: "OAuth session expired" });
+    window.localStorage.setItem(SETUP_RUN_SESSION_KEY, JSON.stringify({ sessionId: "s1", step: 2, status: "done", failure: { kind: "auth", message: "x" } }));
+    expect(loadSetupRunRecord()?.failure).toBeUndefined();
   });
 
   it("keeps the outcome and treats an old record without one as still running", () => {

@@ -315,8 +315,25 @@ describe("SetupAgent", () => {
     expect(agent.providersReady).toBe(false);
   });
 
+  it("a remembered run whose last words were the finish is done, even if an older build recorded it as ended", async () => {
+    saveSetupRunRecord({ sessionId: "sess-old", step: 5, status: "ended" });
+    window.localStorage.setItem(
+      "hq.welcome.setup-run-transcript.v1",
+      JSON.stringify({
+        sessionId: "sess-old",
+        turns: [{ id: "setup:sess-old:9", role: "agent", text: "All set — you're done. Here's where you landed.\n\n- You're signed in to HQ Cloud as x@y.com.", seq: 9 }],
+      }),
+    );
+    const agent = new SetupAgent(fakeSetupRun());
+    await settle();
+    expect(agent.mode).toBe("done");
+    expect(agent.failure).toBeNull();
+    expect(agent.transcript.map((turn) => turn.text)[0]).toContain("All set — you're done");
+    expect(loadSetupRunRecord()?.status).toBe("done");
+  });
+
   it("a remembered sign-in stop whose session is gone still reads plainly and asks which agents are ready", async () => {
-    saveSetupRunRecord({ sessionId: "sess-gone", step: 0, status: "ended" });
+    saveSetupRunRecord({ sessionId: "sess-gone", step: 0, status: "ended", failure: { kind: "auth", message: "Failed to authenticate: OAuth session expired and could not be refreshed" } });
     window.localStorage.setItem(
       "hq.welcome.setup-run-transcript.v1",
       JSON.stringify({

@@ -4971,14 +4971,14 @@
                                     setupAgent.sessionId,
                                 )}
                             >
-                              Open in Sessions
+                              Continue in HQ Sessions
                             </button>
                           {/if}
                           <button type="button" class="setup-agent-btn" data-testid="setup-agent-open-claude" onclick={() => void launchSetupIn("claude")}>
-                            Open in Claude Code
+                            Continue in Claude Code
                           </button>
                           <button type="button" class="setup-agent-btn" data-testid="setup-agent-open-codex" onclick={() => void launchSetupIn("codex")}>
-                            Open in Codex
+                            Continue in Codex
                           </button>
                         </div>
                         {#if setupLaunchError}

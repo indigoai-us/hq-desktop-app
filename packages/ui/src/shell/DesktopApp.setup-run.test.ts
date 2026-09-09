@@ -239,7 +239,7 @@ describe("DesktopApp native setup run wiring", () => {
     expect(api.start).toHaveBeenLastCalledWith("/setup --guided", "claude");
   });
 
-  it("finishing offers Open in Sessions, Claude Code, and Codex under the last message", async () => {
+  it("finishing offers Continue in HQ Sessions, Claude Code, and Codex under the last message", async () => {
     const api = fakeSetupRun();
     await mountApp(api);
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
