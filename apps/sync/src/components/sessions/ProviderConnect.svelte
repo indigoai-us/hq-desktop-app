@@ -2,6 +2,8 @@
   import { onDestroy } from 'svelte';
   import type { SessionToolId } from './session-models';
   import { liveSessionStore, type ProviderLoginState } from '../../desktop-alt/lib/live-session-store.svelte';
+  import { CLAUDE_INSTALL_URL, CODEX_INSTALL_URL } from '../../lib/onboarding-summary';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
   interface Props {
     selected: SessionToolId;
     claudeAvailable: boolean;
@@ -13,6 +15,13 @@
     onrefresh?: () => Promise<void>;
   }
   let { selected, claudeAvailable, codexAvailable, claudeConnected, codexConnected, onconnected, onchoose, onrefresh }: Props = $props();
+  /**
+   * Both desktop apps carry the CLI Sessions needs: Claude.app manages a Claude
+   * Code build, ChatGPT.app ships Codex. Send people to the app download, not
+   * to a terminal install guide.
+   */
+  const installUrl = (tool: SessionToolId) => tool === 'claude' ? CLAUDE_INSTALL_URL : CODEX_INSTALL_URL;
+  const installLabel = (tool: SessionToolId) => tool === 'claude' ? 'Install the Claude app (it includes Claude Code),' : 'Install the ChatGPT app (it includes Codex),';
   let active = $state<SessionToolId | null>(null);
   let loginState = $state<ProviderLoginState['state']>('disconnected');
   let message = $state('');
@@ -75,7 +84,10 @@
         {:else if available(tool)}
           <button class:primary={tool === selected} disabled={busy || loginState === 'waiting'} onclick={() => void start(tool)}>{busy && active === tool ? 'Opening sign-in…' : `Connect ${tool === 'claude' ? 'Claude' : 'Codex'}`}</button>
         {:else}
-          <span class="install-note">Install {name(tool)}, then check again.</span>
+          <span class="install-note">
+            <a href={installUrl(tool)} target="_blank" rel="noopener noreferrer" onclick={(event) => { event.preventDefault(); void openExternal(installUrl(tool)).catch(() => { message = 'Could not open the download page. Visit ' + installUrl(tool) + ' in your browser.'; }); }}>{installLabel(tool)}</a>
+            <span>then check again.</span>
+          </span>
         {/if}
       </div>
     {/each}

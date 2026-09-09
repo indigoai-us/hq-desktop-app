@@ -278,7 +278,7 @@ describe('provider readiness', () => {
     expect(host.textContent).not.toContain('Claude Code is not installed');
     chooseTool('Claude');
     await settle();
-    expect(host.textContent).toContain('Install Claude Code, then check again.');
+    expect(host.textContent).toContain('Install the Claude app (it includes Claude Code), then check again.');
     expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
     chooseTool('Codex');
     await settle();
@@ -289,7 +289,7 @@ describe('provider readiness', () => {
   });
 
   it.each([
-    ['codexAvailable', 'Install Codex, then check again.'],
+    ['codexAvailable', 'Install the ChatGPT app (it includes Codex), then check again.'],
     ['codexLoggedIn', 'Connect Codex'],
     ['hooksReady', 'HQ session hooks are not ready'],
   ] as const)('blocks Codex when %s is false', async (field, message) => {
