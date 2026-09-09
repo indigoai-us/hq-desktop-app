@@ -326,3 +326,34 @@ describe("SetupRunCard guided cards", () => {
     expect(host.querySelectorAll('[data-testid="setup-run-choice"]')).toHaveLength(2);
   });
 });
+
+describe("SetupRunCard prompt variant", () => {
+  it("shows chips only: no question text, descriptions as tooltips, nothing for a plain question", async () => {
+    const run = interpretSetupRun(
+      [
+        { kind: "assistantMessage", text: "Want me to import?" },
+        {
+          kind: "questionRequest",
+          requestId: "req-1",
+          questions: [{ id: "q1", text: "Import?", options: [{ label: "Import now", description: "Scan and propose" }, { label: "Skip" }] }],
+        },
+      ],
+      "needsYou",
+    );
+    await mountCard({ mode: "live", run, variant: "prompt", onanswer: vi.fn() });
+    expect(host.querySelector(".question-text")).toBeNull();
+    const chips = host.querySelectorAll<HTMLButtonElement>('[data-testid="setup-run-choice"]');
+    expect(chips).toHaveLength(2);
+    expect(chips[0]!.title).toBe("Scan and propose");
+    expect(chips[0]!.textContent?.trim()).toBe("Import now");
+    expect(host.querySelector('[data-testid="setup-run-answer"]')).toBeNull();
+
+    const plain = interpretSetupRun(
+      [{ kind: "assistantMessage", text: "Now a few questions.\n\n**What's your name?**" }, { kind: "turnDone", status: "success" }],
+      "idle",
+    );
+    await mountCard({ mode: "live", run: plain, variant: "prompt" });
+    expect(host.querySelector('[data-testid="setup-run-question"]')).toBeNull();
+    expect(host.querySelector('[data-testid="setup-run-steps"]')).toBeNull();
+  });
+});

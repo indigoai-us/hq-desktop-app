@@ -212,10 +212,14 @@
 
   {#if done && variant !== "steps"}
     <h3 class="run-title" data-testid="setup-run-done-title">{SETUP_RUN_DONE.title}</h3>
-    <p class="run-body" data-testid="setup-run-summary">{run?.summary || SETUP_RUN_DONE.summary}</p>
+    {#if variant !== "prompt"}
+      <p class="run-body" data-testid="setup-run-summary">{run?.summary || SETUP_RUN_DONE.summary}</p>
+    {/if}
   {:else if stopped && variant !== "steps"}
     <h3 class="run-title" data-testid="setup-run-stopped-title">{SETUP_RUN_STOPPED.title}</h3>
-    <p class="run-body">{SETUP_RUN_STOPPED.body}</p>
+    {#if variant !== "prompt"}
+      <p class="run-body">{SETUP_RUN_STOPPED.body}</p>
+    {/if}
   {/if}
 
   {#if variant !== "prompt"}
@@ -250,9 +254,11 @@
 
   {#if variant !== "steps"}
 
-  {#if question}
+  {#if question && !(variant === "prompt" && question.kind === "text")}
     <div class="question" data-testid="setup-run-question" data-question-kind={question.kind}>
-      <p class="question-text">{question.text}</p>
+      {#if variant !== "prompt"}
+        <p class="question-text">{question.text}</p>
+      {/if}
       {#if card?.kind === "found" && card.items.length > 0}
         <div class="found" data-testid="setup-run-found">
           <span class="found-title">{card.title || "Here’s what I found"}</span>
@@ -367,7 +373,7 @@
       {:else if question.kind === "choice" && question.options.length > 0}
         <div
           class="choices"
-          class:choices--stacked={question.options.some((option) => Boolean(option.description))}
+          class:choices--stacked={variant !== "prompt" && question.options.some((option) => Boolean(option.description))}
           role="group"
           aria-label="Your answer"
         >
@@ -377,12 +383,13 @@
               class="launch-btn choice"
               class:choice--picked={picked.includes(option.label)}
               data-testid="setup-run-choice"
+              title={variant === "prompt" ? (option.description ?? undefined) : undefined}
               aria-pressed={question.multiSelect ? picked.includes(option.label) : undefined}
               disabled={busy}
               onclick={() => choose(option.label)}
             >
               <span class="choice-label">{option.label}</span>
-              {#if option.description}
+              {#if option.description && variant !== "prompt"}
                 <span class="choice-desc">{option.description}</span>
               {/if}
             </button>
@@ -452,7 +459,7 @@
           </button>
         </div>
       {:else if variant === "prompt"}
-        <p class="reply-hint" data-testid="setup-run-reply-hint">Reply in the message box below.</p>
+        <!-- A plain question: the composer under the messages is the reply box. -->
       {:else}
         <form class="answer" onsubmit={sendText}>
           <input
@@ -537,6 +544,68 @@
     flex-direction: column;
     gap: 14px;
     color: var(--text-1, inherit);
+  }
+
+  /* Under the messages: no box, no repeated question — just small chips,
+     the same weight as the quick-reply controls elsewhere in the chat. */
+  .run-card[data-setup-run-variant="prompt"] {
+    gap: 8px;
+  }
+  .run-card[data-setup-run-variant="prompt"] .question {
+    gap: 8px;
+  }
+  .run-card[data-setup-run-variant="prompt"] .run-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-2, inherit);
+  }
+  .run-card[data-setup-run-variant="prompt"] .choices {
+    gap: 6px;
+  }
+  .run-card[data-setup-run-variant="prompt"] .choice,
+  .run-card[data-setup-run-variant="prompt"] .launch-btn,
+  .run-card[data-setup-run-variant="prompt"] .app {
+    min-height: 26px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    max-width: none;
+  }
+  .run-card[data-setup-run-variant="prompt"] .choice {
+    flex-direction: row;
+    align-items: center;
+  }
+  .run-card[data-setup-run-variant="prompt"] .apps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .run-card[data-setup-run-variant="prompt"] .app {
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px 0 6px;
+  }
+  .run-card[data-setup-run-variant="prompt"] .app-desc {
+    display: none;
+  }
+  .run-card[data-setup-run-variant="prompt"] .app-mark {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+  }
+  .run-card[data-setup-run-variant="prompt"] .found {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+  .run-card[data-setup-run-variant="prompt"] .answer-input {
+    min-height: 28px;
+    border-radius: 999px;
+    font-size: 12px;
+  }
+  .run-card[data-setup-run-variant="prompt"] .run-actions {
+    gap: 8px;
   }
 
   /* Over the hero art the stepper is always on dark wallpaper. */

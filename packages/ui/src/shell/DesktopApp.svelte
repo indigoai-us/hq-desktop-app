@@ -1032,6 +1032,18 @@
       replyCount: 0,
     }));
   });
+  /** Between the person's turns the agent shows as "thinking", like any other agent. */
+  let setupThinkingSince = 0;
+  const setupThinking = $derived.by((): ThinkingEntry | null => {
+    if (!inSetupChannelWithAgent || setupAgent.mode !== "live") return null;
+    const state = setupAgent.state;
+    if (!state || state.done || state.ended || state.question) {
+      setupThinkingSince = 0;
+      return null;
+    }
+    if (!setupThinkingSince) setupThinkingSince = Date.now();
+    return { agentUid: SETUP_AGENT_UID, agentName: SETUP_AGENT_NAME, startedAt: setupThinkingSince, phase: "thinking" };
+  });
   let setupLaunchError = $state<string | null>(null);
   /** The finish buttons: open the HQ folder in a coding tool, ready for `/startwork`. */
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
@@ -4904,12 +4916,6 @@
                     {@const agentState = setupAgent.state}
                     {@const agentDone = setupAgent.mode === "done" || Boolean(agentState?.done)}
                     <div class="setup-agent-prompt" data-testid="setup-agent-prompt">
-                      {#if setupAgent.mode === "live" && agentState && !agentState.done && !agentState.ended && !agentState.question}
-                        <p class="setup-agent-working" data-testid="setup-agent-working">
-                          <span class="setup-agent-pulse" aria-hidden="true"></span>
-                          {SETUP_AGENT_NAME} is working{agentState.statusLine ? ` — ${agentState.statusLine}` : "…"}
-                        </p>
-                      {/if}
                       <SetupRunCard
                         variant="prompt"
                         mode={setupAgent.mode === "starting" || setupAgent.mode === "idle" ? "live" : setupAgent.mode}
@@ -4929,7 +4935,7 @@
                           {#if extraPages?.sessions && setupAgent.sessionId}
                             <button
                               type="button"
-                              class="setup-agent-btn primary"
+                              class="setup-agent-btn"
                               data-testid="setup-agent-open-sessions"
                               onclick={() => openExtraPage("sessions", setupAgent.sessionId)}
                             >
@@ -4976,7 +4982,7 @@
                       {/if}
                     </div>
                   {/if}
-                  <AgentThinkingRow entries={agentThinking} />
+                  <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
                   <AgentTaskStrip tasks={mainPaneTasks} />
                 {/snippet}
                 {#snippet setupHeader()}
@@ -5726,67 +5732,40 @@
     flex: 0 0 auto;
   }
   /* ---- Setup Agent prompt (under the #welcome messages) ---------------- */
+  /* No box: the chips sit under the last message, indented like a reply. */
   .setup-agent-prompt {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     max-width: 760px;
-    margin: 4px 0 8px;
-    padding: 14px 16px;
-    border: 1px solid var(--panel-border, var(--border, rgba(127, 127, 127, 0.25)));
-    border-radius: 12px;
-    background: var(--panel-bg, var(--raised, rgba(127, 127, 127, 0.06)));
+    margin: 2px 0 6px 44px;
   }
   .setup-agent-prompt:empty {
     display: none;
   }
-  .setup-agent-working {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0;
-    font-size: 13px;
-    color: var(--text-2, inherit);
-  }
-  .setup-agent-pulse {
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    background: var(--accent, #22c55e);
-    animation: setup-agent-pulse 1.4s ease-in-out infinite;
-  }
-  @keyframes setup-agent-pulse {
-    0%, 100% { opacity: 0.35; transform: scale(0.85); }
-    50% { opacity: 1; transform: scale(1); }
-  }
   .setup-agent-finish {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
   }
   .setup-agent-btn {
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 500;
-    min-height: 34px;
-    padding: 0 14px;
-    border-radius: 8px;
+    min-height: 26px;
+    padding: 0 10px;
+    border-radius: 999px;
     border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
     background: transparent;
     color: var(--text-1, inherit);
     cursor: pointer;
   }
-  .setup-agent-btn.primary {
-    border-color: transparent;
-    background: var(--text-1, #111);
-    color: var(--bg, #fff);
+  .setup-agent-btn:hover {
+    background: var(--raised, rgba(127, 127, 127, 0.1));
   }
   .setup-agent-error {
     margin: 0;
-    font-size: 13px;
+    font-size: 12px;
     color: var(--danger, #d9534f);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .setup-agent-pulse { animation: none; }
   }
 </style>

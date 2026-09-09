@@ -137,7 +137,9 @@ describe("DesktopApp native setup run wiring", () => {
     expect(agentMessage).toBeTruthy();
     expect(agentMessage?.textContent).toContain("Setup Agent");
     expect(agentMessage?.textContent).not.toContain("[hq-setup]");
-    expect(host.querySelector('[data-testid="setup-agent-working"]')).toBeTruthy();
+    // Working shows as the same thinking row any agent gets, not a box.
+    expect(host.querySelector('[data-testid="agent-thinking-row"]')?.textContent).toContain("Setup Agent");
+    expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-question"]')).toBeNull();
 
     // A structured question shows as the prompt under the messages.
     api.emit(
@@ -146,7 +148,10 @@ describe("DesktopApp native setup run wiring", () => {
     );
     await settle();
     const prompt = host.querySelector('[data-testid="setup-agent-prompt"]');
-    expect(prompt?.querySelector('[data-testid="setup-run-choice"]')?.textContent).toContain("Skip for now");
+    expect(prompt?.querySelector('[data-testid="setup-run-choice"]')?.textContent?.trim()).toBe("Skip for now");
+    // The question itself is the agent's message, not repeated in the prompt.
+    expect(prompt?.querySelector(".question-text")).toBeNull();
+    expect(host.querySelector('[data-testid="agent-thinking-row"]')).toBeNull();
     expect(host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]')?.placeholder).toContain("Setup Agent");
 
     // Typing in the normal composer answers it — nothing is posted to the channel.
