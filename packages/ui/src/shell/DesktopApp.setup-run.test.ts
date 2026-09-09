@@ -169,9 +169,9 @@ describe("DesktopApp native setup run wiring", () => {
     // Signed in when the run starts; the sign-in has lapsed by the time the agent re-checks.
     const providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: true, codexAvailable: false, codexLoggedIn: false }));
     api.providers = providers;
-    api.providerLoginStart = vi.fn(async () => ({ state: "waiting" }));
-    api.providerLoginStatus = vi.fn(async () => ({ state: "waiting" }));
-    api.providerLoginCancel = vi.fn(async () => undefined);
+    api.providerLoginStart = vi.fn(async () => ({ state: "waiting" as const }));
+    api.providerLoginStatus = vi.fn(async () => ({ state: "waiting" as const }));
+    api.providerLoginCancel = vi.fn(async () => ({ state: "disconnected" as const }));
     api.providerInstallUrl = vi.fn(() => "https://claude.ai/download");
     api.openExternal = vi.fn(async () => undefined);
     await mountApp(api);

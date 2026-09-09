@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SetupAgent, loadTranscriptCache, setupAgentProse, setupAgentTranscript } from "./setup-agent.svelte";
 import {
   loadSetupRunRecord,
+  SETUP_FAILURE_COPY,
   saveSetupRunRecord,
   type SetupRunApi,
   type SetupRunEvent,
@@ -310,6 +311,25 @@ describe("SetupAgent", () => {
     const texts = agent.transcript.map((turn) => turn.text);
     expect(texts).not.toContain("Failed to authenticate: OAuth session expired and could not be refreshed");
     expect(texts[texts.length - 1]).toContain("sign-in for your coding agent has expired");
+    expect(providers).toHaveBeenCalledWith(true);
+    expect(agent.providersReady).toBe(false);
+  });
+
+  it("a remembered sign-in stop whose session is gone still reads plainly and asks which agents are ready", async () => {
+    saveSetupRunRecord({ sessionId: "sess-gone", step: 0, status: "ended" });
+    window.localStorage.setItem(
+      "hq.welcome.setup-run-transcript.v1",
+      JSON.stringify({
+        sessionId: "sess-gone",
+        turns: [{ id: "setup:sess-gone:6", role: "agent", text: "Failed to authenticate: OAuth session expired and could not be refreshed", seq: 6 }],
+      }),
+    );
+    const providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false }));
+    const agent = new SetupAgent(fakeSetupRun({ providers }));
+    await settle();
+    expect(agent.mode).toBe("stopped");
+    expect(agent.failure?.kind).toBe("auth");
+    expect(agent.transcript.map((turn) => turn.text)).toEqual([SETUP_FAILURE_COPY.auth.agent]);
     expect(providers).toHaveBeenCalledWith(true);
     expect(agent.providersReady).toBe(false);
   });

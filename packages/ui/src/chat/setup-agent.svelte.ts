@@ -16,6 +16,7 @@ import {
   saveSetupRunRecord,
   SETUP_RUN_STEPS,
   SETUP_FAILURE_COPY,
+  classifySetupFailure,
   setupProvidersReady,
   type SetupProviderStatus,
   type SetupRunFailure,
@@ -146,18 +147,37 @@ export function setupAgentTranscript(
       turns.push({ id: `setup:${sessionId}:${seq}`, role: "user", text, seq });
     }
   });
-  if (failure) {
-    // The engine's raw error is not something to say to a person. Replace
-    // it (or add) with the plain line the channel should show.
-    const friendly = SETUP_FAILURE_COPY[failure.kind].agent;
-    const last = turns[turns.length - 1];
-    if (last && last.role === "agent" && last.text === failure.message) {
-      turns[turns.length - 1] = { ...last, text: friendly };
-    } else if (!last || last.text !== friendly) {
-      turns.push({ id: `setup:${sessionId}:failure`, role: "agent", text: friendly, seq: events.length });
-    }
+  return failure ? withFailureLine(turns, sessionId, failure, events.length) : turns;
+}
+
+/**
+ * The engine's raw error is not something to say to a person. Replace it
+ * (or add) with the plain line the channel should show.
+ */
+export function withFailureLine(
+  turns: SetupAgentTurn[],
+  sessionId: string,
+  failure: SetupRunFailure,
+  seq: number,
+): SetupAgentTurn[] {
+  const friendly = SETUP_FAILURE_COPY[failure.kind].agent;
+  const last = turns[turns.length - 1];
+  if (last && last.role === "agent" && last.text === failure.message) {
+    return [...turns.slice(0, -1), { ...last, text: friendly }];
   }
-  return turns;
+  if (last && last.text === friendly) return turns;
+  return [...turns, { id: `setup:${sessionId}:failure`, role: "agent", text: friendly, seq }];
+}
+
+/**
+ * What a remembered early stop can still tell us when the engine no longer
+ * has the session: the last thing the agent said, if it reads as a sign-in
+ * problem, else just "it stopped".
+ */
+export function cachedSetupFailure(turns: SetupAgentTurn[]): SetupRunFailure {
+  const last = [...turns].reverse().find((turn) => turn.role === "agent");
+  const classified = last ? classifySetupFailure(last.text) : null;
+  return classified?.kind === "auth" ? classified : { kind: "other", message: "" };
 }
 
 export class SetupAgent {
@@ -208,14 +228,23 @@ export class SetupAgent {
     this.listening = $derived(
       this.mode === "live" && this.state !== null && !this.state.done && !this.state.ended,
     );
+    this.failure = $derived.by(() => {
+      if (this.state) return this.state.ended ? (this.state.failure ?? null) : null;
+      // Remembered as stopped, and the engine no longer has the session.
+      if (this.mode === "stopped" && this.sessionId) return cachedSetupFailure(this.cachedTurns);
+      return null;
+    });
     this.transcript = $derived.by(() => {
       const live = this.snapshot
         ? setupAgentTranscript(this.snapshot.sessionId, this.snapshot.events, this.answers, this.state?.failure ?? null)
         : [];
-      return live.length > 0 ? live : this.cachedTurns;
+      if (live.length > 0) return live;
+      const failure = this.snapshot ? null : this.failure;
+      return failure && this.sessionId
+        ? withFailureLine(this.cachedTurns, this.sessionId, failure, this.cachedTurns.length)
+        : this.cachedTurns;
     });
     this.providersReady = $derived(this.providers === null ? true : setupProvidersReady(this.providers));
-    this.failure = $derived(this.state?.ended ? (this.state.failure ?? null) : null);
     if (!api) return;
     void this.refreshProviders();
     // Coming back to #welcome (or relaunching) lands here with the run
@@ -230,6 +259,11 @@ export class SetupAgent {
       this.mode = record.status === "done" ? "done" : record.status === "ended" ? "stopped" : "resume";
       this.cachedTurns = loadTranscriptCache(record.sessionId);
       if (record.status === "done") this.finished = true;
+      if (record.status === "ended" && cachedSetupFailure(this.cachedTurns).kind === "auth") {
+        // Find out afresh which agents are signed in: the stop was a sign-in problem.
+        this.providersRefreshedForFailure = true;
+        void this.refreshProviders(true);
+      }
       if (record.status === "running") void this.continueRun();
       else void this.restoreTranscript();
     }
