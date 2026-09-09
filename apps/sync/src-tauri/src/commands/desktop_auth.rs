@@ -49,10 +49,14 @@ use hq_desktop_core::continuation_custody::{
     ContinuationCustody, CustodyError, PendingCredentials, VerifiedIdentity,
 };
 use hq_desktop_core::continuation_endpoints::ContinuationEndpoints;
-use hq_desktop_core::session_continuation::{AttemptEnd, ContinuationAttempt};
+use hq_desktop_core::first_run::LaunchKind;
+use hq_desktop_core::session_continuation::{
+    may_start, AttemptEnd, ContinuationAttempt, LaunchContext, RolloutDecision, StartRefusal,
+};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::ShellExt;
 
 use crate::util::client_info::build_client;
@@ -77,8 +81,19 @@ fn with_custody<T>(f: impl FnOnce(&mut ContinuationCustody) -> T) -> T {
 /// waiting for confirmation when the account changed underneath it is now about
 /// a question nobody asked, and its tokens go unwritten.
 pub(crate) fn note_auth_transition(end: AttemptEnd) {
+    if end == AttemptEnd::SignedOut {
+        // Latched for the life of the process. Signing someone back in
+        // moments after they deliberately signed out is the single most
+        // hostile thing this feature could do, and the rollout being on is not
+        // a reason to do it. It does not need to survive a restart: a restart
+        // is not a first launch, and `may_start` refuses on that ground too.
+        SIGNED_OUT_THIS_SESSION.store(true, Ordering::SeqCst);
+    }
     with_custody(|custody| custody.bump_generation(end));
 }
+
+/// Set when the person signs out on purpose. Never cleared.
+static SIGNED_OUT_THIS_SESSION: AtomicBool = AtomicBool::new(false);
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -99,6 +114,58 @@ fn custody_error_code(error: CustodyError) -> &'static str {
         CustodyError::StateMismatch => "CONTINUATION_STATE_MISMATCH",
         CustodyError::NonceMismatch => "CONTINUATION_TOKEN_MISMATCH",
         CustodyError::NothingHeld => "CONTINUATION_NOTHING_HELD",
+    }
+}
+
+/// What the renderer is told when the machine's own state forbids a start.
+///
+/// Same closed-vocabulary rule as [`custody_error_code`]. The renderer maps all
+/// of these to "show the provider buttons" — the screen that ships today — so
+/// the distinction exists for the operational counters, not for the UI.
+fn start_refusal_code(refusal: StartRefusal) -> &'static str {
+    match refusal {
+        StartRefusal::AlreadySignedIn => "CONTINUATION_REFUSED_SIGNED_IN",
+        StartRefusal::ExplicitlySignedOut => "CONTINUATION_REFUSED_SIGNED_OUT",
+        StartRefusal::AttemptInFlight => "CONTINUATION_REFUSED_IN_FLIGHT",
+        StartRefusal::UpdateInProgress => "CONTINUATION_REFUSED_UPDATING",
+        StartRefusal::NotAFirstLaunch => "CONTINUATION_REFUSED_NOT_FIRST_LAUNCH",
+    }
+}
+
+/// What this machine knows about itself right now.
+///
+/// Assembled natively because not one of these five facts is visible to the
+/// renderer. The rollout half of the decision was already made upstream by
+/// `desktop-session-continuation.ts`, which is why [`RolloutDecision::Continue`]
+/// is passed here: this call adds the machine-state half, and a caller that
+/// skipped the rollout gate still cannot get past these.
+async fn launch_context(app: &AppHandle) -> LaunchContext {
+    let has_valid_session = super::auth::get_auth_state(app.clone())
+        .await
+        .map(|state| state.authenticated)
+        // A session we cannot evaluate is not a session we may talk over.
+        .unwrap_or(true);
+
+    let attempt_in_flight = super::oauth::oauth_flow_keeps_window_visible()
+        || with_custody(|custody| {
+            custody.tick(now_ms());
+            custody.active_attempt_id().is_some()
+        });
+
+    let is_first_launch = app
+        .try_state::<super::first_run::LaunchKindState>()
+        .map(|state| state.0 == LaunchKind::FirstRun)
+        // `classify_launch` runs at the top of `.setup()`. If the verdict is
+        // missing, something is wrong with startup ordering and the safe read
+        // is "not a first launch", which refuses.
+        .unwrap_or(false);
+
+    LaunchContext {
+        has_valid_session,
+        signed_out_explicitly: SIGNED_OUT_THIS_SESSION.load(Ordering::SeqCst),
+        attempt_in_flight,
+        update_in_progress: crate::updater::update_install_in_progress(),
+        is_first_launch,
     }
 }
 
@@ -168,6 +235,13 @@ pub struct ContinuationStarted {
 /// wandered off mid-login.
 #[tauri::command]
 pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationStarted, String> {
+    // Before anything opens: is this machine even eligible? An enrolled
+    // installation that has a session, that just signed out, that is mid-update,
+    // that already has a login in flight, or that is simply not on its first
+    // launch must not have a browser thrown at it.
+    may_start(launch_context(&app).await, RolloutDecision::Continue)
+        .map_err(|refusal| start_refusal_code(refusal).to_string())?;
+
     let attempt_id = uuid::Uuid::new_v4().to_string();
     let nonce = hq_desktop_core::oauth::generate_nonce();
 
@@ -189,6 +263,10 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
 
     if let Err(error) = app.shell().open(armed.authorize_url.as_str(), None) {
         with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Failed));
+        // The listener was armed before the browser was opened, so a failure
+        // here leaves it holding both loopback sockets and the blur-suppression
+        // flag with nothing ever coming back.
+        release_listener(&armed.state);
         return Err(format!("Could not open the browser: {error}"));
     }
 
@@ -291,8 +369,95 @@ pub async fn desktop_continuation_confirm(
 /// click and once from component teardown.
 #[tauri::command]
 pub async fn desktop_continuation_cancel(attempt_id: String) -> Result<(), String> {
+    // Read the state before cancelling — cancelling finishes the attempt, and a
+    // finished attempt has no state to hand over. Scoped to this attempt id so
+    // a late Cancel for a superseded attempt cannot tear down the listener the
+    // current one is waiting on.
+    let state = with_custody(|custody| {
+        custody
+            .active_state_for(&attempt_id)
+            .map(str::to_string)
+    });
     with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Cancelled));
+
+    // Dropping the custody entry is not cancelling. Without this the listener
+    // thread keeps both loopback sockets and `OAUTH_FLOW_ACTIVE` alive until a
+    // callback or the five-minute timeout, so blur-hide stays suppressed and
+    // Cancel visibly cancels nothing.
+    if let Some(state) = state {
+        release_listener(&state);
+    }
     Ok(())
+}
+
+/// Cancel the loopback listener armed for `state`, clearing its PKCE verifier.
+///
+/// Failures are swallowed on purpose: this is teardown on a path the person has
+/// already left, and the listener's own timeout is the backstop.
+fn release_listener(state: &str) {
+    if let Err(error) = super::oauth::oauth_cancel_listen(Some(state.to_string())) {
+        eprintln!("[continuation] listener teardown failed: {error}");
+    }
+}
+
+// ── Anonymous HTTP, performed natively ─────────────────────────────────
+//
+// The renderer used to make these two calls itself with the HTTP plugin. That
+// worked in the compact popover and silently did not work in the expanded
+// desktop window: `capabilities/desktop-alt.json` grants no `http:default`, so
+// the request was denied, the rollout resolved to unavailable, and continuation
+// could never run on the surface `hq-desktop://signin` opens. The fix is not to
+// widen that capability — it is deliberately minimal — but to move the two
+// calls here, where they need no webview permission at all and the renderer can
+// no longer name a URL.
+
+/// Fetch the rollout document. The renderer still decides what it means.
+#[tauri::command]
+pub async fn desktop_continuation_config() -> Result<serde_json::Value, String> {
+    let response = build_client()
+        .get(endpoints().config_url())
+        .header("accept", "application/json")
+        .send()
+        .await
+        .map_err(|_| "CONTINUATION_OFFLINE".to_string())?;
+
+    if !response.status().is_success() {
+        // Not a config. The renderer reads any error here as disabled, which is
+        // the provider buttons — the screen that ships today.
+        return Err(format!("CONTINUATION_CONFIG_STATUS_{}", response.status().as_u16()));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|_| "CONTINUATION_CONFIG_UNREADABLE".to_string())
+}
+
+/// Deliver one anonymous receipt. Returns the HTTP status so the renderer can
+/// apply its own recorded / retry / rejected rule, which is where that rule is
+/// tested.
+///
+/// `path` is resolved through [`ContinuationEndpoints::receipt_url`], which
+/// accepts exactly the two anonymous onboarding routes. The renderer chooses
+/// when a receipt is sent; it does not get to choose where.
+#[tauri::command]
+pub async fn desktop_continuation_deliver(
+    path: String,
+    body: serde_json::Value,
+) -> Result<u16, String> {
+    let url = endpoints()
+        .receipt_url(&path)
+        .ok_or_else(|| "CONTINUATION_RECEIPT_PATH_REFUSED".to_string())?;
+
+    let response = build_client()
+        .post(url)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "CONTINUATION_OFFLINE".to_string())?;
+
+    Ok(response.status().as_u16())
 }
 
 // ── Server-side verification ───────────────────────────────────────────

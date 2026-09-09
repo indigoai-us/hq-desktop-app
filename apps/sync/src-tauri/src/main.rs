@@ -557,6 +557,8 @@ fn main() {
             // answers "off" on every failure, and the renderer only calls the
             // rest after it answers "on".
             commands::desktop_auth::desktop_continuation_context,
+            commands::desktop_auth::desktop_continuation_config,
+            commands::desktop_auth::desktop_continuation_deliver,
             commands::desktop_auth::desktop_continuation_start,
             commands::desktop_auth::desktop_continuation_await_identity,
             commands::desktop_auth::desktop_continuation_confirm,

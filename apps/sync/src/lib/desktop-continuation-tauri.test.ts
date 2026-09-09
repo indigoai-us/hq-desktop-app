@@ -5,6 +5,8 @@ import {
   continuationDeps,
   loadContinuationContext,
   type ContinuationContext,
+  type ContinuationTauriOptions,
+  type InvokeFn,
 } from './desktop-continuation-tauri';
 
 const CONTEXT: ContinuationContext = {
@@ -13,18 +15,18 @@ const CONTEXT: ContinuationContext = {
   apiBase: 'http://127.0.0.1:1',
 };
 
-function response(status: number, body: unknown = {}) {
+/**
+ * The bundle every dependency test starts from.
+ *
+ * `invoke` is annotated rather than inferred: without it TypeScript pins the
+ * helper's return type to `Promise<undefined>` from the default stub, and every
+ * test that swaps in a stub returning a status fails to typecheck.
+ */
+function options(
+  overrides: Record<string, unknown> = {},
+): ContinuationTauriOptions & { invoke: InvokeFn; platform: 'mac' } {
   return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-  } as unknown as Response;
-}
-
-function options(overrides: Record<string, unknown> = {}) {
-  return {
-    invoke: vi.fn(async () => undefined),
-    fetch: vi.fn(async () => response(200)),
+    invoke: vi.fn(async () => undefined) as InvokeFn,
     storage: {
       getItem: () => null,
       setItem: () => undefined,
@@ -97,27 +99,31 @@ describe('the dependency bundle', () => {
     opts = options();
   });
 
-  it('fetches the config from the desktop route on the resolved base', async () => {
-    opts.fetch = vi.fn(async () => response(200, { protocolVersion: 1 }));
+  it('asks the native side for the config and never the network', async () => {
+    // The webview has no HTTP permission in the expanded desktop window, so a
+    // fetch from here is denied there and continuation can never run on the
+    // surface `hq-desktop://signin` opens. This is the regression: the config
+    // read has to go over the bridge.
+    opts.invoke = vi.fn(async () => ({ protocolVersion: 1 }));
     const deps = continuationDeps(CONTEXT, opts);
     await expect(deps.fetchConfig()).resolves.toEqual({ protocolVersion: 1 });
-    expect(opts.fetch).toHaveBeenCalledWith(
-      'http://127.0.0.1:1/v1/desktop/onboarding/config',
-      expect.objectContaining({ method: 'GET' }),
-    );
+    expect(opts.invoke).toHaveBeenCalledWith('desktop_continuation_config');
   });
 
-  it('treats a non-2xx config response as no config at all', async () => {
-    // A captive portal or a proxy login page answers 200 with HTML and a 404
-    // answers with JSON that is not a config. Neither is a document to act on.
-    opts.fetch = vi.fn(async () => response(404, { message: 'Not Found' }));
+  it('treats a refused config as no config at all', async () => {
+    // A captive portal answering 200 with HTML, a 404, an unreachable host —
+    // the native side turns all of them into an error, and an error is not a
+    // document to act on.
+    opts.invoke = vi.fn(async () => {
+      throw new Error('CONTINUATION_CONFIG_STATUS_404');
+    });
     const deps = continuationDeps(CONTEXT, opts);
     await expect(deps.fetchConfig()).rejects.toThrow();
   });
 
   it('keeps a receipt queued when the network is gone', async () => {
-    opts.fetch = vi.fn(async () => {
-      throw new Error('Failed to fetch');
+    opts.invoke = vi.fn(async () => {
+      throw new Error('CONTINUATION_OFFLINE');
     });
     const deps = continuationDeps(CONTEXT, opts);
     await expect(
@@ -125,27 +131,45 @@ describe('the dependency bundle', () => {
     ).resolves.toBe('retry');
   });
 
-  it('posts a receipt verbatim to its own path', async () => {
+  it('hands the receipt to the native side verbatim, path and all', async () => {
+    opts.invoke = vi.fn(async () => 202);
     const deps = continuationDeps(CONTEXT, opts);
     const receipt = {
       path: '/v1/desktop/onboarding/progress',
       body: { eventId: 'e1', occurredAt: '2026-09-09T00:00:00.000Z', outcome: 'started' },
     };
-    await deps.deliver(receipt);
-    expect(opts.fetch).toHaveBeenCalledWith(
-      'http://127.0.0.1:1/v1/desktop/onboarding/progress',
-      expect.objectContaining({ body: JSON.stringify(receipt.body) }),
-    );
+    await expect(deps.deliver(receipt)).resolves.toBe('recorded');
+    expect(opts.invoke).toHaveBeenCalledWith('desktop_continuation_deliver', {
+      path: receipt.path,
+      body: receipt.body,
+    });
   });
 
-  it('sends no authorization header on the anonymous routes', async () => {
-    // These routes are called before anyone is signed in. A bearer token here
-    // would be a credential the renderer had no business holding.
+  it('sends nothing that could identify anyone across the bridge', async () => {
+    // These routes are called before anyone is signed in. The renderer holds no
+    // credential and must pass none: the payload is the receipt and the path,
+    // and nothing else rides along.
+    opts.invoke = vi.fn(async () => 200);
     const deps = continuationDeps(CONTEXT, opts);
     await deps.deliver({ path: '/v1/desktop/onboarding/launch', body: { eventId: 'e1' } });
-    const call = (opts.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-    const headers = (call[1] as { headers: Record<string, string> }).headers;
-    expect(Object.keys(headers).map((key) => key.toLowerCase())).not.toContain('authorization');
+    const call = (opts.invoke as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+    expect(Object.keys(call[1] as Record<string, unknown>).sort()).toEqual(['body', 'path']);
+  });
+
+  it('classifies what the native side reports rather than assuming success', async () => {
+    opts.invoke = vi.fn(async () => 500);
+    const deps = continuationDeps(CONTEXT, opts);
+    await expect(
+      deps.deliver({ path: '/v1/desktop/onboarding/launch', body: { eventId: 'e1' } }),
+    ).resolves.toBe('retry');
+
+    opts.invoke = vi.fn(async () => 400);
+    await expect(
+      continuationDeps(CONTEXT, opts).deliver({
+        path: '/v1/desktop/onboarding/launch',
+        body: { eventId: 'e1' },
+      }),
+    ).resolves.toBe('rejected');
   });
 });
 

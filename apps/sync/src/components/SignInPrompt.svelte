@@ -49,6 +49,15 @@
   let continuationDepsRef: ContinuationDeps | null = null;
   let continuationBusy = $state(false);
 
+  /**
+   * Set the moment a provider button is pressed, and never cleared.
+   *
+   * Deliberately a plain variable rather than `$state`: the effect below must
+   * run exactly once on mount, and reading a rune inside it would make it
+   * re-run every time the manual flow changed. Nothing renders from this.
+   */
+  let manualSignInStarted = false;
+
   $effect(() => {
     void prepareContinuation();
   });
@@ -65,8 +74,16 @@
     // re-stamped retry would be counted as a second event.
     void flushReceipts(deps).catch(() => undefined);
 
+    // Fetching the config is a network round trip, and someone who did not
+    // want to wait for it has already pressed Google or Microsoft. Starting
+    // now would arm a second flow whose `arm_oauth_flow` cancels the listener
+    // the manual attempt is waiting on — the person would watch their own
+    // sign-in die. The native side refuses this too (`AttemptInFlight`); this
+    // is the cheaper half of the same rule, checked before and after the wait.
+    if (manualSignInStarted) return;
+
     const decision = await resolveRollout(deps);
-    if (!decision.enabled) return;
+    if (!decision.enabled || manualSignInStarted) return;
 
     await beginContinuation(deps, decision, (next) => {
       continuation = next;
@@ -135,6 +152,9 @@
 
   async function handleSignIn(provider: SignInProvider) {
     const run = ++signInRun;
+    // Claim the flow before anything awaits, so a continuation whose config
+    // lands mid-click sees this rather than racing it.
+    manualSignInStarted = true;
     loadingProvider = provider;
     error = '';
     lastProvider = provider;

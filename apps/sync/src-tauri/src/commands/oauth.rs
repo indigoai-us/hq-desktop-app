@@ -631,6 +631,16 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<CognitoTokens
 #[tauri::command]
 pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthState, String> {
     let tokens = exchange_code_for_tokens(&code).await?;
+
+    // The person just chose an account with a provider button. Any continuation
+    // still waiting for confirmation is about a different account and a question
+    // nobody asked any more: bumping the generation here means a stale
+    // "Continue as …" click cannot land afterwards and overwrite the account
+    // they actually picked. Done after the exchange succeeds — a failed
+    // exchange is not a sign-in and must not discard anything.
+    crate::commands::desktop_auth::note_auth_transition(
+        hq_desktop_core::session_continuation::AttemptEnd::Superseded,
+    );
     // Persist, publish, announce — the shared completion browser continuation
     // also ends on, so there is exactly one definition of "signed in".
     let state = crate::commands::auth::complete_auth_session(&app, &tokens).await?;

@@ -4,13 +4,25 @@
  * `desktop-session-continuation.ts` is written against an interface on purpose:
  * every rule about when continuation runs, what a receipt looks like, and what
  * happens when something fails is decided there, where a unit test can reach
- * it. This file is the adapter — `invoke` calls, one fetch, no decisions — and
- * it is deliberately small because `src-tauri` cannot be compiled on a machine
+ * it. This file is the adapter — `invoke` calls, no decisions — and it is
+ * deliberately small because `src-tauri` cannot be compiled on a machine
  * without a GTK/JavaScriptCore toolchain, so anything pushed across that
  * boundary stops being testable.
+ *
+ * ## Why the HTTP is native
+ *
+ * The config read and the receipt POST used to run here through the HTTP
+ * plugin. That worked in the compact popover and silently did not work in the
+ * expanded desktop window: `capabilities/desktop-alt.json` grants no
+ * `http:default`, so the request was denied, the rollout resolved to
+ * unavailable, and continuation could never run on the surface
+ * `hq-desktop://signin` opens. Widening that capability would have been the
+ * wrong repair — it is deliberately minimal — so both calls moved into Rust,
+ * where they need no webview permission and the renderer cannot name a URL.
+ * The status still comes back here, because deciding what a status *means* is
+ * a rule, and rules live where the tests are.
  */
 
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { invoke } from '@tauri-apps/api/core';
 
 import type {
@@ -42,7 +54,6 @@ export type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<
 /** Injection seam. Real code passes nothing; tests pass everything. */
 export interface ContinuationTauriOptions {
   invoke?: InvokeFn;
-  fetch?: typeof tauriFetch;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
   now?: () => number;
   newId?: () => string;
@@ -131,35 +142,31 @@ export function continuationDeps(
   options: ContinuationTauriOptions = {},
 ): ContinuationDeps {
   const call: InvokeFn = options.invoke ?? invoke;
-  const httpFetch = options.fetch ?? tauriFetch;
   const storage =
     options.storage ?? (typeof localStorage === 'undefined' ? null : localStorage);
 
   return {
     bridge: bridge(call),
-    fetchConfig: async () => {
-      const response = await httpFetch(`${context.apiBase}/v1/desktop/onboarding/config`, {
-        method: 'GET',
-        headers: { accept: 'application/json' },
-      });
-      if (!response.ok) {
-        // A non-2xx is not a config. Throwing lands on `unavailable`, which is
-        // the provider buttons — the screen that ships today.
-        throw new Error(`config request failed: ${response.status}`);
-      }
-      return (await response.json()) as unknown;
-    },
+    fetchConfig: async () =>
+      // A native error — offline, non-2xx, unreadable body — propagates and
+      // lands on `unavailable`, which is the provider buttons, the screen that
+      // ships today. There is nothing here that could read a non-config as a
+      // config, because there is nothing here that reads at all.
+      (await call('desktop_continuation_config')) as unknown,
     deliver: async (receipt: ContinuationReceipt) => {
       try {
-        const response = await httpFetch(`${context.apiBase}${receipt.path}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(receipt.body),
-        });
-        return classifyDelivery(response.status);
+        const status = (await call('desktop_continuation_deliver', {
+          // Sent verbatim. The native side resolves the path against a
+          // two-entry allowlist and refuses anything else, so this is a
+          // choice of *which receipt*, never of where it goes.
+          path: receipt.path,
+          body: receipt.body,
+        })) as number;
+        return classifyDelivery(status);
       } catch {
-        // Offline. Keep it queued; it is replayed on the next launch, which is
-        // why the queue survives a restart at all.
+        // Offline, or a path the native side refused. Keep it queued; it is
+        // replayed on the next launch, which is why the queue survives a
+        // restart at all.
         return 'retry';
       }
     },

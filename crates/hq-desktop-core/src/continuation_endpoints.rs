@@ -103,6 +103,22 @@ impl ContinuationEndpoints {
         format!("{}/v1/desktop/onboarding/progress", self.api_base)
     }
 
+    /// Resolve a renderer-supplied receipt path to a full URL, or refuse.
+    ///
+    /// The renderer decides *when* a receipt is sent; it must not be able to
+    /// decide *where*. Without this, the native delivery command would take a
+    /// path from the webview and concatenate it onto the API base — and a path
+    /// is enough to reach any route on that host, including the authenticated
+    /// ones the renderer is deliberately kept away from. Two literals, compared
+    /// whole; no prefix match, no normalisation, no traversal to reason about.
+    pub fn receipt_url(&self, path: &str) -> Option<String> {
+        match path {
+            "/v1/desktop/onboarding/launch" => Some(self.launch_url()),
+            "/v1/desktop/onboarding/progress" => Some(self.progress_url()),
+            _ => None,
+        }
+    }
+
     pub fn session_verify_url(&self) -> String {
         format!("{}/v1/desktop/session/verify", self.api_base)
     }
@@ -121,6 +137,52 @@ impl ContinuationEndpoints {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn endpoints() -> ContinuationEndpoints {
+        ContinuationEndpoints {
+            cognito_domain: "example-domain".to_string(),
+            cognito_client_id: "example-client-id".to_string(),
+            api_base: "https://api.example.test".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_two_anonymous_receipt_paths_resolve() {
+        let e = endpoints();
+        assert_eq!(
+            e.receipt_url("/v1/desktop/onboarding/launch").as_deref(),
+            Some("https://api.example.test/v1/desktop/onboarding/launch"),
+        );
+        assert_eq!(
+            e.receipt_url("/v1/desktop/onboarding/progress").as_deref(),
+            Some("https://api.example.test/v1/desktop/onboarding/progress"),
+        );
+    }
+
+    #[test]
+    fn nothing_else_resolves_however_it_is_spelled() {
+        let e = endpoints();
+        for path in [
+            // The authenticated routes the renderer must never reach.
+            "/v1/desktop/session/verify",
+            "/v1/desktop/session/activated",
+            "/v1/desktop/workspace/selected",
+            // Anything else on the host.
+            "/v1/files/shared-with-me",
+            "/v1/notify/dm",
+            // Traversal, absolute override, and near-misses.
+            "/v1/desktop/onboarding/../session/verify",
+            "https://evil.test/v1/desktop/onboarding/launch",
+            "//evil.test/v1/desktop/onboarding/launch",
+            "/v1/desktop/onboarding/launch?x=1",
+            "/v1/desktop/onboarding/launch/",
+            "/V1/DESKTOP/ONBOARDING/LAUNCH",
+            " /v1/desktop/onboarding/launch",
+            "",
+        ] {
+            assert_eq!(e.receipt_url(path), None, "path should be refused: {path:?}");
+        }
+    }
 
     /// These tests mutate process-global environment variables, so they share
     /// one lock rather than racing each other across vitest-style parallelism.

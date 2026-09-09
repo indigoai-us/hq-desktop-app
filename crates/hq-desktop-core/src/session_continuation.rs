@@ -334,6 +334,22 @@ impl ContinuationAttempt {
         &self.nonce
     }
 
+    /// The `state` this attempt armed the authorize request with.
+    ///
+    /// Needed by exactly one caller: cancelling the attempt has to cancel the
+    /// loopback listener too, and that listener is addressed by state. Without
+    /// it, pressing **Use another account** would drop the custody entry while
+    /// the native listener kept both sockets and the blur-suppression flag
+    /// alive until a callback or the five-minute timeout — a Cancel that
+    /// visibly cancels nothing.
+    ///
+    /// Not a secret in the sense a token is: it is a per-attempt random value
+    /// whose whole job is to be echoed back by the browser. It still never
+    /// crosses the Tauri bridge; only Rust reads this.
+    pub fn state(&self) -> &str {
+        &self.state
+    }
+
     /// Fold in the passage of time. Call before every decision.
     pub fn tick(&mut self, now: EpochMillis) {
         if self.is_finished() {

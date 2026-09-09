@@ -247,6 +247,15 @@ struct PendingUpdateTransition {
 }
 
 static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Whether an update is being applied right now.
+///
+/// Read by browser continuation: the process is about to be replaced, so
+/// opening a browser and asking someone to sign in would strand them halfway
+/// through a flow whose other half is about to exit.
+pub(crate) fn update_install_in_progress() -> bool {
+    UPDATE_INSTALL_IN_PROGRESS.load(Ordering::SeqCst)
+}
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static AUTO_INSTALL_WAITER_GENERATION: AtomicU64 = AtomicU64::new(0);
 static AUTO_INSTALL_WAITER_ACTIVE: AtomicBool = AtomicBool::new(false);

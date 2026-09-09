@@ -191,6 +191,20 @@ impl ContinuationCustody {
             .map(|entry| entry.attempt.attempt_id())
     }
 
+    /// The OAuth `state` of the live attempt with this id, if it is still live.
+    ///
+    /// Read before cancelling, never after: cancelling finishes the attempt and
+    /// this then answers `None`. The id is required rather than optional so a
+    /// stale Cancel for a superseded attempt cannot tear down the listener the
+    /// *current* attempt is waiting on.
+    pub fn active_state_for(&self, attempt_id: &str) -> Option<&str> {
+        self.entry
+            .as_ref()
+            .filter(|entry| !entry.attempt.is_finished())
+            .filter(|entry| entry.attempt.attempt_id() == attempt_id)
+            .map(|entry| entry.attempt.state())
+    }
+
     pub fn holds_credentials(&self) -> bool {
         self.entry
             .as_ref()
@@ -357,6 +371,33 @@ mod tests {
 
     fn attempt(custody: &ContinuationCustody, id: &str) -> ContinuationAttempt {
         ContinuationAttempt::start(id, "state-value", "nonce-value", custody.generation(), NOW)
+    }
+
+    #[test]
+    fn the_live_attempts_state_is_readable_so_cancel_can_tear_down_the_listener() {
+        let mut custody = ContinuationCustody::new();
+        custody.begin(attempt(&custody, "attempt-1"));
+        assert_eq!(custody.active_state_for("attempt-1"), Some("state-value"));
+    }
+
+    #[test]
+    fn a_stale_cancel_cannot_read_the_current_attempts_state() {
+        // The listener is addressed by state. If a Cancel for a superseded
+        // attempt could read the live one's state, pressing Cancel on a stale
+        // card would tear down the listener the current attempt is waiting on.
+        let mut custody = ContinuationCustody::new();
+        custody.begin(attempt(&custody, "attempt-1"));
+        custody.begin(attempt(&custody, "attempt-2"));
+        assert_eq!(custody.active_state_for("attempt-1"), None);
+        assert_eq!(custody.active_state_for("attempt-2"), Some("state-value"));
+    }
+
+    #[test]
+    fn a_finished_attempt_has_no_state_to_cancel() {
+        let mut custody = ContinuationCustody::new();
+        custody.begin(attempt(&custody, "attempt-1"));
+        custody.cancel("attempt-1", AttemptEnd::Cancelled);
+        assert_eq!(custody.active_state_for("attempt-1"), None);
     }
 
     fn holding(id: &str) -> ContinuationCustody {
