@@ -790,7 +790,16 @@
     }
   }
 
-  async function invokeStageCommand(id: StageId, runId: number): Promise<void> {
+  type OnboardingFailureScope = {
+    setupRunId: string;
+    attemptCount: number;
+  };
+
+  async function invokeStageCommand(
+    id: StageId,
+    runId: number,
+    failureScope: OnboardingFailureScope,
+  ): Promise<void> {
     const invocations = stageCommandInvocations(id, { installPath: effectiveInstallPath });
     if (invocations.length === 0) return;
     if (typeof invoke !== 'function') {
@@ -800,6 +809,9 @@
     const ms = stageTimeoutMs(id);
     for (const invocation of invocations) {
       let args = invocation.args;
+      if (['content', 'deps', 'git-init', 'indexing'].includes(id)) {
+        args = { ...(args ?? {}), failureScope };
+      }
       let handle: string | null = null;
       if (invocation.command === 'fetch_and_extract_template') {
         handle = contentHandle(runId);
@@ -832,13 +844,17 @@
     errorCategory?: unknown;
   };
 
-  async function stageFailureTelemetryDetails(id: StageId, error: unknown) {
+  async function stageFailureTelemetryDetails(
+    id: StageId,
+    error: unknown,
+    failureScope: OnboardingFailureScope,
+  ) {
     const timeoutCategory = error instanceof StageTimeoutError ? 'timeout' : undefined;
     let nativeDetail: NativeStageFailureDetail | undefined;
     try {
       nativeDetail = await invokeCommand<NativeStageFailureDetail | undefined>(
         'take_onboarding_failure_detail',
-        { stage: id },
+        { stage: id, ...failureScope },
       );
     } catch {
       // Failure-detail telemetry must not affect setup recovery or its copy.
@@ -857,16 +873,18 @@
     attemptCount: number,
   ): Promise<StageRunOutcome> {
     if (!isCurrentRun(runId)) return 'cancelled';
+    const setupRunId = currentSetupRunId;
+    const failureScope = { setupRunId, attemptCount };
     const startedAt = Date.now();
     recordStep(SETUP_STEP_INDEX, 'started', {
       component: id,
       attemptCount,
-      setupRunId: currentSetupRunId,
+      setupRunId,
     });
     stages = setStageStatus(stages, id, 'running');
     await journalStageStart(id);
 
-    const result = await invokeStageCommand(id, runId).then(
+    const result = await invokeStageCommand(id, runId, failureScope).then(
       () => ({ kind: 'done' as const }),
       (err) => ({ kind: 'failed' as const, err }),
     );
@@ -877,7 +895,7 @@
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'cancelled',
-        setupRunId: currentSetupRunId,
+        setupRunId,
       });
       return 'cancelled';
     }
@@ -889,7 +907,7 @@
         component: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
-        setupRunId: currentSetupRunId,
+        setupRunId,
       });
       return 'ok';
     }
@@ -897,14 +915,14 @@
       const message = errorMessage(result.err);
       stages = setStageStatus(stages, id, 'failed', message);
       await journalStageFailure(id, message);
-      const failureDetails = await stageFailureTelemetryDetails(id, result.err);
+      const failureDetails = await stageFailureTelemetryDetails(id, result.err, failureScope);
       if (!isCurrentRun(runId)) return 'cancelled';
       recordStep(SETUP_STEP_INDEX, 'failed', {
         component: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'stage_command_failed',
-        setupRunId: currentSetupRunId,
+        setupRunId,
         ...failureDetails,
       });
       return 'failed';

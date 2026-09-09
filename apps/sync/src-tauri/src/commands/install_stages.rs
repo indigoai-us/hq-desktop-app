@@ -58,6 +58,19 @@ impl OnboardingErrorCategory {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OnboardingFailureScope {
+    pub setup_run_id: String,
+    pub attempt_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OnboardingFailureDetailKey {
+    stage: String,
+    scope: OnboardingFailureScope,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OnboardingFailureDetail {
@@ -66,22 +79,47 @@ pub(crate) struct OnboardingFailureDetail {
     pub error_category: String,
 }
 
-static ONBOARDING_FAILURE_DETAILS: OnceLock<Mutex<HashMap<String, OnboardingFailureDetail>>> =
-    OnceLock::new();
+static ONBOARDING_FAILURE_DETAILS: OnceLock<
+    Mutex<HashMap<OnboardingFailureDetailKey, OnboardingFailureDetail>>,
+> = OnceLock::new();
 
-fn onboarding_failure_details() -> &'static Mutex<HashMap<String, OnboardingFailureDetail>> {
+fn onboarding_failure_details(
+) -> &'static Mutex<HashMap<OnboardingFailureDetailKey, OnboardingFailureDetail>> {
     ONBOARDING_FAILURE_DETAILS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(crate) fn clear_onboarding_failure_detail(stage: &str) {
-    onboarding_failure_details().lock().unwrap().remove(stage);
+fn onboarding_failure_detail_key(
+    stage: &str,
+    failure_scope: &OnboardingFailureScope,
+) -> OnboardingFailureDetailKey {
+    OnboardingFailureDetailKey {
+        stage: stage.to_string(),
+        scope: failure_scope.clone(),
+    }
+}
+
+pub(crate) fn clear_onboarding_failure_detail(
+    stage: &str,
+    failure_scope: Option<&OnboardingFailureScope>,
+) {
+    let Some(failure_scope) = failure_scope else {
+        return;
+    };
+    onboarding_failure_details()
+        .lock()
+        .unwrap()
+        .remove(&onboarding_failure_detail_key(stage, failure_scope));
 }
 
 pub(crate) fn record_onboarding_failure_detail(
     stage: &str,
+    failure_scope: Option<&OnboardingFailureScope>,
     failed_dependency: Option<&str>,
     error_category: OnboardingErrorCategory,
 ) {
+    let Some(failure_scope) = failure_scope else {
+        return;
+    };
     let failed_dependency = failed_dependency.map(|value| {
         if FAILED_DEPENDENCIES.contains(&value) {
             value.to_string()
@@ -90,15 +128,11 @@ pub(crate) fn record_onboarding_failure_detail(
         }
     });
     let mut details = onboarding_failure_details().lock().unwrap();
-    if details
-        .get(stage)
-        .and_then(|detail| detail.failed_dependency.as_deref())
-        == Some("path-write")
-    {
-        return;
+    if details.len() == 32 {
+        details.clear();
     }
     details.insert(
-        stage.to_string(),
+        onboarding_failure_detail_key(stage, failure_scope),
         OnboardingFailureDetail {
             failed_dependency,
             error_category: error_category.as_str().to_string(),
@@ -107,8 +141,18 @@ pub(crate) fn record_onboarding_failure_detail(
 }
 
 #[tauri::command]
-pub fn take_onboarding_failure_detail(stage: String) -> Option<OnboardingFailureDetail> {
-    onboarding_failure_details().lock().unwrap().remove(&stage)
+pub fn take_onboarding_failure_detail(
+    stage: String,
+    setup_run_id: String,
+    attempt_count: u32,
+) -> Option<OnboardingFailureDetail> {
+    onboarding_failure_details().lock().unwrap().remove(&OnboardingFailureDetailKey {
+        stage,
+        scope: OnboardingFailureScope {
+            setup_run_id,
+            attempt_count,
+        },
+    })
 }
 
 #[derive(Debug)]
@@ -358,8 +402,9 @@ pub fn git_init(
     path: Option<String>,
     name: Option<String>,
     email: Option<String>,
+    failure_scope: Option<OnboardingFailureScope>,
 ) -> Result<String, String> {
-    clear_onboarding_failure_detail("git-init");
+    clear_onboarding_failure_detail("git-init", failure_scope.as_ref());
     let result = (|| -> Result<String, StageCommandFailure> {
         let hq_root = normalize_optional_git_config(path)
             .map_or_else(resolve_hq_path, Ok)
@@ -387,7 +432,12 @@ pub fn git_init(
     match result {
         Ok(message) => Ok(message),
         Err(error) => {
-            record_onboarding_failure_detail("git-init", None, error.error_category);
+            record_onboarding_failure_detail(
+                "git-init",
+                failure_scope.as_ref(),
+                None,
+                error.error_category,
+            );
             Err(error.message)
         }
     }
@@ -409,13 +459,20 @@ pub fn git_probe_user() -> Result<Option<GitUser>, String> {
 
 /// Build the local search index and refresh CLI-generated registries.
 #[tauri::command]
-pub async fn register_search_index() -> Result<(), String> {
-    clear_onboarding_failure_detail("indexing");
+pub async fn register_search_index(
+    failure_scope: Option<OnboardingFailureScope>,
+) -> Result<(), String> {
+    clear_onboarding_failure_detail("indexing", failure_scope.as_ref());
     let hq_root = PathBuf::from(resolve_hq_path()?);
     match run_hq(&["reindex"], &hq_root).await {
         Ok(()) => Ok(()),
         Err(error) => {
-            record_onboarding_failure_detail("indexing", None, error.error_category);
+            record_onboarding_failure_detail(
+                "indexing",
+                failure_scope.as_ref(),
+                None,
+                error.error_category,
+            );
             Err(error.message)
         }
     }
@@ -828,22 +885,60 @@ mod tests {
     }
 
     #[test]
-    fn failure_detail_cache_normalizes_dependencies_and_consumes_each_detail_once() {
-        clear_onboarding_failure_detail("deps");
+    fn failure_detail_cache_is_scoped_to_each_run_and_attempt() {
+        let first_scope = OnboardingFailureScope {
+            setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            attempt_count: 1,
+        };
+        let retry_scope = OnboardingFailureScope {
+            setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            attempt_count: 2,
+        };
+        clear_onboarding_failure_detail("deps", Some(&first_scope));
+        clear_onboarding_failure_detail("deps", Some(&retry_scope));
         record_onboarding_failure_detail(
             "deps",
+            Some(&first_scope),
             Some("unrecognized-private-tool"),
             OnboardingErrorCategory::Network,
         );
+        record_onboarding_failure_detail(
+            "deps",
+            Some(&retry_scope),
+            Some("qmd"),
+            OnboardingErrorCategory::Timeout,
+        );
 
         assert_eq!(
-            take_onboarding_failure_detail("deps".to_string()),
+            take_onboarding_failure_detail(
+                "deps".to_string(),
+                first_scope.setup_run_id.clone(),
+                first_scope.attempt_count,
+            ),
             Some(OnboardingFailureDetail {
                 failed_dependency: Some("unknown".to_string()),
                 error_category: "network".to_string(),
             })
         );
-        assert_eq!(take_onboarding_failure_detail("deps".to_string()), None);
+        assert_eq!(
+            take_onboarding_failure_detail(
+                "deps".to_string(),
+                retry_scope.setup_run_id.clone(),
+                retry_scope.attempt_count,
+            ),
+            Some(OnboardingFailureDetail {
+                failed_dependency: Some("qmd".to_string()),
+                error_category: "timeout".to_string(),
+            })
+        );
+        assert_eq!(
+            take_onboarding_failure_detail(
+                "deps".to_string(),
+                retry_scope.setup_run_id,
+                retry_scope.attempt_count,
+            ),
+            None
+        );
     }
 
     #[test]

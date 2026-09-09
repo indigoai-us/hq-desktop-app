@@ -47,6 +47,7 @@ use tauri::{AppHandle, Emitter};
 use crate::commands::install_directory::resolve_hq_path;
 use crate::commands::install_stages::{
     clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
+    OnboardingFailureScope,
 };
 use crate::util::client_info::client_headers;
 use crate::util::logfile::log;
@@ -233,7 +234,7 @@ fn content_cancelled_error() -> String {
 fn content_error_category(error: &reqwest::Error) -> OnboardingErrorCategory {
     if error.is_timeout() {
         OnboardingErrorCategory::Timeout
-    } else if error.is_connect() {
+    } else if error.is_connect() || error.is_body() {
         OnboardingErrorCategory::Network
     } else {
         OnboardingErrorCategory::Unknown
@@ -345,6 +346,7 @@ fn github_client() -> Result<reqwest::Client, String> {
 async fn latest_release(
     client: &reqwest::Client,
     repo: &str,
+    failure_scope: Option<&OnboardingFailureScope>,
 ) -> Result<Option<ReleaseInfo>, String> {
     let url = format!("{GITHUB_API}/repos/{repo}/releases");
     let resp = client
@@ -352,7 +354,12 @@ async fn latest_release(
         .send()
         .await
         .map_err(|error| {
-            record_onboarding_failure_detail("content", None, content_error_category(&error));
+            record_onboarding_failure_detail(
+                "content",
+                failure_scope,
+                None,
+                content_error_category(&error),
+            );
             format!("network error listing releases: {error}")
         })?;
     if !resp.status().is_success() {
@@ -367,7 +374,7 @@ async fn latest_release(
         // this on 2026-09-03. The web redirect + codeload archive are not
         // subject to the API limit, so fall back to them.
         if matches!(resp.status().as_u16(), 403 | 429) {
-            match latest_release_via_redirect(repo).await {
+            match latest_release_via_redirect(repo, failure_scope).await {
                 Ok(Some(release)) => return Ok(Some(release)),
                 Ok(None) => {}
                 Err(e) => return Err(format!("{api_err}; API-free fallback also failed: {e}")),
@@ -375,6 +382,7 @@ async fn latest_release(
         }
         record_onboarding_failure_detail(
             "content",
+            failure_scope,
             None,
             if resp.status() == reqwest::StatusCode::NOT_FOUND {
                 OnboardingErrorCategory::NotFound
@@ -388,7 +396,12 @@ async fn latest_release(
         .json()
         .await
         .map_err(|error| {
-            record_onboarding_failure_detail("content", None, content_error_category(&error));
+            record_onboarding_failure_detail(
+                "content",
+                failure_scope,
+                None,
+                content_error_category(&error),
+            );
             format!("failed to parse releases response: {error}")
         })?;
     Ok(releases.into_iter().find(|r| !r.prerelease && !r.draft))
@@ -399,7 +412,10 @@ async fn latest_release(
 /// `/releases/tag/<tag>` (drafts and prereleases are never "latest"), and the
 /// source archive is served by codeload at a stable URL. Neither counts
 /// against the 60/hour anonymous API quota.
-async fn latest_release_via_redirect(repo: &str) -> Result<Option<ReleaseInfo>, String> {
+async fn latest_release_via_redirect(
+    repo: &str,
+    failure_scope: Option<&OnboardingFailureScope>,
+) -> Result<Option<ReleaseInfo>, String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("hq-desktop-app")
@@ -412,7 +428,12 @@ async fn latest_release_via_redirect(repo: &str) -> Result<Option<ReleaseInfo>, 
         .send()
         .await
         .map_err(|error| {
-            record_onboarding_failure_detail("content", None, content_error_category(&error));
+            record_onboarding_failure_detail(
+                "content",
+                failure_scope,
+                None,
+                content_error_category(&error),
+            );
             format!("network error resolving {url}: {error}")
         })?;
     let location = resp
@@ -514,7 +535,7 @@ fn staging_tarball_url(reference: &str) -> Result<String, String> {
 
 #[cfg(test)]
 async fn download_tarball(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    download_tarball_with_progress(client, url, None, None).await
+    download_tarball_with_progress(client, url, None, None, None).await
 }
 
 async fn download_tarball_with_progress(
@@ -522,6 +543,7 @@ async fn download_tarball_with_progress(
     url: &str,
     progress: Option<&ContentProgressEmitter>,
     cancel: Option<&AtomicBool>,
+    failure_scope: Option<&OnboardingFailureScope>,
 ) -> Result<Vec<u8>, String> {
     use futures_util::StreamExt;
 
@@ -534,11 +556,21 @@ async fn download_tarball_with_progress(
         .send()
         .await
         .map_err(|error| {
-            record_onboarding_failure_detail("content", None, content_error_category(&error));
+            record_onboarding_failure_detail(
+                "content",
+                failure_scope,
+                None,
+                content_error_category(&error),
+            );
             format!("network error downloading template: {error}")
         })?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        record_onboarding_failure_detail("content", None, OnboardingErrorCategory::NotFound);
+        record_onboarding_failure_detail(
+            "content",
+            failure_scope,
+            None,
+            OnboardingErrorCategory::NotFound,
+        );
         return Err(format!("template tarball not found (404): {url}"));
     }
     if !resp.status().is_success() {
@@ -585,6 +617,7 @@ async fn download_tarball_with_progress(
             Ok(Some(Err(error))) => {
                 record_onboarding_failure_detail(
                     "content",
+                    failure_scope,
                     None,
                     content_error_category(&error),
                 );
@@ -621,6 +654,7 @@ async fn download_tarball_with_progress(
                     Ok(Some(Err(error))) => {
                         record_onboarding_failure_detail(
                             "content",
+                            failure_scope,
                             None,
                             content_error_category(&error),
                         );
@@ -640,6 +674,7 @@ async fn download_tarball_with_progress(
                         }
                         record_onboarding_failure_detail(
                             "content",
+                            failure_scope,
                             None,
                             OnboardingErrorCategory::Timeout,
                         );
@@ -1192,8 +1227,9 @@ fn extract_tarball_with_progress(
 pub async fn fetch_and_extract_template(
     app: AppHandle,
     handle: Option<String>,
+    failure_scope: Option<OnboardingFailureScope>,
 ) -> Result<String, String> {
-    clear_onboarding_failure_detail("content");
+    clear_onboarding_failure_detail("content", failure_scope.as_ref());
     let hq_root = resolve_hq_path()?;
     let source = template_source_for_staging_source(staging_source_enabled());
     let token = if matches!(source.channel, TemplateChannel::StagingMain) {
@@ -1212,7 +1248,7 @@ pub async fn fetch_and_extract_template(
     let (version, tarball_url) = match source.reference {
         Some(reference) => (reference.to_string(), staging_tarball_url(reference)?),
         None => {
-            let release = latest_release(&client, source.repo).await?;
+            let release = latest_release(&client, source.repo, failure_scope.as_ref()).await?;
             let release = release.ok_or_else(|| {
                 format!(
                     "no stable release found for {}; cannot install HQ template",
@@ -1237,6 +1273,7 @@ pub async fn fetch_and_extract_template(
         &tarball_url,
         Some(&progress),
         Some(cancel_flag.as_ref()),
+        failure_scope.as_ref(),
     )
     .await?;
     extract_tarball_with_progress(
@@ -1535,7 +1572,7 @@ mod tests {
     #[ignore]
     async fn real_hq_core_tarball_downloads_and_extracts() {
         let client = github_client().expect("client");
-        let release = latest_release(&client, DEFAULT_TEMPLATE_REPO)
+        let release = latest_release(&client, DEFAULT_TEMPLATE_REPO, None)
             .await
             .expect("release lookup")
             .expect("a stable hq-core release must exist");

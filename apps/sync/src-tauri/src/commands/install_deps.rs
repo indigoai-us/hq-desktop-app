@@ -3743,13 +3743,6 @@ pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
         Ok(())
     })();
 
-    if result.is_err() {
-        record_onboarding_failure_detail(
-            "deps",
-            Some("path-write"),
-            OnboardingErrorCategory::Unknown,
-        );
-    }
     result
 }
 
@@ -5469,8 +5462,11 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
 }
 
 #[tauri::command]
-pub async fn install_deps(app: AppHandle) -> Result<(), String> {
-    clear_onboarding_failure_detail("deps");
+pub async fn install_deps(
+    app: AppHandle,
+    failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
+) -> Result<(), String> {
+    clear_onboarding_failure_detail("deps", failure_scope.as_ref());
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);
     let mut ok_set: HashSet<&'static str> = HashSet::new();
@@ -5551,6 +5547,7 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
             // exact dependency but record the category as the closed fallback.
             record_onboarding_failure_detail(
                 "deps",
+                failure_scope.as_ref(),
                 Some(failed_dependency),
                 OnboardingErrorCategory::Unknown,
             );
