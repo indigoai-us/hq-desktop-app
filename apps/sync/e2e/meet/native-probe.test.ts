@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest';
 async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {}) {
   let button: any, gesture = false;
   const timers = new Map<number, () => void>();
+  let frameCallback: () => void = () => {}, frameInterval = Infinity;
   let time = 0, video = 1, audio = 1, silent = false;
   const pcs: any[] = [];
+  const analysers: any[] = [];
   const track = { id: 'camera', stop() {} };
   const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
   const node = () => ({ connect() {}, start() {}, stop() {} });
@@ -19,11 +21,11 @@ async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {
     state = options.suspended ? 'suspended' : 'running'; onstatechange?: () => void; currentTime = 0; sampleRate = 48000;
     resume = async () => { if (!options.suspended || gesture) { this.state = 'running'; this.onstatechange?.(); } }; close = async () => {};
     createMediaStreamSource = node;
-    createAnalyser() { return { fftSize: 2048, frequencyBinCount: 1024,
+    createAnalyser() { const analyser = { smoothingTimeConstant: 0.8, fftSize: 2048, frequencyBinCount: 1024,
       getFloatFrequencyData(bins: Float32Array) {
         bins.fill(-Infinity);
         if (!silent) for (let bank = 0; bank < 4; bank++) bins[Math.round((700 + bank * 3000 + ((audio >> (bank * 4)) & 15) * 150) * 2048 / 48000)] = -20;
-      } }; }
+      } }; analysers.push(analyser); return analyser; }
     createMediaStreamDestination = () => ({ stream });
     decodeAudioData = async () => ({ duration: 10 });
     createBufferSource = node;
@@ -51,14 +53,15 @@ async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {
     ]);
   }
   const world: any = { performance: { now: () => time }, Date, Float32Array, Uint8Array,
-    setTimeout: (callback: () => void, ms: number) => { timers.set(ms, callback); return ms; }, clearTimeout(ms: number) { timers.delete(ms); }, setInterval: () => 2, clearInterval() {},
+    setTimeout: (callback: () => void, ms: number) => { timers.set(ms, callback); return ms; }, clearTimeout(ms: number) { timers.delete(ms); }, setInterval: (callback: () => void, ms: number) => { frameCallback=callback; frameInterval=ms; return 2; }, clearInterval() {},
     atob: () => '', AudioContext, RTCPeerConnection: Peer,
     MediaStream: class { constructor(_: unknown) {} },
     document: { createElement: (tag: string) => { const el = element(); if(tag==='button') button=el; return el; }, head: { append() {} }, body: { append() {} } },
     navigator: { mediaDevices: { getUserMedia: async () => { throw new Error('physical capture unavailable'); } } } };
   runInNewContext(readFileSync(new URL('./native-probe.js', import.meta.url), 'utf8'), world);
   const probe = world.__hqMeetProbe;
-  const result = { probe, world, pcs,
+  const result = { probe, world, pcs, analysers,
+    frameInterval: () => frameInterval, frame: (t: number) => { time=t; frameCallback(); },
     start: () => probe.start({ speechBase64: '', screenLines: ['a','b','c','d','e'], durationMs: 30000 }),
     activate: () => { gesture = true; button.onclick(); }, expireAudio: () => timers.get(10000)!(),
     set(t: number, v: number, a: number, quiet = false) { time = t; video = v; audio = a; silent = quiet; },
@@ -134,4 +137,22 @@ it('returns SDP while gathering continues and drains actual queued candidates on
   await f.probe.addIce('remote',candidates); expect(f.pcs[0].receivedCandidates).toHaveLength(16);
   expect(f.probe.connection('remote')).toMatchObject({state:'connected',channelState:'open'});
   expect(JSON.stringify(await f.sample())).not.toContain('PRIVATE_ADDRESS'); await f.probe.stop();
+});
+
+it('paints at the requested video cadence while emitting each half-second marker only once', async () => {
+  const f = await fixture();
+  expect(f.frameInterval()).toBeLessThanOrEqual(1000/15);
+  for (let i=1;i<15;i++) f.frame(i*1000/15);
+  const snapshot=await f.probe.snapshot();
+  expect(snapshot.emissions.map((e: any)=>e.sequence)).toEqual([0,1]);
+  await f.probe.stop();
+});
+
+it('reads current audio frequency banks without averaging prior marker sequences', async () => {
+  const f=await fixture();
+  expect(f.analysers).toHaveLength(1);
+  expect(f.analysers[0].smoothingTimeConstant).toBe(0);
+  f.set(100, 15, 15); expect((await f.sample()).audioMarker.sequence).toBe(15);
+  f.set(600, 16, 16); expect((await f.sample()).audioMarker.sequence).toBe(16);
+  await f.probe.stop();
 });

@@ -8,7 +8,7 @@
   let context, camera, fixtureAudio, screenStream, canvas, timer;
   let oscillators = [];
   let surface, mask, watchdog, probeNonce, cancelAudioUnlock;
-  let start = 0, stopped = false, sequence = 0, emitted = [], peers = new Map();
+  let start = 0, stopped = false, sequence = 0, lastEmittedSequence, emitted = [], peers = new Map();
   const now = () => performance.now() - start;
   const finite = value => typeof value === 'number' && Number.isFinite(value);
   const candidate = value => ['host', 'srflx', 'prflx', 'relay'].includes(value) ? value : 'unknown';
@@ -20,6 +20,9 @@
       c.fillStyle = sequence & (1 << bit) ? 'white' : 'black';
       c.fillRect(10 + bit * 24, 10, 20, 30);
     }
+    // Paint real motion at capture cadence; a 2 fps source triggers WebRTC
+    // adaptation even when captureStream requests 15 fps. Markers stay 2 Hz.
+    c.fillStyle = '#a22'; c.fillRect(Math.floor(now() / 10) % 1200, 680, 50, 30);
     c.fillStyle = '#111'; c.font = '14pt Arial';
     globalThis.__hqMeetProbe.screenLines.forEach((line, i) => c.fillText(line, 30, 90 + i * 34));
     // Distinct public frequency marker mixed with the public speech fixture.
@@ -27,7 +30,10 @@
     // single modulo-16 tone this stays unambiguous across a one-hour run.
     oscillators.forEach((oscillator, bank) => oscillator.frequency.setValueAtTime(
       700 + bank * 3000 + ((sequence >> (bank * 4)) & 15) * 150, context.currentTime));
-    emitted.push({ atMs: now(), sequence, audioContextSeconds: context.currentTime });
+    if (sequence !== lastEmittedSequence) {
+      emitted.push({ atMs: now(), sequence, audioContextSeconds: context.currentTime });
+      lastEmittedSequence = sequence;
+    }
     if (emitted.length > 7201) throw new Error('probe emission budget exhausted');
   }
   async function receive(peer, event) {
@@ -36,6 +42,9 @@
     if (track.kind === 'audio') {
       const source = context.createMediaStreamSource(stream);
       const analyser = context.createAnalyser(); analyser.fftSize = 2048;
+      // Markers change frequency: averaging old spectra mixes sequence banks
+      // and attenuates the current symbol below the unchanged detection floor.
+      analyser.smoothingTimeConstant = 0;
       source.connect(analyser);
       // Playback follows real autoplay/user-gesture policy: rejection is a failure.
       const audio = document.createElement('audio'); audio.srcObject = stream; audio.autoplay = true;
@@ -254,7 +263,7 @@
       canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
       canvas.style.width = '640px'; surface.append(canvas);
       camera = canvas.captureStream(15);
-      if (options.shareScreen) screenStream = canvas.captureStream(15); render(); timer = setInterval(render, 500);
+      if (options.shareScreen) screenStream = canvas.captureStream(15); render(); timer = setInterval(render, 1000 / 15);
       return { provenance: 'native-probe-unattested', physicalCaptureTested: false, captureSource: 'generated-public-fixtures', wallTimeMs: Date.now(), monotonicMs: performance.now(),
         audioState: context.state, screenTrack: Boolean(screenStream?.getVideoTracks().length) };
     },
