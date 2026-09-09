@@ -56,15 +56,24 @@ function trimmed(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/** Shown when the summary card 404s for an account the roster says has a company. */
+export const CREATE_COMPANY_ROSTER_SYNCING_REASON =
+  "Your company is still syncing. Try again in a moment.";
+
 /**
  * New company: run the #setup summary card's `create_company` action. The
  * server answers `{ cardId, channelId: "setup" }` with the fresh card. A user
  * with no companies yet has no summary card (404) — the seeded create_company
  * card already sits in #setup, so land there by kind.
+ *
+ * When the caller's roster ALREADY holds a company (`hasCompanies`), that
+ * 404 means the server has not caught up with the website-created company
+ * yet. Landing on the seeded card would re-prompt an owner to create the
+ * company they already have, so report it inline instead of navigating.
  */
 export async function runCreateCompanyEntry(
   api: Pick<EntryPointApi, "runCardAction">,
-  options: { idempotencyKey?: string } = {},
+  options: { idempotencyKey?: string; hasCompanies?: boolean } = {},
 ): Promise<EntryPointResult> {
   let result: CardActionResult;
   try {
@@ -77,6 +86,13 @@ export async function runCreateCompanyEntry(
     });
   } catch (err) {
     if (isNotFound(err)) {
+      if (options.hasCompanies) {
+        return {
+          ok: false,
+          reason: CREATE_COMPANY_ROSTER_SYNCING_REASON,
+          blocked: false,
+        };
+      }
       return {
         ok: true,
         target: {

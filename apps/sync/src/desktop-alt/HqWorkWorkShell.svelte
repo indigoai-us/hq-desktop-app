@@ -16,12 +16,14 @@
     applyRecommendBanner,
     clearRecommendBanner,
     createChatWakeBus,
+    createRosterRefresher,
     dispatchEmbeddedNavigation,
     markDownloaded,
     markInstallStarted,
     reportDownloadProgress,
     reportIdleWait,
     reportInstallFailed,
+    subscribeRosterRefreshEvents,
     toSelfIdentity,
     workspacesFromMembershipRows,
     type ConversationRow,
@@ -62,11 +64,14 @@
     invokeFn?: SyncInvokeFn;
     /** Tests shorten the first-paint bound so a hung fetch cannot stall. */
     bootTimeoutMs?: number;
+    /** Backoff between failed workspace-roster fetches (tests shorten it). */
+    rosterRetryDelaysMs?: readonly number[];
   }
 
   let {
     invokeFn = tauriInvoke as SyncInvokeFn,
     bootTimeoutMs,
+    rosterRetryDelaysMs,
   }: Props = $props();
 
   const adapter = createSyncPlatformAdapter({
@@ -309,29 +314,46 @@
     }
   }
 
-  async function refreshWorkspaces(request: number, generation = authGeneration): Promise<void> {
+  /**
+   * Resolves `true` when the roster applied (or the session moved on — nothing
+   * left to retry) and `false` when the fetch failed for the session that asked.
+   */
+  async function refreshWorkspaces(request: number, generation = authGeneration): Promise<boolean> {
     try {
       const result = await bounded(
         adapter.identity.listWorkspaces(),
         'Workspace lookup',
       );
-      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return;
+      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return true;
       if (!result.ok) {
-        companies = null;
+        // Keep a previously good roster on screen; the refresher retries.
         workspaceError = result.message ?? 'Couldn’t load company workspaces.';
-        return;
+        return false;
       }
       companies = workspacesFromMembershipRows(result.value);
       workspaceError = null;
+      return true;
     } catch (error) {
-      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return;
-      companies = null;
+      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return true;
       workspaceError = readableError(error, 'Couldn’t load company workspaces.');
+      return false;
     }
   }
 
+  // One bounded refresher serves the first fetch, its backoff retries, the
+  // manual Retry button, and the sync runner's company events. Before this,
+  // a failed first fetch left the roster empty until the user retried by hand.
+  const rosterRefresher = createRosterRefresher({
+    load: () => {
+      if (lifecycle !== 'ready') return Promise.resolve(true);
+      return refreshWorkspaces(hydration, authGeneration);
+    },
+    delaysMs: rosterRetryDelaysMs,
+  });
+
   async function hydrateSession(expectedGeneration = authGeneration): Promise<void> {
     const request = ++hydration;
+    rosterRefresher.cancel();
     lifecycle = 'loading';
     identityError = null;
     workspaceError = null;
@@ -389,7 +411,7 @@
       });
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       lifecycle = 'ready';
-      void refreshWorkspaces(request, expectedGeneration);
+      void rosterRefresher.refresh();
     } catch (error) {
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       identityError = readableError(error, 'Couldn’t verify your account.');
@@ -406,7 +428,7 @@
   async function retryWorkspaces(): Promise<void> {
     if (lifecycle !== 'ready') return;
     workspaceError = null;
-    await refreshWorkspaces(hydration, authGeneration);
+    await rosterRefresher.refresh();
   }
 
   function requestRevalidation(options: { automatic?: boolean } = {}): void {
@@ -425,6 +447,7 @@
     try {
       await invokeFn('sign_out');
       navigation.clear();
+      rosterRefresher.cancel();
       authGeneration += 1;
       authAccountId = null;
       self = null;
@@ -613,6 +636,11 @@
     const unlistenAuthReadyPromise = listen('auth:session-ready', () => {
       if (!cancelled) requestRevalidation();
     }).catch(() => () => {});
+    // Website-created companies are provisioned by the sync runner after
+    // sign-in; re-read the roster when it says so instead of after a restart.
+    const unsubscribeRosterEvents = subscribeRosterRefreshEvents(listen, () => {
+      if (!cancelled && lifecycle === 'ready') void rosterRefresher.refresh();
+    });
 
     const updateEvents = [
       'update:available',
@@ -725,6 +753,8 @@
       cancelled = true;
       clearTimeout(bootRevealTimeoutId);
       hydration += 1;
+      unsubscribeRosterEvents();
+      rosterRefresher.dispose();
       detachNavigation?.();
       detachNavigation = null;
       void unlistenSetupPromise.then((unlisten) => safeUnlisten(unlisten)());

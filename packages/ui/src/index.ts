@@ -111,6 +111,15 @@ export {
   type SettingsProfileChrome,
   type ResolveShellCompaniesInput,
 } from "./identity/self.js";
+export {
+  createRosterRefresher,
+  ROSTER_REFRESH_EVENTS,
+  ROSTER_RETRY_DELAYS_MS,
+  subscribeRosterRefreshEvents,
+  type RosterListenFn,
+  type RosterRefresher,
+  type RosterRefreshEvent,
+} from "./identity/roster-refresh.js";
 export { createTenantStorage } from "./identity/tenant-storage.js";
 
 export {

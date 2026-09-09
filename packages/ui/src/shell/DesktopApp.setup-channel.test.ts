@@ -11,8 +11,66 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import {
   SETUP_CHANNEL_ID,
   SETUP_HERO,
+  SETUP_HERO_RETURNING,
   SETUP_ROW_ID,
 } from "../chat/setup-channel.js";
+import type { Workspace } from "../chat/workspaces.js";
+
+const ACME: Workspace = {
+  slug: "acme",
+  displayName: "Acme",
+  kind: "company",
+  state: "cloud-only",
+  cloudUid: "cmp_acme",
+  bucketName: null,
+  hasLocalFolder: false,
+  localPath: null,
+  membershipStatus: "active",
+  role: "owner",
+  lastSyncedAt: null,
+  brokenReason: null,
+  invitedBy: null,
+  invitedAt: null,
+};
+
+const ACME_CHANNEL_ROW = {
+  channelId: "chn_acme",
+  type: "chat",
+  scope: "company",
+  companyUid: "cmp_acme",
+  name: "acme",
+  lastActivityAt: new Date().toISOString(),
+};
+
+/** The seeded card every fresh account gets before the server sees the company. */
+const SEEDED_CREATE_COMPANY = {
+  eventId: "evt_seed_create",
+  createdAt: "2026-09-05T12:00:00Z",
+  messageKind: "system",
+  systemEvent: {
+    v: 1,
+    type: "lifecycle_card",
+    cardId: "card_create_company_seed",
+    kind: "create_company",
+    companyUid: null,
+    state: "open",
+    title: "Create a company",
+    fields: [
+      { id: "name", label: "Company name", control: "text", required: true, value: "" },
+    ],
+    actions: [{ id: "create", label: "Create company", style: "primary" }],
+    viewer: { canAct: true },
+  },
+};
+
+function setupChannelWithSeed(): Partial<PlatformAdapter["messaging"]> {
+  return {
+    fetchChannel: async (args: { channelId: string }) =>
+      args.channelId === SETUP_CHANNEL_ID
+        ? ok({ messages: [SEEDED_CREATE_COMPANY], nextCursor: null })
+        : ({ ok: false as const, reason: "unavailable" as const } as never),
+  };
+}
 
 function adapter(
   messaging: Partial<PlatformAdapter["messaging"]> = {},
@@ -23,6 +81,7 @@ function adapter(
     capabilities: {},
     messaging: {
       listContacts: async () => ok({ contacts: [] }),
+      listChannelMembers: async () => ok({ members: [] }),
       fetchChannel: async () => ({
         ok: false as const,
         reason: "unavailable",
@@ -61,6 +120,7 @@ async function settle(times = 6): Promise<void> {
 async function mountApp(
   messaging: Partial<PlatformAdapter["messaging"]> = {},
   extraPages?: ComponentProps<typeof DesktopApp>["extraPages"],
+  extra: Partial<ComponentProps<typeof DesktopApp>> = {},
 ): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -77,6 +137,7 @@ async function mountApp(
       },
       coreFixtures: false,
       extraPages,
+      ...extra,
     },
   });
   await settle();
@@ -182,5 +243,125 @@ describe("DesktopApp synthetic #setup channel", () => {
     );
     expect(host.textContent).not.toMatch(/isn't linked yet/);
     expect(host.querySelector(".composer-attach-error")).toBeNull();
+  });
+});
+
+describe("DesktopApp #setup leads with an existing company", () => {
+  it("shows the seeded create_company card and the blank-slate hero when the roster is empty", async () => {
+    await mountApp(setupChannelWithSeed(), undefined, { companies: [] });
+    await selectSetupRow();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="lifecycle-card"][data-card-kind="create_company"]'),
+      ).toBeTruthy();
+    });
+    const intro = host.querySelector('[data-testid="setup-channel-intro"]');
+    expect(intro?.getAttribute("data-setup-has-company")).toBe("false");
+    expect(intro?.textContent).toContain(SETUP_HERO.title);
+    expect(host.querySelector('[data-testid="setup-company-actions"]')).toBeNull();
+    expect(host.querySelector('[data-testid="setup-create-another-company"]')).toBeNull();
+  });
+
+  it("hides the seeded create_company card and offers Continue setup for a cloud-only company", async () => {
+    const runCardAction = vi.fn();
+    await mountApp({ ...setupChannelWithSeed(), runCardAction }, undefined, {
+      companies: [ACME],
+    });
+    await selectSetupRow();
+    await settle(10);
+
+    const intro = host.querySelector('[data-testid="setup-channel-intro"]');
+    expect(intro?.getAttribute("data-setup-has-company")).toBe("true");
+    expect(intro?.textContent).toContain(SETUP_HERO_RETURNING.title);
+    expect(intro?.textContent).not.toContain(SETUP_HERO.body);
+    const open = host.querySelector<HTMLButtonElement>(
+      '[data-testid="setup-open-company-acme"]',
+    );
+    expect(open?.textContent?.trim()).toBe("Continue setup for Acme");
+    expect(
+      host.querySelector('[data-testid="lifecycle-card"][data-card-kind="create_company"]'),
+      "seeded create_company card is not the primary action when a company exists",
+    ).toBeNull();
+    // The quiet secondary affordance is still there for a second company.
+    expect(host.querySelector('[data-testid="setup-create-another-company"]')).toBeTruthy();
+    expect(runCardAction).not.toHaveBeenCalled();
+  });
+
+  it("Open <Company> selects that company's channel when the rail has it", async () => {
+    const onselectrow = vi.fn();
+    await mountApp(setupChannelWithSeed(), undefined, {
+      companies: [{ ...ACME, state: "synced", hasLocalFolder: true }],
+      seedDirectory: [ACME_CHANNEL_ROW],
+      onselectrow,
+    });
+    await selectSetupRow();
+    const open = host.querySelector<HTMLButtonElement>(
+      '[data-testid="setup-open-company-acme"]',
+    );
+    expect(open?.textContent?.trim()).toBe("Open Acme");
+    open!.click();
+    await settle(10);
+    expect(onselectrow).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: "ch:chn_acme", companyUid: "cmp_acme" }),
+    );
+    expect(host.querySelector('[data-testid="setup-channel-intro"]')).toBeNull();
+  });
+
+  it("Create another company runs the entry point and brings the create card back", async () => {
+    const runCardAction = vi.fn(async () =>
+      ok({
+        cardId: "card_create_company_seed",
+        actionId: "create_company",
+        state: "open",
+        channelId: SETUP_CHANNEL_ID,
+        replayed: false,
+      }),
+    );
+    await mountApp({ ...setupChannelWithSeed(), runCardAction }, undefined, {
+      companies: [ACME],
+    });
+    await selectSetupRow();
+    await settle(10);
+    expect(
+      host.querySelector('[data-testid="lifecycle-card"][data-card-kind="create_company"]'),
+    ).toBeNull();
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="setup-create-another-company"]')!
+      .click();
+    await vi.waitFor(() => expect(runCardAction).toHaveBeenCalledOnce());
+    expect(runCardAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: SETUP_CHANNEL_ID,
+        cardId: "companies_summary",
+        actionId: "create_company",
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="lifecycle-card"][data-card-kind="create_company"]'),
+      ).toBeTruthy();
+    });
+  });
+
+  it("reports inline when the summary 404s for an account that already has a company", async () => {
+    const runCardAction = vi.fn(async () => {
+      throw new Error("[not_found] Request failed (status 404)");
+    });
+    await mountApp({ ...setupChannelWithSeed(), runCardAction }, undefined, {
+      companies: [ACME],
+    });
+    await selectSetupRow();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="setup-create-another-company"]')!
+      .click();
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-testid="setup-create-another-company-error"]')?.textContent,
+      ).toMatch(/still syncing/);
+    });
+    expect(
+      host.querySelector('[data-testid="lifecycle-card"][data-card-kind="create_company"]'),
+    ).toBeNull();
   });
 });

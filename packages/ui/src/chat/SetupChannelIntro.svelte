@@ -29,13 +29,17 @@
   } from "../settings/launch-actions";
   import {
     SETUP_DEEP_LINK_PROMPT,
-    SETUP_HERO,
     SETUP_LAUNCH_COMMANDS,
     SETUP_RESOURCES,
     SETUP_SUPPORT_NOTE,
+    setupCompanies,
+    setupCompanyActionLabel,
+    setupHeroFor,
     type SetupResourceKind,
   } from "./setup-channel";
   import { SETUP_HERO_ART } from "./setup-welcome-art";
+  import type { EntryPointResult } from "./lifecycle-entry-points";
+  import type { Workspace } from "./workspaces";
 
   interface Props {
     /** Platform seam slices (see @hq/platform PlatformAdapter). */
@@ -52,9 +56,52 @@
     onopenurl?: (url: string) => void;
     /** Present only when the host provides in-app Sessions. Opens a draft, never sends. */
     onopensessions?: () => void;
+    /**
+     * The shell's company roster. When it holds any company (whatever its
+     * sync state), the hero leads with "Open <Company>" / "Continue setup for
+     * <Company>" instead of the create-a-company prompt.
+     */
+    companies?: readonly Workspace[] | null;
+    /** Open (or continue setting up) one of the roster's companies. */
+    onopencompany?: (company: Workspace) => void;
+    /**
+     * Secondary "Create another company" entry point, shown only next to an
+     * existing company. Same host callback the sidebar uses; a failure reason
+     * renders inline where the control was.
+     */
+    oncreatecompany?: (() => Promise<EntryPointResult>) | null;
   }
 
-  let { settings, shell, onopenurl, onopensessions }: Props = $props();
+  let {
+    settings,
+    shell,
+    onopenurl,
+    onopensessions,
+    companies = null,
+    onopencompany,
+    oncreatecompany = null,
+  }: Props = $props();
+
+  const rosterCompanies = $derived(setupCompanies(companies));
+  const hasCompany = $derived(rosterCompanies.length > 0);
+  const hero = $derived(setupHeroFor(companies));
+
+  let createAnotherBusy = $state(false);
+  let createAnotherError = $state<string | null>(null);
+
+  async function createAnotherCompany(): Promise<void> {
+    if (!oncreatecompany || createAnotherBusy) return;
+    createAnotherBusy = true;
+    createAnotherError = null;
+    try {
+      const result = await oncreatecompany();
+      if (!result.ok) createAnotherError = result.reason;
+    } catch (err) {
+      createAnotherError = err instanceof Error ? err.message : String(err);
+    } finally {
+      createAnotherBusy = false;
+    }
+  }
 
   let hqFolderPath = $state("");
   let launching = $state<LaunchKey | null>(null);
@@ -139,6 +186,7 @@
   aria-label="Getting started with HQ Desktop"
   data-testid="setup-channel-intro"
   data-setup-threads="none"
+  data-setup-has-company={hasCompany ? "true" : "false"}
 >
   <div class="hero" data-testid="setup-hero">
     <img
@@ -159,9 +207,53 @@
     />
     <div class="hero-scrim" aria-hidden="true"></div>
     <div class="hero-copy">
-      <span class="eyebrow">{SETUP_HERO.eyebrow}</span>
-      <h2 class="hero-title">{SETUP_HERO.title}</h2>
-      <p class="hero-body">{SETUP_HERO.body}</p>
+      <span class="eyebrow">{hero.eyebrow}</span>
+      <h2 class="hero-title">{hero.title}</h2>
+      <p class="hero-body">{hero.body}</p>
+
+      {#if hasCompany}
+        <div
+          class="hero-actions company-actions"
+          role="group"
+          aria-label="Your companies"
+          data-testid="setup-company-actions"
+        >
+          {#each rosterCompanies as company (company.cloudUid ?? company.slug)}
+            <button
+              type="button"
+              class="launch-btn primary"
+              data-testid={`setup-open-company-${company.slug}`}
+              data-company-uid={company.cloudUid ?? ""}
+              onclick={() => onopencompany?.(company)}
+            >
+              {setupCompanyActionLabel(company)}
+            </button>
+          {/each}
+        </div>
+        {#if oncreatecompany}
+          <div class="setup-action">
+            <button
+              type="button"
+              class="quiet-btn"
+              data-testid="setup-create-another-company"
+              aria-busy={createAnotherBusy}
+              disabled={createAnotherBusy}
+              onclick={() => void createAnotherCompany()}
+            >
+              {createAnotherBusy ? "Opening…" : "Create another company"}
+            </button>
+            {#if createAnotherError}
+              <p
+                class="launch-error"
+                role="alert"
+                data-testid="setup-create-another-company-error"
+              >
+                {createAnotherError}
+              </p>
+            {/if}
+          </div>
+        {/if}
+      {/if}
 
       <div class="optional-tools">
       <p>Work with AI on your computer</p>
@@ -431,6 +523,41 @@
   .launch-btn:disabled {
     opacity: 0.55;
     cursor: default;
+  }
+
+  .company-actions {
+    margin-top: var(--space-3, 12px);
+  }
+
+  /* Secondary affordance beside an existing company: text-only, no chrome. */
+  .quiet-btn {
+    display: inline-flex;
+    align-items: center;
+    align-self: flex-start;
+    min-height: 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.72);
+    font: inherit;
+    font-size: var(--text-base, 13px);
+    text-decoration: underline;
+    text-underline-offset: 0.16em;
+    cursor: pointer;
+  }
+
+  .quiet-btn:hover:not(:disabled) {
+    color: #ffffff;
+  }
+
+  .quiet-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .quiet-btn:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: 2px;
   }
 
   .launch-btn:focus-visible {

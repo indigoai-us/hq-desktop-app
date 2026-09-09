@@ -12,6 +12,7 @@
 // surfaces stay in lockstep without apps/sync leaking into packages/ui.
 
 import type { Channel } from "./channels.js";
+import type { Workspace } from "./workspaces.js";
 
 /** Wire id the backend / Slack support bridge routes on. */
 export const SETUP_CHANNEL_ID = "setup";
@@ -152,6 +153,86 @@ export const SETUP_HERO = {
   title: "Your team's operating system for AI.",
   body: "Create or choose a company below. We'll guide you through cloud setup and choosing a plan, then open your team's channel. Already created a company on the website? Sign in with the same account to continue it here.",
 } as const;
+
+/**
+ * Hero copy when the signed-in account already owns or belongs to a company
+ * (created on the website, or on another machine). The welcome pane must lead
+ * with THAT company — never with "Create a company" — or a brand-new owner
+ * reads the app as having lost the company they just paid for.
+ */
+export const SETUP_HERO_RETURNING = {
+  eyebrow: "Welcome to HQ",
+  title: "Your company is ready.",
+  body: "Open it to pick up where you left off. We'll finish any remaining setup steps from your team's channel. Need a second company? You can add one below.",
+} as const;
+
+/** Pick the hero copy for the roster the shell currently knows about. */
+export function setupHeroFor(
+  companies: readonly Workspace[] | null | undefined,
+): typeof SETUP_HERO | typeof SETUP_HERO_RETURNING {
+  return setupCompanies(companies).length > 0 ? SETUP_HERO_RETURNING : SETUP_HERO;
+}
+
+/**
+ * Company workspaces from the roster, regardless of sync state or whether a
+ * local folder exists yet. A cloud-only, pending, or broken company is still
+ * a company the user has — it is the thing #welcome must point at.
+ */
+export function setupCompanies(
+  companies: readonly Workspace[] | null | undefined,
+): Workspace[] {
+  return (companies ?? []).filter((company) => company.kind === "company");
+}
+
+/** Plain-language display name for a roster row (never a uid or slug id). */
+export function setupCompanyName(company: Workspace): string {
+  const name = company.displayName?.trim();
+  if (name) return name;
+  return company.slug
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+/**
+ * Primary action label for a company on #welcome. A company that already has
+ * a synced local folder is simply opened; anything else (cloud-only, pending
+ * invite, broken mapping) still has setup to finish.
+ */
+export function setupCompanyActionLabel(company: Workspace): string {
+  const name = setupCompanyName(company);
+  const settled =
+    company.state === "synced" &&
+    company.hasLocalFolder &&
+    company.membershipStatus !== "pending";
+  return settled ? `Open ${name}` : `Continue setup for ${name}`;
+}
+
+/**
+ * Hide the seeded `create_company` lifecycle card from the #welcome timeline
+ * once the roster shows a company. The seeded card is stamped for every new
+ * account before the server knows about the website-created company, so
+ * without this filter the pane leads with "Create a company" for an owner
+ * who already has one. It comes back the moment the user asks for another
+ * company (`createRequested`), whether the server posts a fresh card or the
+ * seeded one is reused.
+ */
+export function withoutSeededCreateCompanyCards<
+  T extends { systemEvent?: unknown },
+>(
+  messages: readonly T[],
+  options: { hasCompany: boolean; createRequested: boolean },
+): T[] {
+  if (!options.hasCompany || options.createRequested) return messages.slice();
+  return messages.filter((message) => !isCreateCompanyCard(message.systemEvent));
+}
+
+function isCreateCompanyCard(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const event = raw as { type?: unknown; kind?: unknown };
+  return event.type === "lifecycle_card" && event.kind === "create_company";
+}
 
 export type SetupResourceKind = "guide" | "book" | "training" | "docs";
 

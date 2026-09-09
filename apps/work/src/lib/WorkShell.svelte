@@ -19,8 +19,10 @@
   import {
     DesktopApp,
     createChatWakeBus,
+    createRosterRefresher,
     createTenantStorage,
     resolveShellCompanies,
+    subscribeRosterRefreshEvents,
     settingsProfileFromSelf,
     statusForRow,
     identitiesFromContacts,
@@ -168,6 +170,11 @@
     >;
     /** Native host decorations for project-channel rows. */
     rowExtras?: RowExtrasResolver | null;
+    /**
+     * Backoff between failed company-roster fetches (tests shorten it). The
+     * default is bounded; a roster that keeps failing stops retrying.
+     */
+    rosterRetryDelaysMs?: readonly number[];
   };
 
   // A non-SvelteKit host can supply its runtime kind and public API URL. The
@@ -199,6 +206,7 @@
     onactivethreadchange,
     extraPages,
     rowExtras = null,
+    rosterRetryDelaysMs,
   }: WorkShellProps = $props();
 
   // Only a real desktop host gets the native command bridge. A phone runs a
@@ -373,6 +381,7 @@
   function clearTenantState(): void {
     // This page-scoped cache survives the keyed DesktopApp remount. Clear it
     // at the auth-generation boundary before any next-tenant request starts.
+    rosterRefresher.cancel();
     projectMeta.invalidateAll();
     projectMetaTick += 1;
     self = null;
@@ -386,6 +395,64 @@
     return generation === tenantGeneration && hydration === tenantHydration;
   }
 
+  function sameRoster(a: readonly Workspace[], b: readonly Workspace[]): boolean {
+    if (a.length !== b.length) return false;
+    return a.every((row, index) => {
+      const other = b[index];
+      return (
+        row.slug === other.slug &&
+        row.cloudUid === other.cloudUid &&
+        row.displayName === other.displayName &&
+        row.kind === other.kind &&
+        row.state === other.state &&
+        row.membershipStatus === other.membershipStatus &&
+        row.role === other.role &&
+        row.hasLocalFolder === other.hasLocalFolder
+      );
+    });
+  }
+
+  /**
+   * Fetch the company roster for the tenant that asked. Resolves `true` when
+   * the roster applied (or the tenant moved on — nothing left to retry) and
+   * `false` when the fetch failed, so the refresher can back off and retry.
+   * Never invents a roster: a failed fetch leaves the last good one in place.
+   */
+  async function loadRoster(
+    expectedGeneration: number,
+    hydration: number,
+  ): Promise<boolean> {
+    let res: Awaited<ReturnType<typeof adapter.identity.listWorkspaces>>;
+    try {
+      res = await adapter.identity.listWorkspaces();
+    } catch {
+      return false;
+    }
+    if (!ownsTenant(expectedGeneration, hydration)) return true;
+    if (!res.ok) return false;
+    const roster = resolveShellCompanies({
+      authed: true,
+      membershipRows: res.value,
+    });
+    if (!sameRoster(companies, roster)) companies = roster;
+
+    const threads = await loadWorkThreads(roster, workFetch);
+    if (!ownsTenant(expectedGeneration, hydration)) return true;
+    workThreads = threads;
+    return true;
+  }
+
+  // A failed roster fetch used to leave `companies` empty for the whole
+  // session; the sync runner's company events never re-fetched it either.
+  // Both paths now go through one bounded refresher.
+  const rosterRefresher = createRosterRefresher({
+    load: () => {
+      if (!self) return Promise.resolve(true);
+      return loadRoster(tenantGeneration, tenantHydration);
+    },
+    delaysMs: rosterRetryDelaysMs,
+  });
+
   async function bootstrapTenant(expectedGeneration: number): Promise<void> {
     const hydration = ++tenantHydration;
     const [hydratedSelf] = await Promise.all([
@@ -394,23 +461,7 @@
     if (!ownsTenant(expectedGeneration, hydration)) return;
     self = hydratedSelf;
     if (!self) return;
-    let roster: Workspace[];
-    try {
-      const res = await adapter.identity.listWorkspaces();
-      if (!ownsTenant(expectedGeneration, hydration)) return;
-      roster = resolveShellCompanies({
-        authed: true,
-        membershipRows: res.ok ? res.value : undefined,
-      });
-      companies = roster;
-    } catch {
-      /* keep empty — never invent a roster */
-      return;
-    }
-
-    const threads = await loadWorkThreads(roster, workFetch);
-    if (!ownsTenant(expectedGeneration, hydration)) return;
-    workThreads = threads;
+    await rosterRefresher.refresh();
   }
 
   function acceptAuthSession(
@@ -468,6 +519,23 @@
           }
         })
         .catch(() => {});
+    };
+  });
+
+  // The native sync runner provisions website-created companies after sign-in
+  // and announces them; re-read the roster so #welcome can lead with the
+  // company instead of waiting for a restart.
+  onMount(() => {
+    const unsubscribe =
+      adapter.kind === "desktop"
+        ? subscribeRosterRefreshEvents(nativeListen, () => {
+            if (!self) return;
+            void rosterRefresher.refresh();
+          })
+        : () => {};
+    return () => {
+      unsubscribe();
+      rosterRefresher.dispose();
     };
   });
 

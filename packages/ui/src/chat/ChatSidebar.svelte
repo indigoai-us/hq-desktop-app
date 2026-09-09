@@ -666,6 +666,35 @@
   const hasNonSetupRows = $derived(
     allRows.some((row) => !isSetupChannel(row.channelId)),
   );
+  /**
+   * The roster already names a company (created on the website or another
+   * machine). Its channel rows usually hydrate a beat after the roster, so
+   * the settled-boot fallback must not race them into #setup: give the rows
+   * one more bounded wait, and open the company's channel the moment it
+   * lands. Only after that wait does #setup win — and by then the shell
+   * renders it around the existing company, never "Create a company".
+   */
+  const hasRosterCompany = $derived(
+    (companies ?? []).some((company) => company.kind === "company"),
+  );
+  let companyRowsGraceElapsed = $state(false);
+  $effect(() => {
+    if (
+      selectedId ||
+      !bootAttempted ||
+      loading ||
+      !hasRosterCompany ||
+      hasNonSetupRows ||
+      companyRowsGraceElapsed
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      companyRowsGraceElapsed = true;
+      sidebarLog("auto-open-company-grace-elapsed", { waitedMs: bootTimeoutMs });
+    }, bootTimeoutMs);
+    return () => clearTimeout(timer);
+  });
   $effect(() => {
     if (selectedId) {
       autoOpenRequestedId = null;
@@ -687,6 +716,7 @@
       return;
     }
     if (!bootAttempted || loading) return;
+    if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
     const fallback = pickSettledBootConversation(filteredRows, selectedId);
     if (!fallback) return;
     autoOpenRequestedId = fallback.id;

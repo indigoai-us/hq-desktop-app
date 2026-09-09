@@ -44,7 +44,12 @@
     isAgentUid as isAgentTaskUid,
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
-  import { isSetupChannel, SETUP_CHANNEL_ID } from "../chat/setup-channel.js";
+  import {
+    isSetupChannel,
+    SETUP_CHANNEL_ID,
+    setupCompanies,
+    withoutSeededCreateCompanyCards,
+  } from "../chat/setup-channel.js";
   import {
     findLifecycleCardElement,
     runAddAgentEntry,
@@ -1393,11 +1398,19 @@
   });
 
   /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
-  const timelineWithActivity = $derived.by(() =>
-    projectActivityRows.length > 0
-      ? mergeActivityIntoTimeline(timeline, projectActivityRows)
-      : timeline,
-  );
+  const timelineWithActivity = $derived.by(() => {
+    const merged =
+      projectActivityRows.length > 0
+        ? mergeActivityIntoTimeline(timeline, projectActivityRows)
+        : timeline;
+    if (!selectedRow || !isSetupChannel(selectedRow.channelId)) return merged;
+    // #welcome must not lead with "Create a company" for an account whose
+    // roster already holds one (created on the website / another machine).
+    return withoutSeededCreateCompanyCards(merged, {
+      hasCompany: hasRosterCompany,
+      createRequested: createCompanyRequested,
+    });
+  });
 
   /**
    * A project channel with no chat AND no work-mesh events is empty of
@@ -2400,11 +2413,47 @@
     typeof adapter.messaging.runCardAction === "function",
   );
 
-  /** Sidebar / switcher "New company": summary card action, then #setup. */
+  /**
+   * Companies the roster already knows about, whatever their sync state. Any
+   * of them means the account is NOT a blank slate: #welcome leads with that
+   * company and hides the seeded create_company card.
+   */
+  const rosterCompanies = $derived(setupCompanies(companies));
+  const hasRosterCompany = $derived(rosterCompanies.length > 0);
+  /** The user explicitly asked for another company this session. */
+  let createCompanyRequested = $state(false);
+
+  /** Sidebar / switcher / #welcome "New company": summary card action, then #setup. */
   async function createCompanyEntry(): Promise<EntryPointResult> {
-    const result = await runCreateCompanyEntry(conversationApi);
+    const result = await runCreateCompanyEntry(conversationApi, {
+      hasCompanies: hasRosterCompany,
+    });
+    createCompanyRequested = result.ok;
     if (result.ok) navigateToEntryTarget(result.target, null);
     return result;
+  }
+
+  /**
+   * #welcome "Open <Company>" / "Continue setup for <Company>": select the
+   * company's own channel when the rail already has it, otherwise switch the
+   * sidebar into that company's scope so its rows hydrate and auto-open.
+   */
+  function openCompanyFromSetup(company: Workspace): void {
+    const uid = company.cloudUid?.trim() ?? "";
+    const row = uid
+      ? railRows.find(
+          (candidate) =>
+            candidate.kind === "channel" &&
+            !candidate.browseOnly &&
+            candidate.channelScope === "company" &&
+            candidate.companyUid === uid,
+        )
+      : undefined;
+    if (row) {
+      handleSelect(row);
+      return;
+    }
+    if (uid) changeTenantCompany(uid);
   }
 
   /** Sidebar / header "New agent": Team tab action, then the company channel. */
@@ -4688,6 +4737,9 @@
                     onopensessions={extraPages?.sessions?.createAction
                       ? () => openExtraPage("sessions", extraPages!.sessions.createAction!.param())
                       : undefined}
+                    companies={rosterCompanies}
+                    onopencompany={openCompanyFromSetup}
+                    oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
                   />
                 {/snippet}
                 {#snippet companyHeader()}
