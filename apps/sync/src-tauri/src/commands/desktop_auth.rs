@@ -49,10 +49,7 @@ use hq_desktop_core::continuation_custody::{
     ContinuationCustody, CustodyError, PendingCredentials, VerifiedIdentity,
 };
 use hq_desktop_core::continuation_endpoints::ContinuationEndpoints;
-use hq_desktop_core::session_continuation::{
-    AttemptEnd, ContinuationAttempt, ContinuationConfig, DisabledReason, RolloutDecision,
-    SUPPORTED_PROTOCOL_VERSION,
-};
+use hq_desktop_core::session_continuation::{AttemptEnd, ContinuationAttempt};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::AppHandle;
@@ -107,59 +104,26 @@ fn custody_error_code(error: CustodyError) -> &'static str {
 
 // ── Configuration ──────────────────────────────────────────────────────
 
-/// The rollout document as the backend returns it.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ConfigBody {
-    #[serde(default)]
-    protocol_version: Option<u32>,
-    #[serde(default)]
-    minimum_desktop_version: Option<String>,
-    #[serde(default)]
-    variant: Option<String>,
-    #[serde(default)]
-    rollout_percent: Option<i64>,
-}
-
-/// What the renderer gets back. Never the raw document.
+/// What the renderer needs to decide whether continuation runs.
+///
+/// Note what this does NOT do: it does not fetch the rollout document, parse
+/// it, or decide anything. Those all live in the renderer's
+/// `desktop-session-continuation.ts`, which has real unit tests, because
+/// `src-tauri` cannot be compiled on a machine without a GTK/JavaScriptCore
+/// toolchain and a rollout decision nobody can test is a rollout decision
+/// nobody should trust. This command supplies only the three facts the
+/// renderer cannot know on its own.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ContinuationAvailability {
-    pub enabled: bool,
-    /// Present when disabled. A closed set of labels, safe for telemetry.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<&'static str>,
-    pub variant: Option<String>,
-}
-
-fn disabled(reason: DisabledReason) -> ContinuationAvailability {
-    ContinuationAvailability {
-        enabled: false,
-        reason: Some(match reason {
-            DisabledReason::Unavailable => "unavailable",
-            DisabledReason::Unrecognised => "unrecognised",
-            DisabledReason::Control => "control",
-            DisabledReason::NotInRollout => "not_in_rollout",
-            DisabledReason::BuildTooOld => "build_too_old",
-        }),
-        variant: None,
-    }
-}
-
-fn parse_config(body: &ConfigBody) -> Option<ContinuationConfig> {
-    if body.protocol_version? != SUPPORTED_PROTOCOL_VERSION {
-        return None;
-    }
-    let percent = body.rollout_percent?;
-    if !(0..=100).contains(&percent) {
-        return None;
-    }
-    Some(ContinuationConfig {
-        protocol_version: Some(SUPPORTED_PROTOCOL_VERSION),
-        minimum_desktop_version: Some(body.minimum_desktop_version.clone()?),
-        variant: Some(body.variant.clone()?),
-        rollout_percent: Some(percent),
-    })
+pub struct ContinuationContext {
+    /// Stable per-installation id. The join key to the website's signup funnel,
+    /// and the input to the rollout bucket — which is why it must not change
+    /// between launches.
+    pub install_attempt_id: String,
+    pub app_version: String,
+    /// Vault API base, resolved the same way the sync path resolves it, so a
+    /// dev install pointed elsewhere by `HQ_VAULT_API_URL` stays pointed there.
+    pub api_base: String,
 }
 
 fn endpoints() -> ContinuationEndpoints {
@@ -172,49 +136,21 @@ fn endpoints() -> ContinuationEndpoints {
     }
 }
 
-/// Ask the backend whether continuation is on for this installation.
+/// The facts continuation needs before it can decide anything.
 ///
-/// Every failure mode answers "off". That is not defensive habit — off is the
-/// screen that ships today, so it is never worse than the status quo, whereas
-/// half-applying a config the build does not understand could change behaviour
-/// for a whole fleet on the strength of a typo.
+/// Returns `None` when there is no resolvable home directory, so there is no
+/// stable installation id. Inventing one would put the same machine on a
+/// different side of the rollout line every launch — the experiment would be
+/// unreadable and the same person could see two different sign-in screens on
+/// consecutive days. The renderer reads `None` as "off", which is the screen
+/// that ships today.
 #[tauri::command]
-pub async fn desktop_continuation_availability(app: AppHandle) -> ContinuationAvailability {
-    // No installation id means no stable rollout bucket. Guessing one would put
-    // the same machine on a different side of the line every launch, so the
-    // honest answer is off.
-    let Some(install_attempt_id) = super::first_run::install_attempt_id() else {
-        return disabled(DisabledReason::Unavailable);
-    };
-    let app_version = app.package_info().version.to_string();
-
-    let response = build_client()
-        .get(endpoints().config_url())
-        .header("accept", "application/json")
-        .send()
-        .await;
-
-    let Ok(response) = response else {
-        return disabled(DisabledReason::Unavailable);
-    };
-    if !response.status().is_success() {
-        return disabled(DisabledReason::Unavailable);
-    }
-    let Ok(body) = response.json::<ConfigBody>().await else {
-        return disabled(DisabledReason::Unrecognised);
-    };
-    let Some(config) = parse_config(&body) else {
-        return disabled(DisabledReason::Unrecognised);
-    };
-
-    match config.decide(&app_version, &install_attempt_id) {
-        RolloutDecision::Continue => ContinuationAvailability {
-            enabled: true,
-            reason: None,
-            variant: config.variant.clone(),
-        },
-        RolloutDecision::Disabled(reason) => disabled(reason),
-    }
+pub fn desktop_continuation_context(app: AppHandle) -> Option<ContinuationContext> {
+    Some(ContinuationContext {
+        install_attempt_id: super::first_run::install_attempt_id()?,
+        app_version: app.package_info().version.to_string(),
+        api_base: endpoints().api_base,
+    })
 }
 
 // ── The attempt ────────────────────────────────────────────────────────
