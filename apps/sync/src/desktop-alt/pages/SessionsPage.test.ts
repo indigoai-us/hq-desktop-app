@@ -993,8 +993,8 @@ describe('durable session context', () => {
     await settle(); await settle();
     expect(host.textContent).toContain('Inherited planning context');
     expect(host.textContent).toContain('Child reply');
-    expect(text('session-starter')).toBe('Started by alex@example.test');
-    expect(text('session-source')).toContain('Original project discussion');
+    expect(host.querySelector('[data-testid="session-starter"]')?.getAttribute('aria-label')).toBe('Started by alex@example.test');
+    expect(host.querySelector('[data-testid="session-source"]')?.getAttribute('aria-label')).toContain('Original project discussion');
     await unmount(component!); component = null; resetLiveSessionStore();
     render({ sessionId: 'child', initialHistorySession: backend.observed[0] });
     await settle(); await settle();

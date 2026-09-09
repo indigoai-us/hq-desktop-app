@@ -11,6 +11,7 @@
    *
    * Presentation-pure: props in, callbacks out.
    */
+  import { loadSessionStarter, type SessionStarter } from './session-starter';
   import PoliciesChip from './PoliciesChip.svelte';
   import SessionMenu from './SessionMenu.svelte';
   import type { HandoffState } from './hook-notices';
@@ -72,6 +73,21 @@
     onshare,
     onend,
   }: Props = $props();
+  let starter = $state<SessionStarter | null>(null);
+  let failedAvatar = $state(false);
+  $effect(() => {
+    const identity = startedBy;
+    starter = null;
+    failedAvatar = false;
+    let cancelled = false;
+    if (identity) void loadSessionStarter(identity).then(value => {
+      if (!cancelled) starter = value;
+    });
+    return () => { cancelled = true; };
+  });
+  const starterName = $derived(starter?.name || startedBy || 'Unknown');
+  const starterDetails = $derived(['Started by ' + starterName, starter?.email !== starterName ? starter?.email : null, starter?.description].filter(Boolean).join('\n'));
+  const initials = $derived(starterName === 'Unknown' ? '?' : starterName.split('@')[0].split(/[\s._-]+/).slice(0, 2).map(part => part[0]).join('').toUpperCase());
 </script>
 
 <header class="strip" data-testid="sessions-strip">
@@ -90,18 +106,20 @@
   </button>
 
   <div class="strip-center">
-    <div class="session-heading">
-      <h2 class="strip-title" data-testid="sessions-strip-title">{title}</h2>
-      <div class="provenance">
-        <span data-testid="session-starter">Started by {startedBy || 'Unknown'}</span>
-        {#if sourceSessionId}
-          <button class="source-link" type="button" data-testid="session-source" onclick={() => onopensource?.()} title={`Open source session: ${sourceTitle || sourceSessionId}`}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="4" cy="3" r="2" stroke="currentColor"/><circle cx="12" cy="3" r="2" stroke="currentColor"/><circle cx="4" cy="13" r="2" stroke="currentColor"/><path d="M4 5v6m8-6c0 4-8 1-8 6" stroke="currentColor"/></svg>
-            <span>From {sourceTitle || sourceSessionId}</span>
-          </button>
-        {/if}
-      </div>
-    </div>
+    <button type="button" class="starter-avatar" data-testid="session-starter" aria-label={starterDetails}>
+      {#if starter?.avatarUrl && !failedAvatar}
+        <img src={starter.avatarUrl} alt="" onerror={() => failedAvatar = true} />
+      {:else}
+        <span aria-hidden="true">{initials}</span>
+      {/if}
+      <span class="starter-tooltip" role="tooltip">{starterDetails}</span>
+    </button>
+    <h2 class="strip-title" data-testid="sessions-strip-title">{title}</h2>
+    {#if sourceSessionId}
+      <button class="strip-button source-link" type="button" data-testid="session-source" onclick={() => onopensource?.()} aria-label={`Open source session: ${sourceTitle || sourceSessionId}`} title={`Forked from ${sourceTitle || sourceSessionId}`}>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="4" cy="3" r="2" stroke="currentColor"/><circle cx="12" cy="3" r="2" stroke="currentColor"/><circle cx="4" cy="13" r="2" stroke="currentColor"/><path d="M4 5v6m8-6c0 4-8 1-8 6" stroke="currentColor"/></svg>
+      </button>
+    {/if}
     {#if projectLabel}
       <!-- The bound project, as a pill beside the company. It opens the
            project's channel when one exists; otherwise it only informs. -->
@@ -184,18 +202,17 @@
     align-items: center;
     gap: var(--v4-space-2);
     flex: none;
-    min-height: 52px;
+    height: 38px;
     padding: 0 var(--v4-space-2);
     border-bottom: 1px solid var(--v4-hairline);
     font-family: var(--font-sans);
   }
 
-  .session-heading { min-width: 0; }
-  .provenance { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--v4-text-3); font-size: 11px; min-width: 0; }
-  .source-link { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 240px; padding: 0; border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; }
-  .source-link span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .source-link svg { flex: none; }
-  .source-link:hover { color: var(--v4-text-1); text-decoration: underline; }
+  .starter-avatar { position: relative; flex: none; width: 24px; height: 24px; border: 0; border-radius: 50%; padding: 0; background: var(--v4-active-row); color: var(--v4-text-2); font: 10px var(--font-sans); cursor: default; }
+  .starter-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+  .starter-tooltip { display: none; position: absolute; top: calc(100% + 8px); left: 0; z-index: 50; width: max-content; max-width: 280px; padding: 8px 10px; border: 1px solid var(--v4-hairline); border-radius: 6px; background: var(--v4-bg, #182127); color: var(--v4-text-1); text-align: left; white-space: pre-line; font-size: 12px; line-height: 1.5; box-shadow: 0 4px 16px #0004; pointer-events: none; }
+  .starter-avatar:hover .starter-tooltip, .starter-avatar:focus-visible .starter-tooltip { display: block; }
+  .source-link { flex: none; }
   .strip-center {
     display: flex;
     align-items: center;
@@ -206,7 +223,10 @@
   }
 
   .project-pill {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     height: 18px;
     padding: 0 7px;
     border: 1px solid var(--v4-hairline);

@@ -29,7 +29,7 @@ test('drawer slides both ways and the reopened session retains context and prove
   await expect(page.getByTestId('session-list-panel')).toHaveCount(0);
   await page.getByTestId('sessions-drawer-toggle').click();
   await page.getByTestId('session-live-row').first().click();
-  await expect(page.getByTestId('session-starter')).toHaveText('Started by alex@example.test');
+  await expect(page.getByTestId('session-starter')).toHaveAttribute('aria-label', 'Started by alex@example.test');
   await expect(page.getByTestId('session-transcript')).toContainText('Inherited planning context');
   await expect(page.getByTestId('sessions-new')).toHaveCount(0);
   await page.reload();
@@ -37,7 +37,10 @@ test('drawer slides both ways and the reopened session retains context and prove
   await page.getByTestId('sessions-drawer-toggle').click();
   await page.getByTestId('session-live-row').first().click();
   await expect(page.getByTestId('session-transcript')).toContainText('Inherited planning context');
-  await expect(page.getByTestId('session-starter')).toHaveText('Started by alex@example.test');
+  await expect(page.getByTestId('session-starter')).toHaveAttribute('aria-label', 'Started by alex@example.test');
+  await page.getByTestId('session-starter').hover();
+  await expect(page.getByRole('tooltip')).toContainText('alex@example.test');
+  expect((await page.getByTestId('sessions-strip').boundingBox())!.height).toBeLessThanOrEqual(40);
   await page.getByTestId('session-source').click();
   await expect(page.getByTestId('session-transcript')).toContainText('Original planning session history');
 });
