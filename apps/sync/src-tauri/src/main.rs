@@ -552,6 +552,18 @@ fn main() {
             commands::oauth::start_oauth_login,
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
+            // Browser session continuation. Inert until the backend's rollout
+            // document says otherwise: `desktop_continuation_context`
+            // answers "off" on every failure, and the renderer only calls the
+            // rest after it answers "on".
+            commands::desktop_auth::desktop_continuation_context,
+            commands::desktop_auth::desktop_continuation_config,
+            commands::desktop_auth::desktop_continuation_deliver,
+            commands::desktop_auth::desktop_continuation_may_start,
+            commands::desktop_auth::desktop_continuation_start,
+            commands::desktop_auth::desktop_continuation_await_identity,
+            commands::desktop_auth::desktop_continuation_confirm,
+            commands::desktop_auth::desktop_continuation_cancel,
             commands::auth::get_auth_state,
             commands::auth::whoami,
             commands::auth::get_auth_session,

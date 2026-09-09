@@ -32,9 +32,24 @@ use tauri::{AppHandle, Manager, State};
 use crate::util::paths;
 
 pub use hq_desktop_core::first_run::{
-    classify_from_map, merge_menubar_flags, notice_shown_in_map, read_menubar_obj,
-    should_autoshow_on_launch, LaunchKind,
+    classify_from_map, ensure_install_attempt_id, merge_menubar_flags, notice_shown_in_map,
+    read_menubar_obj, should_autoshow_on_launch, LaunchKind,
 };
+
+/// This installation's attempt identifier, minted on first read.
+///
+/// The join key between the website's signup funnel and the desktop's
+/// onboarding events, which is the whole reason the funnel analysis could see
+/// 101 signups and 43 app opens but not say whether they were the same people.
+///
+/// Returns `None` when there is no resolvable home directory. That is not a
+/// reason to invent an id: an unstable one would put every launch on its own
+/// partition and quietly inflate the counts. The caller treats absence as "do
+/// not report", which is honest.
+pub fn install_attempt_id() -> Option<String> {
+    let path = paths::menubar_json_path().ok()?;
+    ensure_install_attempt_id(&path, || uuid::Uuid::new_v4().to_string()).ok()
+}
 
 /// Managed-state wrapper so the launch verdict survives the rest of the
 /// process even after `machineId` gets written this launch.

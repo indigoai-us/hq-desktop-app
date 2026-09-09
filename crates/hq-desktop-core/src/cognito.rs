@@ -664,6 +664,16 @@ pub struct IdTokenClaims {
     pub name: Option<String>,
     pub given_name: Option<String>,
     pub family_name: Option<String>,
+    /// Echo of the `nonce` the authorize request sent.
+    ///
+    /// Browser continuation binds the token it receives back to the attempt
+    /// that asked for it: a token whose nonce does not match, or which carries
+    /// none at all, is discarded rather than held. Absent on tokens minted by
+    /// the older provider-button flow, which does not send a nonce — hence
+    /// `Option`, and hence continuation treating `None` as a mismatch rather
+    /// than as permission.
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 impl IdTokenClaims {
