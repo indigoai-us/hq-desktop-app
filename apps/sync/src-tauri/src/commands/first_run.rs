@@ -84,7 +84,7 @@ pub fn should_show_auto_sync_notice(state: State<'_, LaunchKindState>) -> bool {
 /// skip the separate notice) and makes "sync is on" explicit by writing
 /// `realtimeSync` + `personalSyncEnabled` true.
 #[tauri::command]
-pub fn mark_first_run_complete() -> Result<(), String> {
+pub fn mark_first_run_complete(app: AppHandle) -> Result<(), String> {
     let path = paths::menubar_json_path()?;
     merge_menubar_flags(
         &path,
@@ -94,7 +94,14 @@ pub fn mark_first_run_complete() -> Result<(), String> {
             ("realtimeSync", Value::Bool(true)),
             ("personalSyncEnabled", Value::Bool(true)),
         ],
-    )
+    )?;
+    // Setup is done for this process too: window routing must stop treating
+    // `main` as the setup card, or the next Dock / tray click reopens it.
+    crate::commands::lifecycle::set_lifecycle_state(
+        &app,
+        hq_desktop_core::lifecycle::LifecycleState::SteadyState,
+    );
+    Ok(())
 }
 
 /// Toggle the main window's translucent popover backdrop. The onboarding is a

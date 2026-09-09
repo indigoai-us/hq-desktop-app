@@ -3,12 +3,44 @@ use hq_desktop_core::lifecycle::{
     classify_lifecycle, hq_root_valid, menubar_flags, LifecycleInputs, LifecycleState,
 };
 use serde_json::{Map, Value};
+use std::sync::RwLock;
 use tauri::{AppHandle, Manager, State};
 
 use crate::util::{logfile::log, paths};
 
-/// Managed lifecycle state resolved once at app startup.
-pub struct LifecycleStateHandle(pub LifecycleState);
+/// Managed lifecycle state resolved at app startup and advanced in-process
+/// when setup finishes (see [`set_lifecycle_state`]), so window routing does
+/// not keep sending an already-installed user back to the setup card until
+/// the next relaunch.
+pub struct LifecycleStateHandle(pub RwLock<LifecycleState>);
+
+impl LifecycleStateHandle {
+    pub fn current(&self) -> LifecycleState {
+        *self.0.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Current lifecycle verdict for the running process, if one was resolved.
+pub fn current_lifecycle_state(app: &AppHandle) -> Option<LifecycleState> {
+    app.try_state::<LifecycleStateHandle>()
+        .map(|handle| handle.current())
+}
+
+/// Advance the in-process lifecycle verdict. Called when the setup wizard
+/// finishes so the same launch routes Dock / tray / second-launch activations
+/// to the desktop workspace instead of back to the (now finished) setup card.
+pub fn set_lifecycle_state(app: &AppHandle, state: LifecycleState) {
+    if let Some(handle) = app.try_state::<LifecycleStateHandle>() {
+        *handle
+            .0
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state;
+        log(
+            "lifecycle",
+            &format!("lifecycle state advanced to {}", lifecycle_state_str(state)),
+        );
+    }
+}
 
 /// Resolve lifecycle inputs at startup, classify, backfill legacy install
 /// markers when needed, and cache the state for command consumers.
@@ -127,12 +159,12 @@ pub fn setup_lifecycle(app: &AppHandle) {
         ),
     );
 
-    app.manage(LifecycleStateHandle(verdict.state));
+    app.manage(LifecycleStateHandle(RwLock::new(verdict.state)));
 }
 
 #[tauri::command]
 pub fn get_lifecycle_state(state: State<'_, LifecycleStateHandle>) -> String {
-    lifecycle_state_str(state.0).to_string()
+    lifecycle_state_str(state.current()).to_string()
 }
 
 /// Fresh (non-cached) setup status for UI surfaces that need to know whether
@@ -177,6 +209,19 @@ pub fn lifecycle_keeps_main_window_visible(state: LifecycleState) -> bool {
     )
 }
 
+/// Whether launch should open the centered setup card on its own.
+///
+/// A brand-new install (`first_run`) always does. So does any launch whose
+/// lifecycle verdict says HQ is not set up on this machine yet — a machine
+/// that already carries a `machineId` (an aborted earlier attempt, a wiped
+/// HQ folder) classifies as a `Normal` launch, and without this rule nothing
+/// opens: the person clicks the Dock icon, lands in the workspace with no HQ
+/// tree underneath, and hits a dead end instead of the setup that would have
+/// fixed it.
+pub fn launch_should_show_setup_card(first_run: bool, state: Option<LifecycleState>) -> bool {
+    first_run || state.is_some_and(lifecycle_keeps_main_window_visible)
+}
+
 fn lifecycle_state_str(state: LifecycleState) -> &'static str {
     match state {
         LifecycleState::NeedsInstall => "NeedsInstall",
@@ -185,5 +230,55 @@ fn lifecycle_state_str(state: LifecycleState) -> &'static str {
         LifecycleState::InstalledFirstRun => "InstalledFirstRun",
         LifecycleState::InstalledLegacyUpdate => "InstalledLegacyUpdate",
         LifecycleState::SteadyState => "SteadyState",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_run_always_shows_the_setup_card() {
+        assert!(launch_should_show_setup_card(true, None));
+        assert!(launch_should_show_setup_card(
+            true,
+            Some(LifecycleState::SteadyState)
+        ));
+    }
+
+    #[test]
+    fn an_uninstalled_machine_shows_the_setup_card_even_on_a_normal_launch() {
+        for state in [
+            LifecycleState::NeedsInstall,
+            LifecycleState::NeedsAuthForInstall,
+            LifecycleState::InstallResume,
+            LifecycleState::InstalledFirstRun,
+        ] {
+            assert!(
+                launch_should_show_setup_card(false, Some(state)),
+                "{state:?} must open the setup card"
+            );
+        }
+    }
+
+    #[test]
+    fn an_installed_machine_stays_quiet_on_launch() {
+        assert!(!launch_should_show_setup_card(false, None));
+        assert!(!launch_should_show_setup_card(
+            false,
+            Some(LifecycleState::SteadyState)
+        ));
+        assert!(!launch_should_show_setup_card(
+            false,
+            Some(LifecycleState::InstalledLegacyUpdate)
+        ));
+    }
+
+    #[test]
+    fn the_handle_can_be_advanced_in_process() {
+        let handle = LifecycleStateHandle(RwLock::new(LifecycleState::NeedsInstall));
+        assert_eq!(handle.current(), LifecycleState::NeedsInstall);
+        *handle.0.write().unwrap() = LifecycleState::SteadyState;
+        assert_eq!(handle.current(), LifecycleState::SteadyState);
     }
 }

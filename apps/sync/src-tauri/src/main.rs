@@ -709,6 +709,7 @@ fn main() {
             // In-app agent sessions (feature-flagged dark by
             // `agent_session_flags`): the live registry + Claude driver.
             commands::agent_session::agent_session_preflight,
+            commands::agent_session::agent_session_repair_hq_setup,
             commands::agent_session::provider_auth::agent_provider_login_start,
             commands::agent_session::provider_auth::agent_provider_login_status,
             commands::agent_session::provider_auth::agent_provider_login_cancel,
@@ -1077,7 +1078,13 @@ fn main() {
                 set_app_icon_from_bytes(HQ_ICON_PNG);
             }
 
-            let first_run = commands::first_run::should_autoshow_on_launch(launch_kind);
+            // Open the setup card on a brand-new install AND on any launch
+            // where HQ is not installed on this machine yet (see
+            // `lifecycle::launch_should_show_setup_card`).
+            let first_run = commands::lifecycle::launch_should_show_setup_card(
+                commands::first_run::should_autoshow_on_launch(launch_kind),
+                commands::lifecycle::current_lifecycle_state(app.handle()),
+            );
 
             // The very first launch opens the onboarding FLOATING CARD (transparent,
             // centered, no frosted popover material, no native window shadow) rather
@@ -1561,8 +1568,11 @@ fn main() {
                 let _ = commands::desktop_alt::activation_policy(
                     commands::desktop_alt::ActivationSource::DockIconClick,
                 );
-                tray::show_desktop_window(_app_handle);
-                util::logfile::log("dock", "dock icon clicked: showing desktop window");
+                // Same rule as every other activation source: while setup
+                // still owns `main`, a Dock click must land on the setup card,
+                // not on a workspace with no HQ tree underneath it.
+                tray::activate_primary_surface(_app_handle);
+                util::logfile::log("dock", "dock icon clicked: opening primary surface");
             }
         });
 }

@@ -1409,13 +1409,13 @@
     void loadProjectActivity(row);
   });
 
-  /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
+  // Diagnostic: what the setup channel is showing and why. Logged only when
+  // the picture changes, so the log is not spammed on every timeline poll.
+  let lastSetupStateLog = "";
   $effect(() => {
     const hqLog = (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog;
     if (!hqLog || !selectedRow || !isSetupChannel(selectedRow.channelId)) return;
-    hqLog(
-      "setup-state",
-      JSON.stringify({
+    const snapshot = JSON.stringify({
         selected: selectedRow?.channelId ?? null,
         isSetup: selectedRow ? isSetupChannel(selectedRow.channelId) : null,
         companies: (companies ?? []).map((c) => `${c.kind}:${c.slug}:${c.state}`),
@@ -1429,10 +1429,13 @@
           const ev = (m as { systemEvent?: { type?: string; kind?: string } }).systemEvent;
           return ev ? `${ev.type}/${ev.kind}` : "msg";
         }),
-      }),
-    );
+      });
+    if (snapshot === lastSetupStateLog) return;
+    lastSetupStateLog = snapshot;
+    hqLog("setup-state", snapshot);
   });
 
+  /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
   const timelineWithActivity = $derived.by(() => {
     const merged =
       projectActivityRows.length > 0
