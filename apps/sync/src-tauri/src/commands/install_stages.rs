@@ -537,6 +537,42 @@ pub async fn ensure_work_mesh_daemon() -> Result<EnsureOutcome, String> {
     }
 }
 
+fn initial_cloud_sync_failure_message(error: Option<&str>) -> String {
+    let is_transient = error.is_some_and(|message| {
+        let normalized = message.to_ascii_lowercase();
+        [
+            "network",
+            "timeout",
+            "timed out",
+            "temporary",
+            "temporarily",
+            "econnreset",
+            "econnaborted",
+            "etimedout",
+            "enotfound",
+            "eai_again",
+            "dns",
+            "socket",
+            "connection reset",
+            "connection closed",
+            "connection refused",
+            "tls",
+            "ssl",
+            "rate limit",
+            "429",
+        ]
+        .iter()
+        .any(|signal| normalized.contains(signal))
+    });
+
+    if is_transient {
+        "Initial cloud sync encountered a temporary network error. Please retry this setup step."
+            .to_string()
+    } else {
+        "Initial cloud sync could not be verified. Please retry this setup step.".to_string()
+    }
+}
+
 /// Provision and verify the first personal-vault cloud sync.
 ///
 /// The frontend has the stage's bounded timeout. This command therefore waits
@@ -544,16 +580,18 @@ pub async fn ensure_work_mesh_daemon() -> Result<EnsureOutcome, String> {
 /// a detached task whose outcome is not known yet.
 #[tauri::command]
 pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), String> {
-    let jwt = resolve_jwt().await?;
-    let vault_url = resolve_vault_api_url()?;
+    let jwt = resolve_jwt()
+        .await
+        .map_err(|_| initial_cloud_sync_failure_message(None))?;
+    let vault_url =
+        resolve_vault_api_url().map_err(|_| initial_cloud_sync_failure_message(None))?;
     let vault = VaultClient::new(&vault_url, &jwt);
-    let hq_root = PathBuf::from(resolve_hq_path()?);
+    let hq_root =
+        PathBuf::from(resolve_hq_path().map_err(|_| initial_cloud_sync_failure_message(None))?);
 
     crate::commands::personal::ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)
         .await
-        .map_err(|_| {
-            "Initial cloud sync could not be verified. Please retry this setup step.".to_string()
-        })
+        .map_err(|error| initial_cloud_sync_failure_message(Some(&error)))
 }
 
 #[cfg(test)]
@@ -621,14 +659,31 @@ mod tests {
 
     #[test]
     fn initial_sync_waits_for_the_provisioning_result() {
-        let src = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/commands/install_stages.rs"
-        ));
+        let src = include_str!("install_stages.rs");
+        let initial_sync_start = src
+            .find("pub async fn start_initial_cloud_sync")
+            .expect("initial cloud sync command must exist");
+        let tests_start = src
+            .find("#[cfg(test)]")
+            .expect("install stage tests must exist");
+        let initial_sync = &src[initial_sync_start..tests_start];
 
-        assert!(src.contains("ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)"));
-        let detached_spawn = format!("{}.spawn", "tauri::async_runtime");
-        assert!(!src.contains(&detached_spawn));
+        assert!(
+            initial_sync.contains("ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)")
+        );
+        assert!(!initial_sync.contains("tauri::async_runtime::spawn"));
+    }
+
+    #[test]
+    fn initial_sync_sanitizes_errors_and_preserves_transient_retry_signal() {
+        assert_eq!(
+            initial_cloud_sync_failure_message(Some("request timed out")),
+            "Initial cloud sync encountered a temporary network error. Please retry this setup step."
+        );
+        assert_eq!(
+            initial_cloud_sync_failure_message(Some("permission denied")),
+            "Initial cloud sync could not be verified. Please retry this setup step."
+        );
     }
 
     #[test]

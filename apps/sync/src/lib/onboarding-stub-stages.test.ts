@@ -82,6 +82,9 @@ describe('honest onboarding stage reporting', () => {
     expect(wizard).toContain('Needs attention');
     expect(wizard).toContain('Retry failed steps');
     expect(wizard).toContain('Existing HQ setup import was not run');
+    expect(wizard).toContain('if (finishing || needsAttention) return false;');
+    expect(wizard).toContain('if (needsAttention) return;');
+    expect(wizard).toContain('disabled={needsAttention || finishing');
   });
 
   it('awaits a bounded initial cloud sync rather than completing a detached task', () => {
@@ -90,6 +93,10 @@ describe('honest onboarding stage reporting', () => {
         new URL('../../src-tauri/src/commands/install_stages.rs', import.meta.url),
       ),
       'utf8',
+    );
+    const initialSync = stages.slice(
+      stages.indexOf('pub async fn start_initial_cloud_sync'),
+      stages.indexOf('#[cfg(test)]'),
     );
     const personalization = stages.slice(
       stages.indexOf('fn personalize_hq_at'),
@@ -101,9 +108,12 @@ describe('honest onboarding stage reporting', () => {
       'fs::create_dir_all(&settings)\n        .map_err(|_| "Could not prepare personal settings.".to_string())?',
     );
     expect(personalization).not.toContain('return Ok(())');
-    expect(stages).toContain(
+    expect(initialSync).toContain(
       'ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)',
     );
-    expect(stages).not.toContain('tauri::async_runtime::spawn');
+    expect(initialSync).toContain(
+      'initial_cloud_sync_failure_message(Some(&error))',
+    );
+    expect(initialSync).not.toContain('tauri::async_runtime::spawn');
   });
 });

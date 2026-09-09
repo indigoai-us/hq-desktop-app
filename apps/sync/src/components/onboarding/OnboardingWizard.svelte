@@ -1224,7 +1224,7 @@
   }
 
   async function finishWithRecovery(): Promise<boolean> {
-    if (finishing) return false;
+    if (finishing || needsAttention) return false;
     finishing = true;
     finishError = false;
     try {
@@ -1505,6 +1505,7 @@
   }
 
   function handleLaunch(kind: LaunchKind | 'download') {
+    if (needsAttention) return;
     if (launching === 'watching' || kind === 'download') {
       return handleDownloadClaude();
     }
@@ -2297,7 +2298,7 @@
                 class="btn btn-primary"
                 type="button"
                 data-testid="onboarding-launch-download"
-                disabled={finishing || (launching !== null && launching !== 'watching')}
+                disabled={needsAttention || finishing || (launching !== null && launching !== 'watching')}
                 aria-busy={finishing || (launching !== null && launching !== 'watching')}
                 onclick={() => void handleLaunch('download')}
               >
@@ -2316,7 +2317,7 @@
                     class="btn {slot.kind === primaryLaunch.kind ? 'btn-primary' : 'btn-secondary'}"
                     type="button"
                     data-testid="onboarding-launch-{slot.kind}"
-                    disabled={finishing || (launching !== null && launching !== 'watching')}
+                    disabled={needsAttention || finishing || (launching !== null && launching !== 'watching')}
                     aria-busy={finishing || launching === slot.kind}
                     onclick={() => void handleLaunch(slot.kind)}
                   >
@@ -2333,7 +2334,7 @@
                       : 'btn-ghost'}"
                     type="button"
                     data-testid="onboarding-install-{slot.kind}"
-                    disabled={finishing}
+                    disabled={needsAttention || finishing}
                     aria-busy={launching === 'watching' && slot.kind === 'claude'}
                     onclick={() => void handleInstallTool(slot.kind)}
                   >
