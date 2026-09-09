@@ -473,7 +473,7 @@
   data-setup-run={runActive ? runMode : "idle"}
   data-setup-roster-status={rosterStatus ?? "ready"}
 >
-  <div class="hero" data-testid="setup-hero">
+  <div class="hero" class:hero--compact={runActive && runMode !== "idle"} data-testid="setup-hero">
     <img
       class="hero-art hero-art--light"
       src={SETUP_HERO_ART.light}
@@ -493,20 +493,9 @@
     <div class="hero-scrim" aria-hidden="true"></div>
     {#if runActive && runMode !== "idle"}
       <div class="hero-copy hero-copy--run">
-        <SetupRunCard
-          mode={runMode === "starting" ? "live" : runMode}
-          run={runState}
-          resumeStep={runResumeStep}
-          busy={runBusy || runMode === "starting"}
-          error={runError}
-          onanswer={answerChoice}
-          onpermission={answerPermission}
-          onsend={answerText}
-          onshowdetails={onopensessiondetails && runSessionId ? showRunDetails : undefined}
-          oncontinue={() => void continueRun()}
-          onrunagain={runAgain}
-          onstoresecret={setupRun?.storeSecret ? storeSecret : undefined}
-        />
+        <span class="eyebrow">{hero.eyebrow}</span>
+        <h2 class="hero-title">Setting up this Mac</h2>
+        <p class="hero-body">Answer the questions below as they come up. It takes about a minute.</p>
       </div>
     {:else}
     <div class="hero-copy">
@@ -683,6 +672,25 @@
     {/if}
   </div>
 
+  {#if runActive && runMode !== "idle"}
+    <div class="run-panel" data-testid="setup-run-panel">
+      <SetupRunCard
+        mode={runMode === "starting" ? "live" : runMode}
+        run={runState}
+        resumeStep={runResumeStep}
+        busy={runBusy || runMode === "starting"}
+        error={runError}
+        onanswer={answerChoice}
+        onpermission={answerPermission}
+        onsend={answerText}
+        onshowdetails={onopensessiondetails && runSessionId ? showRunDetails : undefined}
+        oncontinue={() => void continueRun()}
+        onrunagain={runAgain}
+        onstoresecret={setupRun?.storeSecret ? storeSecret : undefined}
+      />
+    </div>
+  {/if}
+
   {#if firstMoves && firstMoves.length > 0}
     <FirstMoves
       moves={firstMoves}
@@ -825,6 +833,20 @@
 
   .hero-copy--run {
     justify-content: flex-end;
+    min-height: 168px;
+    padding-top: var(--space-4, 16px);
+  }
+
+  .hero--compact {
+    min-height: 168px;
+  }
+
+  /* The live run: a solid panel on the shell surface, under the art. */
+  .run-panel {
+    padding: 16px 18px 18px;
+    border: 1px solid var(--panel-border, var(--border, rgba(127, 127, 127, 0.25)));
+    border-radius: 12px;
+    background: var(--panel-bg, var(--raised, rgba(127, 127, 127, 0.06)));
   }
 
   .eyebrow {

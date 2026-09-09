@@ -165,6 +165,17 @@ describe("SetupChannelIntro native setup run", () => {
     expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 0, status: "running" });
   });
 
+  it("the live run sits in a solid panel below the hero, not on the art", async () => {
+    const api = fakeSetupRun();
+    await mountIntro({ setupRun: api });
+    await clickRunSetup();
+    const panel = q('[data-testid="setup-run-panel"]');
+    expect(panel).not.toBeNull();
+    expect(panel?.closest('[data-testid="setup-hero"]')).toBeNull();
+    expect(q('[data-testid="setup-hero"] [data-testid="setup-run-card"]')).toBeNull();
+    expect(panel?.querySelector('[data-testid="setup-run-card"]')).not.toBeNull();
+  });
+
   it("ticks steps and shows the agent's plain sentence, never a command", async () => {
     const api = fakeSetupRun();
     await mountIntro({ setupRun: api });

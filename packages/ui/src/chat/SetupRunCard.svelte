@@ -219,22 +219,20 @@
       >
         <span class="step-mark" aria-hidden="true">
           {#if status === "done"}
-            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
             </svg>
-          {:else if status === "running"}
-            <span class="step-pulse"></span>
+          {:else}
+            <span class="step-index">{index + 1}</span>
           {/if}
         </span>
-        <span class="step-text">
-          <span class="step-label">{step.label}</span>
-          {#if status === "running" && mode === "live" && !stopped && run?.statusLine && !question}
-            <span class="step-status" data-testid="setup-run-status">{run.statusLine}</span>
-          {/if}
-        </span>
+        <span class="step-label">{step.label}</span>
       </li>
     {/each}
   </ol>
+  {#if !done && !stopped && mode === "live" && run?.statusLine && !question}
+    <p class="run-status" data-testid="setup-run-status">{run.statusLine}</p>
+  {/if}
 
   {#if question}
     <div class="question" data-testid="setup-run-question" data-question-kind={question.kind}>
@@ -506,149 +504,181 @@
 </div>
 
 <style>
+  /* The run panel sits on the app surface (not the hero art): every color is
+     a shell token so it reads in light and dark alike. */
   .run-card {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3, 12px);
-    color: #ffffff;
+    gap: 14px;
+    color: var(--text-1, inherit);
   }
 
   .eyebrow {
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-    font-size: var(--text-micro, 11px);
+    font-size: 11px;
     font-weight: 500;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.62);
+    color: var(--text-3, rgba(127, 127, 127, 0.9));
   }
 
   .run-title {
     margin: 0;
-    max-width: 22ch;
-    font-size: var(--type-detail, 24px);
-    font-weight: 500;
-    line-height: 1.15;
-    letter-spacing: -0.012em;
-    color: #ffffff;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
   }
 
   .run-body {
-    margin: 0;
-    max-width: 52ch;
-    font-size: var(--text-base, 13px);
-    line-height: 1.55;
-    color: rgba(255, 255, 255, 0.74);
+    margin: -6px 0 0;
+    max-width: 56ch;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-2, inherit);
   }
 
-  /* ---- Stepper -------------------------------------------------------- */
-
+  /* ---- Stepper: one horizontal row --------------------------------------- */
   .steps {
-    margin: 0;
-    padding: 0;
-    list-style: none;
     display: flex;
-    flex-direction: column;
-    gap: 6px;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    margin: 0;
+    padding: 0 0 12px;
+    list-style: none;
+    border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.25));
   }
 
   .step {
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr);
-    align-items: start;
-    column-gap: 10px;
-    color: rgba(255, 255, 255, 0.55);
-    font-size: var(--text-base, 13px);
-    line-height: 1.45;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
+    color: var(--text-3, rgba(127, 127, 127, 0.9));
   }
 
   .step--running {
-    color: #ffffff;
+    color: var(--text-1, inherit);
+    font-weight: 600;
   }
 
   .step--done {
-    color: rgba(255, 255, 255, 0.82);
+    color: var(--text-2, inherit);
   }
 
   .step-mark {
     display: inline-flex;
+    width: 18px;
+    height: 18px;
     align-items: center;
     justify-content: center;
-    width: 16px;
-    height: 16px;
-    margin-top: 1px;
-    border: 1px solid rgba(255, 255, 255, 0.38);
-    border-radius: 50%;
-    color: #0a0b0d;
-  }
-
-  .step--done .step-mark {
-    border-color: #ffffff;
-    background: #ffffff;
+    flex: none;
+    border-radius: 999px;
+    border: 1px solid var(--border, rgba(127, 127, 127, 0.4));
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
   }
 
   .step--running .step-mark {
-    border-color: #ffffff;
+    border-color: var(--text-1, currentColor);
+    color: var(--text-1, currentColor);
   }
 
-  .step-pulse {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #ffffff;
-    animation: setup-run-pulse 1.4s ease-in-out infinite;
+  .step--done .step-mark {
+    border-color: transparent;
+    background: var(--accent, #22c55e);
+    color: #fff;
   }
 
-  @keyframes setup-run-pulse {
-    0%,
-    100% {
-      opacity: 0.35;
-      transform: scale(0.8);
-    }
-    50% {
-      opacity: 1;
-      transform: scale(1);
-    }
+  .run-status {
+    margin: -4px 0 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-2, inherit);
   }
 
-  .step-text {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-
-  .step-label {
-    font-weight: 500;
-  }
-
-  .step-status {
-    color: rgba(255, 255, 255, 0.72);
-    max-width: 60ch;
-  }
-
-  /* ---- Question ------------------------------------------------------- */
-
+  /* ---- Question ------------------------------------------------------------ */
   .question {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2, 8px);
-    padding-top: 2px;
+    gap: 12px;
   }
 
+  .question-text {
+    margin: 0;
+    max-width: 60ch;
+    font-size: 14px;
+    font-weight: 550;
+    line-height: 1.45;
+  }
+
+  .choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .choices--stacked {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .choice {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    min-height: 34px;
+    padding: 7px 12px;
+    white-space: normal;
+    text-align: left;
+    max-width: 22rem;
+    min-width: 0;
+  }
+
+  .choices--stacked .choice {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    padding: 10px 14px;
+  }
+
+  .choices--stacked .choice-desc,
+  .choices--stacked .choice-label {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .choice--picked {
+    border-color: var(--text-1, currentColor);
+    background: var(--raised, rgba(127, 127, 127, 0.12));
+  }
+
+  .choice-label {
+    font-weight: 550;
+  }
+
+  .choice-desc {
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.4;
+    color: var(--text-2, inherit);
+  }
+
+  /* ---- Found card ----------------------------------------------------------- */
   .found {
     display: flex;
     flex-direction: column;
     gap: 6px;
     padding: 10px 12px;
     border-radius: 10px;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: var(--raised, rgba(127, 127, 127, 0.1));
+    border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
   }
   .found-title {
     font-size: 11px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.7);
+    color: var(--text-3, rgba(127, 127, 127, 0.9));
   }
   .found-list {
     margin: 0;
@@ -670,10 +700,11 @@
     font-weight: 600;
   }
   .found-detail {
-    color: rgba(255, 255, 255, 0.62);
+    color: var(--text-2, inherit);
     font-size: 12px;
   }
 
+  /* ---- Secret card ---------------------------------------------------------- */
   .secret {
     display: flex;
     flex-direction: column;
@@ -689,7 +720,7 @@
   .secret-name {
     font-weight: 400;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.62);
+    color: var(--text-2, inherit);
   }
   .secret-row {
     display: flex;
@@ -699,9 +730,10 @@
   .secret-hint {
     margin: 0;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.62);
+    color: var(--text-3, rgba(127, 127, 127, 0.9));
   }
 
+  /* ---- Integrations card ---------------------------------------------------- */
   .apps {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -716,20 +748,20 @@
     font: inherit;
     color: inherit;
     border-radius: 10px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
+    background: transparent;
     cursor: pointer;
   }
   .app:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--raised, rgba(127, 127, 127, 0.1));
   }
   .app--picked {
-    border-color: rgba(255, 255, 255, 0.85);
-    background: rgba(255, 255, 255, 0.16);
+    border-color: var(--text-1, currentColor);
+    background: var(--raised, rgba(127, 127, 127, 0.12));
   }
   .app--connected {
     cursor: default;
-    opacity: 0.85;
+    opacity: 0.8;
   }
   .app-mark {
     display: inline-flex;
@@ -739,7 +771,7 @@
     justify-content: center;
     flex: 0 0 auto;
     border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.5);
+    border: 1px solid var(--border, rgba(127, 127, 127, 0.4));
     margin-top: 1px;
   }
   .app--picked .app-mark,
@@ -760,150 +792,84 @@
   }
   .app-desc {
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.66);
+    color: var(--text-2, inherit);
   }
 
-  .question-text {
-    margin: 0;
-    max-width: 52ch;
-    font-size: var(--text-base, 13px);
-    font-weight: 500;
-    line-height: 1.5;
-    color: #ffffff;
-  }
-
-  .choices {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2, 8px);
-  }
-
-  .choice {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1px;
-    min-height: 30px;
-    padding: 6px 12px;
-    white-space: normal;
-    text-align: left;
-    max-width: 22rem;
-    min-width: 0;
-  }
-  /* Options with descriptions read as a list: one full-width row each, text
-     wrapping inside — never a chip whose description runs past its edge. */
-  .choices--stacked {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .choices--stacked .choice {
-    width: 100%;
-    max-width: 100%;
-    height: auto;
-    padding: 8px 12px;
-  }
-  .choices--stacked .choice-desc,
-  .choices--stacked .choice-label {
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-
-  .choice--picked {
-    border-color: #ffffff;
-    background: rgba(255, 255, 255, 0.18);
-  }
-
-  .choice-label {
-    font-weight: 500;
-  }
-
-  .choice-desc {
-    font-size: var(--text-micro, 11px);
-    font-weight: 400;
-    color: rgba(255, 255, 255, 0.72);
-  }
-
-  .answer--other {
-    margin-top: 8px;
-  }
-
+  /* ---- Inputs and buttons --------------------------------------------------- */
   .answer {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-2, 8px);
-    max-width: 32rem;
+    gap: 8px;
+    max-width: 36rem;
+  }
+  .answer--other {
+    margin-top: 2px;
   }
 
   .answer-input {
     flex: 1 1 14rem;
-    min-height: 30px;
-    padding: 0 10px;
-    border: 1px solid rgba(255, 255, 255, 0.38);
-    border-radius: 0;
-    background: rgba(6, 6, 6, 0.28);
-    color: #ffffff;
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-1, inherit);
     font: inherit;
-    font-size: var(--text-base, 13px);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    font-size: 13px;
   }
-
   .answer-input::placeholder {
-    color: rgba(255, 255, 255, 0.5);
+    color: var(--text-3, rgba(127, 127, 127, 0.9));
   }
-
   .answer-input:focus-visible {
-    outline: 2px solid #ffffff;
-    outline-offset: 2px;
+    outline: 2px solid var(--text-2, currentColor);
+    outline-offset: 1px;
   }
-
-  /* ---- Buttons (mirrors the hero) ------------------------------------ */
 
   .launch-btn {
     display: inline-flex;
     align-items: center;
     align-self: flex-start;
-    min-height: 30px;
-    padding: 0 12px;
-    border: 1px solid rgba(255, 255, 255, 0.38);
-    border-radius: 0;
-    background: rgba(6, 6, 6, 0.28);
-    color: #ffffff;
+    min-height: 34px;
+    padding: 0 14px;
+    border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-1, inherit);
     font: inherit;
-    font-size: var(--text-base, 13px);
+    font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
     transition:
       background 140ms ease,
       color 140ms ease,
       border-color 140ms ease;
   }
-
   .launch-btn:hover:not(:disabled) {
-    border-color: rgba(255, 255, 255, 0.7);
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--raised, rgba(127, 127, 127, 0.1));
   }
-
   .launch-btn.primary {
-    border-color: #ffffff;
-    background: #ffffff;
-    color: #0a0b0d;
+    border-color: transparent;
+    background: var(--text-1, #111);
+    color: var(--bg, #fff);
   }
-
   .launch-btn.primary:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.9);
-    border-color: rgba(255, 255, 255, 0.9);
+    background: var(--text-1, #111);
+    opacity: 0.92;
   }
-
-  .launch-btn:disabled {
-    opacity: 0.55;
+  .launch-btn:disabled,
+  .quiet-btn:disabled,
+  .app:disabled {
     cursor: default;
   }
-
-  .launch-btn:focus-visible {
-    outline: 2px solid #ffffff;
+  .launch-btn:disabled {
+    opacity: 0.55;
+  }
+  .launch-btn:focus-visible,
+  .quiet-btn:focus-visible,
+  .app:focus-visible,
+  .choice:focus-visible {
+    outline: 2px solid var(--text-2, currentColor);
     outline-offset: 2px;
   }
 
@@ -915,50 +881,32 @@
     padding: 0;
     border: 0;
     background: transparent;
-    color: rgba(255, 255, 255, 0.72);
+    color: var(--text-2, inherit);
     font: inherit;
-    font-size: var(--text-base, 13px);
+    font-size: 13px;
     text-decoration: underline;
     text-underline-offset: 0.16em;
     cursor: pointer;
   }
 
-  .quiet-btn:hover:not(:disabled) {
-    color: #ffffff;
-  }
-
-  .quiet-btn:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-
-  .quiet-btn:focus-visible {
-    outline: 2px solid #ffffff;
-    outline-offset: 2px;
-  }
-
   .run-error {
     margin: 0;
-    max-width: 32rem;
-    font-size: var(--text-base, 13px);
+    max-width: 40rem;
+    font-size: 13px;
     line-height: 1.4;
-    color: rgba(255, 255, 255, 0.85);
+    color: var(--danger, #d9534f);
   }
 
   .run-actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-3, 12px);
+    gap: 12px;
   }
 
   @media (prefers-reduced-motion: reduce) {
     .launch-btn {
       transition: none;
-    }
-    .step-pulse {
-      animation: none;
-      opacity: 1;
     }
   }
 </style>
