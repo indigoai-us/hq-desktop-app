@@ -275,18 +275,75 @@ describe('onboarding launch handoff', () => {
     expect(primaryButton().textContent).toBe('Install Claude Code');
   });
 
-  it('keeps manual tool installs available after a required setup failure', async () => {
+  it('policy: a failed required setup stage still completes and launches the setup handoff', async () => {
     const claudeDesktopOnly = {
       ...NO_AI_TOOLS,
       claude_desktop: true,
       any: true,
     };
+    const onfinish = vi.fn();
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
         case 'resolve_hq_path':
           return '/placeholder/hq';
         case 'detect_ai_tools':
           return claudeDesktopOnly;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-setup-failures"]')));
+
+    const summary = host.querySelector('[data-testid="onboarding-summary"]');
+    const launchClaude = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-launch-claude"]',
+    );
+    expect(summary?.textContent).toContain('Installing dependencies');
+    expect(summary?.textContent).toContain('1 installer step needs attention');
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).toBeNull();
+    expect(launchClaude?.disabled).toBe(false);
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-install-codex"]')?.disabled,
+    ).toBe(false);
+
+    launchClaude?.click();
+    await flush();
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', expect.any(Object));
+    expect(onfinish).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the download handoff enabled after a required setup failure while tool detection is pending', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return new Promise<never>(() => {});
         case 'install_deps':
           throw new Error('dependency installation failed');
         case 'detect_claude_desktop_connectors':
@@ -310,13 +367,15 @@ describe('onboarding launch handoff', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-setup-failures"]')));
 
-    expect(host.querySelector('[data-testid="onboarding-launch-download"]')).toBeNull();
-    expect(
-      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-launch-claude"]')?.disabled,
-    ).toBe(true);
-    expect(
-      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-install-codex"]')?.disabled,
-    ).toBe(false);
+    const download = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-launch-download"]',
+    );
+    expect(download).not.toBeNull();
+    expect(download?.disabled).toBe(false);
+
+    download?.click();
+    await flush();
+    expect(tauri.open).toHaveBeenCalledWith('https://claude.ai/download');
   });
 
   it('uses an alert completion icon after required setup failure and keeps the success check for clean setup', async () => {

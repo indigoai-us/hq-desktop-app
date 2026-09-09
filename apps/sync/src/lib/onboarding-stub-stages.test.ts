@@ -82,9 +82,10 @@ describe('honest onboarding stage reporting', () => {
     expect(wizard).toContain('Needs attention');
     expect(wizard).toContain('Retry failed steps');
     expect(wizard).toContain('Existing HQ setup import was not run');
-    expect(wizard).toContain('if (finishing || needsAttention) return false;');
-    expect(wizard).toContain('if (needsAttention) return;');
-    expect(wizard).toContain('disabled={needsAttention || finishing');
+    expect(wizard).toContain('if (finishing) return false;');
+    expect(wizard).not.toContain('if (finishing || needsAttention) return false;');
+    expect(wizard).not.toContain('if (needsAttention) return;');
+    expect(wizard).toContain('disabled={finishing ||');
     expect(wizard).toContain('data-testid="onboarding-install-{slot.kind}"\n                    disabled={finishing}');
     expect(wizard).toContain(
       'if (!result.needsAttention) {\n        await journalInstallComplete();\n      }',

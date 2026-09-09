@@ -1299,7 +1299,7 @@
   }
 
   async function finishWithRecovery(): Promise<boolean> {
-    if (finishing || needsAttention) return false;
+    if (finishing) return false;
     finishing = true;
     finishError = false;
     try {
@@ -1580,7 +1580,6 @@
   }
 
   function handleLaunch(kind: LaunchKind | 'download') {
-    if (needsAttention) return;
     if (launching === 'watching' || kind === 'download') {
       return handleDownloadClaude();
     }
@@ -2373,7 +2372,7 @@
                 class="btn btn-primary"
                 type="button"
                 data-testid="onboarding-launch-download"
-                disabled={needsAttention || finishing || (launching !== null && launching !== 'watching')}
+                disabled={finishing || (launching !== null && launching !== 'watching')}
                 aria-busy={finishing || (launching !== null && launching !== 'watching')}
                 onclick={() => void handleLaunch('download')}
               >
@@ -2392,7 +2391,7 @@
                     class="btn {slot.kind === primaryLaunch.kind ? 'btn-primary' : 'btn-secondary'}"
                     type="button"
                     data-testid="onboarding-launch-{slot.kind}"
-                    disabled={needsAttention || finishing || (launching !== null && launching !== 'watching')}
+                    disabled={finishing || (launching !== null && launching !== 'watching')}
                     aria-busy={finishing || launching === slot.kind}
                     onclick={() => void handleLaunch(slot.kind)}
                   >
