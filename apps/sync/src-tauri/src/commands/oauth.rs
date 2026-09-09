@@ -40,7 +40,8 @@
 use super::cognito::{AuthState, CognitoTokens};
 use hq_desktop_core::oauth::{
     build_authorize_url, cognito_identity_provider, cognito_token_url, compute_code_challenge,
-    generate_code_verifier, parse_callback, COGNITO_CLIENT_ID, REDIRECT_URI,
+    generate_code_verifier, parse_callback, CallbackOutcome, CallbackRejection, COGNITO_CLIENT_ID,
+    REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -215,40 +216,63 @@ fn receive_loopback_callback(
                     };
 
                     match parse_callback(&request) {
-                        Some((_code, _state, Some(error))) => {
-                            let reason = format!("Provider error: {error}");
-                            eprintln!("[oauth] callback rejected — {reason}");
-                            write_response(&mut stream, "400 Bad Request", &error_html(&reason));
-                            return Err(structured_error(
-                                "OAUTH_PROVIDER_ERROR",
-                                "Sign-in was cancelled or denied. Retry when you are ready.",
-                            ));
-                        }
-                        Some((code, state, None)) => {
-                            if state != expected_state {
-                                let reason = format!(
-                                    "State mismatch: expected {} got {}",
-                                    expected_state, state
+                        Ok(callback) => {
+                            // State is compared BEFORE the outcome is acted on,
+                            // and on both branches. An unsolicited error
+                            // delivered to this port must not be able to cancel
+                            // an attempt it has nothing to do with, which the
+                            // previous code allowed by checking state only on
+                            // the success branch.
+                            if callback.state != expected_state {
+                                eprintln!(
+                                    "[oauth] callback rejected — state does not match this attempt"
                                 );
-                                eprintln!("[oauth] callback rejected — {reason}");
                                 write_response(
                                     &mut stream,
                                     "400 Bad Request",
-                                    &error_html(&reason),
+                                    &error_html("This sign-in response does not belong to the attempt this app started."),
                                 );
                                 return Err(
                                     "OAuth state mismatch — possible CSRF, aborting.".into()
                                 );
                             }
-                            eprintln!("[oauth] callback accepted — code length {}", code.len());
-                            write_response(&mut stream, "200 OK", SUCCESS_HTML);
-                            return Ok(OAuthResult { code });
+                            match callback.outcome {
+                                CallbackOutcome::Error(error) => {
+                                    eprintln!("[oauth] callback carried provider error {error}");
+                                    write_response(
+                                        &mut stream,
+                                        "400 Bad Request",
+                                        &error_html("Sign-in did not complete. You can close this tab and retry in HQ."),
+                                    );
+                                    return Err(structured_error(
+                                        "OAUTH_PROVIDER_ERROR",
+                                        "Sign-in was cancelled or denied. Retry when you are ready.",
+                                    ));
+                                }
+                                CallbackOutcome::Code(code) => {
+                                    eprintln!("[oauth] callback accepted");
+                                    write_response(&mut stream, "200 OK", SUCCESS_HTML);
+                                    return Ok(OAuthResult { code });
+                                }
+                            }
                         }
-                        None => {
+                        Err(rejection) => {
+                            // Not a callback for us. Something else on this
+                            // machine probed the port, or a callback arrived
+                            // malformed. Answer and keep waiting rather than
+                            // failing the attempt — the real callback may still
+                            // be in flight.
+                            eprintln!("[oauth] ignored a non-callback request: {rejection:?}");
+                            let status = match rejection {
+                                CallbackRejection::WrongPath | CallbackRejection::Malformed => {
+                                    "404 Not Found"
+                                }
+                                _ => "400 Bad Request",
+                            };
                             write_response(
                                 &mut stream,
-                                "404 Not Found",
-                                "<!doctype html><title>404</title>",
+                                status,
+                                "<!doctype html><title>HQ</title>",
                             );
                         }
                     }
