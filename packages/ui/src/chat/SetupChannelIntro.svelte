@@ -20,6 +20,13 @@
    *
    * External links never navigate the webview: every resource row calls
    * `onopenurl` (host → system browser) and cancels the anchor default.
+   *
+   * NATIVE SETUP RUN: with a host `setupRun` API (apps/sync provides one on
+   * `extraPages.sessions`), Run Setup drives `/setup` inside this hero — a
+   * four-step card (`SetupRunCard`), the agent's latest plain sentence, and
+   * each question as a native card — instead of opening the Sessions page.
+   * Interpretation lives in `setup-run.ts`; the run is remembered in
+   * localStorage so a relaunch offers "Continue setup (N of 4)".
    */
   import { onMount } from "svelte";
   import type { SettingsApi, ShellApi } from "@hq/platform";
@@ -47,6 +54,16 @@
   import { SETUP_HERO_ART } from "./setup-welcome-art";
   import FirstMoves from "./FirstMoves.svelte";
   import type { FirstMove, FirstMoveId } from "./first-moves";
+  import SetupRunCard, { type SetupRunCardMode } from "./SetupRunCard.svelte";
+  import {
+    clearSetupRunRecord,
+    interpretSetupRun,
+    loadSetupRunRecord,
+    saveSetupRunRecord,
+    type SetupRunApi,
+    type SetupRunPermissionDecision,
+    type SetupRunSnapshot,
+  } from "./setup-run";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
 
@@ -105,6 +122,21 @@
     onfirstmove?: (id: FirstMoveId) => Promise<string | null | void>;
     /** A move performed here (coding-tools) finished; the shell records it. */
     onfirstmovedone?: (id: FirstMoveId) => void;
+    /**
+     * Host-provided guided run (see `SetupRunApi`). When present, Run Setup
+     * runs `/setup` natively inside this hero — stepper, one-line status,
+     * questions as cards — instead of opening the Sessions page. The Sessions
+     * page is still the fallback when the host's preflight says the provider
+     * or HQ on this Mac is not ready (its Connect / self-heal UI lives there).
+     */
+    setupRun?: SetupRunApi | null;
+    /** "Show details": open the underlying session on the Sessions page. */
+    onopensessiondetails?: (sessionId: string) => void;
+    /**
+     * Fired once the native run reaches its finish. The shell records it so
+     * later boots land in the company channel instead of #welcome.
+     */
+    onsetupfinished?: () => void;
   }
 
   let {
@@ -121,6 +153,9 @@
     firstMoves = null,
     onfirstmove,
     onfirstmovedone,
+    setupRun = null,
+    onopensessiondetails,
+    onsetupfinished,
   }: Props = $props();
 
   /** First-moves "Use HQ from your coding tools": the Advanced launch cascade, recorded as done. */
@@ -196,10 +231,19 @@
   }
 
   /**
-   * The one primary action: open the host's Sessions draft with `/setup`
-   * prefilled. Hosts without in-app Sessions fall back to Claude Code.
+   * The one primary action. With a host guided-run API, `/setup` runs right
+   * here in the hero. Otherwise open the host's Sessions draft with `/setup`
+   * prefilled; hosts without in-app Sessions fall back to Claude Code.
    */
   function runSetup(): void {
+    if (setupRun) {
+      void startNativeRun();
+      return;
+    }
+    openSessionsForSetup();
+  }
+
+  function openSessionsForSetup(): void {
     if (onopensessions) {
       onsetupstarted?.();
       onopensessions();
@@ -207,6 +251,158 @@
     }
     // runLaunch reports onsetupstarted itself.
     void runLaunch("claude");
+  }
+
+  // --- native setup run ------------------------------------------------------
+
+  type RunMode = "idle" | "starting" | SetupRunCardMode;
+  let runMode = $state<RunMode>("idle");
+  let runSessionId = $state<string | null>(null);
+  let runSnapshot = $state<SetupRunSnapshot | null>(null);
+  let runResumeStep = $state(0);
+  let runBusy = $state(false);
+  let runError = $state<string | null>(null);
+  let runFinished = false;
+  let unsubscribeRun: (() => void) | null = null;
+
+  const runState = $derived(
+    runSnapshot
+      ? interpretSetupRun(runSnapshot.events, runSnapshot.phase, runSnapshot.resolvedRequestIds ?? [])
+      : null,
+  );
+  const runActive = $derived(Boolean(setupRun) && runMode !== "idle");
+
+  // A relaunch mid-run lands here with the session id remembered.
+  if (setupRun) {
+    const record = loadSetupRunRecord();
+    if (record) {
+      runSessionId = record.sessionId;
+      runResumeStep = record.step;
+      runMode = "resume";
+    }
+  }
+
+  function watchRun(sessionId: string): void {
+    if (!setupRun) return;
+    unsubscribeRun?.();
+    unsubscribeRun = setupRun.subscribe(sessionId, (snapshot) => {
+      if (snapshot.sessionId !== runSessionId) return;
+      runSnapshot = snapshot;
+    });
+  }
+
+  // Keep the resume record current, and finish / stop with the session.
+  $effect(() => {
+    const state = runState;
+    const sessionId = runSessionId;
+    if (!state || !sessionId || runMode !== "live") return;
+    if (state.done) {
+      if (!runFinished) {
+        runFinished = true;
+        clearSetupRunRecord();
+        onsetupfinished?.();
+      }
+      return;
+    }
+    if (state.ended) {
+      clearSetupRunRecord();
+      return;
+    }
+    saveSetupRunRecord({ sessionId, step: state.step });
+  });
+
+  $effect(() => () => unsubscribeRun?.());
+
+  async function startNativeRun(): Promise<void> {
+    if (!setupRun || runBusy) return;
+    runBusy = true;
+    runError = null;
+    try {
+      const readiness = await setupRun.preflight();
+      if (readiness !== "ready") {
+        // The Sessions page owns Connect / self-heal; never duplicate it here.
+        openSessionsForSetup();
+        return;
+      }
+      runMode = "starting";
+      const sessionId = await setupRun.start(SETUP_LAUNCH_COMMANDS.claude.prompt);
+      runFinished = false;
+      runSessionId = sessionId;
+      runSnapshot = { sessionId, events: [], phase: "starting" };
+      saveSetupRunRecord({ sessionId, step: 0 });
+      watchRun(sessionId);
+      runMode = "live";
+    } catch (err) {
+      runError = err instanceof Error ? err.message : String(err);
+      if (runMode === "starting") runMode = "idle";
+    } finally {
+      runBusy = false;
+    }
+  }
+
+  async function continueRun(): Promise<void> {
+    if (!setupRun || runBusy || !runSessionId) return;
+    runBusy = true;
+    runError = null;
+    try {
+      const attached = await setupRun.attach(runSessionId);
+      if (!attached) {
+        clearSetupRunRecord();
+        runMode = "stopped";
+        return;
+      }
+      runFinished = false;
+      watchRun(runSessionId);
+      runMode = "live";
+    } catch (err) {
+      runError = err instanceof Error ? err.message : String(err);
+    } finally {
+      runBusy = false;
+    }
+  }
+
+  function runAgain(): void {
+    unsubscribeRun?.();
+    unsubscribeRun = null;
+    runSnapshot = null;
+    runSessionId = null;
+    runMode = "idle";
+    void startNativeRun();
+  }
+
+  async function withRun(action: () => Promise<void>): Promise<void> {
+    if (!setupRun || runBusy) return;
+    runBusy = true;
+    runError = null;
+    try {
+      await action();
+    } catch (err) {
+      runError = err instanceof Error ? err.message : String(err);
+    } finally {
+      runBusy = false;
+    }
+  }
+
+  function answerChoice(requestId: string, questionId: string, values: string[]): void {
+    const sessionId = runSessionId;
+    if (!sessionId) return;
+    void withRun(() => setupRun!.answerQuestion(sessionId, requestId, [{ questionId, values }]));
+  }
+
+  function answerPermission(requestId: string, decision: SetupRunPermissionDecision): void {
+    const sessionId = runSessionId;
+    if (!sessionId) return;
+    void withRun(() => setupRun!.respondPermission(sessionId, requestId, decision));
+  }
+
+  function answerText(text: string): void {
+    const sessionId = runSessionId;
+    if (!sessionId) return;
+    void withRun(() => setupRun!.send(sessionId, text));
+  }
+
+  function showRunDetails(): void {
+    if (runSessionId) onopensessiondetails?.(runSessionId);
   }
 
   async function runLaunch(key: LaunchKey): Promise<void> {
@@ -260,6 +456,7 @@
   data-testid="setup-channel-intro"
   data-setup-threads="none"
   data-setup-has-company={hasCompany ? "true" : "false"}
+  data-setup-run={runActive ? runMode : "idle"}
   data-setup-roster-status={rosterStatus ?? "ready"}
 >
   <div class="hero" data-testid="setup-hero">
@@ -280,6 +477,23 @@
       draggable="false"
     />
     <div class="hero-scrim" aria-hidden="true"></div>
+    {#if runActive && runMode !== "idle"}
+      <div class="hero-copy hero-copy--run">
+        <SetupRunCard
+          mode={runMode === "starting" ? "live" : runMode}
+          run={runState}
+          resumeStep={runResumeStep}
+          busy={runBusy || runMode === "starting"}
+          error={runError}
+          onanswer={answerChoice}
+          onpermission={answerPermission}
+          onsend={answerText}
+          onshowdetails={onopensessiondetails && runSessionId ? showRunDetails : undefined}
+          oncontinue={() => void continueRun()}
+          onrunagain={runAgain}
+        />
+      </div>
+    {:else}
     <div class="hero-copy">
       <span class="eyebrow">{hero.eyebrow}</span>
       <h2 class="hero-title">{hero.title}</h2>
@@ -316,15 +530,18 @@
           type="button"
           class="launch-btn primary"
           data-testid="setup-run"
-          disabled={!onopensessions && (!canLaunch || launching !== null)}
-          aria-busy={!onopensessions && launching === "claude"}
+          disabled={runBusy || (!setupRun && !onopensessions && (!canLaunch || launching !== null))}
+          aria-busy={runBusy || (!onopensessions && launching === "claude")}
           onclick={runSetup}
         >
-          {SETUP_RUN_LABEL}
+          {runBusy ? "Starting…" : SETUP_RUN_LABEL}
         </button>
       </div>
       {#if !onopensessions && launchErrors.claude}
         <p class="launch-error" role="alert">{launchErrors.claude}</p>
+      {/if}
+      {#if runError && runMode === "idle"}
+        <p class="launch-error" role="alert" data-testid="setup-run-start-error">{runError}</p>
       {/if}
 
       <details class="advanced" data-testid="setup-advanced">
@@ -437,6 +654,7 @@
         </div>
       </details>
     </div>
+    {/if}
   </div>
 
   {#if firstMoves && firstMoves.length > 0}
@@ -576,6 +794,10 @@
     gap: var(--space-2, 8px);
     padding: var(--space-6, 24px) var(--space-5, 20px) var(--space-5, 20px);
     min-height: 248px;
+    justify-content: flex-end;
+  }
+
+  .hero-copy--run {
     justify-content: flex-end;
   }
 
