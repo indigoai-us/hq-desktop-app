@@ -27,7 +27,7 @@
    * strip, drawer, transcript and composer read it, the cards call back into
    * it, and every `agent_session_*` invoke lives inside it.
    */
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy } from 'svelte';
   import SessionListPanel from '../panels/SessionListPanel.svelte';
   import SessionComposer from '../../components/sessions/SessionComposer.svelte';
   import SessionTranscript from '../../components/sessions/SessionTranscript.svelte';
@@ -138,6 +138,7 @@
     restorePath?: 'open' | 'openHistory';
     /** Unique unsent-draft identity for composer persistence. */
     draftKey?: string | null;
+    restoreScroll?: import('@hq/ui').NavigationScrollState | null;
   }
 
   let {
@@ -150,11 +151,13 @@
     initialHistorySession = null,
     restorePath,
     draftKey = null,
+    restoreScroll = null,
   }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
   let preflightLoading = $state(false);
   let actionError = $state('');
+  let sessionUnavailable = $state(false);
   let starting = $state(false);
   let busyRequestId = $state<string | null>(null);
   let probeCommands = $state<SessionCommand[]>([]);
@@ -301,26 +304,32 @@
       await liveSessionStore.openHistory(providerHistory);
       return;
     }
-    if (restorePath === 'openHistory') return;
+    if (restorePath === 'open' || restorePath === 'openHistory') {
+      sessionUnavailable = true;
+      actionError = 'This session is no longer available.';
+      return;
+    }
     await liveSessionStore.open(next);
   }
 
-  // Open / close the routed session. Runs on mount and whenever the route's id
-  // changes; the previous session's buffer is dropped so a long transcript does
-  // not sit in memory behind a session the user left.
+  // Open the routed session. Background buffers stay resident while this view
+  // unmounts so Back can restore without tearing the agent down.
   $effect(() => {
     const next = sessionId ?? null;
     if (next === routedId) return;
-    const previous = untrack(() => openedId);
     routedId = next;
     openedId = next;
-    if (previous && previous !== next) liveSessionStore.close(previous);
-    if (next) void openRoutedSession(next);
+    sessionUnavailable = false;
+    if (!next) return;
+    if (liveSessionStore.isOpen(next)) {
+      liveSessionStore.activate(next);
+      return;
+    }
+    void openRoutedSession(next);
   });
 
   onDestroy(() => {
     routedId = null;
-    if (openedId) liveSessionStore.close(openedId);
   });
 
   /** Preflight: wanted once per page, best-effort. */
@@ -1263,6 +1272,16 @@
     />
   {/if}
 
+  {#if sessionUnavailable}
+    <div
+      class="session-note"
+      data-testid="session-unavailable"
+      role="alert"
+    >
+      This session is no longer available.
+    </div>
+  {/if}
+
   {#if liveSessionStore.truncated}
     <p class="session-note" data-testid="session-truncated">
       Older messages were dropped from this session's buffer.
@@ -1279,6 +1298,7 @@
     </div>
   {/if}
   <SessionTranscript
+    restoreScroll={restoreScroll}
     blocks={transcript.blocks}
     status={workStatus}
     loading={Boolean(sessionId) && liveSessionStore.loading}

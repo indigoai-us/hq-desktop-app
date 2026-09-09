@@ -23,6 +23,16 @@ export interface NavigationScope {
   companyUid: string | null;
 }
 
+/** Per-entry scroll. Prefer a stable identity; pixel offset is the fallback. */
+export type NavigationScrollAnchorKind = "message" | "event" | "file" | "pixel";
+
+export interface NavigationScrollState {
+  kind: NavigationScrollAnchorKind;
+  /** Message, event, or file identity. Null only for pixel fallback. */
+  id: string | null;
+  offset: number;
+}
+
 /**
  * Discriminated destination union. Values must stay JSON-serializable:
  * no component instances, adapter handles, presigned URLs, cached
@@ -58,6 +68,7 @@ export interface NavigationEntry {
   destination: NavigationDestination;
   accountId: string;
   companyUid: string | null;
+  scroll?: NavigationScrollState | null;
 }
 
 export type NonNavigationReason =
@@ -85,6 +96,8 @@ export interface NavigationHistory {
   replace(entry: NavigationEntry): NavigationHistorySnapshot;
   back(): NavigationEntry | null;
   forward(): NavigationEntry | null;
+  recordScroll(scroll: NavigationScrollState | null): NavigationHistorySnapshot;
+  filter(keep: (entry: NavigationEntry) => boolean): NavigationHistorySnapshot;
   clear(): void;
 }
 
@@ -136,6 +149,13 @@ const FORBIDDEN_ENTRY_KEYS = new Set([
   "cachedContent",
   "bytes",
   "blob",
+]);
+
+const SCROLL_KINDS = new Set<NavigationScrollAnchorKind>([
+  "message",
+  "event",
+  "file",
+  "pixel",
 ]);
 
 function trimId(value: string | null | undefined): string | null {
@@ -270,12 +290,28 @@ export function canonicalizeDestination(
   }
 }
 
+export function canonicalizeScroll(
+  scroll: NavigationScrollState | null | undefined,
+): NavigationScrollState | null {
+  if (!scroll) return null;
+  const kind = SCROLL_KINDS.has(scroll.kind) ? scroll.kind : "pixel";
+  const id = kind === "pixel" ? null : trimId(scroll.id);
+  const offset = Number.isFinite(scroll.offset)
+    ? Math.max(0, Math.round(scroll.offset))
+    : 0;
+  if (kind !== "pixel" && !id) {
+    return { kind: "pixel", id: null, offset };
+  }
+  return { kind, id, offset };
+}
+
 export function canonicalizeEntry(entry: NavigationEntry): NavigationEntry {
   const accountId = requireId(entry.accountId, "accountId");
   return {
     destination: canonicalizeDestination(entry.destination),
     accountId,
     companyUid: trimId(entry.companyUid),
+    scroll: canonicalizeScroll(entry.scroll),
   };
 }
 
@@ -389,14 +425,27 @@ export function destinationLabel(destination: NavigationDestination): string {
 export function createNavigationEntry(
   destination: NavigationDestination,
   scope: NavigationScope,
+  scroll?: NavigationScrollState | null,
 ): NavigationEntry {
   const entry = canonicalizeEntry({
     destination,
     accountId: scope.accountId,
     companyUid: scope.companyUid,
+    scroll: scroll ?? null,
   });
   assertSerializableNavigationEntry(entry);
   return entry;
+}
+
+/** Keep destinations whose company is still in the signed-in membership. */
+export function entryCompanyIsAccessible(
+  entry: NavigationEntry,
+  accessibleCompanyUids: ReadonlySet<string> | null,
+): boolean {
+  if (!accessibleCompanyUids) return true;
+  const uid = trimId(entry.companyUid);
+  if (!uid) return true;
+  return accessibleCompanyUids.has(uid);
 }
 
 function freezeSnapshot(
@@ -423,10 +472,14 @@ export function createNavigationHistory(
     index >= 0 ? cloneJson(entries[index]!) : null;
 
   const commit = (entry: NavigationEntry, mode: "push" | "replace") => {
-    const next = createNavigationEntry(entry.destination, {
-      accountId: entry.accountId,
-      companyUid: entry.companyUid,
-    });
+    const next = createNavigationEntry(
+      entry.destination,
+      {
+        accountId: entry.accountId,
+        companyUid: entry.companyUid,
+      },
+      entry.scroll,
+    );
     const at = index >= 0 ? entries[index]! : null;
     if (mode === "push" && at && entriesEqual(at, next)) {
       return snapshot();
@@ -470,6 +523,34 @@ export function createNavigationHistory(
       if (index < 0 || index >= entries.length - 1) return null;
       index += 1;
       return current();
+    },
+    recordScroll: (scroll) => {
+      if (index < 0) return snapshot();
+      const current = entries[index]!;
+      entries = [
+        ...entries.slice(0, index),
+        { ...current, scroll: canonicalizeScroll(scroll) },
+        ...entries.slice(index + 1),
+      ];
+      return snapshot();
+    },
+    filter: (keep) => {
+      if (entries.length === 0) return snapshot();
+      const current = index >= 0 ? entries[index]! : null;
+      const currentKey = current ? canonicalEntryKey(current) : null;
+      const next = entries.filter(keep);
+      if (next.length === 0) {
+        entries = [];
+        index = -1;
+        return snapshot();
+      }
+      let nextIndex = currentKey
+        ? next.findIndex((item) => canonicalEntryKey(item) === currentKey)
+        : -1;
+      if (nextIndex < 0) nextIndex = Math.min(Math.max(index, 0), next.length - 1);
+      entries = next;
+      index = nextIndex;
+      return snapshot();
     },
     clear: () => {
       entries = [];

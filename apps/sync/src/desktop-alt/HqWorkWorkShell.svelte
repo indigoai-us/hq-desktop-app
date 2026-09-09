@@ -273,6 +273,7 @@
     workspaceError = null;
     identityError = null;
     signOutError = null;
+    navigation.clear();
 
     if (next.status === 'credentials_absent') {
       signedOutReason = 'signed-out';

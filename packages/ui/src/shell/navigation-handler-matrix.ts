@@ -1204,6 +1204,17 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     notes: "Active host chain: HqWorkWorkShell → WorkShell → DesktopApp.",
   },
   {
+    id: "hq-work-sign-out-clears-stack",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "navigation.clear();",
+    destinationKind: "none",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes:
+      "Sign-out and account change clear the pending-route bridge. WorkShell remounts on authGeneration so the in-memory stack is dropped.",
+  },
+  {
     id: "hq-work-project-channel-linked",
     file: HQ_WORK_SHELL_FILE,
     needle: "PROJECT_CHANNEL_LINKED_EVENT",

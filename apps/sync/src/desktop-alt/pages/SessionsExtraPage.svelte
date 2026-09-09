@@ -9,7 +9,7 @@
    * project channel). `SessionsPage` keeps its classic-shell props, and
    * `packages/ui` keeps its Tauri-free boundary.
    */
-  import { dispatchEmbeddedNavigation } from '@hq/ui';
+  import { dispatchEmbeddedNavigation, type NavigationScrollState } from '@hq/ui';
   import SessionsPage from './SessionsPage.svelte';
   import SharedSessionPage from './SharedSessionPage.svelte';
   import {
@@ -23,11 +23,12 @@
   interface Props {
     /** The shell's opaque selection — here, the routed session id. */
     param?: string | null;
+    restoreScroll?: NavigationScrollState | null;
     /** Report the session the user opened back to the shell. */
     onnavigate?: (param: string | null, options?: { mode?: 'push' | 'replace' }) => void;
   }
 
-  let { param = null, onnavigate }: Props = $props();
+  let { param = null, restoreScroll = null, onnavigate }: Props = $props();
 
   const route = $derived(parseSessionsParam(param));
   const restorePath = $derived(sessionRestorePath(route));
@@ -72,6 +73,7 @@
   initialProject={route.kind === 'new' ? route.project : null}
   initialChannelId={route.kind === 'new' ? route.channelId : undefined}
   restorePath={restorePath === 'open' || restorePath === 'openHistory' ? restorePath : undefined}
+  {restoreScroll}
   {draftKey}
   onopensession={openSession}
   onopenchannel={(channelId) => dispatchEmbeddedNavigation({ kind: 'channel', channelId })}

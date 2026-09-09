@@ -11,6 +11,7 @@ import {
   createNavigationHistory,
   destinationLabel,
   destinationsEqual,
+  entriesEqual,
   historyNeighbor,
   NAVIGATION_HISTORY_CAP,
   type NavigationDestination,
@@ -49,13 +50,17 @@ function entry(
   destination: NavigationDestination,
   overrides?: Partial<NavigationEntry>,
 ): NavigationEntry {
-  return createNavigationEntry(destination, {
-    accountId: overrides?.accountId ?? scope().accountId,
-    companyUid:
-      overrides?.companyUid !== undefined
-        ? overrides.companyUid
-        : scope().companyUid,
-  });
+  return createNavigationEntry(
+    destination,
+    {
+      accountId: overrides?.accountId ?? scope().accountId,
+      companyUid:
+        overrides?.companyUid !== undefined
+          ? overrides.companyUid
+          : scope().companyUid,
+    },
+    overrides?.scroll,
+  );
 }
 
 function extractDesktopAppFunctions(source: string): string[] {
@@ -336,5 +341,34 @@ describe("navigation history stack", () => {
       reason: "cosmetic-sidebar",
     });
     expect(history.snapshot().entries).toHaveLength(1);
+  });
+
+  it("stores a scroll anchor on the current entry without changing equality", () => {
+    const history = createNavigationHistory();
+    const a = entry({ kind: "channel", channelId: "chn_long" });
+    history.push(a);
+    history.recordScroll({
+      kind: "message",
+      id: "evt_mid",
+      offset: 840,
+    });
+    const stored = history.current();
+    expect(stored?.scroll).toEqual({
+      kind: "message",
+      id: "evt_mid",
+      offset: 840,
+    });
+    expect(
+      entriesEqual(stored!, entry({ kind: "channel", channelId: "chn_long" })),
+    ).toBe(true);
+    history.push(entry({ kind: "notifications" }));
+    expect(history.snapshot().entries[0]?.scroll).toEqual({
+      kind: "message",
+      id: "evt_mid",
+      offset: 840,
+    });
+    expect(JSON.stringify(history.snapshot())).not.toMatch(
+      /localStorage|sessionStorage|indexedDB/i,
+    );
   });
 });

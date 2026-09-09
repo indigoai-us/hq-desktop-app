@@ -155,7 +155,12 @@
     historyNeighbor,
     type NavigationDestination,
     type NavigationEntry,
+    type NavigationScrollState,
   } from "./navigation-history.js";
+  import {
+    captureNavigationScroll,
+    scheduleNavigationScrollRestore,
+  } from "./navigation-scroll.js";
   import {
     createNavigationController,
     type AppliedNavigation,
@@ -500,6 +505,7 @@
         createAction?: { label: string; param: () => string | null };
         component: Component<{
           param?: string | null;
+          restoreScroll?: NavigationScrollState | null;
           onnavigate?: (
             param: string | null,
             options?: { mode?: "push" | "replace" },
@@ -676,6 +682,9 @@
   let navigationCanGoForward = $state(false);
   let navigationBackLabel = $state("");
   let navigationForwardLabel = $state("");
+  let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
+  let cancelScrollRestore: (() => void) | null = null;
+  const DESTINATION_UNAVAILABLE = "This destination is no longer available.";
   let tab = $state<ChannelTab>("chat");
   let channelFileKey = $state<string | null>(null);
   let companyTab = $state<CompanyChannelTabId>("chat");
@@ -712,6 +721,7 @@
   })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+  let directorySettled = $state(false);
   let conversationBootTimedOut = $state(false);
   $effect(() => {
     if (selectedRow) {
@@ -2954,10 +2964,21 @@
       return createNavigationEntry(
         currentShellDestination(),
         currentNavigationScope(),
+        readNavigationScroll(),
       );
     } catch {
       return null;
     }
+  }
+
+  function readNavigationScroll(): NavigationScrollState | null {
+    if (typeof document === "undefined") return null;
+    return captureNavigationScroll(document);
+  }
+
+  function stopScrollRestore(): void {
+    cancelScrollRestore?.();
+    cancelScrollRestore = null;
   }
 
   function companyIsAccessible(companyUid: string | null | undefined): boolean {
@@ -2970,24 +2991,21 @@
   function rowForDestination(
     destination: NavigationDestination,
   ): ConversationRow | null {
+    const rows = [
+      ...searchRows,
+      ...railRows,
+      ...(selectedRow ? [selectedRow] : []),
+    ];
     if (destination.kind === "channel") {
-      return conversationRowForDeepLink(
-        {
-          channelId: destination.channelId,
-          personUid: null,
-          replyRootEventId: destination.replyRootEventId ?? null,
-        },
-        [...searchRows, ...railRows],
+      return (
+        rows.find((row) => row.channelId === destination.channelId) ?? null
       );
     }
     if (destination.kind === "dm") {
-      return conversationRowForDeepLink(
-        {
-          channelId: null,
-          personUid: destination.personUid,
-          replyRootEventId: destination.replyRootEventId ?? null,
-        },
-        [...searchRows, ...railRows],
+      return (
+        rows.find(
+          (row) => row.personUid === destination.personUid && !row.channelId,
+        ) ?? null
       );
     }
     return null;
@@ -2995,8 +3013,12 @@
 
   function resolveShellDestination(
     destination: NavigationDestination,
-    context: { isStale: () => boolean; accountId: string },
-  ): NavigationResolveOutcome {
+    context: {
+      isStale: () => boolean;
+      accountId: string;
+      companyUid: string | null;
+    },
+  ): NavigationResolveOutcome | Promise<NavigationResolveOutcome> {
     if (context.isStale()) return { status: "cancelled" };
     if (context.accountId !== currentNavigationScope().accountId) {
       return {
@@ -3013,16 +3035,29 @@
       }
       return { status: "ready", destination };
     }
+    if (
+      context.companyUid &&
+      !companyIsAccessible(context.companyUid)
+    ) {
+      return {
+        status: "unavailable",
+        destination,
+        reason: DESTINATION_UNAVAILABLE,
+      };
+    }
     if (destination.kind === "channel" || destination.kind === "dm") {
       const row = rowForDestination(destination);
-      if (row && !companyIsAccessible(row.companyUid)) {
-        return {
-          status: "unavailable",
-          destination,
-          reason: "This destination is no longer available.",
-        };
+      if (row) {
+        if (!companyIsAccessible(row.companyUid)) {
+          return {
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          };
+        }
+        return { status: "ready", destination };
       }
-      return { status: "ready", destination };
+      return waitForDestinationRow(destination, context);
     }
     if (
       destination.kind === "setup-checkout" &&
@@ -3031,10 +3066,59 @@
       return {
         status: "unavailable",
         destination,
-        reason: "This destination is no longer available.",
+        reason: DESTINATION_UNAVAILABLE,
       };
     }
     return { status: "ready", destination };
+  }
+
+  function waitForDestinationRow(
+    destination: Extract<NavigationDestination, { kind: "channel" | "dm" }>,
+    context: { isStale: () => boolean },
+  ): Promise<NavigationResolveOutcome> {
+    const attempts = 16;
+    const delayMs = 50;
+    return new Promise((resolve) => {
+      let tries = 0;
+      const tick = (): void => {
+        if (context.isStale()) {
+          resolve({ status: "cancelled" });
+          return;
+        }
+        const row = rowForDestination(destination);
+        if (row) {
+          if (!companyIsAccessible(row.companyUid)) {
+            resolve({
+              status: "unavailable",
+              destination,
+              reason: DESTINATION_UNAVAILABLE,
+            });
+            return;
+          }
+          resolve({ status: "ready", destination });
+          return;
+        }
+        tries += 1;
+        const directoryReady = directorySettled && companies != null;
+        if (tries >= attempts || directoryReady) {
+          if (!directoryReady && companies == null) {
+            resolve({
+              status: "transient-failure",
+              error: "Directory still loading",
+            });
+            return;
+          }
+          resolve({
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          });
+          return;
+        }
+        setTimeout(tick, delayMs);
+      };
+      setTimeout(tick, delayMs);
+    });
   }
 
   const navigationHistory = createNavigationHistory();
@@ -3056,11 +3140,15 @@
     paletteOpen = false;
     membersOpen = false;
     projectAboutOpen = false;
+    pendingRestoreScroll = applied.entry.scroll ?? null;
+    stopScrollRestore();
     if (applied.availability === "unavailable") {
       navigationUnavailable = {
         destination: applied.entry.destination,
-        reason: applied.reason ?? "This destination is no longer available.",
+        reason: applied.reason ?? DESTINATION_UNAVAILABLE,
       };
+      selectedRow = null;
+      liveTimeline = [];
       return;
     }
     navigationUnavailable = null;
@@ -3177,6 +3265,7 @@
     history: navigationHistory,
     getScope: () => currentNavigationScope(),
     captureCurrent: () => captureCurrentNavigation(),
+    captureScroll: () => readNavigationScroll(),
     resolve: (destination, context) =>
       resolveShellDestination(destination, context),
     apply: (applied) => applyCommittedNavigation(applied),
@@ -3186,6 +3275,21 @@
     onRejected: (reason) => {
       embeddedNavigationError = reason;
     },
+  });
+
+  $effect(() => {
+    const scroll = pendingRestoreScroll;
+    stopScrollRestore();
+    if (!scroll || navigationUnavailable) return;
+    const generation = navigation.generation();
+    cancelScrollRestore = scheduleNavigationScrollRestore(
+      () => (typeof document === "undefined" ? null : document),
+      scroll,
+      {
+        isCancelled: () => navigation.generation() !== generation,
+      },
+    );
+    return () => stopScrollRestore();
   });
 
   function navigate(
@@ -3229,6 +3333,20 @@
 
   $effect(() => {
     navigation.noteAccount((self?.uid ?? tenantAccountId ?? "").trim());
+  });
+
+  $effect(() => {
+    void companies;
+    const current = navigationHistory.current();
+    if (!current?.companyUid) return;
+    if (companyIsAccessible(current.companyUid)) return;
+    if (navigationUnavailable) return;
+    navigationUnavailable = {
+      destination: current.destination,
+      reason: DESTINATION_UNAVAILABLE,
+    };
+    selectedRow = null;
+    liveTimeline = [];
   });
 
   function handleSelect(
@@ -3381,8 +3499,10 @@
 
   function changeTenantCompany(companyUid: string | null): void {
     if (tenantCompanyId === companyUid) return;
-    // Company scope is a tenant boundary too. Remove every visible selection
-    // before the re-keyed sidebar begins reads in the replacement scope.
+    // Company switching is in-account navigation: the history stack stays.
+    // Existing tenant-generation guards still cancel in-flight company reads.
+    // Remove every visible selection before the re-keyed sidebar begins reads
+    // in the replacement scope.
     tenantCompanyId = companyUid;
     selectedRow = null;
     liveTimeline = [];
@@ -3459,6 +3579,7 @@
   });
 
   onDestroy(() => {
+    stopScrollRestore();
     // Account transitions unmount the shared shell; never leave its singleton
     // cache/snapshot visible until the next identity has finished hydrating.
     configureMeetingsApi(null);
@@ -3889,6 +4010,9 @@
   });
 
   async function signOutWithImageCleanup(): Promise<void> {
+    navigation.clear();
+    stopScrollRestore();
+    pendingRestoreScroll = null;
     const cache = imagePreviewCache;
     await onsignout?.();
     try { await cache?.clearAccount(); }
@@ -4513,7 +4637,10 @@
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           oncreateagent={canRunEntryPoints ? addAgentEntry : null}
-          onrows={(rows) => (railRows = rows)}
+          onrows={(rows) => {
+            railRows = rows;
+            directorySettled = true;
+          }}
           {bootTimeoutMs}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
@@ -4554,6 +4681,7 @@
             {#key `${extraPageId}:${extraPageParam ?? ""}`}
               <Page
                 param={extraPageParam}
+                restoreScroll={pendingRestoreScroll}
                 onnavigate={(
                   next: string | null,
                   options?: { mode?: NavigationMode },
@@ -5092,6 +5220,7 @@
                   <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
                 {/snippet}
                 <ChannelConversation
+                  restoreScroll={pendingRestoreScroll}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;

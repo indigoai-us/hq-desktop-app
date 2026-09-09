@@ -14,10 +14,12 @@ import {
   createNavigationEntry,
   createNavigationHistory,
   entriesEqual,
+  entryCompanyIsAccessible,
   type NavigationDestination,
   type NavigationEntry,
   type NavigationHistory,
   type NavigationScope,
+  type NavigationScrollState,
 } from "./navigation-history.js";
 
 export type NavigationMode = "push" | "replace";
@@ -56,6 +58,7 @@ export interface AppliedNavigation {
 export interface NavigationResolveContext {
   generation: number;
   accountId: string;
+  companyUid: string | null;
   isStale: () => boolean;
 }
 
@@ -70,6 +73,7 @@ export interface NavigationControllerDeps {
   resolve?: NavigationResolver;
   apply: (applied: AppliedNavigation) => void;
   captureCurrent?: () => NavigationEntry | null;
+  captureScroll?: () => NavigationScrollState | null;
   onPending?: (pending: NavigationPending | null) => void;
   onRejected?: (reason: string) => void;
 }
@@ -96,6 +100,8 @@ export interface NavigationController {
   back(): NavigationNavigateResult | Promise<NavigationNavigateResult>;
   forward(): NavigationNavigateResult | Promise<NavigationNavigateResult>;
   noteAccount(accountId: string): void;
+  clear(): void;
+  filterAccessible(accessibleCompanyUids: ReadonlySet<string> | null): void;
 }
 
 function isThenable<T>(
@@ -137,13 +143,32 @@ export function createNavigationController(
   const makeContext = (
     generation: number,
     accountId: string,
+    companyUid: string | null,
   ): NavigationResolveContext => ({
     generation,
     accountId,
+    companyUid,
     isStale: () =>
       generation !== currentGeneration ||
       scopeNow().accountId !== accountId,
   });
+
+  const rememberScroll = (): void => {
+    try {
+      const scroll = deps.captureScroll?.() ?? null;
+      if (scroll) history.recordScroll(scroll);
+    } catch {
+      /* capture is best-effort; leaving a destination must still proceed */
+    }
+  };
+
+  const resetStack = (): void => {
+    currentGeneration += 1;
+    history.clear();
+    lastCommit = null;
+    lastAvailability = null;
+    setPending(null);
+  };
 
   function seedCurrentIfNeeded(next: NavigationEntry): void {
     if (history.current()) return;
@@ -156,9 +181,14 @@ export function createNavigationController(
   function resolveDestination(
     destination: NavigationDestination,
     generation: number = currentGeneration,
+    companyUid?: string | null,
   ): NavigationResolveOutcome | Promise<NavigationResolveOutcome> {
     const scope = scopeNow();
-    const context = makeContext(generation, scope.accountId);
+    const context = makeContext(
+      generation,
+      scope.accountId,
+      companyUid !== undefined ? companyUid : scope.companyUid,
+    );
     if (context.isStale()) return { status: "cancelled" };
     let resolved: NavigationResolveOutcome | Promise<NavigationResolveOutcome>;
     try {
@@ -231,11 +261,7 @@ export function createNavigationController(
       return { ...resolved, generation, committed: false };
     }
     if (resolved.status === "account-changed") {
-      currentGeneration += 1;
-      history.clear();
-      lastCommit = null;
-      lastAvailability = null;
-      setPending(null);
+      resetStack();
       return {
         ...resolved,
         generation: currentGeneration,
@@ -258,6 +284,7 @@ export function createNavigationController(
     destination: NavigationDestination,
     mode: NavigationMode = "push",
   ): NavigationNavigateResult | Promise<NavigationNavigateResult> {
+    rememberScroll();
     const generation = ++currentGeneration;
     const canonical = canonicalizeDestination(destination);
     setPending({ generation, destination: canonical });
@@ -283,6 +310,7 @@ export function createNavigationController(
       };
     }
     const target = snap.entries[targetIndex]!;
+    rememberScroll();
     const generation = ++currentGeneration;
     setPending({ generation, destination: target.destination });
     const run = (resolved: NavigationResolveOutcome): NavigationNavigateResult => {
@@ -318,7 +346,11 @@ export function createNavigationController(
       }
       return { ...resolved, generation, committed: true };
     };
-    const resolved = resolveDestination(target.destination, generation);
+    const resolved = resolveDestination(
+      target.destination,
+      generation,
+      target.companyUid,
+    );
     if (isThenable(resolved)) return resolved.then(run);
     return run(resolved);
   }
@@ -326,13 +358,21 @@ export function createNavigationController(
   function noteAccount(accountId: string): void {
     const next = accountId.trim();
     if (lastAccountId && lastAccountId !== next) {
-      currentGeneration += 1;
-      history.clear();
-      lastCommit = null;
-      lastAvailability = null;
-      setPending(null);
+      resetStack();
     }
     lastAccountId = next || null;
+  }
+
+  function filterAccessible(
+    accessibleCompanyUids: ReadonlySet<string> | null,
+  ): void {
+    history.filter((entry) =>
+      entryCompanyIsAccessible(entry, accessibleCompanyUids),
+    );
+    if (lastCommit && !entryCompanyIsAccessible(lastCommit, accessibleCompanyUids)) {
+      lastCommit = history.current();
+      lastAvailability = lastCommit ? lastAvailability : null;
+    }
   }
 
   return {
@@ -347,5 +387,7 @@ export function createNavigationController(
     back: () => traverse("back"),
     forward: () => traverse("forward"),
     noteAccount,
+    clear: resetStack,
+    filterAccessible,
   };
 }

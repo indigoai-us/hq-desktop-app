@@ -1493,6 +1493,10 @@ export const liveSessionStore = {
   get isHistorical(): boolean {
     return activeEntry()?.history !== null && activeEntry()?.history !== undefined;
   },
+  isOpen: (sessionId: string): boolean => Boolean(entries[sessionId]),
+  activate: (sessionId: string): void => {
+    if (entries[sessionId]) activeId = sessionId;
+  },
   open,
   openHistory,
   close,

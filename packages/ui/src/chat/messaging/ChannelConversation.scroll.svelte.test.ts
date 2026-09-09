@@ -270,4 +270,47 @@ describe("ChannelConversation scroll ownership", () => {
     await tick();
     expect(el.scrollTop).toBe(el.scrollHeight);
   });
+
+  it("restores a message anchor and does not follow new messages", async () => {
+    const original = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "offsetTop",
+    );
+    Object.defineProperty(HTMLElement.prototype, "offsetTop", {
+      configurable: true,
+      get() {
+        return this.getAttribute?.("data-event-id") === "evt_3" ? 200 : 0;
+      },
+    });
+    try {
+      const props = $state({
+        messages: messages(10),
+        restoreScroll: {
+          kind: "message" as const,
+          id: "evt_3",
+          offset: 200,
+        },
+      });
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      component = mount(ChannelConversation, { target: host, props });
+      await tick();
+      const el = stubLayout(10);
+      expect(el.querySelector("[data-event-id='evt_3']")).not.toBeNull();
+      await tick();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(el.scrollTop).toBe(200);
+
+      rowCountRef.value = 11;
+      props.messages = messages(11);
+      await tick();
+      expect(el.scrollTop).toBe(200);
+      expect(
+        host.querySelector('[data-testid="conversation-jump-latest"]'),
+      ).not.toBeNull();
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, "offsetTop", original);
+      else delete (HTMLElement.prototype as { offsetTop?: unknown }).offsetTop;
+    }
+  });
 });

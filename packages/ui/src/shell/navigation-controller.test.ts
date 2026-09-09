@@ -4,6 +4,7 @@ import {
   destinationFromEmbeddedTarget,
   type NavigationDestination,
   type NavigationEntry,
+  type NavigationScrollState,
 } from "./navigation-history.js";
 import {
   createNavigationController,
@@ -43,6 +44,7 @@ function controllerWith(
   options?: {
     accountId?: () => string;
     capture?: () => NavigationEntry | null;
+    captureScroll?: () => NavigationScrollState | null;
   },
 ): {
   controller: NavigationController;
@@ -55,6 +57,7 @@ function controllerWith(
   const controller = createNavigationController({
     getScope: () => scope(accountId()),
     captureCurrent: options?.capture,
+    captureScroll: options?.captureScroll,
     resolve: (destination) => resolve(destination),
     apply: (next) => {
       applied.push(next);
@@ -242,6 +245,55 @@ describe("navigation controller commit boundary", () => {
     expect(controller.lastCommitted()?.destination).toEqual(
       expect.objectContaining({ channelId: "chn_home" }),
     );
+  });
+
+  it("records scroll on leave and does not let later captures rewrite a parked entry", () => {
+    let liveOffset = 420;
+    const { controller } = controllerWith(
+      (destination) => ({ status: "ready", destination }),
+      {
+        captureScroll: () => ({
+          kind: "message",
+          id: "evt_mid",
+          offset: liveOffset,
+        }),
+      },
+    );
+    controller.navigate(dest("channel", "long"));
+    controller.navigate(dest("extra", "ses_live"));
+    expect(controller.history.snapshot().entries[0]?.scroll).toEqual({
+      kind: "message",
+      id: "evt_mid",
+      offset: 420,
+    });
+    liveOffset = 9999;
+    expect(controller.history.snapshot().entries[0]?.scroll?.offset).toBe(420);
+    controller.back();
+    expect(controller.lastCommitted()?.scroll).toEqual({
+      kind: "message",
+      id: "evt_mid",
+      offset: 420,
+    });
+  });
+
+  it("clears the stack on account change so prior destinations are not restorable", () => {
+    let accountId = "acct_ada";
+    const { controller } = controllerWith(
+      (destination) => ({ status: "ready", destination }),
+      { accountId: () => accountId },
+    );
+    controller.noteAccount("acct_ada");
+    controller.navigate(dest("channel", "secret"));
+    controller.navigate(dest("extra", "ses_secret"));
+    accountId = "acct_bea";
+    controller.noteAccount("acct_bea");
+    expect(controller.history.snapshot().entries).toEqual([]);
+    expect(controller.lastCommitted()).toBeNull();
+    expect(controller.history.canGoBack()).toBe(false);
+    controller.navigate(dest("messages"));
+    expect(controller.history.snapshot().entries).toHaveLength(1);
+    expect(controller.lastCommitted()?.accountId).toBe("acct_bea");
+    expect(controller.lastCommitted()?.destination).toEqual({ kind: "messages" });
   });
 });
 
