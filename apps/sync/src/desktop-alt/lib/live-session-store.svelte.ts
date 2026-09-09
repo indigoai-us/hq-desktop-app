@@ -1515,6 +1515,20 @@ export const liveSessionStore = {
   providerLoginStatus: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_status', { tool }),
   providerLoginCancel: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_cancel', { tool }),
   invalidatePreflight: () => { preflightCache = null; },
+  /** Install a sessions CLI in-app (npm, Node first if needed). Streams `install:progress`. */
+  installProvider: async (tool: SessionTool, onLine?: (line: string) => void) => {
+    const unlisten = await listen<{ line?: string }>('install:progress', (event) => {
+      const line = event.payload?.line?.trim();
+      if (line) onLine?.(line);
+    });
+    try {
+      return await invoke<string>('install_session_provider', { tool });
+    } finally {
+      unlisten();
+      preflightCache = null;
+      catalogCache.delete(tool);
+    }
+  },
   slashCommands,
   hqSkillCatalog,
   hqSkillMetadata,

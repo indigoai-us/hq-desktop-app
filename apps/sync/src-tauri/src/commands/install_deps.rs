@@ -3016,6 +3016,8 @@ async fn npm_install_global_managed(
                     "--@indigoai-us:registry=https://registry.npmjs.org/",
                     "--@tobilu:registry=https://registry.npmjs.org/",
                     "--@anthropic-ai:registry=https://registry.npmjs.org/",
+                    "--@openai:registry=https://registry.npmjs.org/",
+                    "--@xai-official:registry=https://registry.npmjs.org/",
                     spec,
                 ],
             )
@@ -3170,6 +3172,140 @@ pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
     #[cfg(windows)]
     {
         install_claude_code_windows(app).await
+    }
+}
+
+/// npm spec + bin name for a sessions provider. Unknown tools fail closed.
+pub fn session_provider_npm_spec(tool: &str) -> Result<(&'static str, &'static str), String> {
+    match tool {
+        "claude" => Ok(("@anthropic-ai/claude-code", "claude")),
+        "codex" => Ok(("@openai/codex", "codex")),
+        "grok" => Ok(("@xai-official/grok", "grok")),
+        _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
+    }
+}
+
+fn emit_session_install_line(app: &AppHandle, msg: &str) {
+    #[cfg(not(windows))]
+    emit_preflight_line(app, msg);
+    #[cfg(windows)]
+    emit_progress(app, msg);
+}
+
+async fn npm_bin_or_install_node(app: &AppHandle, tag: &str) -> Result<std::path::PathBuf, String> {
+    let lookup = || {
+        which::which_in(
+            "npm",
+            Some(extended_search_path()),
+            std::env::current_dir().unwrap_or_default(),
+        )
+    };
+    if let Ok(path) = lookup() {
+        return Ok(path);
+    }
+    emit_session_install_line(
+        app,
+        &format!("[{tag}] npm is not installed. Installing Node.js first so the agent CLI can be set up in-app."),
+    );
+    install_node(app.clone()).await?;
+    lookup().map_err(|_| {
+        format!("[{tag}] npm was not found after installing Node.js. Open Settings → Agents and try again.")
+    })
+}
+
+#[cfg(not(windows))]
+async fn install_npm_cli_macos(
+    app: AppHandle,
+    spec: &str,
+    bin: &str,
+    tag: &str,
+) -> Result<String, String> {
+    let prefix = npm_global_prefix_arg(&app, tag)?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), bin) {
+        emit_preflight_line(
+            &app,
+            &format!("[{tag}] removed an unusable leftover bin entry before reinstalling"),
+        );
+    }
+    let npm = npm_bin_or_install_node(&app, tag).await?;
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, spec, tag).await
+}
+
+#[cfg(windows)]
+async fn install_npm_cli_windows(
+    app: AppHandle,
+    spec: &str,
+    bin: &str,
+    tag: &str,
+) -> Result<String, String> {
+    emit_progress(&app, &format!("Installing {tag} via npm..."));
+    let _ = npm_bin_or_install_node(&app, tag).await?;
+    let result = run_streaming(
+        &app,
+        "npm",
+        &[
+            "install",
+            "-g",
+            "--prefix",
+            &managed_npm_prefix().to_string_lossy(),
+            spec,
+        ],
+    )
+    .await?;
+    append_user_path(&managed_npm_bin())?;
+    let _ = bin;
+    Ok(result)
+}
+
+/// Install the Codex CLI via `npm install -g @openai/codex`.
+#[tauri::command]
+pub async fn install_codex(app: AppHandle) -> Result<String, String> {
+    let (spec, bin) = session_provider_npm_spec("codex")?;
+    #[cfg(not(windows))]
+    {
+        install_npm_cli_macos(app, spec, bin, "codex").await
+    }
+    #[cfg(windows)]
+    {
+        install_npm_cli_windows(app, spec, bin, "codex").await
+    }
+}
+
+/// Install the Grok CLI via `npm install -g @xai-official/grok`.
+#[tauri::command]
+pub async fn install_grok(app: AppHandle) -> Result<String, String> {
+    let (spec, bin) = session_provider_npm_spec("grok")?;
+    #[cfg(not(windows))]
+    {
+        install_npm_cli_macos(app, spec, bin, "grok").await
+    }
+    #[cfg(windows)]
+    {
+        install_npm_cli_windows(app, spec, bin, "grok").await
+    }
+}
+
+/// In-app sessions setup: install the selected provider CLI without the user
+/// hunting binaries. Ensures npm/Node first, then the provider package.
+#[tauri::command]
+pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<String, String> {
+    match tool.as_str() {
+        "claude" => {
+            let _ = npm_bin_or_install_node(&app, "claude").await?;
+            install_claude_code(app).await
+        }
+        "codex" | "grok" => {
+            let (spec, bin) = session_provider_npm_spec(&tool)?;
+            #[cfg(not(windows))]
+            {
+                install_npm_cli_macos(app, spec, bin, &tool).await
+            }
+            #[cfg(windows)]
+            {
+                install_npm_cli_windows(app, spec, bin, &tool).await
+            }
+        }
+        _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
     }
 }
 
@@ -5604,6 +5740,23 @@ mod install_deps_planner_tests {
         );
 
         assert_eq!(result, Err("PATH persistence failed".to_string()));
+    }
+
+    #[test]
+    fn session_provider_npm_spec_covers_the_three_session_clis() {
+        assert_eq!(
+            session_provider_npm_spec("claude").unwrap(),
+            ("@anthropic-ai/claude-code", "claude")
+        );
+        assert_eq!(
+            session_provider_npm_spec("codex").unwrap(),
+            ("@openai/codex", "codex")
+        );
+        assert_eq!(
+            session_provider_npm_spec("grok").unwrap(),
+            ("@xai-official/grok", "grok")
+        );
+        assert!(session_provider_npm_spec("cursor").is_err());
     }
 
     #[test]

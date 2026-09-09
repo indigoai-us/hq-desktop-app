@@ -38,6 +38,7 @@
     resolveUseSystemBanners,
   } from '../../lib/notificationSurface';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
+  import AgentProvidersSettings from '../components/AgentProvidersSettings.svelte';
   import '../v4/tokens.css';
 
   // The secondary sidebar drives which section is in view; this page renders all
@@ -2392,6 +2393,8 @@
       </div>
     </section>
     </fieldset>
+
+    <AgentProvidersSettings />
 
     <section id="appearance" class="settings-section" data-testid="settings-appearance">
       <h2>Appearance</h2>

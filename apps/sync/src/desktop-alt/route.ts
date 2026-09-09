@@ -153,6 +153,7 @@ export type SettingsTab =
   | 'widget'
   | 'updates'
   | 'general'
+  | 'agents'
   | 'appearance'
   | 'meetings';
 
@@ -278,6 +279,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{
   { id: 'widget', label: 'Notifications widget' },
   { id: 'updates', label: 'Updates' },
   { id: 'general', label: 'General' },
+  { id: 'agents', label: 'Agents' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'meetings', label: 'Meetings' },
 ];

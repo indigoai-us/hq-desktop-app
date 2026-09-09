@@ -19,6 +19,8 @@
   let loginState = $state<ProviderLoginState['state']>('disconnected');
   let message = $state('');
   let busy = $state(false);
+  let installing = $state<SessionToolId | null>(null);
+  let installLine = $state('');
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const name = (tool: SessionToolId) => tool === 'claude' ? 'Claude Code' : tool === 'grok' ? 'Grok' : 'Codex';
@@ -38,7 +40,7 @@
     catch { if (token === generation) { loginState = 'error'; message = 'Could not check sign-in. Please try again.'; } }
   }
   async function start(tool: SessionToolId) {
-    if (busy || loginState === 'waiting') return;
+    if (busy || loginState === 'waiting' || installing) return;
     stopPolling(); active = tool; busy = true; message = '';
     const token = ++generation;
     try { apply(await liveSessionStore.providerLoginStart(tool), tool, token); }
@@ -54,12 +56,33 @@
     finally { busy = false; }
   }
   async function check() {
-    if (busy || loginState === 'waiting') return;
+    if (busy || loginState === 'waiting' || installing) return;
     active = selected; busy = true; message = '';
     const token = ++generation;
     try { await onrefresh?.(); apply(await liveSessionStore.providerLoginStatus(selected), selected, token); if (token === generation && loginState === 'disconnected') message = 'No sign-in found yet. Connect an agent to continue.'; }
     catch { if (token === generation) { loginState = 'error'; message = 'Could not check sign-in. Please try again.'; } }
     finally { if (token === generation) busy = false; }
+  }
+  async function install(tool: SessionToolId) {
+    if (busy || installing || loginState === 'waiting') return;
+    stopPolling();
+    installing = tool;
+    installLine = `Installing ${name(tool)}…`;
+    message = '';
+    try {
+      await liveSessionStore.installProvider(tool, (line) => { installLine = line; });
+      await onrefresh?.();
+      installLine = `${name(tool)} is installed. Connect it to sign in.`;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      loginState = 'error';
+      message = detail.trim() || `Could not install ${name(tool)}. Check your network and try again.`;
+      if (!/`(claude|codex|grok) login`/.test(message)) {
+        message += ` If this keeps failing, run \`${tool === 'claude' ? 'claude' : tool} login\` in a terminal after the CLI is on PATH.`;
+      }
+    } finally {
+      installing = null;
+    }
   }
   onDestroy(() => { ++generation; stopPolling(); });
 </script>
@@ -74,15 +97,20 @@
       <div class="provider">
         <div class="identity"><strong>{name(tool)}</strong><span>{connected(tool) ? 'Connected on this device' : available(tool) ? 'Not connected on this device' : 'Not installed on this device'}</span></div>
         {#if connected(tool)}
-          <button disabled={busy || loginState === 'waiting'} onclick={() => onchoose(tool)}>Use {name(tool)}</button>
+          <button disabled={busy || loginState === 'waiting' || Boolean(installing)} onclick={() => onchoose(tool)}>Use {name(tool)}</button>
         {:else if available(tool)}
-          <button class:primary={tool === selected} disabled={busy || loginState === 'waiting'} onclick={() => void start(tool)}>{busy && active === tool ? 'Opening sign-in…' : `Connect ${connectLabel(tool)}`}</button>
+          <button class:primary={tool === selected} disabled={busy || loginState === 'waiting' || Boolean(installing)} onclick={() => void start(tool)}>{busy && active === tool ? 'Opening sign-in…' : `Connect ${connectLabel(tool)}`}</button>
         {:else}
-          <span class="install-note">Install {name(tool)}, then check again.</span>
+          <button class:primary={tool === selected} disabled={busy || loginState === 'waiting' || Boolean(installing)} onclick={() => void install(tool)}>{installing === tool ? 'Installing…' : `Install ${connectLabel(tool)}`}</button>
         {/if}
       </div>
     {/each}
   </div>
+  {#if installing || installLine}
+    <div class="flow" aria-live="polite">
+      <p>{installLine || `Installing ${name(installing ?? selected)}…`}</p>
+    </div>
+  {/if}
   {#if active && (loginState === 'waiting' || loginState === 'error' || message)}
     <div class="flow" aria-live="polite">
       {#if loginState === 'waiting'}
@@ -97,7 +125,7 @@
       {/if}
     </div>
   {/if}
-  <div class="foot"><button class="quiet" disabled={busy || loginState === 'waiting'} onclick={() => void check()}>{busy ? 'Checking…' : 'Already signed in? Check again'}</button><span>HQ sign-in is separate. Your provider’s plan and limits apply.</span></div>
+  <div class="foot"><button class="quiet" disabled={busy || loginState === 'waiting' || Boolean(installing)} onclick={() => void check()}>{busy ? 'Checking…' : 'Already signed in? Check again'}</button><span>HQ sign-in is separate. Your provider’s plan and limits apply. Manage agents in Settings → Agents.</span></div>
 </section>
 
 <style>
@@ -107,7 +135,7 @@
   p{font-size:13px;line-height:1.6;color:var(--v4-text-2);margin:0 0 18px}
   .providers{border-top:1px solid var(--v4-hairline);margin-top:24px}
   .provider{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:18px 0;border-bottom:1px solid var(--v4-hairline)}
-  .identity{display:grid;gap:6px}.identity strong{font-size:15px;font-weight:600}.identity span,.install-note{font-size:12px;color:var(--v4-text-3)}
+  .identity{display:grid;gap:6px}.identity strong{font-size:15px;font-weight:600}.identity span{font-size:12px;color:var(--v4-text-3)}
   button{font:inherit;font-size:13px;min-height:40px;padding:8px 14px;border:1px solid var(--v4-hairline);border-radius:8px;background:var(--v4-control-bg);color:var(--v4-text-1);cursor:pointer}
   button:hover:not(:disabled){background:var(--v4-active-row)}button:focus-visible{outline:2px solid var(--v4-text-2);outline-offset:3px}button:disabled{opacity:.5;cursor:default}
   .primary{background:var(--v4-text-1);color:var(--v4-bg,var(--v4-raised));border-color:transparent}.primary:hover:not(:disabled){opacity:.85;background:var(--v4-text-1)}

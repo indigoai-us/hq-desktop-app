@@ -1,4 +1,16 @@
 //! Vendor-owned browser login. HQ never parses OAuth URLs or handles credentials.
+//!
+//! Auth path per sessions provider (US-015):
+//! - Claude Code: CLI on PATH (`claude`). Login is `claude auth login` / `claude
+//!   login`; status is `claude auth status --json` (`loggedIn`). macOS may also
+//!   keep the token in Keychain (`Claude Code-credentials`). HQ does not copy
+//!   token files.
+//! - Codex: CLI on PATH or the ChatGPT.app bundled binary. Login is
+//!   `codex login`; status is `codex login status`.
+//! - Grok: CLI on PATH (`~/.grok/bin/grok` included). Login is `grok login`;
+//!   status is `grok models` ("You are logged in with grok.com").
+//! In-app setup installs the CLI via npm (`install_session_provider`) then
+//! opens this vendor browser login. HQ Cognito is a separate sign-in.
 use hq_desktop_core::{agent_session::types::SessionTool, paths};
 use serde::Serialize;
 use std::{
