@@ -166,6 +166,53 @@ export interface MissionControlSnapshot {
  *  in lock-step with the Rust `EVENT_SESSIONS_UPDATED` constant. */
 export const SESSIONS_UPDATED_EVENT = 'sessions:updated';
 
+/** localStorage key for cache-first Mission Control / session-strip paint. */
+export const SESSIONS_CACHE_KEY = 'hq.mission-control.sessions-cache';
+
+export interface SessionsCachePayload {
+  snapshot: MissionControlSnapshot;
+  cachedAt: number;
+}
+
+export function loadSessionsCache(
+  storage: Pick<Storage, 'getItem'> | null | undefined,
+): SessionsCachePayload | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(SESSIONS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SessionsCachePayload;
+    if (!parsed?.snapshot || !Array.isArray(parsed.snapshot.sessions)) return null;
+    if (!Array.isArray(parsed.snapshot.history)) parsed.snapshot.history = [];
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function saveSessionsCache(
+  payload: SessionsCachePayload,
+  storage: Pick<Storage, 'setItem'> | null | undefined,
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(SESSIONS_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // best-effort
+  }
+}
+
+export function clearSessionsCache(
+  storage: Pick<Storage, 'removeItem'> | null | undefined,
+): void {
+  if (!storage) return;
+  try {
+    storage.removeItem(SESSIONS_CACHE_KEY);
+  } catch {
+    // best-effort
+  }
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Best-effort "kind" derivation (US-007)
 // ───────────────────────────────────────────────────────────────────────────

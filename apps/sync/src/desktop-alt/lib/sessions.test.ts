@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   SESSION_KINDS,
   SESSION_STATUSES,
+  SESSIONS_CACHE_KEY,
+  clearSessionsCache,
   deriveEventTool,
+  loadSessionsCache,
+  saveSessionsCache,
   deriveSessionKind,
   eventNodeTone,
   filterHistory,
@@ -526,5 +530,27 @@ describe('resolveOutpostCard (US-011 box-card up/down states)', () => {
     );
     expect(card.runtimeLabel).toBe('Not reported');
     expect(card.metaLabel).toBe('Location not reported');
+  });
+});
+
+describe('sessions cache', () => {
+  it('round-trips a snapshot through localStorage', () => {
+    const data = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => (data.has(k) ? data.get(k)! : null),
+      setItem: (k: string, v: string) => void data.set(k, v),
+      removeItem: (k: string) => void data.delete(k),
+    };
+    const snap = {
+      sessions: [session()],
+      history: [] as HistoryEvent[],
+      outpost: null,
+    };
+    saveSessionsCache({ snapshot: snap, cachedAt: 1 }, storage);
+    expect(data.has(SESSIONS_CACHE_KEY)).toBe(true);
+    const loaded = loadSessionsCache(storage);
+    expect(loaded?.snapshot.sessions[0]?.id).toBe(snap.sessions[0].id);
+    clearSessionsCache(storage);
+    expect(loadSessionsCache(storage)).toBeNull();
   });
 });
