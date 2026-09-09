@@ -92,3 +92,16 @@ it('bounds enrichment concurrency without delaying local company bindings', asyn
   projectLinksStore.stop();
   finishes.forEach((finish) => finish());
 });
+
+it('holds initial loading until enriched links settle and bounds a hung boot', async () => {
+  vi.useFakeTimers();
+  try {
+    invoke.mockImplementation((_command, args) => args.localOnly ? Promise.resolve([local]) : new Promise(() => {}));
+    projectLinksStore.start(['indigo']);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(projectLinksStore.loading).toBe(true);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(projectLinksStore.loading).toBe(false);
+    expect(projectLinksStore.initialError).toBe(true);
+  } finally { vi.useRealTimers(); }
+});

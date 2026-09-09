@@ -1050,6 +1050,7 @@ describe('US-103 embedded desktop window', () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
+      await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-show-history"]')).not.toBeNull());
       (host.querySelector('[data-testid="chat-show-history"]') as HTMLButtonElement).click();
       await flush();
       setInput('chat-history-search', 'known');

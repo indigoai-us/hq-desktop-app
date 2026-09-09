@@ -490,6 +490,8 @@
       }
     >;
     /** Host decoration for sidebar rows: badge, hover card, and actions. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
   }
 
@@ -541,6 +543,8 @@
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     onShellReady,
     extraPages,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
     rowExtras = null,
   }: Props = $props();
 
@@ -4105,6 +4109,8 @@
           {bootTimeoutMs}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
+          {rowExtrasLoading}
+          {rowExtrasError}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
         />
         {/key}

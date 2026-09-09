@@ -167,6 +167,8 @@
       }
     >;
     /** Native host decorations for project-channel rows. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
   };
 
@@ -198,6 +200,8 @@
     onembeddednavigationready,
     onactivethreadchange,
     extraPages,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
     rowExtras = null,
   }: WorkShellProps = $props();
 
@@ -722,6 +726,8 @@
       {refreshAppVersion}
       {onactivethreadchange}
       {extraPages}
+      {rowExtrasLoading}
+      {rowExtrasError}
       {rowExtras}
     />
   {/key}

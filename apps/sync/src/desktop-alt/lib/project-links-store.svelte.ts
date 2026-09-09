@@ -25,6 +25,10 @@ const PHASE_EVENT = 'agent-session:phase';
 
 export const LINKS_REFRESH_MS = 30_000;
 
+let settledCompanies = $state<string[]>([]);
+let bootTimer: ReturnType<typeof setTimeout> | null = null;
+let watchedCompanies = $state<string[]>([]);
+let failedCompanies = $state<string[]>([]);
 let byCompany = $state<Record<string, ProjectLink[]>>({});
 let watched: string[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -85,8 +89,13 @@ function enrich(company: string, mine: number): void {
     if (mine !== generation) return;
     const revision = revisions.get(company);
     try {
-      const links = await loadSessionProjectLinks(company);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const links = await Promise.race([
+        loadSessionProjectLinks(company),
+        new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('Project links timed out')), 10000); }),
+      ]).finally(() => clearTimeout(timeout));
       if (mine !== generation || !watched.includes(company)) return;
+      failedCompanies = failedCompanies.filter(item => item !== company);
       const current = byCompany[company] ?? [];
       // An intervening phase refresh owns membership/status. A slow network
       // response can enrich labels but cannot roll that newer state back.
@@ -100,8 +109,10 @@ function enrich(company: string, mine: number): void {
       ] };
       refreshShared(company, byCompany[company], mine);
     } catch {
+      if (mine === generation && !failedCompanies.includes(company)) failedCompanies = [...failedCompanies, company];
       // Local links remain usable offline.
     } finally {
+      if (mine === generation && !settledCompanies.includes(company)) settledCompanies = [...settledCompanies, company];
       if (remoteRequests.get(company) === request) remoteRequests.delete(company);
     }
   });
@@ -117,12 +128,17 @@ async function refresh(): Promise<void> {
       const request = {};
       localRequests.set(company, request);
       try {
-        const links = await loadSessionProjectLinks(company, true);
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const links = await Promise.race([
+          loadSessionProjectLinks(company, true),
+          new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('Project sessions timed out')), 10000); }),
+        ]).finally(() => clearTimeout(timeout));
         if (mine !== generation || !watched.includes(company)) return;
         revisions.set(company, (revisions.get(company) ?? 0) + 1);
         const previous = byCompany[company] ?? [];
         byCompany = { ...byCompany, [company]: mergeLocalProjectLinks(links, previous) };
       } catch {
+        if (mine === generation && !failedCompanies.includes(company)) failedCompanies = [...failedCompanies, company];
         // Keep the last known links: the flag may be off, or hq-pro away.
       } finally {
         if (localRequests.get(company) === request) localRequests.delete(company);
@@ -166,6 +182,15 @@ function start(companies: string[]): void {
   const next = Array.from(new Set(companies.map((c) => c.trim()).filter(Boolean)));
   const changed = next.length !== watched.length || next.some((c) => !watched.includes(c));
   watched = next;
+  watchedCompanies = next;
+  if (changed || timer === null) {
+    if (bootTimer !== null) clearTimeout(bootTimer);
+    bootTimer = setTimeout(() => {
+      const missing = watchedCompanies.filter(company => !settledCompanies.includes(company));
+      failedCompanies = [...new Set([...failedCompanies, ...missing])];
+      settledCompanies = [...new Set([...settledCompanies, ...missing])];
+    }, 10000);
+  }
   if (timer === null) {
     timer = setInterval(scheduleRefresh, LINKS_REFRESH_MS);
     window.addEventListener(PROJECT_CHANNEL_LINKED_EVENT, onLinked);
@@ -177,9 +202,14 @@ function start(companies: string[]): void {
 }
 
 function stop(): void {
+  if (bootTimer !== null) clearTimeout(bootTimer);
+  bootTimer = null;
   if (timer !== null) clearInterval(timer);
   timer = null;
   watched = [];
+  watchedCompanies = [];
+  settledCompanies = [];
+  failedCompanies = [];
   generation += 1;
   localRequests.clear();
   remoteRequests.clear();
@@ -193,6 +223,8 @@ function stop(): void {
 }
 
 export const projectLinksStore = {
+  get loading(): boolean { return watchedCompanies.some(company => !settledCompanies.includes(company)); },
+  get initialError(): boolean { return failedCompanies.some(company => watchedCompanies.includes(company)); },
   /** Links per company slug — a new object on every change (derive off it). */
   get byCompany(): Record<string, ProjectLink[]> {
     return byCompany;

@@ -215,6 +215,8 @@
      */
     projectHasPresence?: (row: ConversationRow) => boolean;
     /** Host decoration per row: badge, hover card, context-menu actions. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
   }
 
@@ -247,6 +249,8 @@
     offscreen = false,
     onShellReady,
     projectHasPresence = () => false,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
     rowExtras = null,
   }: Props = $props();
 
@@ -451,7 +455,7 @@
   let loadError = $state<string | null>(null);
   /** First directory/contacts attempt has settled or timed out. */
   let bootAttempted = $state(false);
-  let firstRefreshSettled = false;
+  let firstRefreshSettled = $state(false);
   let reportedShellReady = false;
   let scopeMenuEl: HTMLDivElement | null = $state(null);
   let filterWrapEl: HTMLDivElement | null = $state(null);
@@ -1332,7 +1336,7 @@
   }
 
   onMount(() => {
-    // Cache already painted; one cursor delta in the background. Safety
+    // Reconcile cached rows before revealing the complete list. Safety
     // polling stays off until we know MQTT is down.
     maybeReportShellReady();
     void refreshLists();
@@ -2076,7 +2080,16 @@
     </div>
   </header>
 
-  <div class="chat-scroll" data-testid="chat-conversation-list">
+  <div class="chat-scroll" data-testid="chat-conversation-list" aria-busy={!firstRefreshSettled || rowExtrasLoading}>
+    {#if !firstRefreshSettled || rowExtrasLoading}
+      <div class="sidebar-skeleton" role="status" aria-label="Loading conversations and sessions" data-testid="sidebar-loading">
+        <span class="sr-only">Loading conversations and sessions…</span>
+        {#each Array(10) as _, index}
+          <div class="skeleton-row" aria-hidden="true"><span class="skeleton-icon"></span><span class="skeleton-line" style:width={`${45 + (index % 3) * 15}%`}></span></div>
+        {/each}
+      </div>
+    {:else}
+    {#if rowExtrasError}<div role="status" class="chat-empty">Some project sessions couldn’t load. Retrying…</div>{/if}
     {#if pendingRequestCount > 0}
       <button
         type="button"
@@ -2188,6 +2201,7 @@
       <div class="chat-empty" role="status">Loading…</div>
     {:else if filteredRows.length === 0}
       <div class="chat-empty">No conversations</div>
+    {/if}
     {/if}
   </div>
 
@@ -3049,6 +3063,10 @@
     position: relative;
   }
 
+  .sidebar-skeleton { padding: 12px 8px; }
+  .skeleton-row { display: flex; align-items: center; gap: 10px; height: 36px; }
+  .skeleton-icon { width: 20px; height: 20px; border-radius: 5px; background: var(--line); }
+  .skeleton-line { height: 10px; border-radius: 4px; background: var(--line); }
   .chat-scroll {
     display: flex;
     flex: 1 1 auto;
