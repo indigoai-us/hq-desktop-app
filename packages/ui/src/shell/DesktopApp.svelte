@@ -4851,6 +4851,7 @@
                   activeRootEventId={openReplyRootId}
                   loading={(timelineHydrating || projectActivityLoading) &&
                     timelineWithActivity.length === 0}
+                  landAt={isSetupChannel(selectedRow.channelId) ? "top" : "bottom"}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
                     : isCompanyChannel
