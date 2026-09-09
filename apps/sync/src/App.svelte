@@ -41,6 +41,7 @@
     surfaceNativeNotificationRetry,
     type NativeNotificationRecovery,
   } from './lib/nativeNotificationRecovery';
+  import { executeSessionNotificationAction } from './lib/sessionNotificationAction';
   import {
     applyBrandToDocument,
     cacheLogoAssets,
@@ -1167,6 +1168,12 @@
         await invoke('show_main_window');
         return;
       }
+    } else if (kind === 'session') {
+      // An agent session parked on the human — land on that session's page.
+      await executeSessionNotificationAction(action, data, (command, args) =>
+        invoke(command, args),
+      );
+      return;
     } else if (kind === 'meeting') {
       const windowId = typeof data?.windowId === 'string' ? data.windowId : '';
       const meetingId = typeof data?.meetingId === 'string' ? data.meetingId : '';
@@ -2308,6 +2315,11 @@
     // re-prompt is due it swaps in on the next tick.
     if (authenticated && !isOnboardingState(lifecycleState)) {
       void checkConsentReprompt();
+    }
+    // Already-onboarded machines never re-enter the mesh onboarding stage, so
+    // ensure the Work Mesh Live daemon on SteadyState launch (fail-quiet).
+    if (lifecycleState === 'SteadyState') {
+      void invoke('ensure_work_mesh_daemon').catch(() => {});
     }
   }
 

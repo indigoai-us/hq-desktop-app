@@ -24,10 +24,13 @@
     reportInstallFailed,
     toSelfIdentity,
     workspacesFromMembershipRows,
+    type ConversationRow,
+    type EmbeddedNavigationTarget,
+    type RowExtrasResolver,
     type SelfIdentity,
     type Workspace,
   } from '@hq/ui';
-  import { flushSync, onMount, tick } from 'svelte';
+  import { flushSync, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
@@ -39,6 +42,24 @@
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
   import { startDesktopMeshPresence } from './mesh-presence';
+  import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
+  import {
+    encodeHistorySessionParam,
+    encodeLiveSessionParam,
+    parseSessionsParam,
+  } from './pages/sessions-route-param';
+  import { liveSessionStore } from './lib/live-session-store.svelte';
+  import { configureSessionStarterCache } from '../components/sessions/session-starter';
+  import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
+  import { projectLinksStore } from './lib/project-links-store.svelte';
+  import {
+    newSessionParam,
+    historySessionParam,
+    rowExtrasFor,
+    PROJECT_CHANNEL_LINKED_EVENT,
+    type ProjectChannelLinked,
+    type ProjectLink,
+  } from './lib/session-project-links';
   import {
     createNativeWorkShellCapabilities,
     type NativeInvokeFn,
@@ -99,6 +120,144 @@
   let revalidationPending = false;
   let detachNavigation: (() => void) | null = null;
   let updateWakeSeq = $state(0);
+  // Sessions are generally available, independent of legacy machine preferences.
+  type HostExtraPages = NonNullable<ComponentProps<typeof WorkShell>['extraPages']>;
+  const extraPages = $derived<HostExtraPages>({
+    sessions: {
+      label: 'Sessions',
+      detail: 'Run a Codex or Claude session inside the app',
+      // A unique draft route also resets an already-open empty composer.
+      // Global creation is standalone; project actions bind explicitly.
+      createAction: { label: 'New session', param: () => `new?draft=${crypto.randomUUID()}` },
+      component: SessionsExtraPage,
+    },
+  });
+
+  /**
+   * Project channels ↔ sessions. The shared sidebar paints a badge, nested
+   * session rows and a "New session" action on project-channel rows through the
+   * generic `rowExtras` seam; what those mean comes from this host's
+   * `session_project_links` store, keyed by company slug. A new resolver on
+   * every store change is what makes the rows repaint.
+   */
+  const companySlugByUid = $derived(
+    new Map(
+      (companies ?? [])
+        .filter((company) => company.cloudUid)
+        .map((company) => [company.cloudUid as string, company.slug]),
+    ),
+  );
+
+  function companyOfLink(
+    link: ProjectLink,
+    byCompany: Record<string, ProjectLink[]>,
+  ): string | null {
+    return Object.entries(byCompany).find(([, links]) => links.includes(link))?.[0] ?? null;
+  }
+
+  async function stampSessionsExtra(
+    target: EmbeddedNavigationTarget,
+  ): Promise<EmbeddedNavigationTarget> {
+    if (
+      target.kind !== 'extra' ||
+      target.page !== 'sessions' ||
+      target.companyUid ||
+      !target.param
+    ) {
+      return target;
+    }
+    const route = parseSessionsParam(target.param);
+    let company =
+      (route.kind === 'session' ? route.company : null) ||
+      (route.kind === 'history' ? route.company : null) ||
+      (route.kind === 'new' ? route.company : null) ||
+      (route.kind === 'session' || route.kind === 'history'
+        ? liveSessionStore.companyOf(route.sessionId)
+        : null);
+    if (
+      !company &&
+      (route.kind === 'session' || route.kind === 'history')
+    ) {
+      await liveSessionStore.refreshList();
+      company = liveSessionStore.companyOf(route.sessionId);
+    }
+    if (!company) return target;
+    if (route.kind === 'session') {
+      return {
+        ...target,
+        companyUid: company,
+        param: encodeLiveSessionParam(route.sessionId, company),
+      };
+    }
+    if (route.kind === 'history') {
+      return {
+        ...target,
+        companyUid: company,
+        param: encodeHistorySessionParam({
+          id: route.sessionId,
+          tool: route.tool,
+          company,
+          project: route.project,
+          title: route.title,
+          startedAt: route.startedAt,
+        }),
+      };
+    }
+    return { ...target, companyUid: company };
+  }
+
+  const rowExtras = $derived.by<RowExtrasResolver | null>(() => {
+    if (lifecycle !== 'ready') return null;
+    const byCompany = projectLinksStore.byCompany;
+    const slugByUid = companySlugByUid;
+    return (row: ConversationRow, destination) => {
+      const route = destination?.page === 'sessions' ? parseSessionsParam(destination.param) : null;
+      const selectedSessionId = route?.kind === 'session' || route?.kind === 'history' || route?.kind === 'shared' ? route.sessionId : null;
+      const slug = row.companyUid ? slugByUid.get(row.companyUid) : undefined;
+      const links = slug ? (byCompany[slug] ?? []) : Object.values(byCompany).flat();
+      return rowExtrasFor(
+        row,
+        links,
+        null,
+        (link) => {
+          const company = slug ?? companyOfLink(link, byCompany);
+          if (!company) return;
+          navigation.navigate({
+            kind: 'extra',
+            page: 'sessions',
+            param: newSessionParam(company, link.project, link.channelId),
+            companyUid: row.companyUid ?? company,
+          });
+        },
+        (_link, session) => {
+          const company = slug ?? companyOfLink(_link, byCompany);
+          if (!company) return;
+          navigation.navigate({
+            kind: 'extra',
+            page: 'sessions',
+            param: historySessionParam(company, _link.project, session),
+            companyUid: row.companyUid ?? company,
+          });
+        },
+        selectedSessionId,
+        (link, visible) => {
+          const company = slug ?? companyOfLink(link, byCompany);
+          if (company) projectLinksStore.watchSharedChannel(company, link, visible);
+        },
+      );
+    };
+  });
+
+  $effect(() => {
+    if (lifecycle !== 'ready') return;
+    const slugs = (companies ?? [])
+      .filter((company) => company.kind === 'company' && company.slug !== 'personal')
+      .map((company) => company.slug);
+    // untrack: start() reads/writes store runes. Tracking those from this
+    // effect re-ran start → stop → start until effect_update_depth_exceeded.
+    untrack(() => projectLinksStore.start(slugs));
+    return () => projectLinksStore.stop();
+  });
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -164,6 +323,8 @@
     }
     authGeneration = next.generation;
     authAccountId = next.accountId;
+    configureSessionStarterCache(next.status === 'active' ? next.accountId : null);
+    setSessionComposerDraftAccount(next.status === 'active' ? next.accountId : null);
     hydration += 1;
     detachNavigation?.();
     detachNavigation = null;
@@ -173,6 +334,7 @@
     workspaceError = null;
     identityError = null;
     signOutError = null;
+    navigation.clear();
 
     if (next.status === 'credentials_absent') {
       signedOutReason = 'signed-out';
@@ -331,6 +493,8 @@
       navigation.clear();
       authGeneration += 1;
       authAccountId = null;
+      configureSessionStarterCache(null);
+      setSessionComposerDraftAccount(null);
       self = null;
       companies = null;
       capabilities = null;
@@ -442,6 +606,25 @@
             navigation,
           );
         }
+        const setupTarget = await invokeFn('take_pending_setup_target');
+        if (
+          !cancelled &&
+          setupTarget &&
+          typeof setupTarget === 'object' &&
+          typeof (setupTarget as { companyUid?: string }).companyUid === 'string' &&
+          (setupTarget as { companyUid: string }).companyUid.trim()
+        ) {
+          const companyUid = (setupTarget as { companyUid: string }).companyUid.trim();
+          const checkout =
+            typeof (setupTarget as { checkout?: string }).checkout === 'string'
+              ? (setupTarget as { checkout: string }).checkout
+              : 'done';
+          navigation.navigate({
+            kind: 'setup-checkout',
+            companyUid,
+            checkout,
+          });
+        }
         const meetingId = await invokeFn('meetings_take_pending_focus');
         const pendingFocusIsCurrent =
           latestLiveNavigation === null ||
@@ -461,6 +644,20 @@
       void reveal();
       if (!cancelled) void restoreInitialNavigation();
     });
+
+    const unlistenSetupPromise = listen<{
+      companyUid?: string;
+      checkout?: string;
+    }>('messages:open-setup', (event) => {
+      const companyUid = event.payload?.companyUid?.trim();
+      if (!companyUid) return;
+      latestLiveNavigation = 'other';
+      navigation.navigate({
+        kind: 'setup-checkout',
+        companyUid,
+        checkout: event.payload?.checkout ?? 'done',
+      });
+    }).catch(() => () => {});
 
     const unlistenPromise = listen<string>('desktop:navigate', (event) => {
       const target = applyDesktopAltRoute(event.payload, navigation);
@@ -563,6 +760,24 @@
     };
     window.addEventListener('keydown', onKeyDown);
 
+    const onProjectChannelLinked = (event: Event) => {
+      if (cancelled) return;
+      const detail = (event as CustomEvent<ProjectChannelLinked>).detail;
+      const companyUid =
+        (companies ?? []).find((company) => company.slug === detail?.company)?.cloudUid ?? null;
+      if (detail?.channelId && detail.channelName) {
+        wakes.emit?.('channel:updated', {
+          channelId: detail.channelId,
+          name: detail.channelName,
+          scope: 'company',
+          companyUid,
+          membership: 'joined',
+        });
+      }
+      wakes.emit?.('channel:unread-changed', undefined);
+    };
+    window.addEventListener(PROJECT_CHANNEL_LINKED_EVENT, onProjectChannelLinked);
+
     const revalidateOnRecovery = () => {
       if (!cancelled) requestRevalidation({ automatic: true });
     };
@@ -580,6 +795,7 @@
       hydration += 1;
       detachNavigation?.();
       detachNavigation = null;
+      void unlistenSetupPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());
@@ -596,6 +812,7 @@
       void unlistenForcePromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener(PROJECT_CHANNEL_LINKED_EVENT, onProjectChannelLinked);
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
       window.removeEventListener('pageshow', revalidateOnRecovery);
@@ -673,14 +890,22 @@
         onopenurl={openBrowserUrl}
         {notificationWakeSeq}
         onactivethreadchange={setActiveReplyThread}
+        {extraPages}
+        {rowExtras}
+        rowExtrasLoading={(companies === null && !workspaceError) || projectLinksStore.loading}
+        rowExtrasError={Boolean(workspaceError) || projectLinksStore.initialError}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');
         }}
         onembeddednavigationready={() => {
           detachNavigation?.();
+          // Pending-route bridge only: the shared shell converts `target`
+          // through destinationFromEmbeddedTarget and commits via navigate().
           const detach = navigation.attach((target) => {
-            dispatchEmbeddedNavigation(target);
+            void stampSessionsExtra(target).then((next) => {
+              dispatchEmbeddedNavigation(next);
+            });
           });
           detachNavigation = detach;
           return () => {
@@ -700,6 +925,10 @@
     width: 100%;
     height: 100%;
     margin: 0;
+    /* The document owns WebKit's viewport scrolling. Clipping only the
+       embedded shell leaves native rubber-banding free to move all chrome. */
+    overflow: hidden;
+    overscroll-behavior: none;
   }
 
   .hq-work-embedded {

@@ -1,4 +1,4 @@
-// Synthetic pinned "#setup" support channel for the live desktop shell.
+// Synthetic pinned "#welcome" support channel for the live desktop shell.
 //
 // `setup` is the wire `channelId` the backend / Slack support bridge routes
 // on — not a server-listed HQ channel until one exists. The sidebar injects
@@ -16,19 +16,32 @@ import type { Channel } from "./channels.js";
 /** Wire id the backend / Slack support bridge routes on. */
 export const SETUP_CHANNEL_ID = "setup";
 
+/**
+ * What the user sees in the rail. Renamed from "setup" to "welcome" (2026-09):
+ * "#setup" read like an unfinished chore rather than the place the HQ team says
+ * hello.
+ *
+ * DISPLAY ONLY — `SETUP_CHANNEL_ID` stays "setup" because it is the wire id the
+ * backend routes on and the key under which every user's history is stored. The
+ * server publishes the same rename (`name: "welcome"`, legacy slug "setup"), so
+ * a client on THIS version and a client on an older one address the same
+ * conversation and nobody can end up holding two.
+ */
+export const SETUP_CHANNEL_DISPLAY_NAME = "welcome";
+
 /** Sidebar row id for the synthetic channel (`ch:<channelId>`). */
 export const SETUP_ROW_ID = `ch:${SETUP_CHANNEL_ID}`;
 
 /** Synthetic client-side pinned channel. */
 export const SETUP_CHANNEL: Channel = {
   channelId: SETUP_CHANNEL_ID,
-  name: "setup",
+  name: SETUP_CHANNEL_DISPLAY_NAME,
   scope: "personal",
   membership: "joined",
 };
 
 /**
- * CONFIG — launch actions on the #setup pane. Adjust prompts here; keep
+ * CONFIG — launch actions on the #welcome pane. Adjust prompts here; keep
  * `grok.tool` inside the `launch_cli_in_terminal` allowlist.
  *
  * Terminal tools are interpolated into a shell by the desktop host
@@ -133,7 +146,7 @@ export const SETUP_URLS = {
   docs: "https://docs.getindigo.ai",
 } as const;
 
-/** Hero copy rendered over the wallpaper at the top of #setup. */
+/** Hero copy rendered over the wallpaper at the top of #welcome. */
 export const SETUP_HERO = {
   eyebrow: "Welcome to HQ",
   title: "Your team's operating system for AI.",
@@ -247,7 +260,7 @@ export interface WithSetupChannelOptions {
   /**
    * Epoch-ms activity stamp for the SYNTHETIC row. The constant carries no
    * activity (it is never "unread"); while pinned that is irrelevant, but an
-   * UNPINNED #setup with zero activity would sink into the collapsed
+   * UNPINNED #welcome with zero activity would sink into the collapsed
    * LAST WEEK bucket. Callers pass e.g. the start of today so it renders at
    * the bottom of TODAY instead. Ignored when a real server row wins.
    */
@@ -255,7 +268,7 @@ export interface WithSetupChannelOptions {
 }
 
 /**
- * Prepend the synthetic #setup channel to a channels list, deduped against a
+ * Prepend the synthetic #welcome channel to a channels list, deduped against a
  * real server-listed `setup` channel (the real row wins — it carries server
  * unread/activity/membership). Pure; never mutates the input.
  */
@@ -275,7 +288,7 @@ export function withSetupChannel(
 
 export interface WithSetupPinOptions {
   /**
-   * The user unpinned #setup. Persisted per tenant (see
+   * The user unpinned #welcome. Persisted per tenant (see
    * `loadSetupPinDismissed`); when true the setup row id is NOT re-added and
    * is stripped if present, so the channel lists like any other row.
    */
@@ -283,7 +296,7 @@ export interface WithSetupPinOptions {
 }
 
 /**
- * Ensure the #setup row id is part of the pinned-id set so the rail renders
+ * Ensure the #welcome row id is part of the pinned-id set so the rail renders
  * it in the PINNED section at the top — the default for a fresh profile.
  * Once the user unpins it (`dismissed`), it stays out of the set until they
  * pin it again. Pure; never mutates the input.

@@ -585,6 +585,37 @@ export interface MessagingApi {
   }): AdapterPromise<Json>;
   /** GET /v1/notify/channels/{id}/members — owner/creator + invitees. */
   listChannelMembers(channelId: string): AdapterPromise<Json>;
+  /**
+   * GET /v1/agent-telescope/agents/{agentUid}/channels/{channelId}/tasks —
+   * tasks an agent spawned from messages in ONE room (trace-backed; terminal
+   * states retained). Optional: a host without the route omits it and the
+   * chat falls back to the agent-wide view.
+   */
+  listChannelAgentTasks?(agentUid: string, channelId: string): AdapterPromise<Json>;
+  /** GET /v1/agent-telescope/agents/{agentUid}/tasks — heartbeat task view. */
+  listAgentTasks?(agentUid: string): AdapterPromise<Json>;
+  /**
+   * POST /v1/notify/channels/{id}/cards/{cardId}/actions — desktop
+   * `run_card_action`. Client-generated idempotencyKey; 409 replay is success.
+   */
+  runCardAction(args: {
+    channelId: string;
+    cardId: string;
+    actionId: string;
+    values: Record<string, string>;
+    idempotencyKey?: string;
+  }): AdapterPromise<Json>;
+  /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
+  getCompanyTab?(companyUid: string, tab: string): AdapterPromise<Json>;
+  /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
+  runCompanyTabAction?(args: {
+    companyUid: string;
+    tab: string;
+    cardId: string;
+    actionId: string;
+    values: Record<string, string>;
+    idempotencyKey?: string;
+  }): AdapterPromise<Json>;
   sendChannelMessage(
     channelId: string,
     body: string,
@@ -976,8 +1007,17 @@ export interface PackagesApi {
 }
 
 /** Desktop-only group (capability: canSpawnSessions). */
+export type SessionProviderId = "claude" | "codex" | "grok";
+
 export interface SessionsApi {
   listAgentSessions(): AdapterPromise<Json[]>;
+  /** Desktop in-app sessions: CLI installed + signed-in flags. */
+  preflight?(): AdapterPromise<Json>;
+  slashCommands?(tool: SessionProviderId): AdapterPromise<Json>;
+  installProvider?(tool: SessionProviderId): AdapterPromise<string>;
+  loginStart?(tool: SessionProviderId): AdapterPromise<Json>;
+  loginStatus?(tool: SessionProviderId): AdapterPromise<Json>;
+  loginCancel?(tool: SessionProviderId): AdapterPromise<Json>;
 }
 
 /** Local per-platform settings. */
@@ -1021,6 +1061,9 @@ export interface MigrateSessionRequest {
  * so both hosts share the @hq/core mapper.
  */
 export interface WorkMeshApi {
+  createProjectStory?(projectId: string, companyUid: string, story: {
+    id: string; title: string; description: string; status: string; passes: boolean;
+  }): AdapterPromise<Json>;
   readLocalSnapshot(): AdapterPromise<Json>;
   /** hq-pro GET /v1/work-mesh/projects/{id}?companyUid= is required. */
   getProjectView(projectId: string, companyUid?: string): AdapterPromise<Json>;
@@ -1031,6 +1074,26 @@ export interface WorkMeshApi {
   migrateSession(
     sessionId: string,
     body: MigrateSessionRequest,
+  ): AdapterPromise<Json>;
+  /**
+   * hq-pro GET /v1/work-mesh/threads?companyUid=&projectId= — the work threads
+   * of one project. Additive: hosts that cannot reach hq-pro return
+   * unavailable, and the project channel simply shows chat only.
+   */
+  listProjectThreads(
+    projectId: string,
+    companyUid: string,
+    cursor?: string,
+  ): AdapterPromise<Json>;
+  /**
+   * hq-pro GET /v1/work-mesh/threads/{threadId}/events?companyUid= — the
+   * append-only event log of one thread (v1 envelope today, v2 session events
+   * once Work Mesh Live is enabled; both are parsed by @hq/ui).
+   */
+  listThreadEvents(
+    threadId: string,
+    companyUid: string,
+    since?: string,
   ): AdapterPromise<Json>;
 }
 

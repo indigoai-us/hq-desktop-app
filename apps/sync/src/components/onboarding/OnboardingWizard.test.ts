@@ -13,9 +13,19 @@ const tauri = vi.hoisted(() => ({
   open: vi.fn(),
 }));
 
+const httpFetch = vi.hoisted(() =>
+  vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({}),
+    text: async () => '',
+  })),
+);
+
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
+vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 
@@ -23,6 +33,7 @@ import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
 import OnboardingWizard from './OnboardingWizard.svelte';
 import { BUILD_STEP_INDEX, CONNECTOR_IMPORT_STEP_INDEX } from '../../lib/onboarding-wizard';
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
+import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 
 const wizardSource = readFileSync('src/components/onboarding/OnboardingWizard.svelte', 'utf8');
 
@@ -104,6 +115,14 @@ beforeEach(() => {
   tauri.invoke.mockReset();
   tauri.open.mockReset();
   tauri.open.mockResolvedValue(undefined);
+  httpFetch.mockReset();
+  httpFetch.mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({}),
+    text: async () => '',
+  });
+  __resetInstallerStepTelemetryForTests();
   localStorage.clear();
 });
 
@@ -254,6 +273,233 @@ describe('onboarding launch handoff', () => {
     // Claude keeps the primary slot: it is the path that starts the readiness
     // watch, and the row still needs one obvious next step.
     expect(primaryButton().textContent).toBe('Install Claude Code');
+  });
+
+  it('restores friendly checklist labels instead of internal setup stage names', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2 },
+    });
+
+    const friendlyLabels = [
+      'Laying the groundwork',
+      'Building your workspace',
+      'Bringing in your AI workers and workflows',
+      'Making it yours',
+      'Syncing across your devices',
+    ];
+    const rawStageLabels = [
+      'Downloading HQ template',
+      'Installing dependencies',
+      'Syncing initial cloud data',
+      'Initialising workspace',
+      'Preparing personal workspace',
+      'Registering for search',
+    ];
+
+    await flushUntil(() => {
+      const checklist = host.querySelector('[data-testid="onboarding-setup"]');
+      return friendlyLabels.every((label) => checklist?.textContent?.includes(label));
+    });
+
+    const checklist = host.querySelector('[data-testid="onboarding-setup"]');
+    expect(checklist).not.toBeNull();
+    for (const label of friendlyLabels) {
+      expect(checklist?.textContent).toContain(label);
+    }
+    for (const label of rawStageLabels) {
+      expect(checklist?.textContent).not.toContain(label);
+    }
+  });
+
+  it('renders the same seamless completion screen after a failed required stage as after a clean run', async () => {
+    const claudeDesktopOnly = {
+      ...NO_AI_TOOLS,
+      claude_desktop: true,
+      any: true,
+    };
+    mountWizard(vi.fn(), 4, claudeDesktopOnly);
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
+    const cleanCompletion = host.querySelector<HTMLElement>(
+      '[data-testid="onboarding-summary"]',
+    )?.innerHTML;
+    expect(cleanCompletion).toBeTruthy();
+
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+
+    const onfinish = vi.fn();
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return claudeDesktopOnly;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
+
+    const summary = host.querySelector('[data-testid="onboarding-summary"]');
+    const launchClaude = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-launch-claude"]',
+    );
+    expect((summary as HTMLElement | null)?.innerHTML).toBe(cleanCompletion);
+    expect(summary?.textContent).not.toContain('dependency installation failed');
+    expect(summary?.textContent).not.toContain('HQ setup needs attention');
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-retry-failed-stages"]')).toBeNull();
+    expect(launchClaude?.disabled).toBe(false);
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-install-codex"]')?.disabled,
+    ).toBe(false);
+    expect(tauri.invoke).toHaveBeenCalledWith('record_install_complete');
+
+    launchClaude?.click();
+    await flush();
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', expect.any(Object));
+    expect(onfinish).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the download handoff enabled after a required setup failure while tool detection is pending', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return new Promise<never>(() => {});
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish: vi.fn() },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
+
+    const download = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-launch-download"]',
+    );
+    expect(download).not.toBeNull();
+    expect(download?.disabled).toBe(false);
+
+    download?.click();
+    await flush();
+    expect(tauri.open).toHaveBeenCalledWith('https://claude.ai/download');
+  });
+
+  it('keeps the success completion indicator after a required setup failure', async () => {
+    mountWizard();
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
+
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+
+    const claudeDesktopOnly = {
+      ...NO_AI_TOOLS,
+      claude_desktop: true,
+      any: true,
+    };
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return claudeDesktopOnly;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish: vi.fn() },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
+
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
   });
 
   it('shows Codex as installed when only the ChatGPT-bundled desktop app is present', async () => {
@@ -515,5 +761,119 @@ describe('onboarding connector telemetry', () => {
         .filter((event) => event.properties.step === 'connector-import')
         .map((event) => event.properties.action),
     ).toEqual([]);
+  });
+});
+
+describe('anonymous installer step pings', () => {
+  function stubOnboardingInvoke(
+    extras: Record<string, (args?: Record<string, unknown>) => unknown> = {},
+  ) {
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command in extras) return extras[command]!(args);
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'device_fingerprint':
+          return 'hashed-mac-test';
+        case 'get_auth_state':
+          return { authenticated: false };
+        case 'is_first_run':
+          return false;
+        case 'emit_desktop_operational_telemetry':
+          return undefined;
+        default:
+          return undefined;
+      }
+    });
+  }
+
+  it('posts /v1/installer/step with no auth and the same sessionId as desktop_onboarding_step', async () => {
+    stubOnboardingInvoke();
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flushUntil(() => httpFetch.mock.calls.length > 0);
+
+    const call = httpFetch.mock.calls[0] as unknown as [string, RequestInit];
+    const [url, init] = call;
+    expect(url).toBe('https://telemetry.hq.computer/v1/installer/step');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
+    expect(
+      (init.headers as Record<string, string> | undefined)?.Authorization,
+    ).toBeUndefined();
+
+    const body = JSON.parse(String(init.body)) as {
+      installSessionId: string;
+      step: string;
+      personUid?: string;
+      deviceId?: string;
+    };
+    const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
+      sessionId?: string;
+    };
+    expect(body.installSessionId).toBe(stored.sessionId);
+    expect(typeof body.installSessionId).toBe('string');
+    expect(body.installSessionId.length).toBeGreaterThan(0);
+    expect(body.personUid).toBeUndefined();
+    expect(body.deviceId).toBe('hashed-mac-test');
+
+    const operational = tauri.invoke.mock.calls.filter(
+      ([command]) => command === 'emit_desktop_operational_telemetry',
+    );
+    expect(operational.length).toBeGreaterThan(0);
+    const envelope = operational[0]![1] as {
+      eventName: string;
+      sessionId: string;
+      properties: { step: string; action: string };
+    };
+    expect(envelope.eventName).toBe('desktop_onboarding_step');
+    expect(envelope.sessionId).toBe(body.installSessionId);
+    expect(envelope.properties.step).toBe('welcome-signin');
+    expect(envelope.properties.action).toBe('entered');
+  });
+
+  it('leaves the wizard usable when the ping network call fails', async () => {
+    httpFetch.mockRejectedValue(new Error('network down'));
+    stubOnboardingInvoke();
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+    await flush();
+    await flush();
+    expect(host.querySelector('[data-testid="onboarding-signin"]')).toBeTruthy();
+    expect(host.textContent).not.toContain('network down');
+  });
+
+  it('leaves the wizard usable when device_fingerprint throws', async () => {
+    stubOnboardingInvoke({
+      device_fingerprint: () => {
+        throw new Error('no fingerprint');
+      },
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+    await flushUntil(() => httpFetch.mock.calls.length > 0);
+    const init = (httpFetch.mock.calls[0] as unknown as [string, RequestInit])[1];
+    const body = JSON.parse(String(init.body)) as {
+      deviceId?: string;
+    };
+    expect(body.deviceId).toBeUndefined();
+    expect(host.querySelector('[data-testid="onboarding-signin"]')).toBeTruthy();
+    expect(host.textContent).not.toContain('no fingerprint');
+  });
+
+  it('threads whoami personUid into later pings after sign-in succeeds', async () => {
+    expect(wizardSource).toContain('resolveInstallerPersonUid');
+    expect(wizardSource).toContain("invokeCommand<{ personUid?: string | null }>('whoami')");
+    expect(wizardSource).toContain('onboardingTelemetry.setPersonUid(uid)');
+    expect(wizardSource).toContain('void resolveInstallerPersonUid()');
   });
 });

@@ -16,6 +16,7 @@ const onboarding = readFileSync(root('src/components/Onboarding.svelte'), 'utf8'
 const nativeMain = readFileSync(root('src-tauri/src/main.rs'), 'utf8');
 const app = readFileSync(root('src/App.svelte'), 'utf8');
 const listenerRegistry = readFileSync(root('src/lib/listener-registry.ts'), 'utf8');
+const repairNotice = readFileSync(root('src/desktop-alt/repair-notice.svelte'), 'utf8');
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -105,6 +106,20 @@ describe('HQ-DESKTOP-39: late main-window listener cleanup', () => {
         `${path} registers a Tauri listener without the shared teardown boundary`,
       ).toBe(true);
     }
+  });
+
+  it('routes the US-010 repair-notice listener through the throw-safe boundary', () => {
+    // The global surface scan keys off the literal `listen(`, so a generic
+    // `listen<T>(...)` registration (as repair-notice.svelte uses) can slip past
+    // it. Pin this US-010 surface explicitly: it must import `safeUnlisten`,
+    // tear its handle down through it on destroy, and immediately unlisten a
+    // registration that resolves AFTER the component was already destroyed so a
+    // late handle is never leaked into Tauri's event registry (HQ-DESKTOP-39).
+    expect(repairNotice).toMatch(
+      /import \{[^}]*\bsafeUnlisten\b[^}]*\} from '\.\.\/lib\/listener-registry'/,
+    );
+    expect(repairNotice).toMatch(/onDestroy\(\(\) => \{[\s\S]*?safeUnlisten\(unlisten\)\(\);[\s\S]*?\}\)/);
+    expect(repairNotice).toMatch(/if \(disposed\) \{[\s\S]*?safeUnlisten\(fn\)\(\);[\s\S]*?return;/);
   });
 
   it('decomposes the focus composite instead of wrapping it', () => {

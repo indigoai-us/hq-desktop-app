@@ -6,6 +6,7 @@ pub mod claude;
 pub mod codex;
 pub mod history;
 pub mod outpost;
+pub mod scan_cache;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,6 +64,9 @@ pub struct AgentSession {
     pub id: String,
     pub tool: AgentTool,
     pub origin: AgentOrigin,
+    /// Provider-native conversation title, when available.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub title: String,
     // The six nullable-on-the-wire fields. `default` covers an omitted key,
     // `null_as_default` covers an explicit null; absence is represented as the
     // empty string, exactly as the local collectors already do (see
@@ -104,13 +108,81 @@ pub fn resolve_poll_interval(env_value: Option<&str>) -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Cadence used while **no** app window is visible.
+///
+/// Nobody can see the Mission Control surface when every window is hidden, so
+/// re-scanning the local session store at the interactive cadence is pure waste —
+/// and it is expensive work (thousands of `stat`s plus a `pgrep` fork). We keep a
+/// slow heartbeat rather than stopping outright so long-lived derived state does
+/// not drift arbitrarily far, and the poller emits immediately when a window
+/// becomes visible again (see [`plan_poll`]), so the UI is never stale at the
+/// moment the user can actually look at it.
+pub const SESSIONS_HIDDEN_POLL_INTERVAL_SECS: u64 = 120;
+
+/// How often the poller wakes to re-check window visibility while hidden.
+///
+/// This wake does no I/O — it reads Tauri's in-memory window state — so it is
+/// effectively free, and it bounds how long a hidden→visible transition can take
+/// to trigger the catch-up emit.
+pub const SESSIONS_VISIBILITY_CHECK_SECS: u64 = 2;
+
+/// What the sessions poller should do on this wake-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PollPlan {
+    /// Assemble and emit a snapshot now.
+    pub emit: bool,
+    /// How long to sleep before the next wake-up.
+    pub sleep: Duration,
+}
+
+/// Decide whether to emit a snapshot and how long to sleep next.
+///
+/// Pure so the scheduling policy is unit-testable without a Tauri app handle.
+///
+/// * `visible` / `was_visible` — is any app window visible now, and was it on the
+///   previous wake-up.
+/// * `since_last_emit` — elapsed time since the last snapshot was emitted.
+/// * `active` — the interactive cadence ([`resolve_poll_interval`]).
+///
+/// Policy:
+///
+/// 1. A hidden→visible transition emits immediately, so the surface the user just
+///    opened is current rather than up to [`SESSIONS_HIDDEN_POLL_INTERVAL_SECS`]
+///    stale.
+/// 2. While visible, emit every `active`.
+/// 3. While hidden, emit only every [`SESSIONS_HIDDEN_POLL_INTERVAL_SECS`], and
+///    wake at [`SESSIONS_VISIBILITY_CHECK_SECS`] purely to notice rule 1.
+pub fn plan_poll(
+    visible: bool,
+    was_visible: bool,
+    since_last_emit: Duration,
+    active: Duration,
+) -> PollPlan {
+    if visible {
+        let just_shown = !was_visible;
+        return PollPlan {
+            emit: just_shown || since_last_emit >= active,
+            sleep: active,
+        };
+    }
+
+    let idle = Duration::from_secs(SESSIONS_HIDDEN_POLL_INTERVAL_SECS);
+    let check = Duration::from_secs(SESSIONS_VISIBILITY_CHECK_SECS);
+    PollPlan {
+        emit: since_last_emit >= idle,
+        // Never sleep past the idle heartbeat, and never longer than the
+        // visibility-check tick, whichever is shorter.
+        sleep: check.min(idle.saturating_sub(since_last_emit).max(check)),
+    }
+}
+
 pub fn merge_sessions(
     claude: Vec<AgentSession>,
     codex: Vec<AgentSession>,
     agents: liveness::RunningAgents,
     now: SystemTime,
 ) -> Vec<AgentSession> {
-    claude
+    let mut sessions = claude
         .into_iter()
         .chain(codex)
         .map(|mut session| {
@@ -123,7 +195,20 @@ pub fn merge_sessions(
             );
             session
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    // The UI paginates this merged collection. Keeping reader order here put
+    // every Claude transcript ahead of every Codex rollout, which effectively
+    // hid recent Codex work on machines with a large Claude history. Merge the
+    // providers into one actual activity timeline before pagination.
+    sessions.sort_by(|a, b| {
+        let a_time =
+            liveness::parse_rfc3339_to_system_time(&a.last_activity_at).unwrap_or(UNIX_EPOCH);
+        let b_time =
+            liveness::parse_rfc3339_to_system_time(&b.last_activity_at).unwrap_or(UNIX_EPOCH);
+        b_time.cmp(&a_time).then_with(|| a.id.cmp(&b.id))
+    });
+    sessions
 }
 
 pub mod liveness {
@@ -457,6 +542,7 @@ mod tests {
             id: "25f8d9da-435d-44e6-8bb7-849fd8ad67c8".to_string(),
             tool: AgentTool::Claude,
             origin: AgentOrigin::Local,
+            title: "Mission control".to_string(),
             cwd: "/Users/corey/Documents/HQ/repos/public/hq-sync".to_string(),
             project: "mission-control".to_string(),
             company: "indigo".to_string(),
@@ -588,6 +674,85 @@ mod tests {
         }
     }
 
+    // ── Visibility-gated poll scheduling ────────────────────────────────────
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn visible_poller_emits_on_the_active_cadence() {
+        let active = secs(5);
+        // Not due yet.
+        let plan = plan_poll(true, true, secs(3), active);
+        assert!(!plan.emit);
+        assert_eq!(plan.sleep, active);
+
+        // Due.
+        let plan = plan_poll(true, true, secs(5), active);
+        assert!(plan.emit);
+        assert_eq!(plan.sleep, active);
+    }
+
+    #[test]
+    fn hidden_poller_skips_the_active_cadence() {
+        let active = secs(5);
+        // A tick that would have emitted while visible must not emit while hidden:
+        // this is the idle-CPU saving.
+        let plan = plan_poll(false, false, secs(5), active);
+        assert!(!plan.emit, "hidden window must not drive a full rescan");
+        assert_eq!(
+            plan.sleep,
+            secs(SESSIONS_VISIBILITY_CHECK_SECS),
+            "hidden wake-ups are cheap visibility checks"
+        );
+    }
+
+    #[test]
+    fn hidden_poller_still_heartbeats() {
+        let active = secs(5);
+        let plan = plan_poll(
+            false,
+            false,
+            secs(SESSIONS_HIDDEN_POLL_INTERVAL_SECS),
+            active,
+        );
+        assert!(plan.emit, "a hidden app should still refresh occasionally");
+    }
+
+    #[test]
+    fn becoming_visible_emits_immediately() {
+        let active = secs(5);
+        // Hidden for a long time, so `since_last_emit` is huge; but even with a
+        // fresh emit the transition must force one so the popover is not stale.
+        let plan = plan_poll(true, false, Duration::ZERO, active);
+        assert!(plan.emit, "opening the window must trigger a catch-up emit");
+        assert_eq!(plan.sleep, active);
+    }
+
+    #[test]
+    fn staying_hidden_never_sleeps_past_the_heartbeat() {
+        let active = secs(5);
+        for elapsed in [0, 1, 60, 119, 200] {
+            let plan = plan_poll(false, false, secs(elapsed), active);
+            assert!(
+                plan.sleep <= secs(SESSIONS_VISIBILITY_CHECK_SECS),
+                "hidden sleep {:?} at elapsed={elapsed} must stay within the visibility check",
+                plan.sleep
+            );
+            assert!(plan.sleep > Duration::ZERO, "must never busy-loop");
+        }
+    }
+
+    #[test]
+    fn hidden_poller_respects_a_slower_active_override() {
+        // A user-configured slow cadence must not be sped up by the hidden path.
+        let active = secs(300);
+        let plan = plan_poll(true, true, secs(10), active);
+        assert!(!plan.emit);
+        assert_eq!(plan.sleep, active);
+    }
+
     // ── US-005: merge + liveness ────────────────────────────────────────────
 
     fn session(id: &str, tool: AgentTool, last_activity_at: &str) -> AgentSession {
@@ -595,6 +760,7 @@ mod tests {
             id: id.to_string(),
             tool,
             origin: AgentOrigin::Local,
+            title: id.to_string(),
             cwd: "/tmp".to_string(),
             project: "p".to_string(),
             company: "indigo".to_string(),
@@ -621,9 +787,9 @@ mod tests {
     }
 
     #[test]
-    fn merge_preserves_order_and_reapplies_liveness() {
+    fn merge_sorts_all_providers_newest_first_and_reapplies_liveness() {
         let now = SystemTime::now();
-        let claude = vec![session("c1", AgentTool::Claude, &iso_ago(now, 10))];
+        let claude = vec![session("c1", AgentTool::Claude, &iso_ago(now, 20))];
         let codex = vec![session("x1", AgentTool::Codex, &iso_ago(now, 10))];
         let agents = liveness::RunningAgents {
             claude: true,
@@ -632,10 +798,10 @@ mod tests {
 
         let merged = merge_sessions(claude, codex, agents, now);
 
-        // Claude first, then Codex — readers' order preserved.
+        // Provider does not determine placement: the newest session wins.
         assert_eq!(
             merged.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
-            ["c1", "x1"]
+            ["x1", "c1"]
         );
         // Fresh activity + live process → re-derived to running (NOT the stale Ended).
         assert!(merged.iter().all(|s| s.status == SessionStatus::Running));

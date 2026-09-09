@@ -52,6 +52,8 @@ import {
   type HqWorkInvoker,
 } from '../../src/lib/hq-work';
 import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
+import { takePendingChannelOpen } from '../../../../packages/ui/src/chat/open-target';
+import { takePendingConversation } from '../../../../packages/ui/src/chat/pending-conversation';
 
 const WHOAMI = {
   personUid: 'prs_ada',
@@ -252,6 +254,9 @@ function mountMessagingSidebar(invokeFn: SyncInvokeFn): void {
 
 /** The sidebar "+" opens the unified create modal directly (no dropdown). */
 async function openCreateModal(): Promise<void> {
+  await vi.waitFor(() => {
+    expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy();
+  });
   (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
   await flush();
 }
@@ -326,6 +331,9 @@ afterEach(async () => {
     component = null;
   }
   host?.remove();
+  document.querySelectorAll('[data-testid="chat-create-modal"]').forEach((node) => node.remove());
+  takePendingChannelOpen();
+  takePendingConversation();
   tauriEvents.listeners.clear();
   vi.clearAllMocks();
 });
@@ -1050,6 +1058,7 @@ describe('US-103 embedded desktop window', () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
+      await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-show-history"]')).not.toBeNull());
       (host.querySelector('[data-testid="chat-show-history"]') as HTMLButtonElement).click();
       await flush();
       setInput('chat-history-search', 'known');
@@ -1074,7 +1083,12 @@ describe('US-103 embedded desktop window', () => {
                       name: 'owner-project',
                       scope: 'project',
                       companyUid: 'cmp_indigo',
-                      lastActivityAt: '2026-08-31T10:00:00.000Z',
+                      // Keep this recent relative to the wall clock: ChatSidebar
+                      // collapses rows older than 7 days under "Show all history…",
+                      // so a hardcoded past date makes this render assertion a
+                      // time-bomb (it started failing on 2026-09-07, a week after
+                      // the previous fixed date). Anchor to "now" instead.
+                      lastActivityAt: new Date(Date.now() - 60_000).toISOString(),
                     },
                   ],
                 }

@@ -19,6 +19,7 @@ const ui = (rel: string) => readRepoFile(join('../../packages/ui', rel));
 const card = ui('src/chat/messaging/ArtifactCard.svelte');
 const panel = ui('src/chat/messaging/ArtifactPanel.svelte');
 const model = ui('src/chat/messaging/artifact-model.ts');
+const prose = ui('src/chat/messaging/artifact-prose.css');
 const copy = ui('src/chat/messaging/conversation-copy.ts');
 const shell = ui('src/shell/DesktopApp.svelte');
 const conversation = ui('src/chat/messaging/ChannelConversation.svelte');
@@ -33,11 +34,16 @@ describe('artifact card replaces the dead-end clamp', () => {
     expect(preview).not.toContain('…');
   });
 
-  it('previews whole lines and fades instead of hard-cutting', () => {
-    expect(model).toContain('export const ARTIFACT_PREVIEW_LINES');
-    expect(card).toContain('artifact-card-fade');
-    expect(card).toMatch(/\.artifact-card-fade\s*\{[\s\S]*?linear-gradient\(/);
-    expect(card).toMatch(/\.artifact-card-body\s*\{[\s\S]*?overflow:\s*hidden/);
+  it('collapses to a handle: mesh tile, title, one-line summary, size — no preview body', () => {
+    expect(model).toContain('export function artifactSummary');
+    expect(card).toContain('artifact-tile-mesh');
+    expect(card).toMatch(/\.artifact-tile-mesh\s*\{[\s\S]*?radial-gradient\(/);
+    expect(card).toContain("data-testid=\"artifact-card-preview\"");
+    // The card never hard-cuts with an ellipsis of its own; the summary is
+    // one line clipped by CSS and the full text lives in the pane.
+    expect(card).not.toContain('artifact-card-fade');
+    expect(card).toMatch(/\.artifact-card-summary\s*\{[\s\S]*?white-space:\s*nowrap/);
+    expect(card).toMatch(/\.artifact-card-summary\s*\{[\s\S]*?text-overflow:\s*ellipsis/);
   });
 
   it('renders title, kind label and size hint in the card header', () => {
@@ -57,12 +63,11 @@ describe('artifact card replaces the dead-end clamp', () => {
     expect(card).toContain("data-testid=\"artifact-card-open\"");
   });
 
-  it('keeps desktop-alt chrome: 13px ghost card, hairline border, mono preview only', () => {
-    expect(card).toMatch(/\.artifact-card\s*\{[\s\S]*?border:\s*1px solid var\(--line2/);
-    expect(card).toMatch(/\.artifact-card\s*\{[\s\S]*?background:\s*transparent/);
+  it('keeps desktop-alt chrome: 13px card, hairline border, UI face (no mono prose)', () => {
+    expect(card).toMatch(/\.artifact-card\s*\{[\s\S]*?border:\s*1px solid var\(--line/);
     expect(card).toMatch(/\.artifact-card\s*\{[\s\S]*?font-size:\s*13px/);
     expect(card).toMatch(/\.artifact-card-open\s*\{[\s\S]*?color:\s*var\(--vio-ink/);
-    expect(card).toMatch(/\.artifact-card-preview\s*\{[\s\S]*?font-family:\s*var\(--font-mono/);
+    expect(card).not.toMatch(/\.artifact-card-summary\s*\{[^}]*font-mono/);
     expect(card).not.toMatch(/\.artifact-card-title\s*\{[^}]*font-mono/);
   });
 });
@@ -112,9 +117,21 @@ describe('artifact mode of the existing right side pane', () => {
     expect(panel).toMatch(/\.artifact-panel-body\s*\{[\s\S]*?overflow-y:\s*auto/);
     // Long single lines wrap; the pane never scrolls horizontally.
     expect(panel).toMatch(/\.artifact-panel-body\s*\{[\s\S]*?overflow-x:\s*hidden/);
-    expect(panel).toMatch(/\.artifact-panel-content\s*\{[\s\S]*?white-space:\s*pre-wrap/);
-    expect(panel).toMatch(/\.artifact-panel-content\s*\{[\s\S]*?overflow-wrap:\s*anywhere/);
-    expect(panel).toMatch(/\.artifact-panel-content\s*\{[\s\S]*?max-width:\s*100%/);
+    expect(panel).toMatch(/\.artifact-panel-content\s*\{[\s\S]*?word-break:\s*break-word/);
+    // Plain artifacts keep their line structure via the shared prose sheet.
+    expect(prose).toMatch(/\.artifact-plain\s*\{[\s\S]*?white-space:\s*pre-wrap/);
+    expect(prose).toMatch(/\.artifact-plain\s*\{[\s\S]*?overflow-wrap:\s*anywhere/);
+  });
+
+  it('renders markdown artifacts as a document in the UI face, links via the host opener', () => {
+    expect(panel).toContain('renderMarkdown(artifact.text');
+    expect(panel).toContain('artifactLooksLikeMarkdown');
+    expect(panel).toContain('data-render="markdown"');
+    expect(panel).toContain('data-render="plain"');
+    expect(panel).toContain('handleLinkActivate(e, { onopenurl');
+    expect(shell).toMatch(/<ArtifactPanel[\s\S]*?\{onopenurl\}/);
+    expect(prose).toMatch(/\.artifact-md\s*\{[\s\S]*?font-family:\s*var\(--font-ui/);
+    expect(prose).toMatch(/\.artifact-md pre\s*\{[\s\S]*?font-family:\s*var\(--font-mono/);
   });
 
   it('closes on Escape and respects prefers-reduced-motion', () => {

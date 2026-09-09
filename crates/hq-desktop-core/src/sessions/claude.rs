@@ -70,6 +70,7 @@
 //! the reader still works — company falls back to empty, project to the cwd's
 //! basename (PRD notes: "HQ-instrumented sessions carry the richest metadata").
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -78,7 +79,23 @@ use serde::Deserialize;
 use crate::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::paths;
 
+use super::scan_cache::{FileStamp, StableCache, StampCache};
 use super::{AgentOrigin, AgentSession, AgentTool, SessionStatus};
+
+/// Memo for the bounded tail parse, keyed by `(mtime, len)`.
+///
+/// The Mission Control poller re-scans every few seconds; on a working machine
+/// that is thousands of transcripts, and re-reading 64 KiB from each of them plus
+/// parsing it was measured as the single largest source of the app's idle CPU.
+/// A transcript that has not been appended to since the last tick cannot have a
+/// different tail, so the parse is reused. See `super::scan_cache`.
+static TAIL_CACHE: StampCache<TailInfo> = StampCache::new();
+
+/// Memo for `workspace/sessions/<id>/meta.yaml`. HQ writes it once at session
+/// start and never rewrites it, so a successful parse is reusable for the life of
+/// the process. Absence is deliberately **not** cached — a session that gets
+/// instrumented later must still be picked up.
+static META_CACHE: StableCache<SessionMeta> = StableCache::new();
 
 /// Provenance tag stamped on every record this reader emits (US-001 `source`).
 const SOURCE_TAG: &str = "claude-jsonl";
@@ -101,6 +118,8 @@ const TAIL_BYTES: u64 = 64 * 1024;
 /// to "all None" rather than erroring the whole scan.
 #[derive(Debug, Default, Deserialize)]
 struct TranscriptLine {
+    #[serde(default, rename = "customTitle")]
+    custom_title: Option<String>,
     #[serde(default)]
     cwd: Option<String>,
     #[serde(default)]
@@ -119,8 +138,9 @@ struct TranscriptMessage {
 }
 
 /// Fields recovered from a transcript's tail.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct TailInfo {
+    title: Option<String>,
     cwd: Option<String>,
     git_branch: Option<String>,
     model: Option<String>,
@@ -136,12 +156,16 @@ struct TailInfo {
 /// The subset of `workspace/sessions/<id>/meta.yaml` we read. HQ writes
 /// `session_id` + `started_at` always; instrumented sessions add
 /// `company_slug`, and sometimes `project` / `repo`.
-#[derive(Debug, Default, Deserialize)]
-struct SessionMeta {
+#[derive(Clone, Debug, Default, Deserialize)]
+pub(super) struct SessionMeta {
     #[serde(default)]
-    company_slug: Option<String>,
+    cli_session_id: Option<String>,
     #[serde(default)]
-    project: Option<String>,
+    pub(super) company_slug: Option<String>,
+    #[serde(default)]
+    pub(super) project: Option<String>,
+    #[serde(default)]
+    pub(super) title: Option<String>,
     #[serde(default)]
     repo: Option<String>,
     #[serde(default)]
@@ -291,7 +315,14 @@ pub fn scan_claude_sessions(
         Err(_) => return Vec::new(),
     };
 
+    // Build the app-id → Claude-id bridge once per refresh. Doing this inside
+    // `read_one_transcript` would multiply the bounded metadata work by every
+    // transcript in ~/.claude/projects.
+    let linked_meta = hq_root.map(read_linked_session_meta).unwrap_or_default();
     let mut out: Vec<AgentSession> = Vec::new();
+    // Every transcript this scan saw. Used to prune the parse memos so deleted
+    // or rotated transcripts do not leak cache entries for the process lifetime.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
 
     for project_entry in project_entries.flatten() {
         let project_path = project_entry.path();
@@ -311,11 +342,14 @@ pub fn scan_claude_sessions(
             if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            if let Some(session) = read_one_transcript(&file_path, hq_root, now) {
+            seen.insert(file_path.clone());
+            if let Some(session) = read_one_transcript(&file_path, hq_root, &linked_meta, now) {
                 out.push(session);
             }
         }
     }
+
+    TAIL_CACHE.retain_paths(&seen);
 
     out
 }
@@ -326,6 +360,7 @@ pub fn scan_claude_sessions(
 fn read_one_transcript(
     file_path: &Path,
     hq_root: Option<&Path>,
+    linked_meta: &HashMap<String, SessionMeta>,
     now: SystemTime,
 ) -> Option<AgentSession> {
     // Session id = the file stem (the uuid). No read required.
@@ -336,8 +371,13 @@ fn read_one_transcript(
     let len = metadata.len();
     let mtime = metadata.modified().ok()?;
 
-    // Bounded tail read — never a full parse (HARD perf contract).
-    let tail = read_tail_info(file_path, len);
+    // Bounded tail read — never a full parse (HARD perf contract) — and memoised
+    // against `(mtime, len)` so an unchanged transcript costs the `stat` above and
+    // nothing more. An appended-to transcript changes both fields and is re-read
+    // on the very next tick, so live sessions stay exactly as fresh as before.
+    let tail = TAIL_CACHE.get_or_compute(file_path, FileStamp::new(mtime, len), || {
+        read_tail_info(file_path, len)
+    });
 
     // cwd: prefer the tail's `cwd`, fall back to decoding the project dir name.
     let cwd = tail.cwd.clone().or_else(|| {
@@ -357,20 +397,27 @@ fn read_one_transcript(
         .unwrap_or_else(|| mtime_iso.clone());
 
     // HQ enrichment from workspace/sessions/<id>/meta.yaml.
-    let meta = hq_root.and_then(|root| read_session_meta(root, &id));
+    let meta = hq_root
+        .and_then(|root| read_direct_session_meta(root, &id))
+        .or_else(|| linked_meta.get(&id).cloned());
 
     let company = meta
         .as_ref()
         .and_then(|m| m.company_slug.clone())
         .unwrap_or_default();
 
-    // project: meta `project` → meta `repo` → cwd basename → git branch.
-    let project = meta
-        .as_ref()
-        .and_then(|m| m.project.clone().or_else(|| m.repo.clone()))
-        .or_else(|| basename(&cwd))
-        .or_else(|| tail.git_branch.clone())
-        .unwrap_or_default();
+    // An app-owned session with no project is standalone. Its runtime cwd
+    // must not manufacture a project association when reopening it.
+    let project = if let Some(meta) = &meta {
+        meta.project
+            .clone()
+            .or_else(|| meta.repo.clone())
+            .unwrap_or_default()
+    } else {
+        basename(&cwd)
+            .or_else(|| tail.git_branch.clone())
+            .unwrap_or_default()
+    };
 
     // started-at: prefer HQ meta (authoritative session-open time); else the
     // mtime as a best-effort floor.
@@ -385,6 +432,9 @@ fn read_one_transcript(
         id,
         tool: AgentTool::Claude,
         origin: AgentOrigin::Local,
+        title: tail.title
+            .or_else(|| meta.as_ref().and_then(|m| m.title.clone()))
+            .unwrap_or_default(),
         cwd,
         project,
         company,
@@ -457,6 +507,11 @@ fn read_tail_info(file_path: &Path, len: u64) -> TailInfo {
                 info.last_timestamp = Some(ts);
             }
         }
+        if info.title.is_none() {
+            if let Some(title) = parsed.custom_title.filter(|title| !title.trim().is_empty()) {
+                info.title = Some(title);
+            }
+        }
         if info.cwd.is_none() {
             if let Some(cwd) = parsed.cwd {
                 info.cwd = Some(cwd);
@@ -477,6 +532,7 @@ fn read_tail_info(file_path: &Path, len: u64) -> TailInfo {
             && info.model.is_some()
             && info.git_branch.is_some()
             && info.last_timestamp.is_some()
+            && info.title.is_some()
         {
             break;
         }
@@ -489,16 +545,51 @@ fn read_tail_info(file_path: &Path, len: u64) -> TailInfo {
 // HQ meta.yaml
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Read `workspace/sessions/<id>/meta.yaml` under the HQ root, if present.
-/// A missing or malformed file yields `None` — enrichment is best-effort.
-fn read_session_meta(hq_root: &Path, id: &str) -> Option<SessionMeta> {
-    let meta_path = hq_root
-        .join("workspace")
-        .join("sessions")
-        .join(id)
-        .join("meta.yaml");
-    let bytes = std::fs::read(&meta_path).ok()?;
-    serde_yaml::from_slice(&bytes).ok()
+/// Maximum app-owned metadata records opened while resolving a provider-native
+/// transcript id. Directory enumeration and metadata stat remain cheap; YAML
+/// reads are bounded so a large historic workspace cannot stall the drawer.
+const MAX_LINKED_SESSION_META_READS: usize = 200;
+
+/// Read legacy metadata stored directly under a provider-native id.
+fn read_direct_session_meta(hq_root: &Path, id: &str) -> Option<SessionMeta> {
+    let sessions_dir = hq_root.join("workspace").join("sessions");
+    let direct = sessions_dir.join(id).join("meta.yaml");
+    META_CACHE.get_or_compute(&direct, || {
+        let bytes = std::fs::read(&direct).ok()?;
+        serde_yaml::from_slice(&bytes).ok()
+    })
+}
+
+/// Build one bounded provider-id → metadata index for app-owned sessions.
+pub(super) fn read_linked_session_meta(hq_root: &Path) -> HashMap<String, SessionMeta> {
+    let sessions_dir = hq_root.join("workspace").join("sessions");
+    let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
+        return HashMap::new();
+    };
+    let mut candidates = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path().join("meta.yaml");
+            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
+    candidates
+        .into_iter()
+        .take(MAX_LINKED_SESSION_META_READS)
+        .filter_map(|(_, path)| std::fs::read(path).ok())
+        .filter_map(|bytes| serde_yaml::from_slice::<SessionMeta>(&bytes).ok())
+        .fold(HashMap::new(), |mut index, meta| {
+            if let Some(id) = meta.cli_session_id.clone() {
+                // Candidates are newest-first. Keep the first record if a
+                // stale duplicate link exists instead of letting an older
+                // record overwrite it during collection.
+                index.entry(id).or_insert(meta);
+            }
+            index
+        })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -679,6 +770,10 @@ mod tests {
         format!(r#"{{"type":"queue-operation","operation":"dequeue","sessionId":"{session_id}"}}"#)
     }
 
+    fn custom_title_line(session_id: &str, title: &str) -> String {
+        format!(r#"{{"type":"custom-title","customTitle":"{title}","sessionId":"{session_id}"}}"#)
+    }
+
     #[test]
     fn enumerates_transcripts_and_extracts_fields() {
         let root = make_fixture_root();
@@ -692,7 +787,7 @@ mod tests {
         let id_b = "22222222-2222-4222-8222-222222222222";
 
         let transcript_a = format!(
-            "{}\n{}\n{}\n",
+            "{}\n{}\n{}\n{}\n",
             bookkeeping_line(id_a),
             assistant_line(
                 id_a,
@@ -701,6 +796,7 @@ mod tests {
                 "claude-opus-4-8",
                 "2026-06-15T18:00:00.000Z"
             ),
+            custom_title_line(id_a, "INDIGO · Session history repair"),
             bookkeeping_line(id_a),
         );
         fs::write(proj.join(format!("{id_a}.jsonl")), transcript_a).unwrap();
@@ -728,6 +824,7 @@ mod tests {
         assert_eq!(a.origin, AgentOrigin::Local);
         assert_eq!(a.cwd, "/Users/corey/Documents/HQ");
         assert_eq!(a.model, "claude-opus-4-8");
+        assert_eq!(a.title, "INDIGO · Session history repair");
         // No meta.yaml → company empty, project from cwd basename.
         assert_eq!(a.company, "");
         assert_eq!(a.project, "HQ");
@@ -786,6 +883,75 @@ mod tests {
             s.started_at, "2026-06-15T18:00:00Z",
             "started_at preferred from meta.yaml"
         );
+    }
+
+    #[test]
+    fn enriches_from_app_session_meta_linked_by_claude_session_id() {
+        let root = make_fixture_root();
+        let projects = root.join("projects");
+        let hq = root.join("hq");
+        let claude_id = "83838383-8383-4383-8383-838383838383";
+        let app_id = "desktop-app-session-1";
+
+        let proj = projects.join("-Users-corey-Documents-HQ");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(
+            proj.join(format!("{claude_id}.jsonl")),
+            format!(
+                "{}\n",
+                assistant_line(
+                    claude_id,
+                    "/Users/corey/Documents/HQ",
+                    "main",
+                    "claude-opus-4-8",
+                    "2026-06-15T18:30:00.000Z"
+                )
+            ),
+        )
+        .unwrap();
+
+        // Desktop sessions are owned by an app id. The CLI id becomes known
+        // after Claude's init frame and links this record to the transcript.
+        let meta_dir = hq.join("workspace").join("sessions").join(app_id);
+        fs::create_dir_all(&meta_dir).unwrap();
+        fs::write(
+            meta_dir.join("meta.yaml"),
+            format!(
+                "session_id: {app_id}\ncli_session_id: {claude_id}\nstarted_at: \"2026-06-15T18:00:00Z\"\ncompany_slug: indigo\nproject: session-repairs\ntool: claude\ntitle: Saved Claude session\n"
+            ),
+        )
+        .unwrap();
+
+        let sessions = scan_claude_sessions(&projects, Some(&hq), SystemTime::now());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].company, "indigo");
+        assert_eq!(sessions[0].project, "session-repairs");
+        assert_eq!(sessions[0].started_at, "2026-06-15T18:00:00Z");
+        assert_eq!(sessions[0].title, "Saved Claude session");
+        fs::write(meta_dir.join("meta.yaml"), format!("cli_session_id: {claude_id}\ncompany_slug: indigo\nproject: null\ntitle: Standalone Claude\n")).unwrap();
+        let standalone = scan_claude_sessions(&projects, Some(&hq), SystemTime::now());
+        assert_eq!(standalone[0].title, "Standalone Claude");
+        assert_eq!(standalone[0].project, "", "runtime HQ cwd is not a project association");
+    }
+
+    #[test]
+    fn linked_metadata_index_caps_yaml_reads_per_history_refresh() {
+        let root = make_fixture_root();
+        let hq = root.join("hq");
+        for n in 0..(MAX_LINKED_SESSION_META_READS + 7) {
+            let meta_dir = hq
+                .join("workspace/sessions")
+                .join(format!("app-session-{n:03}"));
+            fs::create_dir_all(&meta_dir).unwrap();
+            fs::write(
+                meta_dir.join("meta.yaml"),
+                format!("cli_session_id: claude-{n:03}\ncompany_slug: indigo\n"),
+            )
+            .unwrap();
+        }
+
+        let index = read_linked_session_meta(&hq);
+        assert_eq!(index.len(), MAX_LINKED_SESSION_META_READS);
     }
 
     /// HARD performance contract: a transcript far larger than TAIL_BYTES must

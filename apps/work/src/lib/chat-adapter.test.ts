@@ -1065,4 +1065,26 @@ describe("fetchReplyThread / sendReply adapters", () => {
     );
     expect(invokeCalls).toEqual([]);
   });
+
+  it("runCardAction POSTs actionId, values, and idempotencyKey", async () => {
+    const { api, calls } = makeReplyFetch();
+    await api.runCardAction({
+      channelId: "chn_setup",
+      cardId: "card_create_1",
+      actionId: "submit",
+      values: { name: "Acme" },
+      idempotencyKey: "idem-1",
+    });
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        path: "/v1/notify/channels/chn_setup/cards/card_create_1/actions",
+        body: {
+          actionId: "submit",
+          values: { name: "Acme" },
+          idempotencyKey: "idem-1",
+        },
+      },
+    ]);
+  });
 });

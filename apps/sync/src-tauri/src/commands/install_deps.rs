@@ -48,6 +48,15 @@ use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, R
 #[cfg(windows)]
 use winreg::{RegKey, RegValue};
 
+use crate::commands::install_stages::{
+    clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
+    OnboardingFailureScope,
+};
+
+tokio::task_local! {
+    static ACTIVE_ONBOARDING_FAILURE_SCOPE: OnboardingFailureScope;
+}
+
 mod which {
     use std::env;
     use std::ffi::{OsStr, OsString};
@@ -481,7 +490,7 @@ static SHELL_LOGIN_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new(
 /// the OnceLock cache. Format is treated as a semi-public contract so
 /// support paste-backs stay greppable.
 #[cfg(not(windows))]
-fn shell_login_path() -> &'static str {
+pub(crate) fn shell_login_path() -> &'static str {
     SHELL_LOGIN_PATH.get_or_init(|| {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let spawn_result = Command::new(&shell)
@@ -1472,9 +1481,70 @@ pub fn is_shell_path_configured(profile_path: &std::path::Path) -> bool {
 /// testing so assertions don't depend on the home directory.
 #[cfg(not(windows))]
 pub fn shell_path_block() -> String {
+    // Every managed bin dir a user-facing tool lands in — node, the npm
+    // global prefix (qmd, hq, claude), the portable dugite git, and
+    // ~/.local/bin (yq's direct-binary fallback). The git dir MUST come
+    // before /usr/bin: on a Mac without Xcode CLT, /usr/bin/git is a stub
+    // that pops the "install developer tools" dialog. The install matrix
+    // (sonoma-consumer:bare:full-fresh-install, 2026-09-03) caught both
+    // `yq: command not found` and the stub git after a reported-OK install.
     format!(
-        "\n{SHELL_PATH_MARKER}\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$PATH\"\n"
+        "\n{SHELL_PATH_MARKER}\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git-shim:$HOME/.local/bin:$PATH\"\n"
     )
+}
+
+/// The portable (dugite) git has no compiled-in prefix and bundles no CA
+/// file: invoked bare from a user's shell it prints `templates not found` and
+/// `'remote-https' is not a git command`, so every https clone fails. The
+/// engine's own calls set `managed_git_env()`; users' shells need the same.
+/// Rather than exporting GIT_EXEC_PATH globally (which would break any other
+/// git the user later installs), install a tiny shim that sets the env and
+/// execs the real binary, and put the SHIM dir on PATH. Idempotent; returns
+/// the shim path when written. Exposed for testing.
+#[cfg(not(windows))]
+pub fn ensure_managed_git_shim_in(home: &std::path::Path) -> Option<PathBuf> {
+    let git_dir = managed_git_dir_in(home);
+    if !git_dir.join("bin").join("git").exists() {
+        return None;
+    }
+    let shim_dir = managed_git_shim_dir_in(home);
+    let shim = shim_dir.join("git");
+    let script = format!(
+        "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n"
+    );
+    if std::fs::read_to_string(&shim).ok().as_deref() == Some(script.as_str()) {
+        return Some(shim);
+    }
+    std::fs::create_dir_all(&shim_dir).ok()?;
+    std::fs::write(&shim, script).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755));
+    }
+    Some(shim)
+}
+
+#[cfg(not(windows))]
+pub fn managed_git_shim_dir_in(home: &std::path::Path) -> PathBuf {
+    managed_toolchain_dir_in(home).join("git-shim")
+}
+
+/// Profile files the PATH block must land in for this shell.
+///
+/// zsh reads `.zshrc` only for INTERACTIVE shells; login-but-non-interactive
+/// shells (`zsh -lc`, launchd, hooks, subprocesses spawned by `hq`) read
+/// `.zprofile` instead. Writing only `.zshrc` made the toolchain vanish for
+/// every non-terminal caller — the matrix `path.non-interactive-shell`
+/// check. Exposed for testing.
+#[cfg(not(windows))]
+pub fn shell_profile_paths_in(home: &std::path::Path) -> Vec<PathBuf> {
+    let primary = shell_profile_path_in(home);
+    let mut paths = vec![primary.clone()];
+    if primary.file_name().and_then(|n| n.to_str()) == Some(".zshrc") {
+        paths.push(home.join(".zprofile"));
+    }
+    paths
 }
 
 /// Ensure the managed toolchain bin directories are present in the user's
@@ -1489,42 +1559,44 @@ pub fn shell_path_block() -> String {
 /// non-fatal and logged via `emit_preflight_line`.
 #[cfg(not(windows))]
 pub(crate) fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
-    let profile_path = shell_profile_path_in(home);
-
-    if is_shell_path_configured(&profile_path) {
-        return;
+    match ensure_managed_git_shim_in(home) {
+        Some(p) => emit_preflight_line(app, &format!("[path] portable git shim at {}", p.display())),
+        None => emit_preflight_line(app, "[path] portable git not present; no shim written"),
     }
-
     let block = shell_path_block();
-
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&profile_path)
-    {
-        Ok(mut f) => {
-            use std::io::Write;
-            if let Err(e) = f.write_all(block.as_bytes()) {
+    for profile_path in shell_profile_paths_in(home) {
+        if is_shell_path_configured(&profile_path) {
+            continue;
+        }
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&profile_path)
+        {
+            Ok(mut f) => {
+                use std::io::Write;
+                if let Err(e) = f.write_all(block.as_bytes()) {
+                    emit_preflight_line(
+                        app,
+                        &format!("[path] failed to write to {}: {e}", profile_path.display()),
+                    );
+                } else {
+                    emit_preflight_line(
+                        app,
+                        &format!(
+                            "[path] added HQ toolchain to {} — restart your terminal or run: source {}",
+                            profile_path.display(),
+                            profile_path.display()
+                        ),
+                    );
+                }
+            }
+            Err(e) => {
                 emit_preflight_line(
                     app,
-                    &format!("[path] failed to write to {}: {e}", profile_path.display()),
-                );
-            } else {
-                emit_preflight_line(
-                    app,
-                    &format!(
-                        "[path] added HQ toolchain to {} — restart your terminal or run: source {}",
-                        profile_path.display(),
-                        profile_path.display()
-                    ),
+                    &format!("[path] failed to open {}: {e}", profile_path.display()),
                 );
             }
-        }
-        Err(e) => {
-            emit_preflight_line(
-                app,
-                &format!("[path] failed to open {}: {e}", profile_path.display()),
-            );
         }
     }
 }
@@ -1612,39 +1684,80 @@ pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Resul
     Ok(rendered)
 }
 
-/// Write the composed toolchain PATH into `<hq>/.claude/settings.json` and
-/// re-ensure the shell-profile PATH block.
-///
-/// Invoked by the setup orchestrator after the deps stage on every installer
-/// pass, including reinstalls where all deps are already present. A missing
-/// settings.json is a skip rather than an error.
+/// The result of writing the composed managed-toolchain PATH into the winning
+/// `.claude` settings file.
 #[cfg(not(windows))]
-#[tauri::command]
-pub async fn configure_claude_settings_path(
-    app: AppHandle,
-    hq_path: String,
-) -> Result<String, String> {
-    let home = home_dir_or_err(&app, "path")?;
-    ensure_shell_path_configured(&home, &app);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SettingsPathWriteOutcome {
+    /// Wrote the composed PATH into this settings file.
+    Wrote(PathBuf),
+    /// No settings file to write into (the target file is absent). A skip, not an
+    /// error, so an already-installed machine without a base settings.json is not
+    /// treated as a failure.
+    Skipped(String),
+}
 
-    let settings_path = Path::new(&hq_path).join(".claude").join("settings.json");
+/// Compose the managed-toolchain-first PATH and write it into the `.claude`
+/// settings file the resolver actually READS for `hq_root` — settings.local.json
+/// when it defines a non-empty `env.PATH`, else settings.json — resolved through
+/// the single source of truth [`hq_desktop_core::paths::winning_settings_path_file`].
+///
+/// This is the heart of the HQ-DESKTOP-46 fix: [`composed_settings_env_path`]
+/// already produces the correct managed-first ordering; only the DESTINATION file
+/// was wrong (it was hard-coded to settings.json, which the resolver ignores
+/// whenever settings.local.json defines a non-empty PATH, so the managed-first
+/// value never reached the file the app resolves `hq` through and a stale foreign
+/// copy kept shadowing the managed CLI).
+///
+/// Reuses the existing staged-sibling + [`atomic_replace_file`] so a partial
+/// write is impossible, and canonicalizes the resolved file to require it stay
+/// inside the resolved HQ folder — a symlinked settings file cannot redirect the
+/// write outside the HQ tree. Pure enough to unit-test with a tempdir HQ root and
+/// home (no `AppHandle`).
+#[cfg(not(windows))]
+pub(crate) fn write_managed_toolchain_settings_path(
+    hq_root: &Path,
+    home: &Path,
+    login_path: &str,
+) -> Result<SettingsPathWriteOutcome, String> {
+    let file = match hq_desktop_core::paths::winning_settings_path_file(hq_root) {
+        hq_desktop_core::paths::SettingsPathFile::Local => "settings.local.json",
+        // Base or None both write the generated base file, exactly as before the
+        // fix: the reader consults settings.json in both cases.
+        hq_desktop_core::paths::SettingsPathFile::Base
+        | hq_desktop_core::paths::SettingsPathFile::None => "settings.json",
+    };
+    let settings_path = hq_root.join(".claude").join(file);
     let contents = match std::fs::read_to_string(&settings_path) {
         Ok(c) => c,
         Err(e) => {
-            let msg = format!(
-                "[path] no settings.json at {} - skipped ({e})",
+            return Ok(SettingsPathWriteOutcome::Skipped(format!(
+                "no {file} at {} - skipped ({e})",
                 settings_path.display()
-            );
-            emit_preflight_line(&app, &msg);
-            return Ok(msg);
+            )));
         }
     };
+
+    // Canonicalization guard: the file exists (we just read it), so canonicalize
+    // it — a symlink resolves to its true location — and require it to stay inside
+    // the resolved HQ folder. A settings file symlinked out of the HQ tree is
+    // refused rather than followed, so the write cannot clobber an unrelated file.
+    let canonical_root = std::fs::canonicalize(hq_root)
+        .map_err(|e| format!("cannot canonicalize HQ folder {}: {e}", hq_root.display()))?;
+    let canonical_file = std::fs::canonicalize(&settings_path)
+        .map_err(|e| format!("cannot canonicalize {}: {e}", settings_path.display()))?;
+    if !canonical_file.starts_with(&canonical_root) {
+        return Err(format!(
+            "refusing to write settings PATH outside the HQ folder: {} is not within {}",
+            canonical_file.display(),
+            canonical_root.display()
+        ));
+    }
 
     let existing_env_path = serde_json::from_str::<serde_json::Value>(&contents)
         .ok()
         .and_then(|v| v.get("env")?.get("PATH")?.as_str().map(|s| s.to_string()));
-    let composed =
-        composed_settings_env_path(&home, shell_login_path(), existing_env_path.as_deref());
+    let composed = composed_settings_env_path(home, login_path, existing_env_path.as_deref());
     let updated = settings_json_with_env_path(&contents, &composed)?;
 
     let staged = unique_sibling_path(&settings_path, "pathfix")?;
@@ -1654,13 +1767,38 @@ pub async fn configure_claude_settings_path(
         let _ = std::fs::remove_file(&staged);
         return Err(e);
     }
+    Ok(SettingsPathWriteOutcome::Wrote(settings_path))
+}
 
-    let msg = format!(
-        "[path] wrote managed toolchain PATH into {}",
-        settings_path.display()
-    );
-    emit_preflight_line(&app, &msg);
-    Ok(msg)
+/// Write the composed toolchain PATH into the winning `.claude` settings file
+/// (settings.local.json when it defines env.PATH, else settings.json) and
+/// re-ensure the shell-profile PATH block.
+///
+/// Invoked by the setup orchestrator after the deps stage on every installer
+/// pass, including reinstalls where all deps are already present. A missing
+/// target settings file is a skip rather than an error.
+#[cfg(not(windows))]
+#[tauri::command]
+pub async fn configure_claude_settings_path(
+    app: AppHandle,
+    hq_path: String,
+) -> Result<String, String> {
+    let home = home_dir_or_err(&app, "path")?;
+    ensure_shell_path_configured(&home, &app);
+
+    match write_managed_toolchain_settings_path(Path::new(&hq_path), &home, shell_login_path()) {
+        Ok(SettingsPathWriteOutcome::Wrote(path)) => {
+            let msg = format!("[path] wrote managed toolchain PATH into {}", path.display());
+            emit_preflight_line(&app, &msg);
+            Ok(msg)
+        }
+        Ok(SettingsPathWriteOutcome::Skipped(reason)) => {
+            let msg = format!("[path] {reason}");
+            emit_preflight_line(&app, &msg);
+            Ok(msg)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Windows no-op. The managed toolchain dirs land on the user PATH via the
@@ -1728,14 +1866,25 @@ pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
     }
 
     // Run `<tool> --version` and capture the first line of stdout.
+    //
+    // PATH is set to the same search path used to locate the tool: npm-global
+    // bins (qmd, hq, claude) are `#!/usr/bin/env node` scripts, and a GUI
+    // app's minimal PATH has no node, so the probe used to report
+    // `version: None` for a perfectly healthy qmd. A non-zero exit is a
+    // FAILED probe — a leftover stub that prints and exits 97 must not be
+    // mistaken for a working tool (install matrix `stale-toolchain`, 2026-09-03).
+    let probe_path = search_path
+        .map(str::to_owned)
+        .unwrap_or_else(extended_search_path);
     let version = Command::new(&bin_path)
         .arg("--version")
+        .env("PATH", probe_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .ok()
         .and_then(|out| {
-            if out.status.success() || !out.stdout.is_empty() {
+            if out.status.success() {
                 // Prefer stdout; fall back to stderr (e.g. git)
                 let raw = if !out.stdout.is_empty() {
                     out.stdout
@@ -2183,6 +2332,17 @@ pub async fn install_homebrew(app: AppHandle) -> Result<String, String> {
 // install_node
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// `node --version` output of an on-disk managed node, or `None` if it does
+/// not run / exits non-zero. Pure over the given path; exposed for testing.
+#[cfg(not(windows))]
+pub fn managed_node_reported_version(node_bin: &std::path::Path) -> Option<String> {
+    let out = Command::new(node_bin).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Install Node.js into HQ's user-local managed toolchain.
 ///
 /// The installer used to require Homebrew here, which stranded fresh Macs
@@ -2197,14 +2357,40 @@ async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Stri
     let node_bin = managed_node_bin_in(&home).join("node");
 
     if node_bin.exists() {
-        emit_preflight_line(
-            &app,
-            &format!(
-                "[node] managed Node already present at {}",
-                node_bin.display()
-            ),
-        );
-        return Ok(format!("node already installed at {}", node_bin.display()));
+        // A leftover from a half-finished or corrupted earlier install must not
+        // be trusted just because the file exists: the install matrix's
+        // `stale-toolchain` profile showed the engine adopting a broken node,
+        // then failing qmd/hq-cli with "prerequisite not installed". Only a
+        // node that runs AND reports the pinned version is reused.
+        match managed_node_reported_version(&node_bin) {
+            Some(v) if v.trim() == MANAGED_NODE_VERSION => {
+                emit_preflight_line(
+                    &app,
+                    &format!(
+                        "[node] managed Node {} already present at {}",
+                        v.trim(),
+                        node_bin.display()
+                    ),
+                );
+                return Ok(format!("node already installed at {}", node_bin.display()));
+            }
+            other => {
+                emit_preflight_line(
+                    &app,
+                    &format!(
+                        "[node] managed Node at {} is unusable ({}) — re-provisioning {}",
+                        node_bin.display(),
+                        other.map(|v| format!("reports '{}'", v.trim())).unwrap_or_else(|| "does not run".into()),
+                        MANAGED_NODE_VERSION
+                    ),
+                );
+                if let Err(e) = std::fs::remove_dir_all(&node_dir) {
+                    let msg = format!("[node] failed to remove stale toolchain {}: {e}", node_dir.display());
+                    emit_preflight_line(&app, &msg);
+                    return Err(msg);
+                }
+            }
+        }
     }
 
     let arch = std::env::consts::ARCH;
@@ -2623,6 +2809,112 @@ async fn install_yq_via_binary(app: &AppHandle) -> Result<String, String> {
     Ok(format!("yq installed at {}", target.display()))
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// install_jq (direct binary, macOS)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Pinned `jqlang/jq` release. HQ's hooks and `core/scripts/setup.sh` require
+/// jq; Sonoma ships none (Tahoe does), so a fresh Sonoma Mac failed setup.sh
+/// right after a reported-OK dependency install (install matrix, 2026-09-03).
+#[cfg(not(windows))]
+const JQ_BINARY_VERSION: &str = "jq-1.8.2";
+#[cfg(not(windows))]
+const JQ_BINARY_SHA256_AMD64: &str =
+    "e94b266e3c26690550006abe63152b782280f4e14374accdf04cbde844f00bc0";
+#[cfg(not(windows))]
+const JQ_BINARY_SHA256_ARM64: &str =
+    "2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e";
+
+#[cfg(not(windows))]
+async fn install_jq_macos(app: AppHandle) -> Result<String, String> {
+    let (arch, expected_sha) = match std::env::consts::ARCH {
+        "aarch64" => ("arm64", JQ_BINARY_SHA256_ARM64),
+        "x86_64" => ("amd64", JQ_BINARY_SHA256_AMD64),
+        other => {
+            let msg = format!("[jq] unsupported arch '{other}' — cannot install jq");
+            emit_preflight_line(&app, &msg);
+            return Err(msg);
+        }
+    };
+    let url = format!(
+        "https://github.com/jqlang/jq/releases/download/{JQ_BINARY_VERSION}/jq-macos-{arch}"
+    );
+    let Some(home) = dirs::home_dir() else {
+        let msg = "[jq] could not resolve home directory".to_string();
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    };
+    let bin_dir = home.join(".local").join("bin");
+    let target = bin_dir.join("jq");
+    let staged = bin_dir.join(format!(".jq.{}.tmp", Uuid::new_v4()));
+    if let Err(e) = std::fs::create_dir_all(&bin_dir) {
+        let msg = format!("[jq] failed to create {}: {e}", bin_dir.display());
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    emit_preflight_line(&app, &format!("[jq] downloading {url} → {}", staged.display()));
+    let staged_str = staged.to_string_lossy().into_owned();
+    run_streaming(&app, "curl", &["-fsSL", "-o", &staged_str, &url]).await?;
+
+    let check_path = bin_dir.join(format!(".{JQ_BINARY_VERSION}.sha256"));
+    let check_str = check_path.to_string_lossy().into_owned();
+    if let Err(e) = std::fs::write(&check_path, format!("{expected_sha}  {staged_str}\n")) {
+        let _ = std::fs::remove_file(&staged);
+        let msg = format!("[jq] failed to write checksum file: {e}");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    emit_preflight_line(&app, "[jq] verifying checksum");
+    if let Err(e) = run_streaming(&app, "/usr/bin/shasum", &["-a", "256", "-c", &check_str]).await {
+        let _ = std::fs::remove_file(&staged);
+        let _ = std::fs::remove_file(&check_path);
+        let msg = format!("[jq] checksum verification failed: {e}");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    let _ = std::fs::remove_file(&check_path);
+    run_streaming(&app, "chmod", &["+x", &staged_str]).await?;
+
+    let output = Command::new(&staged)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("[jq] failed to run staged jq --version: {e}"))?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() || !combined.contains(JQ_BINARY_VERSION) {
+        let _ = std::fs::remove_file(&staged);
+        let msg = format!(
+            "[jq] staged jq version check failed: expected {JQ_BINARY_VERSION}, got '{}'",
+            combined.lines().next().unwrap_or("").trim()
+        );
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    atomic_replace_file(&staged, &target).map_err(|e| {
+        let msg = format!("[jq] failed to activate staged binary: {e}");
+        emit_preflight_line(&app, &msg);
+        msg
+    })?;
+    Ok(format!("jq installed at {}", target.display()))
+}
+
+#[tauri::command]
+pub async fn install_jq(app: AppHandle) -> Result<String, String> {
+    #[cfg(not(windows))]
+    {
+        install_jq_macos(app).await
+    }
+    #[cfg(windows)]
+    {
+        let _ = app;
+        Err("jq is not provisioned by the Windows installer yet".to_string())
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // install_claude_code
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2633,6 +2925,9 @@ async fn install_yq_via_binary(app: &AppHandle) -> Result<String, String> {
 #[cfg(not(windows))]
 async fn install_claude_code_macos(app: AppHandle) -> Result<String, String> {
     let prefix = npm_global_prefix_arg(&app, "claude")?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), "claude") {
+        emit_preflight_line(&app, "[claude] removed an unusable leftover bin entry before reinstalling");
+    }
     let npm = match which::which_in(
         "npm",
         Some(extended_search_path()),
@@ -2645,30 +2940,111 @@ async fn install_claude_code_macos(app: AppHandle) -> Result<String, String> {
             return Err(msg.to_string());
         }
     };
-    run_streaming(
-        &app,
-        npm.to_str().unwrap_or("npm"),
-        &[
-            "install",
-            "-g",
-            "--prefix",
-            &prefix,
-            "@anthropic-ai/claude-code",
-        ],
-    )
-    .await
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, "@anthropic-ai/claude-code", "claude").await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // install_qmd
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Install qmd via `npm install -g @tobilu/qmd`.
+/// Remove a bin entry under the managed npm-global prefix that npm did not
+/// create (a plain file instead of npm's symlink into lib/node_modules, or a
+/// dangling symlink). npm refuses with EEXIST to overwrite such a file, so a
+/// stale stub left by a broken earlier install blocked every re-install
+/// (install matrix `stale-toolchain`, 2026-09-03). Returns true if removed.
+/// Pure over the given prefix; exposed for testing.
+#[cfg(not(windows))]
+pub fn clear_unusable_npm_bin(prefix: &std::path::Path, bin: &str) -> bool {
+    let path = prefix.join("bin").join(bin);
+    let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        return false;
+    };
+    let unusable = if meta.file_type().is_symlink() {
+        std::fs::metadata(&path).is_err() // dangling
+    } else {
+        true // a real file: npm never writes those here
+    };
+    if unusable {
+        let _ = std::fs::remove_file(&path);
+    }
+    unusable
+}
+
+/// Only registry/network-shaped npm failures justify retrying against the
+/// public registry; EACCES, ENOSPC, or a broken node must surface as-is.
+pub fn looks_like_registry_failure(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    ["enotfound", "eai_again", "econnrefused", "econnreset", "etimedout", "e404", "e403", "e401", "e502", "e503", "eproto", "cert", "registry", "proxy", "fetch failed", "network"]
+        .iter()
+        .any(|k| e.contains(k))
+}
+
+/// `npm install -g --prefix <managed> <spec>` honouring the user's npm config
+/// first, then retrying with the public registry forced if that fails.
+///
+/// A `~/.npmrc` pointing at a corporate mirror that does not carry HQ's
+/// packages (or is unreachable off-VPN) made qmd/hq installs die with npm's
+/// generic "you are behind a proxy" text (Sentry HQ-DESKTOP-5Q; install
+/// matrix `corporate-npmrc` profile). Windows already forces the public
+/// registry for hq-cli; macOS now tries the user's registry, then falls back
+/// and says so, so the failure is attributed and usually recovered.
+#[cfg(not(windows))]
+async fn npm_install_global_managed(
+    app: &AppHandle,
+    npm: &str,
+    prefix: &str,
+    spec: &str,
+    tag: &str,
+) -> Result<String, String> {
+    match run_streaming(app, npm, &["install", "-g", "--prefix", prefix, spec]).await {
+        Ok(out) => Ok(out),
+        Err(first) if !looks_like_registry_failure(&first) => Err(first),
+        Err(first) => {
+            emit_preflight_line(
+                app,
+                &format!("[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"),
+            );
+            run_streaming(
+                app,
+                npm,
+                &[
+                    "install",
+                    "-g",
+                    "--prefix",
+                    prefix,
+                    "--registry=https://registry.npmjs.org/",
+                    "--@indigoai-us:registry=https://registry.npmjs.org/",
+                    "--@tobilu:registry=https://registry.npmjs.org/",
+                    "--@anthropic-ai:registry=https://registry.npmjs.org/",
+                    "--@openai:registry=https://registry.npmjs.org/",
+                    "--@xai-official:registry=https://registry.npmjs.org/",
+                    spec,
+                ],
+            )
+            .await
+            .map_err(|second| {
+                format!("{first}\n[{tag}] retry with the public registry also failed: {second}")
+            })
+        }
+    }
+}
+
+/// Pinned qmd version. MUST match `core/scripts/setup.sh` (`QMD_VERSION`),
+/// `core/scripts/install-deps.allow`, and the `@tobilu/qmd` dependency in
+/// hq-cli's package.json. Installing `latest` here produced a live three-way
+/// skew (2.8.3 vs 2.5.3 vs 1.0.7) that the install matrix caught on
+/// 2026-09-03 — `setup.sh` then "downgraded" what the app had just installed.
+pub const MANAGED_QMD_VERSION: &str = "2.5.3";
+
+/// Install qmd via `npm install -g @tobilu/qmd@<pin>`.
 ///
 /// Errors if npm is not available.
 #[cfg(not(windows))]
 async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
     let prefix = npm_global_prefix_arg(&app, "qmd")?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), "qmd") {
+        emit_preflight_line(&app, "[qmd] removed an unusable leftover bin entry before reinstalling");
+    }
     let npm = match which::which_in(
         "npm",
         Some(extended_search_path()),
@@ -2681,12 +3057,7 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
             return Err(msg.to_string());
         }
     };
-    run_streaming(
-        &app,
-        npm.to_str().unwrap_or("npm"),
-        &["install", "-g", "--prefix", &prefix, "@tobilu/qmd"],
-    )
-    .await
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}"), "qmd").await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2714,6 +3085,9 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
         }
     };
     let prefix = npm_global_prefix_arg(&app, "hq")?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
+        emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
+    }
     let npm = match which::which_in(
         "npm",
         Some(extended_search_path()),
@@ -2726,12 +3100,7 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
             return Err(msg.to_string());
         }
     };
-    run_streaming(
-        &app,
-        npm.to_str().unwrap_or("npm"),
-        &["install", "-g", "--prefix", &prefix, "@indigoai-us/hq-cli"],
-    )
-    .await
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, "@indigoai-us/hq-cli", "hq").await
 }
 
 // NOTE (2026-04-21): `install_hq_cloud` was removed along with the
@@ -2803,6 +3172,140 @@ pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
     #[cfg(windows)]
     {
         install_claude_code_windows(app).await
+    }
+}
+
+/// npm spec + bin name for a sessions provider. Unknown tools fail closed.
+pub fn session_provider_npm_spec(tool: &str) -> Result<(&'static str, &'static str), String> {
+    match tool {
+        "claude" => Ok(("@anthropic-ai/claude-code", "claude")),
+        "codex" => Ok(("@openai/codex", "codex")),
+        "grok" => Ok(("@xai-official/grok", "grok")),
+        _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
+    }
+}
+
+fn emit_session_install_line(app: &AppHandle, msg: &str) {
+    #[cfg(not(windows))]
+    emit_preflight_line(app, msg);
+    #[cfg(windows)]
+    emit_progress(app, msg);
+}
+
+async fn npm_bin_or_install_node(app: &AppHandle, tag: &str) -> Result<std::path::PathBuf, String> {
+    let lookup = || {
+        which::which_in(
+            "npm",
+            Some(extended_search_path()),
+            std::env::current_dir().unwrap_or_default(),
+        )
+    };
+    if let Ok(path) = lookup() {
+        return Ok(path);
+    }
+    emit_session_install_line(
+        app,
+        &format!("[{tag}] npm is not installed. Installing Node.js first so the agent CLI can be set up in-app."),
+    );
+    install_node(app.clone()).await?;
+    lookup().map_err(|_| {
+        format!("[{tag}] npm was not found after installing Node.js. Open Settings → Agents and try again.")
+    })
+}
+
+#[cfg(not(windows))]
+async fn install_npm_cli_macos(
+    app: AppHandle,
+    spec: &str,
+    bin: &str,
+    tag: &str,
+) -> Result<String, String> {
+    let prefix = npm_global_prefix_arg(&app, tag)?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), bin) {
+        emit_preflight_line(
+            &app,
+            &format!("[{tag}] removed an unusable leftover bin entry before reinstalling"),
+        );
+    }
+    let npm = npm_bin_or_install_node(&app, tag).await?;
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, spec, tag).await
+}
+
+#[cfg(windows)]
+async fn install_npm_cli_windows(
+    app: AppHandle,
+    spec: &str,
+    bin: &str,
+    tag: &str,
+) -> Result<String, String> {
+    emit_progress(&app, &format!("Installing {tag} via npm..."));
+    let _ = npm_bin_or_install_node(&app, tag).await?;
+    let result = run_streaming(
+        &app,
+        "npm",
+        &[
+            "install",
+            "-g",
+            "--prefix",
+            &managed_npm_prefix().to_string_lossy(),
+            spec,
+        ],
+    )
+    .await?;
+    append_user_path(&managed_npm_bin())?;
+    let _ = bin;
+    Ok(result)
+}
+
+/// Install the Codex CLI via `npm install -g @openai/codex`.
+#[tauri::command]
+pub async fn install_codex(app: AppHandle) -> Result<String, String> {
+    let (spec, bin) = session_provider_npm_spec("codex")?;
+    #[cfg(not(windows))]
+    {
+        install_npm_cli_macos(app, spec, bin, "codex").await
+    }
+    #[cfg(windows)]
+    {
+        install_npm_cli_windows(app, spec, bin, "codex").await
+    }
+}
+
+/// Install the Grok CLI via `npm install -g @xai-official/grok`.
+#[tauri::command]
+pub async fn install_grok(app: AppHandle) -> Result<String, String> {
+    let (spec, bin) = session_provider_npm_spec("grok")?;
+    #[cfg(not(windows))]
+    {
+        install_npm_cli_macos(app, spec, bin, "grok").await
+    }
+    #[cfg(windows)]
+    {
+        install_npm_cli_windows(app, spec, bin, "grok").await
+    }
+}
+
+/// In-app sessions setup: install the selected provider CLI without the user
+/// hunting binaries. Ensures npm/Node first, then the provider package.
+#[tauri::command]
+pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<String, String> {
+    match tool.as_str() {
+        "claude" => {
+            let _ = npm_bin_or_install_node(&app, "claude").await?;
+            install_claude_code(app).await
+        }
+        "codex" | "grok" => {
+            let (spec, bin) = session_provider_npm_spec(&tool)?;
+            #[cfg(not(windows))]
+            {
+                install_npm_cli_macos(app, spec, bin, &tool).await
+            }
+            #[cfg(windows)]
+            {
+                install_npm_cli_windows(app, spec, bin, &tool).await
+            }
+        }
+        _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
     }
 }
 
@@ -3342,42 +3845,57 @@ fn write_user_path_value(env: &RegKey, value: &UserPathValue) -> Result<(), Stri
 
 #[cfg(windows)]
 pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
-    let dir_str = new_dir.to_string_lossy().to_string();
+    let result = (|| {
+        let dir_str = new_dir.to_string_lossy().to_string();
 
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let env = hkcu
-        .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
-        .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let env = hkcu
+            .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
+            .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
 
-    let mut current_value = read_user_path_value(&env)?;
-    let current = current_value.value.clone();
+        let mut current_value = read_user_path_value(&env)?;
+        let current = current_value.value.clone();
 
-    let already_present = current
-        .split(';')
-        .any(|entry| entry.eq_ignore_ascii_case(&dir_str));
-    if already_present {
+        let already_present = current
+            .split(';')
+            .any(|entry| entry.eq_ignore_ascii_case(&dir_str));
+        if already_present {
+            debug_log(&format!(
+                "append_user_path: '{dir_str}' already on PATH, skipping"
+            ));
+            return Ok(());
+        }
+
+        let updated = if current.is_empty() {
+            dir_str.clone()
+        } else if current.ends_with(';') {
+            format!("{current}{dir_str}")
+        } else {
+            format!("{current};{dir_str}")
+        };
+
+        current_value.value = updated;
+        write_user_path_value(&env, &current_value)?;
+
+        broadcast_environment_change();
         debug_log(&format!(
-            "append_user_path: '{dir_str}' already on PATH, skipping"
+            "append_user_path: added '{dir_str}', broadcast sent"
         ));
-        return Ok(());
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let failure_scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
+            .try_with(|scope| scope.clone())
+            .ok();
+        record_onboarding_failure_detail(
+            "deps",
+            failure_scope.as_ref(),
+            Some("path-write"),
+            OnboardingErrorCategory::Unknown,
+        );
     }
-
-    let updated = if current.is_empty() {
-        dir_str.clone()
-    } else if current.ends_with(';') {
-        format!("{current}{dir_str}")
-    } else {
-        format!("{current};{dir_str}")
-    };
-
-    current_value.value = updated;
-    write_user_path_value(&env, &current_value)?;
-
-    broadcast_environment_change();
-    debug_log(&format!(
-        "append_user_path: added '{dir_str}', broadcast sent"
-    ));
-    Ok(())
+    result
 }
 
 /// Remove `dir` from the user's persistent PATH. Idempotent.
@@ -4383,7 +4901,7 @@ async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
             &managed_npm_prefix().to_string_lossy(),
             "--no-audit",
             "--no-fund",
-            "@tobilu/qmd@latest",
+            &format!("@tobilu/qmd@{MANAGED_QMD_VERSION}"),
         ],
     )
     .await?;
@@ -4843,6 +5361,15 @@ const DEP_DEFS: &[DepDef] = &[
         depends_on: &[],
     },
     DepDef {
+        id: "jq",
+        label: "jq",
+        binary: "jq",
+        // Required on macOS (setup.sh + hooks need it; Sonoma ships none).
+        // The Windows installer does not provision jq yet.
+        optional: cfg!(windows),
+        depends_on: &[],
+    },
+    DepDef {
         id: "gh",
         label: "GitHub CLI",
         binary: "gh",
@@ -4864,6 +5391,18 @@ const DEP_DEFS: &[DepDef] = &[
         depends_on: &[],
     },
 ];
+
+/// Public, UI-agnostic view of the dependency registry — `(id, binary, optional)`.
+///
+/// Used by the headless install mode (`commands::headless_install`) so an
+/// unattended VM run can probe every registry entry after `install_deps`
+/// without the private `DepDef` type leaking out of this module.
+pub fn dependency_registry() -> Vec<(&'static str, &'static str, bool)> {
+    dependency_defs()
+        .iter()
+        .map(|d| (d.id, d.binary, d.optional))
+        .collect()
+}
 
 fn dependency_defs() -> &'static [DepDef] {
     DEP_DEFS
@@ -5000,11 +5539,64 @@ fn dep_status_satisfies(dep: &DepDef, status: &DepStatus) -> bool {
     if dep.id == "node" {
         return node_version_meets_floor(status.version.as_deref());
     }
-    true
+    // A required tool that is on disk but cannot report a version does not
+    // run (broken shebang target, stale stub, wrong arch). Treat it as
+    // unsatisfied so the installer re-provisions instead of trusting it.
+    if !dep.optional && status.version.is_none() {
+        return false;
+    }
+    // qmd must be the pinned version: an old/foreign copy found off-PATH
+    // (e.g. a ghost pnpm global) is not "installed" — re-provision into the
+    // managed prefix. hq must live in HQ's managed toolchain: foreign copies
+    // are exactly what the CLI updater collided with (2026-08-20 incident:
+    // ghost pnpm install + uncoordinated updaters reinstalling 8×/hour).
+    // Both surfaced by the install matrix `pnpm-global-ghost` profile.
+    match dep.id {
+        "qmd" => qmd_version_matches_pin(status.version.as_deref()),
+        "hq-cli" => status
+            .path
+            .as_deref()
+            .map(is_managed_toolchain_path)
+            .unwrap_or(false),
+        _ => true,
+    }
+}
+
+/// `qmd 2.5.3 (abc123)` → matches when the second token equals the pin.
+pub fn qmd_version_matches_pin(version: Option<&str>) -> bool {
+    version
+        .and_then(|v| v.split_whitespace().nth(1))
+        .map(|v| v.trim_start_matches('v') == MANAGED_QMD_VERSION)
+        .unwrap_or(false)
+}
+
+/// True when `path` is inside HQ's managed toolchain (any platform layout).
+pub fn is_managed_toolchain_path(path: &std::path::Path) -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    #[cfg(not(windows))]
+    let root = managed_toolchain_dir_in(&home);
+    #[cfg(windows)]
+    let root = managed_toolchain_dir();
+    path.starts_with(&root)
 }
 
 fn dep_is_satisfied(dep: &DepDef) -> bool {
     dep_status_satisfies(dep, &check_dep_impl(dep.binary, None))
+}
+
+fn finish_orchestrated_dep_install(
+    label: &str,
+    install_result: Result<String, String>,
+    found_after_install: bool,
+) -> Result<(), String> {
+    match install_result {
+        Ok(_) if found_after_install => Ok(()),
+        Ok(_) => Err(format!("{label} was not found after install")),
+        // An installer can leave a managed binary on the current process PATH
+        // while failing to persist it for future shells. Do not turn that
+        // failure into success through the post-install probe.
+        Err(err) => Err(err),
+    }
 }
 
 async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
@@ -5022,21 +5614,19 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         "qmd" => install_qmd(app.clone()).await,
         "hq-cli" => install_hq_cli(app.clone()).await,
         "yq" => install_yq(app.clone()).await,
+        "jq" => install_jq(app.clone()).await,
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
 
-    if dep_is_satisfied(dep) {
-        return Ok(());
-    }
-
-    match install_result {
-        Ok(_) => Err(format!("{} was not found after install", dep.label)),
-        Err(err) => Err(err),
-    }
+    finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(dep))
 }
 
 #[tauri::command]
-pub async fn install_deps(app: AppHandle) -> Result<(), String> {
+pub async fn install_deps(
+    app: AppHandle,
+    failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
+) -> Result<(), String> {
+    clear_onboarding_failure_detail("deps", failure_scope.as_ref());
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);
     let mut ok_set: HashSet<&'static str> = HashSet::new();
@@ -5056,8 +5646,16 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
 
         let settled = join_all(ready.into_iter().map(|dep| {
             let app = app.clone();
+            let failure_scope = failure_scope.clone();
             async move {
-                let install_result = install_orchestrated_dep(&app, dep).await;
+                let install_result = match failure_scope {
+                    Some(scope) => {
+                        ACTIVE_ONBOARDING_FAILURE_SCOPE
+                            .scope(scope, install_orchestrated_dep(&app, dep))
+                            .await
+                    }
+                    None => install_orchestrated_dep(&app, dep).await,
+                };
                 result_from_install(dep, install_result)
             }
         }))
@@ -5069,6 +5667,14 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
             }
             result_by_id.insert(result.id, result);
         }
+    }
+
+    // The shell PATH block used to be written only as a side effect of an
+    // npm-global install, so a run where every dep was "already present"
+    // (adopted from elsewhere) left the user's shell without the toolchain.
+    #[cfg(not(windows))]
+    if let Some(home) = dirs::home_dir() {
+        ensure_shell_path_configured(&home, &app);
     }
 
     for result in blocked_required_results(deps, &result_by_id, &ok_set) {
@@ -5100,6 +5706,20 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
     if failures.is_empty() {
         Ok(())
     } else {
+        if let Some(failed_dependency) = deps.iter().find_map(|dep| {
+            let result = result_by_id.get(dep.id)?;
+            (!dep.optional && result.status == DepInstallStatus::Failed).then_some(dep.id)
+        }) {
+            // Individual installers currently return their rendered errors, so
+            // no typed source remains at this aggregation point. Preserve the
+            // exact dependency but record the category as the closed fallback.
+            record_onboarding_failure_detail(
+                "deps",
+                failure_scope.as_ref(),
+                Some(failed_dependency),
+                OnboardingErrorCategory::Unknown,
+            );
+        }
         Err(format!(
             "Dependency install failed: {}",
             failures.join("; ")
@@ -5110,6 +5730,34 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod install_deps_planner_tests {
     use super::*;
+
+    #[test]
+    fn path_persistence_failure_remains_fatal_after_the_managed_binary_is_visible() {
+        let result = finish_orchestrated_dep_install(
+            "Node.js",
+            Err("PATH persistence failed".to_string()),
+            true,
+        );
+
+        assert_eq!(result, Err("PATH persistence failed".to_string()));
+    }
+
+    #[test]
+    fn session_provider_npm_spec_covers_the_three_session_clis() {
+        assert_eq!(
+            session_provider_npm_spec("claude").unwrap(),
+            ("@anthropic-ai/claude-code", "claude")
+        );
+        assert_eq!(
+            session_provider_npm_spec("codex").unwrap(),
+            ("@openai/codex", "codex")
+        );
+        assert_eq!(
+            session_provider_npm_spec("grok").unwrap(),
+            ("@xai-official/grok", "grok")
+        );
+        assert!(session_provider_npm_spec("cursor").is_err());
+    }
 
     #[test]
     fn managed_node_abi_matches_pinned_versions() {
@@ -5255,6 +5903,17 @@ mod install_deps_planner_tests {
         }
     }
 
+    /// Wave-1 required deps. `jq` is required on macOS (setup.sh/hooks need
+    /// it; Sonoma ships none) but optional on Windows, where it is not
+    /// provisioned yet — so it only appears in the required wave off-Windows.
+    fn wave1_required() -> Vec<&'static str> {
+        let mut w = vec!["node", "yq", "git"];
+        if cfg!(not(windows)) {
+            w.push("jq");
+        }
+        w
+    }
+
     #[test]
     fn planner_gates_qmd_and_hq_cli_on_node() {
         let deps = dependency_defs();
@@ -5263,10 +5922,10 @@ mod install_deps_planner_tests {
 
         assert_eq!(
             ids(ready_required_deps(deps, &result_by_id, &ok_set)),
-            vec!["node", "yq", "git"]
+            wave1_required()
         );
 
-        for dep_id in ["node", "yq", "git"] {
+        for dep_id in ["node", "yq", "git", "jq"] {
             let dep = deps.iter().find(|dep| dep.id == dep_id).unwrap();
             result_by_id.insert(dep.id, ok_result(dep));
             ok_set.insert(dep.id);
@@ -5284,7 +5943,7 @@ mod install_deps_planner_tests {
         let mut result_by_id = premark_optional_results(deps);
         let mut ok_set = HashSet::new();
 
-        for dep_id in ["yq", "git"] {
+        for dep_id in ["yq", "git", "jq"] {
             let dep = deps.iter().find(|dep| dep.id == dep_id).unwrap();
             result_by_id.insert(dep.id, ok_result(dep));
             ok_set.insert(dep.id);
@@ -5327,7 +5986,7 @@ mod install_deps_planner_tests {
 
         assert_eq!(
             waves,
-            vec![vec!["node", "yq", "git"], vec!["qmd", "hq-cli"]]
+            vec![wave1_required(), vec!["qmd", "hq-cli"]]
         );
     }
 }
@@ -5589,6 +6248,142 @@ mod install_deps_tests {
 
         let err = settings_json_with_env_path(r#"{"env": "bad"}"#, "/managed/bin").unwrap_err();
         assert_eq!(err, "settings.json 'env' is not an object");
+    }
+
+    /// HQ-DESKTOP-46: the composed managed-first PATH must be WRITTEN into the
+    /// file the resolver READS. settings.local.json defines env.PATH, so it wins,
+    /// and settings.json (which the resolver ignores) must be left untouched.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_targets_settings_local_when_it_has_a_path() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("settings.json"),
+            "{\"other\":1,\"env\":{\"PATH\":\"/base\"}}",
+        )
+        .unwrap();
+        std::fs::write(
+            claude.join("settings.local.json"),
+            "{\"keep\":true,\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}",
+        )
+        .unwrap();
+
+        let outcome =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            outcome,
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.local.json"))
+        );
+
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(claude.join("settings.local.json")).unwrap())
+                .unwrap();
+        let path = doc["env"]["PATH"].as_str().unwrap();
+        // The managed node bin is hoisted to the FRONT.
+        let managed = managed_tool_paths_in(home.path());
+        assert!(
+            path.starts_with(&managed[0]),
+            "managed node bin must be first: {path}"
+        );
+        // The pre-existing foreign dir survives, just behind the managed dirs.
+        assert!(path.split(':').any(|seg| seg == "/opt/homebrew/bin"));
+        // Every other key in the winning document is preserved.
+        assert_eq!(doc["keep"].as_bool(), Some(true));
+        // The base file the resolver ignores is untouched.
+        assert_eq!(
+            std::fs::read_to_string(claude.join("settings.json")).unwrap(),
+            "{\"other\":1,\"env\":{\"PATH\":\"/base\"}}"
+        );
+    }
+
+    /// When only the base settings.json defines env.PATH the writer targets it,
+    /// exactly as before the fix — and the rewrite is idempotent.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_falls_back_to_base_and_is_idempotent() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("settings.json"),
+            "{\"model\":\"x\",\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}",
+        )
+        .unwrap();
+
+        let first =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            first,
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.json"))
+        );
+        let after_first = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+
+        let second =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            second,
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.json"))
+        );
+        let after_second = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+        assert_eq!(after_first, after_second, "the rewrite must be idempotent");
+        let doc: serde_json::Value = serde_json::from_str(&after_second).unwrap();
+        assert_eq!(doc["model"].as_str(), Some("x"));
+    }
+
+    /// A missing target settings file is a skip, not an error.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_skips_when_no_settings_file() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(hq.path().join(".claude")).unwrap();
+        let outcome =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap();
+        assert!(matches!(outcome, SettingsPathWriteOutcome::Skipped(_)));
+    }
+
+    /// A settings file symlinked OUT of the HQ folder is refused, so the write
+    /// cannot be redirected to clobber an unrelated file.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_refuses_a_symlink_escaping_the_hq_folder() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let target = outside.path().join("evil-settings.json");
+        std::fs::write(&target, "{\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}").unwrap();
+        std::os::unix::fs::symlink(&target, claude.join("settings.local.json")).unwrap();
+
+        let err =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap_err();
+        assert!(err.contains("outside the HQ folder"), "unexpected error: {err}");
+        // The escaping target was NOT rewritten.
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "{\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}"
+        );
+    }
+
+    /// A non-object settings document is refused rather than clobbered.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_refuses_a_non_object_document() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        // No file defines env.PATH -> target is settings.json; it exists but is a
+        // JSON array, so the composer refuses it as a non-object.
+        std::fs::write(claude.join("settings.json"), "[]").unwrap();
+        let err =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap_err();
+        assert!(err.contains("not an object"), "unexpected error: {err}");
     }
 
     #[test]
@@ -6793,5 +7588,178 @@ mod toolchain_swap_e2e_tests {
             !staged.exists(),
             "the staged tree must be cleaned up, not stranded"
         );
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod shell_path_block_tests {
+    use super::*;
+
+    #[test]
+    fn path_block_covers_git_and_local_bin_before_system_dirs() {
+        let block = shell_path_block();
+        let export = block.lines().find(|l| l.starts_with("export PATH=")).expect("export line");
+        let idx = |needle: &str| export.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
+        assert!(idx("toolchain/node/bin") < idx("toolchain/npm-global/bin"));
+        assert!(idx("toolchain/npm-global/bin") < idx("toolchain/git-shim"));
+        assert!(idx("toolchain/git-shim") < idx("$HOME/.local/bin"));
+        assert!(idx("$HOME/.local/bin") < idx(":$PATH"));
+        assert!(block.contains(SHELL_PATH_MARKER));
+    }
+
+    #[test]
+    fn zsh_gets_zshrc_and_zprofile() {
+        let home = std::path::Path::new("/Users/x");
+        let primary = shell_profile_path_in(home);
+        let all = shell_profile_paths_in(home);
+        assert_eq!(all[0], primary);
+        if primary.ends_with(".zshrc") {
+            assert_eq!(all.len(), 2);
+            assert!(all[1].ends_with(".zprofile"));
+        } else {
+            assert_eq!(all.len(), 1);
+        }
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod git_shim_tests {
+    use super::*;
+
+    #[test]
+    fn shim_written_only_when_portable_git_exists_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        assert!(ensure_managed_git_shim_in(home).is_none());
+        let bin = managed_git_dir_in(home).join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("git"), "").unwrap();
+        let shim = ensure_managed_git_shim_in(home).expect("shim");
+        let body = std::fs::read_to_string(&shim).unwrap();
+        assert!(body.starts_with("#!/bin/sh"));
+        assert!(body.contains("GIT_EXEC_PATH") && body.contains("GIT_TEMPLATE_DIR") && body.contains("exec "));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&shim).unwrap().permissions().mode() & 0o111, 0o111);
+        assert_eq!(ensure_managed_git_shim_in(home), Some(shim));
+    }
+
+    #[test]
+    fn qmd_pin_matches_setup_sh_contract() {
+        assert_eq!(MANAGED_QMD_VERSION, "2.5.3");
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod managed_node_health_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn stub(dir: &std::path::Path, body: &str) -> PathBuf {
+        let p = dir.join("node");
+        std::fs::write(&p, body).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[test]
+    fn healthy_node_reports_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = stub(tmp.path(), &format!("#!/bin/sh\necho {MANAGED_NODE_VERSION}\n"));
+        assert_eq!(managed_node_reported_version(&p).as_deref().map(str::trim), Some(MANAGED_NODE_VERSION));
+    }
+
+    #[test]
+    fn broken_or_wrong_node_is_not_trusted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = stub(tmp.path(), "#!/bin/sh\necho 'node: stale stub'; exit 97\n");
+        assert_eq!(managed_node_reported_version(&p), None);
+        let p = stub(tmp.path(), "#!/bin/sh\necho v16.20.2\n");
+        assert_ne!(managed_node_reported_version(&p).as_deref().map(str::trim), Some(MANAGED_NODE_VERSION));
+        assert_eq!(managed_node_reported_version(std::path::Path::new("/nonexistent/node")), None);
+    }
+}
+
+#[cfg(test)]
+mod dep_health_tests {
+    use super::*;
+
+    #[test]
+    fn required_dep_on_disk_without_a_version_is_not_satisfied() {
+        let qmd = dependency_defs().iter().find(|d| d.id == "qmd").unwrap();
+        let stub = DepStatus { installed: true, version: None, path: Some(PathBuf::from("/x/qmd")) };
+        assert!(!dep_status_satisfies(qmd, &stub));
+        let healthy = DepStatus { installed: true, version: Some("qmd 2.5.3".into()), path: Some(PathBuf::from("/x/qmd")) };
+        assert!(dep_status_satisfies(qmd, &healthy));
+        let gh = dependency_defs().iter().find(|d| d.id == "gh").unwrap();
+        let opt_no_version = DepStatus { installed: true, version: None, path: Some(PathBuf::from("/x/gh")) };
+        assert!(dep_status_satisfies(gh, &opt_no_version));
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod npm_bin_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn removes_plain_file_and_dangling_link_keeps_valid_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = tmp.path();
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        assert!(!clear_unusable_npm_bin(prefix, "qmd"));
+        std::fs::write(bin.join("qmd"), "#!/bin/sh\nexit 97\n").unwrap();
+        assert!(clear_unusable_npm_bin(prefix, "qmd"));
+        assert!(!bin.join("qmd").exists());
+        std::os::unix::fs::symlink(prefix.join("lib/node_modules/missing/bin/qmd.js"), bin.join("qmd")).unwrap();
+        assert!(clear_unusable_npm_bin(prefix, "qmd"));
+        assert!(std::fs::symlink_metadata(bin.join("qmd")).is_err());
+        let target = prefix.join("lib/node_modules/@tobilu/qmd/bin/qmd.js");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "").unwrap();
+        std::os::unix::fs::symlink(&target, bin.join("qmd")).unwrap();
+        assert!(!clear_unusable_npm_bin(prefix, "qmd"));
+        assert!(bin.join("qmd").exists());
+    }
+}
+
+#[cfg(test)]
+mod foreign_copy_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn qmd_pin_match() {
+        assert!(qmd_version_matches_pin(Some(&format!("qmd {MANAGED_QMD_VERSION} (facd35e)"))));
+        assert!(!qmd_version_matches_pin(Some("qmd 1.0.7-ghost")));
+        assert!(!qmd_version_matches_pin(Some("qmd 2.8.3 (abc)")));
+        assert!(!qmd_version_matches_pin(None));
+    }
+
+    #[test]
+    fn foreign_qmd_and_hq_are_not_satisfied() {
+        let qmd = dependency_defs().iter().find(|d| d.id == "qmd").unwrap();
+        let ghost = DepStatus { installed: true, version: Some("qmd 1.0.7-ghost".into()), path: Some(PathBuf::from("/Users/x/Library/pnpm/qmd")) };
+        assert!(!dep_status_satisfies(qmd, &ghost));
+        let hq = dependency_defs().iter().find(|d| d.id == "hq-cli").unwrap();
+        let foreign = DepStatus { installed: true, version: Some("5.0.0".into()), path: Some(PathBuf::from("/Users/x/Library/pnpm/hq")) };
+        assert!(!dep_status_satisfies(hq, &foreign));
+        #[cfg(not(windows))]
+        {
+            let managed = dirs::home_dir().unwrap().join("Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq");
+            let ok = DepStatus { installed: true, version: Some("5.107.1".into()), path: Some(managed) };
+            assert!(dep_status_satisfies(hq, &ok));
+        }
+    }
+}
+
+#[cfg(test)]
+mod registry_failure_classifier_tests {
+    use super::*;
+    #[test]
+    fn classifies_registry_vs_local_failures() {
+        assert!(looks_like_registry_failure("npm error code ENOTFOUND\nnpm error network request to https://npm.corp.invalid/@tobilu%2fqmd failed"));
+        assert!(looks_like_registry_failure("npm error code E404 Not Found - GET https://npm.corp/..."));
+        assert!(looks_like_registry_failure("npm error network In most cases you are behind a proxy"));
+        assert!(!looks_like_registry_failure("npm error code EACCES permission denied, mkdir '/usr/local/lib/node_modules'"));
+        assert!(!looks_like_registry_failure("npm error code ENOSPC no space left on device"));
     }
 }

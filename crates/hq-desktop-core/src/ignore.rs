@@ -472,7 +472,10 @@ mod tests {
             ".ENV",
             ".Env.Local",
         ] {
-            assert!(!filter.should_sync(&root.join(p)), "{p} must be excluded (case-insensitive)");
+            assert!(
+                !filter.should_sync(&root.join(p)),
+                "{p} must be excluded (case-insensitive)"
+            );
         }
     }
 }

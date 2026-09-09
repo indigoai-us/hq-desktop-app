@@ -1,0 +1,1521 @@
+/**
+ * Route-to-handler coverage matrix for desktop back/forward (US-001).
+ *
+ * Each row is one navigation assignment or callback in the inventoried hosts.
+ * Tests fail if a row's needle is missing from its file, or if a classified
+ * DesktopApp function is absent from this map.
+ *
+ * Active host: shared `DesktopApp` hosted by `WorkShell` and `HqWorkWorkShell`.
+ * Legacy `apps/sync/src/desktop-alt/DesktopApp.svelte` DesktopRoute/navigate
+ * is out of scope — desktop-alt/main.ts mounts HqWorkWorkShell only.
+ *
+ * EmbeddedNavigationController is a pending-route delivery bridge, not a
+ * history stack. US-002 routes in-scope semantic handlers through
+ * navigate() → resolveDestination() → commitDestination().
+ */
+
+import type {
+  NavigationDestination,
+  NonNavigationReason,
+} from "./navigation-history.js";
+
+export type NavigationHostId =
+  | "shared-shell"
+  | "work-host"
+  | "hq-work-host"
+  | "sessions-extra"
+  | "legacy-desktop-alt";
+
+export type HistoryEffect = "push" | "replace" | "none";
+
+export type MatrixDestinationKind =
+  | NavigationDestination["kind"]
+  | "passthrough"
+  | "legacy"
+  | "none";
+
+export interface NavigationHandlerRow {
+  id: string;
+  file: string;
+  /** Unique substring that must appear in `file`. */
+  needle: string;
+  destinationKind: MatrixDestinationKind;
+  history: HistoryEffect;
+  host: NavigationHostId;
+  inScope: boolean;
+  nonNavigationReason?: NonNavigationReason;
+  notes?: string;
+}
+
+export const SHARED_SHELL_FILE = "packages/ui/src/shell/DesktopApp.svelte";
+export const WORK_HOST_FILE = "apps/work/src/lib/WorkShell.svelte";
+export const HQ_WORK_SHELL_FILE =
+  "apps/sync/src/desktop-alt/HqWorkWorkShell.svelte";
+export const HQ_WORK_HOST_FILE = "apps/sync/src/desktop-alt/hq-work-host.ts";
+export const SESSIONS_EXTRA_FILE =
+  "apps/sync/src/desktop-alt/pages/SessionsExtraPage.svelte";
+export const LEGACY_DESKTOP_APP_FILE =
+  "apps/sync/src/desktop-alt/DesktopApp.svelte";
+export const DESKTOP_ALT_MAIN_FILE = "apps/sync/src/desktop-alt/main.ts";
+
+export const NAVIGATION_INVENTORY_FILES = [
+  SHARED_SHELL_FILE,
+  WORK_HOST_FILE,
+  HQ_WORK_SHELL_FILE,
+  HQ_WORK_HOST_FILE,
+  SESSIONS_EXTRA_FILE,
+] as const;
+
+/** Assignments of `view` in DesktopApp.svelte. Comparisons (`view ===`) are excluded. */
+export const DESKTOP_APP_VIEW_ASSIGN_RE = /\bview = (?:view ===|"[^"]+")/g;
+export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 11;
+
+/** Direct `navigation.navigate(` calls in HqWorkWorkShell (native/host seams). */
+export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
+export const HQ_WORK_SHELL_NAVIGATE_COUNT = 7;
+
+export const DESKTOP_APP_FUNCTION_RE =
+  /(?:async )?function (open[A-Z]\w*|close[A-Z]\w*|apply[A-Z]\w*|toggle[A-Z]\w*|navigate[A-Z]\w*|handle[A-Z]\w*|leave[A-Z]\w*|changeTenantCompany|onOpenChannel|onMessagePerson|onOpenSettingsEvent|onEmbeddedNavigation|onKey|navigate|resolveDestination|commitDestination|goBack|goForward)\b/g;
+
+/**
+ * Every DesktopApp function matching DESKTOP_APP_FUNCTION_RE must appear here.
+ * `none` rows are inventoried as non-navigation so they cannot silently start
+ * pushing history later.
+ */
+export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
+  applyCommittedNavigation: "push",
+  navigate: "push",
+  resolveDestination: "none",
+  commitDestination: "push",
+  goBack: "replace",
+  goForward: "replace",
+  leaveCurrentDestination: "replace",
+  handleRecommendedUpdateNow: "none",
+  applyFetchedTimeline: "none",
+  openMemberProfile: "none",
+  closeMemberProfile: "none",
+  openAgentProfileFromHeader: "none",
+  closeAgentDetail: "none",
+  openAgentFromHeader: "none",
+  openProfileForAuthor: "none",
+  openMigrateSession: "none",
+  applyCardFocus: "none",
+  navigateToEntryTarget: "push",
+  applyCardActionFailure: "none",
+  handleTeamAction: "push",
+  handleCardAction: "push",
+  openReply: "push",
+  openArtifact: "none",
+  closeArtifact: "none",
+  closeReply: "replace",
+  applyReplyDeepLink: "push",
+  handleSelect: "push",
+  applyConversationDeepLink: "push",
+  applyPendingChannelOpen: "push",
+  applyPendingConversation: "push",
+  changeTenantCompany: "push",
+  applyChannelWake: "none",
+  openAttachmentTray: "none",
+  openChannelFile: "none",
+  openNotification: "push",
+  openLibrary: "push",
+  toggleNotifications: "push",
+  openSettings: "push",
+  openExtraPage: "push",
+  closeSettings: "replace",
+  applyEmbeddedNavigation: "push",
+  onKey: "push",
+  onOpenChannel: "push",
+  onMessagePerson: "push",
+  onOpenSettingsEvent: "push",
+  onEmbeddedNavigation: "push",
+};
+
+export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
+  // --- shared DesktopApp: user navigation ---
+  {
+    id: "palette-go-notifications",
+    file: SHARED_SHELL_FILE,
+    needle: 'id: "command-go-notifications"',
+    destinationKind: "notifications",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "palette-go-meetings",
+    file: SHARED_SHELL_FILE,
+    needle: 'id: "command-go-meetings"',
+    destinationKind: "meetings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "palette-go-atlas",
+    file: SHARED_SHELL_FILE,
+    needle: 'id: "command-go-atlas"',
+    destinationKind: "atlas",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "palette-go-library",
+    file: SHARED_SHELL_FILE,
+    needle: 'id: "command-go-library"',
+    destinationKind: "library",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "palette-go-settings",
+    file: SHARED_SHELL_FILE,
+    needle: 'id: "command-go-settings"',
+    destinationKind: "settings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "palette-go-extra-page",
+    file: SHARED_SHELL_FILE,
+    needle: "action: () => openExtraPage(id)",
+    destinationKind: "extra",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "palette-go-marketplace",
+    file: SHARED_SHELL_FILE,
+    needle: 'id: "command-go-marketplace"',
+    destinationKind: "library",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "palette-select-conversation",
+    file: SHARED_SHELL_FILE,
+    needle: "action: () => handleSelect(item.row)",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "navigate-to-entry-target",
+    file: SHARED_SHELL_FILE,
+    needle: "function navigateToEntryTarget(",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "team-action-navigate-chat",
+    file: SHARED_SHELL_FILE,
+    needle: 'if (result?.navigateTo === "chat")',
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "card-action-open-agent-channel",
+    file: SHARED_SHELL_FILE,
+    needle: "requestChannelOpen(agentChannelId,",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "open-reply",
+    file: SHARED_SHELL_FILE,
+    needle: "function openReply(rootEventId: string)",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "close-reply",
+    file: SHARED_SHELL_FILE,
+    needle: "function closeReply(): void",
+    destinationKind: "channel",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "apply-reply-deep-link",
+    file: SHARED_SHELL_FILE,
+    needle: "async function applyReplyDeepLink(rootEventId: string)",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "handle-select",
+    file: SHARED_SHELL_FILE,
+    needle: "function handleSelect(",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "apply-conversation-deep-link",
+    file: SHARED_SHELL_FILE,
+    needle: "function applyConversationDeepLink(",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "apply-pending-channel-open",
+    file: SHARED_SHELL_FILE,
+    needle: "function applyPendingChannelOpen(",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "apply-pending-conversation",
+    file: SHARED_SHELL_FILE,
+    needle: "function applyPendingConversation(",
+    destinationKind: "dm",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "change-tenant-company",
+    file: SHARED_SHELL_FILE,
+    needle: "function changeTenantCompany(companyUid: string | null)",
+    destinationKind: "messages",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Company switch is in-account navigation.",
+  },
+  {
+    id: "open-notification",
+    file: SHARED_SHELL_FILE,
+    needle: "function openNotification(item: NotificationItem)",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "open-library",
+    file: SHARED_SHELL_FILE,
+    needle: "function openLibrary(next: LibraryTab = \"skills\")",
+    destinationKind: "library",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "toggle-notifications",
+    file: SHARED_SHELL_FILE,
+    needle: "function toggleNotifications(): void",
+    destinationKind: "notifications",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "open-settings",
+    file: SHARED_SHELL_FILE,
+    needle: "function openSettings(section: EmbeddedSettingsSection | null = null)",
+    destinationKind: "settings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "open-extra-page",
+    file: SHARED_SHELL_FILE,
+    needle: "function openExtraPage(id: string, param: string | null = null)",
+    destinationKind: "extra",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "close-settings",
+    file: SHARED_SHELL_FILE,
+    needle: "function closeSettings(): void",
+    destinationKind: "messages",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "apply-embedded-navigation",
+    file: SHARED_SHELL_FILE,
+    needle: "function applyEmbeddedNavigation(target: EmbeddedNavigationTarget)",
+    destinationKind: "passthrough",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Maps EmbeddedNavigationTarget onto the destination union.",
+  },
+  {
+    id: "event-open-channel",
+    file: SHARED_SHELL_FILE,
+    needle: "function onOpenChannel(event: Event)",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "event-message-person",
+    file: SHARED_SHELL_FILE,
+    needle: "function onMessagePerson(event: Event)",
+    destinationKind: "dm",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "event-open-settings",
+    file: SHARED_SHELL_FILE,
+    needle: "function onOpenSettingsEvent(): void",
+    destinationKind: "settings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "event-embedded-navigation",
+    file: SHARED_SHELL_FILE,
+    needle: "function onEmbeddedNavigation(event: Event)",
+    destinationKind: "passthrough",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "keydown-cmd-comma",
+    file: SHARED_SHELL_FILE,
+    needle: 'key === ","',
+    destinationKind: "settings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "keydown-cmd-1-notifications",
+    file: SHARED_SHELL_FILE,
+    needle: 'key === "1"',
+    destinationKind: "notifications",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "keydown-cmd-2-meetings",
+    file: SHARED_SHELL_FILE,
+    needle: 'key === "2"',
+    destinationKind: "meetings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "keydown-cmd-3-marketplace",
+    file: SHARED_SHELL_FILE,
+    needle: 'key === "3"',
+    destinationKind: "library",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "keydown-cmd-4-library",
+    file: SHARED_SHELL_FILE,
+    needle: 'key === "4"',
+    destinationKind: "library",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "go-chord-atlas",
+    file: SHARED_SHELL_FILE,
+    needle: 'if (letter !== "a") return false;',
+    destinationKind: "atlas",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "titlebar-create-extra-page",
+    file: SHARED_SHELL_FILE,
+    needle: "openExtraPage(id, action.param())",
+    destinationKind: "extra",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "titlebar-notifications",
+    file: SHARED_SHELL_FILE,
+    needle: "onopenNotifications={toggleNotifications}",
+    destinationKind: "notifications",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "titlebar-meetings",
+    file: SHARED_SHELL_FILE,
+    needle: "onopenMeetings={() => {",
+    destinationKind: "meetings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "titlebar-settings",
+    file: SHARED_SHELL_FILE,
+    needle: "onOpenSettings={() => openSettings()}",
+    destinationKind: "settings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "titlebar-library",
+    file: SHARED_SHELL_FILE,
+    needle: 'onopenLibrary={() => openLibrary("skills")}',
+    destinationKind: "library",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "titlebar-marketplace",
+    file: SHARED_SHELL_FILE,
+    needle:
+      'onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}',
+    destinationKind: "library",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "titlebar-back",
+    file: SHARED_SHELL_FILE,
+    needle: "onback={() => void goBack()}",
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "titlebar-forward",
+    file: SHARED_SHELL_FILE,
+    needle: "onforward={() => void goForward()}",
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "keydown-history-back-forward",
+    file: SHARED_SHELL_FILE,
+    needle: "consumeNavigationShortcut(event, {",
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "shortcut-macos-cmd-bracket",
+    file: "packages/ui/src/shell/navigation-shortcuts.ts",
+    needle: 'event.key === "[" || event.code === "BracketLeft"',
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "shortcut-windows-alt-arrow",
+    file: "packages/ui/src/shell/navigation-shortcuts.ts",
+    needle: 'if (event.key === "ArrowLeft") return "back";',
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "settings-onback",
+    file: SHARED_SHELL_FILE,
+    needle: "onback={closeSettings}",
+    destinationKind: "passthrough",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "sidebar-select",
+    file: SHARED_SHELL_FILE,
+    needle: "onselect={(row, options) =>",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "sidebar-navigate-messages",
+    file: SHARED_SHELL_FILE,
+    needle: "onnavigateMessages={() => {",
+    destinationKind: "messages",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "sidebar-open-settings",
+    file: SHARED_SHELL_FILE,
+    needle: "onopenSettings={() => openSettings()}",
+    destinationKind: "settings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "sidebar-company-scope",
+    file: SHARED_SHELL_FILE,
+    needle: "oncompanyscopechange={changeTenantCompany}",
+    destinationKind: "messages",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "notifications-open",
+    file: SHARED_SHELL_FILE,
+    needle: "onopen={openNotification}",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "notifications-onback",
+    file: SHARED_SHELL_FILE,
+    needle: "onunreadchange={(n) => (unreadCount = n)}",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "live-session-phase",
+    notes: "Unread badge updates are not navigation.",
+  },
+  {
+    id: "notifications-back",
+    file: SHARED_SHELL_FILE,
+    needle:
+      "void leaveCurrentDestination();\n            }}\n            onunreadchange=",
+    destinationKind: "messages",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "shared-files-overlay",
+    file: SHARED_SHELL_FILE,
+    needle: '{#if view === "shared-files"}',
+    destinationKind: "shared-files",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "extra-page-onnavigate",
+    file: SHARED_SHELL_FILE,
+    needle: "options?.mode ?? \"push\"",
+    destinationKind: "extra",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Default push; extra pages may pass { mode: 'replace' } (session first-send).",
+  },
+  {
+    id: "meetings-page",
+    file: SHARED_SHELL_FILE,
+    needle: "focusRequest={meetingFocusRequest}",
+    destinationKind: "meetings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "atlas-page",
+    file: SHARED_SHELL_FILE,
+    needle: 'headerVariant="embedded"',
+    destinationKind: "atlas",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "agent-surface-tab",
+    file: SHARED_SHELL_FILE,
+    needle: "onclick={() => pushConversationSurface({ agentSurface: t.id })}",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "agent-surface-close",
+    file: SHARED_SHELL_FILE,
+    needle: "onclose={() => void leaveCurrentDestination()}",
+    destinationKind: "channel",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "company-tab-select",
+    file: SHARED_SHELL_FILE,
+    needle: "onselect={(id) => pushConversationSurface({ companyTab: id })}",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "channel-tab-select",
+    file: SHARED_SHELL_FILE,
+    needle: "onclick={() => pushConversationSurface({ tab: t.id })}",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "board-open-in-channel",
+    file: SHARED_SHELL_FILE,
+    needle: 'onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}',
+    destinationKind: "channel",
+    history: "replace",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "channel-file-preview",
+    file: SHARED_SHELL_FILE,
+    needle: 'pushConversationSurface({ tab: "files", fileKey: item.key })',
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "channel-file-preview-close",
+    file: SHARED_SHELL_FILE,
+    needle: 'pushConversationSurface({ tab: "files", fileKey: null })',
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "library-overlay",
+    file: SHARED_SHELL_FILE,
+    needle: 'onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}',
+    destinationKind: "library",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "library-item-select",
+    file: SHARED_SHELL_FILE,
+    needle:
+      "void navigate({ kind: \"library\", tab: libraryTab, itemId: id })",
+    destinationKind: "library",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "settings-section-select",
+    file: SHARED_SHELL_FILE,
+    needle: "onsectionchange={(section) => openSettings(section)}",
+    destinationKind: "settings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "settings-nav-click",
+    file: "packages/ui/src/settings/ShellSettings.svelte",
+    needle: "if (onsectionchange) onsectionchange(section.id);",
+    destinationKind: "settings",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "native-dialog-confirm",
+    file: SHARED_SHELL_FILE,
+    needle: "<ConfirmDialog",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Native confirm dialogs stay outside history.",
+  },
+  {
+    id: "native-dialog-migrate",
+    file: SHARED_SHELL_FILE,
+    needle: "<MigrateSessionDialog",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Native dialogs stay outside history.",
+  },
+  {
+    id: "external-url-open",
+    file: SHARED_SHELL_FILE,
+    needle: "if (/^https?:\\/\\//i.test(url)) onopenurl?.(url);",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    notes: "External browser windows stay outside history.",
+  },
+  {
+    id: "mount-location-deep-link",
+    file: SHARED_SHELL_FILE,
+    needle: "applyConversationDeepLink(conversationDeepLinkFromLocation())",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "mount-pending-channel",
+    file: SHARED_SHELL_FILE,
+    needle: "if (pendingChannel) applyPendingChannelOpen(pendingChannel)",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "mount-pending-dm",
+    file: SHARED_SHELL_FILE,
+    needle: "if (pendingDm) applyPendingConversation(pendingDm)",
+    destinationKind: "dm",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+  },
+
+  // --- shared DesktopApp: non-navigation ---
+  {
+    id: "initial-row-hydration",
+    file: SHARED_SHELL_FILE,
+    needle: "let selectedRow = $state<ConversationRow | null>(initialRow);",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "hydration",
+  },
+  {
+    id: "richer-row-hydration",
+    file: SHARED_SHELL_FILE,
+    needle: "isStrictlyRicherConversationRow(next, selectedRow)",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "hydration",
+  },
+  {
+    id: "stub-row-metadata-refresh",
+    file: SHARED_SHELL_FILE,
+    needle:
+      "Never touches `view`, replies, or focus: only the row's metadata changes.",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "hydration",
+  },
+  {
+    id: "timeline-fetch",
+    file: SHARED_SHELL_FILE,
+    needle: "async function applyFetchedTimeline(",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "polling",
+  },
+  {
+    id: "channel-wake-live",
+    file: SHARED_SHELL_FILE,
+    needle: "async function applyChannelWake(wake: {",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "live-session-phase",
+  },
+  {
+    id: "meetings-prefetch",
+    file: SHARED_SHELL_FILE,
+    needle: "void prefetchMeetings();",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "polling",
+  },
+  {
+    id: "sync-status-poll",
+    file: SHARED_SHELL_FILE,
+    needle: "syncTimer = window.setInterval(() => {",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "polling",
+  },
+  {
+    id: "reply-new-wake",
+    file: SHARED_SHELL_FILE,
+    needle: 'wakes.on("reply:new", (payload) => {',
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "live-session-phase",
+  },
+  {
+    id: "roster-wake",
+    file: SHARED_SHELL_FILE,
+    needle: "rosterWakeSeq += 1;",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "background-roster",
+  },
+  {
+    id: "sidebar-toggle",
+    file: SHARED_SHELL_FILE,
+    needle:
+      "ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "cosmetic-sidebar",
+  },
+  {
+    id: "members-popover",
+    file: SHARED_SHELL_FILE,
+    needle: "onclick={() => (membersOpen = !membersOpen)}",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "cosmetic-sidebar",
+  },
+  {
+    id: "project-about-dialog",
+    file: SHARED_SHELL_FILE,
+    needle: "onclick={() => (projectAboutOpen = !projectAboutOpen)}",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "cosmetic-sidebar",
+  },
+  {
+    id: "palette-toggle",
+    file: SHARED_SHELL_FILE,
+    needle: "paletteOpen = !paletteOpen;",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "cosmetic-sidebar",
+  },
+  {
+    id: "open-member-profile",
+    file: SHARED_SHELL_FILE,
+    needle: "function openMemberProfile(row: StatusPersonRow)",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Ephemeral overlay; not a history destination in US-001.",
+  },
+  {
+    id: "open-artifact",
+    file: SHARED_SHELL_FILE,
+    needle: "function openArtifact(artifact: ChatArtifact)",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "open-attachment-tray",
+    file: SHARED_SHELL_FILE,
+    needle: "function openAttachmentTray(",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+  },
+  {
+    id: "open-channel-file-external",
+    file: SHARED_SHELL_FILE,
+    needle: "adapter.shell.openFileInClaude(localPath)",
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    notes: "External Claude window; outside in-app history.",
+  },
+  {
+    id: "agent-surface-reset-on-row",
+    file: SHARED_SHELL_FILE,
+    needle: 'agentSurface = "chat";',
+    destinationKind: "none",
+    history: "none",
+    host: "shared-shell",
+    inScope: true,
+    nonNavigationReason: "hydration",
+  },
+
+  // --- WorkShell host ---
+  {
+    id: "work-host-desktop-app",
+    file: WORK_HOST_FILE,
+    needle: "<DesktopApp",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "work-host",
+    inScope: true,
+    notes: "Active host: WorkShell mounts shared DesktopApp.",
+  },
+  {
+    id: "work-host-initial-row",
+    file: WORK_HOST_FILE,
+    needle: "const initialRow = $derived.by((): ConversationRow | null => {",
+    destinationKind: "none",
+    history: "none",
+    host: "work-host",
+    inScope: true,
+    nonNavigationReason: "hydration",
+  },
+  {
+    id: "work-host-hydrate-live-messages",
+    file: WORK_HOST_FILE,
+    needle: "hydrateLiveMessages={true}",
+    destinationKind: "none",
+    history: "none",
+    host: "work-host",
+    inScope: true,
+    nonNavigationReason: "hydration",
+  },
+  {
+    id: "work-host-remember-selected",
+    file: WORK_HOST_FILE,
+    needle: "onselectrow={rememberSelectedRow}",
+    destinationKind: "none",
+    history: "none",
+    host: "work-host",
+    inScope: true,
+    nonNavigationReason: "hydration",
+    notes: "Persists last-selected id; does not push history.",
+  },
+  {
+    id: "work-host-extra-pages",
+    file: WORK_HOST_FILE,
+    needle: "{extraPages}",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "work-host",
+    inScope: true,
+  },
+  {
+    id: "work-host-embedded-nav-ready",
+    file: WORK_HOST_FILE,
+    needle: "{onembeddednavigationready}",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "work-host",
+    inScope: true,
+  },
+  {
+    id: "work-host-sign-out-external",
+    file: WORK_HOST_FILE,
+    needle: "navigate: (url) => window.location.assign(url)",
+    destinationKind: "none",
+    history: "none",
+    host: "work-host",
+    inScope: true,
+    notes: "External sign-in URL; not in-app history.",
+  },
+
+  // --- HqWorkWorkShell ---
+  {
+    id: "hq-work-extra-sessions",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "component: SessionsExtraPage",
+    destinationKind: "extra",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "hq-work-new-session-action",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "createAction: { label: 'New session'",
+    destinationKind: "extra",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "hq-work-row-extras-new-session",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "param: newSessionParam(company, link.project, link.channelId)",
+    destinationKind: "extra",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "hq-work-row-extras-history-session",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "param: historySessionParam(company, _link.project, session)",
+    destinationKind: "extra",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "hq-work-restore-pending-route",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "desktop_alt_consume_pending_route",
+    destinationKind: "passthrough",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Cold pending route; delivery still fires exactly once via the bridge.",
+  },
+  {
+    id: "hq-work-restore-setup",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "take_pending_setup_target",
+    destinationKind: "setup-checkout",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "hq-work-restore-meeting-focus",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "meetings_take_pending_focus",
+    destinationKind: "meetings",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "hq-work-live-open-setup",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "'messages:open-setup'",
+    destinationKind: "setup-checkout",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "hq-work-live-desktop-navigate",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "'desktop:navigate'",
+    destinationKind: "passthrough",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "hq-work-live-meeting-focus",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "'meetings:focus-meeting'",
+    destinationKind: "meetings",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "hq-work-cmd-comma",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "navigation.navigate({ kind: 'settings' })",
+    destinationKind: "settings",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "hq-work-attach-bridge",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "navigation.attach((target) => {",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Pending-route bridge attach; not a second history stack.",
+  },
+  {
+    id: "hq-work-hosts-work-shell",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "<WorkShell",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Active host chain: HqWorkWorkShell → WorkShell → DesktopApp.",
+  },
+  {
+    id: "hq-work-sign-out-clears-stack",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "navigation.clear();",
+    destinationKind: "none",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes:
+      "Sign-out and account change clear the pending-route bridge. WorkShell remounts on authGeneration so the in-memory stack is dropped.",
+  },
+  {
+    id: "hq-work-project-channel-linked",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "PROJECT_CHANNEL_LINKED_EVENT",
+    destinationKind: "none",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    nonNavigationReason: "background-roster",
+  },
+
+  // --- hq-work-host.ts pending-route bridge ---
+  {
+    id: "host-controller-class",
+    file: HQ_WORK_HOST_FILE,
+    needle: "export class EmbeddedNavigationController",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Pending-route delivery bridge, not a history stack.",
+  },
+  {
+    id: "host-controller-navigate",
+    file: HQ_WORK_HOST_FILE,
+    needle: "navigate(target: EmbeddedNavigationTarget): void",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-controller-attach",
+    file: HQ_WORK_HOST_FILE,
+    needle: "attach(deliver: (target: EmbeddedNavigationTarget) => void)",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-route-home",
+    file: HQ_WORK_HOST_FILE,
+    needle: "case 'home':",
+    destinationKind: "messages",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-route-inbox",
+    file: HQ_WORK_HOST_FILE,
+    needle: "case 'inbox':",
+    destinationKind: "notifications",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-route-messages",
+    file: HQ_WORK_HOST_FILE,
+    needle: "case 'messages':",
+    destinationKind: "messages",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-route-meetings",
+    file: HQ_WORK_HOST_FILE,
+    needle: "case 'meetings':",
+    destinationKind: "meetings",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-route-atlas",
+    file: HQ_WORK_HOST_FILE,
+    needle: "case 'atlas':",
+    destinationKind: "atlas",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-route-library",
+    file: HQ_WORK_HOST_FILE,
+    needle: "case 'library':",
+    destinationKind: "library",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-route-sessions",
+    file: HQ_WORK_HOST_FILE,
+    needle: "case 'sessions':",
+    destinationKind: "extra",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-route-settings",
+    file: HQ_WORK_HOST_FILE,
+    needle: "case 'settings':",
+    destinationKind: "settings",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-route-hqwork",
+    file: HQ_WORK_HOST_FILE,
+    needle: "if (route.startsWith('hqwork://'))",
+    destinationKind: "channel",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-route-hq-desktop-setup",
+    file: HQ_WORK_HOST_FILE,
+    needle: "if (route.startsWith('hq-desktop://'))",
+    destinationKind: "setup-checkout",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-apply-desktop-alt-route",
+    file: HQ_WORK_HOST_FILE,
+    needle: "export function applyDesktopAltRoute(",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+  },
+  {
+    id: "host-destination-from-route",
+    file: HQ_WORK_HOST_FILE,
+    needle: "export function navigationDestinationFromRoute(",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Converts native/host route strings onto the shared destination union.",
+  },
+  {
+    id: "host-deliver-immediately",
+    file: HQ_WORK_HOST_FILE,
+    needle: "function deliverImmediately(target: EmbeddedNavigationTarget)",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+  },
+
+  // --- Sessions extra page ---
+  {
+    id: "sessions-open-session",
+    file: SESSIONS_EXTRA_FILE,
+    needle: "onnavigate?.(next, { mode: sessionNavigateMode(options) });",
+    destinationKind: "extra",
+    history: "push",
+    host: "sessions-extra",
+    inScope: true,
+    notes: "First send on a new draft passes replace so Back cannot recreate it.",
+  },
+  {
+    id: "sessions-open-channel",
+    file: SESSIONS_EXTRA_FILE,
+    needle:
+      "onopenchannel={(channelId) => dispatchEmbeddedNavigation({ kind: 'channel', channelId })}",
+    destinationKind: "channel",
+    history: "push",
+    host: "sessions-extra",
+    inScope: true,
+  },
+  {
+    id: "sessions-parse-param",
+    file: SESSIONS_EXTRA_FILE,
+    needle: "const route = $derived(parseSessionsParam(param));",
+    destinationKind: "none",
+    history: "none",
+    host: "sessions-extra",
+    inScope: true,
+    nonNavigationReason: "hydration",
+  },
+
+  // --- out of scope ---
+  {
+    id: "legacy-desktop-route-navigate",
+    file: LEGACY_DESKTOP_APP_FILE,
+    needle: "function navigate(nextRoute: DesktopRoute)",
+    destinationKind: "legacy",
+    history: "none",
+    host: "legacy-desktop-alt",
+    inScope: false,
+    notes:
+      "OUT OF SCOPE. Retired classic shell. Active desktop-alt mounts HqWorkWorkShell (see desktop-alt/main.ts), which hosts WorkShell → shared DesktopApp.",
+  },
+  {
+    id: "active-host-desktop-alt-main",
+    file: DESKTOP_ALT_MAIN_FILE,
+    needle: "import('./HqWorkWorkShell.svelte')",
+    destinationKind: "passthrough",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Confirms the active native host is HqWorkWorkShell, not legacy DesktopApp.",
+  },
+];
+
+export function matrixRowById(
+  id: string,
+): NavigationHandlerRow | undefined {
+  return NAVIGATION_HANDLER_MATRIX.find((row) => row.id === id);
+}
+
+export function matrixRowsForFile(file: string): NavigationHandlerRow[] {
+  return NAVIGATION_HANDLER_MATRIX.filter((row) => row.file === file);
+}
+
+const NAVIGATE_FAMILY_RE =
+  /\b(?:navigate|leaveCurrentDestination|goBack|goForward|pushConversationSurface|openSettings|closeSettings|openLibrary|openExtraPage|openNotification|handleSelect|applyEmbeddedNavigation|applyPendingChannelOpen|applyPendingConversation|applyConversationDeepLink|requestChannelOpen|openReply|closeReply|toggleNotifications|dispatchEmbeddedNavigation|onnavigate)\b/;
+
+/**
+ * In-scope user handlers that must enter history through navigate() (US-004).
+ * Apply/commit/render/bridge rows are excluded.
+ */
+export function inScopeUserHandler(row: NavigationHandlerRow): boolean {
+  if (!row.inScope || row.history === "none") return false;
+  if (row.nonNavigationReason) return false;
+  const n = row.needle;
+  if (
+    n.includes("function apply") ||
+    n.includes("function resolveDestination") ||
+    n.includes("function commitDestination") ||
+    n.includes("function navigate(") ||
+    n.includes("{#if") ||
+    n.includes("headerVariant") ||
+    n.includes("focusRequest=") ||
+    n.includes("<DesktopApp") ||
+    n.includes("<WorkShell") ||
+    n.includes("<ConfirmDialog") ||
+    n.includes("<MigrateSessionDialog") ||
+    n.includes("component: SessionsExtraPage") ||
+    n.includes("let selectedRow") ||
+    n.includes("isStrictlyRicher") ||
+    n.includes("Never touches") ||
+    n.includes("export class") ||
+    n.includes("navigate(target:") ||
+    n.includes("attach(deliver") ||
+    n.includes("deliverImmediately") ||
+    n.includes("applyDesktopAltRoute") ||
+    n.includes("navigationDestinationFromRoute") ||
+    n.includes("hydrateLiveMessages") ||
+    n.includes("onselectrow=") ||
+    n.includes("{extraPages}") ||
+    n.includes("{onembeddednavigationready}") ||
+    n.includes("window.location.assign") ||
+    n.includes("PROJECT_CHANNEL_LINKED") ||
+    n.includes("import('./HqWorkWorkShell") ||
+    n.includes("const route = $derived") ||
+    n.includes("event.key ===") ||
+    n.includes("createAction:") ||
+    n.includes("param: newSessionParam") ||
+    n.includes("param: historySessionParam") ||
+    n.includes("desktop_alt_consume") ||
+    n.includes("take_pending_setup") ||
+    n.includes("meetings_take_pending") ||
+    n.includes("'messages:open-setup'") ||
+    n.includes("'desktop:navigate'") ||
+    n.includes("'meetings:focus-meeting'") ||
+    n.includes("case '") ||
+    n.includes("if (route.startsWith") ||
+    n.includes("if (onsectionchange)") ||
+    n.includes("if (/^https?") ||
+    n.includes("navigation.attach")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function handlerUsesNavigateBoundary(
+  source: string,
+  needle: string,
+): boolean {
+  const index = source.indexOf(needle);
+  if (index < 0) return false;
+  const start = Math.max(0, index - 240);
+  const end = Math.min(source.length, index + needle.length + 280);
+  if (NAVIGATE_FAMILY_RE.test(source.slice(start, end))) return true;
+  const fn = needle.match(/function ([A-Za-z]+)\(/);
+  if (!fn?.[1]) return false;
+  const fnStart = source.indexOf(`function ${fn[1]}(`);
+  if (fnStart < 0) return false;
+  const rest = source.slice(fnStart);
+  const next = rest.search(/\n  (async )?function /);
+  const body = next === -1 ? rest : rest.slice(0, next);
+  return NAVIGATE_FAMILY_RE.test(body);
+}

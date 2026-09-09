@@ -200,7 +200,10 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
         let verdict = looks_like_hq_root(std::path::Path::new("hqroot"));
         std::env::set_current_dir(prev).unwrap();
-        assert!(!verdict, "relative roots must be rejected even when markers resolve");
+        assert!(
+            !verdict,
+            "relative roots must be rejected even when markers resolve"
+        );
     }
 
     fn idx() -> StagingIndex {

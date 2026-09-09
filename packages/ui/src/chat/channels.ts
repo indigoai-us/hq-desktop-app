@@ -36,6 +36,11 @@ export interface Channel {
   /** Company display name (server-supplied for company channels), used for the
    * group header + scope chip. Falls back to companyUid when absent. */
   companyName?: string | null;
+  /**
+   * Owning company's presigned website favicon (server-supplied). Render via
+   * `CompanyIcon`, which falls back to a building glyph when absent.
+   */
+  iconUrl?: string | null;
   postPolicy?: ChannelPostPolicy;
   visibility?: ChannelVisibility;
   membership?: ChannelMembership;

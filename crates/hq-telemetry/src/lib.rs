@@ -405,6 +405,10 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "vault_conflict",
     "vault_not_found",
     "vault_permission_denied",
+    "vault_write_scope",
+    // Added at the ~6.16.23 runner pin: the manifest-upload contract class
+    // (hq-cloud src/manifest/contract.ts -> SyncManifestContractError).
+    "sync_manifest_contract",
     "vend_denied",
     "rate_limited",
     "presign_precondition_missing",
@@ -506,6 +510,44 @@ const RUNNER_ERROR_SITE_TOKENS: &[&str] = &[
     "identity",
     "file",
 ];
+// The PRE-RUNNER (first-push phase) attribution vocabularies (HQ-DESKTOP-64).
+// Mirror `hq_desktop_core::runner_error_shape::PreRunnerSite` / `PreRunnerCause`
+// exactly, kept local like the other rollup mirrors so the egress guard stays
+// independent of the producer crate; a `#[cfg(test)]` drift check drives every
+// `PreRunnerSite::ALL` / `PreRunnerCause::ALL` variant through these lists so a
+// producer that adds a token without updating the mirror fails CI. Every token is
+// denylist-safe (no auth/token/secret/... substring) so a server-side scrubber can
+// never blank the axis.
+const PRE_RUNNER_SITE_TOKENS: &[&str] = &["first_push", "first_push_personal"];
+const PRE_RUNNER_CAUSE_TOKENS: &[&str] = &[
+    "scope_exceeds_parent",
+    "vend_http",
+    "vend_transport",
+    "vend_protocol",
+    "ownership_mismatch",
+    "push_failed",
+    "unknown",
+];
+// The unknown_unnamed residual STRUCTURAL PROFILE vocabulary (HQ-DESKTOP-61/62).
+// Mirrors `hq_desktop_core::runner_error_shape::RunnerErrorUnknownProfile::as_str`
+// exactly, kept local like the other rollup mirrors so the egress guard stays
+// independent of the producer crate; a `#[cfg(test)]` drift check drives every
+// `RunnerErrorUnknownProfile::ALL` variant through this list so a producer that adds
+// a token without updating the mirror fails CI instead of blanking a live tag. Every
+// token is denylist-safe (no auth/token/secret/... substring).
+const RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS: &[&str] = &[
+    "stack_frame",
+    "key_value_led",
+    "identifier_colon_led",
+    "path_led",
+    "quoted_led",
+    "digit_led",
+    "upper_word_led",
+    "single_hump_led",
+    "lower_prose",
+    "empty",
+    "other",
+];
 
 /// A `token:count(,token:count)*` rollup whose tokens are drawn from a closed
 /// `vocabulary` and whose counts are bare integers. Bounded like
@@ -543,6 +585,17 @@ fn is_runner_error_cause_signature_rollup(value: &str) -> bool {
                     && !count.is_empty()
                     && count.bytes().all(|byte| byte.is_ascii_digit())
             })
+        })
+}
+
+/// The first-push capture's `pre_runner_status` tag (HQ-DESKTOP-64): the typed HTTP
+/// status a first-push fault carried, spelled `http_<1-3 digits>`, or the `none`
+/// sentinel when it had none. A bounded, closed shape so a producer bug that shipped
+/// a raw status line or vault body degrades to `[Filtered]` instead of leaking.
+fn is_pre_runner_status(value: &str) -> bool {
+    value == "none"
+        || value.strip_prefix("http_").is_some_and(|digits| {
+            (1..=3).contains(&digits.len()) && digits.bytes().all(|byte| byte.is_ascii_digit())
         })
 }
 
@@ -660,6 +713,61 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             value,
             "declared_default" | "env_override" | "user_node_options"
         )),
+        // Supervisor footprint-preempt decomposition (auto-sync watcher footprint
+        // growth-rate cluster). Bare-integer MB / seconds numeric extras that let
+        // the tree total be split into its largest single member and the non-heap
+        // excess above the declared old-space cap, and the pre-empt's rate be
+        // reconstructed from the prior sample and its age. Each reaches this check
+        // as `""` for a non-string `Value` (type-safe by construction); a string
+        // value must parse as an unsigned integer, so a producer bug that shipped a
+        // path or raw fragment degrades to `[Filtered]` instead.
+        "watcher_tree_rss_mb"
+        | "watcher_tree_largest_member_mb"
+        | "watcher_tree_non_heap_mb"
+        | "watcher_footprint_prev_sample_mb"
+        | "watcher_footprint_sample_gap_secs" => {
+            Some(value.is_empty() || value.parse::<u64>().is_ok())
+        }
+        // Tree PID count for the pre-empt sample, mirroring `watcher_job_process_count`
+        // (a small integer or the fixed `unknown` sentinel) so a single large runner
+        // is distinguishable from many processes summing to the same total.
+        "watcher_tree_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
+        // Closed-vocabulary bucket of the measured whole-tree growth rate behind a
+        // pre-empt, mirroring `runner_heap_peak_used_bucket`; the exact rate is not
+        // shipped. An off-vocabulary token degrades to `[Filtered]`.
+        "watcher_footprint_growth_bucket" => Some(matches!(
+            value,
+            "under_20mbs" | "20_to_50mbs" | "50_to_120mbs" | "over_120mbs" | "unknown"
+        )),
+        // Live memory-class decomposition read from a signal-triggered Node
+        // diagnostic report just before a footprint pre-empt (auto-sync watcher
+        // footprint growth-rate cluster, HQ-DESKTOP-60): the JS old-space total/used,
+        // the inferred non-heap excess (tree RSS minus JS heap total), and the count
+        // of ACTIVE libuv handles — a direct leak signal for a file watcher, so the
+        // ~2.9 GB the tree total alone could not attribute gets a named class. Each
+        // reaches this check as `""` for an unmeasured value (type-safe by
+        // construction); a string value must parse as an unsigned integer, so a
+        // producer bug that shipped a path or fragment degrades to `[Filtered]`.
+        "watcher_js_heap_total_mb"
+        | "watcher_js_heap_used_mb"
+        | "watcher_inferred_non_heap_mb"
+        | "watcher_libuv_active_handles" => {
+            Some(value.is_empty() || value.parse::<u64>().is_ok())
+        }
+        // Why the memory-class decomposition is or is not present, so an absent report
+        // degrades honestly to a queryable token instead of a guess (mirrors
+        // `WatcherMemoryClassSource::as_str`). The POSIX report path yields
+        // report_read / report_absent / report_unreadable, the manual/no-dir path
+        // report_not_requested, and Windows report_unsupported_platform. An
+        // off-vocabulary token degrades to `[Filtered]`.
+        "watcher_memory_class_source" => Some(matches!(
+            value,
+            "report_read"
+                | "report_absent"
+                | "report_unreadable"
+                | "report_not_requested"
+                | "report_unsupported_platform"
+        )),
         // The runner package version comes from a local package manifest, not
         // runner stderr. Accept only bounded plain SemVer (including its optional
         // prerelease/build suffix) or the fixed `unknown` sentinel.
@@ -719,12 +827,45 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // above — an off-vocabulary token or non-digit count degrades to `[Filtered]`
         // rather than shipping the runner's raw `path` sentinel or a file fragment.
         "runner_error_sites" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_SITE_TOKENS)),
+        // The PRE-RUNNER (first-push phase) attribution axes (HQ-DESKTOP-64): a
+        // fault the desktop observed before the runner spawned. Same egress
+        // discipline as the runner-error rollups — an off-vocabulary token or
+        // non-digit count degrades to `[Filtered]`. Registering them is what makes
+        // them fail CLOSED: an unregistered key falls through the `_ => None` arm
+        // below and would pass egress UNTOUCHED, so a future producer bug shipping an
+        // out-of-vocabulary value (a raw vault body, a path) could leak. With these
+        // arms, that value degrades to `[Filtered]` instead.
+        "pre_runner_failures" => {
+            Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_SITE_TOKENS))
+        }
+        "pre_runner_causes" => {
+            Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_CAUSE_TOKENS))
+        }
+        // The first-push CAPTURE's two tags (HQ-DESKTOP-64) — a separate event from the
+        // exit, carrying a SINGLE typed cause token and status, not a count rollup.
+        // Unregistered they fell through `_ => None` and passed egress verbatim, so a
+        // future producer bug on this capture could leak a raw vault body; registering
+        // them makes that value degrade to `[Filtered]`. `pre_runner_cause` is exactly
+        // one `PreRunnerCause` token; `pre_runner_status` is `http_<1-3 digits>`/`none`.
+        "pre_runner_cause" => Some(PRE_RUNNER_CAUSE_TOKENS.contains(&value)),
+        "pre_runner_status" => Some(is_pre_runner_status(value)),
         // The cause-signature axis (this reopen): a bounded `hex12:count` rollup
         // correlating an `unknown_named` residual across machines. The producer
         // emits only a fixed-length lowercase-hex digest of a gated identifier, so
         // this independent egress check refuses anything else — a raw identifier,
         // path, or message fragment degrades to `[Filtered]` instead of shipping.
         "runner_error_cause_signature" => Some(is_runner_error_cause_signature_rollup(value)),
+        // The unknown_unnamed residual axes (HQ-DESKTOP-61/62): the structural profile
+        // census (a closed-vocab count rollup) and the residual signature (a bounded
+        // `hex12:count` rollup, sharing the cause-signature validator). Registering them
+        // is what makes them fail CLOSED — an unregistered key falls through `_ => None`
+        // below and would pass egress UNTOUCHED, so a producer bug shipping an
+        // out-of-vocabulary token or a raw message fragment degrades to `[Filtered]`.
+        "runner_error_unknown_profiles" => Some(is_closed_vocab_count_rollup(
+            value,
+            RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS,
+        )),
+        "runner_error_residual_signature" => Some(is_runner_error_cause_signature_rollup(value)),
         // Exec-layer target provenance (HQ-DESKTOP-52 / HQ-DESKTOP-51). The
         // producer emits fixed-vocabulary tokens from the runner-target probe;
         // these independent egress checks degrade a producer bug to `[Filtered]`
@@ -764,6 +905,24 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // timestamp, host name, or identifier to `[Filtered]` instead of leaking
         // it — the same discipline as the pull-based probe extras above.
         "session_end_latch" => Some(matches!(value, "latched" | "absent" | "unavailable")),
+        // Windows fatal-reason attribution — the THIRD cause channel (this reopen,
+        // HQ-DESKTOP-5W). On Windows both existing "why" channels (WER and runner
+        // stderr) come up empty for a 0xC0000409 fail-fast, so a Node
+        // `--report-on-fatalerror` diagnostic report is read at exit to name the
+        // cause. `runner_fatal_source` names WHERE the reported `runner_fatal_class`
+        // came from; `runner_report_read` is the report read's own provenance. Both
+        // are fixed producer vocabulary; these independent egress checks degrade a
+        // producer bug that shipped a path, a raw report byte, or a stderr fragment
+        // to `[Filtered]` instead of projecting it into a tag or Event.culprit.
+        "runner_fatal_source" => Some(matches!(value, "stderr" | "node_report" | "none")),
+        "runner_report_read" => Some(matches!(
+            value,
+            "report_read"
+                | "report_absent"
+                | "report_unreadable"
+                | "report_not_requested"
+                | "report_disabled_by_user_options"
+        )),
         _ => None,
     }
 }
@@ -1056,7 +1215,7 @@ fn sync_child_exit_detail(
         Some(value) if is_windows_exit_status_hex(value) => Some(value),
         _ => None,
     };
-    Some(match class {
+    let windows_phrase = match class {
         "fault" => match status {
             Some(status) => format!("windows fault {status}"),
             None => "windows fault".to_string(),
@@ -1067,6 +1226,18 @@ fn sync_child_exit_detail(
         // An ordinary exit is not a Windows-signalled shape — prefer a real fatal
         // class if one names the cause.
         _ => return fatal_phrase(),
+    };
+    // A Windows exit class names WHAT the OS signalled; a `fault` shape can only
+    // ever render the raw NT status (`windows fault 0xC0000409`). When the runner's
+    // own output ALSO named WHY it died — a genuine `runner_fatal_class` — render
+    // both (`windows fault 0xC0000409 / heap oom`), so the reason the Windows shape
+    // alone could never state reaches the culprit. This is the surviving half of
+    // HQ-DESKTOP-5W: before, a valid Windows class short-circuited here and the
+    // fatal class was dropped. Byte-identical to before whenever the fatal class is
+    // `none` or invalid — `fatal_phrase()` is then `None`.
+    Some(match fatal_phrase() {
+        Some(reason) => format!("{windows_phrase} / {reason}"),
+        None => windows_phrase,
     })
 }
 
@@ -2167,6 +2338,247 @@ mod tests {
     }
 
     #[test]
+    fn pre_runner_axes_are_egress_safe_across_crates() {
+        use hq_desktop_core::runner_error_shape::{PreRunnerCause, PreRunnerSite};
+        // HQ-DESKTOP-64: the two pre-runner attribution axes are NEW producers of
+        // Sentry tags. Their full emit domain is exactly PreRunnerSite::ALL /
+        // PreRunnerCause::ALL's as_str sets — every one of which the independent
+        // egress mirror must accept. Pinning it fails a future token that slips the
+        // mirror instead of shipping a raw byte.
+        let sites: std::collections::HashSet<&str> =
+            PRE_RUNNER_SITE_TOKENS.iter().copied().collect();
+        for site in PreRunnerSite::ALL {
+            let token = site.as_str();
+            assert!(
+                sites.contains(token),
+                "pre-runner site token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field("pre_runner_failures", &format!("{token}:3")),
+                Some(true),
+                "pre-runner site token {token:?} must survive egress"
+            );
+        }
+        let causes: std::collections::HashSet<&str> =
+            PRE_RUNNER_CAUSE_TOKENS.iter().copied().collect();
+        for cause in PreRunnerCause::ALL {
+            let token = cause.as_str();
+            assert!(
+                causes.contains(token),
+                "pre-runner cause token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field("pre_runner_causes", &format!("{token}:3")),
+                Some(true),
+                "pre-runner cause token {token:?} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_runner_axes_survive_before_send_and_out_of_vocabulary_is_filtered() {
+        // A realistic pre-runner envelope survives before_send byte-for-byte.
+        let mut event = Event::default();
+        event
+            .tags
+            .insert("pre_runner_failures".into(), "first_push:1".into());
+        event
+            .tags
+            .insert("pre_runner_causes".into(), "scope_exceeds_parent:1".into());
+        let survived = before_send(event).expect("event remains sendable");
+        assert_eq!(survived.tags["pre_runner_failures"], "first_push:1");
+        assert_eq!(survived.tags["pre_runner_causes"], "scope_exceeds_parent:1");
+
+        // An out-of-vocabulary value (a path-like fragment a producer bug could ship)
+        // degrades to [Filtered] rather than leaking. On base — before these keys are
+        // registered — the SAME value falls through the `_ => None` arm and survives
+        // verbatim, so this is the non-vacuous base-failing egress probe.
+        let mut leaky = Event::default();
+        leaky
+            .tags
+            .insert("pre_runner_causes".into(), "/Users/ada/secret:1".into());
+        leaky
+            .tags
+            .insert("pre_runner_failures".into(), "not_a_site:1".into());
+        let filtered = before_send(leaky).expect("event remains sendable");
+        assert_eq!(filtered.tags["pre_runner_causes"], "[Filtered]");
+        assert_eq!(filtered.tags["pre_runner_failures"], "[Filtered]");
+    }
+
+    #[test]
+    fn pre_runner_tokens_avoid_the_sentry_denylist() {
+        const DENYLIST: &[&str] = &[
+            "auth",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "api_key",
+            "apikey",
+            "session",
+            "private_key",
+            "privatekey",
+        ];
+        for token in PRE_RUNNER_SITE_TOKENS
+            .iter()
+            .chain(PRE_RUNNER_CAUSE_TOKENS.iter())
+        {
+            for denied in DENYLIST {
+                assert!(
+                    !token.contains(denied),
+                    "pre-runner token {token:?} contains denylist substring {denied:?}"
+                );
+            }
+        }
+    }
+
+    // ── unknown_unnamed residual axes (HQ-DESKTOP-61/62) ─────────────────────────
+
+    #[test]
+    fn residual_axes_are_egress_safe_across_crates() {
+        use hq_desktop_core::runner_error_shape::RunnerErrorUnknownProfile;
+        // The structural-profile census is a NEW producer of a Sentry tag. Its full
+        // emit domain is exactly RunnerErrorUnknownProfile::ALL's as_str set — every
+        // one of which the independent egress mirror must accept. Pinning it fails a
+        // future profile token that slips the mirror instead of shipping a raw byte.
+        let allowed: std::collections::HashSet<&str> =
+            RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS.iter().copied().collect();
+        for profile in RunnerErrorUnknownProfile::ALL {
+            let token = profile.as_str();
+            assert!(
+                allowed.contains(token),
+                "profile token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field(
+                    "runner_error_unknown_profiles",
+                    &format!("{token}:3")
+                ),
+                Some(true),
+                "profile token {token:?} must survive egress"
+            );
+        }
+        // The residual-signature axis reuses the cause-signature validator: a valid
+        // hex12:count survives, a raw identity fails closed.
+        assert_eq!(
+            valid_runner_diagnostic_field(
+                "runner_error_residual_signature",
+                "ea4e65576be5:4,9205e6d1c2fb:1"
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_error_residual_signature", "EWEIRD:4"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn residual_and_pre_runner_capture_axes_survive_before_send_and_malformed_is_filtered() {
+        // Valid envelopes on all four newly-registered keys survive before_send
+        // byte-for-byte.
+        let mut event = Event::default();
+        event.tags.insert(
+            "runner_error_unknown_profiles".into(),
+            "key_value_led:160,lower_prose:8".into(),
+        );
+        event.tags.insert(
+            "runner_error_residual_signature".into(),
+            "ea4e65576be5:9,9205e6d1c2fb:2".into(),
+        );
+        event
+            .tags
+            .insert("pre_runner_cause".into(), "scope_exceeds_parent".into());
+        event.tags.insert("pre_runner_status".into(), "http_403".into());
+        let survived = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            survived.tags["runner_error_unknown_profiles"],
+            "key_value_led:160,lower_prose:8"
+        );
+        assert_eq!(
+            survived.tags["runner_error_residual_signature"],
+            "ea4e65576be5:9,9205e6d1c2fb:2"
+        );
+        assert_eq!(survived.tags["pre_runner_cause"], "scope_exceeds_parent");
+        assert_eq!(survived.tags["pre_runner_status"], "http_403");
+        // `none` is a valid pre_runner_status sentinel.
+        let mut none_status = Event::default();
+        none_status
+            .tags
+            .insert("pre_runner_status".into(), "none".into());
+        assert_eq!(
+            before_send(none_status).expect("sendable").tags["pre_runner_status"],
+            "none"
+        );
+
+        // Fail-closed rejection cases. On base — before these keys are registered — the
+        // SAME values fall through the `_ => None` arm and ship verbatim, so these are
+        // the non-vacuous base-failing egress probes.
+        for (key, value) in [
+            ("runner_error_unknown_profiles", "not_a_profile:1"),
+            ("runner_error_unknown_profiles", "key_value_led:x"),
+            ("runner_error_unknown_profiles", "/Users/ada/secret.env:1"),
+            ("runner_error_residual_signature", "VaultNotFoundError:1"),
+            ("runner_error_residual_signature", "1A2B3C4D5E6F:1"),
+            ("runner_error_residual_signature", "1a2b3c:1"),
+            // The single-value capture keys: a count rollup, a raw body, or a bad
+            // status must all fail closed.
+            ("pre_runner_cause", "scope_exceeds_parent:1"),
+            ("pre_runner_cause", "/Users/ada/secret"),
+            ("pre_runner_status", "http_4030"),
+            ("pre_runner_status", "500"),
+            ("pre_runner_status", "http_x"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "lookalike {key}={value:?} must fail closed"
+            );
+            let mut leaky = Event::default();
+            leaky.tags.insert(key.to_string(), value.to_string());
+            assert_eq!(
+                before_send(leaky).expect("event remains sendable").tags[key],
+                "[Filtered]",
+                "{key}={value:?} must degrade to [Filtered]"
+            );
+        }
+    }
+
+    #[test]
+    fn residual_and_pre_runner_capture_tokens_avoid_the_sentry_denylist() {
+        const DENYLIST: &[&str] = &[
+            "auth",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "api_key",
+            "apikey",
+            "session",
+            "private_key",
+            "privatekey",
+        ];
+        // Every profile token and every newly-registered key name is denylist-safe, so
+        // the server-side @password:filter can never blank the axis.
+        let keys = [
+            "runner_error_unknown_profiles",
+            "runner_error_residual_signature",
+            "pre_runner_cause",
+            "pre_runner_status",
+        ];
+        for token in RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS.iter().chain(keys.iter()) {
+            for denied in DENYLIST {
+                assert!(
+                    !token.contains(denied),
+                    "token/key {token:?} contains denylist substring {denied:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn watcher_fault_fields_survive_and_malformed_fail_closed_before_send() {
         let mut event = Event::default();
         for (key, value) in [
@@ -2460,6 +2872,129 @@ mod tests {
         assert_eq!(
             before_send(event).unwrap().culprit.as_deref(),
             Some("sync/runner pull: heap oom")
+        );
+    }
+
+    #[test]
+    fn before_send_culprit_names_both_the_windows_shape_and_the_reason() {
+        // HQ-DESKTOP-5W, surviving half: the recurrence's exact watcher envelope PLUS
+        // a now-knowable reason (runner_fatal_class=heap_oom, e.g. from the Node
+        // diagnostic report this reopen adds). The culprit must name BOTH the Windows
+        // shape AND the reason. On base a valid Windows class short-circuits
+        // sync_child_exit_detail and the reason is silently dropped, so this
+        // assertion is RED until that short-circuit is fixed.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("windows_fault_symbol", "STATUS_STACK_BUFFER_OVERRUN"),
+            ("watcher_fault_provenance", "deadline_expired"),
+            ("watcher_fault_faulting_image", "unavailable"),
+            ("watcher_fault_job_culprit_candidate", "node_exe"),
+            ("watcher_fault_job_image_provenance", "job_tree_observed"),
+            ("runner_fatal_class", "heap_oom"),
+            ("runner_fatal_source", "node_report"),
+            ("runner_report_read", "report_read"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/watcher: node_exe (windows fault 0xC0000409 / heap oom)")
+        );
+        // The two new attribution axes are content-safe fixed vocabulary and survive
+        // egress unchanged.
+        assert_eq!(result.tags["runner_fatal_source"], "node_report");
+        assert_eq!(result.tags["runner_report_read"], "report_read");
+    }
+
+    #[test]
+    fn before_send_culprit_windows_fault_with_no_reason_is_byte_identical() {
+        // The SAME recurrence envelope with NO knowable reason (runner_fatal_class=none,
+        // report_absent) renders today's culprit byte-for-byte — the merged
+        // HQ-DESKTOP-5W behaviour is preserved when the third channel yields nothing.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("watcher_fault_provenance", "deadline_expired"),
+            ("watcher_fault_faulting_image", "unavailable"),
+            ("watcher_fault_job_culprit_candidate", "node_exe"),
+            ("watcher_fault_job_image_provenance", "job_tree_observed"),
+            ("runner_fatal_class", "none"),
+            ("runner_fatal_source", "none"),
+            ("runner_report_read", "report_absent"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/watcher: node_exe (windows fault 0xC0000409)")
+        );
+    }
+
+    #[test]
+    fn runner_fatal_source_and_report_read_axes_fail_closed_at_egress() {
+        // Valid fixed vocabulary passes; anything else — an off-vocabulary token, a
+        // path, or a [Filtered]-shaped value a producer bug might ship — is refused,
+        // so it can never reach a tag or the culprit.
+        for value in ["stderr", "node_report", "none"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_fatal_source", value),
+                Some(true),
+                "valid source {value:?} must pass egress"
+            );
+        }
+        for value in [
+            "report_read",
+            "report_absent",
+            "report_unreadable",
+            "report_not_requested",
+            "report_disabled_by_user_options",
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_read", value),
+                Some(true),
+                "valid read {value:?} must pass egress"
+            );
+        }
+        for bad in ["node_reporte", "", "/var/report.json", "[Filtered]", "heap_oom"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_fatal_source", bad),
+                Some(false),
+                "off-vocabulary source {bad:?} must degrade to [Filtered]"
+            );
+        }
+        for bad in ["report", "", r"C:\Users\Ada\report.json", "[Filtered]"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_read", bad),
+                Some(false),
+                "off-vocabulary read {bad:?} must degrade to [Filtered]"
+            );
+        }
+
+        // End-to-end through before_send: a poisoned axis is scrubbed to [Filtered];
+        // the culprit still names the (valid) fatal class and never the poison.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "manual"),
+            ("runner_phase", "push"),
+            ("runner_fatal_class", "heap_oom"),
+            ("runner_fatal_source", "/etc/passwd"),
+            ("runner_report_read", "report"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(result.tags["runner_fatal_source"], "[Filtered]");
+        assert_eq!(result.tags["runner_report_read"], "[Filtered]");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/runner push: heap oom")
         );
     }
 
@@ -2961,6 +3496,116 @@ mod tests {
             assert_eq!(
                 result.tags[key], value,
                 "valid {key}={value} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn footprint_preempt_decomposition_fields_survive_egress_and_reject_lookalikes() {
+        // Valid values survive egress: bare-integer MB/seconds, a small PID count or
+        // the `unknown` sentinel, and the closed growth-bucket vocabulary.
+        for (key, value) in [
+            ("watcher_tree_rss_mb", "6506"),
+            ("watcher_tree_rss_mb", ""),
+            ("watcher_tree_largest_member_mb", "4800"),
+            ("watcher_tree_non_heap_mb", "2922"),
+            ("watcher_tree_non_heap_mb", "0"),
+            ("watcher_footprint_prev_sample_mb", "4600"),
+            ("watcher_footprint_prev_sample_mb", ""),
+            ("watcher_footprint_sample_gap_secs", "30"),
+            ("watcher_footprint_sample_gap_secs", ""),
+            ("watcher_tree_process_count", "12"),
+            ("watcher_tree_process_count", "unknown"),
+            ("watcher_footprint_growth_bucket", "under_20mbs"),
+            ("watcher_footprint_growth_bucket", "20_to_50mbs"),
+            ("watcher_footprint_growth_bucket", "50_to_120mbs"),
+            ("watcher_footprint_growth_bucket", "over_120mbs"),
+            ("watcher_footprint_growth_bucket", "unknown"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], value,
+                "valid {key}={value} must survive egress"
+            );
+        }
+        // A producer bug that shipped a path, a non-integer, or an out-of-vocabulary
+        // token in any of the new footprint-decomposition fields degrades to
+        // `[Filtered]` rather than leaking it.
+        for (key, value) in [
+            ("watcher_tree_rss_mb", "6506 /Users/Ada"),
+            ("watcher_tree_largest_member_mb", "4800MB"),
+            ("watcher_tree_non_heap_mb", "-1"),
+            ("watcher_footprint_prev_sample_mb", "4600; rm -rf"),
+            ("watcher_footprint_sample_gap_secs", "30s"),
+            ("watcher_tree_process_count", "12 processes /Users/Ada"),
+            ("watcher_footprint_growth_bucket", "40mbs"),
+            ("watcher_footprint_growth_bucket", "50_to_120mbs:/Users/Ada"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], "[Filtered]", "tag key={key} value={value}");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra key={key} value={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_class_fields_survive_egress_and_reject_lookalikes() {
+        // The live memory-class decomposition read from a signal-triggered report
+        // (HQ-DESKTOP-60): bare-integer MB / counts (or "" when unmeasured) and the
+        // fixed source vocabulary survive egress.
+        for (key, value) in [
+            ("watcher_js_heap_total_mb", "3584"),
+            ("watcher_js_heap_total_mb", ""),
+            ("watcher_js_heap_used_mb", "3072"),
+            ("watcher_inferred_non_heap_mb", "4365"),
+            ("watcher_inferred_non_heap_mb", "0"),
+            ("watcher_libuv_active_handles", "128"),
+            ("watcher_libuv_active_handles", ""),
+            ("watcher_memory_class_source", "report_read"),
+            ("watcher_memory_class_source", "report_absent"),
+            ("watcher_memory_class_source", "report_unreadable"),
+            ("watcher_memory_class_source", "report_not_requested"),
+            ("watcher_memory_class_source", "report_unsupported_platform"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], value,
+                "valid {key}={value} must survive egress"
+            );
+        }
+        // A path, non-integer, or out-of-vocabulary token in any new memory-class
+        // field degrades to `[Filtered]` rather than leaking it.
+        for (key, value) in [
+            ("watcher_js_heap_total_mb", "3584 /Users/Ada"),
+            ("watcher_js_heap_used_mb", "3072MB"),
+            ("watcher_inferred_non_heap_mb", "-1"),
+            ("watcher_libuv_active_handles", "128; rm -rf"),
+            ("watcher_memory_class_source", "report_read /Users/Ada"),
+            ("watcher_memory_class_source", "report_guessed"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], "[Filtered]", "tag key={key} value={value}");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra key={key} value={value}"
             );
         }
     }

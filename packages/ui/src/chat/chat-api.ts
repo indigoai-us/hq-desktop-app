@@ -317,6 +317,61 @@ export interface ConversationApi {
    * thread after send.
    */
   sendReply(args: SendReplyArgs): Promise<void>;
+  /**
+   * POST /v1/notify/channels/{id}/cards/{cardId}/actions — desktop
+   * `run_card_action`. The client supplies (or the command generates) an
+   * idempotencyKey so a replayed submit is a no-op.
+   */
+  runCardAction(args: {
+    channelId: string;
+    cardId: string;
+    actionId: string;
+    values: Record<string, string>;
+    idempotencyKey?: string;
+  }): Promise<CardActionResult>;
+  /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
+  getCompanyTab?(companyUid: string, tab: string): Promise<unknown>;
+  /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
+  runCompanyTabAction?(args: {
+    companyUid: string;
+    tab: string;
+    cardId: string;
+    actionId: string;
+    values: Record<string, string>;
+    idempotencyKey?: string;
+  }): Promise<CardActionResult>;
+  /**
+   * Room-scoped agent tasks (hq-pro #3035). Optional: absent on hosts that
+   * have no telescope routes; the task strip then stays hidden.
+   */
+  listChannelAgentTasks?(args: { agentUid: string; channelId: string }): Promise<unknown>;
+  /** Agent-wide heartbeat task view — the DM / fallback source. */
+  listAgentTasks?(args: { agentUid: string }): Promise<unknown>;
+}
+
+/** Wire result of `run_card_action` / the cards actions route. */
+export interface CardActionResult {
+  cardId: string;
+  actionId: string;
+  eventId?: string;
+  state: string;
+  fields?: unknown;
+  replayed?: boolean;
+  /** US-006/011: agent channel minted on create_agent accept. */
+  agentChannelId?: string;
+  agentUid?: string;
+  navigateTo?: "chat";
+  focusCardId?: string;
+  /**
+   * Channel that received the card this action posted or resurfaced
+   * (entry-point actions: `companies_summary/create_company` answers
+   * `setup`; `team:spend/add_agent` answers the company channel).
+   */
+  channelId?: string;
+  /** Server reason when `state` is `blocked` (permission, plan). */
+  reason?: string;
+  /** URL the host should open (pending checkout: `retry_checkout`). */
+  url?: string;
 }
 
 /** Backend seam for the notifications feed (replaces invoke calls). */
@@ -344,6 +399,7 @@ export interface NotificationsApi {
 // ---------------------------------------------------------------------------
 
 export interface ChatWakeEvents {
+  "conversation:read": { id: string };
   /** New message in a channel — ids only; fetch that slice, not the inbox. */
   "channel:new-message": {
     channelId: string;
@@ -397,6 +453,13 @@ export interface ChatWakeEvents {
   };
   /** Run cursor catch-up (directory delta + open timeline `since`). */
   "mesh:catchup": { reason: "connect" | "focus" };
+  /**
+   * A work-mesh thread event landed on `hq/{companyUid}/thread/#` — ids only,
+   * like every other wake. The open project channel re-reads its activity trail
+   * so a live claim / progress / blocked / task move appears without the user
+   * leaving and returning.
+   */
+  "work-mesh:thread": { companyUid: string; threadId: string };
   /**
    * Presence store changed (MQTT retained/live or live-read rebuild).
    * Ids + status only — never prompts or credentials.

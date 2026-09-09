@@ -442,7 +442,195 @@
 /// caches `_npx` entries by the requested spec, so moving the floor changes the
 /// cache-key argument and prevents existing desktops from serving the cached
 /// older runtime.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.6";
+///
+/// `~6.16.6` -> `~6.16.11`: floors the runner at the release whose personal-vault
+/// sync is push-only for `workspace/.session-logs/` and whose reindex prunes
+/// confirmed-uploaded session logs after 7 days; the floor bump busts the npx
+/// cache key.
+///
+/// `~6.16.23` -> `~6.16.24`: floors the runner at the release that stops one
+/// unroutable key from wedging the whole personal vault (hq-cloud#499,
+/// recorded in [`UNROUTED_OVERFLOW_MIN_HQ_CLOUD`]). The vault's area layout
+/// is frozen at cutover, so any top-level directory created afterwards — the
+/// incident was a stray `npm install -g` writing `bin/` into the HQ root —
+/// resolved to no area, and the journal append threw, aborting EVERY
+/// checkpoint on every machine that pulled it. Deletes never stuck (a delete is
+/// itself a journal write), the vault kept pulling the directory back, and the
+/// only recovery was hand-deleting it on each box. 6.16.24 routes such keys to
+/// an always-configured overflow area and excludes Node project markers from
+/// the vault so the contamination cannot travel again. A desktop holding a
+/// cached 6.16.23 satisfies `~6.16.23` and would never re-resolve; only the
+/// spec-string change below delivers the fix.
+///
+/// `~6.16.11` -> `~6.16.23`: floors the runner at the first published release
+/// whose post-sync manifest-upload pass is both functional AND honest in its
+/// bookkeeping (US-004, sync-reconciliation-audit; hq-cloud
+/// `src/bin/sync-runner-manifest.ts` + `src/manifest/upload-manifest.ts`,
+/// recorded in [`MANIFEST_UPLOAD_MIN_HQ_CLOUD`]). Two prior releases are
+/// deliberately NOT the floor:
+///
+///   - 6.16.21 first shipped the pass, but its chunker carried no byte budget
+///     and emitted 16-18 MiB chunks against API Gateway's 10 MB request limit,
+///     so every vault large enough to chunk got HTTP 413 and uploaded nothing.
+///   - 6.16.22 added the byte budget, but still routed every server-answered
+///     non-success (refused fold, `resend_full`, 404, 413) through
+///     `recordUploadAttempt`, which wrote `lastUploadAt` and armed the full 24h
+///     throttle on the FIRST failure. That claimed an upload that never landed
+///     — so `hq doctor` read healthy while the scope sat silently unaudited —
+///     and suppressed retries for a day per attempt even for a fault that
+///     cleared in minutes.
+///
+/// 6.16.23 replaces that path with `recordFailedAttempt`: a real failure
+/// backoff starting at 1h and escalating to the same 24h ceiling, never
+/// writing `lastUploadAt` on a non-success. Flooring below it would ship a
+/// manifest pass whose health signal cannot be trusted.
+///
+/// Semver admission alone would NOT have been enough here: 6.16.23 already
+/// satisfies `~6.16.11`, but npm keys `_npx` entries by the requested spec
+/// string, so every existing desktop would keep serving its cached 6.16.11
+/// resolution. Changing the requested spec from `~6.16.11` to `~6.16.23` is
+/// what actually moves the cache key and delivers the manifest runner.
+///
+/// Nothing else on the desktop side is required: the manifest outcome arrives
+/// as an additive ndjson event that `events::parse_sync_line` already skips
+/// safely on both consumer paths, and its `HQ_SYNC_MANIFEST_DISABLED` kill
+/// switch reaches the runner by plain environment inheritance (see
+/// `commands::process::child_env_tests`).
+///
+/// `~6.16.24` -> `~6.16.25`: floors the runner at the release that keeps the
+/// HQ root's own `bin/` out of the personal vault entirely (hq-cloud#501,
+/// recorded in [`ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD`]). 6.16.24 stopped an
+/// unroutable key from WEDGING the vault, but it did not stop the debris from
+/// travelling: a misdirected `npm install -g` whose prefix resolves to the HQ
+/// root writes a top-level `bin/` of dangling symlinks beside
+/// `lib/node_modules`, and the vault happily pushed it to every machine the
+/// person owned. 6.16.25 excludes that directory on BOTH legs — the push walk
+/// and watcher via `PERSONAL_VAULT_EXCLUDED_TOP_LEVEL`, and, critically, the
+/// pull planner via a root-anchored `hq-root-bin` rule in
+/// `PERSONAL_VAULT_DEFAULT_EXCLUSIONS`. The pull leg is what makes this a
+/// fleet-wide fix rather than a local one: every bucket that ALREADY holds the
+/// debris re-downloads it on the next pull, so a desktop upgraded without the
+/// pull-side rule would re-materialise the directory it had just been cleaned
+/// of. The exclusion is anchored at the root on purpose, so a legitimate
+/// nested `personal/tools/bin/` still round-trips.
+///
+/// A desktop holding a cached 6.16.24 satisfies `~6.16.24` and would never
+/// re-resolve, so — exactly as with every bump above — only this spec-string
+/// change delivers the fix.
+///
+/// `~6.16.25` -> `~6.16.26`: floors the runner at the release that repairs the
+/// overflow area introduced by 6.16.24 (hq-cloud#502, recorded in
+/// [`AREA_COLLISION_HEAL_MIN_HQ_CLOUD`]). 6.16.24 shipped the overflow area and
+/// the top-level lockfile exclusions in ONE release, and together they turned a
+/// lockfile with a live entry in a real area into a key that no longer routed:
+/// the next delta took the overflow route and the same key was journaled in two
+/// areas at once. The aggregate builder treated that as corruption and threw —
+/// from inside the journal-store OPEN path, so it fired on every open. That is
+/// strictly worse than the failure 6.16.24 removed: the append-time abort was
+/// recoverable, this one wedges the vault permanently with nothing the user can
+/// do. Both HQ outposts hit it within hours of upgrading.
+///
+/// 6.16.26 makes the read tolerate the duplicate and resolve it to the real
+/// area, makes the write refuse to create a new one, and converges the stale
+/// overflow copy away on the next append that touches the key — so an already
+/// wedged vault heals itself with no user action. Two REAL areas holding one
+/// key is still rejected, on the full-rebuild and the incremental path alike.
+///
+/// This floor matters more than any above it, because the population it repairs
+/// is precisely the population that took the 6.16.24 and 6.16.25 pins. A
+/// desktop holding a cached 6.16.25 satisfies `~6.16.25` and never re-resolves,
+/// so the spec string is again the only thing that delivers the repair.
+///
+/// `~6.16.26` -> `~6.16.33`: floors the runner at the release that replaces the
+/// journal write baseline's full `structuredClone` with a per-row fingerprint
+/// map (hq-cloud#513). A writer still compares each later row against exactly
+/// the aggregate it read, but it retains a 53-bit fingerprint per row instead
+/// of a second parsed journal: on the 677k-row desktop journal that removes a
+/// roughly 950 MB duplicate from the runner heap. This is runner-internal
+/// memory layout, not a desktop-visible behavior contract, so it deliberately
+/// does not add another `*_MIN_HQ_CLOUD` floor constant.
+///
+/// A desktop holding a cached 6.16.26 satisfies `~6.16.26` forever and would
+/// retain that duplicate baseline; changing this requested spec is what moves
+/// npm's cache key and delivers the heap reduction.
+///
+/// `~6.16.33` -> `~6.16.34`: floors the runner at the release that recognizes
+/// the server's `403` `cross-tenant-push-rejected` response as terminal for
+/// that company scope (hq-cloud#514). It records the scope as forbidden and
+/// stops publishing realtime events for it, instead of retrying the same
+/// refused file forever. This is runner-internal retry control, not a desktop
+/// behavior contract, so it deliberately does not add another
+/// `*_MIN_HQ_CLOUD` floor constant.
+///
+/// A desktop holding a cached 6.16.33 satisfies `~6.16.33` forever and would
+/// keep retrying the denied scope; changing this requested spec is what moves
+/// npm's cache key and delivers the terminal classification.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.34";
+
+/// First `@indigoai-us/hq-cloud` version that ships the post-sync
+/// manifest-upload pass (US-004, sync-reconciliation-audit).
+///
+/// The pass first shipped in 6.16.21, whose unbudgeted chunker drew HTTP 413
+/// and uploaded nothing; 6.16.22 fixed the chunking but still wrote
+/// `lastUploadAt` on server-answered failures, so a scope could read healthy
+/// while never having been uploaded. The FIRST version that delivers a
+/// manifest upload that both lands and reports truthfully — and therefore the
+/// only sound floor — is 6.16.23. [`HQ_CLOUD_VERSION`] was bumped to
+/// `~6.16.23` in the same commit as this constant — the
+/// pairing the release checklist requires. With this filled in, the
+/// `manifest_upload_floor_is_recorded_once_published` test below is a REAL
+/// floor guard: it fails if the pin's lower bound ever drops below the
+/// manifest-upload release, which is the only thing that moves the npx cache
+/// key for desktops already on an older spec.
+pub const MANIFEST_UPLOAD_MIN_HQ_CLOUD: Option<&str> = Some("6.16.23");
+
+/// First `@indigoai-us/hq-cloud` version whose personal-vault journal routes a
+/// key the frozen area layout cannot place to an overflow area instead of
+/// aborting the checkpoint (hq-cloud#499, published as 6.16.24). Below it a
+/// single stray top-level directory in the HQ root wedges the vault on every
+/// machine that syncs it, and nothing on the desktop can recover that short of
+/// the user deleting files by hand. The pin must FLOOR here so the npx cache
+/// key moves for every installed desktop; see
+/// `version_floor_delivers_unrouted_overflow` below.
+pub const UNROUTED_OVERFLOW_MIN_HQ_CLOUD: &str = "6.16.24";
+
+/// First `@indigoai-us/hq-cloud` version that excludes the HQ root's own
+/// `bin/` from the personal vault on BOTH the push and the pull leg
+/// (hq-cloud#501, published as 6.16.25).
+///
+/// [`UNROUTED_OVERFLOW_MIN_HQ_CLOUD`] above made the vault survive this
+/// debris; this floor stops it existing. The two are separate constants
+/// because they fix separate failures and a desktop can sit between them:
+/// on 6.16.24 the vault checkpoints again, yet the stray `bin/` keeps
+/// syncing to every machine the person owns and keeps coming back after a
+/// local delete, because the pull planner had no rule matching it.
+///
+/// The pull leg is the reason this floor exists at all. A push-only exclusion
+/// would protect a clean root and do nothing for the population that already
+/// has the objects in their bucket — which is every user the incident actually
+/// reached. Semver admission is again not delivery: 6.16.25 satisfies
+/// `~6.16.24`, so the pin's LOWER BOUND must sit here to move the npx cache
+/// key; see `version_floor_delivers_root_bin_exclusion` below.
+pub const ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD: &str = "6.16.25";
+
+/// First `@indigoai-us/hq-cloud` version that heals a personal-vault journal
+/// whose overflow area collides with a real one (hq-cloud#502, published as
+/// 6.16.26).
+///
+/// This is the repair floor for a regression the two floors above introduced
+/// together. [`UNROUTED_OVERFLOW_MIN_HQ_CLOUD`] added the overflow area in
+/// 6.16.24, and the same release excluded the top-level lockfiles; a lockfile
+/// that already had a live entry in a real area stopped routing, so its next
+/// delta went to the overflow and the key existed in two areas. Building the
+/// aggregate then threw, on the journal-store OPEN path, on every open.
+///
+/// A desktop between 6.16.24 and this floor is therefore not merely missing a
+/// fix — it is exposed to a hard wedge that no local action clears, which is
+/// why this floor is separate from the two above rather than folded into them.
+/// Semver admission is not delivery: a cached 6.16.25 satisfies `~6.16.25`
+/// forever, so the pin's LOWER BOUND must sit here; see
+/// `version_floor_delivers_area_collision_heal` below.
+pub const AREA_COLLISION_HEAL_MIN_HQ_CLOUD: &str = "6.16.26";
 
 /// Minimum `@indigoai-us/hq-cloud` version that carries the CURRENT hq-core
 /// rescue contract — the `.claude/settings.json` recompose + drift relocation
@@ -470,26 +658,21 @@ pub const HQ_CLOUD_PACKAGE: &str = "@indigoai-us/hq-cloud";
 /// not match the package name.
 pub const RUNNER_BIN: &str = "hq-sync-runner";
 
-/// One-shot V2 mutation executable. Unlike [`RUNNER_BIN`], this command takes
-/// one local file change on stdin and obtains all authority itself.
-pub const MUTATION_BIN: &str = "hq-cloud";
-
 /// Desktop-visible capabilities of the bundled runner invocation.
 ///
 /// These describe only local command-line compatibility. They are never
 /// enrollment authority: V2 admission remains exclusively an authenticated
-/// server inventory and lease decision. In particular, this compatibility
-/// step deliberately does not claim the V2 mutation boundary that U59 adds.
+/// server inventory and lease decision. The desktop's realtime path is the
+/// runner's `--event-push` watcher plus its receiver; the app no longer ships
+/// a per-file `hq-cloud sync mutation` trigger of its own, so no mutation
+/// capability is advertised here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HqCloudRunnerCapabilities {
     pub event_push: bool,
-    pub v2_mutation: bool,
 }
 
-pub const HQ_CLOUD_RUNNER_CAPABILITIES: HqCloudRunnerCapabilities = HqCloudRunnerCapabilities {
-    event_push: true,
-    v2_mutation: true,
-};
+pub const HQ_CLOUD_RUNNER_CAPABILITIES: HqCloudRunnerCapabilities =
+    HqCloudRunnerCapabilities { event_push: true };
 
 #[cfg(test)]
 mod tests {
@@ -510,7 +693,118 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.6");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.34");
+    }
+
+    /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
+    /// vault that already holds the misdirected global install's `bin/` keeps
+    /// re-downloading it on every pull, so deleting it locally — or even
+    /// deleting it from the vault — cannot converge while any other machine is
+    /// still pushing. As everywhere else on this pin, a cached 6.16.24 would
+    /// satisfy `~6.16.24` forever, so the LOWER BOUND has to move.
+    #[test]
+    fn version_floor_delivers_root_bin_exclusion() {
+        let floor = semver::Version::parse(ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD)
+            .expect("ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD must be an exact semver version");
+        assert!(
+            pin_lower_bound() >= floor,
+            "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
+             root-`bin/` exclusion release {floor}; bump the pin so the npx cache \
+             key moves, not merely so semver admits it",
+            pin_lower_bound()
+        );
+    }
+
+    /// Area-collision heal floor (hq-cloud#502). Below this floor a vault can
+    /// be wedged permanently: the same key ends up in the overflow area AND a
+    /// real one, and building the aggregate throws from the journal-store OPEN
+    /// path, so every open fails and nothing the user does clears it. As
+    /// everywhere else on this pin, a cached 6.16.25 satisfies `~6.16.25`
+    /// forever, so the LOWER BOUND has to move for the repair to be delivered.
+    #[test]
+    fn version_floor_delivers_area_collision_heal() {
+        let floor = semver::Version::parse(AREA_COLLISION_HEAL_MIN_HQ_CLOUD)
+            .expect("AREA_COLLISION_HEAL_MIN_HQ_CLOUD must be an exact semver version");
+        assert!(
+            pin_lower_bound() >= floor,
+            "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
+             area-collision heal release {floor}; bump the pin so the npx cache \
+             key moves, not merely so semver admits it",
+            pin_lower_bound()
+        );
+    }
+
+    /// The three vault floors fix DIFFERENT failures and must stay ordered:
+    /// survive-the-debris (6.16.24) shipped before never-carry-the-debris
+    /// (6.16.25), which shipped before repair-what-6.16.24-broke (6.16.26). If
+    /// a future edit ever collapsed any pair, one of the guards would silently
+    /// stop guarding anything.
+    #[test]
+    fn vault_floors_are_distinct_and_ordered() {
+        let overflow = semver::Version::parse(UNROUTED_OVERFLOW_MIN_HQ_CLOUD)
+            .expect("UNROUTED_OVERFLOW_MIN_HQ_CLOUD must be an exact semver version");
+        let root_bin = semver::Version::parse(ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD)
+            .expect("ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD must be an exact semver version");
+        let heal = semver::Version::parse(AREA_COLLISION_HEAL_MIN_HQ_CLOUD)
+            .expect("AREA_COLLISION_HEAL_MIN_HQ_CLOUD must be an exact semver version");
+        assert!(
+            root_bin > overflow,
+            "the root-`bin/` exclusion ({root_bin}) must floor above the \
+             unrouted-overflow release ({overflow})"
+        );
+        assert!(
+            heal > root_bin,
+            "the area-collision heal ({heal}) must floor above the root-`bin/` \
+             exclusion ({root_bin})"
+        );
+    }
+
+    /// Unrouted-key overflow floor (hq-cloud#499). A desktop below this floor
+    /// can be wedged for good by one stray top-level directory in the HQ root:
+    /// every checkpoint aborts, deletes never stick, and the vault keeps pulling
+    /// the directory back. Semver admission is not delivery — a cached 6.16.23
+    /// satisfies `~6.16.23` forever — so the pin's LOWER BOUND must sit at the
+    /// overflow release to move the npx cache key.
+    #[test]
+    fn version_floor_delivers_unrouted_overflow() {
+        let floor = semver::Version::parse(UNROUTED_OVERFLOW_MIN_HQ_CLOUD)
+            .expect("UNROUTED_OVERFLOW_MIN_HQ_CLOUD must be an exact semver version");
+        assert!(
+            pin_lower_bound() >= floor,
+            "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
+             unrouted-overflow release {floor}; bump the pin so the npx cache key \
+             moves, not merely so semver admits it",
+            pin_lower_bound()
+        );
+    }
+
+    /// Manifest-upload floor (US-004, sync-reconciliation-audit).
+    ///
+    /// The working manifest runner published as hq-cloud 6.16.23, so the constant is
+    /// `Some` and this is a real guard that the pin FLOORS at (not merely
+    /// admits) the manifest release — semver admission alone would leave
+    /// desktops on a cached npx entry that predates it. The `None` arm is kept
+    /// as the fail-closed shape for any future unpublished-runner window.
+    #[test]
+    fn manifest_upload_floor_is_recorded_once_published() {
+        match MANIFEST_UPLOAD_MIN_HQ_CLOUD {
+            None => assert_eq!(
+                HQ_CLOUD_VERSION, "~6.16.24",
+                "manifest runner is still unpublished; when it ships, set \
+                 MANIFEST_UPLOAD_MIN_HQ_CLOUD and bump HQ_CLOUD_VERSION together"
+            ),
+            Some(published) => {
+                let floor = semver::Version::parse(published)
+                    .expect("MANIFEST_UPLOAD_MIN_HQ_CLOUD must be an exact semver version");
+                assert!(
+                    pin_lower_bound() >= floor,
+                    "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
+                     manifest-upload release {floor}; bump the pin so the npx cache key \
+                     moves, not merely so semver admits it",
+                    pin_lower_bound()
+                );
+            }
+        }
     }
 
     /// Desktop hardcodes `--on-conflict keep`; the pin must therefore carry
@@ -647,13 +941,15 @@ mod tests {
     }
 
     #[test]
-    fn runner_capabilities_describe_local_compatibility_and_v2_mutation_support() {
-        assert!(HQ_CLOUD_RUNNER_CAPABILITIES.event_push);
-        assert!(HQ_CLOUD_RUNNER_CAPABILITIES.v2_mutation);
-    }
-
-    #[test]
-    fn mutation_bin_is_hq_cloud() {
-        assert_eq!(MUTATION_BIN, "hq-cloud");
+    fn runner_capabilities_claim_only_event_push() {
+        // The desktop no longer ships a V2 mutation trigger of its own:
+        // realtime delivery is the runner's `--event-push` watcher plus the
+        // receiver, so this record must not advertise a mutation seam that
+        // nothing in the app spawns. Exhaustive equality means a re-added
+        // capability field fails to compile here instead of going unnoticed.
+        assert_eq!(
+            HQ_CLOUD_RUNNER_CAPABILITIES,
+            HqCloudRunnerCapabilities { event_push: true }
+        );
     }
 }

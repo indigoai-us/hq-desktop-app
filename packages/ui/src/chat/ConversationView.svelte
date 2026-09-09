@@ -29,6 +29,8 @@
   } from "./live-messages";
   import ReplyPanel, { type ReplyPreview } from "./messaging/ReplyPanel.svelte";
   import IdentityMark from "./messaging/IdentityMark.svelte";
+  import AgentTaskStrip from "./tasks/AgentTaskStrip.svelte";
+  import { TaskFeedController, isAgentUid } from "./tasks/task-feed-controller.svelte";
   import { REPLY_OVERLAY_MAX_PX } from "./reply-layout";
   import "./tokens.css";
   import "./chat-tokens.css";
@@ -45,6 +47,39 @@
   }
 
   let { api, wakes = null, row, onopenurl }: Props = $props();
+
+  // Background-task chips for every agent in this conversation — the room-
+  // scoped route for channels, the agent-wide view for a DM with an agent.
+  // One controller per conversation id; recreated on switch, disposed on
+  // teardown. Nothing is polled when the host exposes neither source or the
+  // conversation has no agent.
+  let taskCtl = $state<TaskFeedController | null>(null);
+  $effect(() => {
+    const id = row.id;
+    const channelId = row.channelId ?? null;
+    const peer = row.personUid ?? null;
+    const agentUids = channelId
+      ? (row.members ?? []).map((m) => m.personUid)
+      : peer && isAgentUid(peer)
+        ? [peer]
+        : [];
+    void id;
+    const roomFetch = api.listChannelAgentTasks;
+    const agentFetch = api.listAgentTasks;
+    const ctl = new TaskFeedController({
+      agentUids,
+      channelId,
+      fetchRoomTasks: roomFetch
+        ? (agentUid, ch) => roomFetch({ agentUid, channelId: ch })
+        : null,
+      fetchTasks: agentFetch ? (agentUid) => agentFetch({ agentUid }) : null,
+    });
+    taskCtl = ctl;
+    return () => {
+      ctl.dispose();
+      if (taskCtl === ctl) taskCtl = null;
+    };
+  });
 
   interface MessageRow {
     eventId: string;
@@ -543,6 +578,8 @@
           {/each}
         {/if}
       </div>
+
+      <AgentTaskStrip tasks={taskCtl?.tasks ?? []} />
 
       <div class="conv-composer">
         <textarea

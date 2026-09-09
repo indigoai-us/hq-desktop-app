@@ -11,7 +11,6 @@
   import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
   import {
     COMPLETE_SETUP,
-    SETUP_NEEDS_PASS,
     escapeForLaunch,
     type OnboardingEscape,
   } from '../../lib/onboarding-escape';
@@ -39,6 +38,9 @@
     buildInitialStages,
     buildStagesFromManifest,
     friendlySetupBands,
+    createSetupRunId,
+    normalizeFailedStageIds,
+    reuseInFlightOperation,
     resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
@@ -46,10 +48,10 @@
     setupStageRecoveryAction,
     stageCommandInvocations,
     stageTimeoutMs,
+    setupFailureTelemetryDetails,
     StageTimeoutError,
     STAGE_ORDER,
     withTimeout,
-    type FailedStageDetail,
     type InstallManifest,
     type StageId,
     type StageState,
@@ -207,10 +209,11 @@
   let stageCreep = $state(0);
   let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
+  let currentSetupRunId = '';
   let setupCancelled = false;
+  const initialCloudSyncOperation = { operation: null as Promise<void> | null };
   let unlistenInstallProgress: UnlistenFn | null = null;
   let unlistenContentProgress: UnlistenFn | null = null;
-  let setupFailures = $state<FailedStageDetail[]>([]);
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
@@ -264,6 +267,21 @@
     });
   }
 
+  /**
+   * Best-effort: `whoami` is the first place a `prs_*` person uid exists after
+   * token exchange. Never awaited by the wizard; a miss is retried after setup
+   * provisions the person entity.
+   */
+  async function resolveInstallerPersonUid(): Promise<void> {
+    try {
+      const identity = await invokeCommand<{ personUid?: string | null }>('whoami');
+      const uid = typeof identity?.personUid === 'string' ? identity.personUid.trim() : '';
+      if (uid) onboardingTelemetry.setPersonUid(uid);
+    } catch {
+      // Person entity may not exist until setup / ensure_person_entity.
+    }
+  }
+
   const displayPath = $derived(
     resolvedPath ? friendlyPath(resolvedPath, homeDir) : 'Resolving ~/hq...',
   );
@@ -293,10 +311,7 @@
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
-  const needsAttention = $derived(setupFailures.length > 0);
-  const readyCaution = $derived(
-    launchEscape ?? (needsAttention ? SETUP_NEEDS_PASS : COMPLETE_SETUP),
-  );
+  const readyCaution = $derived(launchEscape ?? COMPLETE_SETUP);
   const userFacingInstallPath = $derived(
     installPath ? toUserFacingPath(installPath) : null,
   );
@@ -313,7 +328,7 @@
   );
   const primaryLaunch = $derived<PrimaryLaunch>(selectPrimaryLaunch(aiTools));
   const manualToolsVisible = $derived(
-    showManualTools || Boolean(launchEscape || detectionFailed || needsAttention),
+    showManualTools || Boolean(launchEscape || detectionFailed),
   );
 
   $effect(() => {
@@ -392,7 +407,10 @@
       // operational queue is independent of consent and can resume delivery.
       void invokeCommand<{ authenticated: boolean }>('get_auth_state')
         .then((auth) => {
-          if (auth?.authenticated) return onboardingTelemetry.flush();
+          if (auth?.authenticated) {
+            void resolveInstallerPersonUid();
+            return onboardingTelemetry.flush();
+          }
         })
         .catch(() => {});
     }
@@ -525,6 +543,8 @@
         // The token is now available, so release operational records that were
         // buffered solely while the OAuth flow was unauthenticated.
         void onboardingTelemetry.flush().catch(() => {});
+        // Person entity may not exist yet; later pings retry after setup.
+        void resolveInstallerPersonUid();
         await refocusWindow();
         if (!isCurrentSignInCall(call)) return;
         // The consent question is asked later as its own step after setup.
@@ -640,6 +660,7 @@
 
   function beginSetupRun(): number {
     currentRunId += 1;
+    currentSetupRunId = createSetupRunId();
     setupCancelled = false;
     activeInstallHandles.clear();
     activeContentHandles.clear();
@@ -765,7 +786,16 @@
     }
   }
 
-  async function invokeStageCommand(id: StageId, runId: number): Promise<void> {
+  type OnboardingFailureScope = {
+    setupRunId: string;
+    attemptCount: number;
+  };
+
+  async function invokeStageCommand(
+    id: StageId,
+    runId: number,
+    failureScope: OnboardingFailureScope,
+  ): Promise<void> {
     const invocations = stageCommandInvocations(id, { installPath: effectiveInstallPath });
     if (invocations.length === 0) return;
     if (typeof invoke !== 'function') {
@@ -775,6 +805,9 @@
     const ms = stageTimeoutMs(id);
     for (const invocation of invocations) {
       let args = invocation.args;
+      if (['content', 'deps', 'git-init', 'indexing'].includes(id)) {
+        args = { ...(args ?? {}), failureScope };
+      }
       let handle: string | null = null;
       if (invocation.command === 'fetch_and_extract_template') {
         handle = contentHandle(runId);
@@ -782,8 +815,14 @@
         args = { ...args, handle };
       }
       try {
+        const operation =
+          invocation.command === 'start_initial_cloud_sync'
+            ? reuseInFlightOperation(initialCloudSyncOperation, () =>
+                Promise.resolve(invokeDesktopCommand(invocation.command, args)),
+              )
+            : Promise.resolve(invokeDesktopCommand(invocation.command, args));
         await withTimeout(
-          Promise.resolve(invokeDesktopCommand(invocation.command, args)),
+          operation,
           ms,
           () => new StageTimeoutError(id, ms),
           () => {
@@ -802,18 +841,52 @@
 
   type StageRunOutcome = 'ok' | 'failed' | 'cancelled';
 
+  type NativeStageFailureDetail = {
+    failedDependency?: unknown;
+    errorCategory?: unknown;
+  };
+
+  async function stageFailureTelemetryDetails(
+    id: StageId,
+    error: unknown,
+    failureScope: OnboardingFailureScope,
+  ) {
+    const timeoutCategory = error instanceof StageTimeoutError ? 'timeout' : undefined;
+    let nativeDetail: NativeStageFailureDetail | undefined;
+    try {
+      nativeDetail = await invokeCommand<NativeStageFailureDetail | undefined>(
+        'take_onboarding_failure_detail',
+        { stage: id, ...failureScope },
+      );
+    } catch {
+      // Failure-detail telemetry must not affect setup recovery or its copy.
+      console.warn('[onboarding] setup failure detail was unavailable');
+    }
+    return setupFailureTelemetryDetails({
+      stageId: id,
+      errorCategory: timeoutCategory ?? nativeDetail?.errorCategory,
+      failedDependency: nativeDetail?.failedDependency,
+    });
+  }
+
   async function runStage(
     id: StageId,
     runId: number,
     attemptCount: number,
   ): Promise<StageRunOutcome> {
     if (!isCurrentRun(runId)) return 'cancelled';
+    const setupRunId = currentSetupRunId;
+    const failureScope = { setupRunId, attemptCount };
     const startedAt = Date.now();
-    recordStep(SETUP_STEP_INDEX, 'started', { component: id, attemptCount });
+    recordStep(SETUP_STEP_INDEX, 'started', {
+      component: id,
+      attemptCount,
+      setupRunId,
+    });
     stages = setStageStatus(stages, id, 'running');
     await journalStageStart(id);
 
-    const result = await invokeStageCommand(id, runId).then(
+    const result = await invokeStageCommand(id, runId, failureScope).then(
       () => ({ kind: 'done' as const }),
       (err) => ({ kind: 'failed' as const, err }),
     );
@@ -824,6 +897,7 @@
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'cancelled',
+        setupRunId,
       });
       return 'cancelled';
     }
@@ -835,6 +909,7 @@
         component: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
+        setupRunId,
       });
       return 'ok';
     }
@@ -842,11 +917,15 @@
       const message = errorMessage(result.err);
       stages = setStageStatus(stages, id, 'failed', message);
       await journalStageFailure(id, message);
+      const failureDetails = await stageFailureTelemetryDetails(id, result.err, failureScope);
+      if (!isCurrentRun(runId)) return 'cancelled';
       recordStep(SETUP_STEP_INDEX, 'failed', {
         component: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'stage_command_failed',
+        setupRunId,
+        ...failureDetails,
       });
       return 'failed';
     }
@@ -894,12 +973,14 @@
     if (isCurrentRun(runId) && !setupCompleted && allSettled(stages)) {
       setupCompleted = true;
       const result = setupCompletionResult(stages);
-      setupFailures = result.failedStages;
+      const failedStages = normalizeFailedStageIds(result.failedStages.map((stage) => stage.id));
       markSetupStepCompleted();
       await journalInstallComplete();
       setupCompletionMetrics = {
         stageCount: stages.length,
-        failedStageCount: setupFailures.length,
+        failedStageCount: result.failedStages.length,
+        failedStages,
+        setupRunId: currentSetupRunId,
         detectedToolCount: aiTools
           ? [
               aiTools.claude_cli,
@@ -914,10 +995,14 @@
         eventName: 'desktop_setup_completed',
         properties: { ...setupCompletionMetrics },
       });
+      // Setup is what provisions the person entity; stitch the install session.
+      void resolveInstallerPersonUid();
       // Consent precedes the optional connector-import step and final handoff.
       advanceTo(CONSENT_STEP_INDEX, 'completed', {
-        failedStageCount: setupFailures.length,
-        outcome: setupFailures.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
+        failedStageCount: result.failedStages.length,
+        failedStages,
+        setupRunId: currentSetupRunId,
+        outcome: result.failedStages.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
       });
     }
   }
@@ -925,6 +1010,8 @@
   interface SetupCompletionMetrics {
     stageCount: number;
     failedStageCount: number;
+    failedStages: StageId[];
+    setupRunId: string;
     detectedToolCount: number;
   }
   let setupCompletionMetrics = $state<SetupCompletionMetrics | null>(null);
@@ -970,6 +1057,7 @@
       // HQ), so this is a fast confirmation, not a bootstrap.
       try {
         await invokeCommand<boolean>('ensure_person_entity');
+        void resolveInstallerPersonUid();
       } catch (err) {
         // Could not confirm the entity (no token / vault unreachable). Fall
         // through to postOptIn: the local cache still records the answer, and
@@ -1734,7 +1822,9 @@
           class:out-right={outgoingGraphicStep === READY_STEP_INDEX && outgoingGraphicDirection === 'right'}
           data-g={READY_STEP_INDEX}
         >
-          {@render BigCheck()}
+          <span data-testid="onboarding-completion-success-indicator" aria-hidden="true">
+            {@render BigCheck()}
+          </span>
         </div>
 
         <div
@@ -1901,10 +1991,10 @@
             {/each}
           </div>
           <!-- The setup screen intentionally shows ONLY the friendly checklist (matching
-               the design). Recovery — retry on stall, skip on hard timeout, transient-
-               failure retries — runs AUTOMATICALLY in the setup engine; any stage that
-               still fails is surfaced on the "HQ is ready" screen's needs-attention note,
-               not here. No percentages, stage counts, staging toggle, or manual controls. -->
+               the design). Recovery runs automatically in the setup engine; a stage that
+               still fails is recorded silently for the setup skill, not surfaced on a
+               needs-attention note. No percentages, stage counts, staging toggle, or
+               manual controls. -->
           <div class="btns">
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(DIRECTORY_STEP_INDEX)}>Back</button>
           </div>

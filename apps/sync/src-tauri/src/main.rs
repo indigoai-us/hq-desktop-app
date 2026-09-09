@@ -5,7 +5,9 @@ use tauri::Manager;
 
 mod boot_watchdog;
 mod commands;
+mod deep_link;
 mod events;
+mod fd_limit;
 #[cfg(target_os = "macos")]
 mod glass;
 mod recovery;
@@ -277,6 +279,15 @@ fn main() {
     // here in the binary and passed in, so the crate carries no build-env coupling.
     // `env!("SENTRY_DSN")` is "" on dev/PR CI (no release secret) → Sentry no-ops.
     // Hold the guard for the process lifetime.
+    // Raise the open-file soft limit (macOS GUI default 256) before anything
+    // opens sockets, logs, or webviews. See `fd_limit` for the failure mode.
+    match fd_limit::raise_open_file_limit() {
+        Ok(outcome) => util::logfile::log("startup", &format!("open-file limit: {outcome:?}")),
+        Err(error) => {
+            util::logfile::log("startup", &format!("open-file limit raise failed: {error}"))
+        }
+    }
+
     let _guard = hq_telemetry::init_with_identity(
         env!("SENTRY_DSN"),
         env!("APP_VERSION"),
@@ -350,6 +361,12 @@ fn main() {
                 commands::hq_work::spawn_open_hqwork_deep_link(app, url);
                 return;
             }
+            // US-009: hq-desktop://setup?checkout=done&company=… — focus
+            // Messages on #setup rather than the compact popover.
+            if let Some(url) = crate::deep_link::hq_desktop_url_from_argv(&argv) {
+                crate::deep_link::spawn_open_hq_desktop_url(app, url);
+                return;
+            }
 
             // US-004 WindowRouter: taskbar / second-process activation always
             // shows the compact notification popover — never auto-focuses the
@@ -369,6 +386,7 @@ fn main() {
 
             surface_existing_instance(app);
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("external-links")
@@ -455,6 +473,7 @@ fn main() {
         .manage(commands::dm_notify::ActiveConversationState::new())
         .manage(commands::dm_notify::WatchedSharesState::new())
         .manage(commands::messages::PendingMessagesTarget::new())
+        .manage(crate::deep_link::PendingSetupTarget::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         .manage(commands::banner::PendingBannerActions::default())
         .manage(commands::banner::BannerActionRouterReadiness::default())
@@ -472,6 +491,10 @@ fn main() {
                 if window.label() == "main" {
                     handle_window_close_requested_hide(true, || {
                         api.prevent_close();
+                        // Cmd-W is an explicit dismissal, same as Esc or the
+                        // popover's close button — release the onboarding
+                        // blur-hide pin so click-away works from here on.
+                        tray::note_popover_dismissed();
                         let _ = window.hide();
                     });
                 }
@@ -513,6 +536,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::app::quit_app,
             commands::app::bring_main_window_to_front,
+            commands::app::hide_main_window,
             commands::app::open_settings_window,
             commands::app::open_claude_code_link,
             commands::ai_tools::detect_ai_tools,
@@ -528,6 +552,18 @@ fn main() {
             commands::oauth::start_oauth_login,
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
+            // Browser session continuation. Inert until the backend's rollout
+            // document says otherwise: `desktop_continuation_context`
+            // answers "off" on every failure, and the renderer only calls the
+            // rest after it answers "on".
+            commands::desktop_auth::desktop_continuation_context,
+            commands::desktop_auth::desktop_continuation_config,
+            commands::desktop_auth::desktop_continuation_deliver,
+            commands::desktop_auth::desktop_continuation_may_start,
+            commands::desktop_auth::desktop_continuation_start,
+            commands::desktop_auth::desktop_continuation_await_identity,
+            commands::desktop_auth::desktop_continuation_confirm,
+            commands::desktop_auth::desktop_continuation_cancel,
             commands::auth::get_auth_state,
             commands::auth::whoami,
             commands::auth::get_auth_session,
@@ -600,12 +636,14 @@ fn main() {
             commands::install_manifest::record_install_complete,
             commands::install_stages::git_init,
             commands::install_stages::git_probe_user,
+            commands::install_stages::take_onboarding_failure_detail,
             commands::install_stages::register_search_index,
             commands::install_stages::install_default_packages,
             commands::install_stages::personalize_hq,
             commands::install_stages::import_existing_setup,
             commands::install_stages::install_menubar_app,
             commands::install_stages::install_work_mesh,
+            commands::install_stages::ensure_work_mesh_daemon,
             commands::install_stages::start_initial_cloud_sync,
             commands::install_deps::check_dep,
             commands::install_deps::cancel_install,
@@ -615,6 +653,9 @@ fn main() {
             commands::install_deps::install_git,
             commands::install_deps::install_gh,
             commands::install_deps::install_claude_code,
+            commands::install_deps::install_codex,
+            commands::install_deps::install_grok,
+            commands::install_deps::install_session_provider,
             commands::install_deps::install_qmd,
             commands::install_deps::install_hq_cli,
             commands::install_deps::install_yq,
@@ -680,6 +721,47 @@ fn main() {
             // per-reader commands the readers exposed in US-002/US-003/US-004
             // (registered here so the frontend store can fall back to a single
             // reader and the polling loop emits `sessions:updated`).
+            // In-app agent sessions (feature-flagged dark by
+            // `agent_session_flags`): the live registry + Claude driver.
+            commands::agent_session::agent_session_preflight,
+            commands::agent_session::provider_auth::agent_provider_login_start,
+            commands::agent_session::provider_auth::agent_provider_login_status,
+            commands::agent_session::provider_auth::agent_provider_login_cancel,
+            commands::agent_session::agent_session_start,
+            commands::agent_session::agent_session_send,
+            commands::agent_session::agent_session_respond_permission,
+            commands::agent_session::agent_session_answer_question,
+            commands::agent_session::agent_session_interrupt,
+            commands::agent_session::agent_session_set_permission_mode,
+            commands::agent_session::agent_session_end,
+            commands::agent_session::agent_session_list,
+            commands::agent_session::agent_session_replay,
+            commands::agent_session::agent_session_history_page,
+            commands::agent_session::agent_session_context,
+            commands::agent_session::agent_session_slash_commands,
+            // Sessions composer `@`-mentions: the company directory + the DM
+            // fan-out that runs after a mentioned message is sent.
+            commands::session_mentions::session_mention_candidates,
+            commands::session_mentions::session_mention_notify,
+            commands::agent_session::agent_session_cli_session_id,
+            commands::agent_session_launch::agent_session_open_in_app,
+            // HQ-native context for the Sessions composer (read-only).
+            commands::hq_context::hq_skill_catalog,
+            commands::hq_context::hq_company_projects,
+            commands::hq_context::hq_recent_meetings,
+            commands::hq_context::hq_signals,
+            commands::hq_context::hq_vault_files,
+            commands::hq_context::hq_reference_text,
+            commands::hq_context::hq_share_to_channel_preflight,
+            commands::session_share_channel::session_share_to_channel,
+            // Project channels ↔ sessions: the join behind the sidebar's
+            // session badges / hover cards and the strip's project pill.
+            commands::session_project_links::session_project_links,
+            commands::project_session_sharing::project_sessions_read,
+            // Open / Share / Deploy on files a session produced.
+            commands::session_artifacts::session_artifact_stat,
+            commands::session_artifacts::session_artifact_open,
+            commands::session_artifacts::session_artifact_share,
             commands::sessions::list_agent_sessions,
             commands::sessions::claude::list_local_claude_sessions,
             commands::sessions::codex::list_local_codex_sessions,
@@ -700,6 +782,8 @@ fn main() {
             commands::desktop_alt::get_company_project_creators,
             commands::desktop_alt::get_company_activity,
             commands::desktop_alt::get_company_team_telemetry,
+            commands::desktop_alt::list_agent_tasks,
+            commands::desktop_alt::list_channel_agent_tasks,
             commands::desktop_alt::get_company_deployments,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,
@@ -804,6 +888,10 @@ fn main() {
             commands::messages::join_channel,
             commands::messages::invite_to_channel,
             commands::messages::send_channel_message,
+            commands::messages::run_card_action,
+            commands::messages::get_company_tab,
+            commands::messages::run_company_tab_action,
+            crate::deep_link::take_pending_setup_target,
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,
             commands::messages::delete_channel,
@@ -867,7 +955,14 @@ fn main() {
             commands::compat::open_developer_settings,
         ])
         .setup(|app| {
+            // Unattended dependency-install mode for the VM install matrix.
+            // Engaged only by HQ_HEADLESS_INSTALL_DEPS=<out.json>; runs the
+            // real `install_deps` orchestrator, writes a JSON result, exits.
+            if commands::headless_install::maybe_run(app.handle()) {
+                return Ok(());
+            }
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
+            commands::project_session_sharing::start_recovery(app.handle());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.
             #[cfg(target_os = "macos")]
@@ -905,6 +1000,36 @@ fn main() {
             let startup_args: Vec<String> = std::env::args().collect();
             if let Some(url) = commands::hq_work::hqwork_url_from_argv(&startup_args) {
                 commands::hq_work::spawn_open_hqwork_deep_link(app.handle(), url);
+            }
+            if let Some(url) = crate::deep_link::hq_desktop_url_from_argv(&startup_args) {
+                crate::deep_link::spawn_open_hq_desktop_url(app.handle(), url);
+            }
+
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                #[cfg(any(windows, target_os = "linux"))]
+                {
+                    if let Err(error) = app.deep_link().register("hq-desktop") {
+                        util::logfile::log(
+                            "deep-link",
+                            &format!("HQ_DESKTOP_REGISTER_FAIL {error}"),
+                        );
+                    }
+                }
+                let handle = app.handle().clone();
+                let _ = app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        crate::deep_link::spawn_open_hq_desktop_url(&handle, url.to_string());
+                    }
+                });
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    for url in urls {
+                        crate::deep_link::spawn_open_hq_desktop_url(
+                            app.handle(),
+                            url.to_string(),
+                        );
+                    }
+                }
             }
 
             // One-shot migration of any legacy `/deploy`-skill stub at
@@ -1060,9 +1185,6 @@ fn main() {
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());
-            // U59: hq-cloud itself decides V2 rollout admission; this sidecar
-            // only forwards local file changes through its minimal stdin API.
-            commands::realtime_mutation::setup_realtime_mutation_watcher(app.handle());
             // Supervise the watch daemon: respawn it if it dies while auto-sync
             // is on, so a crash/kill doesn't leave sync silently quiet.
             commands::daemon::setup_daemon_supervisor(app.handle());
@@ -1106,6 +1228,15 @@ fn main() {
             // stays fresh without a manual refresh — same independent-timer
             // pattern as the share/dm poller above.
             commands::sessions::setup_sessions_poller(app.handle().clone());
+
+            // Project watch: notices a `prd.json` HQ writes while a session is
+            // live, binds the session to it and emits
+            // `agent-session:project-created` so the chat can offer a channel.
+            commands::session_project_links::setup_project_watch(app.handle().clone());
+
+            // Agent CLI children spawned by `hq_desktop_core::stdio` join the
+            // same process registry `terminate_all_for_exit` drains on quit.
+            commands::agent_stdio::install_stdio_process_registrar();
 
             // Outpost sessions subscriber + box status (US-011). Subscribes to
             // the per-person `hq/{personUid}/sessions` realtime topic (reusing the
@@ -1533,5 +1664,96 @@ mod native_panic_tests {
             calls.borrow().is_empty(),
             "the app-initiated quit path must stay behaviourally unchanged"
         );
+    }
+}
+
+#[cfg(test)]
+mod mutation_trigger_removal_tests {
+    use std::path::{Path, PathBuf};
+
+    fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                rust_sources(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// The shapes the removed trigger took in source: its module name, the
+    /// one-string form of the hq-cloud subcommand, and a `"sync"` literal
+    /// followed within a few tokens by a `"mutation"` literal, which is how a
+    /// spawn site lists npx arguments whether it writes them as `&str`s or
+    /// `.to_string()`s. Assembled at runtime so this file does not match
+    /// itself. A bare `"mutation"` literal is deliberately not enough:
+    /// unrelated code may legitimately contain that word.
+    fn references_mutation_trigger(text: &str) -> Option<String> {
+        let module = ["realtime_", "muta", "tion"].concat();
+        let one_string = ["sync ", "muta", "tion"].concat();
+        for needle in [&module, &one_string] {
+            if text.contains(needle.as_str()) {
+                return Some(needle.clone());
+            }
+        }
+        let sync_literal = "\"sync\"";
+        let mutation_literal = ["\"muta", "tion\""].concat();
+        let mut from = 0;
+        while let Some(at) = text[from..].find(sync_literal) {
+            let start = from + at + sync_literal.len();
+            let window_end = text
+                .char_indices()
+                .map(|(index, _)| index)
+                .find(|&index| index >= start + 48)
+                .unwrap_or(text.len());
+            if text[start..window_end].contains(mutation_literal.as_str()) {
+                return Some([sync_literal, " .. ", mutation_literal.as_str()].concat());
+            }
+            from = start;
+        }
+        None
+    }
+
+    /// Negative control for the scan: the detector must fire on the exact
+    /// lines the removed module used, or the sweep below proves nothing.
+    #[test]
+    fn detector_matches_the_removed_spawn_shapes() {
+        let module_use = ["commands::realtime_", "muta", "tion::setup"].concat();
+        let arg_vec = ["\"sync\".to_string(),\n\"muta", "tion\".to_string(),"].concat();
+        let arg_slice = ["[\"sync\", \"muta", "tion\", \"--stdin-json\"]"].concat();
+        let one_string = ["\"hq-cloud sync ", "muta", "tion --stdin-json\""].concat();
+        assert!(references_mutation_trigger(&module_use).is_some());
+        assert!(references_mutation_trigger(&arg_vec).is_some());
+        assert!(references_mutation_trigger(&arg_slice).is_some());
+        assert!(references_mutation_trigger(&one_string).is_some());
+        let unrelated = ["let kind = \"", "muta", "tion\"; // GraphQL operation"].concat();
+        assert!(references_mutation_trigger(&unrelated).is_none());
+    }
+
+    /// The desktop used to spawn the hq-cloud one-shot mutation subcommand
+    /// through npx for every changed path under the HQ root (measured at 15 npx+node
+    /// pairs a minute on an active HQ, each ~0.7 s CPU and ~220 MB) while the
+    /// runner's `--event-push` watcher already delivers realtime sync. The
+    /// trigger is gone; this keeps it from creeping back under another name.
+    #[test]
+    fn no_desktop_module_spawns_hq_cloud_sync_mutation() {
+        let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_sources(&src, &mut files);
+        assert!(
+            !files.is_empty(),
+            "no Rust sources found under {}",
+            src.display()
+        );
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("read source");
+            if let Some(needle) = references_mutation_trigger(&text) {
+                panic!(
+                    "{} still references the removed realtime mutation trigger ({needle})",
+                    file.display()
+                );
+            }
+        }
     }
 }

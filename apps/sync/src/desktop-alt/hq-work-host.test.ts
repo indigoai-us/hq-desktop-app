@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatWakeBus } from '@hq/ui';
 import {
+  parseHqDesktopSetupUrl,
   subscribeHqWorkNativeWakes,
   type TauriEventListener,
 } from './hq-work-host';
@@ -84,3 +85,19 @@ describe('subscribeHqWorkNativeWakes', () => {
     dispose();
   });
 });
+
+describe('parseHqDesktopSetupUrl', () => {
+  it('parses hq-desktop://setup?checkout=done&company={uid}', () => {
+    expect(
+      parseHqDesktopSetupUrl(
+        'hq-desktop://setup?checkout=done&company=cmp_acme',
+      ),
+    ).toEqual({ companyUid: 'cmp_acme', checkout: 'done' });
+  });
+
+  it('rejects urls without a company', () => {
+    expect(parseHqDesktopSetupUrl('hq-desktop://setup?checkout=done')).toBeNull();
+    expect(parseHqDesktopSetupUrl('hqwork://open?channel=setup')).toBeNull();
+  });
+});
+

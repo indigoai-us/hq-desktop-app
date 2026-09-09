@@ -12,6 +12,9 @@ resolver = "2"
 members = ["crates/*"]
 exclude = [
   "apps/sync/src-tauri",
+  # Mobile shell for HQ Work (iOS + Android). Standalone for the same reason
+  # apps/sync/src-tauri is: it pins its own Tauri dependency graph.
+  "apps/work/src-tauri",
   "imports/hq-installer-react/src-tauri",
   "imports/hq-sync-win/src-tauri",
 ]

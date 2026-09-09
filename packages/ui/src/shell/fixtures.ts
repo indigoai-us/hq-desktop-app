@@ -583,6 +583,11 @@ export function createFixtureConversationApi(): ConversationApi {
       replyCount: 0,
     }),
     sendReply: async () => {},
+    runCardAction: async (args) => ({
+      cardId: args.cardId,
+      actionId: args.actionId,
+      state: "pending",
+    }),
   };
 }
 

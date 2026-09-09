@@ -10,6 +10,7 @@ import type { AdapterResult, PlatformAdapter } from '@hq/platform';
 import {
   normalizeDirectoryFeed,
   dispatchEmbeddedNavigation,
+  destinationFromEmbeddedTarget,
   isEmbeddedSettingsSection,
   OPEN_SETTINGS_EVENT,
   requestChannelOpen,
@@ -22,6 +23,7 @@ import {
   type MessageSearchResult,
   type RequestsResponse,
   type EmbeddedNavigationTarget,
+  type NavigationDestination,
   type ChatWakeBus,
   type PackagesDone,
   type PackagesEvents,
@@ -495,6 +497,11 @@ export function requestDeepLinkOpen(target: HqWorkOpenTarget): void {
  * Stateful delivery boundary between native desktop routes and the mounted
  * shared shell. `attach` is called by `DesktopApp` only after its listeners
  * exist, so a cold pending route cannot disappear in the mount gap.
+ *
+ * This is not the in-app history stack — see
+ * `packages/ui/src/shell/navigation-history.ts`. Native/host targets convert
+ * into that destination union via `destinationFromEmbeddedTarget` once the
+ * shared shell commits them; this controller only queues delivery.
  */
 export class EmbeddedNavigationController {
   #pending: EmbeddedNavigationTarget | null = null;
@@ -544,8 +551,33 @@ export function createEmbeddedNavigationController(): EmbeddedNavigationControll
   return new EmbeddedNavigationController();
 }
 
+/** Convert a native desktop-alt route string onto the shared destination union. */
+export function navigationDestinationFromRoute(
+  route: string | null | undefined,
+): NavigationDestination | null {
+  const trimmed = route?.trim() ?? '';
+  if (!trimmed) return null;
+  return destinationFromEmbeddedTarget(routeTarget(trimmed));
+}
+
 function routeTarget(route: string): EmbeddedNavigationTarget {
   // hqwork:// must be handled before slash→colon (otherwise `://` becomes `:::`).
+  if (route.startsWith('hq-desktop://')) {
+    const parsed = parseHqDesktopSetupUrl(route);
+    if (!parsed) {
+      return {
+        kind: 'unsupported',
+        route,
+        reason: 'Invalid hq-desktop deep link',
+      };
+    }
+    return {
+      kind: 'setup-checkout',
+      companyUid: parsed.companyUid,
+      checkout: parsed.checkout,
+    };
+  }
+
   if (route.startsWith('hqwork://')) {
     const target = parseHqWorkOpenUrl(route);
     if (!target) {
@@ -608,6 +640,15 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
         return { kind: 'library', tab: detail };
       }
       break;
+    case 'sessions':
+      // Host-registered destination (@hq/ui `extraPages`). `sessions` opens the
+      // new-session surface; `sessions:<id>` / `sessions/<id>` deep-links one.
+      // The shell gates the page itself, so an unregistered id surfaces its
+      // navigation error rather than a blank column.
+      if (!hasExtraSegments) {
+        return { kind: 'extra', page: 'sessions', param: detail || null };
+      }
+      break;
     case 'settings':
       if (!detail) return { kind: 'settings' };
       if (!hasExtraSegments && isEmbeddedSettingsSection(detail)) {
@@ -620,6 +661,26 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
     route,
     reason: 'Unsupported embedded destination',
   };
+}
+
+export function parseHqDesktopSetupUrl(
+  raw: string,
+): { companyUid: string; checkout: string } | null {
+  try {
+    const url = new URL(raw.trim());
+    if (url.protocol !== 'hq-desktop:') return null;
+    const host = url.hostname;
+    const path = url.pathname.replace(/^\/+|\/+$/g, '');
+    if (host !== 'setup' && path !== 'setup') return null;
+    const companyUid = url.searchParams.get('company')?.trim() ?? '';
+    if (!companyUid) return null;
+    return {
+      companyUid,
+      checkout: url.searchParams.get('checkout')?.trim() ?? '',
+    };
+  } catch {
+    return null;
+  }
 }
 
 function deliverImmediately(target: EmbeddedNavigationTarget): void {
@@ -643,6 +704,11 @@ function deliverImmediately(target: EmbeddedNavigationTarget): void {
   }
   if (target.kind === 'settings' && !target.section) {
     window.dispatchEvent(new Event(OPEN_SETTINGS_EVENT));
+    return;
+  }
+  if (target.kind === 'setup-checkout') {
+    requestChannelOpen('setup', { companyUid: target.companyUid });
+    dispatchEmbeddedNavigation(target);
     return;
   }
   dispatchEmbeddedNavigation(target);

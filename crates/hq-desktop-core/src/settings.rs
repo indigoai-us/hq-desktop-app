@@ -66,6 +66,7 @@ mod tests {
             share_notifications: None,
             dm_notifications: None,
             custom_banner: None,
+            notification_surface: None,
             cli_auto_update: None,
             auto_update: None,
             staging_channel: None,
@@ -81,6 +82,7 @@ mod tests {
             widget_show_needs_action: None,
             dock_icon: None,
             hq_work_handoff: None,
+            in_app_sessions: None,
             system_notifications: None,
             native_notify_direct_messages: None,
             native_notify_shares: None,
@@ -109,7 +111,12 @@ mod tests {
             drift_staging_repo: prefs.drift_staging_repo,
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
             dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
-            custom_banner: Some(prefs.custom_banner.unwrap_or(true)),
+            // Notification surface is pass-through, never defaulted — see
+            // `banner::custom_banner_enabled` for the resolution order and
+            // `commands/settings.rs::get_settings_at` for why coercing here
+            // would manufacture a choice the user never made.
+            custom_banner: prefs.custom_banner,
+            notification_surface: prefs.notification_surface,
             cli_auto_update: Some(prefs.cli_auto_update.unwrap_or(true)),
             auto_update: Some(prefs.auto_update.unwrap_or(true)),
             staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
@@ -135,6 +142,8 @@ mod tests {
             dock_icon: Some(prefs.dock_icon.unwrap_or(true)),
             // Retired. Always None so Settings cannot resurrect the classic shell.
             hq_work_handoff: None,
+            // Retired rollout flag: old false values must not hide sessions.
+            in_app_sessions: Some(true),
             system_notifications: Some(prefs.system_notifications.unwrap_or(true)),
             native_notify_direct_messages: Some(
                 prefs.native_notify_direct_messages.unwrap_or(true),
@@ -217,6 +226,7 @@ mod tests {
             share_notifications: Some(false),
             dm_notifications: Some(false),
             custom_banner: Some(false),
+            notification_surface: Some("system".to_string()),
             cli_auto_update: Some(false),
             auto_update: Some(false),
             staging_channel: Some(false),
@@ -232,6 +242,7 @@ mod tests {
             widget_show_needs_action: Some(false),
             dock_icon: Some(false),
             hq_work_handoff: Some(true),
+            in_app_sessions: Some(true),
             system_notifications: Some(true),
             native_notify_direct_messages: Some(false),
             native_notify_shares: Some(false),
@@ -293,6 +304,7 @@ mod tests {
             share_notifications: Some(true),
             dm_notifications: Some(true),
             custom_banner: Some(true),
+            notification_surface: Some("custom".to_string()),
             cli_auto_update: Some(true),
             auto_update: Some(true),
             staging_channel: Some(true),
@@ -308,6 +320,7 @@ mod tests {
             widget_show_needs_action: Some(true),
             dock_icon: Some(true),
             hq_work_handoff: Some(false),
+            in_app_sessions: Some(false),
             system_notifications: Some(false),
             native_notify_direct_messages: Some(true),
             native_notify_shares: Some(true),
@@ -636,5 +649,16 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
         assert!(v.get("hqWorkHandoff").is_none());
         assert_eq!(v["machineId"], "keep-me");
+    }
+
+    #[test]
+    fn test_in_app_sessions_available_for_new_and_existing_installs() {
+        for legacy_value in [None, Some(false), Some(true)] {
+            let prefs = MenubarPrefs {
+                in_app_sessions: legacy_value,
+                ..empty_prefs()
+            };
+            assert_eq!(apply_defaults(prefs).in_app_sessions, Some(true));
+        }
     }
 }

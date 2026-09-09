@@ -267,6 +267,49 @@ pub enum SyncEvent {
     AllComplete(SyncAllCompleteEvent),
 }
 
+/// Parse one ndjson line from `hq-sync-runner` into a [`SyncEvent`].
+///
+/// **Forward-compatibility contract.** `SyncEvent` is an internally-tagged
+/// enum with no catch-all variant, so a line whose `"type"` this build does
+/// not know about — a newer runner emitting an additive event — fails to
+/// deserialize. That is fine and deliberate: this helper turns that failure
+/// into `None` so the caller skips the line and keeps reading the stream. An
+/// older app must never die on a newer runner.
+///
+/// The live case is hq-cloud's post-sync `manifest-upload` event
+/// (sync-reconciliation-audit / US-004), emitted once per scope after
+/// `all-complete`. It is diagnostic-only: it must never reach
+/// `is_alertable_error`, never change the sync verdict, and never gate the UI.
+/// Skipping it here is the whole desktop-side handling.
+///
+/// Blank lines (the runner emits them at teardown) and malformed JSON also
+/// return `None`.
+///
+/// Known events tolerate unknown *fields* too — no payload struct sets
+/// `deny_unknown_fields`, so a runner adding a field to an existing event
+/// keeps parsing here.
+///
+/// Both ndjson consumers route through this so the guarantee holds on both
+/// paths: `commands::sync::handle_sync_line` (manual "Sync Now") and
+/// `commands::daemon::handle_watch_stdout_line` (auto-sync watcher).
+pub fn parse_sync_line(line: &str) -> Option<SyncEvent> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<SyncEvent>(trimmed) {
+        Ok(event) => Some(event),
+        Err(_e) => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[sync] skipping unparseable line: {} | line: {}",
+                _e, trimmed
+            );
+            None
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tauri event channel names
 // ─────────────────────────────────────────────────────────────────────────────
@@ -964,6 +1007,81 @@ mod tests {
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("\"addedBy\""));
+    }
+
+    // ── Forward-compatibility regression tests (US-004) ──────────────────
+    // An older app must keep consuming the stream when a newer
+    // `hq-sync-runner` emits additive ndjson events. `parse_sync_line` is the
+    // single seam both consumers use — `handle_sync_line` (manual sync) and
+    // `handle_watch_stdout_line` (watch daemon) — so pinning it here pins both.
+
+    /// The real post-sync event hq-cloud's runner emits, verbatim in shape.
+    ///
+    /// Source of truth: `src/bin/sync-runner.ts` (`type: "manifest-upload"`,
+    /// spread with `ManifestUploadEventPayload`) and the payload interface in
+    /// `src/bin/sync-runner-manifest.ts` — `company`, `scope`, `status`, and
+    /// the optional `mode` / `chunkCount` / `uploadedChunks` / `errorKind`.
+    /// Kept literal so this test keeps describing the shipped contract; if the
+    /// runner ever renames the type or reshapes the payload, update it here
+    /// deliberately rather than letting the desktop drift silently.
+    const MANIFEST_UPLOAD_LINE: &str = r#"{"type":"manifest-upload","company":"indigo","scope":"company","status":"uploaded","mode":"delta","chunkCount":3,"uploadedChunks":3}"#;
+
+    #[test]
+    fn test_parse_sync_line_skips_manifest_upload_event() {
+        assert_eq!(
+            parse_sync_line(MANIFEST_UPLOAD_LINE),
+            None,
+            "the runner's additive manifest-upload event must be skipped, \
+             not blow up the stream"
+        );
+    }
+
+    #[test]
+    fn test_manifest_upload_line_is_well_formed_json_of_the_expected_type() {
+        // Guards the fixture itself: a typo would make the skip test pass for
+        // the wrong reason (malformed JSON rather than an unknown event type).
+        let value: serde_json::Value =
+            serde_json::from_str(MANIFEST_UPLOAD_LINE).expect("fixture must be valid JSON");
+        assert_eq!(value["type"], "manifest-upload");
+        assert_eq!(value["scope"], "company");
+        assert!(value.get("status").is_some(), "status is a required field");
+    }
+
+    #[test]
+    fn test_parse_sync_line_still_parses_known_events_after_unknown_one() {
+        // Simulates the real stream: the manifest event lands AFTER
+        // `all-complete`, and known events on either side must keep parsing.
+        let lines = [
+            r#"{"type":"all-complete","companiesAttempted":2,"filesDownloaded":4,"bytesDownloaded":99,"errors":[]}"#,
+            MANIFEST_UPLOAD_LINE,
+            r#"{"type":"all-complete","companiesAttempted":1,"filesDownloaded":0,"bytesDownloaded":0,"errors":[]}"#,
+        ];
+        let parsed: Vec<Option<SyncEvent>> = lines.iter().map(|l| parse_sync_line(l)).collect();
+        assert!(matches!(parsed[0], Some(SyncEvent::AllComplete(_))));
+        assert_eq!(parsed[1], None, "manifest-upload is skipped");
+        assert!(
+            matches!(parsed[2], Some(SyncEvent::AllComplete(_))),
+            "known events after an unknown one must still parse, got {:?}",
+            parsed[2]
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_line_tolerates_unknown_fields_on_known_events() {
+        // A newer runner adding a field to an existing event must not break an
+        // older app — no payload struct may use `deny_unknown_fields`.
+        let line = r#"{"type":"all-complete","companiesAttempted":1,"filesDownloaded":0,"bytesDownloaded":0,"errors":[],"manifestUploaded":true,"manifestChunks":3}"#;
+        assert!(
+            matches!(parse_sync_line(line), Some(SyncEvent::AllComplete(_))),
+            "unknown additive fields on a known event must be ignored"
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_line_skips_blank_and_malformed() {
+        assert_eq!(parse_sync_line(""), None);
+        assert_eq!(parse_sync_line("   \n"), None);
+        assert_eq!(parse_sync_line("not json at all"), None);
     }
 
     #[test]

@@ -87,8 +87,8 @@ use crate::util::recordings_ledger::{self, ReconcileOutcome, RecordingStatus};
 pub use hq_desktop_core::recall_sdk::{
     active_detections_cell, active_detections_snapshot, active_recordings_from_ledger,
     bridge_stdin_cell, build_sdk_spawn_env, detection_key, detection_url_and_event,
-    is_meeting_detect_allowed_email, mark_recorded_for_window, parse_sdk_line, resolve_sdk_command,
-    pick_recording_handle, record_active_detection, remove_active_detection,
+    is_meeting_detect_allowed_email, mark_recorded_for_window, parse_sdk_line,
+    pick_recording_handle, record_active_detection, remove_active_detection, resolve_sdk_command,
     synthesize_bridge_exit_errors, write_bridge_command, ActiveRecording, BotStatusResponse,
     RecallSdkEvent, SdkUploadTokenResponse, BRIDGE_EXIT_CMD, BRIDGE_EXIT_ERROR_MESSAGE,
     EVENT_RECORDING_RECONCILED, FORCE_ENV, LOG_TAG, SDK_BIN,

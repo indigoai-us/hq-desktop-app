@@ -56,6 +56,19 @@ Fixed px scale (not fluid), tuned for a 320px popover while matching the desktop
 
 Weight contrast does the hierarchy work: 600 for headings and labels-that-matter, 500 for standard labels, 400 for descriptions. Section headers use the same 13px body size, but read as labels through uppercase, positive letter-spacing, muted color, and often the mono family.
 
+### Chat timeline reading size (14px, `@hq/ui` chat shell — v0.10.216)
+
+The conversation surface hosted from `@hq/ui` (timeline, thread panel, composer,
+sidebar rows) is prose, not chrome, and sits one step above the 13px shell size:
+14px / 1.55 body, author names and markdown headings at the shipped 600 face
+(never 700 — the bundle ships Geist 400/500/600 only), 3px intra-group row
+padding and a 12px gap between author groups. The channel header stays at 15px.
+Artifacts (`--details` / `--prompt`, handoffs) render as a collapsed tile in the
+timeline — kind-tinted mesh, title, one-line plain summary, line/char count — and
+open as a document in the side pane (Markdown via the CSP-safe renderer, plain
+text line-preserved), both in the UI face; monospace is reserved for real code.
+Source: `packages/ui/src/chat/messaging/{message-row.css,artifact-prose.css}`.
+
 ### Big-window and Messages type & chrome (two sizes, Inter/Geist Mono — mirrors hq-console)
 
 The big window (`src/desktop-alt/`) is a wide, dwell-time "Company OS" surface. It follows the [hq-console](../../private/hq-console) language rather than the popover ramp:

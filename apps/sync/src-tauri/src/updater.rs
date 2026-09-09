@@ -247,6 +247,15 @@ struct PendingUpdateTransition {
 }
 
 static UPDATE_INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Whether an update is being applied right now.
+///
+/// Read by browser continuation: the process is about to be replaced, so
+/// opening a browser and asking someone to sign in would strand them halfway
+/// through a flow whose other half is about to exit.
+pub(crate) fn update_install_in_progress() -> bool {
+    UPDATE_INSTALL_IN_PROGRESS.load(Ordering::SeqCst)
+}
 static UPDATE_CHECK_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static AUTO_INSTALL_WAITER_GENERATION: AtomicU64 = AtomicU64::new(0);
 static AUTO_INSTALL_WAITER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -1560,7 +1569,30 @@ fn notify_manual_check(app: &AppHandle, body: &str) {
     }
 }
 
+/// `HQ_DEV_NO_AUTO_UPDATE=1` (or any dev build via `tauri::is_dev()`) disables
+/// the background update checker. A dev binary running from `target/debug`
+/// carries the last stamped version, so the moment a newer release is public
+/// the auto-installer pulls it, hands off, and quits the dev process ten
+/// seconds after launch — every `tauri dev` session died to this on
+/// 2026-09-02 once 0.10.175 shipped. Manual "Check for updates" is untouched.
+pub fn background_updates_disabled() -> bool {
+    dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE") || tauri::is_dev()
+}
+
+fn dev_env_flag_set(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 pub fn setup_update_checker(app: &AppHandle) {
+    if background_updates_disabled() {
+        log(
+            "updater",
+            "background update checker disabled (dev build or HQ_DEV_NO_AUTO_UPDATE=1)",
+        );
+        return;
+    }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         // Wait 10 seconds for app to settle
@@ -2265,5 +2297,32 @@ mod tests {
         assert!(!transition.applied);
         assert!(!transition.announce_available);
         assert_eq!(ledger.status, pending);
+    }
+
+    #[test]
+    fn dev_env_flag_parses_truthy_values_only() {
+        // Pure parse over the value, so no process-env mutation is needed:
+        // exercise the same predicate the flag reader applies.
+        let truthy =
+            |v: &str| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes");
+        assert!(truthy("1"));
+        assert!(truthy(" TRUE "));
+        assert!(truthy("yes"));
+        assert!(!truthy("0"));
+        assert!(!truthy(""));
+        assert!(!truthy("off"));
+        // An unset variable never disables the checker on its own.
+        assert!(!dev_env_flag_set(
+            "HQ_DEV_NO_AUTO_UPDATE_DEFINITELY_UNSET_FOR_TEST"
+        ));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn dev_builds_never_run_the_background_update_checker() {
+        // `cargo test` is a dev profile, so `tauri::is_dev()` is true here and
+        // the checker must be disabled even with the env flag unset. A release
+        // build flips this to depend on the env flag alone.
+        assert!(background_updates_disabled());
     }
 }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { addChannelNotification, readChannelNotifications, saveChannelNotifications } from "./channel-notifications";
   /**
    * ROOT = the full V2 desktop shell (the sidebar-first windowed app), filling
    * 100vw/100vh. The channel rail + title bar ARE the navigation.
@@ -7,9 +8,10 @@
    *   session → direct hq-pro REST + MeshClient MQTT wakes → shallow cache.
    * Tauri selects its native adapter. Neither target reads ~/.hq here.
    */
-  import { onMount } from "svelte";
+  import { onMount, type Component } from "svelte";
   import {
     createSyncPlatformAdapter,
+    resolveHostPlatform,
     WebPlatformAdapter,
     type InvokeFn,
     type PlatformAdapter,
@@ -38,6 +40,7 @@
     type ChatSidebarApi,
     type PackagesEvents,
     type ReplyThreadScope,
+    type RowExtrasResolver,
     type Workspace,
     type WorkMeshThread,
     conversationDeepLinkFromLocation,
@@ -77,6 +80,7 @@
     type HqProFetch,
   } from "./hq-pro-client";
   import { displayVersion } from "./version";
+  import { workRuntimeFor } from "./work-runtime";
   import {
     createTauriAttachmentHandlers,
     hydrateDesktopSelf,
@@ -106,7 +110,7 @@
       item: ChannelFileItemModel,
       selectedCompanyUid: string | null,
     ) => Promise<ChannelFilePreview>;
-    /** Mirrors the safe user shape supplied by +layout.server on the web. */
+    /** Mirrors the safe user shape supplied by the root +layout on the web. */
     hostIdentity?: WorkShellHostIdentity | null;
     /** Native host-owned storage partition for the authenticated account. */
     hostTenantAccountId?: string | null;
@@ -149,6 +153,26 @@
           }
         | null,
     ) => void;
+    /** Native host-only full-column surfaces, forwarded to DesktopApp. */
+    extraPages?: Record<
+      string,
+      {
+        label: string;
+        createAction?: { label: string; param: () => string | null };
+        detail?: string;
+        component: Component<{
+          param?: string | null;
+          onnavigate?: (
+            param: string | null,
+            options?: { mode?: "push" | "replace" },
+          ) => void;
+        }>;
+      }
+    >;
+    /** Native host decorations for project-channel rows. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
+    rowExtras?: RowExtrasResolver | null;
   };
 
   // A non-SvelteKit host can supply its runtime kind and public API URL. The
@@ -178,25 +202,15 @@
     onopenurl: hostOpenUrl,
     onembeddednavigationready,
     onactivethreadchange,
+    extraPages,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
+    rowExtras = null,
   }: WorkShellProps = $props();
 
-  type TauriWindow = Window & {
-    __TAURI__?: {
-      core?: { invoke?: InvokeFn };
-      tauri?: { invoke?: InvokeFn };
-    };
-  };
-
-  function isTauriRuntime(): boolean {
-    return (
-      (import.meta.env as Record<string, string | boolean | undefined>).TAURI ===
-        "1" ||
-      (typeof window !== "undefined" &&
-        Boolean((window as TauriWindow).__TAURI__))
-    );
-  }
-
-  const runtime = runtimeKind ?? (isTauriRuntime() ? "desktop" : "web");
+  // Only a real desktop host gets the native command bridge. A phone runs a
+  // native shell too, but that shell exposes no commands — see work-runtime.ts.
+  const runtime = runtimeKind ?? workRuntimeFor(resolveHostPlatform());
   const nativeInvoke = hostInvoke ?? tauriInvoke;
   const nativeListen = hostListen ?? tauriListen;
   // The Sync embed supplies a settled desktop identity only after its own
@@ -220,11 +234,27 @@
       });
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(nativeInvoke) : null;
-  const notificationsApi = createNotificationsApi(adapter);
   const wakes = hostWakes ?? createChatWakeBus();
+  let localNotificationRows = $state<Record<string, unknown>[]>([]);
+  const notificationsApi = createNotificationsApi(adapter, {
+    localNotifications: () => localNotificationRows,
+    ackLocalNotification: (id) => {
+      localNotificationRows = localNotificationRows.map((row) =>
+        row.id === id ? { ...row, status: "read" } : row,
+      );
+      saveChannelNotifications(conversationCacheStorage, localNotificationRows);
+    },
+    readAllLocalNotifications: () => {
+      localNotificationRows = localNotificationRows.map((row) => ({
+        ...row,
+        status: "read",
+      }));
+      saveChannelNotifications(conversationCacheStorage, localNotificationRows);
+    },
+  });
   let localNotificationWakeSeq = $state(0);
   const notificationWakeSeq = $derived(
-    hostNotificationWakeSeq ?? localNotificationWakeSeq,
+    (hostNotificationWakeSeq ?? 0) + localNotificationWakeSeq,
   );
   let externalLinkError = $state<string | null>(null);
 
@@ -260,6 +290,10 @@
       { accountId: effectiveTenantAccountId, companyId: "all" },
     ),
   );
+  $effect(() => {
+    void personUid;
+    localNotificationRows = personUid ? readChannelNotifications(conversationCacheStorage) : [];
+  });
   $effect(() => {
     shallow = readShallowCache(personUid);
   });
@@ -447,6 +481,20 @@
   // `channel:updated` narrows to that channel; catch-up has no row identity
   // and can reconcile any project directory entry, so it invalidates broadly.
   onMount(() => subscribeProjectMetaInvalidations(wakes, projectMeta));
+
+  // Channel unread deltas arrive through the desktop poller independently of
+  // the NOTIF store. Bridge that wake into the visible feed immediately.
+  onMount(() =>
+    wakes.on("channel:new-message", (wake) => {
+      if (!personUid) return;
+      const channel = shallow.directory.find((row) => row.channelId === wake.channelId);
+      const next = addChannelNotification(localNotificationRows, wake, personUid, channel?.name?.trim() || "");
+      if (next === localNotificationRows) return;
+      localNotificationRows = next;
+      saveChannelNotifications(conversationCacheStorage, next);
+      localNotificationWakeSeq += 1;
+    }),
+  );
 
   $effect(() => {
     if (!self) return;
@@ -680,6 +728,10 @@
       {updateWakeSeq}
       {refreshAppVersion}
       {onactivethreadchange}
+      {extraPages}
+      {rowExtrasLoading}
+      {rowExtrasError}
+      {rowExtras}
     />
   {/key}
   {#if externalLinkError}

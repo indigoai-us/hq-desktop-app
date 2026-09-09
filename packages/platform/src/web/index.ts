@@ -33,11 +33,21 @@ import {
   skillDetailFromShelf,
   type LibrarySkillWire,
 } from "../library-shelf.js";
+import {
+  bearerTokenFromHeaders,
+  createFeatureFlagGate,
+  type FeatureFlagGate,
+} from "../flags.js";
 
 /** Provisional hq-pro REST paths, centralized so they are easy to correct. */
 export const WEB_PATHS = {
   whoami: "/v1/identity/whoami",
   isAdmin: "/v1/identity/is-admin",
+  /**
+   * Dead route — hq-pro has no GET /v1/identity/features/{flag}. Kept for
+   * unmapped flags' byte-for-byte legacy fallback. `meetings` does not use
+   * it: web returns a deliberate `ok(false)` without consulting the registry.
+   */
   hasFeature: (flag: string) =>
     `/v1/identity/features/${encodeURIComponent(flag)}`,
 
@@ -57,6 +67,10 @@ export const WEB_PATHS = {
   channel: (id: string) => `/v1/notify/channels/${encodeURIComponent(id)}`,
   channelMembers: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/members`,
+  agentTasks: (agentUid: string) =>
+    `/v1/agent-telescope/agents/${encodeURIComponent(agentUid)}/tasks`,
+  channelAgentTasks: (agentUid: string, channelId: string) =>
+    `/v1/agent-telescope/agents/${encodeURIComponent(agentUid)}/channels/${encodeURIComponent(channelId)}/tasks`,
   channelMember: (id: string, personUid: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/members/${encodeURIComponent(personUid)}`,
   /** GET/PUT the caller's editable global member profile. */
@@ -71,6 +85,12 @@ export const WEB_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
+  cardAction: (channelId: string, cardId: string) =>
+    `/v1/notify/channels/${encodeURIComponent(channelId)}/cards/${encodeURIComponent(cardId)}/actions`,
+  companyTab: (companyUid: string, tab: string) =>
+    `/v1/companies/${encodeURIComponent(companyUid)}/tabs/${encodeURIComponent(tab)}`,
+  companyTabAction: (companyUid: string, tab: string) =>
+    `/v1/companies/${encodeURIComponent(companyUid)}/tabs/${encodeURIComponent(tab)}/actions`,
   /** Reply thread (plural). Distinct from GET /v1/notify/thread (1:1 DM). */
   replyThreads: "/v1/notify/threads",
   /** POST body `{ toPersonUid, body }` — hq-pro has no POST /v1/notify/dm/{uid}. */
@@ -149,6 +169,9 @@ export const WEB_PATHS = {
     `/v1/work-mesh/projects/${encodeURIComponent(id)}`,
   workMeshSessionMigrate: (sessionId: string) =>
     `/v1/work-mesh/sessions/${encodeURIComponent(sessionId)}/migrate`,
+  workMeshThreads: "/v1/work-mesh/threads",
+  workMeshThreadEvents: (threadId: string) =>
+    `/v1/work-mesh/threads/${encodeURIComponent(threadId)}/events`,
 
   skillsShelf: (companyUid: string) =>
     `/v1/skills/${encodeURIComponent(companyUid)}/shelf`,
@@ -188,6 +211,17 @@ function defaultOnUnauthorized(): void {
   if (path.startsWith("/auth/")) return;
   window.location.assign("/auth/signin");
 }
+
+/**
+ * Flags that must not consult the registry on web.
+ *
+ * `meetings` maps to `desktop.meetings` (defaultValue: true) for the
+ * sync/desktop path. That value is wrong for web: the web legacy answer is a
+ * deliberate `ok(false)` because GET /v1/identity/features/{flag} does not
+ * exist on hq-pro, and Settings treats `!ok` as false. One registry key
+ * cannot serve both adapters, so web bypasses the gate for this flag only.
+ */
+const WEB_REGISTRY_EXCLUDED_FLAGS: ReadonlySet<string> = new Set(["meetings"]);
 
 const DESKTOP_ONLY: AdapterFailure = unavailable(
   "desktop-only",
@@ -374,6 +408,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly headers: Record<string, string>;
   private readonly onUnauthorized: () => void;
+  private readonly flags: FeatureFlagGate;
   private activeCompany: string | null = null;
 
   constructor(config: WebPlatformAdapterConfig) {
@@ -385,6 +420,26 @@ export class WebPlatformAdapter implements PlatformAdapter {
     this.fetchFn = f;
     this.headers = config.headers ?? {};
     this.onUnauthorized = config.onUnauthorized ?? defaultOnUnauthorized;
+    this.flags = createFeatureFlagGate({
+      endpoint: this.baseUrl,
+      getToken: () => bearerTokenFromHeaders(this.headers),
+      fetch: this.fetchFn,
+    });
+  }
+
+  /**
+   * Legacy `hasFeature` for this adapter. The identity/features route 404s
+   * on hq-pro. `meetings` is excluded from the registry on web and therefore
+   * returns a deliberate `ok(false)` — same user-visible answer the Settings
+   * UI already derived from `!ok`, without an unhandled rejection. Unmapped
+   * flags keep the previous GET so their AdapterResult shape stays
+   * byte-for-byte.
+   */
+  private legacyHasFeature(flag: string): AdapterPromise<boolean> {
+    if (flag === "meetings") {
+      return Promise.resolve(ok(false));
+    }
+    return this.get(WEB_PATHS.hasFeature(flag));
   }
 
   isAvailable(cap: Capability): boolean {
@@ -460,7 +515,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.get(WEB_PATHS.whoami),
     isAdmin: () => this.get(WEB_PATHS.isAdmin),
-    hasFeature: (flag) => this.get(WEB_PATHS.hasFeature(flag)),
+    hasFeature: (flag) =>
+      WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
+        ? this.legacyHasFeature(flag)
+        : this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
     listWorkspaces: async () => {
       const result = await this.get<Json>(WEB_PATHS.workspaces);
       if (!result.ok) return result;
@@ -550,6 +608,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
     },
     listChannelMembers: (channelId) =>
       this.get(WEB_PATHS.channelMembers(channelId)),
+    listChannelAgentTasks: (agentUid, channelId) =>
+      this.get(WEB_PATHS.channelAgentTasks(agentUid, channelId)),
+    listAgentTasks: (agentUid) => this.get(WEB_PATHS.agentTasks(agentUid)),
     sendChannelMessage: (channelId, body, extras) =>
       this.post(WEB_PATHS.channelMessages(channelId), {
         body,
@@ -559,6 +620,29 @@ export class WebPlatformAdapter implements PlatformAdapter {
         ...(extras?.attachments && extras.attachments.length > 0
           ? { attachments: extras.attachments }
           : {}),
+      }),
+    runCardAction: (args) =>
+      this.post(WEB_PATHS.cardAction(args.channelId, args.cardId), {
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey:
+          args.idempotencyKey?.trim() ||
+          (typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `card-${Date.now()}`),
+      }),
+    getCompanyTab: (companyUid, tab) =>
+      this.get(WEB_PATHS.companyTab(companyUid, tab)),
+    runCompanyTabAction: (args) =>
+      this.post(WEB_PATHS.companyTabAction(args.companyUid, args.tab), {
+        cardId: args.cardId,
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey:
+          args.idempotencyKey?.trim() ||
+          (typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `tab-${Date.now()}`),
       }),
     fetchDmThread: ({ withPersonUid, limit, since }) => {
       const params = new URLSearchParams({ withPersonUid });
@@ -978,6 +1062,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly workMesh: PlatformAdapter["workMesh"] = {
+    createProjectStory: (projectId, companyUid, story) => this.post(
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
+      { ...story, companyUid: companyUid.trim() },
+    ),
     readLocalSnapshot: async () => DESKTOP_ONLY,
     getProjectView: (projectId, companyUid) => {
       const id = projectId.trim();
@@ -987,5 +1075,13 @@ export class WebPlatformAdapter implements PlatformAdapter {
     },
     migrateSession: (sessionId, body) =>
       this.post(WEB_PATHS.workMeshSessionMigrate(sessionId.trim()), body),
+    listProjectThreads: (projectId, companyUid, cursor) =>
+      this.get(
+        `${WEB_PATHS.workMeshThreads}?companyUid=${encodeURIComponent(companyUid.trim())}&projectId=${encodeURIComponent(projectId.trim())}&limit=100${cursor?.trim() ? `&cursor=${encodeURIComponent(cursor.trim())}` : ""}`,
+      ),
+    listThreadEvents: (threadId, companyUid, since) =>
+      this.get(
+        `${WEB_PATHS.workMeshThreadEvents(threadId.trim())}?companyUid=${encodeURIComponent(companyUid.trim())}${since?.trim() ? `&since=${encodeURIComponent(since.trim())}` : ""}`,
+      ),
   };
 }

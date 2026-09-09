@@ -17,6 +17,7 @@ export { default as AgencyChatPanel } from "./chat/AgencyChatPanel.svelte";
 // — composed as a fixture-driven, ZERO-NETWORK ChannelConversation).
 export * from "./chat/messaging/index.js";
 export * from "./chat/chat-api.js";
+export * from "./chat/card-action.js";
 export * from "./chat/mesh-wakes.js";
 export * from "./chat/live-directory.js";
 export * from "./chat/live-messages.js";
@@ -56,6 +57,7 @@ export {
 } from "./chat/boot-timeout.js";
 export * from "./chat/create-flow.js";
 export * from "./chat/channel-create-scope.js";
+export * from "./chat/row-extras.js";
 export * from "./chat/channel-status-model.js";
 export * from "./chat/mentions.js";
 export * from "./chat/portfolio-session.js";
@@ -123,6 +125,11 @@ export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
 export * from "./shell/embedded-navigation.js";
+export * from "./shell/navigation-history.js";
+export * from "./shell/navigation-scroll.js";
+export * from "./shell/navigation-controller.js";
+export * from "./shell/navigation-shortcuts.js";
+export * from "./shell/navigation-handler-matrix.js";
 export {
   updateStore,
   checkDesktopUpdates,
@@ -144,6 +151,7 @@ export {
 
 // Work-mesh cache overlay glue (shared by desktop Rust reader + web Node reader).
 export * from "./shell/mesh-overlay.js";
+export * from "./shell/palette-rows.js";
 export {
   FIXTURE_COMPANIES,
   FIXTURE_INITIAL_ROW,
@@ -214,3 +222,17 @@ export {
   prettifyPackName,
 } from "./home/pack-display-name.js";
 export * as sessions from "./sessions/index.js";
+export { default as TaskChip } from "./chat/tasks/TaskChip.svelte";
+export { default as AgentTaskStrip } from "./chat/tasks/AgentTaskStrip.svelte";
+export * from "./chat/tasks/agent-tasks";
+export * from "./chat/tasks/agent-task-feed";
+export * from "./chat/tasks/room-task-feed";
+export {
+  TaskFeedController,
+  AGENT_TASK_POLL_MS,
+  type TaskFeedControllerOptions,
+  type TaskFeedSource,
+  type TaskFetcher,
+  type RoomTaskFetcher,
+} from "./chat/tasks/task-feed-controller.svelte";
+export * from "./chat/tasks/visible-tasks";

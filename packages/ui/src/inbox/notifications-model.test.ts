@@ -170,6 +170,34 @@ describe("notifications-model (US-012)", () => {
       );
       expect(dest).toEqual({ kind: "files" });
     });
+
+    it("opens a channel notification from its channel target", () => {
+      expect(
+        notificationDestination(
+          item({
+            id: "local:channel:evt_1",
+            serverType: "channel_message",
+            targetRef: "/channels/chn_123",
+          }),
+        ),
+      ).toEqual({ kind: "channel", channelId: "chn_123" });
+    });
+
+    it("opens a specific reply thread from a channel targetRef", () => {
+      expect(
+        notificationDestination(
+          item({
+            id: "local:channel:evt_thread",
+            serverType: "channel_message",
+            targetRef: "/channels/chn_123/replies/evt_root",
+          }),
+        ),
+      ).toEqual({
+        kind: "channel",
+        channelId: "chn_123",
+        replyRootEventId: "evt_root",
+      });
+    });
   });
 
   describe("verb + actor", () => {

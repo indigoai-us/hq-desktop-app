@@ -1,0 +1,69 @@
+hq-desktop-app
+Copyright (c) Indigo AI
+
+This product includes software developed as part of the Buzz project by Block,
+Inc. (https://github.com/block/buzz), licensed under the Apache License,
+Version 2.0.
+
+Per-file attributions are recorded below, and each derived file repeats its own
+attribution in a header comment.
+
+-------------------------------------------------------------------------------
+Derived work: bounded stdio child + crash breaker
+-------------------------------------------------------------------------------
+
+Upstream project : block/buzz
+Upstream URL     : https://github.com/block/buzz
+Upstream commit  : c5c4f39
+Upstream license : Apache License, Version 2.0
+
+The following files in this repository are derived from Buzz:
+
+  crates/hq-desktop-core/src/stdio/child.rs
+      derived from crates/buzz-acp/src/acp.rs
+      (NDJSON line framing with a 10MB line cap, the bounded request /
+      notification transport, the idle-vs-hard deadline read loop, and
+      process-group teardown)
+
+  crates/hq-desktop-core/src/stdio/circuit.rs
+      derived from crates/buzz-acp/src/lib.rs
+      (SlotCircuit / CrashVerdict crash breaker: 3 crashes in 60s open the
+      circuit for 300s, jittered exponential respawn backoff, half-open probe)
+
+Modifications made by Indigo AI:
+
+  * Removed all Buzz-specific coupling: Nostr, the goose steer extension
+    (`_goose/unstable/session/steer`), the usage tracker, the observer context,
+    CODEX_CONFIG deep-merge, model-switch helpers, and persona plumbing.
+  * Removed the Agent Client Protocol layer entirely (initialize, session/new,
+    session/prompt, session/cancel, permission handling), leaving a
+    protocol-agnostic NDJSON child that separate drivers build on.
+  * Added a `StdioProcessRegistrar` seam so child processes join the host
+    application's existing process registry and exit-drain path.
+  * The child's stderr is piped and drained into the HQ diagnostic log rather
+    than inherited (the host is a GUI application with no terminal, and an
+    undrained stderr pipe deadlocks the child).
+  * Replaced `tracing` with the HQ diagnostic logfile, and `nix` with `libc`
+    for the process-group signal.
+  * Added deterministic-time variants of the circuit-breaker transitions so
+    breaker behaviour is testable without wall-clock sleeps.
+
+-------------------------------------------------------------------------------
+License text
+-------------------------------------------------------------------------------
+
+A verbatim copy of the Apache License, Version 2.0 ships in this repository at:
+
+    LICENSES/Apache-2.0.txt
+
+Section 4(a) of that License requires that recipients of a Derivative Work be
+given a copy of the License itself, so a URL is not sufficient on its own. The
+canonical text is also published at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Two owner/legal questions remain open and are recorded here rather than
+decided: whether the upstream project ships its own NOTICE whose contents
+§4(d) requires reproducing verbatim, and whether the workspace
+`license = "UNLICENSED"` declaration should be restated now that this
+repository carries Apache-2.0 derived source.

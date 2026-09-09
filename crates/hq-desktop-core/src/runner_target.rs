@@ -849,16 +849,87 @@ mod tests {
     #[test]
     fn npx_cache_key_is_sha512_of_the_input_spec_and_changes_with_the_floor() {
         assert_eq!(
-            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.3"),
-            "86e9387d78b4e731",
-        );
-        assert_eq!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             "36f3a23156e2fcea",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
+            "a483dd3663414ee8",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
+            "67dee2de97f5e14d",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
+            "1033876e3ec2f43e",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
+            "838c2f33a5cf6d2a",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
+            "478e3736ac567ec3",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.33"),
+            "e7573451a374149d",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.34"),
+            "c94fa59ef239cba0",
+        );
         assert_ne!(
-            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.3"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
+        );
+        // The unrouted-overflow floor bump (hq-cloud#499): 6.16.24 SATISFIES
+        // `~6.16.23`, so every desktop holding a cached 6.16.23 would stay
+        // wedged forever on semver admission alone. The spec change is the fix.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
+        );
+        // The manifest-upload floor bump: 6.16.23 already SATISFIES `~6.16.11`,
+        // so semver admission alone would have left every existing desktop on
+        // its cached entry. Changing the requested spec is what moves the key.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.23"),
+        );
+        // The root-`bin/` exclusion floor bump (hq-cloud#501): 6.16.25
+        // SATISFIES `~6.16.24`, so a desktop that already resolved 6.16.24
+        // would keep re-pulling the stray `bin/` forever on semver admission
+        // alone. Moving the requested spec is what delivers the exclusion.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.24"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
+        );
+        // The area-collision heal floor bump (hq-cloud#502): 6.16.26 SATISFIES
+        // `~6.16.25`, so a desktop that already resolved 6.16.25 would stay on
+        // it — and 6.16.25 carries the wedge, because the overflow area that
+        // causes it shipped in 6.16.24. This is the one bump where semver
+        // admission alone leaves the user with a vault that cannot be opened.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
+        );
+        // The journal fingerprint-baseline bump (hq-cloud#513): 6.16.33
+        // SATISFIES `~6.16.26`, so a desktop that already resolved 6.16.26
+        // would retain its full cloned write baseline on semver admission
+        // alone. Moving the requested spec is what releases that runner heap.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.33"),
+        );
+        // The terminal cross-tenant-push-denial bump (hq-cloud#514): 6.16.34
+        // SATISFIES `~6.16.33`, so a desktop that already resolved 6.16.33
+        // would keep retrying a refused company scope on semver admission
+        // alone. Moving the requested spec is what delivers the terminal stop.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.33"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.34"),
         );
     }
 
@@ -1027,23 +1098,26 @@ mod tests {
     fn runner_hq_cloud_version_reads_the_resolved_npx_entry_and_fails_soft() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("_npx");
-        let spec = "@indigoai-us/hq-cloud@~6.16.6";
-        let entry = cache.join(npx_cache_entry_hash(spec));
+        // The spec must be the CURRENT pin: the launch-snapshot path below
+        // resolves `pinned_package_spec()`, so a hardcoded stale spec would
+        // silently start reporting "unknown" on the next floor bump.
+        let spec = pinned_package_spec();
+        let entry = cache.join(npx_cache_entry_hash(&spec));
         write_runner(&entry, 0o755);
-        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.6"}"#);
-        assert_eq!(runner_hq_cloud_version_in(&cache, spec), "6.16.6");
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.23"}"#);
+        assert_eq!(runner_hq_cloud_version_in(&cache, &spec), "6.16.23");
         assert_eq!(
             runner_hq_cloud_version(&RunnerSpawnTarget::Npx {
                 cache_root: NpmCacheRoot::Established(tmp.path().to_path_buf()),
             }),
-            "6.16.6",
+            "6.16.23",
             "the npx launch snapshot reports the version from its exact cache entry"
         );
 
         // Every bad cache input is reporting-only and must fail soft rather than
         // changing the watcher crash path.
         assert_eq!(
-            runner_hq_cloud_version_in(&cache.join("missing"), spec),
+            runner_hq_cloud_version_in(&cache.join("missing"), &spec),
             "unknown"
         );
 
@@ -1104,7 +1178,7 @@ mod tests {
         let spec = pinned_package_spec();
         let entry = cache.join(npx_cache_entry_hash(&spec));
         write_runner(&entry, 0o755);
-        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.6"}"#);
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.11"}"#);
 
         let prior_local_runner = std::env::var_os("HQ_CLOUD_LOCAL_RUNNER");
         let prior_npm_cache = npm_cache_environment();
@@ -1126,7 +1200,7 @@ mod tests {
     #[test]
     fn attribution_refuses_a_unique_fallback_cache_entry_but_repair_keeps_it() {
         let tmp = tempfile::tempdir().unwrap();
-        let spec = "@indigoai-us/hq-cloud@~6.16.6";
+        let spec = "@indigoai-us/hq-cloud@~6.16.11";
         let cache = tmp.path().join("_npx");
         let stale_entry = cache.join("4df8f075c5c7872e");
         write_runner(&stale_entry, 0o755);
@@ -1214,7 +1288,7 @@ mod tests {
             .join("_npx")
             .join(npx_cache_entry_hash(&pinned_package_spec()));
         write_runner(&entry, 0o644);
-        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.6"}"#);
+        write_hq_cloud_manifest(&entry, r#"{"version":"6.16.11"}"#);
 
         let attributed_version = runner_hq_cloud_version(&target);
         let repair_outcome = ensure_runner_target_runnable_for(&target);

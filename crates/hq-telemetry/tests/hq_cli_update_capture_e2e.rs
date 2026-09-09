@@ -2,15 +2,15 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use hq_desktop_core::hq_cli_update::{
-    apply_post_install_effects, decide_post_install, non_convergent_episode_key,
+    apply_post_install_effects, cli_install_needed, decide_post_install, non_convergent_episode_key,
     report_install_failure, report_non_convergent_install, report_unreadable_version,
     should_report_unreadable_version, BinaryAnchorShape, ConvergenceVerdict, DeliveredPrefixShim,
-    ExecutedCopyAim, InstallExecutor,
-    InterpreterRecovery, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
-    ManagedRuntimeState, ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport,
-    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
-    PostInstallCoreEffects, ResolutionSource, ResolvedProgramKind, VersionProbeOutcome,
-    NON_CONVERGENT_ERROR_PREFIX,
+    ExecutedCopyAim, HqBacking, InstallExecutor, InterpreterRecovery, LocalVersionProbeDiagnostics,
+    LocalVersionProbeResult, ManagedBinInSettingsPath, ManagedRuntimeState,
+    ManagedShadowRepairOutcome, NonConvergenceKind, NonConvergentReport, PnpmHomeSource,
+    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    ResolutionSource, ResolvedProgramKind, SettingsPathRepair, SettingsPathTelemetry,
+    VersionProbeOutcome, NON_CONVERGENT_ERROR_PREFIX,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -99,6 +99,7 @@ fn pnpm_context<'a>(
         executed_copy_aim: ExecutedCopyAim::Undrivable,
         hq_bin_lane: ResolutionSource::NotResolved,
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+        settings_path: SettingsPathTelemetry::default(),
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present: false,
@@ -439,6 +440,190 @@ fn the_non_convergent_event_carries_hq_bin_lane_and_delivered_prefix_shim() {
             .unwrap();
         assert!(!lane.contains(forbidden) && !shim.contains(forbidden));
     }
+}
+
+/// HQ-DESKTOP-46: once HQ rewrites the winning `.claude` settings file's PATH,
+/// the re-resolution lands the managed current copy, so the run CONVERGES and
+/// the capture pipeline produces zero envelopes and zero marker writes — where
+/// the same shape pre-repair wrote the durable marker that wedged auto-update.
+#[test]
+fn a_settings_path_shadow_repaired_in_run_emits_no_envelope_and_no_marker() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+    let managed_prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let managed_npm = home
+        .join("Library/Application Support/Indigo HQ/toolchain/node/bin/npm")
+        .to_string_lossy()
+        .to_string();
+    let managed_hq = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq")
+        .to_string_lossy()
+        .to_string();
+    let homebrew_hq = "/opt/homebrew/bin/hq";
+
+    // Pre-repair over the FULL capture pipeline: the durable marker that wedges
+    // the machine, one per hq-cli publish (the base behaviour).
+    let base = foreign_nvm_ctx(
+        homebrew_hq,
+        &managed_prefix,
+        &managed_npm,
+        &roots,
+        ExecutedCopyAim::Undrivable,
+        DeliveredPrefixShim::Present,
+        ResolutionSource::SettingsPath,
+        &[],
+    )
+    .with_settings_path(SettingsPathTelemetry {
+        repair: SettingsPathRepair::NotAttempted,
+        file: hq_desktop_core::paths::SettingsPathFile::Local,
+        managed_bin: ManagedBinInSettingsPath::Absent,
+    });
+    let (base_events, base_records, base_captures, _) = composed_non_convergent_events(&base, true);
+    assert_eq!(base_records, 1, "the pre-repair shadow writes the wedging marker");
+    assert_eq!(base_captures, 1);
+    assert_eq!(base_events.len(), 1);
+
+    // Post-repair: the rewritten PATH resolves the managed current copy, so the
+    // after-version is `latest` -> converged. Drive the real decide -> effects ->
+    // reporter seam and assert it produces no envelope and no marker write.
+    let converged = PostInstallContext::npm(
+        homebrew_hq,
+        &managed_hq,
+        Some("5.83.0"),
+        Some("5.84.0"),
+        "5.84.0",
+        Some(&managed_prefix),
+        &managed_npm,
+        false,
+        Some("5.84.0"),
+    )
+    .with_managed_roots(&roots)
+    .with_settings_path(SettingsPathTelemetry {
+        repair: SettingsPathRepair::Rewritten,
+        file: hq_desktop_core::paths::SettingsPathFile::Local,
+        managed_bin: ManagedBinInSettingsPath::Present,
+    });
+    let records = Cell::new(0usize);
+    let captures = Cell::new(0usize);
+    let events = captured_events(|| {
+        let outcome = decide_post_install(&converged);
+        assert!(matches!(
+            outcome.verdict,
+            ConvergenceVerdict::Converged | ConvergenceVerdict::RelocatedAndConverged
+        ));
+        assert!(outcome.record_non_convergent.is_none());
+        assert!(outcome.capture.is_none());
+        let record = |_version: String| {
+            records.set(records.get() + 1);
+            Ok(())
+        };
+        let clear = || {};
+        let capture = |report: NonConvergentReport| {
+            captures.set(captures.get() + 1);
+            report_non_convergent_install(&report);
+        };
+        let record_failure = |_error: String| {};
+        let _ = apply_post_install_effects(
+            &outcome,
+            &PostInstallCoreEffects {
+                record: &record,
+                clear: &clear,
+                capture: &capture,
+                record_failure: &record_failure,
+            },
+        );
+    });
+    assert_eq!(records.get(), 0, "a repaired+converged run writes no marker");
+    assert_eq!(captures.get(), 0, "a repaired+converged run captures nothing");
+    assert!(events.is_empty(), "a repaired+converged run emits no envelope");
+}
+
+/// HQ-DESKTOP-46: a settings-PATH shadow HQ could NOT repair (the rewrite was
+/// refused) still blocks and stays observable, and the residual event now names
+/// its own mechanism through the three closed settings-PATH tokens. The durable
+/// marker bounds it to exactly one envelope per episode across repeated checks,
+/// and the fingerprint is unchanged so the new tags never split the group.
+#[test]
+fn an_unrepairable_settings_path_shadow_emits_one_self_diagnosing_envelope_per_episode() {
+    let home = hq_desktop_core::paths::home_dir().expect("test home directory");
+    let home_text = home.to_string_lossy().to_string();
+    let roots = [home.join("Library/Application Support/Indigo HQ/toolchain")];
+    let managed_prefix = home
+        .join("Library/Application Support/Indigo HQ/toolchain/npm-global")
+        .to_string_lossy()
+        .to_string();
+    let managed_npm = home
+        .join("Library/Application Support/Indigo HQ/toolchain/node/bin/npm")
+        .to_string_lossy()
+        .to_string();
+    let homebrew_hq = "/opt/homebrew/bin/hq";
+    let telemetry = SettingsPathTelemetry {
+        repair: SettingsPathRepair::RefusedNotStale,
+        file: hq_desktop_core::paths::SettingsPathFile::Local,
+        managed_bin: ManagedBinInSettingsPath::Absent,
+    };
+
+    // First occurrence (not yet blocked): captured, with the durable marker.
+    let first = foreign_nvm_ctx(
+        homebrew_hq,
+        &managed_prefix,
+        &managed_npm,
+        &roots,
+        ExecutedCopyAim::Undrivable,
+        DeliveredPrefixShim::Present,
+        ResolutionSource::SettingsPath,
+        &[],
+    )
+    .with_settings_path(telemetry);
+    let (events, records, captures, _) = composed_non_convergent_events(&first, true);
+    assert_eq!(records, 1);
+    assert_eq!(captures, 1);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    for (tag, expected) in [
+        ("settings_path_file", "local"),
+        ("managed_bin_in_settings_path", "absent"),
+        ("settings_path_repair", "refused-not-stale"),
+        ("hq_bin_lane", "settings_path"),
+    ] {
+        assert_eq!(
+            event.tags.get(tag).map(String::as_str),
+            Some(expected),
+            "unexpected {tag} tag"
+        );
+    }
+    assert_eq!(fingerprint(event), ["hq-cli-update", "install-non-convergent"]);
+    let serialized = serde_json::to_string(event).expect("serialize event");
+    assert!(!serialized.contains(&home_text));
+    // The three tokens are drawn from closed vocabularies, never a path.
+    for token in ["settings_path_file", "managed_bin_in_settings_path", "settings_path_repair"] {
+        let value = event.tags.get(token).map(String::as_str).unwrap();
+        assert!(!value.contains('/'), "{token} must be path-free");
+    }
+
+    // Second occurrence (already blocked by the durable marker): NOT captured, so
+    // a persistent unrepairable shadow emits exactly one envelope, not one per 6h.
+    let repeat = PostInstallContext::npm(
+        homebrew_hq,
+        homebrew_hq,
+        Some("5.83.0"),
+        Some("5.83.0"),
+        "5.84.0",
+        Some(&managed_prefix),
+        &managed_npm,
+        true,
+        Some("5.84.0"),
+    )
+    .with_managed_roots(&roots)
+    .with_executed_copy_aim(ExecutedCopyAim::Undrivable)
+    .with_resolution_telemetry(ResolutionSource::SettingsPath, DeliveredPrefixShim::Present)
+    .with_settings_path(telemetry);
+    let (repeat_events, _r, repeat_captures, _f) = composed_non_convergent_events(&repeat, true);
+    assert_eq!(repeat_captures, 0, "an already-blocked episode is not re-captured");
+    assert!(repeat_events.is_empty(), "no second envelope for the same episode");
 }
 
 /// The per-episode bound holds ACROSS runs for the not-yet-aimed foreign shape:
@@ -911,6 +1096,7 @@ fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_
         managed_runtime: ManagedRuntimeState::NotProvisioned,
         interpreter_recovery: InterpreterRecovery::ManagedNodeAbsent,
         resolution_source: ResolutionSource::SettingsPath,
+        hq_backing: HqBacking::UnbackedForeign,
     };
 
     let events = captured_events(|| report_unreadable_version("5.88.3", &probes));
@@ -950,6 +1136,7 @@ fn unreadable_version_capture_keeps_only_closed_diagnostics_and_stable_grouping_
                 "managed_runtime": "not_provisioned",
                 "interpreter_recovery": "managed_node_absent",
                 "resolution_source": "settings_path",
+                "hq_backing": "unbacked_foreign",
             })
             .as_object()
             .unwrap()
@@ -985,6 +1172,7 @@ fn unreadable_version_capture_carries_the_recovery_diagnostics_and_keeps_groupin
         managed_runtime: ManagedRuntimeState::NotProvisioned,
         interpreter_recovery: InterpreterRecovery::ManagedNodeAbsent,
         resolution_source: ResolutionSource::SettingsPath,
+        hq_backing: HqBacking::UnbackedManaged,
     };
 
     let events = captured_events(|| report_unreadable_version("5.99.0", &probes));
@@ -1006,6 +1194,12 @@ fn unreadable_version_capture_carries_the_recovery_diagnostics_and_keeps_groupin
     assert_eq!(
         recorded.get("resolution_source"),
         Some(&Value::String("settings_path".into()))
+    );
+    // The additive backing sub-case names the population without splitting the
+    // cluster: HQ's own orphaned managed-toolchain shim.
+    assert_eq!(
+        recorded.get("hq_backing"),
+        Some(&Value::String("unbacked_managed".into()))
     );
     // The original fields keep their names and values.
     assert_eq!(
@@ -1046,6 +1240,7 @@ fn a_recovered_probe_emits_no_unreadable_event() {
             managed_runtime: ManagedRuntimeState::Present,
             interpreter_recovery: InterpreterRecovery::RecoveredWithManagedNode,
             resolution_source: ResolutionSource::SettingsPath,
+            hq_backing: HqBacking::Backed,
         },
     };
 
@@ -1073,6 +1268,7 @@ fn production_field_quadruple_capture_carries_the_resolved_program_kind() {
         managed_runtime: ManagedRuntimeState::NotProbed,
         interpreter_recovery: InterpreterRecovery::NotNeeded,
         resolution_source: ResolutionSource::SystemPrefix,
+        hq_backing: HqBacking::UnbackedForeign,
     };
 
     let events = captured_events(|| report_unreadable_version("5.94.1", &probes));
@@ -1124,11 +1320,14 @@ fn production_field_quadruple_capture_carries_the_resolved_program_kind() {
     }
 }
 
-/// The anti-silencing counterpart, end to end: a marked-non-spawnable
+/// The anti-silencing counterpart, end to end: a marked, still-installed
 /// resolution with every probe failed must still emit EXACTLY ONE
-/// version-unreadable event. The signal is what tells the team a user's CLI is
-/// installed but unusable; dropping the resolution to "not installed" would
-/// make this zero.
+/// version-unreadable event. Under the truthful-`hq_installed` contract
+/// (HQ-DESKTOP-3P) the still-reporting non-spawnable population is HQ's OWN
+/// orphaned managed-toolchain shim (`UnbackedManaged`) — an install we own whose
+/// package tree is gone but which we must keep surfacing. Only a definitively-
+/// FOREIGN shim is dropped to not-installed and converges silently; dropping the
+/// managed orphan too would make this zero.
 #[test]
 fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
     let probes = LocalVersionProbeDiagnostics {
@@ -1139,7 +1338,8 @@ fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
         resolved_program_kind: ResolvedProgramKind::Extensionless,
         managed_runtime: ManagedRuntimeState::NotProbed,
         interpreter_recovery: InterpreterRecovery::NotNeeded,
-        resolution_source: ResolutionSource::SystemPrefix,
+        resolution_source: ResolutionSource::ManagedToolchain,
+        hq_backing: HqBacking::UnbackedManaged,
     };
 
     let events = captured_events(|| report_unreadable_version("5.94.1", &probes));
@@ -1147,13 +1347,123 @@ fn no_spawnable_sibling_shape_still_emits_exactly_one_unreadable_event() {
     assert_eq!(
         events.len(),
         1,
-        "an installed-but-unusable CLI must keep producing its warning"
+        "an installed-but-unusable CLI (HQ's own orphaned shim) must keep producing its warning"
     );
     assert_eq!(events[0].level, sentry::Level::Warning);
     assert_eq!(
         events[0].tags.get("hq_cli_update_kind").map(String::as_str),
         Some("version-unreadable")
     );
+}
+
+/// HQ-DESKTOP-3P, end to end on the reporting decision: the two halves of the
+/// backing vocabulary now stay coherent with the truthful-`hq_installed` contract.
+///
+/// - A BACKED, readable selection is SILENT (nothing to report).
+/// - A DEFINITIVELY-foreign, unreadable `hq` is ALSO silent — it is not an install
+///   at all, so `should_report_unreadable_version` is false and the machine
+///   converges through `cli_install_needed` instead of reporting the same warning
+///   forever.
+/// - An INDETERMINATE backing (a real install we cannot prove absent) still emits
+///   EXACTLY ONE honest event that NAMES its sub-case and keeps Sentry's default
+///   grouping, so a genuinely broken install stays visible.
+#[test]
+fn backed_and_foreign_are_silent_while_indeterminate_reports_once_named() {
+    // 1. Backed + readable → silent.
+    let backed = LocalVersionProbeResult {
+        local: Some("5.103.30".to_string()),
+        hq_installed: true,
+        probes: LocalVersionProbeDiagnostics {
+            binary_anchor: VersionProbeOutcome::Succeeded,
+            npm_root: VersionProbeOutcome::NotAttempted,
+            hq_version: VersionProbeOutcome::NotAttempted,
+            binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
+            resolved_program_kind: ResolvedProgramKind::CmdOrBat,
+            managed_runtime: ManagedRuntimeState::NotProbed,
+            interpreter_recovery: InterpreterRecovery::NotNeeded,
+            resolution_source: ResolutionSource::UserPrefix,
+            hq_backing: HqBacking::Backed,
+        },
+    };
+    assert!(!should_report_unreadable_version(&backed));
+    let events = captured_events(|| {
+        if should_report_unreadable_version(&backed) {
+            report_unreadable_version("5.103.30", &backed.probes);
+        }
+    });
+    assert!(
+        events.is_empty(),
+        "a backed, readable selection must emit nothing"
+    );
+
+    // 2. Definitively-foreign + unreadable → NOT an install → silent + installable.
+    let foreign = LocalVersionProbeResult {
+        local: None,
+        hq_installed: false,
+        probes: LocalVersionProbeDiagnostics {
+            binary_anchor: VersionProbeOutcome::PackageNotFound,
+            npm_root: VersionProbeOutcome::PackageNotFound,
+            hq_version: VersionProbeOutcome::NonzeroExit,
+            binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
+            resolved_program_kind: ResolvedProgramKind::CmdOrBat,
+            managed_runtime: ManagedRuntimeState::NotProbed,
+            interpreter_recovery: InterpreterRecovery::NotNeeded,
+            resolution_source: ResolutionSource::UserPrefix,
+            hq_backing: HqBacking::UnbackedForeign,
+        },
+    };
+    assert!(
+        !should_report_unreadable_version(&foreign),
+        "a definitively-foreign unbacked hq is not an install → silent"
+    );
+    assert!(
+        cli_install_needed(None, "5.103.30", foreign.hq_installed),
+        "instead it converges via the installer"
+    );
+    let events = captured_events(|| {
+        if should_report_unreadable_version(&foreign) {
+            report_unreadable_version("5.103.30", &foreign.probes);
+        }
+    });
+    assert!(
+        events.is_empty(),
+        "a definitively-foreign, unreadable hq emits zero events"
+    );
+
+    // 3. Indeterminate backing (a real install we cannot prove absent) → still
+    //    reports EXACTLY ONE event that names its sub-case.
+    let indeterminate = LocalVersionProbeResult {
+        local: None,
+        hq_installed: true,
+        probes: LocalVersionProbeDiagnostics {
+            binary_anchor: VersionProbeOutcome::ManifestReadOrParseFailed,
+            npm_root: VersionProbeOutcome::PackageNotFound,
+            hq_version: VersionProbeOutcome::NonzeroExit,
+            binary_anchor_shape: BinaryAnchorShape::NpmPrefix,
+            resolved_program_kind: ResolvedProgramKind::Exe,
+            managed_runtime: ManagedRuntimeState::NotProbed,
+            interpreter_recovery: InterpreterRecovery::NotNeeded,
+            resolution_source: ResolutionSource::SettingsPath,
+            hq_backing: HqBacking::NotProbed,
+        },
+    };
+    assert!(should_report_unreadable_version(&indeterminate));
+    let events = captured_events(|| report_unreadable_version("5.103.30", &indeterminate.probes));
+    assert_eq!(
+        events.len(),
+        1,
+        "an install we cannot prove absent still reports"
+    );
+    let Some(Value::Object(recorded)) = events[0].extra.get("hq_cli_version_probes") else {
+        panic!("probe diagnostics must be an object: {:?}", events[0].extra);
+    };
+    assert_eq!(
+        recorded.get("hq_backing"),
+        Some(&Value::String("not_probed".into())),
+        "the honest event names the indeterminate sub-case"
+    );
+    // Additive field, unchanged grouping: the cluster does not split.
+    assert_eq!(fingerprint(&events[0]), ["{{ default }}"]);
 }
 
 #[test]
@@ -1483,6 +1793,7 @@ fn the_2026_08_10_pnpm_field_event_now_converges_and_captures_nothing() {
         executed_copy_aim: ExecutedCopyAim::Undrivable,
         hq_bin_lane: ResolutionSource::NotResolved,
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+        settings_path: SettingsPathTelemetry::default(),
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,
