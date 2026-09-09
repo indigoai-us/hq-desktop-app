@@ -110,7 +110,7 @@ export function sessionDraftStorageKey(param: string | null | undefined): string
 
 export function encodeHistorySessionParam(session: {
   id: string;
-  tool: 'claude' | 'codex';
+  tool: 'claude' | 'codex' | 'grok';
   company?: string;
   project?: string;
   title?: string;
@@ -118,7 +118,10 @@ export function encodeHistorySessionParam(session: {
 }): string {
   const query = new URLSearchParams();
   query.set('id', session.id);
-  query.set('tool', session.tool === 'codex' ? 'codex' : 'claude');
+  query.set(
+    'tool',
+    session.tool === 'codex' ? 'codex' : session.tool === 'grok' ? 'grok' : 'claude',
+  );
   if (session.company?.trim()) query.set('company', session.company.trim());
   if (session.project?.trim()) query.set('project', session.project.trim());
   if (session.title?.trim()) query.set('title', session.title.trim());

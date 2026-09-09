@@ -97,6 +97,9 @@ describe('parseSessionsParam', () => {
     expect(encodeHistorySessionParam({ id: 'h1', tool: 'codex', company: 'indigo' })).toBe(
       'history?id=h1&tool=codex&company=indigo',
     );
+    expect(encodeHistorySessionParam({ id: 'h2', tool: 'grok', company: 'indigo' })).toBe(
+      'history?id=h2&tool=grok&company=indigo',
+    );
     expect(encodeSharedSessionParam('s1', 'chn_a')).toBe('shared?id=s1&channel=chn_a');
   });
 });
