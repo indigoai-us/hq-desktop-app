@@ -495,6 +495,9 @@ export function requestDeepLinkOpen(target: HqWorkOpenTarget): void {
  * Stateful delivery boundary between native desktop routes and the mounted
  * shared shell. `attach` is called by `DesktopApp` only after its listeners
  * exist, so a cold pending route cannot disappear in the mount gap.
+ *
+ * This is not the in-app history stack — see
+ * `packages/ui/src/shell/navigation-history.ts`.
  */
 export class EmbeddedNavigationController {
   #pending: EmbeddedNavigationTarget | null = null;

@@ -5,6 +5,9 @@
  * owns queuing; this module owns the narrow event payload consumed by the
  * mounted shared UI. Keeping the union explicit prevents a new native route
  * from becoming an accidental silent no-op in the webview.
+ *
+ * This is a pending-route delivery bridge, not the in-app history stack.
+ * History lives in `navigation-history.ts`.
  */
 
 export const EMBEDDED_NAVIGATION_EVENT = 'hq:embedded-navigation';
