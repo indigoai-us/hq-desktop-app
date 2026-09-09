@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   STAGE_COMMAND,
@@ -66,7 +67,9 @@ describe('honest onboarding stage reporting', () => {
       { label: 'Registering for search' },
     ]);
     const wizard = readFileSync(
-      'apps/sync/src/components/onboarding/OnboardingWizard.svelte',
+      fileURLToPath(
+        new URL('../components/onboarding/OnboardingWizard.svelte', import.meta.url),
+      ),
       'utf8',
     );
 
@@ -83,7 +86,9 @@ describe('honest onboarding stage reporting', () => {
 
   it('awaits a bounded initial cloud sync rather than completing a detached task', () => {
     const stages = readFileSync(
-      'apps/sync/src-tauri/src/commands/install_stages.rs',
+      fileURLToPath(
+        new URL('../../src-tauri/src/commands/install_stages.rs', import.meta.url),
+      ),
       'utf8',
     );
     const personalization = stages.slice(
