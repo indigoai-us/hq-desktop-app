@@ -37,6 +37,7 @@
     allSettled,
     buildInitialStages,
     buildStagesFromManifest,
+    friendlySetupBands,
     createSetupRunId,
     normalizeFailedStageIds,
     reuseInFlightOperation,
@@ -309,6 +310,7 @@
   const ringOffset = $derived(
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
+  const setupBands = $derived(friendlySetupBands(overallPercent));
   const readyCaution = $derived(launchEscape ?? COMPLETE_SETUP);
   const userFacingInstallPath = $derived(
     installPath ? toUserFacingPath(installPath) : null,
@@ -1975,21 +1977,24 @@
         >
           <h2 class="h" id="onboarding-title-setup">Getting your HQ ready</h2>
           <div class="list" aria-label="Setup checklist">
-            {#each stages as stage}
-              <div class:muted={stage.status === 'pending'} class="li">
-                {#if stage.status === 'running'}
+            {#each setupBands as band}
+              <div class:muted={band.status === 'pending'} class="li">
+                {#if band.status === 'active'}
                   <span class="st spin" aria-hidden="true"></span>
-                {:else if stage.status === 'ok' || stage.status === 'failed'}
+                {:else if band.status === 'done'}
                   <span class="st dotmark" aria-hidden="true">{@render CheckTiny()}</span>
                 {:else}
                   <span class="st dotpend" aria-hidden="true"></span>
                 {/if}
-                <span class="lt">{stage.label}</span>
+                <span class="lt">{band.label}</span>
               </div>
             {/each}
           </div>
-          <!-- Recovery retries transient failures automatically. Persistent failures
-               are recorded for the setup skill without changing the checklist state. -->
+          <!-- The setup screen intentionally shows ONLY the friendly checklist (matching
+               the design). Recovery runs automatically in the setup engine; a stage that
+               still fails is recorded silently for the setup skill, not surfaced on a
+               needs-attention note. No percentages, stage counts, staging toggle, or
+               manual controls. -->
           <div class="btns">
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(DIRECTORY_STEP_INDEX)}>Back</button>
           </div>

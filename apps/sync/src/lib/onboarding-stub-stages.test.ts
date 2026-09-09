@@ -72,7 +72,9 @@ describe('honest onboarding stage reporting', () => {
     expect(wizard).not.toContain('Retry failed steps');
     expect(wizard).not.toContain('Existing HQ setup import was not run');
     expect(wizard).not.toContain('needsAttention');
-    expect(wizard).toContain("{:else if stage.status === 'ok' || stage.status === 'failed'}");
+    expect(wizard).toContain('friendlySetupBands');
+    expect(wizard).toContain('{#each setupBands as band}');
+    expect(wizard).toContain("{:else if band.status === 'done'}");
     expect(wizard).toContain(
       'markSetupStepCompleted();\n      await journalInstallComplete();\n      setupCompletionMetrics',
     );
