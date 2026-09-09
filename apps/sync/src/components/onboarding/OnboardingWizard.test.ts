@@ -307,6 +307,7 @@ describe('onboarding launch handoff', () => {
       .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
       ?.click();
     host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-setup-failures"]')));
 
     expect(host.querySelector('[data-testid="onboarding-launch-download"]')).toBeNull();
