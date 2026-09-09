@@ -49,6 +49,14 @@ function harnessScenario(): string | null {
   return null;
 }
 
+function isOnboardingCaptureScenario(): boolean {
+  const scenario = harnessScenario();
+  return (
+    scenario === 'onboarding-capture-completion-clean' ||
+    scenario === 'onboarding-capture-completion-failed-required-stage'
+  );
+}
+
 const HARNESS_UPDATE = {
   version: '0.10.36-beta.1',
   body: 'Desktop surface repairs and updater recovery.',
@@ -1133,7 +1141,37 @@ This final paragraph verifies spacing after a thematic break.
   notification_permission_state: () =>
     harnessScenario() === 'permission-denied' ? 'denied' : 'prompt',
   notification_request_permission: () => 'granted',
-  resolve_hq_path: () => '/Users/corey/Documents/HQ',
+  // Screenshot capture fixtures exercise the real wizard setup flow with
+  // placeholder-only data. The failure fixture rejects one required command;
+  // it exists only in the browser design harness, never in the desktop app.
+  resolve_hq_path: () =>
+    isOnboardingCaptureScenario() ? '/Users/Placeholder/HQ' : '/Users/corey/Documents/HQ',
+  read_install_manifest: () =>
+    isOnboardingCaptureScenario()
+      ? {
+          schemaVersion: 1,
+          installerVersion: 'preview',
+          installPath: '/Users/Placeholder/HQ',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          completedAt: null,
+          steps: {},
+        }
+      : null,
+  install_deps: () => {
+    if (
+      harnessScenario() === 'onboarding-capture-completion-failed-required-stage'
+    ) {
+      throw new Error('Preview required dependency stage failed');
+    }
+    return null;
+  },
+  // Hold the final journal write only for capture so a settled real checklist
+  // remains visible long enough for a browser screenshot.
+  record_install_complete: () =>
+    harnessScenario() === 'onboarding-capture-completion-clean' ||
+    harnessScenario() === 'onboarding-capture-completion-failed-required-stage'
+      ? new Promise<never>(() => {})
+      : null,
   // Scenarios let the Ready screen be inspected in every machine state the
   // real detector can produce: `?scenario=tools-claude-only` (the fresh-VM
   // case that has only Claude Code), `?scenario=tools-codex-only`, and
