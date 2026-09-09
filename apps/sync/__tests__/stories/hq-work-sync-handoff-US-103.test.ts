@@ -52,6 +52,8 @@ import {
   type HqWorkInvoker,
 } from '../../src/lib/hq-work';
 import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
+import { takePendingChannelOpen } from '../../../../packages/ui/src/chat/open-target';
+import { takePendingConversation } from '../../../../packages/ui/src/chat/pending-conversation';
 
 const WHOAMI = {
   personUid: 'prs_ada',
@@ -252,6 +254,9 @@ function mountMessagingSidebar(invokeFn: SyncInvokeFn): void {
 
 /** The sidebar "+" opens the unified create modal directly (no dropdown). */
 async function openCreateModal(): Promise<void> {
+  await vi.waitFor(() => {
+    expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy();
+  });
   (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
   await flush();
 }
@@ -326,6 +331,9 @@ afterEach(async () => {
     component = null;
   }
   host?.remove();
+  document.querySelectorAll('[data-testid="chat-create-modal"]').forEach((node) => node.remove());
+  takePendingChannelOpen();
+  takePendingConversation();
   tauriEvents.listeners.clear();
   vi.clearAllMocks();
 });

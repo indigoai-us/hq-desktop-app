@@ -195,7 +195,7 @@ describe("US-006: Restore scroll, lifecycle, and tenant isolation", () => {
     expect(page).toContain('data-testid="session-unavailable"');
     expect(page).toContain("sessionCompanyIsAccessible");
     expect(page).toContain("liveSessionStore.companyOf");
-    expect(page).toContain("denyLostCompany");
+    expect(page).toContain("companyMembershipDenied");
     expect(page).toContain("if (liveSessionStore.isOpen(next))");
     expect(page).toContain("liveSessionStore.activate(next)");
   });

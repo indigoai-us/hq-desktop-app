@@ -267,8 +267,7 @@
     // the slower global session catalogs, which briefly rendered a generic
     // blank session after every click or app restart.
     if (initialHistorySession?.id === next) {
-      if (await denyLostCompany(initialHistorySession.company)) return;
-      if (routedId !== next) return;
+      if (companyMembershipDenied(initialHistorySession.company)) return;
       tool = initialHistorySession.tool;
       model = null;
       effort = null;
@@ -288,8 +287,7 @@
 
       const appOwned = liveSessionStore.sessions.some((session) => session.sessionId === next);
       if (appOwned) {
-        if (await denyLostCompany(liveSessionStore.companyOf(next))) return;
-        if (routedId !== next) return;
+        if (companyMembershipDenied(liveSessionStore.companyOf(next))) return;
         await liveSessionStore.open(next);
         return;
       }
@@ -298,8 +296,7 @@
     if (routedId !== next) return;
     const providerHistory = sessionsStore.sessions.find((session) => session.id === next);
     if (providerHistory) {
-      if (await denyLostCompany(providerHistory.company)) return;
-      if (routedId !== next) return;
+      if (companyMembershipDenied(providerHistory.company)) return;
       tool = providerHistory.tool;
       model = null;
       effort = null;
@@ -315,8 +312,7 @@
       actionError = 'This session is no longer available.';
       return;
     }
-    if (await denyLostCompany(liveSessionStore.companyOf(next))) return;
-    if (routedId !== next) return;
+    if (companyMembershipDenied(liveSessionStore.companyOf(next))) return;
     await liveSessionStore.open(next);
   }
 
@@ -332,20 +328,11 @@
     );
   }
 
-  async function denyLostCompany(
+  function companyMembershipDenied(
     companyKey: string | null | undefined,
-  ): Promise<boolean> {
+  ): boolean {
     const key = companyKey?.trim() ?? '';
-    if (!key) return false;
-    if (!preflight) {
-      try {
-        preflight = await liveSessionStore.preflight();
-      } catch {
-        sessionUnavailable = true;
-        actionError = 'This session is no longer available.';
-        return true;
-      }
-    }
+    if (!key || !preflight) return false;
     if (sessionCompanyIsAccessible(key)) return false;
     sessionUnavailable = true;
     actionError = 'This session is no longer available.';
@@ -357,8 +344,7 @@
     const bound =
       (initialHistorySession?.id === next ? initialHistorySession.company : null) ||
       liveSessionStore.companyOf(next);
-    if (await denyLostCompany(bound)) return;
-    if (routedId !== next) return;
+    if (companyMembershipDenied(bound)) return;
     if (liveSessionStore.isOpen(next)) {
       liveSessionStore.activate(next);
       return;
@@ -374,11 +360,21 @@
     routedId = next;
     openedId = next;
     sessionUnavailable = false;
-    if (!next) {
-      if (initialCompany) void denyLostCompany(initialCompany);
-      return;
-    }
+    if (!next) return;
     void restoreRoutedSession(next);
+  });
+
+  $effect(() => {
+    const offered = preflight?.companies;
+    if (!offered) return;
+    const next = sessionId ?? null;
+    const bound =
+      (next && initialHistorySession?.id === next
+        ? initialHistorySession.company
+        : null) ||
+      (next ? liveSessionStore.companyOf(next) : null) ||
+      initialCompany;
+    if (bound) companyMembershipDenied(bound);
   });
 
   onDestroy(() => {
