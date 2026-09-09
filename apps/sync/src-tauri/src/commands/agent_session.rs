@@ -42,7 +42,7 @@ use hq_desktop_core::agent_session::types::{
     SessionTool, TurnOverrides,
 };
 use hq_desktop_core::agent_session_flags::ensure_in_app_sessions_allowed;
-use hq_desktop_core::claude_launch::check_hq_hooks_ready;
+use hq_desktop_core::claude_launch::{probe_hq_setup, HqSetupReadiness};
 use hq_desktop_core::workspaces::{
     discover_local_companies, humanize_slug, resolve_hq_folder_path,
 };
@@ -182,7 +182,13 @@ pub struct Preflight {
     pub hq_root: String,
     /// True when `.claude/settings.json` wires the hooks a session depends on.
     pub hooks_ready: bool,
+    /// The exact technical reason `hooks_ready` is false. Support-log grade;
+    /// the page shows plain words and self-heals instead of printing this.
     pub hooks_error: Option<String>,
+    /// What the page must do before a session can run: nothing, install the
+    /// HQ template, or rescue the `.claude` layer. `hooks_ready` is
+    /// `hq_setup == Ready` — kept alongside for the existing consumers.
+    pub hq_setup: HqSetupReadiness,
     pub claude_available: bool,
     /// The Claude Code CLI must be signed in separately from Claude Desktop.
     /// The spike's sessions failed at the model call, not at spawn, when it was
@@ -251,13 +257,13 @@ async fn preflight_local_lookup<T: Send + 'static>(
 #[tauri::command]
 pub async fn agent_session_preflight() -> Result<Preflight, String> {
     ensure_in_app_sessions_allowed()?;
-    let (hq_root, hooks_error, tools, entries) = preflight_local_lookup(
+    let (hq_root, setup, tools, entries) = preflight_local_lookup(
         || {
             let hq_root = resolve_hq_folder_path()?;
-            let hooks_error = check_hq_hooks_ready(&hq_root).err();
+            let setup = probe_hq_setup(&hq_root);
             let tools = crate::commands::ai_tools::detect_ai_tools();
             let (entries, _) = discover_local_companies(&hq_root);
-            Ok::<_, String>((hq_root, hooks_error, tools, entries))
+            Ok::<_, String>((hq_root, setup, tools, entries))
         },
         std::time::Duration::from_secs(8),
     ).await?;
@@ -271,14 +277,16 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
     log(
         LOG_TAG,
         &format!(
-            "preflight claude_cli={} claude_desktop={} claude_logged_in={} codex_cli={} codex_desktop={} codex_logged_in={} hooks_ready={}",
+            "preflight claude_cli={} claude_desktop={} claude_logged_in={} codex_cli={} codex_desktop={} codex_logged_in={} hooks_ready={} hq_setup={:?} detail={}",
             tools.claude_cli,
             tools.claude_desktop,
             claude_logged_in,
             tools.codex_cli,
             tools.codex_desktop,
             codex_logged_in,
-            hooks_error.is_none()
+            setup.is_ready(),
+            setup.readiness,
+            setup.detail.as_deref().unwrap_or("-")
         ),
     );
     let companies = entries
@@ -295,14 +303,167 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
 
     Ok(Preflight {
         hq_root: hq_root.to_string_lossy().into_owned(),
-        hooks_ready: hooks_error.is_none(),
-        hooks_error,
+        hooks_ready: setup.is_ready(),
+        hq_setup: setup.readiness,
+        hooks_error: setup.detail,
         claude_available: tools.claude_cli,
         claude_logged_in,
         codex_available: tools.codex_cli,
         codex_logged_in,
         companies,
     })
+}
+
+/// The `content:progress` handle the Sessions self-heal installs under, so
+/// the page can show the template download without confusing it with an
+/// onboarding-wizard run.
+pub const SESSIONS_SETUP_PROGRESS_HANDLE: &str = "sessions-setup";
+
+/// `hq rescue` may have to fetch the CLI through npx on a fresh machine.
+const SETUP_RESCUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Finish HQ setup on this machine so a session can run, then re-run the
+/// preflight. This is what the brown ".claude/settings.json is missing — run
+/// `hq rescue`" banner used to ask the person to do by hand.
+///
+/// Ladder, each rung re-probed before the next:
+///   1. no template (`core/core.yaml`) → the same install the onboarding
+///      wizard's `content` stage runs, into the preflight's HQ root;
+///   2. template present but `.claude/settings.json` missing/invalid/hookless
+///      → `hq rescue -y --paths .claude` in the HQ root through the app's own
+///      `hq` resolution;
+///   3. ready → record the install as complete in the app's bookkeeping so
+///      the lifecycle stops reporting `NeedsInstall` on the next launch.
+///
+/// Idempotent: an already-ready root does nothing and touches no file. Errors
+/// carry plain words for the screen; the technical reason goes to the support
+/// log under `LOG_TAG`.
+#[tauri::command]
+pub async fn agent_session_repair_hq_setup(app: tauri::AppHandle) -> Result<Preflight, String> {
+    ensure_in_app_sessions_allowed()?;
+    let hq_root = preflight_local_lookup(
+        resolve_hq_folder_path,
+        std::time::Duration::from_secs(8),
+    )
+    .await?;
+    let probe_root = hq_root.clone();
+    let probe = || probe_hq_setup(&probe_root);
+
+    let mut setup = probe();
+    log(
+        LOG_TAG,
+        &format!(
+            "setup repair start root={} hq_setup={:?} detail={}",
+            hq_root.display(),
+            setup.readiness,
+            setup.detail.as_deref().unwrap_or("-")
+        ),
+    );
+    let mut repaired = false;
+
+    if setup.readiness == HqSetupReadiness::NeedsInstall {
+        let root = hq_root.to_string_lossy().into_owned();
+        match crate::commands::content::install_template_into(
+            app.clone(),
+            Some(SESSIONS_SETUP_PROGRESS_HANDLE.to_owned()),
+            root,
+        )
+        .await
+        {
+            Ok(version) => {
+                repaired = true;
+                log(LOG_TAG, &format!("setup repair: installed HQ template {version}"));
+            }
+            Err(e) => {
+                log(LOG_TAG, &format!("setup repair: template install failed: {e}"));
+                return Err(
+                    "The HQ files could not be downloaded. Check your internet connection and try again."
+                        .to_owned(),
+                );
+            }
+        }
+        setup = probe();
+    }
+
+    if setup.readiness == HqSetupReadiness::NeedsRescue {
+        log(
+            LOG_TAG,
+            &format!(
+                "setup repair: running hq rescue, reason={}",
+                setup.detail.as_deref().unwrap_or("-")
+            ),
+        );
+        let rescue = tokio::time::timeout(
+            SETUP_RESCUE_TIMEOUT,
+            crate::commands::install_stages::run_hq(
+                &["rescue", "-y", "--paths", ".claude"],
+                &hq_root,
+            ),
+        )
+        .await;
+        match rescue {
+            Ok(Ok(())) => {
+                repaired = true;
+                log(LOG_TAG, "setup repair: hq rescue finished");
+            }
+            Ok(Err(e)) => {
+                log(LOG_TAG, &format!("setup repair: hq rescue failed: {e}"));
+                return Err("HQ's repair step did not finish. Try again in a moment.".to_owned());
+            }
+            Err(_) => {
+                log(LOG_TAG, "setup repair: hq rescue timed out");
+                return Err("HQ's repair step took too long. Try again in a moment.".to_owned());
+            }
+        }
+        setup = probe();
+    }
+
+    if !setup.is_ready() {
+        log(
+            LOG_TAG,
+            &format!(
+                "setup repair: still not ready after repair hq_setup={:?} detail={}",
+                setup.readiness,
+                setup.detail.as_deref().unwrap_or("-")
+            ),
+        );
+        return Err("HQ setup is still incomplete on this Mac. Try again in a moment.".to_owned());
+    }
+
+    if repaired {
+        record_setup_repair_complete();
+    } else {
+        log(LOG_TAG, "setup repair: root already ready, nothing to do");
+    }
+    agent_session_preflight().await
+}
+
+/// The bookkeeping the onboarding wizard writes when its last stage lands:
+/// the install manifest's `completed_at` and `menubar.json`'s
+/// `installCompleted`. Both are best-effort — the session can run either way;
+/// this only keeps the next launch from classifying the machine as
+/// `NeedsInstall` again.
+fn record_setup_repair_complete() {
+    if let Err(e) = crate::commands::install_manifest::record_install_complete() {
+        log(LOG_TAG, &format!("setup repair: install manifest completion not recorded: {e}"));
+    }
+    match crate::util::paths::menubar_json_path() {
+        Ok(path) => {
+            if let Err(e) = hq_desktop_core::first_run::merge_menubar_flags(
+                &path,
+                &[
+                    ("installCompleted", serde_json::Value::Bool(true)),
+                    (
+                        "installRepairedAt",
+                        serde_json::Value::String(now_iso()),
+                    ),
+                ],
+            ) {
+                log(LOG_TAG, &format!("setup repair: menubar installCompleted not recorded: {e}"));
+            }
+        }
+        Err(e) => log(LOG_TAG, &format!("setup repair: menubar path unavailable: {e}")),
+    }
 }
 
 /// Start a session and begin driving it.
@@ -1118,6 +1279,38 @@ mod tests {
         }, std::time::Duration::from_millis(20)).await;
         let _ = release.send(());
         assert!(result.unwrap_err().contains("timed out"));
+    }
+
+    /// The Sessions self-heal must leave the same bookkeeping behind as the
+    /// onboarding wizard's last stage: manifest `completed_at` plus
+    /// `menubar.json` `installCompleted`, so the next launch does not
+    /// classify the machine as `NeedsInstall` again.
+    #[test]
+    fn setup_repair_records_install_complete_in_manifest_and_menubar() {
+        use crate::util::test_support::ENV_MUTEX;
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let previous_home = std::env::var_os("HOME");
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        record_setup_repair_complete();
+
+        let manifest = crate::commands::install_manifest::read_install_manifest().unwrap();
+        let menubar = hq_desktop_core::first_run::read_menubar_obj(
+            &crate::util::paths::menubar_json_path().unwrap(),
+        );
+        if let Some(home) = previous_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        assert!(manifest.completed_at.is_some(), "manifest completed_at must be set");
+        assert_eq!(
+            menubar.get("installCompleted").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert!(menubar.get("installRepairedAt").and_then(serde_json::Value::as_str).is_some());
     }
 
     #[test]

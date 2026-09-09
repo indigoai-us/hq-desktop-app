@@ -28,6 +28,8 @@
    * it, and every `agent_session_*` invoke lives inside it.
    */
   import { onDestroy, untrack } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import SessionListPanel from '../panels/SessionListPanel.svelte';
   import SessionComposer from '../../components/sessions/SessionComposer.svelte';
   import SessionTranscript from '../../components/sessions/SessionTranscript.svelte';
@@ -155,6 +157,22 @@
   let drawerOpen = $state(false);
   /** Guards the once-per-page preflight. */
   let preflightRequested = $state(false);
+
+  /**
+   * HQ setup self-heal. A brand-new machine can reach Sessions with the HQ
+   * root half-made (the sync runner materialized `.claude/skills` and
+   * `companies/`, but the template never landed because the install wizard
+   * did not finish). Rather than tell the person to run a command, the page
+   * finishes setup itself: one automatic attempt per visit, then a Retry.
+   */
+  let setupRepair = $state<'idle' | 'running' | 'failed' | 'done'>('idle');
+  let setupProgress = $state('');
+  /** Plain-language reason from the backend; the technical one is in the app log. */
+  let setupFailure = $state('');
+  let setupAutoAttempted = false;
+  let unlistenSetupProgress: (() => void) | null = null;
+  /** The `content:progress` handle the backend installs under for this page. */
+  const SETUP_PROGRESS_HANDLE = 'sessions-setup';
   /** The tool the loaded catalog belongs to — the catalog is per CLI. */
   let catalogTool = $state<SessionToolId | null>(null);
   /**
@@ -310,6 +328,59 @@
   onDestroy(() => {
     routedId = null;
     if (openedId) liveSessionStore.close(openedId);
+    unlistenSetupProgress?.();
+    unlistenSetupProgress = null;
+  });
+
+  /** True while the HQ root on this machine cannot host a session yet. */
+  const setupNeeded = $derived(
+    Boolean(preflight) && (preflight?.hqSetup ? preflight.hqSetup !== 'ready' : !preflight?.hooksReady),
+  );
+
+  interface SetupProgressPayload {
+    handle?: string;
+    phase?: string;
+    percent?: number | null;
+    message?: string;
+  }
+
+  async function runSetupRepair() {
+    if (setupRepair === 'running') return;
+    setupRepair = 'running';
+    setupProgress = '';
+    setupFailure = '';
+    try {
+      // Progress is a nicety: a bridge without events must not fail the repair.
+      try {
+        unlistenSetupProgress?.();
+        unlistenSetupProgress = safeUnlisten(
+          await listen<SetupProgressPayload>('content:progress', (event) => {
+            const payload = event.payload;
+            if (payload?.handle !== SETUP_PROGRESS_HANDLE) return;
+            const words = payload.message ?? '';
+            setupProgress =
+              typeof payload.percent === 'number' ? `${words} ${Math.round(payload.percent)}%`.trim() : words;
+          }),
+        );
+      } catch {
+        unlistenSetupProgress = null;
+      }
+      preflight = await liveSessionStore.repairHqSetup();
+      setupRepair = 'done';
+    } catch (err) {
+      setupFailure = err instanceof Error ? err.message : String(err);
+      setupRepair = 'failed';
+    } finally {
+      unlistenSetupProgress?.();
+      unlistenSetupProgress = null;
+    }
+  }
+
+  /** Setup self-heal: one automatic attempt per page visit; Retry is by hand. */
+  $effect(() => {
+    if (!setupNeeded || setupAutoAttempted) return;
+    setupAutoAttempted = true;
+    void runSetupRepair();
   });
 
   /** Preflight: wanted once per page, best-effort. */
@@ -676,9 +747,10 @@
   );
 
   /**
-   * The ONE blocking problem, with the exact fix. Each of these fails for a
-   * different reason, so each gets its own remedy — a user told "run `claude
-   * login` in a terminal" can act; one told "preflight failed" cannot.
+   * The ONE blocking problem, in plain words. Each of these fails for a
+   * different reason, so each names its own next step — and every next step
+   * is something on this page (the Connect buttons, the setup Retry), never a
+   * command to type. The technical reason stays in the app's support log.
    */
   const blocker = $derived.by(() => {
     if (preflightLoading || !preflight) return '';
@@ -686,20 +758,16 @@
       return 'Codex is not installed on this machine. Install it, then reopen Sessions.';
     }
     if (tool === 'codex' && !preflight.codexLoggedIn) {
-      return 'Codex is not signed in. Run `codex login` in a terminal, then reopen Sessions.';
+      return 'Codex is not connected yet. Use Connect Codex below to sign in.';
     }
     if (tool === 'claude' && !preflight.claudeAvailable) {
       return 'Claude Code is not installed on this machine. Install it, then reopen Sessions.';
     }
     if (tool === 'claude' && !preflight.claudeLoggedIn) {
-      return 'Claude Code is not signed in. Run `claude login` in a terminal, then reopen Sessions.';
+      return 'Claude Code is not connected yet. Use Connect Claude below to sign in.';
     }
-    if (!preflight.hooksReady) {
-      return (
-        preflight.hooksError ??
-        'HQ session hooks are not ready, so a session would run unguarded.'
-      );
-    }
+    // HQ setup on this machine (`setupNeeded`) is the setup card's job:
+    // progress while it runs, Retry when it could not — not a notice here.
     return '';
   });
 
@@ -714,7 +782,7 @@
   }
   const notice = $derived(needsProvider ? '' : blocker || actionError || liveSessionStore.error);
   const ended = $derived(phase === 'ended' || transcript.ended);
-  const sendDisabled = $derived(!preflight || Boolean(blocker) || starting || ended);
+  const sendDisabled = $derived(!preflight || Boolean(blocker) || setupNeeded || starting || ended);
 
   /**
    * "Hand off" is a `/handoff` turn the strip can send for you. It is offered
@@ -1320,6 +1388,18 @@
   />
 
   <div class="composer-dock">
+    {#if setupRepair === 'running'}
+      <div class="setup-notice" role="status" data-testid="session-setup-progress">
+        <span>Finishing HQ setup on this Mac…</span>
+        {#if setupProgress}<span class="setup-progress">{setupProgress}</span>{/if}
+      </div>
+    {:else if setupNeeded && setupRepair !== 'idle'}
+      <div class="setup-notice failed" role="alert" data-testid="session-setup-failed">
+        <span>Couldn't finish HQ setup.{setupFailure ? ` ${setupFailure}` : ''}</span>
+        <button type="button" class="setup-retry" data-testid="session-setup-retry"
+          onclick={() => void runSetupRepair()}>Retry</button>
+      </div>
+    {/if}
     {#if liveSessionStore.sharingNotice}
       <div class="sharing-notice" role="status">{liveSessionStore.sharingNotice}</div>
     {:else if !sessionId && sharingChannelId}
@@ -1408,6 +1488,37 @@
 
   /* One quiet line above the composer, aligned to its column. */
   .sharing-notice { padding: 8px 12px; font-size: 13px; color: var(--session-muted, #999); }
+
+  /* HQ setup self-heal: progress while it runs, Retry when it could not. */
+  .setup-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--v4-space-2);
+    margin: 0 0 var(--v4-space-2);
+    padding: 6px 10px;
+    border-radius: var(--v4-radius-button);
+    background: color-mix(in srgb, var(--v4-text-3, currentColor) 8%, transparent);
+    color: var(--v4-text-2);
+    font-size: var(--type-metadata);
+    line-height: 1.5;
+  }
+  .setup-notice.failed {
+    background: color-mix(in srgb, var(--v4-warn, currentColor) 10%, transparent);
+  }
+  .setup-progress { color: var(--v4-text-3); }
+  .setup-retry {
+    margin-left: auto;
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill, 999px);
+    background: transparent;
+    color: var(--v4-text-1);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .setup-retry:hover { background: var(--v4-active-row); }
   .checkpoint-notice {
     display: flex;
     align-items: center;

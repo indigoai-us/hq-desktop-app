@@ -239,14 +239,35 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
     expect(PAGE).toContain('LAST_COMPANY_KEY');
   });
 
-  it('names the exact remedy for each preflight blocker', () => {
-    expect(PAGE).toContain('claude login');
+  it('names a plain next step for each preflight blocker, never a command to type', () => {
+    // Every blocker still has its own remedy, but the remedy is something on
+    // the page (the Connect buttons, the setup Retry) — a brand-new user is
+    // never told to run `claude login`, `codex login` or `hq rescue`.
     expect(PAGE).toContain('claudeAvailable');
     expect(PAGE).toContain('claudeLoggedIn');
-    expect(PAGE).toContain('hooksReady');
+    expect(PAGE).toContain('codexLoggedIn');
+    expect(PAGE).toContain('Use Connect Claude below to sign in.');
+    expect(PAGE).toContain('Use Connect Codex below to sign in.');
+    expect(PAGE).not.toContain('claude login');
+    expect(PAGE).not.toContain('codex login');
+    expect(PAGE).not.toContain('hq rescue');
+    expect(PAGE).not.toContain('settings.json');
+    // The technical `hooksError` is for the support log, not the screen.
+    expect(PAGE).not.toContain('{preflight.hooksError}');
+    expect(PAGE).not.toContain('preflight.hooksError ??');
     // One inline notice above the composer — not a screen that replaces it.
     expect(PAGE).toContain('{notice}');
     expect(COMPOSER).toContain('session-composer-notice');
+  });
+
+  it('finishes HQ setup itself instead of asking for a terminal', () => {
+    expect(PAGE).toContain('hqSetup');
+    expect(PAGE).toContain('repairHqSetup');
+    expect(PAGE).toContain('Finishing HQ setup on this Mac…');
+    expect(PAGE).toContain("Couldn't finish HQ setup.");
+    expect(PAGE).toContain('session-setup-retry');
+    // One automatic attempt per visit; Retry is by hand.
+    expect(PAGE).toContain('setupAutoAttempted');
   });
 });
 

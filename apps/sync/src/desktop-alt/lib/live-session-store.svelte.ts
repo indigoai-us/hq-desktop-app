@@ -180,11 +180,20 @@ export interface PreflightCompany {
   cloudUid?: string | null;
 }
 
+/**
+ * What the page must do before a session can run on this machine: nothing,
+ * install the HQ template (the wizard's `content` stage never landed), or
+ * rescue the `.claude` layer. Mirrors `HqSetupReadiness` on the Rust side.
+ */
+export type HqSetupReadiness = 'ready' | 'needs_install' | 'needs_rescue';
+
 /** Can this machine run an in-app session at all, and what is missing? */
 export interface Preflight {
   hqRoot: string;
   hooksReady: boolean;
+  /** Technical reason for the support log; never shown on screen. */
   hooksError: string | null;
+  hqSetup: HqSetupReadiness;
   claudeAvailable: boolean;
   claudeLoggedIn: boolean;
   codexAvailable: boolean;
@@ -1112,6 +1121,20 @@ async function preflight(): Promise<Preflight> {
   return promise;
 }
 
+/**
+ * Finish HQ setup on this machine (template install and/or `.claude` rescue)
+ * and return the fresh preflight. The result replaces the cached preflight so
+ * the page and any later reader agree on the repaired state.
+ */
+async function repairHqSetup(): Promise<Preflight> {
+  const promise = invoke<Preflight>('agent_session_repair_hq_setup');
+  preflightCache = { at: Date.now(), promise };
+  promise.catch(() => {
+    if (preflightCache?.promise === promise) preflightCache = null;
+  });
+  return promise;
+}
+
 /** The CLI's slash-command catalog + model list. */
 async function slashCommands(tool: SessionTool = 'claude', refresh = false): Promise<CommandCatalog> {
   const cached = catalogCache.get(tool);
@@ -1478,6 +1501,7 @@ export const liveSessionStore = {
   openInApp,
   shareToChannel,
   preflight,
+  repairHqSetup,
   providerLoginStart: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_start', { tool }),
   providerLoginStatus: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_status', { tool }),
   providerLoginCancel: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_cancel', { tool }),

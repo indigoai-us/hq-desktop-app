@@ -109,7 +109,10 @@ async fn run_hq_output(args: &[&str], hq_root: &Path) -> Result<Output, String> 
     }
 }
 
-async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), String> {
+/// Run `hq <args>` in `hq_root` through the app's own CLI resolution (local
+/// binary or npx self-heal) with the app's child PATH. Shared by the install
+/// stages and the Sessions setup self-heal.
+pub(crate) async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), String> {
     run_hq_output(args, hq_root).await.map(|_| ())
 }
 

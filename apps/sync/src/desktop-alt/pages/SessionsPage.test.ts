@@ -86,7 +86,8 @@ const CODEX_CATALOG = [
 const PREFLIGHT = {
   hqRoot: '/Users/x/HQ',
   hooksReady: true,
-  hooksError: null,
+  hooksError: null as string | null,
+  hqSetup: 'ready' as 'ready' | 'needs_install' | 'needs_rescue',
   claudeAvailable: true,
   claudeLoggedIn: true,
   codexAvailable: true,
@@ -103,6 +104,8 @@ function deferred<T>() {
 
 interface Backend {
   preflight: typeof PREFLIGHT;
+  /** What `agent_session_repair_hq_setup` answers; a rejection is a failed repair. */
+  repair: () => Promise<typeof PREFLIGHT>;
   /** Every spec handed to `agent_session_start`. */
   starts: SessionSpec[];
   sends: { sessionId: string; text: string; overrides: unknown }[];
@@ -125,6 +128,7 @@ let backend: Backend;
 function mockBackend() {
   backend = {
     preflight: { ...PREFLIGHT },
+    repair: () => Promise.resolve({ ...PREFLIGHT }),
     starts: [], sends: [], list: [], replay: [], observed: [], claudeCatalog: null,
     providerCatalog: null,
     historyPage: { events: [], before: null },
@@ -133,6 +137,8 @@ function mockBackend() {
     switch (command) {
       case 'agent_session_preflight':
         return Promise.resolve(backend.preflight);
+      case 'agent_session_repair_hq_setup':
+        return backend.repair();
       case 'agent_session_slash_commands': {
         if (args?.tool === 'codex') return Promise.resolve({ commands: [], models: CODEX_CATALOG });
         if (backend.claudeCatalog) return backend.claudeCatalog.promise;
@@ -172,6 +178,9 @@ function mockBackend() {
 
 let host: HTMLElement;
 let component: Record<string, unknown> | null = null;
+
+/** Anything a person would have to type into a terminal. */
+const RAW_COMMAND = /claude login|codex login|hq rescue|settings\.json|npx |--paths/;
 
 function render(props: Record<string, unknown> = {}) {
   component = mount(SessionsPage, { target: host, props }) as Record<string, unknown>;
@@ -291,7 +300,6 @@ describe('provider readiness', () => {
   it.each([
     ['codexAvailable', 'Install the ChatGPT app (it includes Codex), then check again.'],
     ['codexLoggedIn', 'Connect Codex'],
-    ['hooksReady', 'HQ session hooks are not ready'],
   ] as const)('blocks Codex when %s is false', async (field, message) => {
     backend.preflight[field] = false;
     remember(LAST_TOOL_KEY, 'codex');
@@ -300,6 +308,124 @@ describe('provider readiness', () => {
     expect(host.textContent).toContain(message);
     expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
     expect(backend.starts).toHaveLength(0);
+  });
+
+  it.each([
+    ['claudeLoggedIn', 'claude'],
+    ['codexLoggedIn', 'codex'],
+  ] as const)('never shows a raw command when %s is false', async (field, toolId) => {
+    backend.preflight[field] = false;
+    remember(LAST_TOOL_KEY, toolId);
+    render();
+    await settle();
+    expect(host.textContent).not.toMatch(RAW_COMMAND);
+    expect(host.querySelector('[data-testid="provider-connect"]')).not.toBeNull();
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('HQ setup self-heal', () => {
+  const repairCalls = () => invoke.mock.calls.filter(([cmd]) => cmd === 'agent_session_repair_hq_setup');
+  /** Send is also disabled for an empty draft, so give it words before asking. */
+  function draft(words: string) {
+    const input = must('session-composer-input') as HTMLTextAreaElement;
+    input.value = words;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+  }
+
+  function needsInstall(detail = '.claude/settings.json is missing — run `hq rescue -y --paths .claude` in your HQ root') {
+    backend.preflight.hooksReady = false;
+    backend.preflight.hooksError = detail;
+    backend.preflight.hqSetup = 'needs_install';
+  }
+
+  it('finishes setup itself once, shows progress in plain words, then is ready', async () => {
+    needsInstall();
+    remember(LAST_TOOL_KEY, 'claude');
+    const gate = deferred<typeof PREFLIGHT>();
+    backend.repair = vi.fn(() => gate.promise);
+    render();
+    await settle();
+
+    expect(repairCalls()).toHaveLength(1);
+    expect(text('session-setup-progress')).toContain('Finishing HQ setup on this Mac…');
+    expect(host.textContent).not.toMatch(RAW_COMMAND);
+    draft('hello during setup');
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+
+    // Template download progress lands as plain words, keyed by the page's handle.
+    handlers.get('content:progress')?.({
+      payload: { handle: 'sessions-setup', phase: 'download', percent: 42, message: 'Downloading HQ template' },
+    });
+    flushSync();
+    expect(text('session-setup-progress')).toContain('Downloading HQ template 42%');
+    handlers.get('content:progress')?.({
+      payload: { handle: 'other-run', phase: 'download', percent: 99, message: 'Not ours' },
+    });
+    flushSync();
+    expect(text('session-setup-progress')).not.toContain('Not ours');
+
+    gate.resolve({ ...PREFLIGHT });
+    await settle();
+    await vi.waitFor(() => { flushSync(); expect(at('session-setup-progress')).toBeNull(); });
+    expect(at('session-setup-failed')).toBeNull();
+    draft('hello after setup');
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
+    expect(repairCalls()).toHaveLength(1);
+    expect(host.textContent).not.toMatch(RAW_COMMAND);
+  });
+
+  it('runs the automatic attempt once per visit and offers Retry on failure', async () => {
+    needsInstall();
+    remember(LAST_TOOL_KEY, 'claude');
+    backend.repair = vi.fn(() => Promise.reject(new Error('The HQ files could not be downloaded. Check your internet connection and try again.')));
+    render();
+    await settle();
+
+    expect(repairCalls()).toHaveLength(1);
+    await vi.waitFor(() => { flushSync(); must('session-setup-failed'); });
+    const failed = must('session-setup-failed');
+    expect(failed.textContent).toContain("Couldn't finish HQ setup.");
+    expect(failed.textContent).toContain('Check your internet connection');
+    expect(host.textContent).not.toMatch(RAW_COMMAND);
+    draft('hello while broken');
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+    // No second automatic run.
+    await settle();
+    expect(repairCalls()).toHaveLength(1);
+
+    backend.repair = vi.fn(() => Promise.resolve({ ...PREFLIGHT }));
+    click(must('session-setup-retry'));
+    await settle();
+    expect(repairCalls()).toHaveLength(2);
+    await vi.waitFor(() => { flushSync(); expect(at('session-setup-failed')).toBeNull(); });
+    draft('hello after retry');
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('treats a missing .claude layer the same way and never prints the hooks error', async () => {
+    backend.preflight.hooksReady = false;
+    backend.preflight.hooksError = 'PreToolUse has no command hook in .claude/settings.json — run `hq rescue -y --paths .claude`';
+    backend.preflight.hqSetup = 'needs_rescue';
+    remember(LAST_TOOL_KEY, 'codex');
+    backend.repair = vi.fn(() => Promise.reject(new Error("HQ's repair step did not finish. Try again in a moment.")));
+    render();
+    await settle();
+    expect(repairCalls()).toHaveLength(1);
+    await vi.waitFor(() => { flushSync(); expect(host.textContent).toContain("Couldn't finish HQ setup."); });
+    expect(host.textContent).not.toMatch(RAW_COMMAND);
+    expect(host.textContent).not.toContain('PreToolUse');
+    expect(backend.starts).toHaveLength(0);
+  });
+
+  it('does nothing when the HQ root is already ready', async () => {
+    remember(LAST_TOOL_KEY, 'claude');
+    render();
+    await settle();
+    expect(repairCalls()).toHaveLength(0);
+    expect(at('session-setup-progress')).toBeNull();
+    expect(at('session-setup-failed')).toBeNull();
   });
 });
 

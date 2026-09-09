@@ -1142,6 +1142,19 @@ pub async fn fetch_and_extract_template(
     handle: Option<String>,
 ) -> Result<String, String> {
     let hq_root = resolve_hq_path()?;
+    install_template_into(app, handle, hq_root).await
+}
+
+/// The template install itself, targeting an explicit HQ root. The onboarding
+/// wizard reaches it through [`fetch_and_extract_template`] (chosen install
+/// directory); the Sessions self-heal reaches it directly with the root the
+/// session preflight resolved, so both paths install the same thing the same
+/// way and report through the same `content:progress` events.
+pub(crate) async fn install_template_into(
+    app: AppHandle,
+    handle: Option<String>,
+    hq_root: String,
+) -> Result<String, String> {
     let source = template_source_for_staging_source(staging_source_enabled());
     let token = if matches!(source.channel, TemplateChannel::StagingMain) {
         Some(get_github_token()?)
