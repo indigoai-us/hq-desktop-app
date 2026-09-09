@@ -120,8 +120,9 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   });
 
   it('provides deterministic onboarding data and a stable in-progress setup preview', () => {
+    expect(mocks).toContain('resolve_hq_path: () =>');
     expect(mocks).toContain(
-      "resolve_hq_path: () => '/Users/corey/Documents/HQ'",
+      "isOnboardingCaptureScenario() ? '/Users/Placeholder/HQ' : '/Users/corey/Documents/HQ'",
     );
     // detect_ai_tools grew scenario support (?scenario=tools-claude-only /
     // tools-codex-only / tools-none) so the Ready screen can be previewed in
