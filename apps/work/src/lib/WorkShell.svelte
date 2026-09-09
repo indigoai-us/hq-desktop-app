@@ -162,6 +162,8 @@
       {
         label: string;
         createAction?: { label: string; param: () => string | null };
+        /** #welcome "Run Setup" destination (see DesktopApp extraPages). */
+        setupAction?: { label: string; param: () => string | null };
         detail?: string;
         component: Component<{
           param?: string | null;

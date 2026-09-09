@@ -51,6 +51,7 @@
     SETUP_CHANNEL_ID,
     setupCompanies,
     setupRosterLoading,
+    withoutCompaniesSummaryCards,
     withoutSeededCreateCompanyCards,
   } from "../chat/setup-channel.js";
   import {
@@ -499,6 +500,12 @@
         detail?: string;
         /** Optional host-owned create action in the window header. */
         createAction?: { label: string; param: () => string | null };
+        /**
+         * Optional host-owned "Run Setup" destination for #welcome: a fresh
+         * session whose param carries the setup prompt so the page can send
+         * it as soon as the provider is ready. Falls back to `createAction`.
+         */
+        setupAction?: { label: string; param: () => string | null };
         component: Component<{
           param?: string | null;
           onnavigate?: (param: string | null) => void;
@@ -1446,11 +1453,13 @@
     if (!selectedRow || !isSetupChannel(selectedRow.channelId)) return merged;
     // #welcome must not lead with "Create a company" for an account whose
     // roster already holds one (created on the website / another machine).
-    return withoutSeededCreateCompanyCards(merged, {
-      hasCompany: hasRosterCompany,
-      createRequested: createCompanyRequested,
-      rosterLoading: setupRosterLoading(companies, rosterStatus),
-    });
+    return withoutCompaniesSummaryCards(
+      withoutSeededCreateCompanyCards(merged, {
+        hasCompany: hasRosterCompany,
+        createRequested: createCompanyRequested,
+        rosterLoading: setupRosterLoading(companies, rosterStatus),
+      }),
+    );
   });
 
   /**
@@ -4795,8 +4804,12 @@
                     settings={adapter.settings}
                     shell={adapter.shell}
                     {onopenurl}
-                    onopensessions={extraPages?.sessions?.createAction
-                      ? () => openExtraPage("sessions", extraPages!.sessions.createAction!.param())
+                    onopensessions={extraPages?.sessions?.setupAction || extraPages?.sessions?.createAction
+                      ? () =>
+                          openExtraPage(
+                            "sessions",
+                            (extraPages!.sessions.setupAction ?? extraPages!.sessions.createAction!).param(),
+                          )
                       : undefined}
                     companies={rosterCompanies}
                     onopencompany={openCompanyFromSetup}

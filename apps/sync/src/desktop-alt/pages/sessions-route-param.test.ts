@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseSessionsParam } from './sessions-route-param';
+import { parseSessionsParam, setupSessionParam } from './sessions-route-param';
 
 describe('parseSessionsParam', () => {
   it('reads a bare param as a session id, and nothing as the empty page', () => {
@@ -57,5 +57,18 @@ describe('parseSessionsParam', () => {
       title: 'Test session',
       startedAt: '2026-09-04T00:13:26Z',
     });
+  });
+});
+
+describe('setupSessionParam', () => {
+  it('carries the setup prompt into a fresh-session route and back out', () => {
+    const param = setupSessionParam('/setup');
+    expect(param.startsWith('new?')).toBe(true);
+    const route = parseSessionsParam(param);
+    expect(route).toMatchObject({ kind: 'new', company: null, project: null, prompt: '/setup' });
+  });
+
+  it('an ordinary New session has no prompt', () => {
+    expect(parseSessionsParam('new?draft=abc')).not.toHaveProperty('prompt');
   });
 });

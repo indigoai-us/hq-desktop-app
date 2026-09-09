@@ -44,7 +44,8 @@
   } from './hq-work-host';
   import { startDesktopMeshPresence } from './mesh-presence';
   import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
-  import { parseSessionsParam } from './pages/sessions-route-param';
+  import { parseSessionsParam, setupSessionParam } from './pages/sessions-route-param';
+  import { SETUP_PROMPT } from './lib/setup-launch';
   import { projectLinksStore } from './lib/project-links-store.svelte';
   import {
     newSessionParam,
@@ -130,6 +131,9 @@
       // A unique draft route also resets an already-open empty composer.
       // Global creation is standalone; project actions bind explicitly.
       createAction: { label: 'New session', param: () => `new?draft=${crypto.randomUUID()}` },
+      // #welcome's Run Setup: a fresh session that sends /setup itself once
+      // Claude Code (or Codex) is connected and HQ is set up on this Mac.
+      setupAction: { label: 'Run Setup', param: () => setupSessionParam(SETUP_PROMPT) },
       component: SessionsExtraPage,
     },
   });

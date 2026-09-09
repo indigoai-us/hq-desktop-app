@@ -14,6 +14,7 @@ import {
   SETUP_HERO,
   SETUP_HERO_RETURNING,
   hasRunWelcomeSetup,
+  withoutCompaniesSummaryCards,
   markWelcomeSetupRun,
   SETUP_ROW_ID,
   setupCompanies,
@@ -320,5 +321,14 @@ describe("welcome-first boot persistence", () => {
     };
     expect(hasRunWelcomeSetup(broken)).toBe(false);
     expect(() => markWelcomeSetupRun(broken)).not.toThrow();
+  });
+});
+
+describe("withoutCompaniesSummaryCards", () => {
+  it("drops the companies_summary card and keeps everything else", () => {
+    const summary = { systemEvent: { type: "lifecycle_card", kind: "companies_summary" } };
+    const create = { systemEvent: { type: "lifecycle_card", kind: "create_company" } };
+    const chat = { systemEvent: undefined };
+    expect(withoutCompaniesSummaryCards([summary, create, chat])).toEqual([create, chat]);
   });
 });

@@ -135,6 +135,14 @@
     initialChannelId?: string;
     /** Durable metadata supplied by a nested project-session route. */
     initialHistorySession?: AgentSession | null;
+    /**
+     * Text to send on the person's behalf the moment the session can start
+     * (#welcome's Run Setup carries `/setup`). Seeded into the composer at
+     * once so it is visible; sent automatically once the provider is
+     * connected, HQ is set up on this Mac, and — for a slash command — the
+     * CLI's own catalog lists it.
+     */
+    initialPrompt?: string | null;
   }
 
   let {
@@ -145,6 +153,7 @@
     initialProject = null,
     initialChannelId,
     initialHistorySession = null,
+    initialPrompt = null,
   }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
@@ -780,7 +789,13 @@
     chooseTool(provider);
     catalogRefresh += 1;
   }
-  const notice = $derived(needsProvider ? '' : blocker || actionError || liveSessionStore.error);
+  const notice = $derived(
+    needsProvider
+      ? ''
+      : blocker ||
+          actionError ||
+          liveSessionStore.error,
+  );
   const ended = $derived(phase === 'ended' || transcript.ended);
   const sendDisabled = $derived(!preflight || Boolean(blocker) || setupNeeded || starting || ended);
 
@@ -879,7 +894,42 @@
 
   let pageEl = $state<HTMLDivElement | null>(null);
   /** The composer, so the transcript's "Choose a model" can open its menu. */
-  let composer = $state<{ openModelMenu: () => void; reset: () => void } | null>(null);
+  let composer = $state<{ openModelMenu: () => void; reset: () => void; setDraft: (text: string) => void } | null>(null);
+
+  // --- a route-carried prompt (#welcome's Run Setup → `/setup`) ---------------
+  /** Seeded into the composer once, so the person sees what is about to run. */
+  let promptSeeded = $state(false);
+  /** Sent (or given up on) once; never twice for one page visit. */
+  let promptSent = $state(false);
+  const routedPrompt = $derived((initialPrompt ?? '').trim());
+  /** `/setup` → `setup`; empty for plain text. */
+  const routedCommandName = $derived(
+    routedPrompt.startsWith('/') ? routedPrompt.slice(1).split(/\s+/)[0] ?? '' : '',
+  );
+  /**
+   * The CLI's catalog has landed and does NOT list the routed command. For
+   * `/setup` that means the HQ skills are not where Claude Code / Codex reads
+   * them — the setup repair is what installs them, so offer it.
+   */
+  const routedCommandMissing = $derived(
+    Boolean(routedCommandName) &&
+      catalogLoaded &&
+      !setupNeeded &&
+      !probeCommands.some((command) => command.name === routedCommandName),
+  );
+  $effect(() => {
+    if (promptSeeded || !routedPrompt || !composer) return;
+    promptSeeded = true;
+    composer.setDraft(routedPrompt);
+  });
+  $effect(() => {
+    if (promptSent || !routedPrompt || sessionId) return;
+    if (sendDisabled || !preflight) return;
+    if (routedCommandName && (!catalogLoaded || routedCommandMissing)) return;
+    promptSent = true;
+    composer?.reset();
+    void handleSend(routedPrompt, []);
+  });
 
   /**
    * ⌘⇧H hands off. The listener lives on the window only while this page is
@@ -1398,6 +1448,12 @@
         <span>Couldn't finish HQ setup.{setupFailure ? ` ${setupFailure}` : ''}</span>
         <button type="button" class="setup-retry" data-testid="session-setup-retry"
           onclick={() => void runSetupRepair()}>Retry</button>
+      </div>
+    {:else if routedCommandMissing && !promptSent}
+      <div class="setup-notice failed" role="alert" data-testid="session-command-missing">
+        <span>HQ's /{routedCommandName} command is not available in this session yet.</span>
+        <button type="button" class="setup-retry" data-testid="session-setup-retry"
+          onclick={() => { void runSetupRepair().then(() => { catalogRefresh += 1; }); }}>Retry setup</button>
       </div>
     {/if}
     {#if liveSessionStore.sharingNotice}

@@ -293,7 +293,7 @@ describe("DesktopApp company header: Add agent", () => {
 });
 
 describe("DesktopApp #setup companies summary", () => {
-  it("renders the primary action and lands on the create_company card the server posts", async () => {
+  it("never renders the summary card on #welcome; a server-posted create_company card still lands", async () => {
     const runCardAction = vi.fn(async () =>
       ok({ cardId: "card_create_company_2", actionId: "create_company", state: "open", channelId: "setup" }),
     );
@@ -309,24 +309,15 @@ describe("DesktopApp #setup companies summary", () => {
     mountApp(adapter({ runCardAction, fetchChannel }), SETUP_ROW);
     await vi.waitFor(
       () => {
-        expect(host.querySelector('[data-testid="lifecycle-action-create_company"]')).toBeTruthy();
+        expect(host.querySelector('[data-card-id="card_create_company_2"]')).toBeTruthy();
       },
       { timeout: 15_000, interval: 50 },
     );
-    const summary = host.querySelector('[data-card-kind="companies_summary"]');
-    expect(summary?.querySelector('[data-testid="lifecycle-action-create_company"]')?.textContent?.trim()).toBe(
-      "Create another company",
-    );
-    host.querySelector<HTMLButtonElement>('[data-testid="lifecycle-action-create_company"]')!.click();
-    await settle(12);
-    expect(runCardAction).toHaveBeenCalledWith(
-      expect.objectContaining({ channelId: "setup", cardId: "companies_summary", actionId: "create_company" }),
-    );
-    await vi.waitFor(
-      () => {
-        expect(document.activeElement?.getAttribute("data-card-id")).toBe("card_create_company_2");
-      },
-      { timeout: 10_000, interval: 50 },
-    );
+    // #welcome has one job (Run Setup). The companies summary duplicated the
+    // sidebar and the company channel as a chat message; it is filtered out.
+    // "Create another company" lives under the hero's Advanced disclosure and
+    // still runs the same server action (covered in DesktopApp.setup-channel).
+    expect(host.querySelector('[data-card-kind="companies_summary"]')).toBeNull();
+    expect(host.textContent).not.toContain("Your companies");
   }, 30_000);
 });

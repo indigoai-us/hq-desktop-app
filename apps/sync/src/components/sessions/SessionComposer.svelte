@@ -488,6 +488,11 @@
    * images, the mention and context chips and the command chip all go; the
    * pills (company, tool, model…) stay, they are props.
    */
+  /** Seed the composer with text on the person's behalf (Run Setup's `/setup`). */
+  export function setDraft(text: string): void {
+    draft = text;
+  }
+
   export function reset(): void {
     draft = '';
     attached = [];

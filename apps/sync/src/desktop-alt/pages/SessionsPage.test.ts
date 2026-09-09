@@ -1103,3 +1103,53 @@ describe('a session whose replay carries a null or hostile payload', () => {
     }
   });
 });
+
+describe('a route-carried prompt (#welcome Run Setup)', () => {
+  it('seeds /setup, waits for the catalog to list it, then sends it once', async () => {
+    backend.claudeCatalog = deferred();
+    render({ initialPrompt: '/setup' });
+    await settle();
+    // Visible before anything runs; nothing sent while the catalog is unknown.
+    expect(host.querySelector('textarea')?.value).toBe('/setup');
+    expect(backend.sends).toHaveLength(0);
+
+    backend.claudeCatalog.resolve({
+      commands: [{ name: 'setup', description: 'Run the HQ Starter Kit setup wizard.' }] as never[],
+      models: CLAUDE_CATALOG,
+    });
+    await vi.waitFor(() => expect(backend.sends).toHaveLength(1));
+    expect(backend.sends[0]).toMatchObject({ sessionId: 'sess-1', text: '/setup' });
+    expect(backend.sends[0].text).not.toContain('/startwork');
+    await settle();
+    expect(backend.sends).toHaveLength(1);
+    expect(at('session-command-missing')).toBeNull();
+  });
+
+  it('offers Retry setup instead of sending when the catalog lacks /setup', async () => {
+    backend.claudeCatalog = deferred();
+    render({ initialPrompt: '/setup' });
+    await settle();
+    backend.claudeCatalog.resolve({ commands: [] as never[], models: CLAUDE_CATALOG });
+    await vi.waitFor(() => expect(at('session-command-missing')).not.toBeNull());
+    expect(backend.sends).toHaveLength(0);
+    expect(host.textContent).not.toMatch(RAW_COMMAND);
+    expect(must('session-command-missing').textContent).toContain('/setup');
+  });
+
+  it('does not send while HQ setup on this Mac is still being repaired', async () => {
+    backend.preflight.hqSetup = 'needs_install';
+    const repaired = deferred<typeof PREFLIGHT>();
+    backend.repair = () => repaired.promise;
+    backend.claudeCatalog = deferred();
+    render({ initialPrompt: '/setup' });
+    await settle();
+    backend.claudeCatalog.resolve({
+      commands: [{ name: 'setup', description: '' }] as never[],
+      models: CLAUDE_CATALOG,
+    });
+    await settle();
+    expect(backend.sends).toHaveLength(0);
+    repaired.resolve({ ...PREFLIGHT, hqSetup: 'ready' });
+    await vi.waitFor(() => expect(backend.sends).toHaveLength(1));
+  });
+});

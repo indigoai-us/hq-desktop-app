@@ -18,7 +18,18 @@ export type SessionsRoute =
       title: string;
       startedAt: string;
     }
-  | { kind: 'new'; company: string | null; project: string | null; channelId?: string };
+  | {
+      kind: 'new';
+      company: string | null;
+      project: string | null;
+      channelId?: string;
+      /**
+       * Text the page should send on the person's behalf as soon as the
+       * session can start (#welcome's Run Setup carries `/setup`). Absent for
+       * an ordinary "New session".
+       */
+      prompt?: string;
+    };
 
 export const NEW_SESSION_PREFIX = 'new?';
 export const HISTORY_SESSION_PREFIX = 'history?';
@@ -61,7 +72,14 @@ export function parseSessionsParam(param: string | null | undefined): SessionsRo
       company: clean(query.get('company')),
       project: clean(query.get('project')),
       ...(clean(query.get('channel')) ? { channelId: clean(query.get('channel'))! } : {}),
+      ...(clean(query.get('prompt')) ? { prompt: clean(query.get('prompt'))! } : {}),
     };
   }
   return { kind: 'session', sessionId: raw };
+}
+
+/** The #welcome "Run Setup" destination: a fresh session that sends `prompt` itself. */
+export function setupSessionParam(prompt: string): string {
+  const query = new URLSearchParams({ draft: crypto.randomUUID(), prompt });
+  return `${NEW_SESSION_PREFIX}${query.toString()}`;
 }

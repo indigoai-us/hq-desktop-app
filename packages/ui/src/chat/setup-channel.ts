@@ -315,6 +315,25 @@ export function withoutSeededCreateCompanyCards<
   return messages.filter((message) => !isCreateCompanyCard(message.systemEvent));
 }
 
+/**
+ * #welcome has one job (Run Setup). The server-posted `companies_summary`
+ * card duplicated the sidebar (the roster) and the company channel (its
+ * lifecycle steps) as a chat message that scrolled, aged, and out-shouted
+ * the hero. It is never rendered on #welcome; "Create another company"
+ * lives under the hero's Advanced disclosure and still runs the same action.
+ */
+export function withoutCompaniesSummaryCards<
+  T extends { systemEvent?: unknown },
+>(messages: readonly T[]): T[] {
+  return messages.filter((message) => !isCompaniesSummaryCard(message.systemEvent));
+}
+
+function isCompaniesSummaryCard(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const event = raw as { type?: unknown; kind?: unknown };
+  return event.type === "lifecycle_card" && event.kind === "companies_summary";
+}
+
 function isCreateCompanyCard(raw: unknown): boolean {
   if (!raw || typeof raw !== "object") return false;
   const event = raw as { type?: unknown; kind?: unknown };
