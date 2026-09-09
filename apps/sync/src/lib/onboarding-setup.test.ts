@@ -97,6 +97,20 @@ describe('onboarding setup stages', () => {
     expect(stages.every((stage) => stage.status === 'pending')).toBe(true);
   });
 
+  it('runs only stages with verified onboarding work', () => {
+    expect(STAGE_ORDER).toEqual([
+      'content',
+      'deps',
+      'initial-sync',
+      'git-init',
+      'personalize',
+      'indexing',
+    ]);
+    expect(STAGE_ORDER).not.toContain('packages');
+    expect(STAGE_ORDER).not.toContain('import');
+    expect(STAGE_ORDER).not.toContain('menubar');
+  });
+
   it('settles only when every stage is ok or failed', () => {
     const pending = buildInitialStages();
     const running = setStageStatus(pending, 'deps', 'running');
@@ -205,6 +219,26 @@ describe('setup attention summary', () => {
       },
     ]);
   });
+
+  it('keeps failed required stages out of a clean completion result', () => {
+    const stages = setStageStatus(
+      buildInitialStages().map((stage) => ({ ...stage, status: 'ok' })),
+      'deps',
+      'failed',
+      'dependency install failed',
+    );
+
+    expect(setupCompletionResult(stages)).toMatchObject({
+      needsAttention: true,
+      failedStages: [
+        {
+          id: 'deps',
+          label: 'Installing dependencies',
+          message: 'dependency install failed',
+        },
+      ],
+    });
+  });
 });
 
 describe('setup progress percent', () => {
@@ -240,6 +274,18 @@ describe('setup progress percent', () => {
         allDone: true,
       }),
     ).toBe(100);
+  });
+
+  it('does not complete the checklist when a settled stage failed', () => {
+    expect(
+      setupProgressPercent({
+        settledCount: STAGE_ORDER.length,
+        totalStages: STAGE_ORDER.length,
+        hasRunningStage: false,
+        stageCreep: 0,
+        allDone: false,
+      }),
+    ).toBe(99);
   });
 });
 
@@ -390,8 +436,8 @@ describe('automatic setup recovery', () => {
     ).toBe(true);
     expect(
       isTransientSetupStageFailure({
-        stageId: 'packages',
-        message: 'npm registry timeout fetching package',
+        stageId: 'initial-sync',
+        message: 'network timeout while syncing initial cloud data',
       }),
     ).toBe(true);
     expect(
@@ -465,7 +511,7 @@ describe('stage timeouts', () => {
     expect(stageTimeoutMs('deps')).toBeGreaterThan(DEFAULT_STAGE_TIMEOUT_MS);
     expect(stageTimeoutMs('indexing')).toBeGreaterThan(DEFAULT_STAGE_TIMEOUT_MS);
     expect(stageTimeoutMs('git-init')).toBe(DEFAULT_STAGE_TIMEOUT_MS);
-    expect(stageTimeoutMs('menubar')).toBe(DEFAULT_STAGE_TIMEOUT_MS);
+    expect(stageTimeoutMs('personalize')).toBe(DEFAULT_STAGE_TIMEOUT_MS);
   });
 
   it('resolves when the work settles before the timeout', async () => {

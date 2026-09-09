@@ -11,8 +11,8 @@
   import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
   import {
     COMPLETE_SETUP,
-    SETUP_NEEDS_PASS,
     escapeForLaunch,
+    setupFailureEscape,
     type OnboardingEscape,
   } from '../../lib/onboarding-escape';
   import {
@@ -241,6 +241,7 @@
   let copyFailure = $state<CopyAction | null>(null);
   let finishing = $state(false);
   let finishError = $state(false);
+  let retryingFailedStages = $state(false);
 
   type StepTelemetryDetails = Omit<
     RecordOnboardingStep['properties'],
@@ -299,23 +300,24 @@
     stages.find((stage) => stage.status === 'running')?.id ?? null,
   );
   const setupDone = $derived(allSettled(stages));
+  const setupHasFailedStage = $derived(
+    stages.some((stage) => stage.status === 'failed'),
+  );
   const overallPercent = $derived(
     setupProgressPercent({
       settledCount,
       totalStages: STAGE_ORDER.length,
       hasRunningStage: currentStageId !== null,
       stageCreep,
-      allDone: setupDone,
+      allDone: setupDone && !setupHasFailedStage,
     }),
   );
   const ringOffset = $derived(
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
-  const setupBands = $derived(friendlySetupBands(overallPercent));
   const needsAttention = $derived(setupFailures.length > 0);
-  const readyCaution = $derived(
-    launchEscape ?? (needsAttention ? SETUP_NEEDS_PASS : COMPLETE_SETUP),
-  );
+  const setupFailureCaution = $derived(setupFailureEscape(setupFailures));
+  const readyCaution = $derived(launchEscape ?? COMPLETE_SETUP);
   const userFacingInstallPath = $derived(
     installPath ? toUserFacingPath(installPath) : null,
   );
@@ -944,10 +946,13 @@
     });
   }
 
-  async function runSetup(runId: number, startStage: StageId = STAGE_ORDER[0]) {
-    const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
+  async function runSetup(
+    runId: number,
+    stageIds: readonly StageId[] = STAGE_ORDER,
+    advanceWhenComplete = true,
+  ) {
     const retryCounts = new Map<StageId, number>();
-    for (const id of STAGE_ORDER.slice(startIndex)) {
+    for (const id of stageIds) {
       if (!isCurrentRun(runId)) return;
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
@@ -996,13 +1001,15 @@
       });
       // Setup is what provisions the person entity; stitch the install session.
       void resolveInstallerPersonUid();
-      // Consent precedes the optional connector-import step and final handoff.
-      advanceTo(CONSENT_STEP_INDEX, 'completed', {
-        failedStageCount: setupFailures.length,
-        failedStages,
-        setupRunId: currentSetupRunId,
-        outcome: setupFailures.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
-      });
+      if (advanceWhenComplete) {
+        // Consent precedes the optional connector-import step and final handoff.
+        advanceTo(CONSENT_STEP_INDEX, 'completed', {
+          failedStageCount: setupFailures.length,
+          failedStages,
+          setupRunId: currentSetupRunId,
+          outcome: setupFailures.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
+        });
+      }
     }
   }
 
@@ -1164,7 +1171,31 @@
       // Missing/corrupt manifests fall back to a fresh run.
     }
     if (!isCurrentRun(runId)) return;
-    await runSetup(runId, startStage);
+    const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
+    await runSetup(runId, STAGE_ORDER.slice(startIndex));
+  }
+
+  async function retryFailedSetupStages(): Promise<void> {
+    if (retryingFailedStages || setupFailures.length === 0) return;
+    const failedStageIds = new Set(setupFailures.map((stage) => stage.id));
+    retryingFailedStages = true;
+    setupCompleted = false;
+    stages = stages.map((stage) =>
+      failedStageIds.has(stage.id)
+        ? { ...stage, status: 'pending', error: null }
+        : stage,
+    );
+    const runId = beginSetupRun();
+    unlistenInstallProgress?.();
+    unlistenInstallProgress = null;
+    unlistenContentProgress?.();
+    unlistenContentProgress = null;
+    try {
+      await listenForProgress(runId);
+      await runSetup(runId, [...failedStageIds], false);
+    } finally {
+      retryingFailedStages = false;
+    }
   }
 
   function cancelSetupRun() {
@@ -1258,7 +1289,7 @@
   }
 
   async function finishWithRecovery(): Promise<boolean> {
-    if (finishing) return false;
+    if (finishing || needsAttention) return false;
     finishing = true;
     finishError = false;
     try {
@@ -1539,6 +1570,7 @@
   }
 
   function handleLaunch(kind: LaunchKind | 'download') {
+    if (needsAttention) return;
     if (launching === 'watching' || kind === 'download') {
       return handleDownloadClaude();
     }
@@ -1974,24 +2006,31 @@
         >
           <h2 class="h" id="onboarding-title-setup">Getting your HQ ready</h2>
           <div class="list" aria-label="Setup checklist">
-            {#each setupBands as band}
-              <div class:muted={band.status === 'pending'} class="li">
-                {#if band.status === 'active'}
+            {#each stages as stage}
+              <div
+                class:muted={stage.status === 'pending'}
+                class:failed={stage.status === 'failed'}
+                class="li"
+              >
+                {#if stage.status === 'running'}
                   <span class="st spin" aria-hidden="true"></span>
-                {:else if band.status === 'done'}
+                {:else if stage.status === 'ok'}
                   <span class="st dotmark" aria-hidden="true">{@render CheckTiny()}</span>
+                {:else if stage.status === 'failed'}
+                  <span class="st dotfail" aria-hidden="true">!</span>
                 {:else}
                   <span class="st dotpend" aria-hidden="true"></span>
                 {/if}
-                <span class="lt">{band.label}</span>
+                <span class="lt">{stage.label}</span>
+                {#if stage.status === 'failed'}
+                  <span class="setup-stage-failed">Needs attention</span>
+                {/if}
               </div>
             {/each}
           </div>
-          <!-- The setup screen intentionally shows ONLY the friendly checklist (matching
-               the design). Recovery — retry on stall, skip on hard timeout, transient-
-               failure retries — runs AUTOMATICALLY in the setup engine; any stage that
-               still fails is surfaced on the "HQ is ready" screen's needs-attention note,
-               not here. No percentages, stage counts, staging toggle, or manual controls. -->
+          <!-- Recovery retries transient failures automatically. Failed stages remain
+               visible here and are named again on the Ready screen, which offers a
+               targeted manual retry. -->
           <div class="btns">
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(DIRECTORY_STEP_INDEX)}>Back</button>
           </div>
@@ -2183,24 +2222,57 @@
           data-testid="onboarding-summary"
           aria-labelledby="onboarding-title-ready"
         >
-          <h2 class="h" id="onboarding-title-ready">HQ is ready</h2>
-          <p class="body">HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.</p>
-          <div
-            class="setup-caution"
-            role="note"
-            data-testid="onboarding-escape"
-            aria-label={readyCaution.title}
-          >
-            <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M10 2.4 18 17H2L10 2.4Z"></path>
-              <path d="M10 7v4.5"></path>
-              <circle cx="10" cy="14.2" r=".7"></circle>
-            </svg>
-            <div class="setup-caution-copy">
-              <strong>{readyCaution.title}</strong>
-              <span>{readyCaution.body}</span>
+          <h2 class="h" id="onboarding-title-ready">
+            {needsAttention ? 'HQ setup needs attention' : 'HQ is ready'}
+          </h2>
+          {#if needsAttention}
+            <div
+              class="setup-caution"
+              role="note"
+              data-testid="onboarding-setup-failures"
+              aria-label={setupFailureCaution.title}
+            >
+              <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M10 2.4 18 17H2L10 2.4Z"></path>
+                <path d="M10 7v4.5"></path>
+                <circle cx="10" cy="14.2" r=".7"></circle>
+              </svg>
+              <div class="setup-caution-copy">
+                <strong>{setupFailureCaution.title}</strong>
+                <span>{setupFailureCaution.body}</span>
+                <button
+                  type="button"
+                  data-testid="onboarding-retry-failed-stages"
+                  onclick={() => void retryFailedSetupStages()}
+                  disabled={retryingFailedStages}
+                  aria-busy={retryingFailedStages}
+                >{retryingFailedStages ? 'Retrying failed steps…' : 'Retry failed steps'}</button>
+              </div>
             </div>
-          </div>
+          {:else}
+            <p class="body">
+              HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.
+            </p>
+            <div
+              class="setup-caution"
+              role="note"
+              data-testid="onboarding-escape"
+              aria-label={readyCaution.title}
+            >
+              <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M10 2.4 18 17H2L10 2.4Z"></path>
+                <path d="M10 7v4.5"></path>
+                <circle cx="10" cy="14.2" r=".7"></circle>
+              </svg>
+              <div class="setup-caution-copy">
+                <strong>{readyCaution.title}</strong>
+                <span>{readyCaution.body}</span>
+              </div>
+            </div>
+          {/if}
+          <p class="inline-note" role="status" data-testid="onboarding-import-not-available">
+            Existing HQ setup import was not run because it is not available in this desktop release.
+          </p>
           {#if detectionFailed && !launchEscape}
             <p class="inline-note" role="status">
               Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.
@@ -2291,7 +2363,7 @@
                 class="btn btn-primary"
                 type="button"
                 data-testid="onboarding-launch-download"
-                disabled={finishing || (launching !== null && launching !== 'watching')}
+                disabled={needsAttention || finishing || (launching !== null && launching !== 'watching')}
                 aria-busy={finishing || (launching !== null && launching !== 'watching')}
                 onclick={() => void handleLaunch('download')}
               >
@@ -2310,7 +2382,7 @@
                     class="btn {slot.kind === primaryLaunch.kind ? 'btn-primary' : 'btn-secondary'}"
                     type="button"
                     data-testid="onboarding-launch-{slot.kind}"
-                    disabled={finishing || (launching !== null && launching !== 'watching')}
+                    disabled={needsAttention || finishing || (launching !== null && launching !== 'watching')}
                     aria-busy={finishing || launching === slot.kind}
                     onclick={() => void handleLaunch(slot.kind)}
                   >
@@ -2327,7 +2399,7 @@
                       : 'btn-ghost'}"
                     type="button"
                     data-testid="onboarding-install-{slot.kind}"
-                    disabled={finishing}
+                    disabled={needsAttention || finishing}
                     aria-busy={launching === 'watching' && slot.kind === 'claude'}
                     onclick={() => void handleInstallTool(slot.kind)}
                   >
@@ -2673,9 +2745,12 @@
   .list { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
   .li { display:flex; align-items:center; gap:10px; color:var(--c-text); font-size:13px; line-height:18px; }
   .li.muted { color:var(--c-muted); }
+  .li.failed { color:var(--c-text); }
   .dotmark { width:14px; height:14px; border-radius:50%; background:var(--check-bg); color:var(--check-fg); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
   .dotmark svg { width:8px; height:8px; stroke:var(--check-fg); }
   .dotpend { width:14px; height:14px; border-radius:50%; border:1.4px solid var(--check-border); flex-shrink:0; }
+  .dotfail { width:14px; height:14px; border-radius:50%; border:1.4px solid var(--c-text); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:11px; font-weight:700; line-height:1; }
+  .setup-stage-failed { margin-left:auto; color:var(--c-muted); font-size:12px; }
   .spin { width:13px; height:13px; border:1.6px solid var(--check-border); border-top-color:var(--c-text); border-radius:50%; animation:sp .8s linear infinite; flex-shrink:0; }
   @keyframes sp { to{transform:rotate(360deg)} }
 

@@ -858,6 +858,8 @@ const ERROR_CATEGORY_VALUES: &[&str] = &[
     "unknown",
 ];
 
+// Keep all nine identifiers for historical rows; packages, import, and menubar
+// are no longer emitted by setup, but readers must still normalize them.
 const ONBOARDING_STAGE_IDS: &[&str] = &[
     "content",
     "deps",
