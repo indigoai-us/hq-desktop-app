@@ -53,6 +53,8 @@
     readStartworkEnabled,
     rememberLastProject,
     rememberStartworkEnabled,
+    isSetupChat,
+    isSetupPrompt,
     startworkCommand,
     type ProjectEntry,
     type ProjectViewer,
@@ -699,8 +701,12 @@
 
   /** The pills describe a different session than the live one — say so. */
   const newSessionPending = $derived(Boolean(sessionId) && pillsDirty);
+  /** A setup chat (`/setup` first) is never oriented with /startwork. */
+  const setupChat = $derived(
+    isSetupPrompt((initialPrompt ?? '').trim()) || isSetupChat(liveSessionStore.events),
+  );
   const orientationCommand = $derived(
-    (!sessionId || newSessionPending) && startworkEnabled
+    (!sessionId || newSessionPending) && startworkEnabled && !setupChat
       ? startworkCommand({ company, project })
       : null,
   );
@@ -1142,7 +1148,7 @@
       // Orientation, selected skill and natural-language prompt are one
       // atomic first message. The transcript splits context from the visible
       // prompt only as presentation; the CLI receives one send.
-      const first = planFirstSend(wire, { company, project }, startworkEnabled)[0]!;
+      const first = planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)[0]!;
       const firstMeta: UserTurnMeta = first.label
         ? { ...meta, hidden: false, contextLabel: first.label, displayText: first.displayText }
         : meta;
@@ -1475,7 +1481,8 @@
       {projectsLoading}
       {projectsError}
       {viewer}
-      {startworkEnabled}
+      startworkEnabled={startworkEnabled && !setupChat}
+      startworkLocked={setupChat}
       {orientationCommand}
       {catalog}
       {catalogLoading}

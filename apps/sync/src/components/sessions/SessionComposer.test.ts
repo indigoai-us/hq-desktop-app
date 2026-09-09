@@ -44,6 +44,17 @@ it('puts the startwork setting before all company rows', () => {
   expect(menu.querySelector('button')?.getAttribute('data-testid')).toBe('session-menu-startwork-toggle');
 });
 
+it('a setup chat shows the startwork setting off and will not toggle it', () => {
+  const onstartworktoggle = vi.fn();
+  render({ startworkEnabled: true, startworkLocked: true, onstartworktoggle });
+  click(must('session-pill-company'));
+  const toggle = must('session-menu-startwork-toggle');
+  expect(toggle.getAttribute('aria-checked')).toBe('false');
+  expect(toggle.textContent).toContain('Not used in a setup chat');
+  click(toggle);
+  expect(onstartworktoggle).not.toHaveBeenCalled();
+});
+
 it('shows only an animated loading status, never model options while loading', () => {
   render({ modelsLoading: true });
   click(must('session-pill-model'));

@@ -515,6 +515,17 @@
       {:else}
         <p class="hero-body">{hero.body}</p>
       {/if}
+      {#if setupRun}
+        <!-- What Run Setup will do, visible before the first click. -->
+        <ol class="steps-preview" aria-label="Setup steps" data-testid="setup-steps-preview">
+          {#each SETUP_RUN_STEPS as step, index (step.id)}
+            <li class="steps-preview-step">
+              <span class="steps-preview-index" aria-hidden="true">{index + 1}</span>
+              <span>{step.label}</span>
+            </li>
+          {/each}
+        </ol>
+      {/if}
       {#if rosterFailed}
         <p class="roster-failed" role="alert" data-testid="setup-roster-failed">
           <span>{SETUP_ROSTER_FAILED.body}</span>
@@ -847,6 +858,33 @@
     font-size: var(--text-base, 13px);
     line-height: 1.4;
     color: rgba(255, 255, 255, 0.85);
+  }
+
+  .steps-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.78);
+  }
+  .steps-preview-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .steps-preview-index {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
   }
 
   .hero-actions {

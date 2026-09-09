@@ -307,7 +307,7 @@
     {/if}
     {#if onshowdetails && mode !== "resume"}
       <button type="button" class="quiet-btn" data-testid="setup-run-details" onclick={() => onshowdetails?.()}>
-        Show details
+        Open setup chat
       </button>
     {/if}
   </div>

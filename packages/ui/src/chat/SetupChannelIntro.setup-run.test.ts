@@ -360,3 +360,24 @@ describe("SetupChannelIntro remembers the setup outcome", () => {
     expect(loadSetupRunRecord()).toMatchObject({ sessionId: "sess-1", status: "ended" });
   });
 });
+
+describe("SetupChannelIntro before the first click", () => {
+  it("shows the four setup steps under Run Setup so the plan is visible up front", async () => {
+    await mountIntro({ setupRun: fakeSetupRun() });
+    const preview = q('[data-testid="setup-steps-preview"]');
+    expect(preview).not.toBeNull();
+    expect(preview?.querySelectorAll("li").length).toBe(4);
+    expect(preview?.textContent).toContain("HQ Cloud");
+    expect(q('[data-testid="setup-run"]')).not.toBeNull();
+  });
+
+  it("a remembered outcome offers Open setup chat back to the session", async () => {
+    const onopensessiondetails = vi.fn();
+    saveSetupRunRecord({ sessionId: "sess-done", step: 3, status: "done" });
+    await mountIntro({ setupRun: fakeSetupRun(), onopensessiondetails });
+    const button = q('[data-testid="setup-run-details"]') as HTMLButtonElement;
+    expect(button?.textContent?.trim()).toBe("Open setup chat");
+    button.click();
+    expect(onopensessiondetails).toHaveBeenCalledWith("sess-done");
+  });
+});
