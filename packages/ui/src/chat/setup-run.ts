@@ -127,7 +127,7 @@ export function classifySetupFailure(message: string): SetupRunFailure | null {
 export const SETUP_FAILURE_COPY = {
   auth: {
     title: "Setup paused — your coding agent needs to sign in again.",
-    agent: "I couldn't continue: the sign-in for your coding agent has expired. Sign in again below and I'll pick up where we left off.",
+    agent: "I couldn't continue: the sign-in for your coding agent has expired. Once you're signed in again, run setup and I'll pick up where we left off.",
   },
   other: {
     title: "Setup stopped before finishing",
