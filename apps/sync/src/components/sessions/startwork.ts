@@ -132,8 +132,8 @@ export function startworkLabelFromText(text: string): string {
 /**
  * Build the ONE atomic first message: orientation, then the user's selected
  * skill and prompt. Return the text alone when the toggle is off, there is
- * nothing to orient on, or the user already typed `/startwork` themselves
- * (never double-send the orientation).
+ * nothing to orient on, or the user explicitly requested `/startwork` or
+ * `/setup`. Setup must run before ordinary workspace orientation is possible.
  */
 export function planFirstSend(
   text: string,
@@ -143,6 +143,7 @@ export function planFirstSend(
   const user: PlannedTurn = { text, hidden: false };
   if (!enabled) return [user];
   if (isStartworkTurn(text)) return [user];
+  if (/^\/setup(?:\s|$)/.test(text.trimStart())) return [user];
   const command = startworkCommand(target);
   if (!command) return [user];
   return [{

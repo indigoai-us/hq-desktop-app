@@ -4685,6 +4685,9 @@
                     settings={adapter.settings}
                     shell={adapter.shell}
                     {onopenurl}
+                    onopensessions={extraPages?.sessions?.createAction
+                      ? () => openExtraPage("sessions", extraPages!.sessions.createAction!.param())
+                      : undefined}
                   />
                 {/snippet}
                 {#snippet companyHeader()}

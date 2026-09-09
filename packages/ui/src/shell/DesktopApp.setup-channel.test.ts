@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mount, tick, unmount } from "svelte";
+import { mount, tick, unmount, type ComponentProps } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
+import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import {
@@ -59,6 +60,7 @@ async function settle(times = 6): Promise<void> {
 
 async function mountApp(
   messaging: Partial<PlatformAdapter["messaging"]> = {},
+  extraPages?: ComponentProps<typeof DesktopApp>["extraPages"],
 ): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -74,6 +76,7 @@ async function mountApp(
         email: "stefan@example.com",
       },
       coreFixtures: false,
+      extraPages,
     },
   });
   await settle();
@@ -90,6 +93,26 @@ async function selectSetupRow(): Promise<HTMLButtonElement> {
 }
 
 describe("DesktopApp synthetic #setup channel", () => {
+  it("opens the registered Sessions draft from welcome without sending", async () => {
+    const sendChannelMessage = vi.fn();
+    const param = vi.fn(() => "new?draft=welcome-test");
+    await mountApp({ sendChannelMessage }, {
+      sessions: {
+        label: "Sessions",
+        detail: "Local sessions",
+        component: ExtraPageProbe,
+        createAction: { label: "New session", param },
+      },
+    });
+    await selectSetupRow();
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="setup-open-sessions"]');
+    expect(button).toBeTruthy();
+    button!.click();
+    await settle();
+    expect(param).toHaveBeenCalledOnce();
+    expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("new?draft=welcome-test");
+    expect(sendChannelMessage).not.toHaveBeenCalled();
+  });
   it("pins #setup in the sidebar and routes selection to the setup intro", async () => {
     await mountApp();
 

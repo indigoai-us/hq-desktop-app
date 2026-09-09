@@ -43,12 +43,12 @@ afterEach(async () => {
   host?.remove();
 });
 
-async function mountIntro(onopenurl = vi.fn()) {
+async function mountIntro(onopenurl = vi.fn(), onopensessions?: () => void) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(SetupChannelIntro, {
     target: host,
-    props: { settings, shell, onopenurl } as never,
+    props: { settings, shell, onopenurl, onopensessions } as never,
   });
   await tick();
   await tick();
@@ -95,11 +95,22 @@ describe("setup welcome copy model", () => {
 });
 
 describe("SetupChannelIntro welcome experience", () => {
-  it("keeps company setup in the app and makes coding-tool setup optional", async () => {
+  it("shows local setup without hiding its actions and explains optional hosted agents", async () => {
     await mountIntro();
     expect(SETUP_HERO.body).not.toContain("/setup");
     expect(host.textContent).toContain("Create or choose a company below");
-    expect(host.querySelector('[data-testid="setup-launch-codex"]')?.closest("details")?.open).toBe(false);
+    expect(host.querySelector('[data-testid="setup-launch-codex"]')?.closest("details")).toBeNull();
+    expect(host.textContent).toContain("Hosted agents require a paid plan");
+    expect(host.querySelector('[data-testid="setup-open-sessions"]')).toBeNull();
+  });
+  it("opens the host's Sessions draft without launching an external tool", async () => {
+    const openSessions = vi.fn();
+    await mountIntro(vi.fn(), openSessions);
+    const before = shell.launchCodexWorkspace.mock.calls.length;
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-open-sessions"]')!.click();
+    expect(openSessions).toHaveBeenCalledOnce();
+    expect(shell.launchCodexWorkspace.mock.calls.length).toBe(before);
+    expect(host.textContent).toContain("/setup");
   });
   it("renders the hero, every resource link, the support note, and the launch buttons", async () => {
     await mountIntro();

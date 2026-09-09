@@ -113,6 +113,19 @@ describe('planFirstSend — the exact atomic first message', () => {
       { text: 'go', hidden: false },
     ]);
   });
+
+  it.each(['/setup', '  /setup', '/setup hqonboardingtest', '/setup\nHelp me connect my company'])('runs explicit setup without a premature work orientation: %s', (text) => {
+    expect(planFirstSend(text, { company: 'hqonboardingtest', project: null }, true)).toEqual([
+      { text, hidden: false },
+    ]);
+  });
+
+  it('does not confuse another command or prose with setup', () => {
+    for (const text of ['/setup-tools', 'Explain /setup']) {
+      expect(planFirstSend(text, { company: 'hqonboardingtest', project: null }, true)[0].text)
+        .toBe(`/startwork hqonboardingtest\n\n${text}`);
+    }
+  });
 });
 
 describe('labels', () => {

@@ -50,9 +50,11 @@
     >;
     /** Open an external URL via the host (system browser). */
     onopenurl?: (url: string) => void;
+    /** Present only when the host provides in-app Sessions. Opens a draft, never sends. */
+    onopensessions?: () => void;
   }
 
-  let { settings, shell, onopenurl }: Props = $props();
+  let { settings, shell, onopenurl, onopensessions }: Props = $props();
 
   let hqFolderPath = $state("");
   let launching = $state<LaunchKey | null>(null);
@@ -161,8 +163,13 @@
       <h2 class="hero-title">{SETUP_HERO.title}</h2>
       <p class="hero-body">{SETUP_HERO.body}</p>
 
-      <details class="optional-tools">
-      <summary>Optional: connect a coding tool</summary>
+      <div class="optional-tools">
+      <p>Work with AI on your computer</p>
+      {#if onopensessions}
+        <button type="button" class="launch-btn primary" data-testid="setup-open-sessions" onclick={onopensessions}>Open HQ Sessions</button>
+        <p>Choose Claude Code or Codex, then send <code>/setup</code> to connect your local workspace.</p>
+      {/if}
+      <p>Or open setup in a separate coding tool:</p>
       <div class="hero-actions" role="group" aria-label="Open setup">
         {#each LAUNCHES as launch (launch.key)}
           <div class="setup-action">
@@ -185,7 +192,11 @@
           </div>
         {/each}
       </div>
-      </details>
+      </div>
+      <div class="optional-tools" data-testid="setup-hosted-agent-guidance">
+        <p>Optional: work with a hosted agent</p>
+        <p>Open your company channel and choose Add agent. Once it is ready, send it a direct message. Hosted agents require a paid plan; local setup does not require one.</p>
+      </div>
     </div>
   </div>
 
@@ -245,8 +256,7 @@
 
 <style>
   .optional-tools { margin-top: 16px; font-size: 13px; }
-  .optional-tools summary { cursor: pointer; color: inherit; }
-  .optional-tools[open] .hero-actions { margin-top: 12px; }
+  .optional-tools p { margin: 0 0 8px; line-height: 1.5; }
   .setup-intro {
     flex: 0 0 auto;
     overflow: visible;
