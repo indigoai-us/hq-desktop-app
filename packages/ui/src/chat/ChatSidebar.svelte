@@ -2817,9 +2817,9 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    flex: 0 0 260px;
+    flex: 0 0 var(--sidebar-width, 260px);
     align-self: stretch;
-    width: 260px;
+    width: var(--sidebar-width, 260px);
     min-height: 0;
     height: auto;
     overflow: hidden;

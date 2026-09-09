@@ -3,6 +3,8 @@
    * app-owned process resuming it are two representations of the same session,
    * so navigation merges them instead of inventing Live and History buckets. */
   import { onMount } from 'svelte';
+  import { fly, fade } from 'svelte/transition';
+  const motionDuration = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180;
   import { liveSessionStore, type SessionPhase } from '../lib/live-session-store.svelte';
   import { sessionsStore, startSessionsStore } from '../lib/sessions-store.svelte';
   import { relativeActivity, type AgentSession } from '../lib/sessions';
@@ -101,15 +103,17 @@
   <button
     type="button"
     class="scrim"
+    transition:fade={{ duration: motionDuration }}
     aria-label="Close sessions"
     data-testid="sessions-drawer-scrim"
     onclick={() => onclose?.()}
   ></button>
 
-  <aside class="drawer" aria-label="Sessions">
+  <aside class="drawer" aria-label="Sessions" transition:fly={{ x: -280, duration: motionDuration }}>
     <section class="group" aria-labelledby="sessions-heading">
       <h3 id="sessions-heading" class="group-head">
         Sessions <span class="count">{rows.length}</span>
+        <button class="close" type="button" aria-label="Close sessions sidebar" onclick={() => onclose?.()}>×</button>
       </h3>
 
       {#if liveSessionStore.listError}
@@ -198,7 +202,7 @@
     min-height: 0;
     box-sizing: border-box;
     overflow-x: hidden;
-    overflow-y: scroll;
+    overflow-y: auto;
     overscroll-behavior: contain;
     padding: var(--v4-space-3) var(--v4-space-2);
     border-right: 1px solid var(--v4-hairline);
@@ -230,6 +234,9 @@
     text-transform: uppercase;
     color: var(--v4-text-3);
   }
+
+  .close { margin-left: auto; border: 0; background: transparent; color: inherit; font-size: 20px; cursor: pointer; width: 28px; height: 28px; border-radius: 6px; }
+  .close:hover { background: var(--v4-active-row); }
 
   .count {
     font-family: var(--font-mono, ui-monospace, monospace);

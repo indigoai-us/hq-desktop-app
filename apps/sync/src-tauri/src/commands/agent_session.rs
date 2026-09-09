@@ -321,6 +321,14 @@ pub async fn agent_session_start(
         .map(|resume| history_replay::load_resume_history(spec.tool, resume))
         .unwrap_or_default();
 
+    let creator = super::auth::get_auth_state(app.clone()).await.ok()
+        .filter(|identity| identity.authenticated).and_then(|identity| identity.email);
+    let context = SessionContext {
+        source_session_id: spec.resume.clone(),
+        source_title: spec.title.clone(),
+        started_by: creator,
+        history: resumed_history.clone(),
+    };
     let state = state();
 
     // Reserve the slot BEFORE spawning: refusing after a child is already
@@ -406,6 +414,10 @@ pub async fn agent_session_start(
             LOG_TAG,
             &format!("session={session_id} meta write failed: {e}"),
         );
+    }
+
+    if let Err(error) = save_session_context(&hq_root, &session_id, &context) {
+        log(LOG_TAG, &format!("session={session_id} context persistence failed: {error}"));
     }
 
     match spawned {
@@ -895,6 +907,105 @@ async fn wait_until_ended(
     }
 }
 
+/// Immutable display context survives replay-ring eviction and app restarts.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContext {
+    source_session_id: Option<String>,
+    source_title: Option<String>,
+    started_by: Option<String>,
+    history: history_replay::HistoryPage,
+}
+
+fn save_session_context(root: &Path, id: &str, context: &SessionContext) -> Result<(), String> {
+    if !is_safe_session_id(id) {
+        return Err("Invalid session id".into());
+    }
+    let dir = root.join("workspace/sessions").join(id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let tmp = dir.join("context.json.tmp");
+    std::fs::write(
+        &tmp,
+        serde_json::to_vec(context).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::rename(tmp, dir.join("context.json")).map_err(|e| e.to_string())
+}
+
+fn is_safe_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 160
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn read_session_context(root: &Path, id: &str) -> SessionContext {
+    if !is_safe_session_id(id) {
+        return SessionContext::default();
+    }
+    let sessions = root.join("workspace/sessions");
+    let direct = sessions.join(id).join("context.json");
+    if let Ok(raw) = std::fs::read(&direct) {
+        if let Ok(context) = serde_json::from_slice(&raw) {
+            return context;
+        }
+    }
+    // The history scanner navigates by provider id, while the runtime uses
+    // the app id. Resolve the durable link, never titles or current identity.
+    let Ok(entries) = std::fs::read_dir(sessions) else {
+        return SessionContext::default();
+    };
+    let mut candidates: Vec<_> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .collect();
+    candidates
+        .sort_by_key(|entry| std::cmp::Reverse(entry.metadata().and_then(|m| m.modified()).ok()));
+    for entry in candidates {
+        let matches = std::fs::read_to_string(entry.path().join("meta.yaml"))
+            .ok()
+            .and_then(|raw| serde_yaml::from_str::<serde_yaml::Value>(&raw).ok())
+            .is_some_and(|meta| meta.get("cli_session_id").and_then(|v| v.as_str()) == Some(id));
+        if matches {
+            if let Ok(raw) = std::fs::read(entry.path().join("context.json")) {
+                if let Ok(context) = serde_json::from_slice(&raw) {
+                    return context;
+                }
+            }
+        }
+    }
+    SessionContext::default()
+}
+
+#[tauri::command]
+pub async fn agent_session_context(session_id: String) -> Result<SessionContext, String> {
+    ensure_in_app_sessions_allowed()?;
+    let root = resolve_hq_folder_path()?;
+    let spec = state()
+        .lock()
+        .await
+        .registry
+        .get(&session_id)
+        .map(|session| session.spec.clone());
+    tokio::task::spawn_blocking(move || {
+        let mut context = read_session_context(&root, &session_id);
+        // Also recover a session that began before durable context was added.
+        // Its running registry still knows the source; do not guess a creator.
+        if context.source_session_id.is_none() {
+            if let Some(spec) = spec.filter(|spec| spec.resume.is_some()) {
+                context.history =
+                    history_replay::load_resume_history(spec.tool, spec.resume.as_deref().unwrap());
+                context.source_session_id = spec.resume;
+                context.source_title = spec.title;
+            }
+        }
+        context
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Stamp `workspace/sessions/<id>/meta.yaml` so the existing session-history
 /// reader can enrich this session with its company and true start time.
 fn write_session_meta(
@@ -1103,6 +1214,28 @@ mod tests {
         }, std::time::Duration::from_millis(20)).await;
         let _ = release.send(());
         assert!(result.unwrap_err().contains("timed out"));
+    }
+
+    #[test]
+    fn session_context_survives_restart_and_provider_id_lookup() {
+        let root = tempfile::tempdir().unwrap();
+        let context = SessionContext {
+            source_session_id: Some("original".into()), source_title: Some("Planning".into()), started_by: Some("alex@example.test".into()),
+            history: history_replay::HistoryPage { before: Some(42), events: vec![history_replay::HistoricalEvent {
+                received_at_ms: 123, event: SessionEvent::UserMessage { text: "Inherited context".into(), image_count: 0 },
+            }] },
+        };
+        save_session_context(root.path(), "app-child", &context).unwrap();
+        std::fs::write(root.path().join("workspace/sessions/app-child/meta.yaml"), "cli_session_id: provider-child\n").unwrap();
+        for id in ["app-child", "provider-child"] {
+            let restored = read_session_context(root.path(), id);
+            assert_eq!(restored.source_session_id.as_deref(), Some("original"));
+            assert_eq!(restored.started_by.as_deref(), Some("alex@example.test"));
+            assert_eq!(restored.history.events.len(), 1);
+            assert_eq!(restored.history.before, Some(42));
+        }
+        assert!(read_session_context(root.path(), "../app-child").history.events.is_empty());
+        assert!(read_session_context(root.path(), "unknown").started_by.is_none());
     }
 
     #[test]

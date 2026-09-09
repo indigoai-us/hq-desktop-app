@@ -223,6 +223,7 @@ function send(message: string) {
 }
 
 beforeEach(() => {
+  vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ matches: query.includes('prefers-reduced-motion'), media: query, addEventListener() {}, removeEventListener() {} } as unknown as MediaQueryList));
   localStorage.clear();
   handlers.clear();
   invoke.mockReset();
@@ -975,5 +976,29 @@ describe('a session whose replay carries a null or hostile payload', () => {
       Object.defineProperty(liveSessionStore, 'transcript', original);
       error.mockRestore();
     }
+  });
+});
+
+
+describe('durable session context', () => {
+  it('restores inherited messages and starter after the store is discarded', async () => {
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation((command, args) => command === 'agent_session_context'
+      ? Promise.resolve({ sourceSessionId: 'parent', sourceTitle: 'Original project discussion', startedBy: 'alex@example.test',
+          history: { before: null, events: [{ receivedAtMs: 1000, event: { kind: 'userMessage', text: 'Inherited planning context', imageCount: 0 } }] } })
+      : original(command, args));
+    backend.observed = [{ id: 'child', title: 'Follow-up', tool: 'codex', origin: 'local', cwd: '/HQ', company: 'indigo', project: '', model: '', status: 'ended', startedAt: '', lastActivityAt: '', source: 'codex-rollout' }];
+    backend.historyPage = { before: null, events: [{ receivedAtMs: 2000, event: { kind: 'assistantMessage', text: 'Child reply', parentToolUseId: null } }] };
+    render({ sessionId: 'child', initialHistorySession: backend.observed[0] });
+    await settle(); await settle();
+    expect(host.textContent).toContain('Inherited planning context');
+    expect(host.textContent).toContain('Child reply');
+    expect(text('session-starter')).toBe('Started by alex@example.test');
+    expect(text('session-source')).toContain('Original project discussion');
+    await unmount(component!); component = null; resetLiveSessionStore();
+    render({ sessionId: 'child', initialHistorySession: backend.observed[0] });
+    await settle(); await settle();
+    expect(host.textContent).toContain('Inherited planning context');
+    expect(host.textContent).toContain('Child reply');
   });
 });

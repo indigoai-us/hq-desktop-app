@@ -7,8 +7,7 @@
    * owner rejected). Centre names the session in the only two terms that
    * matter, company and model. Right is the policies chip (what HQ's hooks
    * have bound the session to), a "Hand off" action, a "⋯" session menu
-   * (open in Claude Code / Codex, share to channel, end), "+" for a new
-   * session, and a phase dot.
+   * (open in Claude Code / Codex, share to channel, end), and a phase dot.
    *
    * Presentation-pure: props in, callbacks out.
    */
@@ -20,6 +19,10 @@
 
   interface Props {
     title: string;
+    startedBy?: string | null;
+    sourceTitle?: string | null;
+    sourceSessionId?: string | null;
+    onopensource?: () => void;
     /** 'idle' | 'working' | 'needs you' | 'ended' — already humanised. */
     phaseLabel?: string;
     phase?: 'starting' | 'idle' | 'working' | 'needsYou' | 'ended';
@@ -39,7 +42,6 @@
     projectLinked?: boolean;
     onopenproject?: () => void;
     ontoggledrawer?: () => void;
-    onnew?: () => void;
     /** Send `/handoff` on the live session. */
     onhandoff?: () => void;
     onopeninapp?: () => void;
@@ -49,6 +51,10 @@
 
   let {
     title,
+    startedBy = null,
+    sourceTitle = null,
+    sourceSessionId = null,
+    onopensource,
     phaseLabel = '',
     phase = 'idle',
     drawerOpen = false,
@@ -61,7 +67,6 @@
     projectLinked = false,
     onopenproject,
     ontoggledrawer,
-    onnew,
     onhandoff,
     onopeninapp,
     onshare,
@@ -85,7 +90,18 @@
   </button>
 
   <div class="strip-center">
-    <h2 class="strip-title" data-testid="sessions-strip-title">{title}</h2>
+    <div class="session-heading">
+      <h2 class="strip-title" data-testid="sessions-strip-title">{title}</h2>
+      <div class="provenance">
+        <span data-testid="session-starter">Started by {startedBy || 'Unknown'}</span>
+        {#if sourceSessionId}
+          <button class="source-link" type="button" data-testid="session-source" onclick={() => onopensource?.()} title={`Open source session: ${sourceTitle || sourceSessionId}`}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="4" cy="3" r="2" stroke="currentColor"/><circle cx="12" cy="3" r="2" stroke="currentColor"/><circle cx="4" cy="13" r="2" stroke="currentColor"/><path d="M4 5v6m8-6c0 4-8 1-8 6" stroke="currentColor"/></svg>
+            <span>From {sourceTitle || sourceSessionId}</span>
+          </button>
+        {/if}
+      </div>
+    </div>
     {#if projectLabel}
       <!-- The bound project, as a pill beside the company. It opens the
            project's channel when one exists; otherwise it only informs. -->
@@ -158,17 +174,7 @@
       {onshare}
       {onend}
     />
-    <button
-      type="button"
-      class="strip-button"
-      aria-label="New session"
-      data-testid="sessions-new"
-      onclick={() => onnew?.()}
-    >
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <path d="M7 2.4v9.2M2.4 7h9.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-      </svg>
-    </button>
+
   </div>
 </header>
 
@@ -178,12 +184,18 @@
     align-items: center;
     gap: var(--v4-space-2);
     flex: none;
-    height: 36px;
+    min-height: 52px;
     padding: 0 var(--v4-space-2);
     border-bottom: 1px solid var(--v4-hairline);
     font-family: var(--font-sans);
   }
 
+  .session-heading { min-width: 0; }
+  .provenance { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--v4-text-3); font-size: 11px; min-width: 0; }
+  .source-link { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 240px; padding: 0; border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; }
+  .source-link span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .source-link svg { flex: none; }
+  .source-link:hover { color: var(--v4-text-1); text-decoration: underline; }
   .strip-center {
     display: flex;
     align-items: center;

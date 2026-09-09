@@ -1136,22 +1136,6 @@
     rememberLastProject(company, name);
   }
 
-  /**
-   * The strip's "+": a fresh draft in the same company — the project pill
-   * back to "No project" (and its remembered value dropped, so the remount
-   * the route change causes reads null too), the composer emptied of text,
-   * images and chips. When the page is already on the new-session route the
-   * route does not change and nothing remounts, so the reset is done here
-   * rather than left to the mount.
-   */
-  function startFreshDraft() {
-    drawerOpen = false;
-    project = null;
-    forgetLastProject(company);
-    composer?.reset();
-    onopensession?.('');
-  }
-
   function toggleStartwork(enabled: boolean) {
     startworkEnabled = enabled;
     rememberStartworkEnabled(enabled);
@@ -1205,13 +1189,21 @@
 <div class="sessions" data-testid="sessions-page" bind:this={pageEl}>
   <SessionsStrip
     {title}
+    startedBy={liveSessionStore.context?.startedBy}
+    sourceTitle={liveSessionStore.context?.sourceTitle}
+    sourceSessionId={liveSessionStore.context?.sourceSessionId}
+    onopensource={() => {
+      const sourceId = liveSessionStore.context?.sourceSessionId;
+      const source = sessionsStore.sessions.find(item => item.id === sourceId);
+      if (source) void handleOpenHistory(source);
+      else if (sourceId) onopensession?.(sourceId);
+    }}
     {phase}
     {phaseLabel}
     drawerOpen={drawerOpen}
     policies={sessionId ? transcript.policies : null}
     handoff={handoffState}
     ontoggledrawer={() => (drawerOpen = !drawerOpen)}
-    onnew={startFreshDraft}
     onhandoff={() => void handleHandoff()}
     tool={summary?.tool ?? tool}
     menuEnabled={Boolean(sessionId) && !ended}

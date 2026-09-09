@@ -23,6 +23,7 @@
   import { failure, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
+  import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import type { RowExtrasResolver } from "../chat/row-extras.js";
   import {
@@ -672,6 +673,10 @@
     sidebarLayout(window.innerWidth) === "overlay";
   let phoneViewport = $state(startsAsOverlay);
   let sidebarCollapsed = $state(startsAsOverlay);
+  let sidebarWidth = $state((() => {
+    try { const saved = Number(localStorage.getItem('hq.sidebar.width')); return saved >= 220 && saved <= 440 ? saved : 260; }
+    catch { return 260; }
+  })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
   let conversationBootTimedOut = $state(false);
@@ -4058,7 +4063,7 @@
       />
     </div>
   {:else}
-    <div class="desktop-body">
+    <div class="desktop-body" style:--sidebar-width={`${sidebarWidth}px`}>
       <!-- Kept mounted while closed at phone width: the list owns roster
            loading and the #setup fallback, so unmounting it leaves the phone
            with nothing selected. -->
@@ -4103,6 +4108,7 @@
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
         />
         {/key}
+        {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
