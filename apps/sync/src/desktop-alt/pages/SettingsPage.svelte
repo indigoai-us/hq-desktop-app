@@ -2392,9 +2392,9 @@
         </div>
       </div>
     </section>
-    </fieldset>
 
     <AgentProvidersSettings />
+    </fieldset>
 
     <section id="appearance" class="settings-section" data-testid="settings-appearance">
       <h2>Appearance</h2>

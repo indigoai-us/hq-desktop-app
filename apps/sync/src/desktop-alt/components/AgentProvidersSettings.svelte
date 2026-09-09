@@ -172,7 +172,7 @@
     Sessions use the Claude, Codex, or Grok CLI on this Mac. HQ can install the CLI and open the provider’s own sign-in. HQ sign-in is separate.
   </p>
   {#if loadError}
-    <p class="error" role="alert">{loadError} <button type="button" class="quiet" onclick={() => void load(true)}>Retry</button></p>
+    <p class="agents-error" data-testid="settings-agents-error">{loadError} <button type="button" class="quiet" onclick={() => void load(true)}>Retry</button></p>
   {/if}
   <div class="settings-card" data-testid="settings-agents-list">
     {#each PROVIDERS as provider}
@@ -236,7 +236,7 @@
     font-weight: 500;
     line-height: 1.25;
   }
-  .lead, .models, .status, .error, small {
+  .lead, .models, .status, .error, .agents-error, small {
     font-size: 12px;
     line-height: 1.55;
     color: var(--v4-text-2);
@@ -244,7 +244,7 @@
   }
   .lead { margin: 0 0 8px; }
   .muted { color: var(--v4-text-3); }
-  .error { color: var(--v4-danger, #dcaaa0); }
+  .error, .agents-error { color: var(--v4-danger, #dcaaa0); }
   .agent-row {
     display: flex;
     flex-wrap: wrap;
