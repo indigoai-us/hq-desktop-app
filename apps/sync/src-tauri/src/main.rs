@@ -721,6 +721,7 @@ fn main() {
             commands::agent_session::agent_session_list,
             commands::agent_session::agent_session_replay,
             commands::agent_session::agent_session_history_page,
+            commands::agent_session::agent_session_context,
             commands::agent_session::agent_session_slash_commands,
             // Sessions composer `@`-mentions: the company directory + the DM
             // fan-out that runs after a mentioned message is sent.

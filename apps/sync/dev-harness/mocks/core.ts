@@ -1493,6 +1493,13 @@ This final paragraph verifies spacing after a thematic break.
       departments: [{ groupId: 'grp_product', name: 'Product', skills: [{ skillUid: 'skl_launch', name: 'Review launch', tags: ['launch', 'review'] }] }],
     } }),
   }),
+  agent_session_context: (args) => ({
+    sourceSessionId: args?.sessionId === SESSION_ID ? 'session-event-sync' : null,
+    sourceTitle: 'Original planning session',
+    startedBy: 'alex@example.test',
+    history: { before: null, events: args?.sessionId === SESSION_ID ? [{ receivedAtMs: AGENT_SESSION_T0 - 60000, event: { kind: 'userMessage', text: 'Inherited planning context', imageCount: 0 } }] : [] },
+  }),
+  agent_session_history_page: () => ({ before: null, events: [{ receivedAtMs: AGENT_SESSION_T0 - 60000, event: { kind: 'userMessage', text: 'Original planning session history', imageCount: 0 } }] }),
   agent_session_list: () => [
     {
       sessionId: SESSION_ID,

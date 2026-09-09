@@ -1,3 +1,4 @@
+import { missingInheritedPrefix, type SessionContext } from './session-context';
 /**
  * Live in-app agent-session store (Sessions page).
  *
@@ -264,6 +265,7 @@ interface SessionEntry {
   sessionId: string;
   /** Provider metadata when this is a hydrated, dormant conversation. */
   history: AgentSession | null;
+  context: SessionContext | null;
   events: SessionEvent[];
   /**
    * Wall-clock ms each event was recorded by the backend, parallel to
@@ -295,6 +297,7 @@ function newEntry(sessionId: string): SessionEntry {
   return {
     sessionId,
     history: null,
+    context: null,
     events: [],
     receivedAt: [],
     nextSeq: 0,
@@ -644,6 +647,13 @@ async function refreshList(): Promise<void> {
   }
 }
 
+async function loadContext(sessionId: string): Promise<void> {
+  try {
+    const context = await invoke<SessionContext>('agent_session_context', { sessionId });
+    if (entries[sessionId]) { entries[sessionId].context = context ?? null; revision += 1; }
+  } catch { /* Older native builds have no provenance command. */ }
+}
+
 /**
  * Open a session: subscribe (before replaying, so no event can slip between
  * the catch-up and the live stream) then replay it in full.
@@ -663,6 +673,7 @@ async function open(sessionId: string): Promise<void> {
     entries[sessionId] = entry;
     foldCache = null;
     revision += 1;
+    await loadContext(sessionId);
     return;
   }
   if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
@@ -677,7 +688,7 @@ async function open(sessionId: string): Promise<void> {
   // lands is whatever the pre-send snapshot said — so every round trip spent
   // before that correction is a round trip the strip spends naming the wrong
   // state on a session that is mid-turn.
-  await Promise.all([replayFrom(sessionId, 0), refreshList()]);
+  await Promise.all([replayFrom(sessionId, 0), refreshList(), loadContext(sessionId)]);
 }
 
 /** Open a provider transcript without spawning or resuming its CLI process. */
@@ -696,6 +707,7 @@ async function openHistory(session: AgentSession): Promise<void> {
   foldCache = null;
   revision += 1;
   try {
+    await loadContext(session.id);
     const page = await invoke<DurableHistoryPage>('agent_session_history_page', {
       sessionId: session.id,
       before: null,
@@ -736,17 +748,27 @@ function sameDialogueEvent(left: SessionEvent | undefined, right: SessionEvent |
 async function loadEarlier(): Promise<void> {
   const sessionId = activeId;
   const entry = activeEntry();
-  if (!sessionId || !entry || entry.loadingEarlier || entry.historyBefore === null) return;
+  if (!sessionId || !entry || entry.loadingEarlier) return;
+  const inherited = entry.context;
+  const loadInherited = Boolean(inherited?.sourceSessionId && inherited.history.before != null
+    && (entry.historyBefore === null || missingInheritedPrefix(inherited, entry.events, entry.receivedAt).length > 0));
+  if (!loadInherited && entry.historyBefore === null) return;
   entry.loadingEarlier = true;
   entry.error = '';
   try {
     const page = await invoke<DurableHistoryPage>('agent_session_history_page', {
-      sessionId,
-      before: entry.historyBefore,
-      ...(entry.history ? { tool: entry.history.tool } : {}),
+      sessionId: loadInherited ? inherited!.sourceSessionId : sessionId,
+      before: loadInherited ? inherited!.history.before : entry.historyBefore,
+      ...(loadInherited ? { tool: entry.history?.tool ?? sessions.find(item => item.sessionId === sessionId)?.tool } : entry.history ? { tool: entry.history.tool } : {}),
     });
     const target = entries[sessionId];
     if (!target) return;
+    if (loadInherited && target.context) {
+      target.context = { ...target.context, history: { events: [...page.events, ...target.context.history.events], before: page.before } };
+      target.loadingEarlier = false;
+      revision += 1;
+      return;
+    }
     const olderEvents = page.events.map((item) => item.event);
     const olderStamps = page.events.map((item) => item.receivedAtMs ?? null);
     if (sameDialogueEvent(olderEvents.at(-1), target.events[0])) {
@@ -889,7 +911,7 @@ async function resumeAndSend(
     activeId = sessionId;
     if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
     await ensureListeners();
-    await Promise.all([replayFrom(sessionId, 0), refreshList()]);
+    await Promise.all([replayFrom(sessionId, 0), refreshList(), loadContext(sessionId)]);
 
     const entry = entries[sessionId]!;
     userTurnsById[sessionId] = [
@@ -1326,9 +1348,10 @@ function transcriptOf(entry: SessionEntry | null): TranscriptState {
   if (foldCache && foldCache.id === entry.sessionId && foldCache.revision === rev) {
     return foldCache.value;
   }
-  const value = safeFold(entry.sessionId, entry.events, {
-    receivedAt: entry.receivedAt,
-    userTurns: userTurnsById[entry.sessionId] ?? [],
+  const prefix = missingInheritedPrefix(entry.context, entry.events, entry.receivedAt);
+  const value = safeFold(entry.sessionId, [...prefix.map(item => item.event), ...entry.events], {
+    receivedAt: [...prefix.map(item => item.receivedAtMs), ...entry.receivedAt],
+    userTurns: (userTurnsById[entry.sessionId] ?? []).map(turn => ({ ...turn, atIndex: turn.atIndex + prefix.length })),
     resolutions: entry.resolutions,
     turnMeta: turnMetaById[entry.sessionId],
   });
@@ -1367,7 +1390,7 @@ export const liveSessionStore = {
     return activeEntry()?.truncated ?? false;
   },
   get hasEarlier(): boolean {
-    return activeEntry()?.historyBefore != null;
+    return activeEntry()?.historyBefore != null || activeEntry()?.context?.history.before != null;
   },
   get loadingEarlier(): boolean {
     return activeEntry()?.loadingEarlier ?? false;
@@ -1457,6 +1480,7 @@ export const liveSessionStore = {
       historyBefore: entry.historyBefore,
     };
   },
+  get context(): SessionContext | null { return activeEntry()?.context ?? null; },
   get isHistorical(): boolean {
     return activeEntry()?.history !== null && activeEntry()?.history !== undefined;
   },

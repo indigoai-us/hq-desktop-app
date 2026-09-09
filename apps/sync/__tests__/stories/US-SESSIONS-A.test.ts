@@ -845,16 +845,10 @@ describe('company / project start-work — the first send orients the session', 
   });
 
   it('a new session clears the project (and the draft) but keeps the company', () => {
-    // The strip's "+" resets in place — the route may not change.
-    expect(STRIP).toContain('data-testid="sessions-new"');
-    expect(PAGE).toContain('onnew={startFreshDraft}');
-    const fn = PAGE.slice(PAGE.indexOf('function startFreshDraft()'));
-    const body = fn.slice(0, fn.indexOf('\n  }\n'));
-    expect(body).toContain('project = null;');
-    expect(body).toContain('forgetLastProject(company);');
-    expect(body).toContain('composer?.reset();');
-    expect(body).toContain("onopensession?.('');");
-    expect(body).not.toContain('company =');
+    expect(STRIP).not.toContain('data-testid="sessions-new"');
+    const host = read('src/desktop-alt/HqWorkWorkShell.svelte');
+    expect(host).toContain("label: 'New session'");
+    expect(host).toContain('crypto.randomUUID()');
     // The id-less `sessions` route is the new-session route: a mount without
     // an id forgets the remembered project before the effect reads it.
     expect(PAGE).toContain('if (!sessionId) forgetLastProject(company);');
@@ -1072,10 +1066,11 @@ describe('the "⋯" session menu — open in Claude Code / Codex, share to chann
   const SHARE = read('src/components/sessions/share-channel.ts');
   const EXTRA = read('src/desktop-alt/pages/SessionsExtraPage.svelte');
 
-  it('the strip hosts the menu before "+", inert without a live session', () => {
+  it('the strip hosts the menu without a redundant new-session action, inert without a live session', () => {
     expect(STRIP).toContain("import SessionMenu from './SessionMenu.svelte';");
     expect(STRIP).toContain('disabled={!menuEnabled}');
-    expect(STRIP.indexOf('<SessionMenu')).toBeLessThan(STRIP.indexOf('data-testid="sessions-new"'));
+    expect(STRIP).toContain('<SessionMenu');
+    expect(STRIP).not.toContain('data-testid="sessions-new"');
     expect(STRIP).toContain('data-testid="session-menu-result"');
     expect(PAGE).toContain('menuEnabled={Boolean(sessionId) && !ended}');
     expect(PAGE).toContain('tool={summary?.tool ?? tool}');

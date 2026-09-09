@@ -215,11 +215,12 @@ describe("ChatSidebar create flow", () => {
 
     type(queryInput(), "Q4 board");
     await settleQuery();
-    document
-      .querySelector<HTMLButtonElement>(
-        '[data-testid="chat-create-channel-row"]',
-      )
-      ?.click();
+    const createRow = await vi.waitFor(() => {
+      const row = document.querySelector<HTMLButtonElement>('[data-testid="chat-create-channel-row"]');
+      expect(row).toBeTruthy();
+      return row!;
+    });
+    createRow.click();
     await tick();
 
     // Add one member from the full directory roster.
