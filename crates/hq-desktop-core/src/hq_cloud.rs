@@ -540,7 +540,20 @@
 /// is precisely the population that took the 6.16.24 and 6.16.25 pins. A
 /// desktop holding a cached 6.16.25 satisfies `~6.16.25` and never re-resolves,
 /// so the spec string is again the only thing that delivers the repair.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.26";
+///
+/// `~6.16.26` -> `~6.16.33`: floors the runner at the release that replaces the
+/// journal write baseline's full `structuredClone` with a per-row fingerprint
+/// map (hq-cloud#513). A writer still compares each later row against exactly
+/// the aggregate it read, but it retains a 53-bit fingerprint per row instead
+/// of a second parsed journal: on the 677k-row desktop journal that removes a
+/// roughly 950 MB duplicate from the runner heap. This is runner-internal
+/// memory layout, not a desktop-visible behavior contract, so it deliberately
+/// does not add another `*_MIN_HQ_CLOUD` floor constant.
+///
+/// A desktop holding a cached 6.16.26 satisfies `~6.16.26` forever and would
+/// retain that duplicate baseline; changing this requested spec is what moves
+/// npm's cache key and delivers the heap reduction.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.33";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -668,7 +681,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.26");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.33");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

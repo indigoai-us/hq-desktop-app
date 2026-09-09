@@ -127,7 +127,20 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// class. The ledger does throw on a two-real-area duplicate, but as a plain
 /// `Error` carrying an `area-ledger:` message, so it lands in the generic
 /// bucket exactly as it did before and adds no identity.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.26";
+///
+/// The `~6.16.26` -> `~6.16.33` bump (the journal fingerprint write baseline,
+/// hq-cloud#513) was re-derived from both hq-cloud trees. The 52 distinct
+/// `this.name` identities remain 52 — matching the prior derivation — and the
+/// three `readonly name` identities (`InvalidSignalTypeError`,
+/// `InvalidSourceChannelError`, and `SignalNotFoundError`) also remain, for 55
+/// distinct identities across both declarations at each tag. There is no
+/// identity delta, and `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains
+/// (`error`, `auth-error`). The seven releases touch 43 files in aggregate,
+/// including journal, state-store, watcher, conflict, manifest, and ignore
+/// code; the #513 release itself changes only `src/journal.ts`, its baseline
+/// test, the package version, and its design note. No new vocabulary arm is
+/// needed, but the source-version marker moves with the verified runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.33";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
