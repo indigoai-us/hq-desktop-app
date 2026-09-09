@@ -138,6 +138,7 @@ const SETTINGS_SECTIONS = new Set<EmbeddedSettingsSection>([
   "profile",
   "companies",
   "general",
+  "agents",
   "appearance",
   "notifications",
   "sync",

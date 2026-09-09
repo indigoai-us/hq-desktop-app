@@ -16,6 +16,7 @@ export const EMBEDDED_SETTINGS_SECTIONS = [
   'profile',
   'companies',
   'general',
+  'agents',
   'appearance',
   'notifications',
   'sync',
