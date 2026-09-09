@@ -56,9 +56,9 @@
   import type { FirstMove, FirstMoveId } from "./first-moves";
   import SetupRunCard, { type SetupRunCardMode } from "./SetupRunCard.svelte";
   import {
-    clearSetupRunRecord,
     interpretSetupRun,
     loadSetupRunRecord,
+    SETUP_RUN_STEPS,
     saveSetupRunRecord,
     type SetupRunApi,
     type SetupRunPermissionDecision,
@@ -272,13 +272,19 @@
   );
   const runActive = $derived(Boolean(setupRun) && runMode !== "idle");
 
-  // A relaunch mid-run lands here with the session id remembered.
+  // Coming back to #welcome (or relaunching) lands here with the run
+  // remembered: a finished run keeps its "Setup complete" card, a run that
+  // ended early keeps "Setup paused", and a run still going re-attaches.
   if (setupRun) {
     const record = loadSetupRunRecord();
     if (record) {
       runSessionId = record.sessionId;
       runResumeStep = record.step;
-      runMode = "resume";
+      runMode = record.status === "done" ? "done" : record.status === "ended" ? "stopped" : "resume";
+      if (record.status === "done") runFinished = true;
+      // Still running: pick it straight back up. If the session is gone
+      // (a relaunch), attach fails and the card offers Run Setup again.
+      if (record.status === "running") void continueRun();
     }
   }
 
@@ -299,16 +305,16 @@
     if (state.done) {
       if (!runFinished) {
         runFinished = true;
-        clearSetupRunRecord();
+        saveSetupRunRecord({ sessionId, step: SETUP_RUN_STEPS.length - 1, status: "done" });
         onsetupfinished?.();
       }
       return;
     }
     if (state.ended) {
-      clearSetupRunRecord();
+      saveSetupRunRecord({ sessionId, step: state.step, status: "ended" });
       return;
     }
-    saveSetupRunRecord({ sessionId, step: state.step });
+    saveSetupRunRecord({ sessionId, step: state.step, status: "running" });
   });
 
   $effect(() => () => unsubscribeRun?.());
@@ -329,7 +335,7 @@
       runFinished = false;
       runSessionId = sessionId;
       runSnapshot = { sessionId, events: [], phase: "starting" };
-      saveSetupRunRecord({ sessionId, step: 0 });
+      saveSetupRunRecord({ sessionId, step: 0, status: "running" });
       watchRun(sessionId);
       runMode = "live";
     } catch (err) {
@@ -347,7 +353,7 @@
     try {
       const attached = await setupRun.attach(runSessionId);
       if (!attached) {
-        clearSetupRunRecord();
+        saveSetupRunRecord({ sessionId: runSessionId, step: runResumeStep, status: "ended" });
         runMode = "stopped";
         return;
       }

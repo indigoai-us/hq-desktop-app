@@ -23,7 +23,8 @@
   } from "./setup-run";
 
   /** Which face the card shows. `live` reads the rest from `state`. */
-  export type SetupRunCardMode = "live" | "resume" | "stopped";
+  /** `done` is the remembered outcome after a finished run (no live session). */
+  export type SetupRunCardMode = "live" | "resume" | "stopped" | "done";
 
   interface Props {
     mode: SetupRunCardMode;
@@ -57,7 +58,7 @@
     onrunagain,
   }: Props = $props();
 
-  const done = $derived(mode === "live" && Boolean(run?.done));
+  const done = $derived(mode === "done" || (mode === "live" && Boolean(run?.done)));
   const stopped = $derived(mode === "stopped" || (mode === "live" && Boolean(run?.ended)));
   const question = $derived(mode === "live" && !done && !stopped ? (run?.question ?? null) : null);
   const currentStep = $derived(mode === "resume" ? resumeStep : (run?.step ?? 0));
@@ -271,6 +272,16 @@
         onclick={() => onrunagain?.()}
       >
         Run Setup
+      </button>
+    {:else if done && onrunagain}
+      <button
+        type="button"
+        class="quiet-btn"
+        data-testid="setup-run-again"
+        disabled={busy}
+        onclick={() => onrunagain?.()}
+      >
+        Run again
       </button>
     {/if}
     {#if onshowdetails && mode !== "resume"}

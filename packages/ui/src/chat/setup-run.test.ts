@@ -276,16 +276,27 @@ describe("resume record", () => {
 
   it("round-trips the session id and step", () => {
     expect(loadSetupRunRecord()).toBeNull();
-    saveSetupRunRecord({ sessionId: "sess-1", step: 2 });
+    saveSetupRunRecord({ sessionId: "sess-1", step: 2, status: "running" });
     expect(window.localStorage.getItem(SETUP_RUN_SESSION_KEY)).toBeTruthy();
-    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 2 });
+    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 2, status: "running" });
     clearSetupRunRecord();
     expect(loadSetupRunRecord()).toBeNull();
   });
 
+  it("keeps the outcome and treats an old record without one as still running", () => {
+    saveSetupRunRecord({ sessionId: "sess-1", step: 3, status: "done" });
+    expect(loadSetupRunRecord()?.status).toBe("done");
+    saveSetupRunRecord({ sessionId: "sess-1", step: 1, status: "ended" });
+    expect(loadSetupRunRecord()?.status).toBe("ended");
+    window.localStorage.setItem(SETUP_RUN_SESSION_KEY, JSON.stringify({ sessionId: "sess-1", step: 1 }));
+    expect(loadSetupRunRecord()?.status).toBe("running");
+    window.localStorage.setItem(SETUP_RUN_SESSION_KEY, JSON.stringify({ sessionId: "sess-1", step: 1, status: "bogus" }));
+    expect(loadSetupRunRecord()?.status).toBe("running");
+  });
+
   it("clamps a bad step and rejects garbage", () => {
     window.localStorage.setItem(SETUP_RUN_SESSION_KEY, JSON.stringify({ sessionId: "s", step: 99 }));
-    expect(loadSetupRunRecord()).toEqual({ sessionId: "s", step: 3 });
+    expect(loadSetupRunRecord()).toEqual({ sessionId: "s", step: 3, status: "running" });
     window.localStorage.setItem(SETUP_RUN_SESSION_KEY, "{not json");
     expect(loadSetupRunRecord()).toBeNull();
     window.localStorage.setItem(SETUP_RUN_SESSION_KEY, JSON.stringify({ step: 1 }));
@@ -304,7 +315,7 @@ describe("resume record", () => {
         throw new Error("nope");
       },
     };
-    expect(() => saveSetupRunRecord({ sessionId: "s", step: 0 }, broken)).not.toThrow();
+    expect(() => saveSetupRunRecord({ sessionId: "s", step: 0, status: "running" }, broken)).not.toThrow();
     expect(loadSetupRunRecord(broken)).toBeNull();
     expect(() => clearSetupRunRecord(broken)).not.toThrow();
   });

@@ -162,7 +162,7 @@ describe("SetupChannelIntro native setup run", () => {
     expect(q('[data-testid="setup-run-card"]')?.dataset.setupRunMode).toBe("live");
     expect(q('[data-testid="setup-run"]')).toBeNull();
     expect(q('[data-testid="setup-run-step-tools"]')?.dataset.stepStatus).toBe("running");
-    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 0 });
+    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 0, status: "running" });
   });
 
   it("ticks steps and shows the agent's plain sentence, never a command", async () => {
@@ -178,7 +178,7 @@ describe("SetupChannelIntro native setup run", () => {
     expect(q('[data-testid="setup-run-status"]')?.textContent?.trim()).toBe("Everything is reachable.");
     expect(host.textContent).not.toContain("hq auth status");
     expect(host.textContent).not.toContain("Bash");
-    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 1 });
+    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 1, status: "running" });
   });
 
   it("answers a structured question through the API and a trailing question through send", async () => {
@@ -232,7 +232,7 @@ describe("SetupChannelIntro native setup run", () => {
     expect(q('[data-testid="setup-run-question"]')).toBeNull();
   });
 
-  it("finishes: done state, record cleared, and the host graduation hook fires once", async () => {
+  it("finishes: done state, outcome remembered, and the host graduation hook fires once", async () => {
     const api = fakeSetupRun();
     const onsetupfinished = vi.fn();
     const onsetupstarted = vi.fn();
@@ -246,7 +246,7 @@ describe("SetupChannelIntro native setup run", () => {
     expect(q('[data-testid="setup-run-done-title"]')?.textContent).toBe("You’re set up");
     expect(onsetupfinished).toHaveBeenCalledOnce();
     expect(onsetupstarted).not.toHaveBeenCalled();
-    expect(window.localStorage.getItem(SETUP_RUN_SESSION_KEY)).toBeNull();
+    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 3, status: "done" });
     api.emit("sess-1", { kind: "exited", code: 0 }, "ended");
     await settle();
     expect(onsetupfinished).toHaveBeenCalledOnce();
@@ -262,15 +262,12 @@ describe("SetupChannelIntro native setup run", () => {
     expect(onopensessiondetails).toHaveBeenCalledWith("sess-1");
   });
 
-  it("resumes a remembered run: Continue setup (N of 4) re-attaches to the session", async () => {
+  it("resumes a remembered run on its own: coming back re-attaches without a click", async () => {
     const api = fakeSetupRun();
     api.exists("sess-old");
-    saveSetupRunRecord({ sessionId: "sess-old", step: 2 });
+    saveSetupRunRecord({ sessionId: "sess-old", step: 2, status: "running" });
     await mountIntro({ setupRun: api });
     expect(q('[data-testid="setup-run"]')).toBeNull();
-    const button = q('[data-testid="setup-run-continue"]') as HTMLButtonElement;
-    expect(button.textContent?.trim()).toBe("Continue setup (3 of 4)");
-    button.click();
     await settle();
     expect(api.attach).toHaveBeenCalledWith("sess-old");
     expect(api.start).not.toHaveBeenCalled();
@@ -283,12 +280,12 @@ describe("SetupChannelIntro native setup run", () => {
 
   it("offers Run Setup again when the remembered session is gone, and starts fresh", async () => {
     const api = fakeSetupRun();
-    saveSetupRunRecord({ sessionId: "sess-gone", step: 1 });
+    saveSetupRunRecord({ sessionId: "sess-gone", step: 1, status: "running" });
     await mountIntro({ setupRun: api });
-    (q('[data-testid="setup-run-continue"]') as HTMLButtonElement).click();
     await settle();
+    expect(api.attach).toHaveBeenCalledWith("sess-gone");
     expect(q('[data-testid="setup-run-card"]')?.dataset.setupRunMode).toBe("stopped");
-    expect(window.localStorage.getItem(SETUP_RUN_SESSION_KEY)).toBeNull();
+    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-gone", step: 1, status: "ended" });
     (q('[data-testid="setup-run-again"]') as HTMLButtonElement).click();
     await settle();
     expect(api.start).toHaveBeenCalledOnce();
@@ -316,5 +313,50 @@ describe("SetupChannelIntro native setup run", () => {
     expect(q('[data-testid="setup-run-start-error"]')?.textContent).toBe("Could not start the session.");
     expect((q('[data-testid="setup-run"]') as HTMLButtonElement).disabled).toBe(false);
     expect(loadSetupRunRecord()).toBeNull();
+  });
+});
+
+describe("SetupChannelIntro remembers the setup outcome", () => {
+  it("coming back after a finished run shows Setup complete, not a fresh Run Setup", async () => {
+    const api = fakeSetupRun();
+    saveSetupRunRecord({ sessionId: "sess-done", step: 3, status: "done" });
+    const onsetupfinished = vi.fn();
+    await mountIntro({ setupRun: api, onsetupfinished });
+    expect(q('[data-testid="setup-run"]')).toBeNull();
+    expect(q('[data-testid="setup-run-card"]')?.dataset.setupRunMode).toBe("done");
+    expect(q('[data-testid="setup-run-done-title"]')?.textContent).toBe("You’re set up");
+    expect(onsetupfinished).not.toHaveBeenCalled();
+    expect(api.attach).not.toHaveBeenCalled();
+    expect(loadSetupRunRecord()?.status).toBe("done");
+  });
+
+  it("Run again from a remembered outcome starts a fresh run", async () => {
+    const api = fakeSetupRun();
+    saveSetupRunRecord({ sessionId: "sess-done", step: 3, status: "done" });
+    await mountIntro({ setupRun: api });
+    (q('[data-testid="setup-run-again"]') as HTMLButtonElement).click();
+    await settle();
+    expect(api.start).toHaveBeenCalledOnce();
+    expect(q('[data-testid="setup-run-card"]')?.dataset.setupRunMode).toBe("live");
+    expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-1", step: 0, status: "running" });
+  });
+
+  it("a run that ended early keeps its paused card and its record", async () => {
+    const api = fakeSetupRun();
+    saveSetupRunRecord({ sessionId: "sess-ended", step: 1, status: "ended" });
+    await mountIntro({ setupRun: api });
+    expect(q('[data-testid="setup-run-card"]')?.dataset.setupRunMode).toBe("stopped");
+    expect(q('[data-testid="setup-run-again"]')).not.toBeNull();
+    expect(loadSetupRunRecord()?.status).toBe("ended");
+  });
+
+  it("a run that exits before finishing is remembered as ended", async () => {
+    const api = fakeSetupRun();
+    await mountIntro({ setupRun: api });
+    await clickRunSetup();
+    api.emit("sess-1", say("Checking what's already in place on this Mac."), "working");
+    api.emit("sess-1", { kind: "exited", code: 1 }, "ended");
+    await settle();
+    expect(loadSetupRunRecord()).toMatchObject({ sessionId: "sess-1", status: "ended" });
   });
 });

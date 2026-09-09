@@ -416,16 +416,22 @@ export function interpretSetupRun(
 // ---------------------------------------------------------------------------
 
 /**
- * The setup session in flight on this machine, so a relaunch mid-run shows
- * "Continue setup (N of 4)" instead of a fresh Run Setup. Cleared on finish.
- * Namespaced beside `hq.welcome.setup-run.v1` (the graduation flag).
+ * The setup session on this machine and how it ended. A `running` record makes
+ * a relaunch (or a trip to another channel) pick the run back up; `done` and
+ * `ended` keep the card's outcome on #welcome instead of snapping back to a
+ * fresh Run Setup. Namespaced beside `hq.welcome.setup-run.v1` (the
+ * graduation flag).
  */
 export const SETUP_RUN_SESSION_KEY = "hq.welcome.setup-run-session.v1";
+
+export type SetupRunRecordStatus = "running" | "done" | "ended";
 
 export interface SetupRunRecord {
   sessionId: string;
   /** Last known step index, for the resume label before re-attaching. */
   step: number;
+  /** Defaults to `running` for records written before outcomes were kept. */
+  status: SetupRunRecordStatus;
 }
 
 type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -443,10 +449,16 @@ export function loadSetupRunRecord(storage?: StorageLike | null): SetupRunRecord
   try {
     const raw = storageOf(storage)?.getItem(SETUP_RUN_SESSION_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { sessionId?: unknown; step?: unknown };
+    const parsed = JSON.parse(raw) as { sessionId?: unknown; step?: unknown; status?: unknown };
     if (typeof parsed?.sessionId !== "string" || !parsed.sessionId.trim()) return null;
     const step = typeof parsed.step === "number" && Number.isFinite(parsed.step) ? parsed.step : 0;
-    return { sessionId: parsed.sessionId, step: Math.min(Math.max(Math.floor(step), 0), SETUP_RUN_STEPS.length - 1) };
+    const status: SetupRunRecordStatus =
+      parsed.status === "done" || parsed.status === "ended" ? parsed.status : "running";
+    return {
+      sessionId: parsed.sessionId,
+      step: Math.min(Math.max(Math.floor(step), 0), SETUP_RUN_STEPS.length - 1),
+      status,
+    };
   } catch {
     return null;
   }

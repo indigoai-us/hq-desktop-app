@@ -121,11 +121,11 @@
     font-size: 11px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--text-3, rgba(127, 127, 127, 0.9));
+    color: var(--text-2, rgba(127, 127, 127, 0.9));
   }
   .count {
     font-size: 12px;
-    color: var(--text-3, rgba(127, 127, 127, 0.9));
+    color: var(--text-2, rgba(127, 127, 127, 0.9));
     font-variant-numeric: tabular-nums;
   }
   .list {
@@ -172,10 +172,12 @@
     font-size: 14px;
     font-weight: 550;
   }
+  /* Completed moves stay readable: secondary text, no strike-through, the
+     green check alone says "done". Tertiary text on a translucent surface
+     vanished entirely. */
   .done .title {
-    color: var(--text-3, rgba(127, 127, 127, 0.9));
-    text-decoration: line-through;
-    text-decoration-color: rgba(127, 127, 127, 0.5);
+    color: var(--text-2, inherit);
+    font-weight: 500;
   }
   .body {
     margin: 8px 0 0 28px;

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount, type ComponentProps } from "svelte";
 
 import SetupRunCard from "./SetupRunCard.svelte";
-import { SETUP_RUN_DONE, SETUP_RUN_STOPPED, interpretSetupRun, type SetupRunEvent } from "./setup-run";
+import { SETUP_RUN_DONE, SETUP_RUN_STEPS, SETUP_RUN_STOPPED, interpretSetupRun, type SetupRunEvent } from "./setup-run";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -177,5 +177,23 @@ describe("SetupRunCard", () => {
     expect(onshowdetails).toHaveBeenCalledOnce();
     expect(host.querySelector<HTMLInputElement>('[data-testid="setup-run-answer"]')?.disabled).toBe(true);
     expect(host.querySelector('[data-testid="setup-run-error"]')?.textContent).toBe("Could not reach the session.");
+  });
+});
+
+describe("SetupRunCard remembered outcome", () => {
+  it("the done face shows every step complete and offers Run again", async () => {
+    const onrunagain = vi.fn();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const component = mount(SetupRunCard, { target: host, props: { mode: "done", onrunagain } as never });
+    await tick();
+    const card = host.querySelector('[data-testid="setup-run-card"]') as HTMLElement;
+    expect(card.dataset.setupRunMode).toBe("done");
+    expect(host.querySelectorAll(".step--done").length).toBe(SETUP_RUN_STEPS.length);
+    expect(host.querySelector('[data-testid="setup-run-continue"]')).toBeNull();
+    (host.querySelector('[data-testid="setup-run-again"]') as HTMLButtonElement).click();
+    expect(onrunagain).toHaveBeenCalledOnce();
+    unmount(component);
+    host.remove();
   });
 });
