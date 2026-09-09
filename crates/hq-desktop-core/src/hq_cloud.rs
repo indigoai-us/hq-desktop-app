@@ -633,26 +633,21 @@ pub const HQ_CLOUD_PACKAGE: &str = "@indigoai-us/hq-cloud";
 /// not match the package name.
 pub const RUNNER_BIN: &str = "hq-sync-runner";
 
-/// One-shot V2 mutation executable. Unlike [`RUNNER_BIN`], this command takes
-/// one local file change on stdin and obtains all authority itself.
-pub const MUTATION_BIN: &str = "hq-cloud";
-
 /// Desktop-visible capabilities of the bundled runner invocation.
 ///
 /// These describe only local command-line compatibility. They are never
 /// enrollment authority: V2 admission remains exclusively an authenticated
-/// server inventory and lease decision. In particular, this compatibility
-/// step deliberately does not claim the V2 mutation boundary that U59 adds.
+/// server inventory and lease decision. The desktop's realtime path is the
+/// runner's `--event-push` watcher plus its receiver; the app no longer ships
+/// a per-file `hq-cloud sync mutation` trigger of its own, so no mutation
+/// capability is advertised here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HqCloudRunnerCapabilities {
     pub event_push: bool,
-    pub v2_mutation: bool,
 }
 
-pub const HQ_CLOUD_RUNNER_CAPABILITIES: HqCloudRunnerCapabilities = HqCloudRunnerCapabilities {
-    event_push: true,
-    v2_mutation: true,
-};
+pub const HQ_CLOUD_RUNNER_CAPABILITIES: HqCloudRunnerCapabilities =
+    HqCloudRunnerCapabilities { event_push: true };
 
 #[cfg(test)]
 mod tests {
@@ -921,13 +916,15 @@ mod tests {
     }
 
     #[test]
-    fn runner_capabilities_describe_local_compatibility_and_v2_mutation_support() {
-        assert!(HQ_CLOUD_RUNNER_CAPABILITIES.event_push);
-        assert!(HQ_CLOUD_RUNNER_CAPABILITIES.v2_mutation);
-    }
-
-    #[test]
-    fn mutation_bin_is_hq_cloud() {
-        assert_eq!(MUTATION_BIN, "hq-cloud");
+    fn runner_capabilities_claim_only_event_push() {
+        // The desktop no longer ships a V2 mutation trigger of its own:
+        // realtime delivery is the runner's `--event-push` watcher plus the
+        // receiver, so this record must not advertise a mutation seam that
+        // nothing in the app spawns. Exhaustive equality means a re-added
+        // capability field fails to compile here instead of going unnoticed.
+        assert_eq!(
+            HQ_CLOUD_RUNNER_CAPABILITIES,
+            HqCloudRunnerCapabilities { event_push: true }
+        );
     }
 }

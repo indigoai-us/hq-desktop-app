@@ -1169,9 +1169,6 @@ fn main() {
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());
-            // U59: hq-cloud itself decides V2 rollout admission; this sidecar
-            // only forwards local file changes through its minimal stdin API.
-            commands::realtime_mutation::setup_realtime_mutation_watcher(app.handle());
             // Supervise the watch daemon: respawn it if it dies while auto-sync
             // is on, so a crash/kill doesn't leave sync silently quiet.
             commands::daemon::setup_daemon_supervisor(app.handle());
@@ -1651,5 +1648,53 @@ mod native_panic_tests {
             calls.borrow().is_empty(),
             "the app-initiated quit path must stay behaviourally unchanged"
         );
+    }
+}
+
+#[cfg(test)]
+mod mutation_trigger_removal_tests {
+    use std::path::{Path, PathBuf};
+
+    fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                rust_sources(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// The desktop used to spawn `npx hq-cloud sync mutation --stdin-json`
+    /// for every changed path under the HQ root (measured at 15 npx+node
+    /// pairs a minute on an active HQ, each ~0.7 s CPU and ~220 MB) while the
+    /// runner's `--event-push` watcher already delivers realtime sync. The
+    /// trigger is gone; this keeps it from creeping back under another name.
+    /// The needles are assembled at runtime so this file does not match itself.
+    #[test]
+    fn no_desktop_module_spawns_hq_cloud_sync_mutation() {
+        let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_sources(&src, &mut files);
+        assert!(
+            !files.is_empty(),
+            "no Rust sources found under {}",
+            src.display()
+        );
+
+        let module = ["realtime_", "muta", "tion"].concat();
+        let subcommand = ["\"sync\", ", "\"muta", "tion\""].concat();
+        let literal = ["\"muta", "tion\""].concat();
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("read source");
+            for needle in [&module, &subcommand, &literal] {
+                assert!(
+                    !text.contains(needle.as_str()),
+                    "{} still references the removed realtime mutation trigger ({needle})",
+                    file.display()
+                );
+            }
+        }
     }
 }
