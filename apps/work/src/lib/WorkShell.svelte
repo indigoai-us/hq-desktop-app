@@ -165,6 +165,8 @@
         createAction?: { label: string; param: () => string | null };
         /** #welcome "Run Setup" destination (see DesktopApp extraPages). */
         setupAction?: { label: string; param: () => string | null };
+        /** After setup: a fresh session with `/startwork <company>` as its first turn. */
+        startworkAction?: { label: string; param: (company: string | null) => string | null };
         /** #welcome native guided run (see DesktopApp extraPages). */
         setupRun?: SetupRunApi;
         detail?: string;
