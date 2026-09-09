@@ -275,6 +275,55 @@ describe('onboarding launch handoff', () => {
     expect(primaryButton().textContent).toBe('Install Claude Code');
   });
 
+  it('restores friendly checklist labels instead of internal setup stage names', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2 },
+    });
+
+    const friendlyLabels = [
+      'Laying the groundwork',
+      'Building your workspace',
+      'Bringing in your AI workers and workflows',
+      'Making it yours',
+      'Syncing across your devices',
+    ];
+    const rawStageLabels = [
+      'Downloading HQ template',
+      'Installing dependencies',
+      'Syncing initial cloud data',
+      'Initialising workspace',
+      'Preparing personal workspace',
+      'Registering for search',
+    ];
+
+    await flushUntil(() => {
+      const checklist = host.querySelector('[data-testid="onboarding-setup"]');
+      return friendlyLabels.every((label) => checklist?.textContent?.includes(label));
+    });
+
+    const checklist = host.querySelector('[data-testid="onboarding-setup"]');
+    expect(checklist).not.toBeNull();
+    for (const label of friendlyLabels) {
+      expect(checklist?.textContent).toContain(label);
+    }
+    for (const label of rawStageLabels) {
+      expect(checklist?.textContent).not.toContain(label);
+    }
+  });
+
   it('renders the same seamless completion screen after a failed required stage as after a clean run', async () => {
     const claudeDesktopOnly = {
       ...NO_AI_TOOLS,
