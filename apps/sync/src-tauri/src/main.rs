@@ -1666,12 +1666,60 @@ mod mutation_trigger_removal_tests {
         }
     }
 
-    /// The desktop used to spawn `npx hq-cloud sync mutation --stdin-json`
-    /// for every changed path under the HQ root (measured at 15 npx+node
+    /// The shapes the removed trigger took in source: its module name, the
+    /// one-string form of the hq-cloud subcommand, and a `"sync"` literal
+    /// followed within a few tokens by a `"mutation"` literal, which is how a
+    /// spawn site lists npx arguments whether it writes them as `&str`s or
+    /// `.to_string()`s. Assembled at runtime so this file does not match
+    /// itself. A bare `"mutation"` literal is deliberately not enough:
+    /// unrelated code may legitimately contain that word.
+    fn references_mutation_trigger(text: &str) -> Option<String> {
+        let module = ["realtime_", "muta", "tion"].concat();
+        let one_string = ["sync ", "muta", "tion"].concat();
+        for needle in [&module, &one_string] {
+            if text.contains(needle.as_str()) {
+                return Some(needle.clone());
+            }
+        }
+        let sync_literal = "\"sync\"";
+        let mutation_literal = ["\"muta", "tion\""].concat();
+        let mut from = 0;
+        while let Some(at) = text[from..].find(sync_literal) {
+            let start = from + at + sync_literal.len();
+            let window_end = text
+                .char_indices()
+                .map(|(index, _)| index)
+                .find(|&index| index >= start + 48)
+                .unwrap_or(text.len());
+            if text[start..window_end].contains(mutation_literal.as_str()) {
+                return Some([sync_literal, " .. ", mutation_literal.as_str()].concat());
+            }
+            from = start;
+        }
+        None
+    }
+
+    /// Negative control for the scan: the detector must fire on the exact
+    /// lines the removed module used, or the sweep below proves nothing.
+    #[test]
+    fn detector_matches_the_removed_spawn_shapes() {
+        let module_use = ["commands::realtime_", "muta", "tion::setup"].concat();
+        let arg_vec = ["\"sync\".to_string(),\n\"muta", "tion\".to_string(),"].concat();
+        let arg_slice = ["[\"sync\", \"muta", "tion\", \"--stdin-json\"]"].concat();
+        let one_string = ["\"hq-cloud sync ", "muta", "tion --stdin-json\""].concat();
+        assert!(references_mutation_trigger(&module_use).is_some());
+        assert!(references_mutation_trigger(&arg_vec).is_some());
+        assert!(references_mutation_trigger(&arg_slice).is_some());
+        assert!(references_mutation_trigger(&one_string).is_some());
+        let unrelated = ["let kind = \"", "muta", "tion\"; // GraphQL operation"].concat();
+        assert!(references_mutation_trigger(&unrelated).is_none());
+    }
+
+    /// The desktop used to spawn the hq-cloud one-shot mutation subcommand
+    /// through npx for every changed path under the HQ root (measured at 15 npx+node
     /// pairs a minute on an active HQ, each ~0.7 s CPU and ~220 MB) while the
     /// runner's `--event-push` watcher already delivers realtime sync. The
     /// trigger is gone; this keeps it from creeping back under another name.
-    /// The needles are assembled at runtime so this file does not match itself.
     #[test]
     fn no_desktop_module_spawns_hq_cloud_sync_mutation() {
         let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -1682,15 +1730,10 @@ mod mutation_trigger_removal_tests {
             "no Rust sources found under {}",
             src.display()
         );
-
-        let module = ["realtime_", "muta", "tion"].concat();
-        let subcommand = ["\"sync\", ", "\"muta", "tion\""].concat();
-        let literal = ["\"muta", "tion\""].concat();
         for file in files {
             let text = std::fs::read_to_string(&file).expect("read source");
-            for needle in [&module, &subcommand, &literal] {
-                assert!(
-                    !text.contains(needle.as_str()),
+            if let Some(needle) = references_mutation_trigger(&text) {
+                panic!(
                     "{} still references the removed realtime mutation trigger ({needle})",
                     file.display()
                 );
