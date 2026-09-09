@@ -11,7 +11,9 @@
 // a person who opens "Show details" and then browses another session on the
 // Sessions page does not have the card start narrating that one instead.
 
-import type { SetupRunAnswer, SetupRunApi, SetupRunPermissionDecision, SetupRunReadiness, SetupRunSnapshot, SetupSecretCard } from '@hq/ui';
+import type { SetupProviderStatus, SetupRunAnswer, SetupRunApi, SetupRunPermissionDecision, SetupRunReadiness, SetupRunSnapshot, SetupSecretCard } from '@hq/ui';
+import { open as openExternal } from '@tauri-apps/plugin-shell';
+import { CLAUDE_INSTALL_URL, CODEX_INSTALL_URL } from '../../lib/onboarding-summary';
 import { invoke } from '@tauri-apps/api/core';
 import {
   liveSessionStore,
@@ -154,5 +156,32 @@ export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunAp
     });
   }
 
-  return { preflight, start, attach, subscribe, answerQuestion, respondPermission, send, storeSecret };
+  async function providers(refresh = false): Promise<SetupProviderStatus> {
+    if (refresh) store.invalidatePreflight();
+    const result = await store.preflight();
+    return {
+      hqReady: result.hqSetup ? result.hqSetup === 'ready' : result.hooksReady,
+      claudeAvailable: result.claudeAvailable,
+      claudeLoggedIn: result.claudeLoggedIn,
+      codexAvailable: result.codexAvailable,
+      codexLoggedIn: result.codexLoggedIn,
+    };
+  }
+
+  return {
+    preflight,
+    start,
+    attach,
+    subscribe,
+    answerQuestion,
+    respondPermission,
+    send,
+    storeSecret,
+    providers,
+    providerLoginStart: (tool) => store.providerLoginStart(tool),
+    providerLoginStatus: (tool) => store.providerLoginStatus(tool),
+    providerLoginCancel: (tool) => store.providerLoginCancel(tool),
+    providerInstallUrl: (tool) => (tool === 'claude' ? CLAUDE_INSTALL_URL : CODEX_INSTALL_URL),
+    openExternal: (url) => openExternal(url),
+  };
 }

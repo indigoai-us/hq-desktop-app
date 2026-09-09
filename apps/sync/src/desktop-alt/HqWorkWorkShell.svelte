@@ -136,6 +136,11 @@
       // #welcome's Run Setup: a fresh session that sends /setup itself once
       // Claude Code (or Codex) is connected and HQ is set up on this Mac.
       setupAction: { label: 'Run Setup', param: () => setupSessionParam(SETUP_PROMPT) },
+      // After setup: a fresh session oriented on the company, `/startwork` sent.
+      startworkAction: {
+        label: 'Start work',
+        param: (company: string | null) => setupSessionParam(company ? `/startwork ${company}` : '/startwork'),
+      },
       // The native run: /setup drives a stepper + question cards inside the
       // #welcome hero; `setupAction` stays the fallback when preflight says
       // this page's Connect / self-heal UI must go first.

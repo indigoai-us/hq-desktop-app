@@ -525,6 +525,8 @@
          * on this page with its id as the param.
          */
         setupRun?: SetupRunApi;
+        /** After setup: a fresh session with `/startwork <company>` as its first turn. */
+        startworkAction?: { label: string; param: (company: string | null) => string | null };
         component: Component<{
           param?: string | null;
           onnavigate?: (param: string | null) => void;
@@ -1045,7 +1047,10 @@
     return { agentUid: SETUP_AGENT_UID, agentName: SETUP_AGENT_NAME, startedAt: setupThinkingSince, phase: "thinking" };
   });
   let setupLaunchError = $state<string | null>(null);
-  /** The finish buttons: open the HQ folder in a coding tool, ready for `/startwork`. */
+  /** The company `/startwork` orients on after setup: the first company in the roster. */
+  const startworkCompany = $derived(setupCompanies(companies).find((c) => c.kind === "company")?.slug ?? null);
+  const startworkPrompt = $derived(startworkCompany ? `/startwork ${startworkCompany}` : "/startwork");
+  /** The finish buttons: open the HQ folder in a coding tool with `/startwork` ready to go. */
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
     setupLaunchError = null;
     const res = await adapter.settings.getSetupStatus();
@@ -1054,7 +1059,7 @@
       setupLaunchError = "HQ folder is not ready yet.";
       return;
     }
-    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt: "/startwork" });
+    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt: startworkPrompt });
     const error = key === "claude" ? await actions.launchClaude() : await actions.launchCodex();
     if (error) setupLaunchError = error;
   }
@@ -4932,12 +4937,18 @@
                       />
                       {#if agentDone}
                         <div class="setup-agent-finish" data-testid="setup-agent-finish" role="group" aria-label="Keep going">
-                          {#if extraPages?.sessions && setupAgent.sessionId}
+                          {#if extraPages?.sessions}
                             <button
                               type="button"
                               class="setup-agent-btn"
                               data-testid="setup-agent-open-sessions"
-                              onclick={() => openExtraPage("sessions", setupAgent.sessionId)}
+                              onclick={() =>
+                                openExtraPage(
+                                  "sessions",
+                                  extraPages!.sessions.startworkAction?.param(startworkCompany) ??
+                                    extraPages!.sessions.createAction?.param() ??
+                                    setupAgent.sessionId,
+                                )}
                             >
                               Open in Sessions
                             </button>
@@ -5748,20 +5759,21 @@
     flex-wrap: wrap;
     gap: 6px;
   }
+  /* The same white, square buttons as Run Setup on the hero. */
   .setup-agent-btn {
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
-    min-height: 26px;
-    padding: 0 10px;
-    border-radius: 999px;
-    border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
-    background: transparent;
-    color: var(--text-1, inherit);
+    min-height: 30px;
+    padding: 0 12px;
+    border-radius: 0;
+    border: 1px solid var(--text-1, #111);
+    background: var(--text-1, #111);
+    color: var(--bg, #fff);
     cursor: pointer;
   }
   .setup-agent-btn:hover {
-    background: var(--raised, rgba(127, 127, 127, 0.1));
+    opacity: 0.9;
   }
   .setup-agent-error {
     margin: 0;

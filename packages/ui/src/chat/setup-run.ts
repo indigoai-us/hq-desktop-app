@@ -635,7 +635,42 @@ export type SetupRunReadiness = "ready" | "needs-sessions-page";
  * The guided-run seam a host provides on `extraPages.sessions.setupRun`. Built
  * in apps/sync on the live session store; `packages/ui` only calls it.
  */
+/** Which coding agents this Mac can run setup with. */
+export interface SetupProviderStatus {
+  /** The HQ `.claude` layer is in place (skills, hooks) — nothing to repair. */
+  hqReady: boolean;
+  claudeAvailable: boolean;
+  claudeLoggedIn: boolean;
+  codexAvailable: boolean;
+  codexLoggedIn: boolean;
+}
+
+export type SetupProviderTool = "claude" | "codex";
+
+export interface SetupProviderLoginState {
+  state: "disconnected" | "waiting" | "connected" | "error";
+  message?: string;
+}
+
+/** True when at least one signed-in agent can run setup here. */
+export function setupProvidersReady(status: SetupProviderStatus | null | undefined): boolean {
+  if (!status || !status.hqReady) return false;
+  return (status.claudeAvailable && status.claudeLoggedIn) || (status.codexAvailable && status.codexLoggedIn);
+}
+
 export interface SetupRunApi {
+  /**
+   * Which agents are installed / signed in on this Mac. Optional: hosts
+   * without it skip the Connect step and rely on `preflight` alone.
+   */
+  providers?(refresh?: boolean): Promise<SetupProviderStatus>;
+  /** Open the provider's browser sign-in; poll `providerLoginStatus` until connected. */
+  providerLoginStart?(tool: SetupProviderTool): Promise<SetupProviderLoginState>;
+  providerLoginStatus?(tool: SetupProviderTool): Promise<SetupProviderLoginState>;
+  providerLoginCancel?(tool: SetupProviderTool): Promise<SetupProviderLoginState>;
+  /** Where to get the provider's app; opened in the system browser by the host. */
+  providerInstallUrl?(tool: SetupProviderTool): string;
+  openExternal?(url: string): Promise<void>;
   /**
    * Can the run start here, or must the Sessions page's Connect / self-heal
    * UI go first? The card never duplicates that UI — it falls back to opening

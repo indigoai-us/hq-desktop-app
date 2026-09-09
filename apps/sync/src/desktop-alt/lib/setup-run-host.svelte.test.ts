@@ -249,6 +249,22 @@ describe('createSetupRunApi', () => {
     expect(liveSessionStore.resolvedRequestIdsOf(SETUP)).toEqual(['perm-1', 'perm-2']);
   });
 
+  it('providers reports what preflight knows and login calls pass straight through', async () => {
+    mockBackend({ list: [], preflight: preflight({ claudeLoggedIn: false, codexAvailable: true, codexLoggedIn: true }), commands: ['setup'] });
+    const api = createSetupRunApi();
+    expect(await api.providers!()).toEqual({
+      hqReady: true,
+      claudeAvailable: true,
+      claudeLoggedIn: false,
+      codexAvailable: true,
+      codexLoggedIn: true,
+    });
+    expect(api.providerInstallUrl!('claude')).toContain('claude.ai');
+    invoke.mockResolvedValueOnce({ state: 'waiting' });
+    expect(await api.providerLoginStart!('claude')).toEqual({ state: 'waiting' });
+    expect(calls('agent_provider_login_start')[0]).toEqual({ tool: 'claude' });
+  });
+
   it('storeSecret hands the value to the Rust side only, never to the session', async () => {
     mockBackend({ list: [summary(SETUP)], preflight: preflight(), commands: ['setup'] });
     const api = createSetupRunApi();

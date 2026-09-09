@@ -55,6 +55,7 @@
   import FirstMoves from "./FirstMoves.svelte";
   import type { FirstMove, FirstMoveId } from "./first-moves";
   import SetupRunCard from "./SetupRunCard.svelte";
+  import SetupConnectStep from "./SetupConnectStep.svelte";
   import { SETUP_RUN_STEPS } from "./setup-run";
   import type { SetupAgent } from "./setup-agent.svelte";
   import type { EntryPointResult } from "./lifecycle-entry-points";
@@ -388,6 +389,10 @@
         </p>
       {/if}
 
+      {#if agent?.api && agent.providers && !agent.providersReady}
+        <!-- No signed-in agent on this Mac yet: connect one first. -->
+        <SetupConnectStep api={agent.api} providers={agent.providers} onrefresh={() => agent!.refreshProviders(true)} />
+      {:else}
       <div class="hero-actions" role="group" aria-label="Set up this Mac">
         <button
           type="button"
@@ -400,6 +405,7 @@
           {agent?.busy ? "Starting…" : SETUP_RUN_LABEL}
         </button>
       </div>
+      {/if}
       {#if !onopensessions && launchErrors.claude}
         <p class="launch-error" role="alert">{launchErrors.claude}</p>
       {/if}

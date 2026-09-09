@@ -4,7 +4,7 @@
 // answer / finish, the resume record, and the transcript the channel shows.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SetupAgent, setupAgentProse, setupAgentTranscript } from "./setup-agent.svelte";
+import { SetupAgent, loadTranscriptCache, setupAgentProse, setupAgentTranscript } from "./setup-agent.svelte";
 import {
   loadSetupRunRecord,
   saveSetupRunRecord,
@@ -229,16 +229,70 @@ describe("SetupAgent", () => {
     expect(loadSetupRunRecord()).toEqual({ sessionId: "sess-gone", step: 1, status: "ended" });
   });
 
-  it("a remembered outcome shows as done or paused without touching the api", async () => {
+  it("a remembered outcome shows as done or paused, re-attaching quietly for its transcript", async () => {
     saveSetupRunRecord({ sessionId: "sess-done", step: 5, status: "done" });
     const api = fakeSetupRun();
+    api.exists("sess-done");
     const done = new SetupAgent(api);
+    await settle();
     expect(done.mode).toBe("done");
     expect(done.active).toBe(true);
-    expect(api.attach).not.toHaveBeenCalled();
+    expect(api.attach).toHaveBeenCalledWith("sess-done");
+    expect(api.start).not.toHaveBeenCalled();
 
     saveSetupRunRecord({ sessionId: "sess-ended", step: 1, status: "ended" });
     expect(new SetupAgent(api).mode).toBe("stopped");
+  });
+
+  it("the person's answers to chips and permission asks show as their own turns", async () => {
+    const api = fakeSetupRun();
+    const agent = new SetupAgent(api);
+    await agent.start();
+    api.emit("sess-1", say("Want me to import?"));
+    api.emit(
+      "sess-1",
+      { kind: "questionRequest", requestId: "req-1", questions: [{ id: "q1", text: "Import?", options: [{ label: "Skip for now" }] }] },
+      "needsYou",
+    );
+    await agent.answerChoice("req-1", "q1", ["Skip for now"]);
+    api.emit("sess-1", { kind: "permissionRequest", requestId: "perm-1", toolName: "Bash" }, "needsYou");
+    await agent.answerPermission("perm-1", "allowSession");
+    api.emit("sess-1", say("Done."));
+    expect(agent.transcript.map((t) => [t.role, t.text])).toEqual([
+      ["agent", "Want me to import?"],
+      ["user", "Skip for now"],
+      ["user", "Allowed for the rest of setup"],
+      ["agent", "Done."],
+    ]);
+  });
+
+  it("keeps the conversation when the engine no longer has the session", async () => {
+    const api = fakeSetupRun();
+    const agent = new SetupAgent(api);
+    await agent.start();
+    api.emit("sess-1", say("Checking tools."));
+    api.emit("sess-1", say("You're all set."));
+    api.emit("sess-1", turnDone, "idle");
+    expect(loadTranscriptCache("sess-1").map((t) => t.text)).toEqual(["Checking tools.", "You're all set."]);
+
+    // A relaunch: same record, but a fresh engine that never heard of sess-1.
+    const later = new SetupAgent(fakeSetupRun());
+    await settle();
+    expect(later.mode).toBe("done");
+    expect(later.transcript.map((t) => t.text)).toEqual(["Checking tools.", "You're all set."]);
+  });
+
+  it("asks the host which agents are ready and reports readiness", async () => {
+    const providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false }));
+    const agent = new SetupAgent(fakeSetupRun({ providers }));
+    await settle();
+    expect(agent.providersReady).toBe(false);
+    providers.mockResolvedValue({ hqReady: true, claudeAvailable: true, claudeLoggedIn: true, codexAvailable: false, codexLoggedIn: false });
+    await agent.refreshProviders(true);
+    expect(providers).toHaveBeenLastCalledWith(true);
+    expect(agent.providersReady).toBe(true);
+    // A host that cannot say leaves the decision to preflight.
+    expect(new SetupAgent(fakeSetupRun()).providersReady).toBe(true);
   });
 
   it("run again starts a fresh session", async () => {

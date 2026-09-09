@@ -15,6 +15,8 @@ import {
   loadSetupRunRecord,
   saveSetupRunRecord,
   SETUP_RUN_STEPS,
+  setupProvidersReady,
+  type SetupProviderStatus,
   type SetupRunApi,
   type SetupRunPermissionDecision,
   type SetupRunSnapshot,
@@ -64,9 +66,66 @@ function isLaunchPrompt(text: string): boolean {
   return /^\/setup(?:\s|$)/.test(text.trim());
 }
 
-export function setupAgentTranscript(sessionId: string, events: SetupRunSnapshot["events"]): SetupAgentTurn[] {
+/**
+ * Answers to structured questions and permission asks go back through the
+ * request, not as a user turn, so the engine never echoes them. The store
+ * records them here (keyed by the request id) and the transcript places
+ * each right after the request it answered — the person sees what they said.
+ */
+export type SetupAgentAnswers = ReadonlyMap<string, string>;
+
+/** The transcript cache: what the channel showed, so leaving and coming back (or relaunching) keeps it. */
+export const SETUP_AGENT_TRANSCRIPT_KEY = "hq.welcome.setup-run-transcript.v1";
+
+interface TranscriptCache {
+  sessionId: string;
+  turns: SetupAgentTurn[];
+}
+
+function storage(): Storage | null {
+  try {
+    return typeof window !== "undefined" ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+export function loadTranscriptCache(sessionId: string): SetupAgentTurn[] {
+  try {
+    const raw = storage()?.getItem(SETUP_AGENT_TRANSCRIPT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Partial<TranscriptCache>;
+    if (parsed.sessionId !== sessionId || !Array.isArray(parsed.turns)) return [];
+    return parsed.turns.filter(
+      (turn): turn is SetupAgentTurn =>
+        Boolean(turn) && typeof turn.id === "string" && (turn.role === "agent" || turn.role === "user") && typeof turn.text === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function saveTranscriptCache(sessionId: string, turns: readonly SetupAgentTurn[]): void {
+  try {
+    storage()?.setItem(SETUP_AGENT_TRANSCRIPT_KEY, JSON.stringify({ sessionId, turns: [...turns] } satisfies TranscriptCache));
+  } catch {
+    // Storage unavailable: the transcript simply is not kept across a relaunch.
+  }
+}
+
+export function setupAgentTranscript(
+  sessionId: string,
+  events: SetupRunSnapshot["events"],
+  answers: SetupAgentAnswers = new Map(),
+): SetupAgentTurn[] {
   const turns: SetupAgentTurn[] = [];
   events.forEach((event, seq) => {
+    if (event.kind === "questionRequest" || event.kind === "permissionRequest") {
+      const requestId = String((event as { requestId?: unknown }).requestId ?? "");
+      const text = answers.get(requestId);
+      if (text) turns.push({ id: `setup:${sessionId}:${seq}:answer`, role: "user", text, seq });
+      return;
+    }
     if (event.kind === "assistantMessage") {
       if ((event as { parentToolUseId?: unknown }).parentToolUseId) return; // sub-agent chatter
       const text = setupAgentProse(String((event as { text?: unknown }).text ?? ""));
@@ -101,6 +160,12 @@ export class SetupAgent {
   resumeStep = $state(0);
   busy = $state(false);
   error = $state<string | null>(null);
+  /** Which agents this Mac can run setup with; null until the host answers. */
+  providers = $state<SetupProviderStatus | null>(null);
+  /** Answers given through requests (chips, typed replies to choices, permissions), by request id. */
+  answers = $state<Map<string, string>>(new Map());
+  /** What the channel showed last time, when the engine no longer has the session. */
+  private cachedTurns = $state<SetupAgentTurn[]>([]);
 
   readonly state: SetupRunState | null;
   /** A run exists (live, remembered, or finished): the hero shows the stepper, the channel the agent. */
@@ -108,6 +173,8 @@ export class SetupAgent {
   /** The composer talks to the agent instead of the channel. */
   readonly listening: boolean;
   readonly transcript: SetupAgentTurn[];
+  /** A signed-in agent is available, or the host cannot tell (then preflight decides). */
+  readonly providersReady: boolean;
 
   constructor(api: SetupRunApi | null, hooks: SetupAgentHooks = {}) {
     this.api = api;
@@ -124,20 +191,49 @@ export class SetupAgent {
     this.listening = $derived(
       this.mode === "live" && this.state !== null && !this.state.done && !this.state.ended,
     );
-    this.transcript = $derived(
-      this.snapshot ? setupAgentTranscript(this.snapshot.sessionId, this.snapshot.events) : [],
-    );
+    this.transcript = $derived.by(() => {
+      const live = this.snapshot ? setupAgentTranscript(this.snapshot.sessionId, this.snapshot.events, this.answers) : [];
+      return live.length > 0 ? live : this.cachedTurns;
+    });
+    this.providersReady = $derived(this.providers === null ? true : setupProvidersReady(this.providers));
     if (!api) return;
+    void this.refreshProviders();
     // Coming back to #welcome (or relaunching) lands here with the run
     // remembered: finished stays finished, an early exit stays paused, and a
-    // run still going re-attaches on its own.
+    // run still going re-attaches on its own. The conversation comes back
+    // with it — from the engine when it still has the session, else from
+    // what the channel showed last time.
     const record = loadSetupRunRecord();
     if (record) {
       this.sessionId = record.sessionId;
       this.resumeStep = record.step;
       this.mode = record.status === "done" ? "done" : record.status === "ended" ? "stopped" : "resume";
+      this.cachedTurns = loadTranscriptCache(record.sessionId);
       if (record.status === "done") this.finished = true;
       if (record.status === "running") void this.continueRun();
+      else void this.restoreTranscript();
+    }
+  }
+
+  /** Ask the host which agents are ready; harmless when it cannot say. */
+  async refreshProviders(refresh = false): Promise<void> {
+    if (!this.api?.providers) return;
+    try {
+      this.providers = await this.api.providers(refresh);
+    } catch {
+      this.providers = null;
+    }
+  }
+
+  /** A finished / paused run: re-attach quietly so its transcript renders from the engine. */
+  private async restoreTranscript(): Promise<void> {
+    const api = this.api;
+    const sessionId = this.sessionId;
+    if (!api || !sessionId) return;
+    try {
+      if (await api.attach(sessionId)) this.watch(sessionId);
+    } catch {
+      // The cache already covers it.
     }
   }
 
@@ -148,6 +244,8 @@ export class SetupAgent {
       if (snapshot.sessionId !== this.sessionId) return;
       this.snapshot = snapshot;
       this.keepRecord();
+      const turns = setupAgentTranscript(snapshot.sessionId, snapshot.events, this.answers);
+      if (turns.length > 0) saveTranscriptCache(snapshot.sessionId, turns);
     });
   }
 
@@ -189,6 +287,8 @@ export class SetupAgent {
       const sessionId = await api.start(SETUP_GUIDED_PROMPT);
       this.finished = false;
       this.sessionId = sessionId;
+      this.answers = new Map();
+      this.cachedTurns = [];
       this.snapshot = { sessionId, events: [], phase: "starting" };
       saveSetupRunRecord({ sessionId, step: 0, status: "running" });
       this.watch(sessionId);
@@ -251,11 +351,24 @@ export class SetupAgent {
     }
   }
 
+  private recordAnswer(requestId: string, text: string): void {
+    const next = new Map(this.answers);
+    next.set(requestId, text);
+    this.answers = next;
+    const snapshot = this.snapshot;
+    if (snapshot) saveTranscriptCache(snapshot.sessionId, setupAgentTranscript(snapshot.sessionId, snapshot.events, next));
+  }
+
   answerChoice(requestId: string, questionId: string, values: string[]): Promise<void> {
+    this.recordAnswer(requestId, values.join(", "));
     return this.withRun((api, sessionId) => api.answerQuestion(sessionId, requestId, [{ questionId, values }]));
   }
 
   answerPermission(requestId: string, decision: SetupRunPermissionDecision): Promise<void> {
+    this.recordAnswer(
+      requestId,
+      decision === "deny" ? "Not now" : decision === "allowSession" ? "Allowed for the rest of setup" : "Allowed",
+    );
     return this.withRun((api, sessionId) => api.respondPermission(sessionId, requestId, decision));
   }
 

@@ -176,9 +176,10 @@ describe("DesktopApp native setup run wiring", () => {
     expect(finish).toBeTruthy();
     expect(host.querySelector('[data-testid="setup-agent-open-claude"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="setup-agent-open-codex"]')).toBeTruthy();
+    // Open in Sessions starts a fresh session with /startwork ready, not the setup transcript.
     host.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-sessions"]')!.click();
     await settle();
-    expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("sess-42");
+    expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("new?draft=y");
   });
 
   it("Open setup chat opens the session on the Sessions page by id", async () => {

@@ -197,3 +197,26 @@ describe("SetupChannelIntro with a Setup Agent", () => {
     expect(onopensessiondetails).toHaveBeenCalledWith("sess-done");
   });
 });
+
+describe("SetupChannelIntro Connect step", () => {
+  it("asks to connect an agent before Run Setup when none is signed in, then offers Run Setup", async () => {
+    const providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false }));
+    const providerLoginStart = vi.fn(async () => ({ state: "connected" as const }));
+    const api = fakeSetupRun({ providers, providerLoginStart, providerLoginStatus: vi.fn(async () => ({ state: "connected" as const })) });
+    const agent = new SetupAgent(api);
+    await mountIntro({ agent });
+    await settle();
+    expect(q('[data-testid="setup-run"]')).toBeNull();
+    const step = q('[data-testid="setup-connect-step"]');
+    expect(step).not.toBeNull();
+    expect(q('[data-testid="setup-connect-claude"]')?.dataset.state).toBe("available");
+    expect(q('[data-testid="setup-connect-codex"]')?.dataset.state).toBe("missing");
+
+    providers.mockResolvedValue({ hqReady: true, claudeAvailable: true, claudeLoggedIn: true, codexAvailable: false, codexLoggedIn: false });
+    (q('[data-testid="setup-connect-claude-signin"]') as HTMLButtonElement).click();
+    await settle(8);
+    expect(providerLoginStart).toHaveBeenCalledWith("claude");
+    expect(q('[data-testid="setup-connect-step"]')).toBeNull();
+    expect(q('[data-testid="setup-run"]')).not.toBeNull();
+  });
+});
