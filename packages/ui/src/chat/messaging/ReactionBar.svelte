@@ -3,6 +3,7 @@
   // ported verbatim from the hq-sync desktop source). Pure presentation: the
   // parent owns the reaction map and the toggle call; this component renders the
   // pills and bubbles a (messageId, emoji) toggle up.
+  import Smiley from "phosphor-svelte/lib/Smiley";
   import { type ReactionAggregate, reactionAttribution } from "./reactions";
   import EmojiPicker from "./EmojiPicker.svelte";
 
@@ -68,8 +69,12 @@
       aria-label="Add a reaction"
       title="Add a reaction"
     >
-      <span class="reaction-add-glyph" aria-hidden="true">☺</span>
-      <span class="reaction-add-plus" aria-hidden="true">+</span>
+      <!-- One Phosphor mark, like the concept's add-reaction control. The
+           typed `☺` and `+` were font glyphs, not icons, so they sat at a
+           different weight and baseline from everything around them. -->
+      <span class="reaction-add-glyph" aria-hidden="true">
+        <Smiley size={12} aria-hidden="true" />
+      </span>
     </button>
     {#if pickerOpen}
       <EmojiPicker onpick={pick} onclose={() => (pickerOpen = false)} />
@@ -174,10 +179,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.0625rem;
     min-width: 22px;
     height: 22px;
-    padding: 0 7px;
+    padding: 0 6px;
     border: 1px solid var(--pop-border);
     border-radius: 999px;
     background: var(--pop-hover);
@@ -199,13 +203,9 @@
   }
 
   .reaction-add-glyph {
-    font-size: var(--text-base);
-    line-height: 1;
-  }
-
-  .reaction-add-plus {
-    font-size: var(--text-base);
-    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     line-height: 1;
   }
 

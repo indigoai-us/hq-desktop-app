@@ -73,7 +73,9 @@ describe("ChatSidebar identity footer layout", () => {
     expect(rail).toBeTruthy();
     expect(card).toBeTruthy();
     expect(card?.textContent).toContain("Stefan");
-    expect(card?.textContent).toMatch(/Signed in/i);
+    // The card is the name and a disclosure caret only — no status line.
+    expect(card?.textContent).not.toMatch(/signed in/i);
+    expect(card?.querySelector('[data-testid="caret"]')).toBeTruthy();
     // happy-dom does not apply Svelte scoped CSS, so box-sizing is
     // asserted from source in the test above — here we lock the DOM
     // contract the live apps rely on.

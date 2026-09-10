@@ -11,6 +11,8 @@ Current operational docs:
 
 - [`RELEASE.md`](RELEASE.md) — the unified, channel-isolated, atomic release
   workflow.
+- [`DESIGN-HARNESS.md`](DESIGN-HARNESS.md) — the browser-speed loop for the
+  desktop shell's appearance, what it mounts, and what it cannot show you.
 - [`hq-work-handoff-qa.md`](hq-work-handoff-qa.md) — HQ Work handoff smoke
   checklist (canonical: [`apps/sync/docs/hq-work-handoff-qa.md`](../apps/sync/docs/hq-work-handoff-qa.md)).
 - [`rich-agent-messages.md`](rich-agent-messages.md) — the structured-content

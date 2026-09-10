@@ -2211,12 +2211,8 @@
       <span class="chat-avatar" aria-hidden="true">{initials}</span>
       <span class="chat-user-copy">
         <span class="chat-user-name">{firstName}</span>
-        <span class="chat-user-status">
-          <span class="chat-status-dot" aria-hidden="true"></span>
-          Signed in
-        </span>
       </span>
-      <span class="chat-chevron" aria-hidden="true">›</span>
+      <Caret tone="var(--t3)" size="10px" />
     </button>
     {#if footerMenuOpen}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -3611,31 +3607,6 @@
     color: var(--t2);
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .chat-user-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    color: var(--ok-ink);
-    font-size: 10px;
-    font-weight: 400;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .chat-status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--ok);
-  }
-
-  .chat-chevron {
-    color: var(--t3);
-    font-size: 10px;
-    font-weight: 400;
-    transform: rotate(90deg);
   }
 
   .chat-popover {

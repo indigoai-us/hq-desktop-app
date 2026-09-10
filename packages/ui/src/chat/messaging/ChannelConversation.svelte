@@ -1,7 +1,6 @@
 <script lang="ts">
   import PaperPlaneRight from "phosphor-svelte/lib/PaperPlaneRight";
   import Paperclip from "phosphor-svelte/lib/Paperclip";
-  import Plus from "phosphor-svelte/lib/Plus";
   import Smiley from "phosphor-svelte/lib/Smiley";
   /**
    * ChannelConversation — the real channel timeline + composer, ported faithfully
@@ -1403,7 +1402,9 @@
                         (reactPickerFor =
                           reactPickerFor === msg.eventId ? null : msg.eventId)}
                     >
-                      <Plus size={14} aria-hidden="true" />
+                      <!-- Smiley, like the concept's `.rb-ic.glyph` — the
+                           same mark the reaction row's add pill carries. -->
+                      <Smiley size={14} aria-hidden="true" />
                     </button>
                     {#if reactPickerFor === msg.eventId}
                       <EmojiPicker
