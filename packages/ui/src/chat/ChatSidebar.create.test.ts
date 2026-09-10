@@ -133,6 +133,61 @@ describe("ChatSidebar create flow", () => {
     expect(document.querySelector('[data-testid="chat-create-query"]')).toBeTruthy();
   });
 
+  it("dismisses the New menu on an outside click and on Escape", async () => {
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: createFixtureChatSidebarApi(), seedDirectory },
+    });
+    await tick();
+    await tick();
+
+    const plus = () =>
+      host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]');
+    const menu = () => document.querySelector('[data-testid="chat-new-menu"]');
+
+    plus()?.click();
+    await tick();
+    expect(menu()).toBeTruthy();
+
+    document.body.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    await tick();
+    expect(menu()).toBeNull();
+
+    plus()?.click();
+    await tick();
+    expect(menu()).toBeTruthy();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await tick();
+    expect(menu()).toBeNull();
+  });
+
+  it("keeps the New menu open when the click lands inside it", async () => {
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: createFixtureChatSidebarApi(), seedDirectory },
+    });
+    await tick();
+    await tick();
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')
+      ?.click();
+    await tick();
+    const menu = document.querySelector('[data-testid="chat-new-menu"]');
+    expect(menu).toBeTruthy();
+
+    menu!.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    await tick();
+    expect(document.querySelector('[data-testid="chat-new-menu"]')).toBeTruthy();
+  });
+
   it("New project opens the channel form, skipping the finder", async () => {
     component = mount(ChatSidebar, {
       target: host,

@@ -1076,6 +1076,7 @@
       !scopeMenuOpen &&
       !filterOpen &&
       !footerMenuOpen &&
+      !newMenuOpen &&
       !searchOpen &&
       !contextMenu
     )
@@ -1106,6 +1107,13 @@
         const insideMenu = menu?.contains(event.target) ?? false;
         if (!insideFooter && !insideMenu) footerMenuOpen = false;
       }
+      if (newMenuOpen) {
+        const menu = document.querySelector('[data-testid="chat-new-menu"]');
+        const inside =
+          (newWrapEl?.contains(event.target) ?? false) ||
+          (menu?.contains(event.target) ?? false);
+        if (!inside) newMenuOpen = false;
+      }
     }
 
     function onKeyDown(event: KeyboardEvent) {
@@ -1122,10 +1130,11 @@
       }
       // No `createOpen` branch on purpose — CreateModal owns its own Escape
       // (and backdrop) dismissal; two handlers would double-fire.
-      if (scopeMenuOpen || filterOpen || footerMenuOpen) {
+      if (scopeMenuOpen || filterOpen || footerMenuOpen || newMenuOpen) {
         scopeMenuOpen = false;
         filterOpen = false;
         footerMenuOpen = false;
+        newMenuOpen = false;
         event.preventDefault();
       }
     }
@@ -2072,6 +2081,10 @@
             }}
             onmousedown={(e) => e.stopPropagation()}
           >
+            <!-- The panel itself does not scroll: an inner scroller keeps the
+                 bar off the rounded edge and inside the padding, the way every
+                 other scroll region in the concept is built. -->
+            <div class="chat-filter-scroll">
             <div class="chat-filter-caption">Sort by</div>
             <div class="chat-sort-toggle" role="group" aria-label="Sort by">
               <button
@@ -2212,6 +2225,7 @@
                 {/each}
               </div>
             {/if}
+            </div>
           </div>
         {/if}
       </div>
@@ -4084,9 +4098,25 @@
     width: 252px;
     min-width: 0;
     max-width: min(252px, calc(100vw - 16px));
-    padding: 6px;
-    overflow-x: hidden;
+    /* Tall enough that a normal roster does not need scrolling at all; the
+       inherited 280px cap put the People list behind a scrollbar on every
+       window. */
+    max-height: min(70vh, 520px);
+    padding: 6px 2px 6px 6px;
+    overflow: hidden;
     z-index: 80;
+  }
+
+  .chat-filter-scroll {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    /* 4px lane for the 4px bar, so it sits clear of the panel's rounded edge
+       instead of riding the border. */
+    margin-right: 4px;
+    padding-right: 4px;
   }
 
   /* `.p-sec` */
