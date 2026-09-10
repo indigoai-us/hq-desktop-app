@@ -4,12 +4,8 @@ import { buildClaudeCodeUrl } from "./claude-code-link";
 import { createLaunchActions } from "./launch-actions";
 import {
   NO_AI_TOOLS,
-  SETUP_BOOTSTRAP_COMMAND,
-  SETUP_CORE_MARKER,
   SETUP_DEEP_LINK_PROMPT,
   SETUP_PROMPT,
-  SETUP_REPAIR_COMMAND,
-  SETUP_SKILL_PATH,
   type AiTools,
 } from "./setup-launch";
 
@@ -21,9 +17,8 @@ import {
 // scanned"). The pre-typed `/setup` then landed in the composer as an
 // unknown command and the one-click setup CTA did nothing.
 //
-// The deep link now carries a plain-language prompt that names the skill
-// file, so the session can run the wizard without the skill being
-// registered. Terminal launches settle trust before the scan, so they keep
+// The deep link now carries a plain-language request. Native preflight ensures the skill
+// file exists before dispatch, without requiring slash-command registration. Terminal launches settle trust before the scan, so they keep
 // the slash command.
 
 function ok<T>(value: T) {
@@ -49,38 +44,8 @@ describe("SETUP_DEEP_LINK_PROMPT", () => {
     expect(SETUP_DEEP_LINK_PROMPT.trimStart().startsWith("/")).toBe(false);
   });
 
-  it("names the setup skill file so the session can read it directly", () => {
-    expect(SETUP_SKILL_PATH).toBe(".claude/skills/setup/SKILL.md");
-    expect(SETUP_DEEP_LINK_PROMPT).toContain(SETUP_SKILL_PATH);
-  });
-
-  // This CTA is the installer's REPAIR path: `runSetup` reaches the ready
-  // screen even when `fetch_and_extract_template` failed, and the Rust
-  // preflight (`bind_hq_root_for_setup_repair`) deliberately accepts any
-  // existing directory for exactly that case. So the folder the link opens
-  // may have no HQ tree at all — including no setup skill to read. A prompt
-  // that only knows how to read the skill file dead-ends on the machines
-  // that need this button most.
-  it("recovers a partially installed HQ folder, not just a complete one", () => {
-    expect(SETUP_DEEP_LINK_PROMPT).toContain(SETUP_CORE_MARKER);
-    expect(SETUP_DEEP_LINK_PROMPT).toContain(SETUP_REPAIR_COMMAND);
-  });
-
-  it("bootstraps a folder where the template never downloaded", () => {
-    // `hq rescue` cannot serve this case — it resolves the HQ root and reads
-    // core/core.yaml for its version floor, neither of which exists yet.
-    expect(SETUP_BOOTSTRAP_COMMAND).toContain("create-hq");
-    expect(SETUP_DEEP_LINK_PROMPT).toContain(SETUP_BOOTSTRAP_COMMAND);
-    expect(SETUP_REPAIR_COMMAND).not.toContain("create-hq");
-  });
-
-  it("covers all three folder states in order, most-complete first", () => {
-    const skill = SETUP_DEEP_LINK_PROMPT.indexOf(SETUP_SKILL_PATH);
-    const repair = SETUP_DEEP_LINK_PROMPT.indexOf(SETUP_REPAIR_COMMAND);
-    const bootstrap = SETUP_DEEP_LINK_PROMPT.indexOf(SETUP_BOOTSTRAP_COMMAND);
-    expect(skill).toBeGreaterThan(-1);
-    expect(repair).toBeGreaterThan(skill);
-    expect(bootstrap).toBeGreaterThan(repair);
+  it("shows only the human request; recovery lives in the setup skill", () => {
+    expect(SETUP_DEEP_LINK_PROMPT).toBe("Run the setup skill");
   });
 
   it("survives URL encoding into the deep link's q parameter", () => {
