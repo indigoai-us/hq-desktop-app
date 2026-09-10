@@ -791,6 +791,18 @@ async function loadEarlier(): Promise<void> {
  * close/open pair is exactly what a route change does, and the message the
  * user just sent has to survive it.
  */
+/**
+ * Show no session, without dropping any. A fresh chat on the Sessions page
+ * must not inherit whichever session another surface (#welcome's native
+ * setup run) left active — that surface still watches its entry by id.
+ */
+function deselect(): void {
+  if (activeId === null) return;
+  activeId = null;
+  foldCache = null;
+  revision += 1;
+}
+
 function close(sessionId: string): void {
   const { [sessionId]: _dropped, ...rest } = entries;
   entries = rest;
@@ -1505,6 +1517,7 @@ export const liveSessionStore = {
     return Boolean(entries[sessionId]);
   },
   open,
+  deselect,
   openHistory,
   close,
   refreshList,

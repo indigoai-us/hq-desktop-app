@@ -331,12 +331,20 @@
   // not sit in memory behind a session the user left.
   $effect(() => {
     const next = sessionId ?? null;
-    if (next === routedId) return;
+    if (next === routedId) {
+      // Mounting straight onto a fresh chat: still let go of whatever
+      // session another surface left active.
+      // (untracked: the store's active id must not re-run this effect.)
+      if (next === null) untrack(() => liveSessionStore.deselect());
+      return;
+    }
     const previous = untrack(() => openedId);
     routedId = next;
     openedId = next;
     if (previous && previous !== next) liveSessionStore.close(previous);
     if (next) void openRoutedSession(next);
+    // A fresh chat shows no session — not one another surface left active.
+    else untrack(() => liveSessionStore.deselect());
   });
 
   onDestroy(() => {

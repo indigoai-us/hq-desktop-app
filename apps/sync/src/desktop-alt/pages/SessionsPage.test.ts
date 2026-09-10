@@ -1105,6 +1105,30 @@ describe('a session whose replay carries a null or hostile payload', () => {
 });
 
 describe('a route-carried prefill (#welcome Continue in HQ Sessions)', () => {
+  it('is a fresh chat even when another surface left a session active in the store', async () => {
+    backend.list = [{
+      sessionId: 'setup-1', tool: 'claude', phase: 'idle', company: null,
+      model: 'opus', requestedModel: 'opus', effort: null, permissionMode: 'prompt',
+      cwd: '/Users/x/HQ', startedAt: '2026-09-10T00:00:00Z',
+      lastActivityAt: '2026-09-10T00:00:00Z', lastSeq: 0, pendingCount: 0,
+    }];
+    // #welcome's native setup run opened its session in the shared store.
+    await liveSessionStore.refreshList();
+    await liveSessionStore.open('setup-1');
+    expect(liveSessionStore.activeSessionId).toBe('setup-1');
+
+    render({ initialPrefill: '/startwork acme' });
+    await settle();
+    expect(liveSessionStore.activeSessionId).toBeNull();
+    // The setup run's own entry is untouched — #welcome still watches it by id.
+    expect(liveSessionStore.hasOpen('setup-1')).toBe(true);
+    expect(host.querySelector('textarea')?.value).toBe('/startwork acme');
+    send('/startwork acme');
+    await settle();
+    expect(backend.starts).toHaveLength(1);
+    expect(backend.sends.every((entry) => entry.sessionId !== 'setup-1')).toBe(true);
+  });
+
   it('seeds /startwork into the composer and leaves it there — nothing is sent for the person', async () => {
     render({ initialPrefill: '/startwork acme' });
     await settle();
