@@ -590,7 +590,7 @@ fn main() {
             commands::first_run::is_first_run,
             commands::first_run::should_show_auto_sync_notice,
             commands::first_run::mark_first_run_complete,
-            glass::window_material_capability,
+            commands::window_material::window_material_capability,
             commands::setup_secret::setup_store_secret,
             commands::first_run::mark_auto_sync_notice_shown,
             commands::first_run::set_main_window_vibrancy,
