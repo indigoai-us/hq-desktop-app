@@ -114,7 +114,7 @@
     type TurnOverrides,
   } from '../lib/live-session-store.svelte';
   import type { AgentSession } from '../lib/sessions';
-  import { encodeHistorySessionParam } from './sessions-route-param';
+  import { encodeHistorySessionParam, encodeLiveSessionParam } from './sessions-route-param';
   import { sessionsStore } from '../lib/sessions-store.svelte';
   import ProjectCreatedCard from '../../components/sessions/ProjectCreatedCard.svelte';
   import { projectLinksStore } from '../lib/project-links-store.svelte';
@@ -1224,7 +1224,7 @@
           meta,
         );
         openedId = started;
-        onopensession?.(started);
+        onopensession?.(encodeLiveSessionParam(started, company));
         await onmentionsend(started, text, mentions);
       } catch (err) {
         actionError = err instanceof Error ? err.message : String(err);
@@ -1274,7 +1274,10 @@
       // is what made a follow-up accidentally start another conversation.
       if (started) {
         openedId = started;
-        onopensession?.(started, sessionId ? undefined : { replace: true });
+        // The route carries the company the session was started with: the
+        // store's list may not have caught up yet, and the shell keys its
+        // access check on that `?company=`.
+        onopensession?.(encodeLiveSessionParam(started, company), sessionId ? undefined : { replace: true });
       }
     }
     if (started && messageAccepted) await onmentionsend(started, text, mentions);
