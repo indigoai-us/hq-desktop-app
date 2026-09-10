@@ -185,16 +185,24 @@ describe("SetupChannelIntro with a Setup Agent", () => {
     expect(q('[data-testid="setup-run"]')).not.toBeNull();
   });
 
-  it("a remembered outcome shows the finished stepper and Open setup chat", async () => {
+  it("a remembered outcome shows the finished stepper; Open setup chat lives in the finale, not the hero", async () => {
     saveSetupRunRecord({ sessionId: "sess-done", step: 5, status: "done" });
     const agent = new SetupAgent(fakeSetupRun());
     const onopensessiondetails = vi.fn();
     await mountIntro({ agent, onopensessiondetails });
     expect(q('[data-testid="setup-run-card"]')?.dataset.setupRunMode).toBe("done");
+    expect(q('[data-testid="setup-run-details"]')).toBeNull();
+  });
+
+  it("a paused outcome keeps Open setup chat on the hero", async () => {
+    saveSetupRunRecord({ sessionId: "sess-paused", step: 2, status: "ended" });
+    const agent = new SetupAgent(fakeSetupRun());
+    const onopensessiondetails = vi.fn();
+    await mountIntro({ agent, onopensessiondetails });
     const button = q('[data-testid="setup-run-details"]') as HTMLButtonElement;
     expect(button?.textContent?.trim()).toBe("Open setup chat");
     button.click();
-    expect(onopensessiondetails).toHaveBeenCalledWith("sess-done");
+    expect(onopensessiondetails).toHaveBeenCalledWith("sess-paused");
   });
 });
 

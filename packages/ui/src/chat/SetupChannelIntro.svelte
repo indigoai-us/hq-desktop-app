@@ -336,7 +336,7 @@
           run={agent.state}
           resumeStep={agent.resumeStep}
           busy={agent.busy}
-          onshowdetails={onopensessiondetails && agent.sessionId ? showRunDetails : undefined}
+          onshowdetails={onopensessiondetails && agent.sessionId && agent.mode !== "done" ? showRunDetails : undefined}
         />
       </div>
     {:else}

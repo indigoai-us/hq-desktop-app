@@ -42,8 +42,8 @@ describe("SetupFinale", () => {
     const el = render({ onsessions, onclaude, oncodex });
     const root = el.querySelector('[data-testid="setup-agent-finish"]');
     expect(root?.getAttribute("role")).toBe("group");
-    expect(root?.getAttribute("aria-label")).toBe("You're set up");
-    expect(el.querySelector('[data-testid="setup-finale-title"]')?.textContent).toBe("You're set up");
+    expect(root?.getAttribute("aria-label")).toBe("You're set up.");
+    expect(el.querySelector('[data-testid="setup-finale-title"]')?.textContent).toBe("You're set up.");
     expect(el.textContent).toContain("Pick where to keep going");
     const sessions = el.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-sessions"]');
     const claude = el.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-claude"]');

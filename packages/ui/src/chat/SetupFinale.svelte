@@ -1,22 +1,23 @@
 <script lang="ts">
   /**
-   * SetupFinale — the one calm block under the Setup Agent's last message
-   * once the run is done. Top to bottom: a thin divider, "You're set up",
-   * the three "Continue in …" actions, the Learn-HQ links, the quiet
-   * Run again / Open setup chat row, and (when the shell has any) the
-   * First Moves list. No box, no background: it sits in the message text
-   * column like a reply, and eases in (a 220ms fade with a 6px rise, as a
-   * CSS keyframe: the test DOM has no Web Animations API for svelte/transition).
-   * Presentational; every action goes back up.
+   * SetupFinale — the end of setup under the Setup Agent's last message:
+   * a wallpaper banner (the same art and scrim as the #welcome hero) that
+   * says it's done, the three "Continue in …" actions, the Learn-HQ links
+   * and the quiet Run again / Open setup chat row; then, on the surface
+   * below it, the First Moves list. One column, one rhythm. Eases in with a
+   * CSS keyframe (the test DOM has no Web Animations API for
+   * svelte/transition). Presentational; every action goes back up.
    */
   import SetupButton from "./SetupButton.svelte";
   import FirstMoves from "./FirstMoves.svelte";
   import { SETUP_RESOURCES } from "./setup-channel";
+  import { SETUP_HERO_ART } from "./setup-welcome-art";
   import { SETUP_RESOURCE_GLYPHS } from "./setup-resource-glyphs";
   import type { FirstMove, FirstMoveId } from "./first-moves";
 
-  const SETUP_FINALE_TITLE = "You're set up";
-  const SETUP_FINALE_LEAD = "Pick where to keep going — each opens a fresh chat with your first task ready.";
+  const SETUP_FINALE_EYEBROW = "Setup complete";
+  const SETUP_FINALE_TITLE = "You're set up.";
+  const SETUP_FINALE_LEAD = "Pick where to keep going. Each opens a fresh chat with your first task ready.";
 
   interface Props {
     /** Continue in HQ Sessions; the button is hidden when the host has no Sessions page. */
@@ -61,113 +62,106 @@
   const hasMoves = $derived(Boolean(firstMoves && firstMoves.length > 0 && onmove));
 </script>
 
-<div
+<section
   class="setup-finale"
   data-testid="setup-agent-finish"
   role="group"
   aria-label={SETUP_FINALE_TITLE}
 >
-  <div class="finale-inner">
-    <hr class="divider" aria-hidden="true" />
+  <div class="banner">
+    <img class="art art--light" src={SETUP_HERO_ART.light} alt="" aria-hidden="true" decoding="async" draggable="false" />
+    <img class="art art--dark" src={SETUP_HERO_ART.dark} alt="" aria-hidden="true" decoding="async" draggable="false" />
+    <div class="scrim" aria-hidden="true"></div>
 
-    <div class="title-row">
-      <svg
-        class="check"
-        viewBox="0 0 16 16"
-        width="16"
-        height="16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.75"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
-      </svg>
-      <h3 class="title" data-testid="setup-finale-title">{SETUP_FINALE_TITLE}</h3>
-    </div>
-    <p class="lead">{SETUP_FINALE_LEAD}</p>
+    <div class="copy">
+      <div class="heading">
+        <span class="eyebrow">{SETUP_FINALE_EYEBROW}</span>
+        <h3 class="title" data-testid="setup-finale-title">{SETUP_FINALE_TITLE}</h3>
+        <p class="lead">{SETUP_FINALE_LEAD}</p>
+      </div>
 
-    <div class="actions" role="group" aria-label="Keep going">
-      {#if onsessions}
-        <SetupButton variant="primary" data-testid="setup-agent-open-sessions" onclick={() => onsessions?.()}>
-          Continue in HQ Sessions
+      <div class="actions" role="group" aria-label="Keep going">
+        {#if onsessions}
+          <SetupButton variant="primary" data-testid="setup-agent-open-sessions" onclick={() => onsessions?.()}>
+            Continue in HQ Sessions
+          </SetupButton>
+        {/if}
+        <SetupButton variant="primary" data-testid="setup-agent-open-claude" onclick={() => onclaude()}>
+          Continue in Claude Code
         </SetupButton>
+        <SetupButton variant="primary" data-testid="setup-agent-open-codex" onclick={() => oncodex()}>
+          Continue in Codex
+        </SetupButton>
+      </div>
+      {#if launchError}
+        <p class="launch-error" role="alert" data-testid="setup-finale-error">{launchError}</p>
       {/if}
-      <SetupButton variant="primary" data-testid="setup-agent-open-claude" onclick={() => onclaude()}>
-        Continue in Claude Code
-      </SetupButton>
-      <SetupButton variant="primary" data-testid="setup-agent-open-codex" onclick={() => oncodex()}>
-        Continue in Codex
-      </SetupButton>
-    </div>
-    {#if launchError}
-      <p class="launch-error" role="alert" data-testid="setup-finale-error">{launchError}</p>
-    {/if}
 
-    <div class="learn">
-      <span class="eyebrow">Learn HQ</span>
-      <ul class="resources" aria-label="Learn HQ">
-        {#each SETUP_RESOURCES as resource (resource.id)}
-          <li>
-            <a
-              class="resource-link"
-              href={resource.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              data-testid={`setup-finale-resource-${resource.id}`}
-              onclick={(event) => openResourceLink(event, resource.href)}
-            >
-              <svg
-                class="resource-glyph"
-                viewBox="0 0 16 16"
-                width="16"
-                height="16"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.25"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
+      <div class="learn">
+        <span class="eyebrow eyebrow--small">Learn HQ</span>
+        <ul class="resources" aria-label="Learn HQ">
+          {#each SETUP_RESOURCES as resource (resource.id)}
+            <li>
+              <a
+                class="resource-link"
+                href={resource.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid={`setup-finale-resource-${resource.id}`}
+                onclick={(event) => openResourceLink(event, resource.href)}
               >
-                {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
-              </svg>
-              <span>{resource.title}</span>
-            </a>
-          </li>
-        {/each}
-      </ul>
+                <svg
+                  class="resource-glyph"
+                  viewBox="0 0 16 16"
+                  width="16"
+                  height="16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.25"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
+                </svg>
+                <span>{resource.title}</span>
+              </a>
+            </li>
+          {/each}
+        </ul>
+      </div>
+
+      {#if hasQuietRow}
+        <div class="quiet-row">
+          {#if onshowdetails}
+            <SetupButton variant="quiet" data-testid="setup-run-details" onclick={() => onshowdetails?.()}>
+              Open setup chat
+            </SetupButton>
+          {/if}
+          {#if onrunagain}
+            <SetupButton variant="quiet" data-testid="setup-run-again" onclick={() => onrunagain?.()}>
+              Run again
+            </SetupButton>
+          {/if}
+        </div>
+      {/if}
     </div>
-
-    {#if hasQuietRow}
-      <div class="quiet-row">
-        {#if onshowdetails}
-          <SetupButton variant="quiet" data-testid="setup-run-details" onclick={() => onshowdetails?.()}>
-            Open setup chat
-          </SetupButton>
-        {/if}
-        {#if onrunagain}
-          <SetupButton variant="quiet" data-testid="setup-run-again" onclick={() => onrunagain?.()}>
-            Run again
-          </SetupButton>
-        {/if}
-      </div>
-    {/if}
-
-    {#if hasMoves}
-      <div class="moves">
-        <FirstMoves moves={firstMoves!} onmove={onmove!} oncodex={onmovecodex} />
-      </div>
-    {/if}
   </div>
-</div>
+
+  {#if hasMoves}
+    <div class="moves">
+      <FirstMoves moves={firstMoves!} onmove={onmove!} oncodex={onmovecodex} />
+    </div>
+  {/if}
+</section>
 
 <style>
   .setup-finale {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
     max-width: 760px;
-    color: var(--text-1, inherit);
-    animation: finale-enter 220ms ease-out both;
+    animation: finale-enter 240ms ease-out both;
   }
   @keyframes finale-enter {
     from {
@@ -179,37 +173,96 @@
       transform: translateY(0);
     }
   }
-  .finale-inner {
+
+  /* ---- The banner: same art, scrim and white-on-dark buttons as the hero. */
+  .banner {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border-radius: 14px;
+    background: #0a0b0d;
+    color: #ffffff;
+    --text-1: #ffffff;
+    --text-2: rgba(255, 255, 255, 0.82);
+    --text-3: rgba(255, 255, 255, 0.62);
+    --setup-btn-fg: #fff;
+    --setup-btn-line: rgba(255, 255, 255, 0.6);
+    --setup-btn-primary-bg: #fff;
+    --setup-btn-primary-fg: #111;
+    --setup-btn-muted: rgba(255, 255, 255, 0.78);
+    --setup-btn-hover: rgba(255, 255, 255, 0.14);
+  }
+  .art {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center 40%;
+    user-select: none;
+    pointer-events: none;
+  }
+  .art--dark {
+    display: none;
+  }
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-force-theme="light"])) .art--dark {
+      display: block;
+    }
+    :global(:root:not([data-force-theme="light"])) .art--light {
+      display: none;
+    }
+  }
+  :global(:root[data-force-theme="dark"]) .art--dark {
+    display: block;
+  }
+  :global(:root[data-force-theme="dark"]) .art--light {
+    display: none;
+  }
+  .scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    background:
+      linear-gradient(180deg, rgba(6, 6, 6, 0.18) 0%, rgba(6, 6, 6, 0.5) 45%, rgba(6, 6, 6, 0.88) 100%),
+      linear-gradient(90deg, rgba(6, 6, 6, 0.5) 0%, rgba(6, 6, 6, 0) 70%);
+  }
+  .copy {
+    position: relative;
+    z-index: 2;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 20px;
+    padding: 28px 28px 24px;
   }
-  .divider {
-    margin: 16px 0 0;
-    border: 0;
-    border-top: 1px solid var(--border);
-  }
-  .title-row {
+  .heading {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-direction: column;
+    gap: 6px;
   }
-  .check {
-    flex: 0 0 auto;
-    color: var(--text-1, inherit);
+  .eyebrow {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-3);
   }
   .title {
     margin: 0;
-    font-size: 15px;
+    font-size: 22px;
     font-weight: 600;
-    line-height: 1.3;
-    color: var(--text-1, inherit);
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+    color: var(--text-1);
   }
   .lead {
-    margin: -6px 0 0;
+    margin: 0;
+    max-width: 56ch;
     font-size: 13px;
     line-height: 1.5;
-    color: var(--text-2, inherit);
+    color: var(--text-2);
   }
   .actions {
     display: flex;
@@ -218,27 +271,25 @@
     gap: 8px;
   }
   .launch-error {
-    margin: -4px 0 0;
+    margin: -12px 0 0;
     font-size: 12px;
     line-height: 1.4;
-    color: var(--danger, #d9534f);
+    color: #ffb4ad;
   }
   .learn {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 10px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(255, 255, 255, 0.18);
   }
-  .eyebrow {
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text-3, inherit);
+  .eyebrow--small {
+    letter-spacing: 0.1em;
   }
   .resources {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px 16px;
+    gap: 8px 20px;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -246,33 +297,36 @@
   .resource-link {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
     font-size: 13px;
     line-height: 1.4;
-    color: var(--text-2, inherit);
+    color: var(--text-2);
     text-decoration: none;
     transition: color 140ms ease;
   }
   .resource-link:hover,
   .resource-link:focus-visible {
-    color: var(--text-1, inherit);
+    color: var(--text-1);
   }
   .resource-link:focus-visible {
-    outline: 2px solid var(--text-1, currentColor);
+    outline: 2px solid #fff;
     outline-offset: 2px;
   }
   .resource-glyph {
     flex: 0 0 auto;
+    opacity: 0.85;
   }
   .quiet-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
-    margin-left: -12px; /* quiet buttons carry 12px side padding; keep the text on the column. */
+    margin: -8px 0 0 -6px; /* quiet buttons carry 6px side padding: keep the text on the column. */
   }
+
+  /* ---- First moves sit on the surface below the banner, same column. */
   .moves {
-    margin-top: 4px; /* 12px rhythm + 4px = 16px above the list. */
+    padding: 0 2px;
   }
   @media (prefers-reduced-motion: reduce) {
     .setup-finale {
