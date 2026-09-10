@@ -955,7 +955,6 @@
         {extraPages}
         {rowExtras}
         rowExtrasLoading={(companies === null && !workspaceError) || projectLinksStore.loading}
-        rowExtrasError={Boolean(workspaceError) || projectLinksStore.initialError}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');

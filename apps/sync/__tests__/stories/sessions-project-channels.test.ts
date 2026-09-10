@@ -124,6 +124,9 @@ describe('expand a project channel → its nested sessions', () => {
     expect(STORE).toContain("invoke<ProjectLink[]>('session_project_links'".replace('invoke<ProjectLink[]>', '').slice(0, 0) + 'loadSessionProjectLinks(company)');
     expect(STORE).toContain("const PHASE_EVENT = 'agent-session:phase'");
     expect(STORE).toContain('export const LINKS_REFRESH_MS = 30_000');
+    expect(STORE).toContain("area: 'session-project-links'");
+    expect(UI_SIDEBAR).not.toContain('Some project sessions');
+    expect(SHELL).not.toContain('rowExtrasError={Boolean(workspaceError)');
     expect(MAIN_RS).toContain('commands::session_project_links::session_project_links,');
     expect(LINKS_RS).toContain('pub const CACHE_TTL: Duration = Duration::from_secs(10)');
   });

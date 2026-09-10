@@ -9,6 +9,7 @@
 // cloud lookup never gates first paint or removes saved local sessions.
 
 import { untrack } from 'svelte';
+import * as Sentry from '@sentry/svelte';
 import { listen } from '@tauri-apps/api/event';
 
 import { safeUnlisten } from '../../lib/listener-registry';
@@ -68,6 +69,38 @@ let watched: string[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
 let unlisteners: Array<() => void> = [];
 let generation = 0;
+/** Dedupe Sentry until that company succeeds again. */
+const reportedFailures = new Set<string>();
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function reportLinksFailure(
+  company: string,
+  stage: 'local' | 'enrich' | 'boot',
+  err: unknown,
+): void {
+  const message = errorText(err);
+  const key = `${company}:${stage}:${message}`;
+  if (reportedFailures.has(key)) return;
+  reportedFailures.add(key);
+  console.error('[session-project-links]', stage, company, message);
+  Sentry.captureException(err instanceof Error ? err : new Error(message), {
+    tags: {
+      area: 'session-project-links',
+      company,
+      stage,
+    },
+    extra: { company, stage, message },
+  });
+}
+
+function clearReportedFailures(company: string): void {
+  for (const key of [...reportedFailures]) {
+    if (key.startsWith(`${company}:`)) reportedFailures.delete(key);
+  }
+}
 const localRequests = new Map<string, object>();
 const remoteRequests = new Map<string, object>();
 const revisions = new Map<string, number>();
@@ -135,6 +168,7 @@ function enrich(company: string, mine: number): void {
       ]).finally(() => clearTimeout(timeout));
       if (mine !== generation || !watched.includes(company)) return;
       failedCompanies = failedCompanies.filter(item => item !== company);
+      clearReportedFailures(company);
       const current = byCompany[company] ?? [];
       // An intervening phase refresh owns membership/status. A slow network
       // response can enrich labels but cannot roll that newer state back.
@@ -147,8 +181,9 @@ function enrich(company: string, mine: number): void {
         ...mergeLocalProjectLinks(current, links),
       ]);
       refreshShared(company, byCompany[company], mine);
-    } catch {
+    } catch (err) {
       if (mine === generation && !failedCompanies.includes(company)) failedCompanies = [...failedCompanies, company];
+      if (mine === generation) reportLinksFailure(company, 'enrich', err);
       // Local links remain usable offline.
     } finally {
       if (mine === generation && !settledCompanies.includes(company)) settledCompanies = [...settledCompanies, company];
@@ -174,10 +209,13 @@ async function refresh(): Promise<void> {
         ]).finally(() => clearTimeout(timeout));
         if (mine !== generation || !watched.includes(company)) return;
         revisions.set(company, (revisions.get(company) ?? 0) + 1);
+        failedCompanies = failedCompanies.filter(item => item !== company);
+        clearReportedFailures(company);
         const previous = byCompany[company] ?? [];
         setCompanyLinks(company, mergeLocalProjectLinks(links, previous));
-      } catch {
+      } catch (err) {
         if (mine === generation && !failedCompanies.includes(company)) failedCompanies = [...failedCompanies, company];
+        if (mine === generation) reportLinksFailure(company, 'local', err);
         // Keep the last known links: the flag may be off, or hq-pro away.
       } finally {
         if (localRequests.get(company) === request) localRequests.delete(company);
@@ -239,6 +277,9 @@ function start(companies: string[]): void {
       const missing = watchedCompanies.filter(company => !settledCompanies.includes(company));
       failedCompanies = [...new Set([...failedCompanies, ...missing])];
       settledCompanies = [...new Set([...settledCompanies, ...missing])];
+      for (const company of missing) {
+        reportLinksFailure(company, 'boot', new Error('Project session links boot timed out'));
+      }
     }, 10000);
   }
   if (timer === null) {
@@ -260,6 +301,7 @@ function stop(): void {
   watchedCompanies = [];
   settledCompanies = [];
   failedCompanies = [];
+  reportedFailures.clear();
   generation += 1;
   localRequests.clear();
   remoteRequests.clear();

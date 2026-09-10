@@ -254,6 +254,8 @@
     rowExtrasError = false,
     rowExtras = null,
   }: Props = $props();
+  // Host still reports load failures; the sidebar no longer paints them.
+  void rowExtrasError;
 
   interface PairUnreadEntry {
     withPersonUid: string;
@@ -2094,7 +2096,6 @@
         {/each}
       </div>
     {:else}
-    {#if rowExtrasError}<div role="status" class="chat-empty">Some project sessions couldn’t load. Retrying…</div>{/if}
     {#if pendingRequestCount > 0}
       <button
         type="button"
