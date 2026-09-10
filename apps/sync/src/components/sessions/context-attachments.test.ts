@@ -94,6 +94,12 @@ describe('chips', () => {
   it('labels a chip as Source · title · subtitle', () => {
     expect(attachmentLabel(loaded())).toBe('Meeting · Weekly sync · 2026-09-01');
     expect(attachmentLabel({ kind: 'vault', title: 'brief.md', path: '/p' })).toBe('File · brief.md');
+    expect(attachmentLabel({ kind: 'file', title: 'notes.txt', path: 'pasted/notes.txt' })).toBe(
+      'File · notes.txt',
+    );
+    expect(attachmentLabel({ kind: 'image', title: 'shot.png', path: 'pasted/shot.png' })).toBe(
+      'Image · shot.png',
+    );
   });
 
   it('builds chips from each row shape', () => {
