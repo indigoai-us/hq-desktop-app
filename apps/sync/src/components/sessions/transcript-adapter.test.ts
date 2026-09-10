@@ -370,6 +370,29 @@ describe('foldSessionEvents — tool groups', () => {
     expect(groups(closed.blocks)[0]!.calls[0]!.status).toBe('ok');
   });
 
+  it('does not duplicate a toolCall that is re-announced under the same id', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'toolCall', id: 'a', name: 'bash', input: { command: 'ls' } },
+      { kind: 'toolCall', id: 'a', name: 'bash', input: { command: 'ls' } },
+      { kind: 'toolResult', id: 'a', isError: false, content: 'ok' },
+    ]);
+    expect(groups(blocks)[0]!.calls).toHaveLength(1);
+    expect(groups(blocks)[0]!.running).toBe(false);
+    expect(groups(blocks)[0]!.calls[0]!.status).toBe('ok');
+  });
+
+  it('settles leftover running calls when the turn ends without results', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'toolCall', id: 'a', name: 'read_file', input: { target_file: '/x.ts' } },
+      { kind: 'toolCall', id: 'b', name: 'grep', input: { pattern: 'foo' } },
+      { kind: 'turnDone', status: 'success' },
+    ]);
+    const group = groups(blocks)[0]!;
+    expect(group.running).toBe(false);
+    expect(group.calls.map((c) => c.status)).toEqual(['ok', 'ok']);
+    expect(group.summary).toBe('Read 1 file · searched 1 time');
+  });
+
   it('marks a failed result and names the failure on the summary', () => {
     const { blocks } = foldSessionEvents([
       { kind: 'toolCall', id: 'a', name: 'Bash', input: { command: 'boom' } },

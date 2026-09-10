@@ -97,23 +97,33 @@ export type ToolCategory = (typeof TOOL_CATEGORIES)[number];
 export function toolCategory(toolName: string): ToolCategory {
   switch (toolName) {
     case 'Bash':
+    case 'bash':
     case 'BashOutput':
     case 'KillShell':
+    case 'run_terminal_command':
       return 'command';
     case 'Edit':
     case 'MultiEdit':
     case 'Write':
     case 'NotebookEdit':
+    case 'write':
+    case 'search_replace':
       return 'edit';
     case 'Read':
+    case 'read_file':
       return 'read';
     case 'Grep':
     case 'Glob':
     case 'WebSearch':
+    case 'grep':
+    case 'web_search':
       return 'search';
     case 'WebFetch':
+    case 'web_fetch':
+    case 'open_page':
       return 'fetch';
     case 'TodoWrite':
+    case 'todo_write':
       return 'todo';
     default:
       return 'other';
@@ -779,6 +789,18 @@ export function foldSessionEvents(
     openGroup = null;
   }
 
+  /**
+   * A finished turn (or a hard session end) is the last word on open tools.
+   * Grok often never sends a matching toolResult after prompt_complete; leave
+   * those calls `running` and the folded row spins after Idle — and expanding
+   * it remounts live artifact stats for every still-open write.
+   */
+  function settleOpenCalls(): void {
+    for (const call of callsById.values()) {
+      if (call.status === 'running') call.status = 'ok';
+    }
+  }
+
   function closeProse(): void {
     if (openProse) openProse.streaming = false;
     openProse = null;
@@ -977,6 +999,17 @@ export function foldSessionEvents(
         // A call with no id still gets a row; a call with no name is "Tool".
         const id = contentToText(event.id) || `call-${index}`;
         const name = contentToText(event.name) || 'Tool';
+        const existing = callsById.get(id);
+        if (existing) {
+          // Grok (and other ACP hosts) re-announce the same toolCallId on
+          // tool_call_update. A second row would stay `running` forever after
+          // the result lands on the first object — spinner never stops, and
+          // expanding duplicates the list enough to take the webview down.
+          if (name && name !== 'Tool') existing.name = name;
+          const detail = describeToolInput(event.input);
+          if (detail) existing.detail = detail;
+          break;
+        }
         const call: ToolCallSummary = {
           id,
           name,
@@ -1117,6 +1150,7 @@ export function foldSessionEvents(
       case 'turnDone': {
         retireThought();
         closeProse();
+        settleOpenCalls();
         closeGroup();
         // The turn a `/handoff` started has ended: written on success, and
         // simply over (the error row below says why) on anything else.
@@ -1154,6 +1188,7 @@ export function foldSessionEvents(
       case 'error': {
         retireThought();
         closeProse();
+        settleOpenCalls();
         closeGroup();
         const message = contentToText(event.message);
         const code = typeof event.code === 'string' ? event.code : undefined;
@@ -1168,6 +1203,7 @@ export function foldSessionEvents(
       case 'exited': {
         retireThought();
         closeProse();
+        settleOpenCalls();
         closeGroup();
         ended = true;
         push({ type: 'divider', id: `exited-${index}`, label: 'Session ended', at });

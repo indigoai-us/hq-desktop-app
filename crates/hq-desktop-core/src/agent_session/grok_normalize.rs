@@ -8,6 +8,8 @@
 //! Grok release that adds a notification must not turn a working session into
 //! a red transcript.
 
+use std::collections::HashSet;
+
 use serde_json::Value;
 
 use super::grok_wire::{
@@ -21,6 +23,10 @@ pub struct GrokNormalizer {
     /// Set by the driver when IT sent `session/cancel`. The turn then ends as
     /// [`DoneStatus::Interrupted`] instead of an error, and the flag clears.
     interrupted: bool,
+    /// Tool ids already announced as [`SessionEvent::ToolCall`]. Grok repeats
+    /// the same toolCallId on `tool_call_update` with a title; a second
+    /// ToolCall event leaves a stuck spinner in the transcript.
+    seen_tool_ids: HashSet<String>,
 }
 
 impl GrokNormalizer {
@@ -49,7 +55,9 @@ impl GrokNormalizer {
         }
 
         match method {
-            "session/update" => map_update(params.get("update").unwrap_or(&Value::Null)),
+            "session/update" => {
+                map_update(params.get("update").unwrap_or(&Value::Null), &mut self.seen_tool_ids)
+            }
             "_x.ai/session/prompt_complete" => {
                 let status = if self.interrupted {
                     self.interrupted = false;
@@ -199,7 +207,7 @@ fn tool_output(update: &Value) -> Value {
     Value::String(parts.join("\n"))
 }
 
-fn map_update(update: &Value) -> Vec<SessionEvent> {
+fn map_update(update: &Value, seen_tool_ids: &mut HashSet<String>) -> Vec<SessionEvent> {
     let kind = update
         .get("sessionUpdate")
         .and_then(Value::as_str)
@@ -219,6 +227,9 @@ fn map_update(update: &Value) -> Vec<SessionEvent> {
         "user_message_chunk" => Vec::new(),
         "tool_call" => {
             let id = str_field(update, "toolCallId");
+            if !id.is_empty() {
+                seen_tool_ids.insert(id.clone());
+            }
             let mut events = vec![SessionEvent::ToolCall {
                 id: id.clone(),
                 name: tool_name(update),
@@ -233,16 +244,22 @@ fn map_update(update: &Value) -> Vec<SessionEvent> {
         "tool_call_update" => {
             let id = str_field(update, "toolCallId");
             let mut events = Vec::new();
-            if update.get("kind").is_some()
-                || update.get("title").is_some()
-                || update.get("rawInput").is_some()
-            {
-                events.push(SessionEvent::ToolCall {
-                    id: id.clone(),
-                    name: tool_name(update),
-                    input: tool_input(update),
-                    parent_tool_use_id: None,
-                });
+            // A later title/input patch is not a new call. Re-emitting ToolCall
+            // duplicates the row in the transcript fold; the original stays
+            // `running` after the result. Only announce when this id is new.
+            if !id.is_empty() && !seen_tool_ids.contains(&id) {
+                if update.get("kind").is_some()
+                    || update.get("title").is_some()
+                    || update.get("rawInput").is_some()
+                {
+                    seen_tool_ids.insert(id.clone());
+                    events.push(SessionEvent::ToolCall {
+                        id: id.clone(),
+                        name: tool_name(update),
+                        input: tool_input(update),
+                        parent_tool_use_id: None,
+                    });
+                }
             }
             if let Some(result) = resolved_result(update, id) {
                 events.push(result);
@@ -319,6 +336,49 @@ mod tests {
             thought,
             vec![SessionEvent::ThinkingDelta { text: "hmm".into() }]
         );
+    }
+
+    #[test]
+    fn tool_call_update_does_not_reannounce_a_known_id() {
+        let mut n = GrokNormalizer::new();
+        let start = n.normalize(&json!({
+            "method": "session/update",
+            "params": { "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "t1",
+                "kind": "execute",
+                "status": "pending",
+            }}
+        }));
+        assert_eq!(start.len(), 1);
+        let update = n.normalize(&json!({
+            "method": "session/update",
+            "params": { "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "t1",
+                "title": "bash",
+                "rawInput": { "command": "ls" },
+                "status": "in_progress",
+            }}
+        }));
+        assert!(update.is_empty());
+        let done = n.normalize(&json!({
+            "method": "session/update",
+            "params": { "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "t1",
+                "status": "completed",
+                "content": [{
+                    "type": "content",
+                    "content": { "type": "text", "text": "ok" }
+                }],
+            }}
+        }));
+        assert_eq!(done.len(), 1);
+        assert!(matches!(
+            &done[0],
+            SessionEvent::ToolResult { id, is_error, .. } if id == "t1" && !*is_error
+        ));
     }
 
     #[test]
