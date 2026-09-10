@@ -12,6 +12,41 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 const UI_SEAM_CATEGORY: &str = "ui.seam";
 const NATIVE_PANIC_PHASE_TAG: &str = "native_panic_phase";
 
+/// Maximum bytes retained from either raw process-output stream on a setup
+/// failure. The end of a process stream contains its actionable failure text.
+pub const SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES: usize = 16 * 1024;
+
+/// Return the tail of a diagnostic stream without splitting a UTF-8 codepoint.
+pub fn setup_diagnostic_tail(value: &str) -> String {
+    if value.len() <= SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES {
+        return value.to_string();
+    }
+
+    let mut start = value.len() - SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    value[start..].to_string()
+}
+
+/// The exact Sentry issue grouping for setup dependency failures. Correlation
+/// fields deliberately stay outside this pair so retries and people do not
+/// fragment a single dependency/category root cause into separate issues.
+pub fn setup_failure_fingerprint<'a>(dependency: &'a str, category: &'a str) -> [&'a str; 2] {
+    [dependency, category]
+}
+
+/// Isolate best-effort Sentry reporting from an interactive command. A failed
+/// thread launch, slow transport, or panic is intentionally a silent no-op for
+/// the caller; product work must never wait on diagnostics.
+pub fn dispatch_sentry_report(report: impl FnOnce() + Send + 'static) {
+    let _ = std::thread::Builder::new()
+        .name("sentry-diagnostic-reporter".to_string())
+        .spawn(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(report));
+        });
+}
+
 /// Lifecycle state recorded with native-panic reports. The state is deliberately
 /// small and static because it is updated from the native event-loop thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,11 +224,18 @@ fn append_native_panic_context(event: &mut Event<'static>, phase: NativePanicPha
 
 const SENSITIVE_FIELD_NAMES: &[&str] = &[
     "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
     "password",
     "secret",
     "apikey",
     "api_key",
+    "x-api-key",
     "token",
+    "access_token",
+    "client_secret",
+    "private_key",
 ];
 
 /// Mirror of `hq_desktop_core::sync_outcome::RUNNER_STACK_TOKENS`. The two must
@@ -233,6 +275,190 @@ fn is_sensitive_key(k: &str) -> bool {
     SENSITIVE_FIELD_NAMES
         .iter()
         .any(|name| k.eq_ignore_ascii_case(name))
+}
+
+const FILTERED: &str = "[Filtered]";
+
+fn has_ascii_case_insensitive_prefix_at(value: &str, start: usize, prefix: &str) -> bool {
+    value.as_bytes().get(start..start.saturating_add(prefix.len()))
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix.as_bytes()))
+}
+
+fn replace_ranges(value: &str, ranges: Vec<(usize, usize)>, replacement: &str) -> String {
+    if ranges.is_empty() {
+        return value.to_string();
+    }
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if start < cursor || end <= start {
+            continue;
+        }
+        output.push_str(&value[cursor..start]);
+        output.push_str(replacement);
+        cursor = end;
+    }
+    output.push_str(&value[cursor..]);
+    output
+}
+
+fn redact_home_path_accounts(value: &str) -> String {
+    let mut ranges = Vec::new();
+    let prefixes = ["C:\\Users\\", "C:/Users/", "/Users/", "/home/"];
+    for index in 0..value.len() {
+        for prefix in prefixes {
+            if !has_ascii_case_insensitive_prefix_at(value, index, prefix) {
+                continue;
+            }
+            let account_start = index + prefix.len();
+            let account_end = value[account_start..]
+                .find(['/', '\\'])
+                .map(|offset| account_start + offset)
+                .unwrap_or(value.len());
+            if account_start < account_end {
+                ranges.push((account_start, account_end));
+            }
+            break;
+        }
+    }
+    replace_ranges(value, ranges, "[user]")
+}
+
+fn redact_url_credentials(value: &str) -> String {
+    let mut ranges = Vec::new();
+    let mut offset = 0;
+    while let Some(scheme_offset) = value[offset..].find("://") {
+        let authority_start = offset + scheme_offset + 3;
+        let authority_end = value[authority_start..]
+            .find(|character: char| character.is_whitespace() || matches!(character, '/' | '?' | '#'))
+            .map(|relative| authority_start + relative)
+            .unwrap_or(value.len());
+        if let Some(at_relative) = value[authority_start..authority_end].rfind('@') {
+            let credential_end = authority_start + at_relative;
+            if !value[authority_start..credential_end].is_empty() {
+                ranges.push((authority_start, credential_end));
+            }
+        }
+        offset = authority_end.max(authority_start);
+        if offset == value.len() {
+            break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_labeled_secret_values(value: &str) -> String {
+    const LABELS: &[&str] = &[
+        "authorization",
+        "proxy-authorization",
+        "api_key",
+        "api-key",
+        "apikey",
+        "x-api-key",
+        "token",
+        "access_token",
+        "client_secret",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "private_key",
+        "private-key",
+        "cookie",
+        "set-cookie",
+    ];
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    for index in 0..bytes.len() {
+        for label in LABELS {
+            if !has_ascii_case_insensitive_prefix_at(value, index, label)
+                || (index > 0 && bytes[index - 1].is_ascii_alphanumeric()) {
+                continue;
+            }
+            let mut value_start = index + label.len();
+            while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                value_start += 1;
+            }
+            if !matches!(bytes.get(value_start), Some(b'=') | Some(b':')) {
+                continue;
+            }
+            value_start += 1;
+            while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                value_start += 1;
+            }
+            let value_end = value[value_start..]
+                .find(|character: char| character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"'))
+                .map(|relative| value_start + relative)
+                .unwrap_or(value.len());
+            if value_start < value_end {
+                ranges.push((value_start, value_end));
+            }
+            break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_bearer_tokens(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !has_ascii_case_insensitive_prefix_at(value, index, "bearer") {
+            index += 1;
+            continue;
+        }
+        let mut token_start = index + "bearer".len();
+        if !bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            index += 1;
+            continue;
+        }
+        while bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            token_start += 1;
+        }
+        let token_end = value[token_start..]
+            .find(|character: char| character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"'))
+            .map(|relative| token_start + relative)
+            .unwrap_or(value.len());
+        if token_start < token_end {
+            ranges.push((token_start, token_end));
+            index = token_end;
+        } else {
+            index += 1;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_prefixed_api_keys(value: &str) -> String {
+    const PREFIXES: &[&str] = &["sk-", "sk_", "AKIA", "AIza", "ghp_", "github_pat_", "xoxb-", "xoxp-", "npm_"];
+    let mut ranges = Vec::new();
+    for index in 0..value.len() {
+        for prefix in PREFIXES {
+            if !has_ascii_case_insensitive_prefix_at(value, index, prefix) {
+                continue;
+            }
+            let end = value[index..]
+                .find(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-')))
+                .map(|relative| index + relative)
+                .unwrap_or(value.len());
+            if end.saturating_sub(index) >= prefix.len() + 12 {
+                ranges.push((index, end));
+            }
+            break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+/// Remove credentials and account names from raw setup diagnostics at the
+/// shared Sentry egress boundary, rather than relying on callers to sanitize.
+fn scrub_sensitive_text(value: &str) -> String {
+    let value = redact_url_credentials(value);
+    let value = redact_bearer_tokens(&value);
+    let value = redact_labeled_secret_values(&value);
+    let value = redact_prefixed_api_keys(&value);
+    redact_home_path_accounts(&value)
 }
 
 fn valid_runner_stack_shape(value: &str) -> bool {
@@ -1081,6 +1307,7 @@ fn scrub_sensitive_in_value(v: &mut Value) {
                 scrub_sensitive_in_value(child);
             }
         }
+        Value::String(value) => *value = scrub_sensitive_text(value),
         _ => {}
     }
 }
@@ -1352,6 +1579,15 @@ fn before_send_with_native_context(
         for k in sensitive_keys {
             request.headers.insert(k, "[Filtered]".into());
         }
+        if let Some(url) = request.url.as_mut() {
+            if let Ok(scrubbed) = url::Url::parse(&scrub_sensitive_text(url.as_str())) {
+                *url = scrubbed;
+            }
+        }
+    }
+
+    if let Some(message) = event.message.as_mut() {
+        *message = scrub_sensitive_text(message);
     }
 
     // event.extra is BTreeMap<String, Value>; recurse into each value and
@@ -1364,6 +1600,9 @@ fn before_send_with_native_context(
         }
     }
     scrub_runner_diagnostic_fields(&mut event);
+    for value in event.tags.values_mut() {
+        *value = scrub_sensitive_text(value);
+    }
 
     // event.contexts is BTreeMap<String, Context>; `Context` is a typed enum
     // (`Device`, `Os`, `Runtime`, `App`, `Browser`, `Gpu`, `Trace`, `Other`).
@@ -1386,6 +1625,9 @@ fn before_send_with_native_context(
             )
         {
             breadcrumb.message = Some("[Filtered]".into());
+        }
+        if let Some(message) = breadcrumb.message.as_mut() {
+            *message = scrub_sensitive_text(message);
         }
 
         // event.breadcrumbs[].data is BTreeMap<String, Value> — same pattern
@@ -1542,9 +1784,87 @@ mod tests {
         assert!(is_sensitive_key("token"));
         assert!(is_sensitive_key("apikey"));
         assert!(is_sensitive_key("api_key"));
-        assert!(!is_sensitive_key("x-api-key"));
+        assert!(is_sensitive_key("x-api-key"));
+        assert!(is_sensitive_key("Cookie"));
         assert!(!is_sensitive_key("url"));
         assert!(!is_sensitive_key("note"));
+    }
+
+    /// Setup diagnostics retain raw process text; this proves the shared
+    /// egress scrubber removes several independently shaped credentials from
+    /// environment, command-line, and stderr fields.
+    #[test]
+    fn setup_diagnostic_secret_shapes_are_scrubbed_at_egress() {
+        let mut event = Event::default();
+        event.extra.insert("setup_environment".into(), Value::String("API_KEY=sk_live_abcdefghijklmnopqrstuv".into()));
+        event.extra.insert("setup_command".into(), Value::String("npm --token=Bearer-token-value-123456".into()));
+        event.extra.insert("setup_stderr".into(), Value::String("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature\nhttps://ada:hunter2@registry.example/private".into()));
+
+        let result = before_send(event).expect("event remains sendable");
+        let sent = result.extra.values().map(|value| match value {
+            Value::String(text) => text.as_str(),
+            _ => "",
+        }).collect::<Vec<_>>().join("\n");
+        for secret in ["sk_live_abcdefghijklmnopqrstuv", "Bearer-token-value-123456", "eyJhbGciOiJIUzI1NiJ9.payload.signature", "ada:hunter2"] {
+            assert!(!sent.contains(secret), "credential-shaped text {secret:?} must not leave the process");
+        }
+    }
+
+    /// Absolute paths retain their useful layout without the local account;
+    /// the cap retains the output tail where commands write failure details.
+    #[test]
+    fn setup_diagnostic_paths_are_anonymized_and_streams_keep_the_16kib_tail() {
+        let mut event = Event::default();
+        event.extra.insert("setup_stderr".into(), Value::String(r"C:\Users\Ada\AppData\Local\HQ\error.log /Users/ada/.npm/_logs/error.log".into()));
+        let result = before_send(event).expect("event remains sendable");
+        let Value::String(paths) = &result.extra["setup_stderr"] else {
+            panic!("setup stderr remains text");
+        };
+        assert!(paths.contains(r"C:\Users\[user]\AppData\Local\HQ\error.log"));
+        assert!(paths.contains("/Users/[user]/.npm/_logs/error.log"));
+        assert!(!paths.contains("Ada"));
+        assert!(!paths.contains("/Users/ada"));
+
+        let input = format!("discard-me-{}diagnostic-tail", "x".repeat(SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES));
+        let tail = setup_diagnostic_tail(&input);
+        assert_eq!(tail.len(), SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+        assert!(tail.ends_with("diagnostic-tail"));
+        assert!(!tail.contains("discard-me-"), "the leading output is discarded");
+    }
+
+    /// Correlation is event context, never part of the issue key: one failed
+    /// dependency/category stays one root cause across retries and people.
+    #[test]
+    fn setup_failure_fingerprint_is_only_dependency_and_closed_category() {
+        assert_eq!(
+            setup_failure_fingerprint("node", "exit-nonzero"),
+            ["node", "exit-nonzero"],
+        );
+    }
+
+    /// Diagnostic reporting remains fire-and-forget even when its work is
+    /// slow or panics, which models a stalled or failed Sentry transport.
+    #[test]
+    fn setup_diagnostic_reporter_never_blocks_on_slow_or_failing_work() {
+        let (slow_started, slow_started_rx) = std::sync::mpsc::channel();
+        let start = std::time::Instant::now();
+        dispatch_sentry_report(move || {
+            let _ = slow_started.send(());
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        });
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        slow_started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("detached report should start");
+
+        let (failed_started, failed_started_rx) = std::sync::mpsc::channel();
+        dispatch_sentry_report(move || {
+            let _ = failed_started.send(());
+            panic!("simulated Sentry transport failure");
+        });
+        failed_started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("failed detached report should remain isolated");
     }
 
     #[test]

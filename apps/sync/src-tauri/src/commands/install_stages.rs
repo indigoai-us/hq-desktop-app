@@ -63,6 +63,8 @@ impl OnboardingErrorCategory {
 pub(crate) struct OnboardingFailureScope {
     pub setup_run_id: String,
     pub attempt_count: u32,
+    pub flow: String,
+    pub frontend_session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -153,12 +155,16 @@ pub fn take_onboarding_failure_detail(
     stage: String,
     setup_run_id: String,
     attempt_count: u32,
+    flow: String,
+    frontend_session_id: String,
 ) -> Option<OnboardingFailureDetail> {
     onboarding_failure_details().lock().unwrap().remove(&OnboardingFailureDetailKey {
         stage,
         scope: OnboardingFailureScope {
             setup_run_id,
             attempt_count,
+            flow,
+            frontend_session_id,
         },
     })
 }
@@ -947,14 +953,20 @@ mod tests {
         let first_scope = OnboardingFailureScope {
             setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
             attempt_count: 1,
+            flow: "first_install".to_string(),
+            frontend_session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
         };
         let retry_scope = OnboardingFailureScope {
             setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
             attempt_count: 2,
+            flow: "first_install".to_string(),
+            frontend_session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
         };
         let path_write_scope = OnboardingFailureScope {
             setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
             attempt_count: 3,
+            flow: "first_install".to_string(),
+            frontend_session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
         };
         clear_onboarding_failure_detail("deps", Some(&first_scope));
         clear_onboarding_failure_detail("deps", Some(&retry_scope));
@@ -989,6 +1001,8 @@ mod tests {
                 "deps".to_string(),
                 first_scope.setup_run_id.clone(),
                 first_scope.attempt_count,
+                first_scope.flow.clone(),
+                first_scope.frontend_session_id.clone(),
             ),
             Some(OnboardingFailureDetail {
                 failed_dependency: Some("unknown".to_string()),
@@ -1000,6 +1014,8 @@ mod tests {
                 "deps".to_string(),
                 retry_scope.setup_run_id.clone(),
                 retry_scope.attempt_count,
+                retry_scope.flow.clone(),
+                retry_scope.frontend_session_id.clone(),
             ),
             Some(OnboardingFailureDetail {
                 failed_dependency: Some("qmd".to_string()),
@@ -1011,6 +1027,8 @@ mod tests {
                 "deps".to_string(),
                 retry_scope.setup_run_id,
                 retry_scope.attempt_count,
+                retry_scope.flow,
+                retry_scope.frontend_session_id,
             ),
             None
         );
@@ -1019,6 +1037,8 @@ mod tests {
                 "deps".to_string(),
                 path_write_scope.setup_run_id,
                 path_write_scope.attempt_count,
+                path_write_scope.flow,
+                path_write_scope.frontend_session_id,
             ),
             Some(OnboardingFailureDetail {
                 failed_dependency: Some("path-write".to_string()),

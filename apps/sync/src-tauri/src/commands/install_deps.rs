@@ -57,6 +57,60 @@ tokio::task_local! {
     static ACTIVE_ONBOARDING_FAILURE_SCOPE: OnboardingFailureScope;
 }
 
+tokio::task_local! {
+    static ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR: SetupDiagnosticCollector;
+}
+
+/// Retains the terminal process failure for one dependency. An installer can
+/// retry internally; only a dependency that ultimately fails emits it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SetupCommandDiagnostic {
+    command: String,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    error: String,
+}
+
+#[derive(Clone)]
+struct SetupDiagnosticCollector {
+    command_failure: Arc<Mutex<Option<SetupCommandDiagnostic>>>,
+}
+
+impl SetupDiagnosticCollector {
+    fn new() -> Self {
+        Self { command_failure: Arc::new(Mutex::new(None)) }
+    }
+
+    fn record(&self, diagnostic: SetupCommandDiagnostic) {
+        *self.command_failure.lock().unwrap() = Some(diagnostic);
+    }
+
+    fn take(&self) -> Option<SetupCommandDiagnostic> {
+        self.command_failure.lock().unwrap().take()
+    }
+}
+
+fn record_setup_command_failure(program: &str, args: &[&str], exit_code: Option<i32>, stdout: String, stderr: String, error: String) {
+    let command = std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
+    let diagnostic = SetupCommandDiagnostic {
+        command,
+        exit_code,
+        stdout: hq_telemetry::setup_diagnostic_tail(&stdout),
+        stderr: hq_telemetry::setup_diagnostic_tail(&stderr),
+        error,
+    };
+    let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(|collector| collector.record(diagnostic));
+}
+
+fn append_setup_diagnostic_tail(stream: &mut String, line: &str) {
+    if !stream.is_empty() {
+        stream.push('\n');
+    }
+    stream.push_str(line);
+    *stream = hq_telemetry::setup_diagnostic_tail(stream);
+}
+
 mod which {
     use std::env;
     use std::ffi::{OsStr, OsString};
@@ -1998,7 +2052,9 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(child) => child,
         Err(e) => {
             deregister_handle(&handle_id);
-            return Err(format!("Failed to spawn '{}': {}", program, e));
+            let error = format!("Failed to spawn '{}': {}", program, e);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
     register_process_group(&handle_id, child.id() as i32);
@@ -2008,14 +2064,18 @@ async fn run_streaming<R: tauri::Runtime>(
         Some(stdout) => stdout,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stdout".to_string());
+            let error = "no stdout".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stderr".to_string());
+            let error = "no stderr".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
@@ -2029,15 +2089,19 @@ async fn run_streaming<R: tauri::Runtime>(
     }
 
     // Drain stderr in a background thread — see the function doc above for why.
+    let stdout_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let (tx, rx) = mpsc::channel::<ReaderMsg>();
     let stdout_thread = {
         let tx = tx.clone();
+        let stdout_tail = Arc::clone(&stdout_tail);
         std::thread::spawn(move || {
             let mut err = None;
             for line_result in BufReader::new(stdout).lines() {
                 match line_result {
                     Ok(line) => {
+                        append_setup_diagnostic_tail(&mut stdout_tail.lock().unwrap(), &line);
                         if tx.send(ReaderMsg::Stdout(line)).is_err() {
                             return;
                         }
@@ -2058,6 +2122,7 @@ async fn run_streaming<R: tauri::Runtime>(
         let app = app.clone();
         let handle_id = handle_id.clone();
         let stderr_lines = Arc::clone(&stderr_lines);
+        let stderr_tail = Arc::clone(&stderr_tail);
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut err = None;
@@ -2065,6 +2130,7 @@ async fn run_streaming<R: tauri::Runtime>(
                 match line_result {
                     Ok(line) => {
                         stderr_lines.lock().unwrap().push(line.clone());
+                        append_setup_diagnostic_tail(&mut stderr_tail.lock().unwrap(), &line);
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
@@ -2226,8 +2292,11 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
+        let stdout = stdout_tail.lock().unwrap().clone();
         let captured = stderr_lines.lock().unwrap().clone();
+        let stderr = stderr_tail.lock().unwrap().clone();
         let msg = format_install_error(code, &captured);
+        record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -4051,7 +4120,9 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(path) => path,
         Err(_) => {
             deregister_handle(&handle_id);
-            return Err(format!("'{}' not found on PATH", program));
+            let error = format!("'{}' not found on PATH", program);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
@@ -4059,6 +4130,7 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(job) => Arc::new(job),
         Err(e) => {
             deregister_handle(&handle_id);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), e.clone());
             return Err(e);
         }
     };
@@ -4075,11 +4147,14 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(child) => child,
         Err(e) => {
             deregister_handle(&handle_id);
-            return Err(format!("Failed to spawn '{}': {}", program, e));
+            let error = format!("Failed to spawn '{}': {}", program, e);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
     if let Err(e) = assign_process_to_job(job.0, child.as_raw_handle() as HANDLE) {
+        record_setup_command_failure(program, args, None, String::new(), String::new(), e.clone());
         let kill_result = child.kill().map_err(|kill_err| {
             format!("failed to kill untracked child after job assignment failure: {kill_err}")
         });
@@ -4107,14 +4182,18 @@ async fn run_streaming<R: tauri::Runtime>(
         Some(stdout) => stdout,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stdout".to_string());
+            let error = "no stdout".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stderr".to_string());
+            let error = "no stderr".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
@@ -4127,15 +4206,19 @@ async fn run_streaming<R: tauri::Runtime>(
         },
     }
 
+    let stdout_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let (tx, rx) = mpsc::channel::<ReaderMsg>();
     let stdout_thread = {
         let tx = tx.clone();
+        let stdout_tail = Arc::clone(&stdout_tail);
         std::thread::spawn(move || {
             let mut err = None;
             for line_result in BufReader::new(stdout).lines() {
                 match line_result {
                     Ok(line) => {
+                        append_setup_diagnostic_tail(&mut stdout_tail.lock().unwrap(), &line);
                         if tx.send(ReaderMsg::Stdout(line)).is_err() {
                             return;
                         }
@@ -4156,6 +4239,7 @@ async fn run_streaming<R: tauri::Runtime>(
         let app = app.clone();
         let handle_id = handle_id.clone();
         let stderr_lines = Arc::clone(&stderr_lines);
+        let stderr_tail = Arc::clone(&stderr_tail);
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut err = None;
@@ -4163,6 +4247,7 @@ async fn run_streaming<R: tauri::Runtime>(
                 match line_result {
                     Ok(line) => {
                         stderr_lines.lock().unwrap().push(line.clone());
+                        append_setup_diagnostic_tail(&mut stderr_tail.lock().unwrap(), &line);
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
@@ -4312,8 +4397,11 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
+        let stdout = stdout_tail.lock().unwrap().clone();
         let captured = stderr_lines.lock().unwrap().clone();
+        let stderr = stderr_tail.lock().unwrap().clone();
         let msg = format_install_error(code, &captured);
+        record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -5488,6 +5576,119 @@ fn result_from_install(dep: &DepDef, install_result: Result<(), String>) -> DepI
     }
 }
 
+fn is_blocked_dependency_result(result: &DepInstallResult) -> bool {
+    result.error.as_deref().is_some_and(|error| error.starts_with("Prerequisite not installed:"))
+}
+
+fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupCommandDiagnostic>) -> OnboardingErrorCategory {
+    if diagnostic.and_then(|diagnostic| diagnostic.exit_code).is_some() {
+        return OnboardingErrorCategory::ExitNonzero;
+    }
+    let error = result.error.as_deref().unwrap_or_default().to_ascii_lowercase();
+    if error.contains("checksum") { OnboardingErrorCategory::Checksum }
+    else if error.contains("timed out") || error.contains("timeout") { OnboardingErrorCategory::Timeout }
+    else if error.contains("permission") || error.contains("eacces") { OnboardingErrorCategory::Permission }
+    else if error.contains("not found") || error.contains("enoent") { OnboardingErrorCategory::NotFound }
+    else if error.contains("failed to spawn") { OnboardingErrorCategory::SpawnFailed }
+    else if error.contains("network") || error.contains("connection") { OnboardingErrorCategory::Network }
+    else { OnboardingErrorCategory::Unknown }
+}
+
+fn setup_flow_token(flow: &str) -> &'static str {
+    match flow {
+        "first_install" => "first_install",
+        "first_launch" => "first_launch",
+        "resume" => "resume",
+        _ => "unknown",
+    }
+}
+
+fn setup_correlation_id(value: &str) -> String {
+    Uuid::parse_str(value).map(|uuid| uuid.to_string()).unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn fallback_setup_command_diagnostic(result: &DepInstallResult) -> SetupCommandDiagnostic {
+    SetupCommandDiagnostic {
+        command: "installer internal operation".to_string(),
+        exit_code: None,
+        stdout: String::new(),
+        stderr: String::new(),
+        error: result.error.clone().unwrap_or_else(|| "installation failed".to_string()),
+    }
+}
+
+fn blocked_dependents_for(deps: &[DepDef], results: &HashMap<&'static str, DepInstallResult>, prerequisite: &'static str) -> Vec<&'static str> {
+    deps.iter()
+        .filter(|dep| dep.depends_on.contains(&prerequisite))
+        .filter_map(|dep| results.get(dep.id).filter(|result| is_blocked_dependency_result(result)).map(|_| dep.id))
+        .collect()
+}
+
+fn reportable_setup_failure_ids(deps: &[DepDef], results: &HashMap<&'static str, DepInstallResult>) -> Vec<&'static str> {
+    deps.iter()
+        .filter(|dep| !dep.optional)
+        .filter_map(|dep| results.get(dep.id)
+            .filter(|result| result.status == DepInstallStatus::Failed && !is_blocked_dependency_result(result))
+            .map(|_| dep.id))
+        .collect()
+}
+
+/// Emit the diagnostic envelope on the current Sentry hub. Callers that are on
+/// the setup path must use `queue_setup_dependency_failure` instead.
+fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'static str, category: OnboardingErrorCategory, diagnostic: SetupCommandDiagnostic, blocked_dependents: &[String]) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let os = os_info::get();
+        let search_path = {
+            #[cfg(windows)] { Some(extended_search_path()) }
+            #[cfg(not(windows))] { None::<String> }
+        };
+        sentry::with_scope(|sentry_scope| {
+            // Only this pair groups events. Correlation and retry data remain context.
+            let fingerprint = hq_telemetry::setup_failure_fingerprint(dependency, category.as_str());
+            sentry_scope.set_fingerprint(Some(&fingerprint));
+            sentry_scope.set_tag("setup_stage", "deps");
+            sentry_scope.set_tag("setup_dependency", dependency);
+            sentry_scope.set_tag("setup_error_category", category.as_str());
+            sentry_scope.set_tag("setup_execution", "attempted");
+            sentry_scope.set_tag("setup_flow", setup_flow_token(&scope.flow));
+            sentry_scope.set_tag("setup_attempt", scope.attempt_count.to_string());
+            sentry_scope.set_tag("setup_os", os.os_type().to_string());
+            sentry_scope.set_tag("setup_architecture", std::env::consts::ARCH);
+            sentry_scope.set_extra("setup_run_id", sentry::protocol::Value::String(setup_correlation_id(&scope.setup_run_id)));
+            sentry_scope.set_extra("setup_frontend_session_id", sentry::protocol::Value::String(setup_correlation_id(&scope.frontend_session_id)));
+            sentry_scope.set_extra("setup_app_version", sentry::protocol::Value::String(env!("APP_VERSION").to_string()));
+            sentry_scope.set_extra("setup_os_version", sentry::protocol::Value::String(os.version().to_string()));
+            sentry_scope.set_extra("setup_command", sentry::protocol::Value::String(diagnostic.command));
+            sentry_scope.set_extra("setup_exit_code", diagnostic.exit_code.map(|code| sentry::protocol::Value::Number(code.into())).unwrap_or(sentry::protocol::Value::Null));
+            sentry_scope.set_extra("setup_stdout_tail", sentry::protocol::Value::String(diagnostic.stdout));
+            sentry_scope.set_extra("setup_stderr_tail", sentry::protocol::Value::String(diagnostic.stderr));
+            sentry_scope.set_extra("setup_error", sentry::protocol::Value::String(diagnostic.error));
+            sentry_scope.set_extra("setup_blocked_dependents", sentry::protocol::Value::Array(blocked_dependents.iter().cloned().map(sentry::protocol::Value::String).collect()));
+            sentry_scope.set_extra("setup_blocked_dependents_status", sentry::protocol::Value::String(if blocked_dependents.is_empty() { "none" } else { "blocked_by_failed_prerequisite" }.to_string()));
+            if let Some(search_path) = search_path {
+                sentry_scope.set_extra("setup_resolved_search_path", sentry::protocol::Value::String(search_path));
+            }
+        }, || sentry::capture_message("Desktop setup dependency installation failed", sentry::Level::Error));
+    }));
+}
+
+/// Queue a terminal setup failure without waiting for the Sentry transport.
+///
+/// Setup completion is more important than a diagnostic envelope: a disabled
+/// client is a no-op, and a slow or panicking transport is isolated in this
+/// detached reporter thread rather than delaying the setup command.
+fn queue_setup_dependency_failure(scope: OnboardingFailureScope, dependency: &'static str, category: OnboardingErrorCategory, diagnostic: SetupCommandDiagnostic, blocked_dependents: Vec<String>) {
+    let hub = sentry::Hub::current().clone();
+    if hub.client().is_none() {
+        return;
+    }
+    hq_telemetry::dispatch_sentry_report(move || {
+        sentry::Hub::run(hub, || {
+            send_setup_dependency_failure(&scope, dependency, category, diagnostic, &blocked_dependents);
+        });
+    });
+}
+
 fn emit_install_line<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
     let _ = app.emit(
         "install:progress",
@@ -5629,6 +5830,7 @@ pub async fn install_deps(
     clear_onboarding_failure_detail("deps", failure_scope.as_ref());
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);
+    let mut diagnostic_by_id: HashMap<&'static str, SetupCommandDiagnostic> = HashMap::new();
     let mut ok_set: HashSet<&'static str> = HashSet::new();
 
     for dep in deps.iter().filter(|dep| dep.optional) {
@@ -5648,22 +5850,26 @@ pub async fn install_deps(
             let app = app.clone();
             let failure_scope = failure_scope.clone();
             async move {
+                let collector = SetupDiagnosticCollector::new();
                 let install_result = match failure_scope {
                     Some(scope) => {
                         ACTIVE_ONBOARDING_FAILURE_SCOPE
-                            .scope(scope, install_orchestrated_dep(&app, dep))
+                            .scope(scope, ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector.clone(), install_orchestrated_dep(&app, dep)))
                             .await
                     }
-                    None => install_orchestrated_dep(&app, dep).await,
+                    None => ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector.clone(), install_orchestrated_dep(&app, dep)).await,
                 };
-                result_from_install(dep, install_result)
+                (result_from_install(dep, install_result), collector.take())
             }
         }))
         .await;
 
-        for result in settled {
+        for (result, diagnostic) in settled {
             if result.status == DepInstallStatus::Ok {
                 ok_set.insert(result.id);
+            }
+            if let Some(diagnostic) = diagnostic {
+                diagnostic_by_id.insert(result.id, diagnostic);
             }
             result_by_id.insert(result.id, result);
         }
@@ -5706,6 +5912,19 @@ pub async fn install_deps(
     if failures.is_empty() {
         Ok(())
     } else {
+        if let Some(scope) = failure_scope.as_ref() {
+            for dependency in reportable_setup_failure_ids(deps, &result_by_id) {
+                let dep = deps.iter().find(|dep| dep.id == dependency).expect("reportable dependency is registered");
+                let result = result_by_id.get(dep.id).expect("reportable dependency has an install result");
+                let diagnostic = diagnostic_by_id.remove(dep.id).unwrap_or_else(|| fallback_setup_command_diagnostic(result));
+                let category = setup_error_category(result, Some(&diagnostic));
+                let blocked_dependents = blocked_dependents_for(deps, &result_by_id, dep.id)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
+                queue_setup_dependency_failure(scope.clone(), dep.id, category, diagnostic, blocked_dependents);
+            }
+        }
         if let Some(failed_dependency) = deps.iter().find_map(|dep| {
             let result = result_by_id.get(dep.id)?;
             (!dep.optional && result.status == DepInstallStatus::Failed).then_some(dep.id)
@@ -5988,6 +6207,191 @@ mod install_deps_planner_tests {
             waves,
             vec![wave1_required(), vec!["qmd", "hq-cli"]]
         );
+    }
+
+    fn failure_scope(run: &str, attempt: u32, session: &str) -> OnboardingFailureScope {
+        OnboardingFailureScope {
+            setup_run_id: run.to_string(),
+            attempt_count: attempt,
+            flow: "first_install".to_string(),
+            frontend_session_id: session.to_string(),
+        }
+    }
+
+    fn setup_diagnostic() -> SetupCommandDiagnostic {
+        SetupCommandDiagnostic {
+            command: "npm install -g @tobilu/qmd".to_string(),
+            exit_code: Some(17),
+            stdout: "downloading package\ninstall complete? no".to_string(),
+            stderr: "npm ERR! EACCES: permission denied".to_string(),
+            error: "Process exited with code 17: npm ERR! EACCES".to_string(),
+        }
+    }
+
+    fn string_extra(event: &sentry::protocol::Event<'static>, key: &str) -> &str {
+        let Some(sentry::protocol::Value::String(value)) = event.extra.get(key) else {
+            panic!("{key} must be a string extra");
+        };
+        value
+    }
+
+    /// The Sentry-only envelope holds the command result and all correlation
+    /// fields needed to line it up with the bounded product telemetry row.
+    #[test]
+    fn setup_failure_event_carries_command_output_correlation_and_system_context() {
+        let scope = failure_scope("11111111-1111-4111-8111-111111111111", 2, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let events = sentry::test::with_captured_events_options(
+            || {
+                send_setup_dependency_failure(&scope, "qmd", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), &["hq-cli".to_string()]);
+            },
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.fingerprint, vec!["qmd", "exit-nonzero"]);
+        assert_eq!(event.tags["setup_stage"], "deps");
+        assert_eq!(event.tags["setup_dependency"], "qmd");
+        assert_eq!(event.tags["setup_error_category"], "exit-nonzero");
+        assert_eq!(event.tags["setup_execution"], "attempted");
+        assert_eq!(event.tags["setup_attempt"], "2");
+        assert_eq!(event.tags["setup_flow"], "first_install");
+        assert_eq!(string_extra(event, "setup_run_id"), "11111111-1111-4111-8111-111111111111");
+        assert_eq!(string_extra(event, "setup_frontend_session_id"), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        assert_eq!(string_extra(event, "setup_command"), "npm install -g @tobilu/qmd");
+        assert_eq!(event.extra["setup_exit_code"], sentry::protocol::Value::Number(17.into()));
+        assert!(string_extra(event, "setup_stdout_tail").contains("downloading package"));
+        assert!(string_extra(event, "setup_stderr_tail").contains("EACCES"));
+        assert!(event.tags.contains_key("setup_os"));
+        assert!(event.tags.contains_key("setup_architecture"));
+        assert!(!string_extra(event, "setup_app_version").is_empty());
+        assert!(!string_extra(event, "setup_os_version").is_empty());
+        assert_eq!(event.extra["setup_blocked_dependents"], sentry::protocol::Value::Array(vec![sentry::protocol::Value::String("hq-cli".into())]));
+        assert_eq!(string_extra(event, "setup_blocked_dependents_status"), "blocked_by_failed_prerequisite");
+    }
+
+    /// A failed node prerequisite blocks qmd and hq-cli, but only node is a
+    /// root cause and only its event carries those dependent effects.
+    #[test]
+    fn setup_failure_roots_exclude_two_dependents_blocked_by_one_prerequisite() {
+        let deps = dependency_defs();
+        let node = deps.iter().find(|dep| dep.id == "node").unwrap();
+        let qmd = deps.iter().find(|dep| dep.id == "qmd").unwrap();
+        let hq_cli = deps.iter().find(|dep| dep.id == "hq-cli").unwrap();
+        let mut results = premark_optional_results(deps);
+        results.insert(node.id, failed_result(node));
+        for dependent in [qmd, hq_cli] {
+            results.insert(dependent.id, DepInstallResult {
+                id: dependent.id,
+                label: dependent.label,
+                optional: dependent.optional,
+                status: DepInstallStatus::Failed,
+                error: Some("Prerequisite not installed: node".to_string()),
+            });
+        }
+        assert_eq!(reportable_setup_failure_ids(deps, &results), vec!["node"]);
+        assert_eq!(blocked_dependents_for(deps, &results, "node"), vec!["qmd", "hq-cli"]);
+    }
+
+    /// Retried failures stay grouped but run/session context distinguishes a
+    /// retry by one person from a second affected person.
+    #[test]
+    fn repeated_setup_failures_share_one_issue_but_retain_person_and_retry_context() {
+        let first = failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let retry = failure_scope("11111111-1111-4111-8111-111111111111", 2, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let other = failure_scope("22222222-2222-4222-8222-222222222222", 1, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        let events = sentry::test::with_captured_events(|| {
+            for scope in [&first, &retry, &other] {
+                send_setup_dependency_failure(scope, "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), &[]);
+            }
+        });
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|event| event.fingerprint == vec!["node", "exit-nonzero"]));
+        assert_eq!(events[0].tags["setup_attempt"], "1");
+        assert_eq!(events[1].tags["setup_attempt"], "2");
+        assert_eq!(string_extra(&events[0], "setup_frontend_session_id"), string_extra(&events[1], "setup_frontend_session_id"));
+        assert_ne!(string_extra(&events[0], "setup_frontend_session_id"), string_extra(&events[2], "setup_frontend_session_id"));
+    }
+
+    /// Empty DSNs in development and PR CI must leave setup able to complete.
+    #[test]
+    fn setup_failure_capture_is_a_noop_without_a_sentry_client() {
+        let hub = std::sync::Arc::new(sentry::Hub::new(None, std::sync::Arc::new(sentry::Scope::new())));
+        sentry::Hub::run(hub.clone(), || {
+            queue_setup_dependency_failure(failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), vec![]);
+        });
+        assert!(hub.last_event_id().is_none());
+    }
+
+    struct BlockingSetupTransport {
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl sentry::Transport for BlockingSetupTransport {
+        fn send_envelope(&self, _envelope: sentry::Envelope) {
+            let _ = self.started.send(());
+            let (released, wake) = &*self.release;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = wake.wait(released).unwrap();
+            }
+        }
+    }
+
+    struct PanickingSetupTransport {
+        started: std::sync::mpsc::Sender<()>,
+    }
+
+    impl sentry::Transport for PanickingSetupTransport {
+        fn send_envelope(&self, _envelope: sentry::Envelope) {
+            let _ = self.started.send(());
+            panic!("simulated Sentry transport failure");
+        }
+    }
+
+    fn setup_hub<T: sentry::Transport>(transport: std::sync::Arc<T>) -> std::sync::Arc<sentry::Hub> {
+        let options = sentry::ClientOptions {
+            dsn: Some("https://public@sentry.invalid/1".parse().unwrap()),
+            transport: Some(transport),
+            before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+            ..Default::default()
+        };
+        std::sync::Arc::new(sentry::Hub::new(
+            Some(std::sync::Arc::new(sentry::Client::from(options))),
+            std::sync::Arc::new(sentry::Scope::new()),
+        ))
+    }
+
+    /// A slow transport and a transport failure run only on the reporter
+    /// thread, so the setup command returns immediately in either case.
+    #[test]
+    fn setup_failure_reporter_never_blocks_on_slow_or_failing_sentry_transport() {
+        let (slow_started, slow_started_rx) = std::sync::mpsc::channel();
+        let release = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let slow_transport = std::sync::Arc::new(BlockingSetupTransport {
+            started: slow_started,
+            release: release.clone(),
+        });
+        let slow_hub = setup_hub(slow_transport);
+        let start = std::time::Instant::now();
+        sentry::Hub::run(slow_hub, || {
+            queue_setup_dependency_failure(failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), vec![]);
+        });
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        slow_started_rx.recv_timeout(std::time::Duration::from_secs(1)).expect("reporter should reach the slow transport");
+        let (released, wake) = &*release;
+        *released.lock().unwrap() = true;
+        wake.notify_all();
+
+        let (panic_started, panic_started_rx) = std::sync::mpsc::channel();
+        let failing_hub = setup_hub(std::sync::Arc::new(PanickingSetupTransport { started: panic_started }));
+        sentry::Hub::run(failing_hub, || {
+            queue_setup_dependency_failure(failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), vec![]);
+        });
+        panic_started_rx.recv_timeout(std::time::Duration::from_secs(1)).expect("reporter should isolate a failed transport");
     }
 }
 

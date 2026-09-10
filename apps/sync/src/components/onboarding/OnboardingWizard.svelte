@@ -795,6 +795,8 @@
   type OnboardingFailureScope = {
     setupRunId: string;
     attemptCount: number;
+    flow: OnboardingFlow;
+    frontendSessionId: string;
   };
 
   async function invokeStageCommand(
@@ -882,7 +884,12 @@
   ): Promise<StageRunOutcome> {
     if (!isCurrentRun(runId)) return 'cancelled';
     const setupRunId = currentSetupRunId;
-    const failureScope = { setupRunId, attemptCount };
+    const failureScope = {
+      setupRunId,
+      attemptCount,
+      flow: onboardingFlow,
+      frontendSessionId: onboardingTelemetry.sessionId,
+    };
     const startedAt = Date.now();
     recordStep(SETUP_STEP_INDEX, 'started', {
       component: id,

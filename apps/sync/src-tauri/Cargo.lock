@@ -2811,6 +2811,7 @@ dependencies = [
  "notify",
  "objc2",
  "objc2-core-foundation",
+ "os_info",
  "reqwest 0.12.28",
  "rfd",
  "rumqttc",
