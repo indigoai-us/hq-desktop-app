@@ -196,7 +196,9 @@ describe("DesktopApp native setup run wiring", () => {
     await mountApp(api);
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
     await settle();
-    api.emit({ kind: "assistantMessage", text: "Let me finish the last bit of housekeeping." });
+    // The reported phase may lag ("idle" here): words followed by a tool call still mean working.
+    api.emit({ kind: "assistantMessage", text: "Let me finish the last bit of housekeeping." }, "idle");
+    api.emit({ kind: "toolCall", id: "t1", name: "Bash" }, "idle");
     await settle();
     expect(host.querySelector('[data-testid="agent-thinking-row"]')).toBeTruthy();
     api.emit({ kind: "turnDone", status: "success", error: null }, "idle");

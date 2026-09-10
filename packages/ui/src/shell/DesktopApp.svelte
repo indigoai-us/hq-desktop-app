@@ -1044,7 +1044,9 @@
     const phase = setupAgent.snapshot?.phase;
     // Thinking is only while the engine is actually working on a turn — not
     // while it waits for the person, and not once it has finished or stopped.
-    if (!state || state.done || state.ended || state.question || (phase !== "working" && phase !== "starting")) {
+    // The reported phase can lag or be missed; the event stream is the tiebreak.
+    const working = phase === "working" || phase === "starting" || (phase !== "needsYou" && phase !== "ended" && state?.inFlight);
+    if (!state || state.done || state.ended || state.question || !working) {
       setupThinkingSince = 0;
       return null;
     }

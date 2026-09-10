@@ -565,15 +565,28 @@
   .run-card[data-setup-run-variant="prompt"] .choices {
     gap: 6px;
   }
+  /* Same shape and weight as the Connect / Continue buttons: readable, not a pill. */
   .run-card[data-setup-run-variant="prompt"] .choice,
   .run-card[data-setup-run-variant="prompt"] .launch-btn,
   .run-card[data-setup-run-variant="prompt"] .app {
-    min-height: 26px;
-    padding: 0 10px;
-    border-radius: 999px;
-    font-size: 12px;
+    min-height: 30px;
+    padding: 0 12px;
+    border-radius: 0;
+    font-size: 13px;
     font-weight: 500;
     max-width: none;
+  }
+  .run-card[data-setup-run-variant="prompt"] .choice {
+    border: 1px solid var(--text-1, #111);
+    background: var(--text-1, #111);
+    color: var(--bg, #fff);
+  }
+  .run-card[data-setup-run-variant="prompt"] .choice:hover {
+    opacity: 0.9;
+  }
+  .run-card[data-setup-run-variant="prompt"] .choice.choice--picked {
+    outline: 2px solid var(--accent, #6b5bff);
+    outline-offset: 1px;
   }
   .run-card[data-setup-run-variant="prompt"] .choice {
     flex-direction: row;
@@ -603,9 +616,9 @@
     background: transparent;
   }
   .run-card[data-setup-run-variant="prompt"] .answer-input {
-    min-height: 28px;
-    border-radius: 999px;
-    font-size: 12px;
+    min-height: 30px;
+    border-radius: 0;
+    font-size: 13px;
   }
   .run-card[data-setup-run-variant="prompt"] .run-actions {
     gap: 8px;

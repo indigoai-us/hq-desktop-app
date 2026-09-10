@@ -161,6 +161,12 @@ export interface SetupRunState {
   done: boolean;
   /** The session stopped (exited / errored / ended phase) before finishing. */
   ended: boolean;
+  /**
+   * The engine is in the middle of a turn as far as the events say: the last
+   * thing seen was words, a tool call, or the person's message — not a turn
+   * end, an exit, or a request waiting on the person.
+   */
+  inFlight: boolean;
   /** Why it stopped, when the engine said; null for a clean finish or an unexplained stop. */
   failure: SetupRunFailure | null;
   /** Short closing line for the done state. */
@@ -421,6 +427,7 @@ export function interpretSetupRun(
   let assistantIsLatest = false;
   /** The turn ended after the latest assistant words — the agent is waiting on the person. */
   let turnDoneSinceAssistant = false;
+  let lastKind = "";
 
   const advanceTo = (id: SetupRunStepId, status: "running" | "done") => {
     const index = STEP_INDEX[id];
@@ -442,6 +449,7 @@ export function interpretSetupRun(
   };
 
   for (const event of events) {
+    if (!(event as { parentToolUseId?: unknown }).parentToolUseId) lastKind = String(event.kind);
     switch (event.kind) {
       case "assistantMessage": {
         const text = String((event as { text?: unknown }).text ?? "");
@@ -607,6 +615,11 @@ export function interpretSetupRun(
     done,
     ended,
     failure,
+    inFlight:
+      !done &&
+      !ended &&
+      events.length > 0 &&
+      !["turnDone", "exited", "error", "questionRequest", "permissionRequest"].includes(lastKind),
     summary: done ? SETUP_RUN_DONE.summary : "",
   };
 }

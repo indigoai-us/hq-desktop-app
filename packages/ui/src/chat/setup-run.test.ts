@@ -242,6 +242,22 @@ describe("interpretSetupRun — questions", () => {
   });
 });
 
+describe("interpretSetupRun — in flight", () => {
+  it("is in flight after words, tool calls, or the person's message; not after a turn end, exit, or a request", () => {
+    expect(interpretSetupRun([]).inFlight).toBe(false);
+    expect(interpretSetupRun([say("Checking tools.")], "idle").inFlight).toBe(true);
+    expect(interpretSetupRun([say("Checking tools."), tool()], "idle").inFlight).toBe(true);
+    expect(interpretSetupRun([say("Checking tools."), user("skip to the end")], "idle").inFlight).toBe(true);
+    expect(interpretSetupRun([say("Checking tools."), turnDone], "idle").inFlight).toBe(false);
+    expect(interpretSetupRun([say("Checking tools."), { kind: "exited", code: 0 }], "ended").inFlight).toBe(false);
+    expect(
+      interpretSetupRun([{ kind: "questionRequest", requestId: "r", questions: [{ id: "q", text: "Name?", options: [{ label: "A" }] }] }], "needsYou").inFlight,
+    ).toBe(false);
+    // Sub-agent chatter after the parent's turn end does not restart the turn.
+    expect(interpretSetupRun([say("Done."), turnDone, { kind: "toolCall", id: "t9", name: "Bash", parentToolUseId: "p" } as SetupRunEvent], "idle").inFlight).toBe(false);
+  });
+});
+
 describe("interpretSetupRun — finish and stop", () => {
   it("finishes when the agent says the person is set up, ticking every step", () => {
     const events: SetupRunEvent[] = [
