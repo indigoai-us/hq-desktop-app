@@ -131,7 +131,6 @@
   import "./tokens.css";
   import "./chat-tokens.css";
   import Caret from "../common/Caret.svelte";
-  import Buildings from "phosphor-svelte/lib/Buildings";
   import CaretRight from "phosphor-svelte/lib/CaretRight";
   import Chat from "phosphor-svelte/lib/Chat";
   import ChatCircle from "phosphor-svelte/lib/ChatCircle";
@@ -2112,11 +2111,16 @@
                 data-testid="chat-filter-include-non-members"
                 onclick={() => setIncludeNonMembers(!includeNonMembers)}
               >
-                <span class="chat-filter-lead" aria-hidden="true"><Buildings size={14} /></span>
+                <span
+                  class="chat-filter-box"
+                  class:on={includeNonMembers}
+                  aria-hidden="true"
+                >
+                  {#if includeNonMembers}
+                    <Check size={10} weight="bold" />
+                  {/if}
+                </span>
                 <span class="chat-filter-text">Include channels I'm not in</span>
-                {#if includeNonMembers}
-                  <span class="chat-filter-check" aria-hidden="true"><Check size={12} weight="bold" /></span>
-                {/if}
               </button>
             {/if}
 
@@ -4162,6 +4166,32 @@
   }
 
   /* `.p-check` */
+  /* The one row in this menu that toggles rather than selects, so it wears a
+     real checkbox instead of the leading glyph + trailing tick the Show rows
+     use. With a leading icon it read as a fourth view. */
+  .chat-filter-box {
+    display: inline-grid;
+    place-items: center;
+    flex-shrink: 0;
+    box-sizing: border-box;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    background: transparent;
+    color: transparent;
+    line-height: 0;
+    transition:
+      background 0.12s,
+      border-color 0.12s;
+  }
+
+  .chat-filter-box.on {
+    border-color: var(--ice-ink);
+    background: var(--ice-ink);
+    color: var(--badge-fg, #fff);
+  }
+
   .chat-filter-check {
     display: inline-flex;
     align-items: center;

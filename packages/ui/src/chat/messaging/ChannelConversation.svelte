@@ -1816,8 +1816,11 @@
   /* No hover fill. The design's timeline never moves under the pointer — it
      reveals the timestamp and the reaction bar instead, and tinting the row
      as well made both readings compete. Focus still needs a visible target,
-     so keyboard focus keeps a wash that the mouse does not get. */
-  .dm-msg:focus-within {
+     so keyboard focus keeps a wash that the mouse does not get — hence
+     `:focus-visible`, not `:focus-within`, which left the whole block washed
+     after a click on "View replies" and made the open message read as
+     selected. */
+  .dm-msg:has(:focus-visible) {
     background: color-mix(in srgb, var(--t1) 4%, transparent);
   }
 

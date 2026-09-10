@@ -1304,18 +1304,18 @@
 
   .reply-root-meta {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 0.5rem;
+    width: 100%;
+    min-width: 0;
   }
 
-  .reply-time {
-    color: var(--t3);
-    font-size: 11px;
-  }
-
+  /* Same type as the main chat's `.dm-msg-author` — the panel was a point
+     larger on the name and the body, so the same message grew as it moved
+     into the thread. */
   .reply-root-author,
   .reply-author {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
     line-height: var(--msg-author-line-height, 1.3);
     color: var(--t1);
@@ -1368,10 +1368,24 @@
     text-decoration-color: currentColor;
   }
 
+  /* `.dm-msg-header-time`: 10px mono riding the right edge, revealed on hover.
+     It was a 12px UI-font stamp parked beside the name, which read as part of
+     the header rather than as chrome. */
   .reply-time {
+    flex: 0 0 auto;
+    margin-left: auto;
     color: var(--t3);
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-variant-numeric: tabular-nums;
+    line-height: 1.45;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+
+  .reply-row:hover .reply-time,
+  .reply-root:hover .reply-time {
+    opacity: 1;
   }
 
   .reply-root-body,
@@ -1380,9 +1394,10 @@
     --message-markdown-muted: var(--t3, #a0a0a0);
     min-width: 0;
     margin: 0;
-    /* Match the timeline reading size. */
-    font-size: 14px;
-    line-height: 1.55;
+    /* The timeline reading size, for real: 13px on a 19px line, the same as
+       `.msg-body` in the main chat. */
+    font-size: 13px;
+    line-height: 19px;
     color: var(--t1, var(--message-markdown-text));
     overflow-wrap: anywhere;
   }
@@ -1579,11 +1594,14 @@
     gap: 0;
   }
 
+  /* Full width so the timestamp can ride the right edge rather than sitting
+     against the name — `.dm-msg-meta`. */
   .reply-meta {
     display: flex;
     align-items: baseline;
     gap: 0.4375rem;
     margin: 0 0 var(--msg-name-body-gap, 0.1875rem);
+    width: 100%;
     min-width: 0;
   }
 
