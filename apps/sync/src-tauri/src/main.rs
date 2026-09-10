@@ -996,8 +996,12 @@ fn main() {
             // share/dm pollers below) — `machineId` is the tiebreaker that
             // distinguishes a brand-new install from a legacy user updating.
             // See commands/first_run.rs for the full rationale.
-            let launch_kind = commands::first_run::classify_launch(app.handle());
+            // Lifecycle first: it may write a missing `firstRunCompleted` back
+            // for a machine that is plainly set up, and the launch kind must
+            // read the repaired file — otherwise a lost marker still opens the
+            // setup card and sends the Dock click to the popover.
             commands::lifecycle::setup_lifecycle(app.handle());
+            let launch_kind = commands::first_run::classify_launch(app.handle());
 
             // US-104: cold-start hqwork:// on argv (if the OS delivered one).
             // Not an OS-scheme registration — only handle what we were given.

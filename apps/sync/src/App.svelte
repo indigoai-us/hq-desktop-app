@@ -24,6 +24,7 @@
   } from './lib/auth';
   import { shouldRecheckAuthOnFocus } from './lib/authRecheckGate';
   import { isOnboardingState, type LifecycleState } from './lib/lifecycle';
+  import { wizardModeForLifecycle } from './lib/onboarding-wizard';
   import { friendlyCompanyLabel } from './lib/company-label';
   import { ListenerRegistry, subscribeWindowFocus } from './lib/listener-registry';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
@@ -2401,6 +2402,7 @@
   {:else if isOnboardingState(lifecycleState)}
     <Onboarding
       state={(lifecycleState ?? 'NeedsInstall') as LifecycleState}
+      mode={wizardModeForLifecycle(lifecycleState ?? 'NeedsInstall')}
       onfinish={handleOnboardingFinish}
     />
   {:else if authenticated && consentReprompt}

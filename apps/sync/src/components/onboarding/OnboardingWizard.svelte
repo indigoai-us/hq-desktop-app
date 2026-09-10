@@ -68,6 +68,7 @@
     BUILD_STEP_INDEX,
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
+    type WizardMode,
     createWizardRouter,
     DIRECTORY_STEP_INDEX,
     HANDOFF_STEP_INDEX,
@@ -95,7 +96,7 @@
      * setup and no ready screen. The `personUid` the guard is keyed to is passed
      * so the answer can mark the re-prompt "shown" for exactly this person.
      */
-    mode?: 'onboarding' | 'reprompt';
+    mode?: WizardMode;
     onboardingFlow?: OnboardingFlow;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
@@ -152,6 +153,11 @@
   }: Props = $props();
 
   const isReprompt = $derived(mode === 'reprompt');
+  /**
+   * Only the consent step is shown and the wizard closes on the answer: the
+   * re-prompt, and an installed machine that just lacks its consent answer.
+   */
+  const consentOnly = $derived(mode !== 'onboarding');
   const onboardingTelemetry = createOnboardingStepTelemetry();
 
   let activeInitialStep = $state<number | null>(null);
@@ -256,7 +262,7 @@
     details: StepTelemetryDetails = {},
     flow?: OnboardingFlow,
   ): void {
-    if (isReprompt) return;
+    if (consentOnly) return;
     onboardingTelemetry.record({
       properties: {
         step: stepIdFor(step),
@@ -350,7 +356,7 @@
   $effect(() => {
     // In re-prompt mode there is no install/setup — only the consent step — so
     // the setup run must never start even if the step index momentarily reads 2.
-    if (isReprompt || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
+    if (consentOnly || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
     setupStarted = true;
     void startSetupRun();
   });
@@ -386,7 +392,7 @@
     detectorMounted = true;
     directoryCancelled = false;
 
-    if (!isReprompt) {
+    if (!consentOnly) {
       // Every visible panel has an entry event. A resumed, non-initial panel
       // records both its ordinary entry and the resume signal used for drop-off
       // analysis.
@@ -1095,7 +1101,7 @@
         return;
       }
 
-      if (isReprompt) {
+      if (consentOnly) {
         // The stale record is now replaced with a fully versioned one. Record
         // that the re-prompt was answered for this person+version (idempotent
         // with the dismissal guard) and close — there is no ready screen.
@@ -1137,7 +1143,7 @@
    */
   async function finishOffline(): Promise<void> {
     if (consentSubmitting || finishing) return;
-    if (isReprompt) {
+    if (consentOnly) {
       // Reprompt has no ready screen. The answer is cached with provenance and
       // reconciled by the consent repair on reconnect; mark the prompt shown so
       // it does not nag again this version, then close.
