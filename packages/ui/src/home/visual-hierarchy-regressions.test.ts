@@ -24,14 +24,17 @@ const confirmDialog = readFileSync(
 );
 
 describe("desktop visual hierarchy regressions", () => {
-  it("keeps pressed global controls neutral while preserving aria-pressed selection", () => {
+  it("gives a pressed global control the same flat treatment as every other bar icon", () => {
     expect(titleBar).toContain("aria-pressed={!sidebarCollapsed}");
-    const selectedRule = titleBar.match(
-      /\.v4-icon-btn\[aria-pressed=['"]true['"]\]\s*\{([\s\S]*?)\}/,
+    // The concept's `.bar-ic` has no boxed pressed variant: on-state is the
+    // ordinary hover fill (via `.active`), never a border plus inset shadow.
+    expect(titleBar).not.toMatch(/\.v4-icon-btn\[aria-pressed=['"]true['"]\]/);
+    const activeRule = titleBar.match(
+      /\.v4-icon-btn:hover,\s*\n\s*\.v4-icon-btn\.active\s*\{([\s\S]*?)\}/,
     )?.[1];
-    expect(selectedRule).toContain("var(--v4-control-border)");
-    expect(selectedRule).toContain("var(--v4-text-1)");
-    expect(selectedRule).not.toMatch(
+    expect(activeRule).toContain("var(--hover)");
+    expect(activeRule).toContain("var(--t1)");
+    expect(activeRule).not.toMatch(
       /purple|violet|indigo|#[456789a-f][0-9a-f]{5}/i,
     );
   });
