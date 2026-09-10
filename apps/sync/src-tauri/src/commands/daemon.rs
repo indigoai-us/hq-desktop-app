@@ -1289,16 +1289,20 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             exit_context.watcher_fault_job_image_provenance =
                                 Some(job_sample.images.provenance_token().to_string());
                         }
-                        // Live-survivor discriminator (this reopen, HQ-DESKTOP-66): a
-                        // single read-only QueryInformationJobObject on the SAME
-                        // retained Job handle, resolving each LIVE pid's image to the
-                        // closed survivor vocabulary. This is the one fact that
-                        // separates a shim-only death (the cmd.exe shim died with the
-                        // runner) from an orphaned runner (a node_exe still alive after
-                        // the shim's 0xFFFFFFFF status was read). Windows-only; a no-op
-                        // (`unavailable`/0) elsewhere and purely additive diagnostics.
+                        // Live-survivor discriminator (this reopen, HQ-DESKTOP-66): read
+                        // the survivor reading the shim-exit detector sampled the instant
+                        // the registered shim died — NOT a fresh query here. The Job
+                        // Object must be sampled at shim-exit because this exit callback
+                        // fires only after the child's inherited stdout/stderr pipes drain
+                        // to EOF, which an orphaned Node runner defers by holding them
+                        // open; a query here would see the runner already gone and report
+                        // `none`. This is the one fact that separates a shim-only death
+                        // (the cmd.exe shim died with the runner) from an orphaned runner
+                        // (a node_exe still alive after the shim's 0xFFFFFFFF status was
+                        // read). `unavailable`/0 on non-Windows or when no shim-exit was
+                        // observed; purely additive diagnostics.
                         let job_survivors =
-                            crate::commands::process::sample_watcher_job_survivors_for_generation(
+                            crate::commands::process::take_watcher_job_survivors_at_shim_exit(
                                 DAEMON_HANDLE,
                                 daemon_generation,
                             );
@@ -2938,10 +2942,15 @@ pub(crate) fn read_runner_diagnostic_report(
 /// channel loses). Always records `runner_report_read`; when a class IS adopted,
 /// flips `runner_fatal_source` to `node_report` and adopts the report's
 /// content-safe stack shape/signature. Pure — a test proves the patch with no I/O.
+///
+/// Returns `true` when a report class was adopted, so the caller can keep the
+/// `runner_fatal_class_seen` EXTRA consistent with the now-non-`none` class (that
+/// extra was computed from the stderr class before this deferred read, and lives
+/// alongside — not inside — the tags this fn patches).
 fn apply_report_to_fault_tags(
     tags: &mut Vec<(String, String)>,
     report: &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport,
-) {
+) -> bool {
     set_payload_tag(tags, "runner_report_read", report.read.as_str().to_string());
     let current_class = tags
         .iter()
@@ -2965,6 +2974,24 @@ fn apply_report_to_fault_tags(
             "runner_fatal_source",
             report.fatal_source().to_string(),
         );
+        return true;
+    }
+    false
+}
+
+/// Keep the `runner_fatal_class_seen` EXTRA consistent after a deferred read adopted
+/// a report-derived fatal class (this reopen, HQ-DESKTOP-66). That extra is built
+/// from the stderr class BEFORE the deferred read, so without this a
+/// report-attributed event would carry `runner_fatal_class != none` beside
+/// `runner_fatal_class_seen == false`. A fatal class IS now known for the event, so
+/// set it `true`; `runner_fatal_source == node_report` still records that it came
+/// from the report, not stderr.
+fn mark_runner_fatal_class_seen(extras: &mut [(String, sentry::protocol::Value)]) {
+    if let Some((_, value)) = extras
+        .iter_mut()
+        .find(|(key, _)| key == "runner_fatal_class_seen")
+    {
+        *value = sentry::protocol::Value::Bool(true);
     }
 }
 
@@ -3024,7 +3051,9 @@ fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
             // class never overrides a stderr-derived one (see apply_report_to_fault_tags).
             if let Some(report_dir) = payload.read.report_dir.clone() {
                 let report = read_runner_diagnostic_report(&report_dir);
-                apply_report_to_fault_tags(&mut payload.tags, &report);
+                if apply_report_to_fault_tags(&mut payload.tags, &report) {
+                    mark_runner_fatal_class_seen(&mut payload.extras);
+                }
             }
             let resolution = if outcome.is_some() {
                 "read_resolved"
@@ -3167,9 +3196,15 @@ impl DeferredWatcherReportCapture {
 /// Sentry, so a test proves the measured `runner_report_read` with a temp dir and
 /// no thread. A report-derived class never overrides a stderr-derived one — that
 /// precedence lives in `apply_report_to_fault_tags`.
-fn apply_deferred_report_read(tags: &mut Vec<(String, String)>, report_dir: &Path) {
+fn apply_deferred_report_read(
+    tags: &mut Vec<(String, String)>,
+    extras: &mut [(String, sentry::protocol::Value)],
+    report_dir: &Path,
+) {
     let report = read_runner_diagnostic_report(report_dir);
-    apply_report_to_fault_tags(tags, &report);
+    if apply_report_to_fault_tags(tags, &report) {
+        mark_runner_fatal_class_seen(extras);
+    }
 }
 
 /// Hand a non-fault, report-requested capture to a bounded worker that performs the
@@ -3184,7 +3219,8 @@ fn apply_deferred_report_read(tags: &mut Vec<(String, String)>, report_dir: &Pat
 fn spawn_deferred_watcher_report_capture(payload: DeferredWatcherReportCapture) {
     std::thread::spawn(move || {
         let mut payload = payload;
-        apply_deferred_report_read(&mut payload.tags, &payload.report_dir);
+        let report_dir = payload.report_dir.clone();
+        apply_deferred_report_read(&mut payload.tags, &mut payload.extras, &report_dir);
         send_deferred_watcher_report_capture(payload);
     });
 }
@@ -9858,7 +9894,13 @@ mod tests {
             ("runner_fatal_class".to_string(), "none".to_string()),
             ("runner_report_read".to_string(), "report_absent".to_string()),
         ];
-        apply_deferred_report_read(&mut tags, &dir);
+        // The class-seen extra was computed from the (none) stderr class before the
+        // deferred read, so it starts false; adopting a report class must flip it.
+        let mut extras = vec![(
+            "runner_fatal_class_seen".to_string(),
+            sentry::protocol::Value::Bool(false),
+        )];
+        apply_deferred_report_read(&mut tags, &mut extras, &dir);
 
         let tag = |key: &str| {
             tags.iter()
@@ -9869,11 +9911,21 @@ mod tests {
         assert_eq!(tag("runner_report_read"), "report_read");
         assert_eq!(tag("runner_fatal_class"), "node_fatal");
         assert_eq!(tag("runner_fatal_source"), "node_report");
+        // The class-seen extra is kept consistent with the now-non-none class, so the
+        // event never reports a class beside runner_fatal_class_seen=false.
+        assert_eq!(
+            extras
+                .iter()
+                .find(|(k, _)| k == "runner_fatal_class_seen")
+                .map(|(_, v)| v.clone()),
+            Some(sentry::protocol::Value::Bool(true))
+        );
         // The read is terminal: the directory is gone (bounding disk).
         assert!(!dir.exists());
 
         // A stderr-derived class is never overridden: with a class already named, the
-        // report read still records the measured provenance but keeps the class.
+        // report read still records the measured provenance but keeps the class AND
+        // leaves the class-seen extra untouched (it was already true).
         let dir2 = unique_report_dir("apply-precedence");
         std::fs::create_dir_all(&dir2).unwrap();
         std::fs::write(
@@ -9888,7 +9940,11 @@ mod tests {
             ("runner_fatal_class".to_string(), "libuv_assert".to_string()),
             ("runner_report_read".to_string(), "report_absent".to_string()),
         ];
-        apply_deferred_report_read(&mut tags2, &dir2);
+        let mut extras2 = vec![(
+            "runner_fatal_class_seen".to_string(),
+            sentry::protocol::Value::Bool(true),
+        )];
+        apply_deferred_report_read(&mut tags2, &mut extras2, &dir2);
         let tag2 = |key: &str| {
             tags2
                 .iter()

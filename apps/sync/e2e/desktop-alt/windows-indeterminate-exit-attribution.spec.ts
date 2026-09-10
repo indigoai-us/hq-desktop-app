@@ -59,7 +59,7 @@ describe('windows indeterminate-exit attribution — source contracts', () => {
     // two routes cannot drift.
     expect(daemonSource).toContain('fn apply_deferred_report_read(');
     expect(daemonSource).toContain('let report = read_runner_diagnostic_report(report_dir);');
-    expect(daemonSource).toContain('apply_report_to_fault_tags(tags, &report);');
+    expect(daemonSource).toContain('apply_report_to_fault_tags(tags, &report)');
     // A report-derived class NEVER overrides a stderr-derived one (precedence lives in
     // the shared applier, unchanged).
     expect(daemonSource).toContain('current_class == "none"');
@@ -94,13 +94,23 @@ describe('windows indeterminate-exit attribution — source contracts', () => {
     expect(coreReportSource).toContain('trigger.eq_ignore_ascii_case("Signal")');
   });
 
-  it('Leg C: renders the shim-vs-runner survivor discriminator from a shared vocabulary', () => {
-    // A single read-only QueryInformationJobObject(JobObjectBasicProcessIdList) at the
-    // exit boundary, resolved to the closed survivor vocabulary and a bare count.
+  it('Leg C: samples the shim-vs-runner discriminator AT shim-exit, not at the exit callback', () => {
+    // A single read-only QueryInformationJobObject(JobObjectBasicProcessIdList),
+    // resolved to the closed survivor vocabulary and a bare count.
     expect(processSource).toContain('pub fn sample_watcher_job_survivors_for_generation(');
     expect(processSource).toContain('query_job_live_pids(job)');
     expect(processSource).toContain('JobObjectBasicProcessIdList');
-    expect(daemonSource).toContain('sample_watcher_job_survivors_for_generation(');
+    // The sample MUST be taken the instant the registered shim exits — a detector
+    // that waits on the shim process and stashes the reading — because the exit
+    // callback fires only after the child's inherited pipes drain to EOF, which an
+    // orphaned Node runner defers by holding them open (a callback-time query would
+    // see the runner already gone and report `none`).
+    expect(processSource).toContain('fn spawn_shim_exit_survivor_sampler(');
+    expect(processSource).toContain('fn wait_for_process_exit(');
+    expect(processSource).toContain('spawn_shim_exit_survivor_sampler(handle, generation, pid)');
+    // The watcher exit callback READS the shim-exit reading (never a fresh, too-late
+    // sample of its own).
+    expect(daemonSource).toContain('take_watcher_job_survivors_at_shim_exit(');
     expect(daemonSource).toContain('"watcher_job_survivors"');
     expect(daemonSource).toContain('"watcher_job_survivor_count"');
     // The token fold lives in the shared watcher_fault vocabulary — no re-declared

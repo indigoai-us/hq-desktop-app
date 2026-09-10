@@ -1234,6 +1234,89 @@ pub fn sample_watcher_job_survivors_for_generation(
     WatcherJobSurvivors::unavailable()
 }
 
+/// The per-generation survivor reading sampled AT SHIM-EXIT and stashed for the
+/// terminal exit callback to read (this reopen, HQ-DESKTOP-66). It MUST be sampled
+/// when the registered `cmd.exe` shim's exit is first observed, NOT at the exit
+/// callback: the generic exit loop below emits the exit event only after the
+/// child's inherited stdout/stderr pipes drain to EOF, and an orphaned Node runner
+/// holds those pipes open, so a sample taken at the callback would see the runner
+/// already gone and report `none` — defeating the shim-vs-runner discriminator.
+/// Keyed by (handle, generation) so a manual-route generation can never be mistaken
+/// for a watcher one.
+#[allow(clippy::type_complexity)]
+static WATCHER_JOB_SURVIVORS_AT_EXIT: OnceLock<Mutex<HashMap<(String, u64), WatcherJobSurvivors>>> =
+    OnceLock::new();
+
+fn watcher_job_survivors_at_exit() -> &'static Mutex<HashMap<(String, u64), WatcherJobSurvivors>> {
+    WATCHER_JOB_SURVIVORS_AT_EXIT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn stash_watcher_job_survivors(handle: &str, generation: u64, survivors: WatcherJobSurvivors) {
+    watcher_job_survivors_at_exit()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert((handle.to_string(), generation), survivors);
+}
+
+/// Remove and return this generation's shim-exit survivor reading, or the honest
+/// `unavailable` sentinel when none was stashed (non-Windows; no shim-exit observed
+/// before this read; or the query failed). Called once by the watcher exit callback,
+/// so the stash can never retain a generation key.
+pub fn take_watcher_job_survivors_at_shim_exit(
+    handle: &str,
+    generation: u64,
+) -> WatcherJobSurvivors {
+    watcher_job_survivors_at_exit()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&(handle.to_string(), generation))
+        .unwrap_or_else(WatcherJobSurvivors::unavailable)
+}
+
+/// Start a detector that waits for the registered shim process to exit and, at that
+/// instant, samples the Job Object's LIVE survivors ONCE and stashes them (this
+/// reopen, HQ-DESKTOP-66). This is the ONLY moment a surviving orphaned Node runner
+/// is observable — the generic exit loop emits the exit event only after the
+/// inherited pipes reach EOF, which an orphaned runner defers by holding them open.
+/// Mirrors the stdout/stderr reader threads' lifecycle: it is never joined, holds no
+/// lock, and ends exactly when the shim ends. Windows-only; a no-op elsewhere.
+#[cfg(target_os = "windows")]
+fn spawn_shim_exit_survivor_sampler(handle: &str, generation: u64, shim_pid: u32) {
+    let handle = handle.to_string();
+    thread::spawn(move || {
+        if wait_for_process_exit(shim_pid) {
+            let survivors = sample_watcher_job_survivors_for_generation(&handle, generation);
+            stash_watcher_job_survivors(&handle, generation, survivors);
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn spawn_shim_exit_survivor_sampler(_handle: &str, _generation: u64, _shim_pid: u32) {}
+
+/// Block until the process `pid` exits, returning `true` when its exit was observed
+/// (`false` when the handle could not be opened — a reused or already-gone pid).
+/// Read-only: a synchronize-only wait that never mutates the process; the handle is
+/// closed on every path.
+#[cfg(target_os = "windows")]
+fn wait_for_process_exit(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    // SAFETY: standard open-wait-close on a synchronize-only handle. The wait never
+    // mutates the process, and the handle is closed before returning on every path.
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
+            return false;
+        };
+        // `u32::MAX` is Win32 `INFINITE`: wait for the whole shim lifetime, exactly as
+        // the stdout/stderr reader threads block on their pipes until the process
+        // closes them. This thread is never joined and ends when the shim ends.
+        let outcome = WaitForSingleObject(process, u32::MAX);
+        let _ = CloseHandle(process);
+        outcome == WAIT_OBJECT_0
+    }
+}
+
 #[cfg(test)]
 mod watcher_job_survivor_tests {
     use super::*;
@@ -3021,6 +3104,16 @@ where
     // The guard lives until this function returns, and dropping it always
     // resumes the group, so no exit path can strand a stopped child.
     let _cpu_throttle = hq_desktop_core::cpu_throttle::CpuThrottle::attach(pid as i32);
+
+    // Watcher route only (this reopen, HQ-DESKTOP-66): start the shim-exit survivor
+    // detector NOW, so the Job Object is sampled the instant the registered shim
+    // dies — before the exit loop below drains the inherited stdout/stderr pipes to
+    // EOF, which an orphaned Node runner defers by holding them open. Gated on a
+    // pre-registered generation, so it never runs for the manual `Sync Now` route;
+    // a no-op on non-Windows.
+    if pre_registered_generation.is_some() {
+        spawn_shim_exit_survivor_sampler(handle, generation, pid);
+    }
 
     let stdout = child.stdout.take().expect("stdout pipe");
     let stderr = child.stderr.take().expect("stderr pipe");
