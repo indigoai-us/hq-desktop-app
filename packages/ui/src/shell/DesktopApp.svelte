@@ -5686,7 +5686,12 @@
     flex-direction: column;
     min-height: 0;
     border-left: 1px solid var(--line);
-    background: var(--v4-ground, #161618);
+    /* NO ground here. The shell root already paints it, so this column added a
+       SECOND layer under the panel's own side-bg, and the thread came out a
+       full step lighter than the concept, which stacks exactly two: the
+       content ground, then the panel. The panel inside is opaque enough to
+       keep main-pane chrome from reading through, which is what this was
+       for. */
     transition: width 150ms ease;
   }
 

@@ -147,15 +147,23 @@
     outline: none;
   }
 
+  /* Concept `.react.mine`: yours reads as a SELECTED control, in the same ice
+     tint every other selected thing in the shell uses. It was a neutral fill
+     one shade off the resting one, so a pill you had reacted to and one you
+     had not were nearly indistinguishable. */
   .reaction-pill.reacted {
-    background: var(--c-field-bg);
-    border-color: var(--c-field-border);
+    background: var(--ice-tile);
+    border-color: color-mix(in srgb, var(--ice-ink) 30%, transparent);
     color: var(--pop-text);
+  }
+
+  .reaction-pill.reacted .reaction-count {
+    color: var(--ice-ink);
   }
 
   .reaction-pill.reacted:hover,
   .reaction-pill.reacted:focus-visible {
-    background: var(--pop-hover);
+    border-color: color-mix(in srgb, var(--ice-ink) 55%, transparent);
   }
 
   .reaction-emoji {
