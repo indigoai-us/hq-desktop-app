@@ -8,12 +8,9 @@ import type {
 } from "./appearance-seam.js";
 import { applyColorTheme, readStoredTheme } from "./shell-settings-model.js";
 
-const DEFAULT_TRANSPARENCY = 65;
-
 export function createShellAppearanceSeam(): AppearanceSeam {
   const read = (): AppearancePreferences => ({
     colorTheme: readStoredTheme(),
-    windowTransparency: DEFAULT_TRANSPARENCY,
   });
   return {
     read,
@@ -21,8 +18,6 @@ export function createShellAppearanceSeam(): AppearanceSeam {
       const current = read();
       const next: AppearancePreferences = {
         colorTheme: patch.colorTheme ?? current.colorTheme,
-        windowTransparency:
-          patch.windowTransparency ?? current.windowTransparency,
       };
       applyColorTheme(next.colorTheme);
       return next;

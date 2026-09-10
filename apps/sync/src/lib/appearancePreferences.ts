@@ -2,17 +2,10 @@ export const APPEARANCE_STORAGE_KEY = 'hq-sync.appearance.v1';
 export const APPEARANCE_CHANGE_EVENT = 'hq:appearance-change';
 export const APPEARANCE_REQUEST_EVENT = 'hq:appearance-request';
 
-export const DEFAULT_WINDOW_TRANSPARENCY = 65;
-export const MIN_WINDOW_TRANSPARENCY = 0;
-export const MAX_WINDOW_TRANSPARENCY = 100;
-export const MIN_WINDOW_OPACITY = 0;
-export const MAX_WINDOW_OPACITY = 100;
-
 export type ColorTheme = 'system' | 'light' | 'dark';
 
 export interface AppearancePreferences {
   colorTheme: ColorTheme;
-  windowTransparency: number;
 }
 
 type AppearanceStorage = Pick<Storage, 'getItem' | 'setItem'>;
@@ -49,37 +42,11 @@ export function normalizeColorTheme(value: unknown): ColorTheme {
   return value === 'light' || value === 'dark' ? value : 'system';
 }
 
-export function normalizeWindowTransparency(value: unknown): number {
-  const numeric = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(numeric)) return DEFAULT_WINDOW_TRANSPARENCY;
-  return Math.round(
-    Math.min(
-      MAX_WINDOW_TRANSPARENCY,
-      Math.max(MIN_WINDOW_TRANSPARENCY, numeric),
-    ),
-  );
-}
-
-export function windowOpacityFromTransparency(value: unknown): number {
-  return MAX_WINDOW_OPACITY - normalizeWindowTransparency(value);
-}
-
-export function windowTransparencyFromOpacity(value: unknown): number {
-  const numeric = typeof value === 'number' ? value : Number(value);
-  const opacity = Number.isFinite(numeric)
-    ? Math.round(
-        Math.min(MAX_WINDOW_OPACITY, Math.max(MIN_WINDOW_OPACITY, numeric)),
-      )
-    : windowOpacityFromTransparency(DEFAULT_WINDOW_TRANSPARENCY);
-  return normalizeWindowTransparency(MAX_WINDOW_OPACITY - opacity);
-}
-
 export function normalizeAppearancePreferences(
   value: Partial<AppearancePreferences> | null | undefined,
 ): AppearancePreferences {
   return {
     colorTheme: normalizeColorTheme(value?.colorTheme),
-    windowTransparency: normalizeWindowTransparency(value?.windowTransparency),
   };
 }
 
@@ -118,9 +85,9 @@ export function writeAppearancePreferences(
 /**
  * Applies the visual half of Appearance immediately.
  *
- * The persisted value is the inverse of the user-facing opacity control:
- * transparency 0 is the explicit 100% solid endpoint, while higher values
- * reveal more native Liquid Glass/Mica. System Reduce Transparency still wins.
+ * Surface alpha used to be computed here from a user-adjustable transparency
+ * value. It is now fixed in tokens.css at the values the design specifies, so
+ * theme is all this has left to do. System Reduce Transparency still wins.
  */
 export function applyAppearancePreferences(
   root: AppearanceRoot,
@@ -132,19 +99,6 @@ export function applyAppearancePreferences(
   } else {
     root.dataset.forceTheme = normalized.colorTheme;
   }
-
-  const lightAlpha = Math.max(
-    0.15,
-    1 - normalized.windowTransparency / 100,
-  );
-  const darkAlpha = Math.min(1, lightAlpha + 0.13);
-  root.style.setProperty(
-    '--hq-window-transparency-factor',
-    (normalized.windowTransparency / 100).toFixed(2),
-  );
-  root.style.setProperty('--hq-window-alpha-light', lightAlpha.toFixed(2));
-  root.style.setProperty('--hq-window-alpha-dark', darkAlpha.toFixed(2));
-  root.dataset.windowTransparency = String(normalized.windowTransparency);
 }
 
 export function requestAppearancePreferenceChange(

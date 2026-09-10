@@ -20,8 +20,6 @@
     APPEARANCE_CHANGE_EVENT,
     readBrowserAppearancePreferences,
     requestAppearancePreferenceChange,
-    windowOpacityFromTransparency,
-    windowTransparencyFromOpacity,
     type AppearancePreferences,
     type ColorTheme,
   } from '../../lib/appearancePreferences';
@@ -374,10 +372,6 @@
     readBrowserAppearancePreferences(),
   );
   let interfaceZoom = $state(readBrowserDesktopZoom());
-  const windowOpacity = $derived(
-    windowOpacityFromTransparency(appearance.windowTransparency),
-  );
-
   const displayedChannel = $derived<Channel>(releaseChannel ?? 'stable');
   const hqPathLabel = $derived(hqPath ? formatHqFolderMeta(hqPath) : 'HQ folder not set');
   const coreHasDrift = $derived((coreState?.driftReport.count ?? 0) > 0);
@@ -2419,31 +2413,6 @@
             {/each}
           </div>
         </div>
-
-        <label class="setting-row appearance-row">
-          <span>
-            <strong>Window opacity</strong>
-            <small>100% is fully solid. Lower values reveal more native vibrancy.</small>
-          </span>
-          <span class="range-control">
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="5"
-              value={windowOpacity}
-              aria-label="Window opacity"
-              aria-valuetext={`${windowOpacity}%`}
-              oninput={(event) =>
-                updateAppearance({
-                  windowTransparency: windowTransparencyFromOpacity(
-                    event.currentTarget.valueAsNumber,
-                  ),
-                })}
-            />
-            <output aria-live="polite">{windowOpacity}%</output>
-          </span>
-        </label>
 
         <label class="setting-row appearance-row">
           <span>

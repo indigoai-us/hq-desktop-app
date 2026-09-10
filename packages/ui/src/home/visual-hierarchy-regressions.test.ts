@@ -59,11 +59,26 @@ describe("desktop visual hierarchy regressions", () => {
     expect(tokens).toContain(
       "--v4-glass-filter-popover: blur(40px) saturate(124%) contrast(104%);",
     );
-    expect(tokens).toContain(
-      "--v4-popover-strong: rgb(250 250 250 / clamp(0.7, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.308), 1));",
-    );
-    expect(tokens).toContain(
-      "--v4-popover-strong: rgb(36 36 36 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.277), 1));",
-    );
+    expect(tokens).toContain("--v4-popover-strong: rgba(252, 252, 253, 0.96);");
+    expect(tokens).toContain("--v4-popover-strong: rgba(44, 44, 54, 0.94);");
+  });
+
+  it("pins window surfaces to the design's fixed alphas, not a user setting", () => {
+    // These are the V2 concept's own surface values
+    // (apps/sync/dev-harness/v2/DaybookApp.svelte). They were previously
+    // derived from an adjustable window-transparency preference, which meant
+    // no single rendering of the shell was the designed one. If a surface
+    // needs to change, change it here — do not reintroduce the multiplier.
+    for (const declaration of [
+      "--v4-ground: rgba(255, 255, 255, 0.35);",
+      "--v4-sidebar: rgba(255, 255, 255, 0.18);",
+      "--v4-ground: rgba(255, 255, 255, 0.02);",
+      "--v4-sidebar: rgba(0, 0, 0, 0.12);",
+      // The titlebar sits on the window material rather than a fill.
+      "--v4-chrome: transparent;",
+    ]) {
+      expect(tokens).toContain(declaration);
+    }
+    expect(tokens).not.toContain("--hq-window-transparency-factor");
   });
 });
