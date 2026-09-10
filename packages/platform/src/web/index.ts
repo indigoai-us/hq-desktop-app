@@ -55,6 +55,9 @@ export const WEB_PATHS = {
   channelDirectory: "/v1/notify/channels",
   contacts: "/v1/notify/contacts",
   dmRequests: "/v1/notify/connections/requests",
+  /** POST body `{ pairKey }` — accept / decline / block a pending request. */
+  dmRequestRespond: (action: "accept" | "decline" | "block") =>
+    `/v1/notify/connections/${action}`,
   markChannelRead: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/read`,
   /** GET two-way DM history. */
@@ -585,7 +588,23 @@ export class WebPlatformAdapter implements PlatformAdapter {
           : WEB_PATHS.contacts,
       );
     },
-    listDmRequests: () => this.get(WEB_PATHS.dmRequests),
+    // The route answers `{ requests: [...] }`. Unwrap here so the web and
+    // Tauri adapters return the same bare array — the chat bridge wraps it
+    // once more into `{ requests }`, and a double-wrapped envelope read as
+    // "no pending requests" forever.
+    listDmRequests: async () => {
+      const result = await this.get<unknown>(WEB_PATHS.dmRequests);
+      if (!result.ok) return result;
+      return ok(unwrapNamedArray(result.value, ["requests"]));
+    },
+    respondDmRequest: async ({ pairKey, action }) => {
+      const key = pairKey.trim();
+      if (!key) return failure("bad-argument", "pairKey required");
+      if (action !== "accept" && action !== "decline" && action !== "block") {
+        return failure("bad-argument", "unsupported request action");
+      }
+      return this.post(WEB_PATHS.dmRequestRespond(action), { pairKey: key });
+    },
     markChannelRead: (id) => this.post(WEB_PATHS.markChannelRead(id), {}),
     markDmThreadRead: async (uid) => {
       const withPersonUid = uid.trim();

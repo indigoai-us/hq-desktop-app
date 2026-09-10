@@ -442,6 +442,10 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['requests']));
       },
+      // Tauri command args are camelCase: `respond_dm_request(pair_key, action)`
+      // is invoked as `{ pairKey, action }`.
+      respondDmRequest: ({ pairKey, action }) =>
+        call('respond_dm_request', { pairKey, action }),
       markChannelRead: (id) => call('mark_channel_read', { channelId: id }),
       markDmThreadRead: (personUid) =>
         call('mark_dm_thread_read', { withPersonUid: personUid }),

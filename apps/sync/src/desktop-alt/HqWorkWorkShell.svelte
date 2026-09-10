@@ -34,6 +34,7 @@
   } from '@hq/ui';
   import { flushSync, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
+  import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
   import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
@@ -579,6 +580,12 @@
         if (!closed && lifecycle === 'ready' && self?.uid === personUid) {
           notificationWakeSeq += 1;
         }
+      },
+      listContacts: async () => {
+        const result = await adapter.messaging.listContacts();
+        return result.ok
+          ? (result.value as unknown as DmRequestContact[])
+          : [];
       },
     });
     return () => {

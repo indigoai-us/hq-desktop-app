@@ -340,11 +340,23 @@ export function createChatSidebarApi(
         await call<unknown>(adapter.messaging.listContacts({ companyUid })),
       ),
     }),
+    // Both platform adapters answer a bare array (the web adapter unwraps
+    // the route's `{ requests }` envelope itself); this is the ONLY wrap.
     listDmRequests: async () => ({
       requests: await call<NonNullable<RequestsResponse["requests"]>>(
         adapter.messaging.listDmRequests(),
       ),
     }),
+    ...(adapter.messaging.respondDmRequest
+      ? {
+          respondDmRequest: async (args: {
+            pairKey: string;
+            action: "accept" | "decline" | "block";
+          }) => {
+            await call<unknown>(adapter.messaging.respondDmRequest!(args));
+          },
+        }
+      : {}),
     listChannels: async (args) => {
       const native = await call<
         ChannelsResponse | NonNullable<ChannelsResponse["channels"]>

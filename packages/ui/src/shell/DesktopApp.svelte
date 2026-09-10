@@ -26,6 +26,7 @@
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import type { RowExtrasResolver } from "../chat/row-extras.js";
+  import DmRequestsPanel from "../chat/DmRequestsPanel.svelte";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
@@ -330,15 +331,18 @@
   } from "../chat/live-catchup.js";
   import {
     OPEN_CHANNEL_EVENT,
+    OPEN_DM_REQUESTS_EVENT,
     OPEN_SETTINGS_EVENT,
     conversationDeepLinkFromLocation,
     conversationRowForDeepLink,
     requestChannelOpen,
     shouldOpenReplyDeepLink,
     takePendingChannelOpen,
+    takePendingDmRequests,
     type ConversationDeepLink,
     type PendingChannelOpen,
   } from "../chat/open-target.js";
+  import type { DmRequest, RequestAction } from "../chat/dm-requests.js";
   import {
     MESSAGE_PERSON_EVENT,
     takePendingConversation,
@@ -707,9 +711,12 @@
     | "library"
     | "shared-files"
     | "extra"
+    | "dm-requests"
   >("conversation");
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
+  /** Which pending request the Requests panel should bring into view first. */
+  let dmRequestsFocusPairKey = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
   let libraryItemId = $state<string | null>(null);
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
@@ -3755,6 +3762,36 @@
     );
   }
 
+  /** The sidebar's "Connection requests" row (and any host deep link). */
+  function openDmRequests(pairKey?: string | null): void {
+    dmRequestsFocusPairKey = pairKey?.trim() || null;
+    meetingFocusRequest = null;
+    view = "dm-requests";
+  }
+
+  /**
+   * A request was answered. The panel already pruned it and emitted
+   * `dm:request-update`; refresh the rail (accept promotes a new contact) and,
+   * on accept, open the conversation with the requester through the same
+   * pending-conversation path a deep link uses.
+   */
+  function handleDmRequestResolved(
+    request: DmRequest,
+    action: RequestAction,
+  ): void {
+    rosterWakeSeq += 1;
+    if (action !== "accept") return;
+    const personUid = request.fromPersonUid?.trim() ?? "";
+    if (!personUid) return;
+    applyPendingConversation({
+      personUid,
+      email: request.fromEmail ?? "",
+      displayName: request.fromDisplayName ?? "",
+      replyRootEventId: null,
+    });
+    view = "conversation";
+  }
+
   /**
    * Self-heal a placeholder selection. `selectedRow` is a snapshot taken at
    * open time; when the channel was opened before the directory listed it
@@ -4772,8 +4809,14 @@
         return;
       applyPendingConversation({ ...detail, automatic: detail.automatic === true });
     }
-  function onOpenSettingsEvent(): void {
+    function onOpenSettingsEvent(): void {
       openSettings();
+    }
+    function onOpenDmRequests(event: Event): void {
+      const detail = (event as CustomEvent<{ pairKey?: string | null }>).detail;
+      // Consume the stash so a later mount does not replay this open.
+      takePendingDmRequests();
+      openDmRequests(detail?.pairKey ?? null);
     }
     function onEmbeddedNavigation(event: Event): void {
       const target = (event as CustomEvent<EmbeddedNavigationTarget>).detail;
@@ -4783,6 +4826,7 @@
     window.addEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
     window.addEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
     window.addEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+    window.addEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
     window.addEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
 
     applyConversationDeepLink(conversationDeepLinkFromLocation());
@@ -4790,6 +4834,8 @@
     if (pendingChannel) applyPendingChannelOpen(pendingChannel);
     const pendingDm = takePendingConversation();
     if (pendingDm) applyPendingConversation(pendingDm);
+    const pendingRequests = takePendingDmRequests();
+    if (pendingRequests) openDmRequests(pendingRequests.pairKey);
     const detachEmbeddedNavigation = onembeddednavigationready?.();
 
     return () => {
@@ -4799,6 +4845,7 @@
       if (syncTimer !== undefined) window.clearInterval(syncTimer);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+      window.removeEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
       window.removeEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
       window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
       window.removeEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
@@ -4983,6 +5030,7 @@
           {seedDirectory}
           {avatarByUid}
           {rosterWakeSeq}
+          requestsWakeSeq={notificationWakeSeq}
           onavatarmap={(map) => (contactAvatarByUid = map)}
           onselect={(row, options) =>
             handleSelect(row, {
@@ -5057,6 +5105,17 @@
               />
             {/key}
           </div>
+        {:else if view === "dm-requests"}
+          <DmRequestsPanel
+            api={sidebarApi}
+            {wakes}
+            focusPairKey={dmRequestsFocusPairKey}
+            onback={() => {
+              view = "conversation";
+              meetingFocusRequest = null;
+            }}
+            onresolved={handleDmRequestResolved}
+          />
         {:else if view === "meetings"}
           <MeetingsPage
             {adapter}

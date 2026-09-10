@@ -172,6 +172,13 @@
     avatarByUid?: Record<string, string> | null;
     /** Bump to refetch contacts (after an agent profile save). */
     rosterWakeSeq?: number;
+    /**
+     * Bump to re-read pending connection requests only. Hosts tie this to
+     * their notification wake (native poll or `notifications:*` MQTT
+     * reconcile) so a request that arrives without a `dm:request-new` wake
+     * — the web path has none — still surfaces without a remount.
+     */
+    requestsWakeSeq?: number;
     /** Contact-roster avatar URLs, including agents once hq-pro sends them. */
     onavatarmap?: (map: Record<string, string>) => void;
     oncommand?: () => void;
@@ -242,6 +249,7 @@
     seedDirectory = null,
     avatarByUid = null,
     rosterWakeSeq = 0,
+    requestsWakeSeq = 0,
     onavatarmap,
     oncommand,
     onnavigateMessages,
@@ -1249,6 +1257,11 @@
           bootTimeoutMs,
           "list_dm_requests",
         ).catch((err) => {
+          sidebarLog("boot-error", {
+            source: "list_dm_requests",
+            timeout: err instanceof BootTimeoutError,
+            message: err instanceof Error ? err.message : String(err),
+          });
           console.error("chat-sidebar: list_dm_requests failed", err);
           return { requests: pendingRequests };
         }),
@@ -1315,6 +1328,33 @@
     if (seq <= 0) return;
     untrack(() => {
       void refreshLists();
+    });
+  });
+
+  /** Re-read pending connection requests alone (no directory/contacts churn). */
+  async function refreshRequests(): Promise<void> {
+    try {
+      const resp = await raceTimeout(
+        api.listDmRequests(),
+        bootTimeoutMs,
+        "list_dm_requests",
+      );
+      pendingRequests = Array.isArray(resp?.requests) ? resp.requests : [];
+    } catch (err) {
+      sidebarLog("boot-error", {
+        source: "list_dm_requests",
+        timeout: err instanceof BootTimeoutError,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      console.error("chat-sidebar: list_dm_requests failed", err);
+    }
+  }
+
+  $effect(() => {
+    const seq = requestsWakeSeq;
+    if (seq <= 0) return;
+    untrack(() => {
+      void refreshRequests();
     });
   });
 
