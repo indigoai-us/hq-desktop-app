@@ -529,7 +529,7 @@
       projectId: string;
       channelId?: string | null;
       prompt: string;
-    }) => Promise<void>;
+    }) => Promise<{ title: string }>;
   }
 
   let {
@@ -1439,12 +1439,36 @@
     void loadProjectActivity(row);
   });
 
+  let taskGenLines = $state<Record<string, ConversationMessageWire[]>>({});
+
+  function taskGenMessage(id: string, note: string): ConversationMessageWire {
+    return {
+      eventId: id,
+      createdAt: new Date().toISOString(),
+      direction: "in",
+      messageKind: "system",
+      body: note,
+      systemEvent: { v: 1, type: "work_session_task_status", note },
+    };
+  }
+
+  function upsertTaskGenLine(rowKey: string, id: string, note: string): void {
+    const existing = taskGenLines[rowKey] ?? [];
+    const next = existing.some((row) => row.eventId === id)
+      ? existing.map((row) => (row.eventId === id ? taskGenMessage(id, note) : row))
+      : [...existing, taskGenMessage(id, note)];
+    taskGenLines = { ...taskGenLines, [rowKey]: next };
+  }
+
   /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
-  const timelineWithActivity = $derived.by(() =>
-    projectActivityRows.length > 0
-      ? mergeActivityIntoTimeline(timeline, projectActivityRows)
-      : timeline,
-  );
+  const timelineWithActivity = $derived.by(() => {
+    const merged =
+      projectActivityRows.length > 0
+        ? mergeActivityIntoTimeline(timeline, projectActivityRows)
+        : timeline;
+    const extras = selectedRow ? taskGenLines[activityKeyForRow(selectedRow)] ?? [] : [];
+    return extras.length ? [...merged, ...extras] : merged;
+  });
 
   /**
    * A project channel with no chat AND no work-mesh events is empty of
@@ -1511,13 +1535,18 @@
       description: task.description,
       projectId,
     });
-    await onGenerateTask({
+    const key = activityKeyForRow(row);
+    const lineId = `task-gen-${task.id}`;
+    upsertTaskGenLine(key, lineId, "Creating task");
+    void onGenerateTask({
       companyUid,
       projectId,
       channelId: row.channelId,
       prompt,
-    });
-    const key = activityKeyForRow(row);
+    }).then(
+      (created) => upsertTaskGenLine(key, lineId, `Task created — ${created.title}`),
+      () => upsertTaskGenLine(key, lineId, "Could not create the task"),
+    );
     const prior = createdTasks[key];
     const placeholder = projectViewToBoard({
       companyUid,
@@ -1578,7 +1607,10 @@
     const companyUid = row?.companyUid?.trim();
     const projectId = row ? projectIdForRow(row) : null;
     if (!row || !companyUid || !projectId || !onGenerateTask) throw new Error("Project unavailable");
-    await onGenerateTask({
+    const rowKey = activityKeyForRow(row);
+    const lineId = `task-gen-${crypto.randomUUID()}`;
+    upsertTaskGenLine(rowKey, lineId, "Creating task");
+    void onGenerateTask({
       companyUid,
       projectId,
       channelId: row.channelId,
@@ -1588,7 +1620,10 @@
         notes: input.notes,
         thread: input.thread,
       }),
-    });
+    }).then(
+      (created) => upsertTaskGenLine(rowKey, lineId, `Task created — ${created.title}`),
+      () => upsertTaskGenLine(rowKey, lineId, "Could not create the task"),
+    );
   }
   const files = $derived<ChannelFileItemModel[]>(
     overlayFiles.length > 0 ? overlayFiles : (liveTabs?.files ?? []),

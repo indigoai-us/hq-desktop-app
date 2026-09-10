@@ -1052,6 +1052,7 @@ while (!closed || queue.length) {
             effort: None,
             resume: None,
             permission_mode: mode,
+            hidden: false,
         }
     }
 

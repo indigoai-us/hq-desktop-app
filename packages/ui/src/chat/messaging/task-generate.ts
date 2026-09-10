@@ -17,6 +17,7 @@ export function boardTaskGeneratePrompt(input: {
     "Write a real executable story: stable id (next US-00N if that scheme is in use), description, acceptanceCriteria[], and priority.",
     "Persist it on the live work-mesh Board / project PRD so other members see it.",
     "Do not leave a UUID stub with empty acceptance criteria.",
+    "When the story is on the Board, stop. Do not wait for further operator input.",
   ].join("\n");
 }
 
@@ -47,5 +48,6 @@ export function messageTaskGeneratePrompt(input: {
     "Write a real executable story: stable id, description, acceptanceCriteria[], priority.",
     "Persist it on the live work-mesh Board / project PRD.",
     "Do not leave a UUID stub with empty acceptance criteria.",
+    "When the story is on the Board, stop. Do not wait for further operator input.",
   ].join("\n");
 }

@@ -62,6 +62,7 @@
   } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import GenerateTaskModal from "./GenerateTaskModal.svelte";
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
@@ -1712,15 +1713,19 @@
       onclose={() => (linkMenu = null)}
     />
   {/if}
-  {#if generateFor}
-    <div class="generate-task-dialog" data-testid="generate-task-notes" role="dialog" aria-modal="true" aria-label="Generate task from message">
-      <p>Generate a Board task from this message. Optional notes go to the session with the channel thread.</p>
-      <textarea bind:value={generateNotes} maxlength="2000" placeholder="Notes for the session (optional)" disabled={generatePending}></textarea>
-      {#if generateError}<p role="alert">{generateError}</p>{/if}
-      <button type="button" disabled={generatePending} onclick={() => void submitGenerateTask()}>{generatePending ? "Starting…" : "Generate task"}</button>
-      <button type="button" disabled={generatePending} onclick={() => (generateFor = null)}>Cancel</button>
-    </div>
-  {/if}
+  <GenerateTaskModal
+    open={Boolean(generateFor)}
+    messageBody={(generateFor?.body ?? generateFor?.prompt ?? "").trim()}
+    notes={generateNotes}
+    pending={generatePending}
+    error={generateError}
+    onnotes={(value) => (generateNotes = value)}
+    onconfirm={() => void submitGenerateTask()}
+    oncancel={() => {
+      if (generatePending) return;
+      generateFor = null;
+    }}
+  />
 </div>
 
 <style>
@@ -2627,16 +2632,4 @@
     cursor: default;
   }
 
-  .generate-task-dialog {
-    flex: none;
-    padding: 12px 16px;
-    border-top: 1px solid var(--line);
-  }
-  .generate-task-dialog textarea {
-    display: block;
-    box-sizing: border-box;
-    width: 100%;
-    min-height: 72px;
-    margin: 8px 0;
-  }
 </style>

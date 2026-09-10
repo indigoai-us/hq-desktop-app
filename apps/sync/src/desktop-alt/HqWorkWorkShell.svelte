@@ -47,11 +47,15 @@
     encodeHistorySessionParam,
     encodeLiveSessionParam,
     parseSessionsParam,
-    sessionDraftStorageKey,
   } from './pages/sessions-route-param';
   import { liveSessionStore } from './lib/live-session-store.svelte';
+  import { parseMeshProjectView } from '@hq/core';
+  import {
+    isPermissionGranted as isNotifyPermissionGranted,
+    sendNotification,
+  } from '@tauri-apps/plugin-notification';
   import { configureSessionStarterCache } from '../components/sessions/session-starter';
-  import { saveSessionComposerDraft, setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
+  import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
   import { projectLinksStore } from './lib/project-links-store.svelte';
   import {
     newSessionParam,
@@ -876,14 +880,58 @@
           const company = (companies ?? []).find((row) => row.cloudUid === seed.companyUid);
           const slug = company?.slug?.trim();
           if (!slug) throw new Error('Company unavailable');
-          const param = newSessionParam(slug, seed.projectId, seed.channelId ?? undefined);
-          saveSessionComposerDraft(sessionDraftStorageKey(param), { text: seed.prompt, images: [] });
-          dispatchEmbeddedNavigation({
-            kind: 'extra',
-            page: 'sessions',
-            param,
-            companyUid: seed.companyUid,
-          });
+          const beforeRes = await adapter.workMesh.getProjectView(seed.projectId, seed.companyUid);
+          if (!beforeRes.ok) throw new Error(beforeRes.message || 'Project unavailable');
+          const before = parseMeshProjectView(beforeRes.value);
+          const known = new Set((before?.stories ?? []).map((story) => story.id));
+          const preflight = await invokeFn<{
+            claudeLoggedIn?: boolean;
+            codexLoggedIn?: boolean;
+            grokLoggedIn?: boolean;
+          }>('agent_session_preflight');
+          const tool = preflight.claudeLoggedIn
+            ? 'claude'
+            : preflight.codexLoggedIn
+              ? 'codex'
+              : preflight.grokLoggedIn
+                ? 'grok'
+                : 'claude';
+          await liveSessionStore.startBackground(
+            {
+              sessionId: '',
+              title: 'Generate board task',
+              tool,
+              cwd: '',
+              company: slug,
+              project: seed.projectId,
+              model: null,
+              effort: null,
+              resume: null,
+              permissionMode: 'bypassAll',
+              hidden: true,
+              projectChannelId: seed.channelId ?? undefined,
+            },
+            seed.prompt,
+          );
+          const deadline = Date.now() + 180_000;
+          while (Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 2500));
+            const nextRes = await adapter.workMesh.getProjectView(seed.projectId, seed.companyUid);
+            if (!nextRes.ok) continue;
+            const after = parseMeshProjectView(nextRes.value);
+            const created = (after?.stories ?? []).find((story) => !known.has(story.id));
+            if (created?.title) {
+              try {
+                if (await isNotifyPermissionGranted()) {
+                  sendNotification({ title: 'Task created', body: created.title });
+                }
+              } catch {
+                /* in-chat status is the required signal */
+              }
+              return { title: created.title };
+            }
+          }
+          throw new Error('Timed out creating task');
         }}
         data={{ user: capabilities.hostIdentity }}
         runtimeKind={capabilities.runtimeKind}

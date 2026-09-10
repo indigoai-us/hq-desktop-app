@@ -115,6 +115,8 @@ export interface SessionSpec {
   /** Existing CLI session id to resume. */
   resume: string | null;
   permissionMode: PermissionMode;
+  /** Background jobs (task generate) stay out of the session list. */
+  hidden?: boolean;
 }
 
 /** The user's answer to one parked permission request (Rust `PermissionDecision`). */
@@ -875,6 +877,21 @@ async function startAndSend(
   }
 }
 
+/** Start a hidden session, send one prompt, and do not open it in the Sessions list. */
+async function startBackground(spec: SessionSpec, text: string): Promise<string> {
+  await ensureListeners();
+  const started = await invoke<{ sessionId: string }>('agent_session_start', {
+    spec: { ...spec, hidden: true, title: spec.title ?? 'Generate board task' },
+    ...(spec.projectChannelId ? { projectChannelId: spec.projectChannelId } : {}),
+  });
+  const sessionId = started.sessionId;
+  if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
+  const entry = entries[sessionId]!;
+  entry.loading = false;
+  await invoke('agent_session_send', { sessionId, text, images: [], overrides: null });
+  return sessionId;
+}
+
 /**
  * Continue a dormant provider conversation. Opening history is read-only;
  * this first new turn is the precise point where a live runtime is needed.
@@ -1524,6 +1541,7 @@ export const liveSessionStore = {
   loadEarlier,
   start,
   startAndSend,
+  startBackground,
   resumeAndSend,
   waitForTurnDone,
   send,
