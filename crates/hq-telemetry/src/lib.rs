@@ -379,6 +379,14 @@ fn redact_labeled_secret_values(value: &str) -> String {
             while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
                 value_start += 1;
             }
+            // JSON and shell-style quoted keys put a closing quote between the
+            // label and separator: `"password":"value"` / `PASSWORD="value"`.
+            if matches!(bytes.get(value_start), Some(b'\'') | Some(b'"')) {
+                value_start += 1;
+                while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                    value_start += 1;
+                }
+            }
             if !matches!(bytes.get(value_start), Some(b'=') | Some(b':')) {
                 continue;
             }
@@ -386,10 +394,47 @@ fn redact_labeled_secret_values(value: &str) -> String {
             while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
                 value_start += 1;
             }
-            let value_end = value[value_start..]
-                .find(|character: char| character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"'))
-                .map(|relative| value_start + relative)
-                .unwrap_or(value.len());
+            let value_end = match bytes.get(value_start) {
+                Some(quote @ (b'\'' | b'"')) => {
+                    let mut cursor = value_start + 1;
+                    let mut escaped = false;
+                    while let Some(byte) = bytes.get(cursor) {
+                        if *byte == *quote && !escaped {
+                            cursor += 1;
+                            break;
+                        }
+                        escaped = *byte == b'\\' && !escaped;
+                        if *byte != b'\\' {
+                            escaped = false;
+                        }
+                        cursor += 1;
+                    }
+                    cursor
+                }
+                _ if (label.eq_ignore_ascii_case("authorization")
+                    || label.eq_ignore_ascii_case("proxy-authorization"))
+                    && has_ascii_case_insensitive_prefix_at(value, value_start, "basic")
+                    && bytes
+                        .get(value_start + "basic".len())
+                        .is_some_and(|byte| byte.is_ascii_whitespace()) => {
+                    let mut token_start = value_start + "basic".len();
+                    while bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                        token_start += 1;
+                    }
+                    value[token_start..]
+                        .find(|character: char| {
+                            character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"')
+                        })
+                        .map(|relative| token_start + relative)
+                        .unwrap_or(value.len())
+                }
+                _ => value[value_start..]
+                    .find(|character: char| {
+                        character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"')
+                    })
+                    .map(|relative| value_start + relative)
+                    .unwrap_or(value.len()),
+            };
             if value_start < value_end {
                 ranges.push((value_start, value_end));
             }
@@ -1844,15 +1889,15 @@ mod tests {
     fn setup_diagnostic_secret_shapes_are_scrubbed_at_egress() {
         let mut event = Event::default();
         event.extra.insert("setup_environment".into(), Value::String("API_KEY=sk_live_abcdefghijklmnopqrstuv npm_abcdefghijklmnopqrstuvwxyz".into()));
-        event.extra.insert("setup_command".into(), Value::String("npm --token=Bearer-token-value-123456".into()));
-        event.extra.insert("setup_stderr".into(), Value::String("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature\nhttps://ada:hunter2@registry.example/private".into()));
+        event.extra.insert("setup_command".into(), Value::String(r#"npm --token=Bearer-token-value-123456 PASSWORD="quoted-password-value" {"token":"json-token-value"}"#.into()));
+        event.extra.insert("setup_stderr".into(), Value::String("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature\nAuthorization: Basic YWRhOnNlY3JldA==\nhttps://ada:hunter2@registry.example/private".into()));
 
         let result = before_send(event).expect("event remains sendable");
         let sent = result.extra.values().map(|value| match value {
             Value::String(text) => text.as_str(),
             _ => "",
         }).collect::<Vec<_>>().join("\n");
-        for secret in ["sk_live_abcdefghijklmnopqrstuv", "npm_abcdefghijklmnopqrstuvwxyz", "Bearer-token-value-123456", "eyJhbGciOiJIUzI1NiJ9.payload.signature", "ada:hunter2"] {
+        for secret in ["sk_live_abcdefghijklmnopqrstuv", "npm_abcdefghijklmnopqrstuvwxyz", "Bearer-token-value-123456", "quoted-password-value", "json-token-value", "eyJhbGciOiJIUzI1NiJ9.payload.signature", "YWRhOnNlY3JldA==", "ada:hunter2"] {
             assert!(!sent.contains(secret), "credential-shaped text {secret:?} must not leave the process");
         }
     }

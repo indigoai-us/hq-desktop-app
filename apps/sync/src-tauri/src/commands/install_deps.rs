@@ -89,6 +89,10 @@ impl SetupDiagnosticCollector {
     fn take(&self) -> Option<SetupCommandDiagnostic> {
         self.command_failure.lock().unwrap().take()
     }
+
+    fn clear(&self) {
+        let _ = self.command_failure.lock().unwrap().take();
+    }
 }
 
 fn record_setup_command_failure(program: &str, args: &[&str], exit_code: Option<i32>, stdout: String, stderr: String, error: String) {
@@ -101,6 +105,12 @@ fn record_setup_command_failure(program: &str, args: &[&str], exit_code: Option<
         error,
     };
     let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(|collector| collector.record(diagnostic));
+}
+
+/// The next installer path is a recovery attempt. Its terminal error, not the
+/// command failure it recovered from, must describe any eventual Sentry event.
+fn clear_recovered_setup_command_failure() {
+    let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(SetupDiagnosticCollector::clear);
 }
 
 fn append_setup_diagnostic_tail(stream: &mut String, line: &str) {
@@ -2761,6 +2771,7 @@ async fn install_yq_macos(app: AppHandle) -> Result<String, String> {
                         "[yq] brew install failed ({first_line}); falling back to direct binary download"
                     ),
                 );
+                clear_recovered_setup_command_failure();
             }
         }
     } else {
@@ -3073,6 +3084,7 @@ async fn npm_install_global_managed(
                 app,
                 &format!("[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"),
             );
+            clear_recovered_setup_command_failure();
             run_streaming(
                 app,
                 npm,
@@ -6226,6 +6238,24 @@ mod install_deps_planner_tests {
             stderr: "npm ERR! EACCES: permission denied".to_string(),
             error: "Process exited with code 17: npm ERR! EACCES".to_string(),
         }
+    }
+
+    /// A recovered brew/npm command must not be reported if a later fallback
+    /// path is the terminal failure for that dependency.
+    #[test]
+    fn recovered_command_failure_is_discarded_before_terminal_fallback() {
+        let collector = SetupDiagnosticCollector::new();
+        collector.record(setup_diagnostic());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(
+            ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector.clone(), async {
+                clear_recovered_setup_command_failure();
+            }),
+        );
+        assert!(collector.take().is_none());
     }
 
     fn string_extra(event: &sentry::protocol::Event<'static>, key: &str) -> &str {
