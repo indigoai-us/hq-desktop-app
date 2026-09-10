@@ -1145,6 +1145,120 @@ pub fn sample_watcher_job_pids_for_generation(handle: &str, generation: u64) {
 #[cfg(not(target_os = "windows"))]
 pub fn sample_watcher_job_pids_for_generation(_handle: &str, _generation: u64) {}
 
+/// The live-survivor reading taken at the watcher exit boundary (this reopen,
+/// HQ-DESKTOP-66): a closed-vocabulary image token for the processes STILL ALIVE in
+/// the generation's Job Object, and the bare count of them. `unavailable`/0 on
+/// non-Windows, when the generation carries no retained job handle, or when the
+/// single read-only query fails — so absence never masquerades as `none`. Never a
+/// pid or a path: the token is a shared `watcher_fault` vocabulary value and the
+/// count is a bare integer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatcherJobSurvivors {
+    pub token: &'static str,
+    pub count: u32,
+}
+
+impl WatcherJobSurvivors {
+    /// The honest "the query could not run" reading: no token, no count. Rendered on
+    /// non-Windows, a missing job handle, or a failed QueryInformationJobObject.
+    pub fn unavailable() -> Self {
+        Self {
+            token: hq_desktop_core::watcher_fault::WATCHER_JOB_SURVIVORS_UNAVAILABLE,
+            count: 0,
+        }
+    }
+}
+
+/// Sample the LIVE process survivors of the EXACT `generation`'s retained Job
+/// Object AT THE WATCHER EXIT BOUNDARY (this reopen, HQ-DESKTOP-66): one read-only
+/// `QueryInformationJobObject(JobObjectBasicProcessIdList)` on the same retained
+/// handle [`sample_watcher_job_pids_for_generation`] reads, each live PID's image
+/// resolved through the shared allow-list, folded to the closed
+/// `watcher_job_survivors` token plus a bare live count. This is the single fact
+/// that separates a shim-only death (the cmd.exe shim died together with the
+/// runner) from an orphaned runner (a `node_exe` still alive after the registered
+/// shim's `0xFFFFFFFF` status was read). Read-only and generation-scoped; it never
+/// terminates, duplicates, or closes the handle, and it never feeds capture policy,
+/// fingerprint, or any lifecycle decision. `unavailable`/0 when the generation
+/// carries no job handle or the query fails.
+#[cfg(target_os = "windows")]
+pub fn sample_watcher_job_survivors_for_generation(
+    handle: &str,
+    generation: u64,
+) -> WatcherJobSurvivors {
+    let registry = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let job = registry
+        .active
+        .get(handle)
+        .filter(|entry| entry.generation == generation)
+        .or_else(|| {
+            registry
+                .retired
+                .get(&generation)
+                .filter(|retired| retired.handle == handle)
+                .map(|retired| &retired.entry)
+        })
+        .and_then(|entry| entry.job_handle);
+    let Some(job) = job else {
+        return WatcherJobSurvivors::unavailable();
+    };
+    // SAFETY: `job` is this app's own retained Job Object handle and the registry
+    // lock is held for the duration of the read, so it cannot be closed here. The
+    // query is read-only; it never closes, terminates, or duplicates the handle.
+    let pids = unsafe { query_job_live_pids(job) };
+    drop(registry);
+    let Some(pids) = pids else {
+        return WatcherJobSurvivors::unavailable();
+    };
+    let count = pids.len().min(u32::MAX as usize) as u32;
+    let mut images = hq_desktop_core::watcher_fault::WatcherJobImageDescriptor::default();
+    for pid in pids.into_iter().take(WATCHER_PID_SAMPLE_CAP) {
+        // Resolve the image while the process is still alive; `None` (gone or
+        // unreadable) records no class but still counts toward the live total, so a
+        // survivor the query proved exists is never denied by an unreadable image.
+        images.record_optional(resolve_process_image_token(pid));
+    }
+    WatcherJobSurvivors {
+        token: hq_desktop_core::watcher_fault::watcher_job_survivors_token(&images, count),
+        count,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn sample_watcher_job_survivors_for_generation(
+    _handle: &str,
+    _generation: u64,
+) -> WatcherJobSurvivors {
+    WatcherJobSurvivors::unavailable()
+}
+
+#[cfg(test)]
+mod watcher_job_survivor_tests {
+    use super::*;
+
+    #[test]
+    fn survivors_unavailable_carries_the_shared_sentinel_token() {
+        let unavailable = WatcherJobSurvivors::unavailable();
+        assert_eq!(
+            unavailable.token,
+            hq_desktop_core::watcher_fault::WATCHER_JOB_SURVIVORS_UNAVAILABLE
+        );
+        assert_eq!(unavailable.count, 0);
+    }
+
+    #[test]
+    fn survivors_of_an_unregistered_generation_are_unavailable() {
+        // No handle is registered for this bogus generation, so the query cannot run
+        // and the reading is `unavailable` — never a false `none`. Portable: the
+        // non-Windows build always returns unavailable, and on Windows an
+        // unregistered handle carries no job handle, so both reach the same verdict.
+        let survivors = sample_watcher_job_survivors_for_generation("no-such-handle", u64::MAX);
+        assert_eq!(survivors, WatcherJobSurvivors::unavailable());
+    }
+}
+
 /// Best-effort working-set (KB) of one live PID via `OpenProcess` +
 /// `GetProcessMemoryInfo`. Read-only: it opens the process for limited query,
 /// reads `WorkingSetSize`, and closes the handle on every path. `None` when the

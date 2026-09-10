@@ -923,6 +923,25 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "report_not_requested"
                 | "report_disabled_by_user_options"
         )),
+        // Watcher-exit live-survivor discriminator (this reopen, HQ-DESKTOP-66): the
+        // closed-vocabulary image class of the processes STILL ALIVE in the
+        // generation's Job Object at the exit boundary, plus their bare count. This
+        // is the fact that separates a shim-only death (the cmd.exe shim died with
+        // the runner) from an orphaned runner (a node_exe still alive after the
+        // registered shim's 0xFFFFFFFF status was read). The token reuses the shared
+        // WatcherFaultBinary vocabulary; the count is a bare integer. Registering
+        // them is what makes them fail CLOSED — an unregistered key falls through the
+        // `_ => None` arm below and would ship UNTOUCHED, so a producer bug that
+        // shipped a pid or path degrades to `[Filtered]` instead.
+        "watcher_job_survivors" => Some(matches!(
+            value,
+            "none" | "node_exe" | "cmd_exe" | "other" | "mixed" | "unavailable"
+        )),
+        // Bare survivor count. A numeric extra reaches this check as `""` (the scrub
+        // loop passes an empty string for a non-string `Value`), which is type-safe by
+        // construction; a string value must parse as an unsigned integer, so a
+        // producer bug that shipped a pid list or raw text degrades to `[Filtered]`.
+        "watcher_job_survivor_count" => Some(value.is_empty() || value.parse::<u32>().is_ok()),
         _ => None,
     }
 }
@@ -3645,6 +3664,58 @@ mod tests {
             ("watcher_exit_signal_class", "killed by SIGHUP"),
             ("watcher_exit_signal", "1; rm -rf"),
             ("watcher_exit_signal", "one"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], "[Filtered]", "tag {key}={value}");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra {key}={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_job_survivor_fields_are_registered_and_near_misses_are_filtered() {
+        // This reopen (HQ-DESKTOP-66): the whole closed survivor vocabulary and a
+        // bare count survive egress.
+        for (key, value) in [
+            ("watcher_job_survivors", "none"),
+            ("watcher_job_survivors", "node_exe"),
+            ("watcher_job_survivors", "cmd_exe"),
+            ("watcher_job_survivors", "other"),
+            ("watcher_job_survivors", "mixed"),
+            ("watcher_job_survivors", "unavailable"),
+            ("watcher_job_survivor_count", "0"),
+            ("watcher_job_survivor_count", "7"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(true),
+                "valid {key}={value} must survive egress"
+            );
+        }
+        // A numeric extra reaches the count check as `""` (non-string Value), which is
+        // type-safe by construction and must be accepted.
+        assert_eq!(
+            valid_runner_diagnostic_field("watcher_job_survivor_count", ""),
+            Some(true)
+        );
+        // Off-vocabulary tokens, a `token:pid` compound, a path, or a raw process
+        // name, and a shell-injection / pid-list on the count, all degrade to
+        // `[Filtered]` rather than shipping raw bytes.
+        for (key, value) in [
+            ("watcher_job_survivors", "node_exe:4812"),
+            ("watcher_job_survivors", "Node_Exe"),
+            ("watcher_job_survivors", r"C:\Windows\System32\node.exe"),
+            ("watcher_job_survivor_count", "4812,4813,4814"),
+            ("watcher_job_survivor_count", "1; rm -rf"),
+            ("watcher_job_survivor_count", "seven"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());

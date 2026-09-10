@@ -1289,6 +1289,21 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             exit_context.watcher_fault_job_image_provenance =
                                 Some(job_sample.images.provenance_token().to_string());
                         }
+                        // Live-survivor discriminator (this reopen, HQ-DESKTOP-66): a
+                        // single read-only QueryInformationJobObject on the SAME
+                        // retained Job handle, resolving each LIVE pid's image to the
+                        // closed survivor vocabulary. This is the one fact that
+                        // separates a shim-only death (the cmd.exe shim died with the
+                        // runner) from an orphaned runner (a node_exe still alive after
+                        // the shim's 0xFFFFFFFF status was read). Windows-only; a no-op
+                        // (`unavailable`/0) elsewhere and purely additive diagnostics.
+                        let job_survivors =
+                            crate::commands::process::sample_watcher_job_survivors_for_generation(
+                                DAEMON_HANDLE,
+                                daemon_generation,
+                            );
+                        exit_context.watcher_job_survivors = job_survivors.token.to_string();
+                        exit_context.watcher_job_survivor_count = job_survivors.count;
                         // Windows fatal-reason attribution (this reopen, HQ-DESKTOP-5W):
                         // recompute this generation's report directory and seed the
                         // read provenance. The runner child may have written a
@@ -1363,10 +1378,19 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             None => {
                                 exit_context.watcher_fault_provenance =
                                     WatcherFaultProvenance::NotApplicable.as_str().to_string();
+                                // A non-fault exit warrants no OS fault read, but if a
+                                // Node diagnostic report was requested for this
+                                // generation, hand its directory to the report-only
+                                // deferral so runner_report_read becomes a MEASUREMENT
+                                // instead of the request-time seed (this reopen,
+                                // HQ-DESKTOP-66). `Some` only when a report was actually
+                                // requested; the capture seam reads it off the exit path.
+                                exit_context.watcher_report_deferred_read =
+                                    deferred_report_dir.clone();
                             }
                         }
                         let last_stderr = stderr_tail.last().map(String::as_str);
-                        handle_watcher_exit(
+                        let report_dir_disposition = handle_watcher_exit(
                             code,
                             signal,
                             success,
@@ -1375,11 +1399,15 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             last_stderr,
                             &exit_context,
                         );
-                        // Clean up this generation's report directory unless a deferred
-                        // fault worker owns it (that worker deletes it after reading).
-                        // Covers the clean-exit case and the user-disabled/not-requested
-                        // cases, so no run accumulates disk under `~/.hq/runner-reports`.
-                        if deferred_report_dir.is_none() {
+                        // Remove this generation's report directory unless a deferred
+                        // worker owns the read (the fault worker WITH a report, or the
+                        // non-fault report worker — each deletes it after reading). This
+                        // now covers EVERY exit that spawns no worker — clean, disabled,
+                        // not-requested, cancelled, teardown, rate-limited, and
+                        // session-terminate — so a requested-but-not-deferred generation
+                        // is no longer left for prune_stale_runner_report_siblings to
+                        // delete unread (this reopen, HQ-DESKTOP-66, Leg A2).
+                        if report_dir_disposition == RunnerReportDirDisposition::CallerCleansUp {
                             if let Some(dir) = &generation_report_dir {
                                 remove_runner_report_dir(dir);
                             }
@@ -1487,6 +1515,24 @@ fn is_unrecognized_watcher_exit(code: Option<i32>, signal: Option<i32>) -> bool 
         && code
             .map(|code| !classify_windows_exit_status(code).is_windows_status())
             .unwrap_or(true)
+}
+
+/// Whether a deferred worker took ownership of this generation's runner-report
+/// directory — and will read then delete it — or the terminal exit callback must
+/// remove it now (this reopen, HQ-DESKTOP-66). Returned up from the exit handlers
+/// so the callback can clean up the report directory after EVERY watcher exit
+/// without racing a worker that still needs to read it: a `RetainedByWorker`
+/// directory must be left alone (the worker deletes it after the measured read),
+/// while `CallerCleansUp` is removed promptly so a requested-but-not-deferred
+/// generation (a benign, rate-limited, or session-terminate exit) is no longer
+/// left for `prune_stale_runner_report_siblings` to delete unread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerReportDirDisposition {
+    /// A deferred worker (the fault worker WITH a report, or the non-fault report
+    /// worker) owns the directory; the callback must NOT touch it.
+    RetainedByWorker,
+    /// No worker will read the directory; the callback removes it now.
+    CallerCleansUp,
 }
 
 /// What the deferred fault-read worker needs to complete a Windows fault exit's
@@ -1679,6 +1725,31 @@ struct WatcherExitCaptureContext {
     /// generation started. Carried independently of the exit-time probe so a
     /// divergent pair is itself diagnostic rather than misleading (TOCTOU-safe).
     runner_target_repair_attempted: bool,
+    /// Present only for a NON-fault watcher exit that nonetheless requested a
+    /// crash-surviving Node diagnostic report for this generation (this reopen,
+    /// HQ-DESKTOP-66). The report is read and applied OFF the terminal exit callback
+    /// on a bounded worker — the SAME `read_runner_diagnostic_report` +
+    /// `apply_report_to_fault_tags` the fault worker uses — so `runner_report_read`
+    /// becomes a MEASUREMENT (report_read/report_absent/report_unreadable) instead of
+    /// the request-time seed, and any report-named class is adopted under the same
+    /// stderr-wins precedence. No OS fault / Event Log read is performed on this path
+    /// (that channel stays dead for non-fault exits by design). Mutually exclusive
+    /// with `watcher_fault_deferred_read` (a fault exit reads the report inside the
+    /// fault worker); the worker deletes the directory after the read.
+    watcher_report_deferred_read: Option<PathBuf>,
+    /// The closed-vocabulary image class of the processes STILL ALIVE in this
+    /// generation's Job Object at the exit boundary (this reopen, HQ-DESKTOP-66):
+    /// `none`/`node_exe`/`cmd_exe`/`other`/`mixed`, or `unavailable` on non-Windows,
+    /// a missing job handle, or a failed query. A `node_exe` survivor after the
+    /// registered cmd.exe shim's 0xFFFFFFFF status was read means the shim died while
+    /// the runner kept running (an orphaned runner); `none` means the tree died
+    /// together. Diagnostic-only; never gates capture, fingerprint, or lifecycle.
+    watcher_job_survivors: String,
+    /// The bare count of live processes still in the Job Object at the exit boundary
+    /// (this reopen, HQ-DESKTOP-66), beside `watcher_job_survivors`. `0` when the
+    /// query could not run, so a positive count with a `none`/`unavailable` token is
+    /// itself readable (survivors existed but were unnamed / the query failed).
+    watcher_job_survivor_count: u32,
 }
 
 impl WatcherExitCaptureContext {
@@ -1800,6 +1871,12 @@ impl Default for WatcherExitCaptureContext {
             watcher_fault_deferred_read: None,
             runner_exec_target: None,
             runner_target_repair_attempted: false,
+            watcher_report_deferred_read: None,
+            // No live-survivor query applies by default (non-Windows, or a query that
+            // could not run); the token keeps the honest `unavailable` sentinel.
+            watcher_job_survivors:
+                hq_desktop_core::watcher_fault::WATCHER_JOB_SURVIVORS_UNAVAILABLE.to_string(),
+            watcher_job_survivor_count: 0,
         }
     }
 }
@@ -1993,6 +2070,14 @@ fn watcher_exit_capture_context(
         watcher_fault_deferred_read: None,
         runner_exec_target,
         runner_target_repair_attempted: runner_target_repair_attempted(),
+        // Filled by the exit callback after this snapshot (this reopen,
+        // HQ-DESKTOP-66): the non-fault report deferral needs this generation's
+        // report directory, and the live-survivor sample needs the exit boundary.
+        // Default them here so the snapshot is complete for unit-only callers.
+        watcher_report_deferred_read: None,
+        watcher_job_survivors:
+            hq_desktop_core::watcher_fault::WATCHER_JOB_SURVIVORS_UNAVAILABLE.to_string(),
+        watcher_job_survivor_count: 0,
     }
 }
 
@@ -3032,6 +3117,94 @@ fn send_deferred_watcher_fault_capture(
     effects.capture(&payload.message, &fingerprint, &tags, &extras);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Non-fault report-only deferral (this reopen, HQ-DESKTOP-66)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A NON-fault watcher-exit capture held back only while its bounded diagnostic-
+/// report read runs OFF the terminal exit callback. Unlike a fault capture it does
+/// NO OS fault / Event Log read (that channel stays dead for non-fault exits by
+/// design) and stamps NO watcher_fault_* resolution — it exists purely so
+/// `runner_report_read` becomes a MEASUREMENT instead of the request-time seed. It
+/// carries the payload exactly as the exit path built it, plus the report directory.
+#[derive(Debug, Clone)]
+struct DeferredWatcherReportCapture {
+    message: String,
+    fingerprint: Vec<String>,
+    tags: Vec<(String, String)>,
+    extras: Vec<(String, sentry::protocol::Value)>,
+    report_dir: PathBuf,
+}
+
+impl DeferredWatcherReportCapture {
+    fn new(
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+        report_dir: PathBuf,
+    ) -> Self {
+        Self {
+            message: message.to_string(),
+            fingerprint: fingerprint.iter().map(|part| (*part).to_string()).collect(),
+            tags: tags
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+            extras: extras
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+            report_dir,
+        }
+    }
+}
+
+/// Read this generation's crash-surviving Node diagnostic report and patch the
+/// capture's tags with the MEASURED provenance, reusing the SAME
+/// `read_runner_diagnostic_report` + `apply_report_to_fault_tags` the fault worker
+/// uses so the two can never drift; the read deletes the directory. Pure w.r.t.
+/// Sentry, so a test proves the measured `runner_report_read` with a temp dir and
+/// no thread. A report-derived class never overrides a stderr-derived one — that
+/// precedence lives in `apply_report_to_fault_tags`.
+fn apply_deferred_report_read(tags: &mut Vec<(String, String)>, report_dir: &Path) {
+    let report = read_runner_diagnostic_report(report_dir);
+    apply_report_to_fault_tags(tags, &report);
+}
+
+/// Hand a non-fault, report-requested capture to a bounded worker that performs the
+/// diagnostic-report read OFF the exit path, then sends. The read is a SINGLE
+/// size-capped file read (a few KB), NOT the seconds-long timeout-less Event Log
+/// read the fault worker must guard — so, unlike the fault path, it needs no
+/// pending-registry teardown flush: it is short-lived, and a non-fault UNEXPECTED
+/// watcher exit is never produced during an app-quit / session-end teardown (an
+/// app-owned termination exits with code 1, which is benign → LocalLogOnly and
+/// spawns no capture, and an observed session-terminate is deferred on its own
+/// grace), so no report capture is ever in flight to lose at shutdown.
+fn spawn_deferred_watcher_report_capture(payload: DeferredWatcherReportCapture) {
+    std::thread::spawn(move || {
+        let mut payload = payload;
+        apply_deferred_report_read(&mut payload.tags, &payload.report_dir);
+        send_deferred_watcher_report_capture(payload);
+    });
+}
+
+fn send_deferred_watcher_report_capture(payload: DeferredWatcherReportCapture) {
+    let fingerprint: Vec<&str> = payload.fingerprint.iter().map(String::as_str).collect();
+    let tags: Vec<(&str, String)> = payload
+        .tags
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let extras: Vec<(&str, sentry::protocol::Value)> = payload
+        .extras
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let mut effects = ProductionWatcherProcessEffects;
+    effects.capture(&payload.message, &fingerprint, &tags, &extras);
+}
+
 /// Overwrite (or insert) one tag in a held-back payload's tag list.
 fn set_payload_tag(tags: &mut Vec<(String, String)>, key: &str, value: String) {
     match tags.iter().position(|(existing, _)| existing == key) {
@@ -3107,6 +3280,20 @@ trait WatcherProcessEffects {
         tags: &[(&str, String)],
         extras: &[(&str, sentry::protocol::Value)],
         read: WatcherFaultDeferredRead,
+    );
+    /// Hold this NON-fault watcher-exit capture back only while its bounded
+    /// diagnostic-report read runs OFF the terminal callback (this reopen,
+    /// HQ-DESKTOP-66), so `runner_report_read` becomes a MEASUREMENT instead of the
+    /// request-time seed and any report-named class is adopted under the same
+    /// stderr-wins precedence. It performs NO OS fault / Event Log read (that channel
+    /// stays dead for non-fault exits by design). Never cancels a capture on its own.
+    fn defer_watcher_report_capture(
+        &mut self,
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+        report_dir: PathBuf,
     );
 }
 
@@ -3221,6 +3408,23 @@ impl WatcherProcessEffects for ProductionWatcherProcessEffects {
             read,
         ));
     }
+
+    fn defer_watcher_report_capture(
+        &mut self,
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+        report_dir: PathBuf,
+    ) {
+        spawn_deferred_watcher_report_capture(DeferredWatcherReportCapture::new(
+            message,
+            fingerprint,
+            tags,
+            extras,
+            report_dir,
+        ));
+    }
 }
 
 /// Fixed-vocabulary bucket for a Job Object's peak per-process COMMITTED memory
@@ -3300,7 +3504,7 @@ fn handle_watcher_exit(
     watcher_command: &str,
     last_stderr: Option<&str>,
     context: &WatcherExitCaptureContext,
-) {
+) -> RunnerReportDirDisposition {
     let mut effects = ProductionWatcherProcessEffects;
     handle_watcher_exit_with_effects(
         &mut effects,
@@ -3312,7 +3516,7 @@ fn handle_watcher_exit(
         last_stderr,
         current_termination_host(),
         context,
-    );
+    )
 }
 
 fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
@@ -3325,11 +3529,11 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
     last_stderr: Option<&str>,
     host: TerminationHost,
     context: &WatcherExitCaptureContext,
-) {
+) -> RunnerReportDirDisposition {
     if cancelled {
         // Deliberate stop path already recorded lifecycle.
         effects.reset_exec_not_runnable_failure_streak();
-        return;
+        return RunnerReportDirDisposition::CallerCleansUp;
     }
 
     if context.attributed_to_app_teardown(code, signal) {
@@ -3340,13 +3544,13 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         // recorded the lifecycle transition, so this is not a new event, not a
         // lifecycle change, and never references the stall in-flight flag.
         effects.reset_exec_not_runnable_failure_streak();
-        return;
+        return RunnerReportDirDisposition::CallerCleansUp;
     }
 
     if !is_unexpected_watcher_exit(success, signal, cancelled) {
         effects.reset_exec_not_runnable_failure_streak();
         effects.set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
-        return;
+        return RunnerReportDirDisposition::CallerCleansUp;
     }
 
     // The capture policy is a pure function of the exit shape and the exit-time
@@ -3393,7 +3597,7 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         // identical to an immediate capture's (the escalation path reuses it), and
         // `1` is a capture milestone so the deferral is always registered —
         // resolution, never a pre-send rate limiter, makes the drop/escalate call.
-        record_unexpected_watcher_exit(
+        return record_unexpected_watcher_exit(
             effects,
             code,
             signal,
@@ -3405,7 +3609,6 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
             host,
             context,
         );
-        return;
     }
 
     // Every other unexpected exit is a genuine watcher failure (or an
@@ -3446,7 +3649,7 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         last_stderr,
         host,
         context,
-    );
+    )
 }
 
 /// Compute evidence-gated memory-exhaustion attribution for a watcher exit. Any
@@ -3502,7 +3705,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     last_stderr: Option<&str>,
     host: TerminationHost,
     context: &WatcherExitCaptureContext,
-) {
+) -> RunnerReportDirDisposition {
     if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
         if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
             && signal.is_none()
@@ -3598,7 +3801,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 ),
             );
         }
-        return;
+        return RunnerReportDirDisposition::CallerCleansUp;
     }
 
     if !should_capture_watcher_exit(capture_policy, policy_consecutive) {
@@ -3619,7 +3822,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 ),
             );
         }
-        return;
+        return RunnerReportDirDisposition::CallerCleansUp;
     }
 
     let (uptime, rss_kb, rss_age, rss_kind) = effects.watcher_exit_diagnostics();
@@ -3808,6 +4011,17 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     tags.push((
         "watcher_job_process_count",
         context.watcher_job_process_count.clone(),
+    ));
+    // The live-survivor discriminator (this reopen, HQ-DESKTOP-66): the closed-
+    // vocabulary image class STILL ALIVE in the Job Object at the exit boundary, plus
+    // its bare count. Separates a shim-only death (the cmd.exe shim died with the
+    // runner) from an orphaned runner (a node_exe alive after the shim's 0xFFFFFFFF
+    // status was read). Fixed vocabulary + bare integer; `unavailable`/0 when the
+    // query could not run. Re-validated at the telemetry egress. Diagnostic-only.
+    tags.push(("watcher_job_survivors", context.watcher_job_survivors.clone()));
+    tags.push((
+        "watcher_job_survivor_count",
+        context.watcher_job_survivor_count.to_string(),
     ));
     tags.push((
         "watcher_child_kind",
@@ -4006,7 +4220,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             ),
         );
         effects.defer_session_end_capture(&message, &fingerprint, &tags, &extras);
-        return;
+        return RunnerReportDirDisposition::CallerCleansUp;
     }
     // A Windows fault exit whose OS fault read was deferred off the terminal
     // callback (HQ-DESKTOP-4X): hand the fully-built payload to the deferred
@@ -4017,10 +4231,35 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // and unchanged — only WHEN this event is sent and WHAT provenance it carries
     // differ from an immediate send.
     if let Some(read) = &context.watcher_fault_deferred_read {
+        // The fault worker reads AND deletes the report directory only when it has
+        // one; otherwise the callback must clean it up.
+        let worker_owns_report_dir = read.report_dir.is_some();
         effects.defer_watcher_fault_capture(&message, &fingerprint, &tags, &extras, read.clone());
-        return;
+        return if worker_owns_report_dir {
+            RunnerReportDirDisposition::RetainedByWorker
+        } else {
+            RunnerReportDirDisposition::CallerCleansUp
+        };
+    }
+    // A non-fault watcher exit that nonetheless requested a Node diagnostic report
+    // for this generation (this reopen, HQ-DESKTOP-66): hand the fully-built payload
+    // to a bounded worker that reads the report OFF this terminal callback, upgrades
+    // runner_report_read from its request-time seed to a MEASUREMENT, adopts any
+    // report-named class under the SAME stderr-wins precedence, and sends. No OS
+    // fault / Event Log read runs on this path — that channel stays dead for
+    // non-fault exits by design — and the worker deletes the directory after the read.
+    if let Some(report_dir) = &context.watcher_report_deferred_read {
+        effects.defer_watcher_report_capture(
+            &message,
+            &fingerprint,
+            &tags,
+            &extras,
+            report_dir.clone(),
+        );
+        return RunnerReportDirDisposition::RetainedByWorker;
     }
     effects.capture(&message, &fingerprint, &tags, &extras);
+    RunnerReportDirDisposition::CallerCleansUp
 }
 
 /// Context is constructed from the core's closed-vocabulary rollup. Keep this
@@ -6622,6 +6861,11 @@ mod tests {
         /// sent now, with their seeded `deferred` provenance. Separate so a test
         /// can prove the fault read is off the exit path.
         deferred_watcher_fault: Vec<RecordedCapture>,
+        /// Captures handed to the non-fault report-only deferral (this reopen,
+        /// HQ-DESKTOP-66) instead of being sent now, carrying their seeded
+        /// runner_report_read. Separate so a test can prove the report read is off
+        /// the exit path and that a non-fault report-requested exit routed here.
+        deferred_watcher_report: Vec<RecordedCapture>,
         lifecycle: Vec<(WatchDaemonState, DaemonFailureCategory)>,
     }
 
@@ -6719,6 +6963,18 @@ mod tests {
             _read: WatcherFaultDeferredRead,
         ) {
             self.deferred_watcher_fault
+                .push(recorded_capture(message, fingerprint, tags, extras));
+        }
+
+        fn defer_watcher_report_capture(
+            &mut self,
+            message: &str,
+            fingerprint: &[&str],
+            tags: &[(&str, String)],
+            extras: &[(&str, sentry::protocol::Value)],
+            _report_dir: PathBuf,
+        ) {
+            self.deferred_watcher_report
                 .push(recorded_capture(message, fingerprint, tags, extras));
         }
     }
@@ -9407,6 +9663,245 @@ mod tests {
         );
         assert!(event.message.contains("0xFFFFFFFF (origin unknown)"));
         assert!(!event.message.contains("code=Some(-1)"));
+    }
+
+    #[test]
+    fn indeterminate_exit_with_a_requested_report_defers_the_read_off_the_exit_path() {
+        // This reopen (HQ-DESKTOP-66): a 0xFFFFFFFF indeterminate exit that requested
+        // a Node diagnostic report must NOT capture inline with the request-time seed.
+        // It hands the payload to the report-only deferral so runner_report_read
+        // becomes a MEASUREMENT off the exit path, and tells the callback a worker
+        // owns the report directory. On the investigated base the None arm never
+        // built a deferral, so the seed shipped and the file was left on disk.
+        let context = WatcherExitCaptureContext {
+            runner_report_read: "report_absent".to_string(), // the seed the exit path sets
+            watcher_report_deferred_read: Some(unique_report_dir("route")),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        let disposition = handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        // Held for the read, not sent inline.
+        assert!(effects.captures.is_empty(), "must not send inline");
+        assert_eq!(effects.deferred_watcher_report.len(), 1);
+        let held = &effects.deferred_watcher_report[0];
+        // Still the seed on the held payload — the worker upgrades it after reading.
+        assert_eq!(recorded_tag(held, "runner_report_read"), "report_absent");
+        // watcher_fault_provenance stays not_applicable for this non-fault exit.
+        assert_eq!(
+            recorded_tag(held, "watcher_fault_provenance"),
+            "not_applicable"
+        );
+        // The callback must NOT delete the directory: the worker owns the read.
+        assert_eq!(disposition, RunnerReportDirDisposition::RetainedByWorker);
+        // Grouping continuity: the message and this cluster's fingerprint are unchanged.
+        assert!(held.message.contains("0xFFFFFFFF (origin unknown)"));
+        assert_eq!(
+            held.fingerprint
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:status-ffffffff",
+                "none",
+                "none",
+                "none"
+            ]
+        );
+    }
+
+    #[test]
+    fn report_dir_disposition_tells_the_callback_who_cleans_up() {
+        // A non-fault exit with NO requested report captures inline and the callback
+        // cleans up (report not requested).
+        let mut plain = RecordingWatcherEffects::default();
+        let plain_disposition = handle_watcher_exit_with_effects(
+            &mut plain,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(plain.captures.len(), 1);
+        assert!(plain.deferred_watcher_report.is_empty());
+        assert_eq!(plain_disposition, RunnerReportDirDisposition::CallerCleansUp);
+
+        // A cancelled exit records nothing and the callback cleans up.
+        let mut cancelled = RecordingWatcherEffects::default();
+        let cancelled_disposition = handle_watcher_exit_with_effects(
+            &mut cancelled,
+            Some(-1),
+            None,
+            false,
+            true,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert!(cancelled.captures.is_empty());
+        assert_eq!(
+            cancelled_disposition,
+            RunnerReportDirDisposition::CallerCleansUp
+        );
+
+        // A benign exit code (1) is LocalLogOnly — no capture, and even though a
+        // report was requested it reads none, so the callback cleans up (Leg A2:
+        // a requested-but-not-deferred generation is no longer left for the prune).
+        let benign_ctx = WatcherExitCaptureContext {
+            watcher_report_deferred_read: Some(unique_report_dir("benign")),
+            ..Default::default()
+        };
+        let mut benign = RecordingWatcherEffects::default();
+        let benign_disposition = handle_watcher_exit_with_effects(
+            &mut benign,
+            Some(1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &benign_ctx,
+        );
+        assert!(benign.captures.is_empty(), "benign exit is LocalLogOnly");
+        assert!(benign.deferred_watcher_report.is_empty());
+        assert_eq!(
+            benign_disposition,
+            RunnerReportDirDisposition::CallerCleansUp
+        );
+    }
+
+    #[test]
+    fn watcher_exit_renders_the_job_survivor_discriminator_tags() {
+        // This reopen (HQ-DESKTOP-66): a surviving node_exe after the shim's
+        // 0xFFFFFFFF status was read is the orphaned-runner signal; the count rides
+        // alongside it. Both are rendered on the capture.
+        let context = WatcherExitCaptureContext {
+            watcher_job_survivors: "node_exe".to_string(),
+            watcher_job_survivor_count: 2,
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        let event = &effects.captures[0];
+        assert_eq!(recorded_tag(event, "watcher_job_survivors"), "node_exe");
+        assert_eq!(recorded_tag(event, "watcher_job_survivor_count"), "2");
+
+        // The default (no query ran) reading is the honest unavailable sentinel / 0.
+        let mut default_effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut default_effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(
+            recorded_tag(&default_effects.captures[0], "watcher_job_survivors"),
+            "unavailable"
+        );
+        assert_eq!(
+            recorded_tag(&default_effects.captures[0], "watcher_job_survivor_count"),
+            "0"
+        );
+    }
+
+    #[test]
+    fn apply_deferred_report_read_measures_the_token_and_deletes_the_dir() {
+        // The report-only worker's core: reuse the SAME shared reader + applier the
+        // fault worker uses, so a written report upgrades the seed to report_read,
+        // adopts the node_report class (the stderr class was none), and the directory
+        // is removed after the terminal read.
+        let dir = unique_report_dir("apply");
+        std::fs::create_dir_all(&dir).unwrap();
+        let report = serde_json::json!({
+            "header": { "trigger": "Exception", "event": "Uncaught TypeError" }
+        })
+        .to_string();
+        std::fs::write(
+            dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME),
+            report,
+        )
+        .unwrap();
+
+        let mut tags = vec![
+            ("runner_fatal_class".to_string(), "none".to_string()),
+            ("runner_report_read".to_string(), "report_absent".to_string()),
+        ];
+        apply_deferred_report_read(&mut tags, &dir);
+
+        let tag = |key: &str| {
+            tags.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("<absent>")
+        };
+        assert_eq!(tag("runner_report_read"), "report_read");
+        assert_eq!(tag("runner_fatal_class"), "node_fatal");
+        assert_eq!(tag("runner_fatal_source"), "node_report");
+        // The read is terminal: the directory is gone (bounding disk).
+        assert!(!dir.exists());
+
+        // A stderr-derived class is never overridden: with a class already named, the
+        // report read still records the measured provenance but keeps the class.
+        let dir2 = unique_report_dir("apply-precedence");
+        std::fs::create_dir_all(&dir2).unwrap();
+        std::fs::write(
+            dir2.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME),
+            serde_json::json!({
+                "header": { "trigger": "Exception", "event": "Uncaught TypeError" }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut tags2 = vec![
+            ("runner_fatal_class".to_string(), "libuv_assert".to_string()),
+            ("runner_report_read".to_string(), "report_absent".to_string()),
+        ];
+        apply_deferred_report_read(&mut tags2, &dir2);
+        let tag2 = |key: &str| {
+            tags2
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("<absent>")
+        };
+        assert_eq!(tag2("runner_report_read"), "report_read");
+        assert_eq!(
+            tag2("runner_fatal_class"),
+            "libuv_assert",
+            "a report class never overrides a stderr-derived class"
+        );
     }
 
     #[test]
