@@ -34,6 +34,47 @@ export const ERROR_CATEGORIES = [
 
 export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
 
+/**
+ * Claude Desktop connector import observes only its documented local config,
+ * never Codex, browser sessions, or cloud integrations. Keep the emitted
+ * outcomes finite so a malformed native response cannot become telemetry.
+ */
+export const CONNECTOR_IMPORT_OUTCOMES = [
+  'tool_not_installed',
+  'config_path_unavailable',
+  'config_missing',
+  'config_unreadable',
+  'config_invalid',
+  'zero_servers',
+  'imported',
+  'import_failed',
+  'command_failed',
+  'user_skipped',
+  'unknown',
+] as const;
+
+export type ConnectorImportOutcome = (typeof CONNECTOR_IMPORT_OUTCOMES)[number];
+
+/** The complete inspected-source set for the connector-import probe. */
+export const CONNECTOR_IMPORT_SOURCE_SETS = [
+  'claude_desktop_config',
+  'unknown',
+] as const;
+
+export type ConnectorImportSourceSet = (typeof CONNECTOR_IMPORT_SOURCE_SETS)[number];
+
+export function normalizeConnectorImportOutcome(value: unknown): ConnectorImportOutcome {
+  return typeof value === 'string' && CONNECTOR_IMPORT_OUTCOMES.includes(value as ConnectorImportOutcome)
+    ? (value as ConnectorImportOutcome)
+    : 'unknown';
+}
+
+export function normalizeConnectorImportSourceSet(value: unknown): ConnectorImportSourceSet {
+  return typeof value === 'string' && CONNECTOR_IMPORT_SOURCE_SETS.includes(value as ConnectorImportSourceSet)
+    ? (value as ConnectorImportSourceSet)
+    : 'unknown';
+}
+
 export const STAGE_ORDER: StageId[] = [
   'content',
   'deps',

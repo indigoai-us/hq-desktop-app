@@ -2179,7 +2179,13 @@
                   ...(event.detectedToolCount === undefined
                     ? {}
                     : { detectedToolCount: event.detectedToolCount }),
+                  ...(event.detectedSourceSet === undefined
+                    ? {}
+                    : { detectedSourceSet: event.detectedSourceSet }),
                   ...(event.outcome === undefined ? {} : { outcome: event.outcome }),
+                  ...(event.errorCategory === undefined
+                    ? {}
+                    : { errorCategory: event.errorCategory }),
                 })}
             />
           {/if}
