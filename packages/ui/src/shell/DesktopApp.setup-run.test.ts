@@ -366,6 +366,26 @@ describe("DesktopApp native setup run wiring", () => {
     expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("new?draft=y");
   });
 
+  it("the session that starts from Continue in HQ Sessions stays on screen even without a company key", async () => {
+    const api = fakeSetupRun();
+    await mountApp(api, undefined, { companies: [{ ...ACME, state: "synced", hasLocalFolder: true }] });
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await settle();
+    api.emit({ kind: "assistantMessage", text: "[hq-setup] step=moves status=done\n\nAll set — you're done." });
+    api.emit({ kind: "turnDone", status: "success" }, "idle");
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-sessions"]')!.click();
+    await settle();
+    expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("new?draft=y");
+    // The person presses Enter: the page replaces the draft with the new
+    // session's bare id. That is a real place, not "no longer available".
+    host.querySelector<HTMLButtonElement>('[data-testid="extra-page-probe-replace"]')!.click();
+    await settle();
+    await settle();
+    expect(host.querySelector('[data-testid="navigation-unavailable"]')).toBeNull();
+    expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("replaced-by-page");
+  });
+
   it("the finale's Open <Company> selects that company's channel when the rail has it", async () => {
     const api = fakeSetupRun();
     const onselectrow = vi.fn();

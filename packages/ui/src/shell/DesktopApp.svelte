@@ -172,7 +172,6 @@
     destinationLabel,
     extraParamCompanyKey,
     historyNeighbor,
-    sessionExtraRequiresCompany,
     type NavigationDestination,
     type NavigationEntry,
     type NavigationScrollState,
@@ -3250,11 +3249,6 @@
    * company key because this app started it for this account. Everything
    * else on the Sessions extra keeps needing its key.
    */
-  function isSetupRunSessionParam(param: string | null | undefined): boolean {
-    const id = setupAgent.sessionId?.trim() ?? "";
-    return Boolean(id) && setupAgent.active && (param?.trim() ?? "") === id;
-  }
-
   function companyAccess(
     companyKey: string | null | undefined,
   ): "ok" | "unknown" | "denied" {
@@ -3337,26 +3331,11 @@
           reason: `Unknown destination: ${destination.page}`,
         };
       }
+      // A session with no company key is not gated: a personal chat, or a
+      // fresh one whose company the page has not learned yet. Only a key
+      // that is no longer in the membership makes a session unavailable.
       const extraCompany =
         destination.companyUid ?? extraParamCompanyKey(destination.param);
-      if (
-        destination.page === "sessions" &&
-        sessionExtraRequiresCompany(destination.param) &&
-        !extraCompany &&
-        !isSetupRunSessionParam(destination.param)
-      ) {
-        if (companies == null) {
-          return {
-            status: "transient-failure",
-            error: "Directory still loading",
-          };
-        }
-        return {
-          status: "unavailable",
-          destination,
-          reason: DESTINATION_UNAVAILABLE,
-        };
-      }
       const extraDenied = accessOutcome(destination, extraCompany);
       if (extraDenied) return extraDenied;
       return { status: "ready", destination };
@@ -3684,22 +3663,8 @@
         (current ? destinationCompanyKey(current.destination) : null));
     const extraPruned = Boolean(shownExtra && !currentIsShownExtra);
     const lostCompany = Boolean(shownKey && !allowed.has(shownKey));
-    const extraUnscoped = Boolean(
-      shownExtra &&
-        shownExtra.page === "sessions" &&
-        sessionExtraRequiresCompany(shownExtra.param) &&
-        !shownKey &&
-        !isSetupRunSessionParam(shownExtra.param),
-    );
-    if (!extraPruned && !lostCompany && !extraUnscoped) return;
-    if (
-      navigationUnavailable &&
-      !extraPruned &&
-      !lostCompany &&
-      !extraUnscoped
-    ) {
-      return;
-    }
+    if (!extraPruned && !lostCompany) return;
+    if (navigationUnavailable && !extraPruned && !lostCompany) return;
     navigationUnavailable = {
       destination: current?.destination ?? shownExtra ?? { kind: "messages" },
       reason: DESTINATION_UNAVAILABLE,

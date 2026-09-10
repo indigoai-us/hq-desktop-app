@@ -782,7 +782,7 @@ describe('first-message orientation', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('/startwork indigo'));
     expect(host.textContent).toContain('Show me the launch plan');
     expect(backend.sends).toHaveLength(1);
-    expect(onopensession).toHaveBeenCalledWith('sess-1', { replace: true });
+    expect(onopensession).toHaveBeenCalledWith('sess-1?company=indigo', { replace: true });
     expect(at('session-composer-notice')).toBeNull();
   });
 
