@@ -1,5 +1,6 @@
 <script lang="ts">
   import PaperPlaneRight from "phosphor-svelte/lib/PaperPlaneRight";
+  import X from "phosphor-svelte/lib/X";
   import Paperclip from "phosphor-svelte/lib/Paperclip";
   /**
    * ReplyPanel — Slack-style reply column (port of hq-desktop-app ThreadPanel).
@@ -819,7 +820,7 @@
       title="Close"
       onclick={onclose}
     >
-      ×
+      <X size={13} weight="bold" aria-hidden="true" />
     </button>
   </header>
 
@@ -1211,7 +1212,7 @@
     min-height: 0;
     min-width: 0;
     height: 100%;
-    background: var(--surface-panel, var(--v4-ground, #161618));
+    background: var(--side-bg, var(--surface-panel, var(--v4-ground, #161618)));
     border-left: 1px solid var(--line, var(--border, rgba(255, 255, 255, 0.12)));
     color: var(--t1);
     font: 400 13px/1.45 var(--font-ui);
@@ -1221,17 +1222,21 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    gap: 10px;
+    padding: 16px 18px 0;
     flex-shrink: 0;
   }
 
+  /* `.sd-id`: a caption, not a heading. A 15px/700 title with a rule under it
+     made the panel announce itself louder than the conversation it belongs to. */
   .reply-title {
     margin: 0;
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--t1);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--t3);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1240,22 +1245,25 @@
   .reply-close {
     display: grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
+    margin-left: auto;
     padding: 0;
     border: 0;
-    border-radius: 8px;
+    border-radius: 6px;
     background: transparent;
-    color: var(--t2);
+    color: var(--t3);
     font-family: inherit;
-    font-size: 20px;
-    font-weight: 400;
     line-height: 1;
     cursor: pointer;
+    transition:
+      color 0.12s,
+      background 0.12s;
   }
 
   .reply-close:hover,
   .reply-close:focus-visible {
+    color: var(--t1);
     background: var(--hover, color-mix(in srgb, var(--t1) 6%, transparent));
     outline: none;
   }
@@ -1267,8 +1275,7 @@
     grid-template-columns: 36px minmax(0, 1fr);
     gap: 8px;
     align-items: start;
-    padding: 12px 16px 16px;
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    padding: 12px 18px 4px;
   }
 
   .reply-root:hover .reply-quick-react-root,
@@ -1393,14 +1400,24 @@
   }
 
   .reply-root-label {
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.12));
-    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0 14px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.08em;
     color: var(--t3);
     text-transform: uppercase;
+  }
+
+  .reply-root-label::before,
+  .reply-root-label::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
   }
 
   .reply-status {
@@ -1425,7 +1442,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 8px 12px;
+    padding: 0 10px 8px;
     display: flex;
     flex-direction: column;
     gap: 0;

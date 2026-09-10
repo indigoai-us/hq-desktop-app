@@ -67,7 +67,9 @@
     box-sizing: border-box;
     min-height: 16px;
     margin: 6px 0;
-    padding: 0;
+    /* Same 8px inset `.dm-msg` gives itself, so the 32px glyph column lands on
+       the avatar column and the copy starts where message bodies start. */
+    padding: 0 8px;
     color: var(--t3, var(--muted, var(--pop-muted)));
     font-size: 11px;
     line-height: 1.45;

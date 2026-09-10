@@ -5591,8 +5591,11 @@
     min-height: 0;
   }
 
+  /* `min()` so the pair can still split a narrow stage. Two hard 320/360px
+     floors added up to more than the stage had and pushed the thread pane
+     out under the window edge. */
   .chat-stage:has(.reply-column:not(.overlay)) :global(.conversation) {
-    min-width: 320px;
+    min-width: min(320px, 50%);
   }
 
   /* Open thread pane takes half the conversation area — a 50/50 split
@@ -5601,7 +5604,7 @@
   .chat-stage:has(.reply-column:not(.profile-column):not(.overlay))
     :global(.conversation) {
     flex: 1 1 0;
-    min-width: 360px;
+    min-width: min(360px, 50%);
   }
 
   .reply-column {
@@ -5612,7 +5615,7 @@
        hover chrome and message text. .overlay still overrides to
        position:absolute; z-index:5. */
     isolation: isolate;
-    width: clamp(340px, 34%, 420px);
+    width: clamp(min(340px, 50%), 34%, 420px);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -5629,7 +5632,7 @@
   .reply-column:not(.profile-column):not(.overlay) {
     width: auto;
     flex: 1 1 0;
-    min-width: 360px;
+    min-width: min(360px, 50%);
   }
 
   @media (prefers-reduced-motion: reduce) {
