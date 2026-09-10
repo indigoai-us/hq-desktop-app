@@ -17,6 +17,8 @@
     "bundle:debug": "npm run sidecar:install && tauri build --debug; bash scripts/fix-recall-framework-symlinks.sh \"src-tauri/target/debug/bundle/macos/HQ.app\" && bash scripts/sign-bundle.sh \"src-tauri/target/debug/bundle/macos/HQ.app\"",
     "bundle:release": "npm run sidecar:install && tauri build; bash scripts/fix-recall-framework-symlinks.sh \"src-tauri/target/release/bundle/macos/HQ.app\" && bash scripts/sign-bundle.sh \"src-tauri/target/release/bundle/macos/HQ.app\"",
     "test:e2e:desktop-alt": "vitest run --config e2e/desktop-alt/vitest.config.ts",
+    "test:e2e:idea-board": "vitest run --config e2e/idea-board/vitest.config.ts",
+    "bench:idea-board": "node scripts/idea-board-bench.mjs",
     "test:e2e:browser": "playwright test"
   },
   "dependencies": {

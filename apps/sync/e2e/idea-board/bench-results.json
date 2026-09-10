@@ -1,0 +1,30 @@
+{
+  "generatedAt": "2026-09-10T20:16:09.837Z",
+  "source": "log-file",
+  "logPath": "~/.hq/logs/hq-sync.log",
+  "platform": "darwin",
+  "requestedCycles": null,
+  "budgets": {
+    "chordToOverlay": 80,
+    "releaseToPng": 120
+  },
+  "chordToOverlay": {
+    "samples": 0,
+    "p50": null,
+    "p95": null,
+    "min": null,
+    "max": null,
+    "budgetMs": 80,
+    "withinBudget": false
+  },
+  "releaseToPng": {
+    "samples": 0,
+    "p50": null,
+    "p95": null,
+    "min": null,
+    "max": null,
+    "budgetMs": 120,
+    "withinBudget": false
+  },
+  "pass": false
+}

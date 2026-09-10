@@ -11,7 +11,7 @@
     "prepare": "node scripts/install-git-hooks.mjs",
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "test": "turbo run test",
+    "test": "turbo run test && pnpm --filter hq-sync test:e2e:idea-board",
     "coverage": "turbo run coverage",
     "test:scripts": "vitest run scripts/*.test.ts",
     "lint": "turbo run lint",
