@@ -3233,6 +3233,18 @@
     cancelScrollRestore = null;
   }
 
+  /**
+   * The one live session that is legitimately company-less: #welcome's
+   * native setup run, which exists before the company it creates. "Open setup
+   * chat" lands on it by bare id while the run is in flight; it needs no
+   * company key because this app started it for this account. Everything
+   * else on the Sessions extra keeps needing its key.
+   */
+  function isSetupRunSessionParam(param: string | null | undefined): boolean {
+    const id = setupAgent.sessionId?.trim() ?? "";
+    return Boolean(id) && setupAgent.active && (param?.trim() ?? "") === id;
+  }
+
   function companyAccess(
     companyKey: string | null | undefined,
   ): "ok" | "unknown" | "denied" {
@@ -3320,7 +3332,8 @@
       if (
         destination.page === "sessions" &&
         sessionExtraRequiresCompany(destination.param) &&
-        !extraCompany
+        !extraCompany &&
+        !isSetupRunSessionParam(destination.param)
       ) {
         if (companies == null) {
           return {
@@ -3665,7 +3678,8 @@
       shownExtra &&
         shownExtra.page === "sessions" &&
         sessionExtraRequiresCompany(shownExtra.param) &&
-        !shownKey,
+        !shownKey &&
+        !isSetupRunSessionParam(shownExtra.param),
     );
     if (!extraPruned && !lostCompany && !extraUnscoped) return;
     if (
