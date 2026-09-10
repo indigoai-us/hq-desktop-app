@@ -76,7 +76,9 @@ afterEach(async () => {
 });
 
 describe("DesktopApp project about", () => {
-  it("opens a description dialog from the channel-header info control", async () => {
+  // The description used to open a modal: three actions (open, read, dismiss)
+  // for one short paragraph. It rides the info icon's own tooltip now.
+  it("describes the project from the channel-header info control on hover", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(DesktopApp, {
@@ -95,12 +97,22 @@ describe("DesktopApp project about", () => {
     await tick();
     const info = host.querySelector(
       '[data-testid="project-about"]',
-    ) as HTMLButtonElement | null;
+    ) as HTMLElement | null;
     expect(info).toBeTruthy();
-    info?.click();
+    // No modal, at any point.
+    expect(host.querySelector("[data-testid='project-about-dialog']")).toBeNull();
+
+    // Focus shows the bubble with no dwell delay, which is also the path a
+    // keyboard user takes.
+    info?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     await tick();
-    expect(
-      host.querySelector("[data-testid='project-about-body']")?.textContent,
-    ).toBe("Live board for HQ Work mesh.");
+    const bubble = host.querySelector("[data-testid='tooltip-bubble']");
+    expect(bubble?.textContent?.trim()).toBe("Live board for HQ Work mesh.");
+    // Wired for screen readers rather than relying on the bubble being read.
+    expect(info?.getAttribute("aria-describedby")).toBe(bubble?.id);
+
+    info?.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await tick();
+    expect(host.querySelector("[data-testid='tooltip-bubble']")).toBeNull();
   });
 });

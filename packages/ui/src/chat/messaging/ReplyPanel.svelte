@@ -1485,7 +1485,7 @@
   /* Every reply carries its own header, so each one is a group start in the
      main chat's terms and takes the same 18px of air. */
   .reply-row + .reply-row {
-    margin-top: var(--msg-group-gap, 18px);
+    margin-top: var(--msg-group-gap, 12px);
   }
 
   .reply-avatar {

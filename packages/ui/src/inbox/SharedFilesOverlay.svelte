@@ -186,7 +186,11 @@
     height: 100%;
     overflow: auto;
     color: var(--t1);
-    background: var(--v4-bg, var(--desktop-bg, #0c0c0c));
+    /* Same undefined-token trap as the library overlay: neither `--v4-bg` nor
+       `--desktop-bg` exists, so this painted a black page under light-theme
+       text. `--v4-surface-solid` is the shell's page fill and follows the
+       theme. */
+    background: var(--v4-surface-solid, #0c0c0c);
   }
   .shared-files-status button { border: 1px solid var(--line2); border-radius: 6px; padding: 5px 9px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
   .shared-files-status, .shared-files-list { max-width: 760px; margin: 16px auto 24px; padding: 0 20px; }

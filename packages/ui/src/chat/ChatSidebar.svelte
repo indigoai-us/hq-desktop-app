@@ -72,6 +72,7 @@
     groupByType,
     historySearchScopeLabel,
     initialsFor,
+    monogramFor,
     buildScopeOptions,
     loadConversationCache,
     loadDmDots,
@@ -2149,7 +2150,7 @@
                     }}
                   >
                     <span class="chat-person-avatar" aria-hidden="true"
-                      >{initialsFor(personName)}</span
+                      >{monogramFor(personName)}</span
                     >
                     <span class="chat-person-name">{personName}</span>
                     {#if isYou}

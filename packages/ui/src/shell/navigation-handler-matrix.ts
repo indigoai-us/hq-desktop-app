@@ -943,16 +943,6 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     nonNavigationReason: "cosmetic-sidebar",
   },
   {
-    id: "project-about-dialog",
-    file: SHARED_SHELL_FILE,
-    needle: "onclick={() => (projectAboutOpen = !projectAboutOpen)}",
-    destinationKind: "none",
-    history: "none",
-    host: "shared-shell",
-    inScope: true,
-    nonNavigationReason: "cosmetic-sidebar",
-  },
-  {
     id: "palette-toggle",
     file: SHARED_SHELL_FILE,
     needle: "paletteOpen = !paletteOpen;",

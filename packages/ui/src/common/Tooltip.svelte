@@ -30,6 +30,12 @@
     /** Horizontal alignment of the bubble relative to the trigger. */
     align?: "center" | "start" | "end";
     /**
+     * Let the label wrap. The default bubble is a one-line hint for an icon
+     * button; a sentence of prose (a project description, say) needs to wrap
+     * rather than run off the end of a 220px nowrap line.
+     */
+    multiline?: boolean;
+    /**
      * Silence the tooltip while the trigger owns something else on screen.
      * A pill that opens a menu must not also describe itself: the bubble
      * covers the first row of the menu it just opened.
@@ -43,6 +49,7 @@
     label = null,
     delay = 400,
     align = "center",
+    multiline = false,
     suppressed = false,
     trigger,
   }: Props = $props();
@@ -101,6 +108,7 @@
       class="tooltip-bubble"
       class:align-start={align === "start"}
       class:align-end={align === "end"}
+      class:multiline
       role="tooltip"
       {id}
       data-testid="tooltip-bubble"
@@ -141,6 +149,11 @@
     white-space: nowrap;
     pointer-events: none;
     animation: tooltip-in 100ms ease-out;
+  }
+
+  .tooltip-bubble.multiline {
+    max-width: 280px;
+    white-space: normal;
   }
 
   .tooltip-bubble.align-start {

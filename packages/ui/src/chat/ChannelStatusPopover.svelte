@@ -325,7 +325,10 @@
         <span class="k">Preview</span>
         <span class="preview-link">
           {shortPreview(model.project.previewUrl)}
-          <ArrowUpRight size={11} weight="fill" aria-hidden="true" />
+          <!-- Bold, not fill: the filled Phosphor arrow draws as a solid
+               wedge that reads as a different icon set from every other mark
+               in this panel. -->
+          <ArrowUpRight size={11} weight="bold" aria-hidden="true" />
         </span>
       </button>
     {:else}

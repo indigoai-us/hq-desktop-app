@@ -28,7 +28,7 @@ describe("shared message-row name→body spacing", () => {
     expect(messageRowCss).toContain("--msg-row-pad-y: 3px");
     // A new author group opens at the design's 18px, so a new speaker reads
     // as a break rather than as more of the previous run.
-    expect(messageRowCss).toContain("--msg-group-gap: 18px");
+    expect(messageRowCss).toContain("--msg-group-gap: 12px");
   });
 
   it("wires the row-rhythm tokens into the main-column message rows", () => {
@@ -38,7 +38,7 @@ describe("shared message-row name→body spacing", () => {
     );
     // A new author group gets the inter-group gap, not the old 10px.
     expect(channelConversationSrc).toMatch(
-      /\.dm-msg-group-start\s*\{[\s\S]*?margin-top:\s*var\(--msg-group-gap, 18px\);/,
+      /\.dm-msg-group-start\s*\{[\s\S]*?margin-top:\s*var\(--msg-group-gap, 12px\);/,
     );
     expect(channelConversationSrc).not.toContain("margin-top: 10px");
   });

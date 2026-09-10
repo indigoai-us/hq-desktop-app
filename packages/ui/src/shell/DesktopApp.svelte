@@ -115,6 +115,7 @@
   import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import Tooltip from "../common/Tooltip.svelte";
   import MigrateSessionDialog from "../common/MigrateSessionDialog.svelte";
   import { canMigrateCompanySession } from "../avatars/can-edit.js";
   import {
@@ -135,7 +136,6 @@
     saveAgentAvatar,
   } from "../avatars/save-agent-avatar.js";
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
-  import ProjectAboutDialog from "../chat/ProjectAboutDialog.svelte";
   import MeetingsPage from "../meetings/MeetingsPage.svelte";
   import {
     configureMeetingsApi,
@@ -194,6 +194,7 @@
   import type { SyncState } from "../common/sync-model.js";
   import {
     buildChannelStatusModel,
+    projectAboutBody,
     type ChannelStatusModel,
     type StatusPersonRow,
   } from "../chat/channel-status-model.js";
@@ -801,7 +802,6 @@
   /** Channel-header member pill → status/members popover. */
   let membersOpen = $state(false);
   /** Channel-header info control → project description dialog. */
-  let projectAboutOpen = $state(false);
 
   /**
    * Command-palette items: NAVIGATE actions (Notifications, Settings) plus one
@@ -966,6 +966,12 @@
             ? "personal channel"
             : "channel";
     const name = companyDisplayName(row.companyUid, companyNames);
+    // A company channel is TITLED with the company name, so the subtitle
+    // carries the channel's own slug instead of repeating it.
+    if (scope === "company") {
+      const slug = row.title?.trim();
+      return slug ? `${slug} · ${kindLabel}` : kindLabel;
+    }
     return name ? `${name} · ${kindLabel}` : kindLabel;
   });
 
@@ -998,7 +1004,22 @@
   );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
-  const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
+  const resolvedTitle = $derived(
+    resolveConversationTitle(selectedRow, railRows),
+  );
+
+  /**
+   * A company channel IS the company's room, so it is titled with the company
+   * — "Indigo", not the slug "gtm-standup". The slug moves to the subtitle so
+   * nothing is lost. Every other conversation keeps its own name.
+   */
+  const headerTitle = $derived(
+    selectedIsCompanyChannel
+      ? companyAppearanceName ||
+          companyDisplayName(selectedRow?.companyUid, companyNames) ||
+          resolvedTitle
+      : resolvedTitle,
+  );
 
   /**
    * Company hero shows the company's display name ("Ramen Bae"), not the
@@ -1933,7 +1954,6 @@
       // Clear the selection the way changeTenantCompany does so the pane
       // falls back to its empty state instead of a dead conversation.
       membersOpen = false;
-      projectAboutOpen = false;
       selectedRow = null;
       liveTimeline = [];
       liveTimelineId = null;
@@ -2665,6 +2685,13 @@
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
     if (!id || !selectedRow) return;
+    // The replies button is a toggle, as it is in the concept
+    // (`openThread === i ? null : i`): clicking the thread you are already
+    // reading closes it rather than re-opening the same pane.
+    if (openReplyRootId === id) {
+      closeReply();
+      return;
+    }
     openProfileMember = null;
     openAgentMember = null;
     openArtifactView = null;
@@ -2857,7 +2884,6 @@
     channelFileKey = null;
     paletteOpen = false;
     membersOpen = false;
-    projectAboutOpen = false;
     openReplyRootId = null;
     queueReplyForRow(row, options?.replyRootEventId);
     attachTray = null;
@@ -3197,7 +3223,6 @@
     syncNavigationChrome();
     paletteOpen = false;
     membersOpen = false;
-    projectAboutOpen = false;
     pendingRestoreScroll = applied.entry.scroll ?? null;
     stopScrollRestore();
     if (applied.availability === "unavailable") {
@@ -4863,8 +4888,14 @@
             <div class="channel-title-block">
               <div class="channel-title">
                 {#if selectedIsCompanyChannel}
-                  <!-- Company channels lead with the company's own mark. -->
-                  <CompanyIcon iconUrl={selectedCompanyIcon} size={22} />
+                  <!-- Company channels lead with the company's own mark. The
+                       row is baseline-aligned for the title/subtitle, and a
+                       box with no baseline aligns by its bottom edge — which
+                       is what floated a 22px mark above the title it labels.
+                       Centred on the line, and sized to the `#` beside it. -->
+                  <span class="channel-title-mark">
+                    <CompanyIcon iconUrl={selectedCompanyIcon} size={17} />
+                  </span>
                 {:else if selectedRow.kind === "channel"}
                   <span class="channel-hash" aria-hidden="true">#</span>
                 {/if}
@@ -4929,18 +4960,30 @@
                       >{channelSubtitle}</span
                     >
                     {#if isProjectChannel}
-                      <button
-                        type="button"
-                        class="project-about-btn"
-                        data-testid="project-about"
-                        title="Project description"
-                        aria-haspopup="dialog"
-                        aria-expanded={projectAboutOpen}
-                        aria-label="Project description"
-                        onclick={() => (projectAboutOpen = !projectAboutOpen)}
+                      <!-- The description is one short paragraph. Making the
+                           reader open a modal, read it, and dismiss it was
+                           three actions for a line of text — it rides the
+                           icon's own tooltip now. -->
+                      <Tooltip
+                        label={projectAboutBody(
+                          channelStatus?.project.description ?? null,
+                        )}
+                        align="start"
+                        multiline
                       >
-                        <Info size={14} aria-hidden="true" />
-                      </button>
+                        {#snippet trigger(describedBy: string)}
+                          <span
+                            class="project-about-btn"
+                            data-testid="project-about"
+                            tabindex="0"
+                            role="note"
+                            aria-describedby={describedBy || undefined}
+                            aria-label="Project description"
+                          >
+                            <Info size={14} aria-hidden="true" />
+                          </span>
+                        {/snippet}
+                      </Tooltip>
                     {/if}
                   </span>
                 {/if}
@@ -5116,14 +5159,6 @@
               {channelActionError}
             </div>
           {/if}
-          {#if projectAboutOpen && isProjectChannel}
-            <ProjectAboutDialog
-              title={headerTitle}
-              description={channelStatus?.project.description ?? null}
-              onclose={() => (projectAboutOpen = false)}
-            />
-          {/if}
-
           {#if isAgentChannel && agentSurface === "details" && agentChannelUid}
             <AgentDetailPanel
               agentUid={agentChannelUid}
@@ -5767,6 +5802,13 @@
     color: var(--t3);
     font-size: 15px;
     font-weight: 600;
+  }
+
+  .channel-title-mark {
+    display: inline-flex;
+    align-self: center;
+    flex-shrink: 0;
+    line-height: 0;
   }
 
   .channel-title h2 {

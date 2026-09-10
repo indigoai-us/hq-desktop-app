@@ -455,6 +455,10 @@
                 <span class="core-conflict-error">{row.error}</span>
               {/if}
             </div>
+            <!-- One primary. Two filled buttons side by side read as a pair of
+                 equally-weighted defaults, which is exactly what a conflict is
+                 not — the user has to choose. Keeping your own edit is the
+                 common resolution, so that one carries the weight. -->
             <div class="core-conflict-actions">
               <button
                 type="button"
@@ -467,7 +471,7 @@
               </button>
               <button
                 type="button"
-                class="core-btn primary"
+                class="core-btn secondary"
                 data-testid="core-popover-keep-cloud"
                 disabled={row.actionsDisabled}
                 onclick={() => void onresolve?.(row.path, "keep-remote")}

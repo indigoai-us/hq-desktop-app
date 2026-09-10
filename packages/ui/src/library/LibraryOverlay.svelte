@@ -409,7 +409,12 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--v4-bg, var(--desktop-bg, #0c0c0c));
+    /* Neither `--v4-bg` nor `--desktop-bg` is defined anywhere in the shell,
+       so this always fell through to the literal — a black page under the
+       light theme's near-black text. The overlay covers a still-mounted
+       messages view, so it does need to be opaque: `--v4-surface-solid` is the
+       shell's own page fill and follows the theme. */
+    background: var(--v4-surface-solid, #0c0c0c);
     color: var(--t1);
     font: 400 13px/1.45 var(--font-ui);
   }

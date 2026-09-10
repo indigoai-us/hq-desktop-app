@@ -1825,7 +1825,7 @@
   }
 
   .dm-msg-group-start {
-    margin-top: var(--msg-group-gap, 18px);
+    margin-top: var(--msg-group-gap, 12px);
     padding-top: 3px;
   }
 
