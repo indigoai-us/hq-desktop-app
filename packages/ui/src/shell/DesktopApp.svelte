@@ -3142,7 +3142,10 @@
         status: "running",
       });
     } catch (err) {
-      patchSessionThread(thread.id, { status: "idle" });
+      patchSessionThread(thread.id, {
+        status: "idle",
+        startError: err instanceof Error ? err.message : String(err),
+      });
       console.error("[hq-desktop] channel session", err);
     }
   }

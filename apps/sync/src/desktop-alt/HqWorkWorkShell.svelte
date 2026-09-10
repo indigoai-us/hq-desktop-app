@@ -938,6 +938,7 @@
       <LiveChannelSessionPane
         {thread}
         starting={thread.status === 'starting' && !thread.liveSessionId}
+        startError={thread.startError ?? null}
       />
     {/snippet}
     {#key authGeneration}

@@ -45,6 +45,7 @@ export interface SessionThread {
   /** Work-mesh story id this session is bound to. */
   taskId?: string | null;
   taskCreated?: boolean;
+  startError?: string | null;
 }
 
 export function excerptFromBody(body: string, max = 180): string {
