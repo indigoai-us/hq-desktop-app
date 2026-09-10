@@ -21,6 +21,19 @@
   } from '../../lib/onboarding-path';
   import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
   import {
+    continuationDeps,
+    loadContinuationContext,
+  } from '../../lib/desktop-continuation-tauri';
+  import {
+    beginContinuation,
+    cancelContinuation,
+    confirmContinuation,
+    flushReceipts,
+    resolveRollout,
+    type ContinuationDeps,
+    type ContinuationState,
+  } from '../../lib/desktop-session-continuation';
+  import {
     NO_AI_TOOLS,
     availableLaunches,
     installUrlFor,
@@ -196,6 +209,18 @@
   let currentSignInCall = 0;
   let mounted = true;
 
+  // Browser session continuation belongs on the first screen someone sees
+  // after downloading HQ, not only on the returning-user sign-in surfaces.
+  // It is deliberately additive: every state other than `confirming` keeps
+  // the existing provider path available, and every failure falls through to
+  // that path without surfacing an error.
+  let continuation = $state<ContinuationState>({ phase: 'idle' });
+  let continuationDepsRef: ContinuationDeps | null = null;
+  let continuationBusy = $state(false);
+  let continuationPrepared = false;
+  let continuationPreparation: Promise<void> | null = null;
+  let manualSignInStarted = false;
+
   let installPath = $state<string | null>(null);
   let resolvedPath = $state<string | null>(null);
   let homeDir = $state<string | null>(null);
@@ -345,6 +370,23 @@
 
   $effect(() => {
     if (installPath) effectiveInstallPath = installPath;
+  });
+
+  $effect(() => {
+    // This is intentionally scoped to the first-run sign-in panel. Native
+    // eligibility independently refuses resumed and non-first-launch windows,
+    // but there is no reason to fetch rollout configuration after the wizard
+    // has already moved past authentication.
+    if (
+      isReprompt ||
+      currentStep !== WELCOME_SIGNIN_STEP_INDEX ||
+      continuationPrepared
+    ) {
+      return;
+    }
+    continuationPrepared = true;
+    continuationPreparation = prepareContinuation();
+    void continuationPreparation;
   });
 
   $effect(() => {
@@ -508,6 +550,35 @@
 
   async function handleSignIn(provider: SignInProvider) {
     const call = ++currentSignInCall;
+    // Claim the provider path before any await. The continuation config can
+    // settle while this click is being handled; it must not then arm a second
+    // listener over the provider flow the person deliberately chose.
+    manualSignInStarted = true;
+
+    // While the browser continuation listener is still holding the loopback
+    // port, release it before starting explicit OAuth. Once an identity is
+    // confirming, leave it to oauth_exchange_code: that shared completion
+    // marks the pending continuation AttemptEnd::Superseded only after the
+    // provider exchange succeeds.
+    if (
+      continuationDepsRef &&
+      (continuation.phase === 'opening' || continuation.phase === 'waiting')
+    ) {
+      continuationBusy = true;
+      try {
+        await cancelContinuation(continuationDepsRef, continuation, (next) => {
+          continuation = next;
+        });
+      } finally {
+        continuationBusy = false;
+      }
+    }
+    // A config or native eligibility check may still be resolving while the
+    // panel is visually idle. Wait for it to observe the manual-flow claim,
+    // so explicit OAuth cannot race a listener that continuation just armed.
+    await continuationPreparation?.catch(() => undefined);
+    if (!isCurrentSignInCall(call)) return;
+
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
@@ -540,20 +611,7 @@
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
-        // The token is now available, so release operational records that were
-        // buffered solely while the OAuth flow was unauthenticated.
-        void onboardingTelemetry.flush().catch(() => {});
-        // Person entity may not exist yet; later pings retry after setup.
-        void resolveInstallerPersonUid();
-        await refocusWindow();
-        if (!isCurrentSignInCall(call)) return;
-        // The consent question is asked later as its own step after setup.
-        // Operational setup telemetry is emitted independently; skill usage
-        // remains governed by that choice.
-        advanceTo(DIRECTORY_STEP_INDEX, 'completed', {
-          provider: telemetryProvider,
-          outcome: 'authenticated',
-        });
+        await completeAuthenticatedSignIn(call, { provider: telemetryProvider });
       } else {
         signInError = 'Authentication failed. Please try again.';
         recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
@@ -574,6 +632,96 @@
         loadingProvider = null;
       }
     }
+  }
+
+  async function prepareContinuation(): Promise<void> {
+    const context = await loadContinuationContext();
+    if (!context) return;
+    const deps = continuationDeps(context);
+    continuationDepsRef = deps;
+
+    // Receipt delivery is best effort and must never delay sign-in.
+    void flushReceipts(deps).catch(() => undefined);
+
+    // Check before and after the config round trip. A provider click during
+    // that wait is a deliberate choice and must win without arming another
+    // OAuth listener.
+    if (manualSignInStarted) return;
+    const decision = await resolveRollout(deps);
+    if (!decision.enabled || manualSignInStarted) return;
+
+    await beginContinuation(
+      deps,
+      decision,
+      (next) => {
+        continuation = next;
+      },
+      () => !manualSignInStarted,
+    );
+  }
+
+  async function handleContinuationConfirm(): Promise<void> {
+    if (
+      continuation.phase !== 'confirming' ||
+      !continuationDepsRef ||
+      continuationBusy ||
+      loadingProvider
+    ) {
+      return;
+    }
+    continuationBusy = true;
+    try {
+      const next = await confirmContinuation(
+        continuationDepsRef,
+        continuation,
+        (state) => {
+          continuation = state;
+        },
+      );
+      if (next.phase !== 'activated') return;
+
+      const auth = await invokeCommand<{ authenticated: boolean }>('get_auth_state');
+      if (auth.authenticated) await completeAuthenticatedSignIn(currentSignInCall);
+    } finally {
+      continuationBusy = false;
+    }
+  }
+
+  async function handleContinuationReject(): Promise<void> {
+    if (!continuationDepsRef || continuationBusy) return;
+    continuationBusy = true;
+    try {
+      await cancelContinuation(continuationDepsRef, continuation, (next) => {
+        continuation = next;
+      });
+    } finally {
+      continuationBusy = false;
+    }
+  }
+
+  /**
+   * Both OAuth routes land here after native code has activated the same auth
+   * session. Keeping this as the one wizard completion preserves the normal
+   * post-auth transition, telemetry flush, person lookup, and refocus path.
+   */
+  async function completeAuthenticatedSignIn(
+    call: number,
+    details: StepTelemetryDetails = {},
+  ): Promise<void> {
+    // The token is now available, so release operational records that were
+    // buffered solely while the OAuth flow was unauthenticated.
+    void onboardingTelemetry.flush().catch(() => {});
+    // Person entity may not exist yet; later pings retry after setup.
+    void resolveInstallerPersonUid();
+    await refocusWindow();
+    if (!isCurrentSignInCall(call)) return;
+    // The consent question is asked later as its own step after setup.
+    // Operational setup telemetry is emitted independently; skill usage
+    // remains governed by that choice.
+    advanceTo(DIRECTORY_STEP_INDEX, 'completed', {
+      ...details,
+      outcome: 'authenticated',
+    });
   }
 
   function detectLooksLikeHq(result: DetectHqResult): boolean {
@@ -1902,6 +2050,43 @@
                gone on purpose: a pre-ticked box is not a real choice, and posting
                the answer here (before setup provisions the person entity) meant the
                write had nowhere to land. Consent is now its own step after setup. -->
+          {#if continuation.phase === 'confirming'}
+            <div class="continuation-card" data-testid="onboarding-continuation-confirm">
+              <p class="continuation-lead">You’re already signed in as</p>
+              <p class="continuation-email">{continuation.identity.email}</p>
+              <button
+                class="btn btn-primary"
+                type="button"
+                data-testid="onboarding-continuation-confirm-button"
+                onclick={handleContinuationConfirm}
+                disabled={continuationBusy || loadingProvider !== null}
+              >
+                {continuationBusy ? 'Signing in…' : `Continue as ${continuation.identity.email}`}
+              </button>
+              <button
+                class="continuation-dismiss"
+                type="button"
+                data-testid="onboarding-continuation-reject"
+                onclick={handleContinuationReject}
+                disabled={continuationBusy || loadingProvider !== null}
+              >
+                Use another account
+              </button>
+            </div>
+          {:else if continuation.phase === 'opening' || continuation.phase === 'waiting'}
+            <div class="continuation-card" data-testid="onboarding-continuation-waiting">
+              <p class="continuation-lead">Finishing your sign-in in the browser…</p>
+              <button
+                class="continuation-dismiss"
+                type="button"
+                data-testid="onboarding-continuation-reject"
+                onclick={handleContinuationReject}
+                disabled={continuationBusy}
+              >
+                Use another account
+              </button>
+            </div>
+          {/if}
           {#if signInError}
             <p class="inline-note error" role="alert">{signInError}</p>
           {:else if loadingProvider}
@@ -1909,26 +2094,30 @@
               A browser window opened for {loadingProvider} sign-in. Complete it there and you'll return here automatically.
             </p>
           {/if}
-          <div class="btns">
-            <button
-              class="btn btn-primary"
-              type="button"
-              disabled={loadingProvider !== null}
-              aria-busy={loadingProvider === 'Google'}
-              onclick={() => handleSignIn('Google')}
-            >
-              Log in with Google
-            </button>
-            <button
-              class="btn btn-secondary"
-              type="button"
-              disabled={loadingProvider !== null}
-              aria-busy={loadingProvider === 'Microsoft'}
-              onclick={() => handleSignIn('Microsoft')}
-            >
-              Log in with Microsoft
-            </button>
-          </div>
+          {#if continuation.phase !== 'opening' && continuation.phase !== 'waiting'}
+            <div class="btns">
+              <button
+                class="btn btn-primary"
+                type="button"
+                data-testid="onboarding-signin-google"
+                disabled={loadingProvider !== null || continuationBusy}
+                aria-busy={loadingProvider === 'Google'}
+                onclick={() => handleSignIn('Google')}
+              >
+                Log in with Google
+              </button>
+              <button
+                class="btn btn-secondary"
+                type="button"
+                data-testid="onboarding-signin-microsoft"
+                disabled={loadingProvider !== null || continuationBusy}
+                aria-busy={loadingProvider === 'Microsoft'}
+                onclick={() => handleSignIn('Microsoft')}
+              >
+                Log in with Microsoft
+              </button>
+            </div>
+          {/if}
         </section>
 
         <section
@@ -2637,6 +2826,37 @@
   .inline-note { margin:10px 0 0; color:var(--c-muted); font-size:12px; line-height:16px; }
   .inline-note.error,
   .inline-note.warning { color:var(--c-text); }
+  .continuation-card {
+    display:flex;
+    flex-direction:column;
+    align-items:flex-start;
+    gap:8px;
+    margin-top:16px;
+    padding:14px;
+    border:1px solid var(--c-field-border);
+    border-radius:10px;
+    background:var(--c-field-bg);
+  }
+  .continuation-lead,
+  .continuation-email { margin:0; color:var(--c-text); font-size:13px; line-height:18px; }
+  .continuation-lead { color:var(--c-muted); }
+  .continuation-email { font-weight:600; overflow-wrap:anywhere; }
+  .continuation-dismiss {
+    appearance:none;
+    padding:0;
+    border:0;
+    background:transparent;
+    color:var(--c-muted);
+    font:inherit;
+    font-size:12px;
+    line-height:16px;
+    text-decoration:underline;
+    text-underline-offset:2px;
+    cursor:pointer;
+  }
+  .continuation-dismiss:hover:not(:disabled) { color:var(--c-text); }
+  .continuation-dismiss:focus-visible { outline:1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset:2px; border-radius:3px; }
+  .continuation-dismiss:disabled { opacity:.55; cursor:wait; }
   .finish-action,
   .finish-action-error { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:10px 0 0; color:var(--c-text); font-size:12px; line-height:16px; }
   .finish-action button,

@@ -113,10 +113,11 @@ describe('a manual sign-in invalidates anything continuation is holding', () => 
       signInPrompt.indexOf('async function prepareContinuation()'),
       signInPrompt.indexOf('async function handleContinuationConfirm'),
     );
-    // Checked on both sides of the config round trip: the click can land
-    // during it, and arming a second flow would cancel the listener the manual
-    // attempt is waiting on.
-    expect(prepare.match(/manualSignInStarted/g) ?? []).toHaveLength(2);
+    // Checked before and after the config round trip, then handed to the
+    // continuation state machine for the native-arming gap. A click during
+    // any of those windows must win over the automatic route.
+    expect(prepare.match(/manualSignInStarted/g) ?? []).toHaveLength(3);
+    expect(prepare).toContain('() => !manualSignInStarted');
   });
 });
 

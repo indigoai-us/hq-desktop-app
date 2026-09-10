@@ -408,8 +408,9 @@ export async function beginContinuation(
   deps: ContinuationDeps,
   decision: RolloutDecision,
   onState: (state: ContinuationState) => void,
+  shouldContinue: () => boolean = () => true,
 ): Promise<ContinuationState> {
-  if (!decision.enabled) {
+  if (!decision.enabled || !shouldContinue()) {
     // Being switched off is not an error and is not reported as one. No receipt
     // is emitted either: the control arm's whole point is that it behaves
     // exactly as the app does today, and a progress row nobody in the control
@@ -433,7 +434,7 @@ export async function beginContinuation(
     // Unanswerable is not permission.
     refusal = 'CONTINUATION_REFUSED_UNKNOWN';
   }
-  if (refusal !== null) {
+  if (refusal !== null || !shouldContinue()) {
     const state: ContinuationState = { phase: 'fallback', errorKind: 'unavailable' };
     onState(state);
     return state;
@@ -452,6 +453,20 @@ export async function beginContinuation(
     }));
   } catch (error) {
     return await fail(deps, sessionId, startedAt, variant, classifyContinuationError(error), onState);
+  }
+
+  // A provider click can land while native code is arming the listener. The
+  // renderer serializes its explicit OAuth start behind this promise; release
+  // the freshly armed attempt before that path starts, rather than allowing a
+  // late continuation to steal its loopback port.
+  if (!shouldContinue()) {
+    try {
+      await deps.bridge.cancel({ attemptId });
+    } catch {
+      // Native may have already ended it; either way explicit OAuth remains
+      // the preferred path and this attempt must not wait for an identity.
+    }
+    return await fail(deps, sessionId, startedAt, variant, 'cancelled', onState);
   }
 
   onState({ phase: 'opening', attemptId, sessionId });
