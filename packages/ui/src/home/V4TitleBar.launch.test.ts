@@ -353,9 +353,9 @@ describe("V4TitleBar Launch menu", () => {
 });
 
 describe("V4TitleBar back/forward controls", () => {
-  it("places compact buttons beside the date, outside the drag region", async () => {
+  it("places compact buttons after the sidebar toggle, outside the drag region", async () => {
     await mountBar(makeAdapter({}));
-    const date = host.querySelector('[data-testid="titlebar-day-date"]');
+    const leading = host.querySelector('[data-testid="titlebar-leading"]');
     const cluster = host.querySelector('[data-testid="titlebar-history"]');
     const back = host.querySelector<HTMLButtonElement>(
       '[data-testid="titlebar-back"]',
@@ -363,13 +363,14 @@ describe("V4TitleBar back/forward controls", () => {
     const forward = host.querySelector<HTMLButtonElement>(
       '[data-testid="titlebar-forward"]',
     );
-    expect(date).toBeTruthy();
+    expect(leading).toBeTruthy();
+    // The bar leads with controls only — no wordmark, no DAY · DATE.
+    expect(host.querySelector('[data-testid="titlebar-wordmark"]')).toBeNull();
+    expect(host.querySelector('[data-testid="titlebar-day-date"]')).toBeNull();
     expect(cluster).toBeTruthy();
     expect(back).toBeTruthy();
     expect(forward).toBeTruthy();
-    expect(
-      date!.compareDocumentPosition(cluster!) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(cluster!.parentElement).toBe(leading);
     expect(cluster?.getAttribute("data-tauri-drag-region")).toBe("false");
     expect(cluster?.hasAttribute("data-no-drag")).toBe(true);
     expect(back?.closest("[data-no-drag]")).toBe(cluster);

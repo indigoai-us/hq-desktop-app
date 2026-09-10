@@ -4,7 +4,6 @@
   import type { PlatformAdapter } from "@hq/platform";
   import { getV4TitleBarModel, type V4HydrationIssue } from "./model.js";
   import { startWindowDrag } from "./window-drag.js";
-  import { titlebarDayDate } from "../chat/sidebar-model.js";
   import type { HomeConflict } from "./home-model.js";
   import CorePopover from "./CorePopover.svelte";
   import { corePillDotTone } from "./core-popover-model.js";
@@ -17,8 +16,8 @@
   import Tooltip from "../common/Tooltip.svelte";
   import Caret from "../common/Caret.svelte";
   import Bell from "phosphor-svelte/lib/Bell";
-  import CaretLeft from "phosphor-svelte/lib/CaretLeft";
-  import CaretRight from "phosphor-svelte/lib/CaretRight";
+  import ArrowLeft from "phosphor-svelte/lib/ArrowLeft";
+  import ArrowRight from "phosphor-svelte/lib/ArrowRight";
   import FolderOpen from "phosphor-svelte/lib/FolderOpen";
   import Globe from "phosphor-svelte/lib/Globe";
   import Plus from "phosphor-svelte/lib/Plus";
@@ -29,7 +28,7 @@
 
   /**
    * Minimal native title bar (visual QA D-04): traffic-light inset, sidebar
-   * toggle, HQ wordmark, DAY · DATE, meetings icon, bell with monochrome unread
+   * toggle, back / forward, meetings icon, bell with monochrome unread
    * dot, and Core pill. Sync/cloud/version/account live in Core + sidebar footer.
    * Overlay titlebar drag: data-tauri-drag-region on every non-control node
    * plus plugin:window|start_dragging (needs core:window:allow-start-dragging).
@@ -150,7 +149,6 @@
     onforward,
   }: Props = $props();
 
-  const dayDateLabel = $derived(titlebarDayDate());
   const backHoverLabel = $derived(
     canGoBack && backLabel.trim() ? backLabel : "Back",
   );
@@ -556,7 +554,6 @@
     <button
       type="button"
       class="v4-icon-btn"
-      class:active={!sidebarCollapsed}
       aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
       title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
       aria-pressed={!sidebarCollapsed}
@@ -564,17 +561,6 @@
     >
       <SidebarSimple class="v4-icon" size={15} aria-hidden="true" />
     </button>
-    <span
-      class="v4-wordmark"
-      data-testid="titlebar-wordmark"
-      aria-label="HQ"
-      data-tauri-drag-region>HQ</span
-    >
-    <span
-      class="v4-day-date"
-      data-testid="titlebar-day-date"
-      data-tauri-drag-region>{dayDateLabel}</span
-    >
     <div
       class="v4-history"
       data-testid="titlebar-history"
@@ -593,7 +579,7 @@
             disabled={!canGoBack}
             onclick={() => onback?.()}
           >
-            <CaretLeft class="v4-icon" size={15} aria-hidden="true" />
+            <ArrowLeft class="v4-icon" size={15} aria-hidden="true" />
           </button>
         {/snippet}
       </Tooltip>
@@ -609,7 +595,7 @@
             disabled={!canGoForward}
             onclick={() => onforward?.()}
           >
-            <CaretRight class="v4-icon" size={15} aria-hidden="true" />
+            <ArrowRight class="v4-icon" size={15} aria-hidden="true" />
           </button>
         {/snippet}
       </Tooltip>
@@ -838,35 +824,15 @@
     gap: 8px;
     /* Leading gutter clears overlay traffic lights (macOS). Shared with
        sub-page headers via `--titlebar-leading-inset` (titlebar-layout.ts).
-       Hosts without native window controls (web) drop it so the wordmark is
-       flush-left — see `.no-window-controls`. */
+       Hosts without native window controls (web) drop it so the leading
+       controls are flush-left — see `.no-window-controls`. */
     padding-left: var(--titlebar-leading-inset);
   }
 
-  /* Web / no OS window controls: wordmark + DAY·DATE flush-left. */
+  /* Web / no OS window controls: the leading controls sit flush-left. */
   .v4-titlebar-leading.no-window-controls {
     --titlebar-leading-inset: 16px;
     padding-left: var(--titlebar-leading-inset);
-  }
-
-  .v4-wordmark {
-    flex: 0 0 auto;
-    color: var(--t1);
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1;
-  }
-
-  .v4-day-date {
-    flex: 0 0 auto;
-    color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 400;
-    letter-spacing: 0.08em;
-    line-height: 1;
-    text-transform: uppercase;
-    white-space: nowrap;
   }
 
   .v4-history {
