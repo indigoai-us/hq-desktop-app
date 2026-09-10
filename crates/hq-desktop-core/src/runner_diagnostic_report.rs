@@ -498,6 +498,34 @@ mod tests {
     }
 
     #[test]
+    fn an_exception_triggered_report_names_a_fatal_cause() {
+        // This reopen (HQ-DESKTOP-66): the app now arms --report-uncaught-exception,
+        // so an uncaught JS exception writes a report with an `Exception` trigger.
+        // classify_report_fatal must adopt it as a fatal cause (node_fatal) — the
+        // exact channel Windows was missing — while a `Signal` trigger still names
+        // none (the HQ-DESKTOP-60 refusal must not regress).
+        let exception_report = serde_json::json!({
+            "header": { "trigger": "Exception", "event": "Uncaught TypeError" }
+        })
+        .to_string();
+        let report = parse_runner_diagnostic_report(exception_report.as_bytes());
+        assert_eq!(report.read, RunnerReportRead::Read);
+        assert_eq!(report.fatal_class, RunnerFatalClass::NodeFatal);
+        assert!(report.named_cause());
+        assert_eq!(report.fatal_source(), "node_report");
+
+        // The Signal refusal is unchanged: a Signal-triggered report names none.
+        let signal_report = serde_json::json!({
+            "header": { "trigger": "Signal", "event": "Uncaught TypeError" }
+        })
+        .to_string();
+        let signal = parse_runner_diagnostic_report(signal_report.as_bytes());
+        assert_eq!(signal.read, RunnerReportRead::Read);
+        assert_eq!(signal.fatal_class, RunnerFatalClass::None);
+        assert!(!signal.named_cause());
+    }
+
+    #[test]
     fn native_stack_string_and_object_shapes_are_both_handled() {
         // Node has emitted nativeStack as an array of strings AND as an array of
         // objects; both must produce the same content-safe shape.

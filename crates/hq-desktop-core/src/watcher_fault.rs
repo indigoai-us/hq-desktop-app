@@ -807,6 +807,77 @@ impl WatcherJobImageDescriptor {
             WATCHER_FAULT_UNAVAILABLE
         }
     }
+
+    /// The distinct LIVE survivor classes present, collapsed to the closed
+    /// `watcher_job_survivors` vocabulary. The shim/dispatch layer — `cmd.exe` and
+    /// the `npx.cmd` batch shim it dispatches — folds to the single `cmd_exe` shim
+    /// class; the app's own binary and any unrecognised image fold to `other`. Each
+    /// token is a shared [`WatcherFaultBinary::as_str`], never a re-declared literal.
+    fn survivor_classes(&self) -> Vec<&'static str> {
+        let mut classes = Vec::new();
+        if self.node_exe {
+            classes.push(WatcherFaultBinary::NodeExe.as_str());
+        }
+        if self.cmd_exe || self.npx_cmd {
+            classes.push(WatcherFaultBinary::CmdExe.as_str());
+        }
+        if self.other || self.hq_sync_menubar_exe {
+            classes.push(WatcherFaultBinary::Other.as_str());
+        }
+        classes
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Watcher-exit live-survivor discriminator (this reopen, HQ-DESKTOP-66)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The `watcher_job_survivors` token when the exit-boundary Job Object query could
+/// not run at all (non-Windows, no retained job handle, or a failed
+/// `QueryInformationJobObject`): a sample with honest provenance, never a claim of
+/// zero survivors. Rendered by the CALLER, never by [`watcher_job_survivors_token`].
+pub const WATCHER_JOB_SURVIVORS_UNAVAILABLE: &str = "unavailable";
+/// The query ran and observed NO live process in the job at the exit boundary —
+/// the tree died together. Deliberately distinct from `unavailable` (query failed):
+/// `none` means "no live process observed at the exit boundary", not "the tree was
+/// already reaped".
+pub const WATCHER_JOB_SURVIVORS_NONE: &str = "none";
+/// More than one distinct survivor image class was still alive at the exit boundary
+/// (e.g. the runner AND a shim process).
+pub const WATCHER_JOB_SURVIVORS_MIXED: &str = "mixed";
+
+/// Fold a watcher generation's LIVE Job Object survivors — sampled at the exit
+/// boundary and resolved through the shared allow-list — into the single
+/// closed-vocabulary `watcher_job_survivors` token (this reopen, HQ-DESKTOP-66).
+/// This is the ONE fact that separates a shim-only death (the `cmd.exe` shim died
+/// together with the runner) from an orphaned runner (a `node_exe` still alive
+/// after the registered shim's `0xFFFFFFFF` status was read). It reuses the shared
+/// [`WatcherFaultBinary`] vocabulary and never renders a pid or path.
+///
+/// `live_count` is the raw number of live processes the query returned; `images`
+/// holds the classes it could RESOLVE. The caller renders `unavailable` when the
+/// query itself could not run, so that case never reaches here. Contract:
+///  - `live_count == 0`                      -> `none`  (query ran, nothing alive)
+///  - exactly one resolved class             -> that class token
+///  - more than one resolved class           -> `mixed`
+///  - `live_count > 0` but no image resolved -> `other` (survivors existed but
+///    their images could not be read — never `none`, which would deny them).
+///
+/// It never feeds capture policy, fingerprint, or any lifecycle decision — it is a
+/// diagnostic sample with honest provenance, exactly like the job-image tree
+/// observation above.
+pub fn watcher_job_survivors_token(
+    images: &WatcherJobImageDescriptor,
+    live_count: u32,
+) -> &'static str {
+    if live_count == 0 {
+        return WATCHER_JOB_SURVIVORS_NONE;
+    }
+    match images.survivor_classes().as_slice() {
+        [] => WatcherFaultBinary::Other.as_str(),
+        [single] => single,
+        _ => WATCHER_JOB_SURVIVORS_MIXED,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1853,6 +1924,62 @@ mod tests {
         assert_eq!(unknown.culprit_candidate_token(), "other");
         let tag = unknown.images_tag().unwrap();
         assert!(!tag.contains("cognito") && !tag.contains("abc123") && !tag.contains("private"));
+    }
+
+    #[test]
+    fn watcher_job_survivors_token_folds_the_live_set_to_the_closed_vocabulary() {
+        // This reopen (HQ-DESKTOP-66): the exit-boundary live-survivor discriminator.
+        // A live node_exe after the shim's 0xFFFFFFFF status was read is the
+        // orphaned-runner signal; no live process is the tree-died-together signal.
+        let mut runner_only = WatcherJobImageDescriptor::default();
+        runner_only.record(WatcherFaultBinary::NodeExe);
+        assert_eq!(watcher_job_survivors_token(&runner_only, 1), "node_exe");
+
+        // The shim layer — cmd.exe AND the npx.cmd batch shim — folds to `cmd_exe`.
+        let mut shim_only = WatcherJobImageDescriptor::default();
+        shim_only.record(WatcherFaultBinary::NpxCmd);
+        assert_eq!(watcher_job_survivors_token(&shim_only, 1), "cmd_exe");
+        let mut cmd_only = WatcherJobImageDescriptor::default();
+        cmd_only.record(WatcherFaultBinary::CmdExe);
+        assert_eq!(watcher_job_survivors_token(&cmd_only, 1), "cmd_exe");
+
+        // Runner AND shim alive together -> mixed.
+        let mut mixed = WatcherJobImageDescriptor::default();
+        mixed.record(WatcherFaultBinary::NodeExe);
+        mixed.record(WatcherFaultBinary::CmdExe);
+        assert_eq!(watcher_job_survivors_token(&mixed, 2), "mixed");
+
+        // The app binary / an unrecognised image fold to `other`.
+        let mut other = WatcherJobImageDescriptor::default();
+        other.record(WatcherFaultBinary::HqSyncMenubarExe);
+        assert_eq!(watcher_job_survivors_token(&other, 1), "other");
+
+        // Zero live processes -> `none` (the query ran; the tree died together).
+        let empty = WatcherJobImageDescriptor::default();
+        assert_eq!(watcher_job_survivors_token(&empty, 0), WATCHER_JOB_SURVIVORS_NONE);
+
+        // Live but unresolved images -> `other`, NEVER `none` (which would deny a
+        // survivor the raw count proves exists).
+        assert_eq!(watcher_job_survivors_token(&empty, 3), "other");
+
+        // Every token the fold and its sentinels can emit is inside the closed
+        // vocabulary the egress allow-list validates — no drift, no re-declared list.
+        for token in [
+            watcher_job_survivors_token(&runner_only, 1),
+            watcher_job_survivors_token(&cmd_only, 1),
+            watcher_job_survivors_token(&other, 1),
+            watcher_job_survivors_token(&mixed, 2),
+            watcher_job_survivors_token(&empty, 0),
+            WATCHER_JOB_SURVIVORS_UNAVAILABLE,
+        ] {
+            assert!(
+                matches!(
+                    token,
+                    "none" | "node_exe" | "cmd_exe" | "other" | "mixed" | "unavailable"
+                ),
+                "survivor token {token:?} escaped the closed vocabulary"
+            );
+        }
     }
 
     #[test]

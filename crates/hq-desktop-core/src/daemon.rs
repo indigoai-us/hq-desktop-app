@@ -535,6 +535,15 @@ pub fn resolve_runner_report_request(
 /// [`runner_report_signal_flag`]).
 fn runner_report_argv_flags(report_dir: &Path) -> Vec<String> {
     let mut flags = vec!["--report-on-fatalerror".to_string()];
+    // Arm the crash-surviving report on an uncaught JS exception too (this reopen,
+    // HQ-DESKTOP-66). `--report-on-fatalerror` covers only a fatal C++/OOM abort, and
+    // `runner_report_signal_flag` is POSIX-only, so on Windows a runner that dies on
+    // an ordinary uncaught exception currently writes NO report while its fatal stderr
+    // is lost on the async libuv pipe. This trigger is cross-platform, so it closes
+    // that Windows gap without a spawn-shape change; `classify_report_fatal` already
+    // accepts an `Exception` trigger and already refuses a `Signal` one, so no
+    // classifier change is needed.
+    flags.push("--report-uncaught-exception".to_string());
     if let Some(signal_flag) = runner_report_signal_flag() {
         flags.push(signal_flag.to_string());
     }
@@ -551,6 +560,10 @@ fn runner_report_argv_flags(report_dir: &Path) -> Vec<String> {
 /// signal-triggered report is armed too (see [`runner_report_signal_flag`]).
 fn runner_report_node_options_flags(report_dir: &Path) -> Vec<String> {
     let mut flags = vec!["--report-on-fatalerror".to_string()];
+    // Mirror the argv composer's uncaught-exception trigger (this reopen,
+    // HQ-DESKTOP-66) so BOTH spellings arm the same set — see
+    // `runner_report_argv_flags` for the full rationale.
+    flags.push("--report-uncaught-exception".to_string());
     if let Some(signal_flag) = runner_report_signal_flag() {
         flags.push(signal_flag.to_string());
     }
@@ -2206,6 +2219,56 @@ mod tests {
             .any(|a| a == "--report-directory=/home/ada/.hq/runner-reports/7"));
         assert_eq!(flags.report, RunnerReportRequest::Requested);
         assert_eq!(flags.report.seed_read_token(), "report_absent");
+    }
+
+    #[test]
+    fn compose_runner_spawn_flags_arms_the_uncaught_exception_report_on_both_spellings() {
+        // This reopen (HQ-DESKTOP-66): the crash-surviving report must also be armed
+        // for an uncaught JS exception, in BOTH the NODE_OPTIONS spelling and the
+        // bare-`node` argv spelling, so the two spawn routes cannot drift. Windows
+        // otherwise armed only --report-on-fatalerror (the signal report is
+        // POSIX-only), leaving an uncaught-exception death with no report.
+        let dir = Path::new("/home/ada/.hq/runner-reports/7");
+        let flags = compose_runner_spawn_flags(None, None, Some(dir));
+        let node_options = flags.node_options.clone().expect("report flags composed");
+        assert!(
+            node_options.contains("--report-uncaught-exception"),
+            "NODE_OPTIONS must arm the uncaught-exception report: {node_options}"
+        );
+        assert!(
+            flags
+                .node_argv
+                .iter()
+                .any(|a| a == "--report-uncaught-exception"),
+            "argv must arm the uncaught-exception report: {:?}",
+            flags.node_argv
+        );
+        // It is added ALONGSIDE, never in place of, the fatal-error trigger.
+        assert!(node_options.contains("--report-on-fatalerror"));
+        assert!(flags.node_argv.iter().any(|a| a == "--report-on-fatalerror"));
+    }
+
+    #[test]
+    fn compose_runner_spawn_flags_withholds_uncaught_exception_when_user_set_report_option() {
+        // The user's own --report-* still suppresses ALL of ours — including the new
+        // uncaught-exception trigger — and still records the disabled provenance.
+        let flags = compose_runner_spawn_flags(
+            Some("--report-directory=/x"),
+            None,
+            Some(Path::new("/tmp/rr/1")),
+        );
+        if let Some(node_options) = &flags.node_options {
+            assert!(!node_options.contains("--report-uncaught-exception"));
+        }
+        assert!(!flags
+            .node_argv
+            .iter()
+            .any(|a| a == "--report-uncaught-exception"));
+        assert_eq!(flags.report, RunnerReportRequest::DisabledByUserOptions);
+        assert_eq!(
+            flags.report.seed_read_token(),
+            "report_disabled_by_user_options"
+        );
     }
 
     #[test]
