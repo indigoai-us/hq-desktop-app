@@ -115,19 +115,6 @@ pub async fn get_config() -> Result<ConfigState, String> {
     })
 }
 
-/// Detect the retired on-disk choice so the launch migration can strip it.
-/// `None` means the key is already gone (or the file is unreadable).
-pub fn hq_work_handoff_choice(contents: &str) -> Option<bool> {
-    if let Ok(prefs) = serde_json::from_str::<MenubarPrefs>(contents) {
-        if let Some(explicit) = prefs.hq_work_handoff {
-            return Some(explicit);
-        }
-    }
-    serde_json::from_str::<serde_json::Value>(contents)
-        .ok()
-        .and_then(|v| v.get("hqWorkHandoff").and_then(|b| b.as_bool()))
-}
-
 /// Strip `hqWorkHandoff` from `~/.hq/menubar.json` if it is still present.
 /// Best-effort and idempotent — never aborts launch.
 pub fn migrate_retired_hq_work_handoff() {
@@ -135,35 +122,4 @@ pub fn migrate_retired_hq_work_handoff() {
         return;
     };
     let _ = hq_desktop_core::first_run::migrate_retired_hq_work_handoff(&path);
-}
-
-/// Always on. Remaining callers (deep links, conversation intercepts, boot
-/// tests) keep this command so they do not grow a second policy.
-#[tauri::command]
-pub async fn get_hq_work_handoff() -> Result<bool, String> {
-    Ok(true)
-}
-
-/// Retired write path. Ignores `enabled` and strips the leftover key so an
-/// upgraded install cannot opt back into the classic shell.
-#[tauri::command]
-pub async fn set_hq_work_handoff(_enabled: bool) -> Result<(), String> {
-    let path = paths::menubar_json_path()?;
-    hq_desktop_core::first_run::migrate_retired_hq_work_handoff(&path).map(|_| ())
-}
-
-#[cfg(test)]
-mod hq_work_handoff_tests {
-    use super::*;
-
-    #[test]
-    fn choice_still_detects_the_retired_key_so_migration_can_strip_it() {
-        assert_eq!(
-            hq_work_handoff_choice(r#"{"hqWorkHandoff":true}"#),
-            Some(true)
-        );
-        assert_eq!(hq_work_handoff_choice(r#"{"hqPath":"/tmp/HQ"}"#), None);
-        assert_eq!(hq_work_handoff_choice("{}"), None);
-        assert_eq!(hq_work_handoff_choice("not-json"), None);
-    }
 }

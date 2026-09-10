@@ -29,8 +29,7 @@ Flag (merge; do not overwrite other keys): `~/.hq/menubar.json`
 }
 ```
 
-Same write path as `set_hq_work_handoff(true)`. Related keys operators may
-see:
+Launch strips the retired `hqWorkHandoff` key. Related keys operators may see:
 
 | Key | Role |
 | --- | --- |

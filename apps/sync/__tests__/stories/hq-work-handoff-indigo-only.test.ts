@@ -24,26 +24,8 @@ function rustSources(dir: string): string[] {
 }
 
 describe('desktop workspace is the only UI', () => {
-  const config = readRepo('src-tauri/src/commands/config.rs');
   const featureGate = readRepo('../../crates/hq-desktop-core/src/feature_gate.rs');
   const boot = readRepo('src/desktop-alt/boot.ts');
-
-  it('get_hq_work_handoff always returns true', () => {
-    expect(config).toContain('pub async fn get_hq_work_handoff()');
-    const body = config.slice(
-      config.indexOf('pub async fn get_hq_work_handoff()'),
-      config.indexOf('pub async fn set_hq_work_handoff('),
-    );
-    expect(body).toContain('Ok(true)');
-    expect(body).not.toContain('is_hq_work_cohort_user');
-  });
-
-  it('set_hq_work_handoff strips the retired key instead of refusing a domain', () => {
-    const body = config.slice(config.indexOf('pub async fn set_hq_work_handoff('));
-    expect(body).toContain('migrate_retired_hq_work_handoff');
-    expect(body).not.toMatch(/is_hq_work_cohort_user/);
-    expect(body).not.toMatch(/@vyg\.ai/);
-  });
 
   it('feature gate no longer has an HQ Work email-domain cohort', () => {
     expect(featureGate).not.toContain('HQ_WORK_ALLOWED_DOMAINS');

@@ -35,16 +35,14 @@ Flag (merge; do not overwrite other keys): `~/.hq/menubar.json`
 }
 ```
 
-`get_hq_work_handoff` always returns true. Launch strips any leftover
-`hqWorkHandoff` key. Updater, moderation, admin, and staging access remain
-Indigo-only (`is_indigo_user`).
+Launch strips any leftover `hqWorkHandoff` key. Updater, moderation, admin,
+and staging access remain Indigo-only (`is_indigo_user`).
 
 Practical consequence for this checklist: **run it as any signed-in user**.
 A Gmail account with no company affiliation must see the same desktop
 workspace as an `@getindigo.ai` account.
 
-Same write path as `set_hq_work_handoff(true)`. Inspect without dumping
-secrets:
+Inspect without dumping secrets:
 
 ```bash
 python3 - <<'PY'

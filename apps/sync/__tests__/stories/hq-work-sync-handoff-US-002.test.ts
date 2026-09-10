@@ -9,9 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   HQ_WORK_BUNDLE_ID,
   detectHqWorkInstalled,
-  getHqWorkHandoff,
   launchHqWork,
-  setHqWorkHandoff,
   type HqWorkInvoker,
 } from '../../src/lib/hq-work';
 
@@ -66,27 +64,6 @@ describe('US-002 HQ Work detection, launch, and handoff flag', () => {
         args: { url: 'hqwork://open?channel=X' },
       },
     ]);
-  });
-
-  it('getHqWorkHandoff and setHqWorkHandoff round-trip through the invoker', async () => {
-    let stored = false;
-    const invokeFn = mockInvoker((command, args) => {
-      if (command === 'get_hq_work_handoff') return stored;
-      if (command === 'set_hq_work_handoff') {
-        stored = Boolean(args?.enabled);
-        return undefined;
-      }
-      return undefined;
-    });
-    expect(await getHqWorkHandoff(invokeFn)).toBe(false);
-    await setHqWorkHandoff(invokeFn, true);
-    expect(await getHqWorkHandoff(invokeFn)).toBe(true);
-    expect(invokeFn.calls.map((c) => c.command)).toEqual([
-      'get_hq_work_handoff',
-      'set_hq_work_handoff',
-      'get_hq_work_handoff',
-    ]);
-    expect(invokeFn.calls[1].args).toEqual({ enabled: true });
   });
 
   it('an installed HQ Work app launches a channel URL', async () => {

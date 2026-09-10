@@ -103,7 +103,6 @@ describe('US-003 desktop-view-moved handoff card', () => {
         /plan_desktop_alt_open[\s\S]*should_intercept_desktop_alt[\s\S]*OpenDesktopAlt/,
       );
       expect(hq).toContain('hq_work_installed()');
-      expect(hq).toContain('get_hq_work_handoff()');
     });
 
     it('persists hqWorkHandoffCardShown via merge_menubar_flags', () => {

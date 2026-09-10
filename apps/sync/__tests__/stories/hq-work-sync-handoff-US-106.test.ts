@@ -18,7 +18,6 @@ function readRepo(...parts: string[]): string {
 
 describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
   const settings = readRepo('src-tauri/src/commands/settings.rs');
-  const config = readRepo('src-tauri/src/commands/config.rs');
   const boot = readRepo('src/desktop-alt/boot.ts');
   const twoApp = readRepo('docs/hq-work-handoff.md');
   const desktopAltDoc = readRepo('docs/desktop-alt.md');
@@ -36,13 +35,6 @@ describe('US-106 HQ Work embedded rollout, rollback, updater budget', () => {
       expect(noFile).toContain('hq_work_handoff: None');
     });
 
-    it('get_hq_work_handoff always returns true', () => {
-      const idx = config.indexOf('fn get_hq_work_handoff');
-      expect(idx).toBeGreaterThan(-1);
-      const body = config.slice(idx, config.indexOf('fn set_hq_work_handoff', idx));
-      expect(body).toContain('Ok(true)');
-      expect(body).not.toContain('is_hq_work_cohort_user');
-    });
   });
 
   describe('boot always mounts the hq-work shell', () => {

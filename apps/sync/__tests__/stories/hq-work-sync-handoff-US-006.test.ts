@@ -18,7 +18,6 @@ function readRepo(...parts: string[]): string {
 
 describe('US-006 HQ Work handoff rollout defaults, logs, rollback', () => {
   const hq = readRepo('src-tauri/src/commands/hq_work.rs');
-  const config = readRepo('src-tauri/src/commands/config.rs');
   const settings = readRepo('src-tauri/src/commands/settings.rs');
   const coreConfig = readRepo('../../crates/hq-desktop-core/src/config.rs');
   const coreSettings = readRepo('../../crates/hq-desktop-core/src/settings.rs');
@@ -43,14 +42,6 @@ describe('US-006 HQ Work handoff rollout defaults, logs, rollback', () => {
       );
     });
 
-    it('get_hq_work_handoff always returns true', () => {
-      const idx = config.indexOf('fn get_hq_work_handoff');
-      expect(idx).toBeGreaterThan(-1);
-      const body = config.slice(idx, config.indexOf('fn set_hq_work_handoff', idx));
-      expect(body).toContain('Ok(true)');
-      expect(body).not.toContain('is_hq_work_cohort_user');
-    });
-
     it('MenubarPrefs keeps the field only so upgrades can strip it', () => {
       expect(coreConfig).toContain('pub hq_work_handoff: Option<bool>');
       expect(coreSettings).toContain('hq_work_handoff: None');
@@ -67,12 +58,13 @@ describe('US-006 HQ Work handoff rollout defaults, logs, rollback', () => {
       expect(logfile).toContain('~/.hq/logs/hq-sync.log');
     });
 
-    it('emits distinct detected/launched/card_shown/co_installed/failed lines', () => {
-      expect(hq).toContain('handoff.detected installed=');
-      expect(hq).toContain('handoff.launched');
-      expect(hq).toContain('handoff.card_shown first=');
-      expect(hq).toContain('handoff.co_installed');
-      expect(hq).toContain('handoff.failed');
+    it('does not probe the retired handoff path when opening desktop-alt', () => {
+      const idx = hq.indexOf('pub fn maybe_intercept_desktop_alt_handoff');
+      expect(idx).toBeGreaterThan(-1);
+      const body = hq.slice(idx, hq.indexOf('pub async fn maybe_intercept_conversation_open', idx));
+      expect(body).toContain('Ok(intercept_steals_desktop_alt_window())');
+      expect(hq).toContain('pub fn intercept_steals_desktop_alt_window() -> bool {\n    false');
+      expect(hq).not.toContain('handoff.detected installed=');
     });
   });
 

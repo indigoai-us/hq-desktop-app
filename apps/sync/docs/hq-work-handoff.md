@@ -27,8 +27,8 @@ toggle for this flag — do not add one. Enable per machine:
    }
    ```
 
-   Same write path as the Tauri command `set_hq_work_handoff(true)`
-   (`merge_menubar_flags` on `hqWorkHandoff`).
+   The retired key is removed by the launch-time migration and no longer
+   selects a shell.
 
 2. Quit and relaunch Sync.
 
@@ -45,13 +45,10 @@ shows the US-003 card. Flag on + installed launches HQ Work.
 | `MenubarPrefs.hq_work_handoff` | `Option<bool>`, absent → `None` (`crates/hq-desktop-core/src/config.rs`) |
 | `get_settings` no-file branch | `hq_work_handoff: Some(false)` |
 | `get_settings` file-present branch | `prefs.hq_work_handoff.unwrap_or(false)` |
-| `get_hq_work_handoff` missing file | `Ok(false)` |
 
 ## Default-on (copy-paste when baking)
 
-When alpha is baked and launch is a config change, flip **all** of these in
-the same Sync release. The intercept path reads `get_hq_work_handoff`, not
-only Settings.
+No default-on action remains: the desktop workspace is now the only shell.
 
 **Canonical one-liners** (US-006):
 
@@ -68,25 +65,8 @@ apps/sync/src-tauri/src/commands/settings.rs
 
 ```
 
-**Lockstep** (otherwise Settings vs Open HQ disagree):
-
-```text
-apps/sync/src-tauri/src/commands/config.rs
-  get_hq_work_handoff missing file:
-    return Ok(false);
-  → return Ok(true);
-
-crates/hq-desktop-core/src/settings.rs
-  apply_defaults:
-    hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false))
-  → hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(true))
-```
-
-Then update the unit tests that assert default-off
-(`test_hq_work_handoff_defaults_false`).
-
-An explicit `"hqWorkHandoff": false` on disk must still restore desktop-alt
-after default-on.
+The old `hqWorkHandoff` field remains only so launch can remove it from
+upgraded installations.
 
 ## Handoff events (QA sampling)
 
@@ -119,10 +99,8 @@ Do not log on every app-activate cache refresh.
 
 ### Procedure
 
-1. Set `hqWorkHandoff` to `false` in `~/.hq/menubar.json` (or
-   `set_hq_work_handoff(false)`).
-2. Quit and relaunch Sync so intercept re-reads the flag.
-3. Open HQ (tray, Opt+Shift+O, widget, notification) opens **desktop-alt**.
+1. Quit and relaunch Sync; launch strips any leftover `hqWorkHandoff` key.
+2. Open HQ (tray, Opt+Shift+O, widget, notification) opens **desktop-alt**.
 4. Tray popover and widget are unchanged.
 5. No data loss: this handoff has **no migration**. Both apps sign into the
    same Cognito pool independently. Flag off only picks the window.

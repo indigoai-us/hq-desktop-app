@@ -582,8 +582,6 @@ fn main() {
             commands::hq_work::install_hq_work,
             commands::hq_work::get_hq_work_handoff_card_shown,
             commands::hq_work::mark_hq_work_handoff_card_shown,
-            commands::config::get_hq_work_handoff,
-            commands::config::set_hq_work_handoff,
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,

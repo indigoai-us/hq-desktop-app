@@ -31,8 +31,7 @@ not broaden those.
 The email-domain cohort (`@getindigo.ai` / `@vyg.ai` / `@liverecover.com`) no
 longer selects a shell. `migrate_retired_hq_work_handoff` runs at launch and
 deletes `hqWorkHandoff` from `~/.hq/menubar.json`. Writing the key again does
-nothing: `get_hq_work_handoff` is `Ok(true)` and `set_hq_work_handoff`
-strips the key.
+nothing: the next launch strips the key.
 
 There is no Settings toggle. There is no opt-out to the classic chat shell.
 
@@ -52,7 +51,6 @@ rollout notes, not active product controls.
 | `MenubarPrefs.hq_work_handoff` | `Option<bool>`, absent → `None` (`crates/hq-desktop-core/src/config.rs`) comment "Absent → false" |
 | `get_settings` no-file branch | `hq_work_handoff: Some(false)` |
 | `get_settings` file-present branch | `prefs.hq_work_handoff.unwrap_or(false)` |
-| `get_hq_work_handoff` missing file | `Ok(false)` |
 | `crates/hq-desktop-core/src/settings.rs` `apply_defaults` | `unwrap_or(false)` |
 
 ## Default-on (copy-paste when baking)
@@ -74,11 +72,6 @@ apps/sync/src-tauri/src/commands/settings.rs
     hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false))
   → hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(true))
 
-apps/sync/src-tauri/src/commands/config.rs
-  get_hq_work_handoff missing file:
-    return Ok(false);
-  → return Ok(true);
-
 crates/hq-desktop-core/src/settings.rs
   apply_defaults:
     hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false))
@@ -88,8 +81,8 @@ crates/hq-desktop-core/src/settings.rs
 Then update the unit tests that assert default-off
 (`test_hq_work_handoff_defaults_false`).
 
-An explicit `"hqWorkHandoff": false` on disk must still restore the legacy
-window after default-on.
+An explicit `"hqWorkHandoff": false` on disk is removed at launch and cannot
+restore the legacy window.
 
 ## Rollback drill
 
@@ -97,8 +90,8 @@ window after default-on.
 
 ### Procedure
 
-1. Set `hqWorkHandoff` to `false` in `~/.hq/menubar.json` (or omit the key,
-   or `set_hq_work_handoff(false)`).
+1. Set or omit `hqWorkHandoff` in `~/.hq/menubar.json`; launch removes the
+   retired key.
 2. Quit and relaunch Sync so boot re-reads the flag.
 3. Open HQ (tray, Opt+Shift+O, widget, notification) opens the same
    desktop-alt WINDOW with the **legacy** shell
