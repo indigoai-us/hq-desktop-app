@@ -173,6 +173,12 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
+    onGenerateTask?: (seed: {
+      companyUid: string;
+      projectId: string;
+      channelId?: string | null;
+      prompt: string;
+    }) => Promise<void>;
   };
 
   // A non-SvelteKit host can supply its runtime kind and public API URL. The
@@ -206,6 +212,7 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
+    onGenerateTask,
   }: WorkShellProps = $props();
 
   // Only a real desktop host gets the native command bridge. A phone runs a
@@ -732,6 +739,7 @@
       {rowExtrasLoading}
       {rowExtrasError}
       {rowExtras}
+      {onGenerateTask}
     />
   {/key}
   {#if externalLinkError}

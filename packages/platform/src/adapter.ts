@@ -1064,6 +1064,7 @@ export interface WorkMeshApi {
   createProjectStory?(projectId: string, companyUid: string, story: {
     id: string; title: string; description: string; status: string; passes: boolean;
   }): AdapterPromise<Json>;
+  putProjectView?(projectId: string, companyUid: string, view: Json): AdapterPromise<Json>;
   readLocalSnapshot(): AdapterPromise<Json>;
   /** hq-pro GET /v1/work-mesh/projects/{id}?companyUid= is required. */
   getProjectView(projectId: string, companyUid?: string): AdapterPromise<Json>;

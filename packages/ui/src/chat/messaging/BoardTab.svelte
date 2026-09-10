@@ -23,13 +23,14 @@
 
   interface Props {
     onCreateTask?: (task: {id: string; title: string; description: string; status: BoardStageId}) => Promise<void>;
+    onDeleteTask?: (task: {id: string; title: string; status: string}) => Promise<void>;
     columns: BoardColumnModel[];
     stories: Record<string, BoardStoryPanelModel>;
     /** Bubbled "Open in channel" — the host flips back to the Chat tab. */
     onOpenInChannel?: () => void;
   }
 
-  let { columns, stories, onOpenInChannel, onCreateTask }: Props = $props();
+  let { columns, stories, onOpenInChannel, onCreateTask, onDeleteTask }: Props = $props();
 
   let createStage = $state<BoardStageId | null>(null);
   let taskTitle = $state("");
@@ -37,6 +38,9 @@
   let createPending = $state(false);
   let createError = $state("");
   let createId = "";
+  let deletePending = $state(false);
+  let deleteError = $state("");
+  let deleteConfirm = $state<{id: string; title: string; status: string} | null>(null);
 
   function beginCreate(stage: string): void {
     const valid = BOARD_STAGE_ORDER.find(value => value === stage);
@@ -57,7 +61,7 @@
       selectedStoryId = createId;
       createStage = null;
     } catch {
-      createError = "Could not create the task. Your draft is saved here; try again.";
+      createError = "Could not start task generation. Your draft is saved here; try again.";
     } finally { createPending = false; }
   }
 
@@ -103,6 +107,21 @@
       closePanel();
     }
   }
+
+  async function confirmDelete(): Promise<void> {
+    if (!deleteConfirm || !onDeleteTask || deletePending) return;
+    deletePending = true;
+    deleteError = "";
+    try {
+      await onDeleteTask(deleteConfirm);
+      if (selectedStoryId === deleteConfirm.id) selectedStoryId = null;
+      deleteConfirm = null;
+    } catch {
+      deleteError = "Could not delete the task. Try again.";
+    } finally {
+      deletePending = false;
+    }
+  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -139,12 +158,13 @@
   </div>
 
   {#if createStage}
-    <form class="board-create" onsubmit={createTask} aria-label="Create task">
-      <h3>Create task · {BOARD_STAGE_TITLES[createStage]}</h3>
+    <form class="board-create" onsubmit={createTask} aria-label="Generate task">
+      <h3>Generate task · {BOARD_STAGE_TITLES[createStage]}</h3>
+      <p class="board-create-hint">Title and description start a session that writes the full PRD task (acceptance criteria included).</p>
       <label>Title <input use:focusOnMount required maxlength="300" bind:value={taskTitle} disabled={createPending} /></label>
       <label>Description <textarea maxlength="2000" bind:value={taskDescription} disabled={createPending}></textarea></label>
       {#if createError}<p role="alert">{createError}</p>{/if}
-      <button type="submit" disabled={createPending || !taskTitle.trim()}>{createPending ? "Creating…" : "Create task"}</button>
+      <button type="submit" disabled={createPending || !taskTitle.trim()}>{createPending ? "Generating…" : "Generate task"}</button>
       <button type="button" disabled={createPending} onclick={() => (createStage = null)}>Cancel</button>
     </form>
   {/if}
@@ -169,7 +189,7 @@
                   >{column.title}</span
                 >
                 <span class="column-count">{column.cards.length}</span>
-                {#if onCreateTask}<button class="board-add" type="button" aria-label={`Create task in ${column.title}`} disabled={createPending} onclick={() => beginCreate(column.id)}>+</button>{/if}
+                {#if onCreateTask}<button class="board-add" type="button" aria-label={`Generate task in ${column.title}`} disabled={createPending} onclick={() => beginCreate(column.id)}>+</button>{/if}
               </div>
               <div class="column-body">
                 {#if column.cards.length === 0}
@@ -319,6 +339,24 @@
             >
               Open in channel
             </button>
+            {#if onDeleteTask}
+              <button
+                type="button"
+                class="panel-btn panel-btn-danger"
+                data-testid="board-delete-task"
+                disabled={deletePending}
+                onclick={() => {
+                  deleteError = "";
+                  deleteConfirm = {
+                    id: panelModel.id,
+                    title: panelModel.title,
+                    status: panelModel.fields.status,
+                  };
+                }}
+              >
+                Delete task
+              </button>
+            {/if}
           </footer>
         </div>
       {/if}
@@ -326,9 +364,24 @@
   {/if}
 </div>
 
+{#if deleteConfirm}
+  <div class="delete-confirm" data-testid="board-delete-confirm" role="dialog" aria-modal="true" aria-label="Delete task">
+    <p>Delete <strong>{deleteConfirm.title}</strong> ({deleteConfirm.id})? This removes it from the Board for everyone.</p>
+    {#if /progress|review/i.test(deleteConfirm.status)}
+      <p role="status">This task is {deleteConfirm.status}. Deleting it will interrupt in-flight work.</p>
+    {/if}
+    {#if deleteError}<p role="alert">{deleteError}</p>{/if}
+    <button type="button" class="panel-btn panel-btn-danger" disabled={deletePending} onclick={() => void confirmDelete()}>{deletePending ? "Deleting…" : "Delete"}</button>
+    <button type="button" class="panel-btn" disabled={deletePending} onclick={() => (deleteConfirm = null)}>Cancel</button>
+  </div>
+{/if}
+
 <style>
   .board-add { margin-left: auto; color: var(--pop-text); background: transparent; border: 0; font-size: 20px; cursor: pointer; }
   .board-create { padding: 12px 16px; border-bottom: 1px solid var(--pop-border); }
+  .board-create-hint { margin: 0 0 8px; color: var(--t3); font-size: 12px; }
+  .delete-confirm { padding: 12px 16px; border-top: 1px solid var(--pop-border); }
+  .panel-btn-danger { color: var(--danger, #f87171); }
   .board-create label { display: block; margin: 8px 0; }
   .board-create input, .board-create textarea { display: block; box-sizing: border-box; width: 100%; padding: 6px; color: var(--pop-text); background: var(--c-field-bg); border: 1px solid var(--pop-border); border-radius: 4px; }
 
