@@ -881,8 +881,7 @@ async function startAndSend(
 async function startBackground(spec: SessionSpec, text: string): Promise<string> {
   await ensureListeners();
   const started = await invoke<{ sessionId: string }>('agent_session_start', {
-    spec: { ...spec, hidden: true, title: spec.title ?? 'Generate board task' },
-    ...(spec.projectChannelId ? { projectChannelId: spec.projectChannelId } : {}),
+    spec: { ...spec, hidden: true, title: spec.title ?? null, projectChannelId: undefined },
   });
   const sessionId = started.sessionId;
   if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
@@ -890,6 +889,10 @@ async function startBackground(spec: SessionSpec, text: string): Promise<string>
   entry.loading = false;
   await invoke('agent_session_send', { sessionId, text, images: [], overrides: null });
   return sessionId;
+}
+
+function eventsFor(sessionId: string): SessionEvent[] {
+  return entries[sessionId]?.events ?? [];
 }
 
 /**
@@ -1527,6 +1530,7 @@ export const liveSessionStore = {
   start,
   startAndSend,
   startBackground,
+  eventsFor,
   resumeAndSend,
   waitForTurnDone,
   send,

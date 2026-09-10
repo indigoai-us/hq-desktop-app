@@ -282,7 +282,7 @@ export type ChatBlock =
        * `model_not_found` case: the pill holds a model this CLI does not have,
        * and the fix is one click away rather than a sentence away.
        */
-      action?: 'chooseModel';
+      action?: 'chooseModel' | 'reauth';
       at: number | null;
     }
   | { type: 'divider'; id: string; label: string; at: number | null };
@@ -293,6 +293,7 @@ export type ChatBlock =
 
 /** The Claude CLI's code for a model it cannot run. */
 export const MODEL_NOT_FOUND_CODE = 'model_not_found';
+export const AUTHENTICATION_FAILED_CODE = 'authentication_failed';
 
 /** The one line the transcript says about it. */
 export const MODEL_NOT_FOUND_TEXT = "The selected model isn't available.";
@@ -722,10 +723,21 @@ export function foldSessionEvents(
     // The rendered line carries the code; a later `turnDone` repeats only the
     // sentence, so the sentence is what is remembered.
     const text = code ? `${message} (${code})` : message;
+    const auth =
+      code === AUTHENTICATION_FAILED_CODE ||
+      /authenticate|oauth access token has been revoked/i.test(message);
     push(
       code === undefined
         ? { type: 'error', id: `${tone === 'warn' ? 'rate' : 'error'}-${index}`, tone, text, at }
-        : { type: 'error', id: `error-${index}`, tone, text, code, at },
+        : {
+            type: 'error',
+            id: `error-${index}`,
+            tone,
+            text,
+            code,
+            at,
+            ...(auth ? { action: 'reauth' as const } : {}),
+          },
     );
     return true;
   }
