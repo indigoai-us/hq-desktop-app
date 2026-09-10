@@ -74,6 +74,11 @@ function mountSidebar(props: Record<string, unknown>): void {
 async function openModal(): Promise<void> {
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
   await settle();
+  // The plus is a menu now; the finder is behind "New message".
+  document
+    .querySelector<HTMLButtonElement>('[data-testid="chat-new-message-item"]')!
+    .click();
+  await settle();
 }
 
 beforeEach(() => {

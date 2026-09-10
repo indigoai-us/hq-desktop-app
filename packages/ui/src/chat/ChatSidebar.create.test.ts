@@ -63,10 +63,16 @@ function press(node: EventTarget, key: string) {
   node.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
 }
 
-function openModal(): void {
+/** The plus opens the New menu; "New message" is the way into the finder. */
+async function openModal(): Promise<void> {
   host
     .querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')
     ?.click();
+  await tick();
+  document
+    .querySelector<HTMLButtonElement>('[data-testid="chat-new-message-item"]')
+    ?.click();
+  await tick();
 }
 
 function queryInput(): HTMLInputElement {
@@ -107,20 +113,47 @@ describe("ChatSidebar create flow", () => {
       '[data-testid="chat-new-message"]',
     );
     expect(plus).toBeTruthy();
-    expect(plus?.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(plus?.getAttribute("aria-haspopup")).toBe("menu");
     plus?.click();
+    await tick();
+
+    // The plus opens a menu of the four things you can create; the finder is
+    // behind "New message", and "New project" opens the channel form directly.
+    const menu = document.querySelector('[data-testid="chat-new-menu"]');
+    expect(menu).toBeTruthy();
+    expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
+
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="chat-new-message-item"]')
+      ?.click();
+    await tick();
+    expect(
+      document.querySelector('[data-testid="chat-create-modal"]'),
+    ).toBeTruthy();
+    expect(document.querySelector('[data-testid="chat-create-query"]')).toBeTruthy();
+  });
+
+  it("New project opens the channel form, skipping the finder", async () => {
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: createFixtureChatSidebarApi(), seedDirectory },
+    });
+    await tick();
+    await tick();
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')
+      ?.click();
+    await tick();
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="chat-new-project-item"]')
+      ?.click();
     await tick();
 
     expect(
       document.querySelector('[data-testid="chat-create-modal"]'),
     ).toBeTruthy();
-    // The old dropdown is gone for good (it also rendered clipped).
-    expect(
-      document.querySelector('[data-testid="chat-plus-new-message"]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[data-testid="chat-plus-new-channel"]'),
-    ).toBeNull();
+    expect(document.querySelector('[data-testid="chat-create-query"]')).toBeNull();
   });
 
   it("picking a suggestion opens that conversation", async () => {
@@ -131,7 +164,7 @@ describe("ChatSidebar create flow", () => {
     });
     await tick();
     await tick();
-    openModal();
+    await openModal();
     await tick();
 
     type(queryInput(), "Bryan");
@@ -165,7 +198,7 @@ describe("ChatSidebar create flow", () => {
     });
     await tick();
     await tick();
-    openModal();
+    await openModal();
     await tick();
 
     type(queryInput(), "Q4 board");
@@ -210,7 +243,7 @@ describe("ChatSidebar create flow", () => {
     });
     await tick();
     await tick();
-    openModal();
+    await openModal();
     await tick();
 
     type(queryInput(), "Q4 board");
@@ -303,7 +336,7 @@ describe("ChatSidebar create flow", () => {
     });
     await tick();
     await tick();
-    openModal();
+    await openModal();
     await tick();
 
     type(queryInput(), "Alpha");
@@ -350,7 +383,7 @@ describe("ChatSidebar create flow", () => {
     });
     await tick();
     await tick();
-    openModal();
+    await openModal();
     await tick();
 
     type(queryInput(), "hq");
@@ -389,7 +422,7 @@ describe("ChatSidebar create flow", () => {
     // The rail itself still pins #welcome — only the create flow hides it.
     await vi.waitFor(() => expect(host.textContent).toMatch(/welcome/i));
 
-    openModal();
+    await openModal();
     await tick();
     const results = Array.from(
       document.querySelectorAll('[data-testid="chat-create-result"]'),
@@ -415,7 +448,7 @@ describe("ChatSidebar create flow", () => {
     });
     await tick();
     await tick();
-    openModal();
+    await openModal();
     await tick();
 
     type(queryInput(), "bryan");
@@ -470,7 +503,7 @@ describe("ChatSidebar create flow", () => {
     });
     await tick();
     await tick();
-    openModal();
+    await openModal();
     await tick();
 
     type(queryInput(), "jacob posel");

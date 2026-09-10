@@ -155,6 +155,12 @@ async function openNewChannelModal(name = "HQ Desktop Bugs"): Promise<void> {
     ) as HTMLButtonElement | null
   )?.click();
   await tick();
+  (
+    document.querySelector(
+      '[data-testid="chat-new-message-item"]',
+    ) as HTMLButtonElement | null
+  )?.click();
+  await tick();
   const query = document.querySelector(
     '[data-testid="chat-create-query"]',
   ) as HTMLInputElement;

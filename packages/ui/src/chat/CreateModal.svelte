@@ -105,6 +105,11 @@
     oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
+    /**
+     * Where the modal opens. The rail's New menu routes "New project"
+     * straight to the channel form; "New message" lands on the finder.
+     */
+    initialStep?: "find" | "create";
   }
 
   let {
@@ -121,6 +126,7 @@
     oncreatecompany = null,
     oncreateagent = null,
     agentCompanies = null,
+    initialStep = "find",
   }: Props = $props();
 
   // ── lifecycle entry points (New company / New agent) ─────────────────────
@@ -241,7 +247,7 @@
     return { ...partial, resolved: null, pending: false, error: null };
   }
 
-  let step = $state<Step>("find");
+  let step = $state<Step>(initialStep);
   let query = $state("");
   let queryDebounced = $state("");
   let activeIndex = $state(0);
@@ -709,6 +715,12 @@
       });
       if (raw.createSlug) enterCreate(query);
     }
+  }
+
+  // Opening straight on the channel form skips `enterCreate`, which is what
+  // normally seeds the workspace select.
+  if (initialStep === "create") {
+    companyUid = defaultCompanyUid(activeScope, targetCompanies);
   }
 
   function enterCreate(raw: string): void {

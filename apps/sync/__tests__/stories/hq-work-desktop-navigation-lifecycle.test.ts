@@ -1035,9 +1035,13 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
     ).toBe(true);
 
-    // The "+" opens the unified create modal directly. Create a channel whose
-    // first message is answered late by the host.
+    // The "+" opens the New menu; "New message" opens the finder. Create a
+    // channel whose first message is answered late by the host.
     (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
+    await flush();
+    (
+      document.querySelector('[data-testid="chat-new-message-item"]') as HTMLButtonElement
+    ).click();
     await flush();
     setInput('chat-create-query', '#release');
     await new Promise((resolve) => setTimeout(resolve, 150));

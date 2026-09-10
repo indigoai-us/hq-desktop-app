@@ -252,12 +252,16 @@ function mountMessagingSidebar(invokeFn: SyncInvokeFn): void {
   });
 }
 
-/** The sidebar "+" opens the unified create modal directly (no dropdown). */
+/** The sidebar "+" opens the New menu; "New message" opens the finder. */
 async function openCreateModal(): Promise<void> {
   await vi.waitFor(() => {
     expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy();
   });
   (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
+  await flush();
+  (
+    document.querySelector('[data-testid="chat-new-message-item"]') as HTMLButtonElement
+  ).click();
   await flush();
 }
 

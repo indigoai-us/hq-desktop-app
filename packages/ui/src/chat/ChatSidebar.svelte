@@ -144,6 +144,7 @@
   import PencilSimple from "phosphor-svelte/lib/PencilSimple";
   import Plus from "phosphor-svelte/lib/Plus";
   import PushPin from "phosphor-svelte/lib/PushPin";
+  import Robot from "phosphor-svelte/lib/Robot";
   import SignOut from "phosphor-svelte/lib/SignOut";
   import Stack from "phosphor-svelte/lib/Stack";
   import {
@@ -398,7 +399,13 @@
    * new-channel modals.
    */
   let createOpen = $state(false);
+  /** Which face of CreateModal the New menu asked for. */
+  let createStep = $state<"find" | "create">("find");
+  let newMenuOpen = $state(false);
+  let newEntryBusy = $state<"company" | "agent" | null>(null);
+  let newEntryError = $state<string | null>(null);
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
+  let newWrapEl = $state<HTMLElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
   let searchButton = $state<HTMLButtonElement | null>(null);
@@ -825,6 +832,7 @@
     filterOpen = false;
     scopeMenuOpen = false;
     footerMenuOpen = false;
+    newMenuOpen = false;
     createOpen = false;
     searchOpen = false;
   }
@@ -841,9 +849,62 @@
     filterOpen = next;
   }
 
-  function openCreate(): void {
+  function openCreate(step: "find" | "create" = "find"): void {
     closeAllOverlays();
+    createStep = step;
     createOpen = true;
+  }
+
+  /**
+   * The plus is a menu, not a shortcut into the finder. "New message" and
+   * "New project" are two faces of CreateModal; company and agent run the
+   * host's lifecycle entry points directly, the same ones the finder exposed.
+   */
+  function openNewMenu(): void {
+    const next = !newMenuOpen;
+    closeAllOverlays();
+    newEntryError = null;
+    newMenuOpen = next;
+  }
+
+  function newFromMenu(step: "find" | "create"): void {
+    newMenuOpen = false;
+    openCreate(step);
+  }
+
+  async function runNewEntry(
+    kind: "company" | "agent",
+    run: () => Promise<EntryPointResult>,
+  ): Promise<void> {
+    if (newEntryBusy) return;
+    newEntryBusy = kind;
+    newEntryError = null;
+    try {
+      const result = await run();
+      if (result.ok) {
+        newMenuOpen = false;
+        return;
+      }
+      newEntryError = result.reason;
+    } catch (err) {
+      newEntryError = err instanceof Error ? err.message : String(err);
+    } finally {
+      newEntryBusy = null;
+    }
+  }
+
+  function newCompanyFromMenu(): void {
+    if (!oncreatecompany) return;
+    void runNewEntry("company", oncreatecompany);
+  }
+
+  /** One company: straight there. Several: the active scope, else the first. */
+  function newAgentFromMenu(): void {
+    if (!oncreateagent) return;
+    const target =
+      agentCompanies.find((c) => c.companyUid === scope) ?? agentCompanies[0];
+    if (!target) return;
+    void runNewEntry("agent", () => oncreateagent!(target.companyUid));
   }
 
   /** Close the create modal; optionally open the channel it just created. */
@@ -1882,23 +1943,95 @@
     </div>
 
     <div class="chat-header-actions">
-      <button
-        type="button"
-        class="chat-icon-btn"
-        bind:this={plusBtnEl}
-        data-testid="chat-new-message"
-        aria-label={oncreatecompany || oncreateagent
-          ? "New message, channel, company, or agent"
-          : "New message or channel"}
-        title={oncreatecompany || oncreateagent
-          ? "New message, channel, company, or agent"
-          : "New message or channel"}
-        aria-haspopup="dialog"
-        aria-expanded={createOpen}
-        onclick={openCreate}
-      >
-        <Plus size={16} aria-hidden="true" />
-      </button>
+      <div class="chat-new-wrap" bind:this={newWrapEl}>
+        <button
+          type="button"
+          class="chat-icon-btn"
+          bind:this={plusBtnEl}
+          data-testid="chat-new-message"
+          aria-label="New"
+          title="New"
+          aria-haspopup="menu"
+          aria-expanded={newMenuOpen}
+          onclick={openNewMenu}
+        >
+          <Plus size={16} aria-hidden="true" />
+        </button>
+        {#if newMenuOpen}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="chat-popover chat-new-menu"
+            data-testid="chat-new-menu"
+            role="menu"
+            tabindex="-1"
+            aria-label="Create"
+            use:menuPortal={{ anchor: newWrapEl, placement: "bottom-start" }}
+            onmousedown={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              class="chat-popover-row"
+              role="menuitem"
+              data-testid="chat-new-message-item"
+              onclick={() => newFromMenu("find")}
+            >
+              <span class="chat-popover-ic" aria-hidden="true">
+                <ChatCircle size={14} />
+              </span>
+              New message
+            </button>
+            <button
+              type="button"
+              class="chat-popover-row"
+              role="menuitem"
+              data-testid="chat-new-project-item"
+              onclick={() => newFromMenu("create")}
+            >
+              <span class="chat-popover-ic" aria-hidden="true">
+                <Hash size={14} />
+              </span>
+              New project
+            </button>
+            {#if oncreatecompany}
+              <button
+                type="button"
+                class="chat-popover-row"
+                role="menuitem"
+                data-testid="chat-new-company-item"
+                aria-busy={newEntryBusy === "company" ? "true" : undefined}
+                disabled={newEntryBusy != null}
+                onclick={newCompanyFromMenu}
+              >
+                <span class="chat-popover-ic" aria-hidden="true">
+                  <Buildings size={14} />
+                </span>
+                New company
+              </button>
+            {/if}
+            {#if oncreateagent && agentCompanies.length > 0}
+              <button
+                type="button"
+                class="chat-popover-row"
+                role="menuitem"
+                data-testid="chat-new-agent-item"
+                aria-busy={newEntryBusy === "agent" ? "true" : undefined}
+                disabled={newEntryBusy != null}
+                onclick={newAgentFromMenu}
+              >
+                <span class="chat-popover-ic" aria-hidden="true">
+                  <Robot size={14} />
+                </span>
+                New agent
+              </button>
+            {/if}
+            {#if newEntryError}
+              <p class="chat-scope-error" role="alert" data-testid="chat-new-error">
+                {newEntryError}
+              </p>
+            {/if}
+          </div>
+        {/if}
+      </div>
       <button
         type="button"
         class="chat-icon-btn"
@@ -2562,6 +2695,7 @@
       createCompanies={createScopeCompanies}
       activeScope={scope}
       {self}
+      initialStep={createStep}
       onclose={closeCreate}
       onpick={(row) => {
         createOpen = false;
@@ -2954,6 +3088,19 @@
 
   .chat-scope-menu::-webkit-scrollbar {
     display: none;
+  }
+
+  .chat-new-wrap {
+    position: relative;
+    display: inline-flex;
+  }
+
+  /* The concept's `.new-panel`. */
+  .chat-popover.chat-new-menu {
+    left: 0;
+    right: auto;
+    width: 180px;
+    min-width: 0;
   }
 
   .chat-popover-row.chat-scope-row {

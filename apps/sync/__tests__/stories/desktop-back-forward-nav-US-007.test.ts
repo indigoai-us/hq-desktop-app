@@ -75,14 +75,18 @@ describe("US-007: Accept the full matrix in browser, native preview, and Windows
 
   it("Given the native macOS preview, when Back and Forward are used across channel → session → source, then selection matches and no send occurs", () => {
     const titleBar = readRepo("packages/ui/src/home/V4TitleBar.svelte");
-    const dateNeedle = 'data-testid="titlebar-day-date"';
+    // The bar's lead is the sidebar toggle then the history cluster — the HQ
+    // wordmark and DAY · DATE that used to sit between them are gone.
+    const leadNeedle = 'data-testid="titlebar-leading"';
     const historyNeedle = 'data-testid="titlebar-history"';
-    const date = titleBar.indexOf(dateNeedle);
+    const lead = titleBar.indexOf(leadNeedle);
     const history = titleBar.indexOf(historyNeedle);
-    expect(date).toBeGreaterThan(-1);
-    expect(history).toBeGreaterThan(date);
-    expect(titleBar.slice(date + dateNeedle.length, history)).not.toMatch(
-      /data-testid="titlebar-/,
+    expect(lead).toBeGreaterThan(-1);
+    expect(history).toBeGreaterThan(lead);
+    expect(titleBar).not.toContain('data-testid="titlebar-day-date"');
+    expect(titleBar).not.toContain('data-testid="titlebar-wordmark"');
+    expect(titleBar.slice(lead + leadNeedle.length, history)).not.toMatch(
+      /data-testid="titlebar-(?!back|forward)/,
     );
 
     const shell = readRepo("packages/ui/src/shell/DesktopApp.svelte");
