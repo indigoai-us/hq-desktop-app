@@ -94,11 +94,13 @@
     readRemembered,
     readRememberedEffort,
     readRememberedModel,
+    readRememberedPermission,
     readRememberedTool,
     readSessionModels,
     remember,
     rememberEffort,
     rememberModel,
+    rememberPermission,
     validateModel,
     type ComposerImage,
     type SessionModel,
@@ -238,7 +240,7 @@
   let tool = $state<SessionToolId>(initialTool);
   let model = $state<string | null>(readRememberedModel(initialTool));
   let effort = $state<string | null>(readRememberedEffort(initialTool));
-  let permissionMode = $state<PermissionMode>('prompt');
+  let permissionMode = $state<PermissionMode>(readRememberedPermission());
   let companySeeded = $state(false);
   /** "Model reset to Default for Claude" — the composer's footer, until the next pick. */
   let modelNote = $state('');
@@ -1405,6 +1407,9 @@
   function choosePermission(mode: PermissionMode) {
     const changed = mode !== permissionMode;
     permissionMode = mode;
+    // An explicit pick is a standing preference: the next session (and the
+    // welcome channel's setup run) starts the way the person last chose.
+    rememberPermission(mode);
     if (!changed || !sessionId || liveSessionStore.isHistorical) return;
     void liveSessionStore.setPermissionMode(mode).catch((err: unknown) => {
       actionError = err instanceof Error ? err.message : String(err);

@@ -14,6 +14,7 @@
 import type { SetupProviderStatus, SetupRunAnswer, SetupRunApi, SetupRunPermissionDecision, SetupRunReadiness, SetupRunSnapshot, SetupSecretCard } from '@hq/ui';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { CLAUDE_INSTALL_URL, CODEX_INSTALL_URL } from '../../lib/onboarding-summary';
+import { readRememberedPermission } from '../../components/sessions/session-models';
 import { invoke } from '@tauri-apps/api/core';
 import {
   liveSessionStore,
@@ -84,7 +85,9 @@ export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunAp
       model: null,
       effort: null,
       resume: null,
-      permissionMode: 'prompt',
+      // The person's standing choice on the Sessions page: with permissions
+      // bypassed there, setup must not stop for an Allow on every command.
+      permissionMode: readRememberedPermission(),
     };
     return store.startAndSend(spec, prompt);
   }

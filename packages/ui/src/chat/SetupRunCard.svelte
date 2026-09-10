@@ -531,14 +531,11 @@
         Run again
       </SetupButton>
     {:else if waiting}
+      <!-- Between turns there is nothing to offer but the honest way out;
+           starting over lives on the finale, not under every reply. -->
       {#if onfinish && canFinish}
         <SetupButton variant="primary" data-testid="setup-run-finish" disabled={busy} onclick={() => onfinish?.()}>
           I'm all set
-        </SetupButton>
-      {/if}
-      {#if onrunagain}
-        <SetupButton variant="quiet" data-testid="setup-run-again" disabled={busy} onclick={() => onrunagain?.()}>
-          Run again
         </SetupButton>
       {/if}
     {/if}
