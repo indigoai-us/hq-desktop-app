@@ -677,6 +677,31 @@ export class WebPlatformAdapter implements PlatformAdapter {
           ? { attachments: extras.attachments }
           : {}),
       }),
+    // Mirrors the Rust `build_compose_payload` contract: exactly one
+    // recipient key travels (personUid wins when both are given), and the
+    // server's 202 `{ state: "connection_requested" }` is folded into the
+    // `connectionRequested` discriminant the UI already understands.
+    sendDmToEmail: async ({ toEmail, toPersonUid, body }) => {
+      const personUid = toPersonUid?.trim() ?? "";
+      const email = toEmail?.trim() ?? "";
+      const text = body.trim();
+      if (!text) return failure("invalid", "Message body must not be empty");
+      if (!personUid && !email) {
+        return failure("invalid", "A recipient (email or personUid) is required");
+      }
+      const result = await this.post<Json>(WEB_PATHS.dmSend, {
+        ...(personUid ? { toPersonUid: personUid } : { toEmail: email }),
+        body: text,
+      });
+      if (!result.ok) return result;
+      const rec = asRecord(result.value) ?? {};
+      const state =
+        rec.state === "connection_requested" ||
+        rec.state === "connectionRequested"
+          ? "connectionRequested"
+          : "delivered";
+      return ok({ ...rec, state } as Json);
+    },
     fetchReplyThread: async (args) => {
       const invalid = validateFetchReplyThread(args);
       if (invalid) return invalid;

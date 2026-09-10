@@ -1406,3 +1406,199 @@ describe("CreateModal project channels", () => {
     expect(createChannel.mock.calls[0]?.[0]).toMatchObject({ scope: "project", projectId: "growth" });
   });
 });
+
+describe("CreateModal message by email", () => {
+  async function typeEmail(email = "kai@acme.test"): Promise<HTMLInputElement> {
+    const input = $<HTMLInputElement>('[data-testid="chat-create-query"]')!;
+    type(input, email);
+    await settleQuery();
+    return input;
+  }
+
+  it("keeps the honest no-match note when the host cannot send by email", async () => {
+    open({ rows: [personRow()] });
+    await tick();
+    await typeEmail();
+    expect($('[data-testid="chat-create-email-row"]')).toBeNull();
+    expect($('[data-testid="chat-create-no-match"]')?.textContent).toContain(
+      "No one on HQ matches that address",
+    );
+  });
+
+  it("offers a keyboard-navigable 'Message <email>' row instead of the dead end", async () => {
+    open({
+      rows: [personRow()],
+      api: stubApi({
+        sendDmToEmail: async () => ({ state: "connectionRequested" as const }),
+      }),
+    });
+    await tick();
+    const input = await typeEmail();
+
+    expect($('[data-testid="chat-create-no-match"]')).toBeNull();
+    expect($('[data-testid="chat-create-channel-row"]')).toBeNull();
+    const row = $<HTMLButtonElement>('[data-testid="chat-create-email-row"]')!;
+    expect(row.textContent).toContain("Message kai@acme.test");
+    expect(row.getAttribute("role")).toBe("option");
+    expect(row.getAttribute("aria-selected")).toBe("true");
+    expect(input.getAttribute("aria-activedescendant")).toBe("create-opt-0");
+    expect(document.getElementById("create-results")!.contains(row)).toBe(true);
+
+    press(input, "Enter");
+    await tick();
+    expect($('[data-testid="chat-create-email-body"]')).toBeTruthy();
+    expect($("#create-modal-title")?.textContent).toContain(
+      "Message kai@acme.test",
+    );
+  });
+
+  it("opens compose straight from Enter before the debounce settles", async () => {
+    open({
+      api: stubApi({
+        sendDmToEmail: async () => ({ state: "connectionRequested" as const }),
+      }),
+    });
+    await tick();
+    const input = $<HTMLInputElement>('[data-testid="chat-create-query"]')!;
+    type(input, "kai@acme.test");
+    press(input, "Enter");
+    await tick();
+    expect($('[data-testid="chat-create-email-body"]')).toBeTruthy();
+  });
+
+  it("sends the first message and reports a held connection request", async () => {
+    const sendDmToEmail = vi
+      .fn()
+      .mockResolvedValue({ state: "connectionRequested" as const });
+    const onclose = vi.fn();
+    const onpick = vi.fn();
+    open({ api: stubApi({ sendDmToEmail }), onclose, onpick });
+    await tick();
+    await typeEmail();
+    $<HTMLButtonElement>('[data-testid="chat-create-email-row"]')!.click();
+    await tick();
+
+    const send = $<HTMLButtonElement>('[data-testid="chat-create-email-send"]')!;
+    expect(send.disabled).toBe(true);
+    type($<HTMLTextAreaElement>('[data-testid="chat-create-email-body"]')!, "hey Kai");
+    await tick();
+    expect(send.disabled).toBe(false);
+    send.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-email-result"]')).toBeTruthy();
+    });
+    expect(sendDmToEmail).toHaveBeenCalledTimes(1);
+    expect(sendDmToEmail).toHaveBeenCalledWith({
+      toEmail: "kai@acme.test",
+      body: "hey Kai",
+    });
+    const result = $('[data-testid="chat-create-email-result"]')!;
+    expect(result.getAttribute("data-state")).toBe("connectionRequested");
+    expect(result.textContent?.replace(/\s+/g, " ")).toContain(
+      "Request sent to kai@acme.test — your message is held until they accept.",
+    );
+    expect($('[data-testid="chat-create-email-body"]')).toBeNull();
+
+    $<HTMLButtonElement>('[data-testid="chat-create-email-done"]')!.click();
+    expect(onclose).toHaveBeenCalledTimes(1);
+    expect(onclose).toHaveBeenCalledWith();
+    expect(onpick).not.toHaveBeenCalled();
+  });
+
+  it("reports delivery and opens the DM when the person is known", async () => {
+    const onclose = vi.fn();
+    const onpick = vi.fn();
+    open({
+      api: stubApi({
+        sendDmToEmail: async () => ({
+          state: "delivered" as const,
+          personUid: "prs_kai",
+        }),
+      }),
+      contacts: [
+        { personUid: "prs_kai", email: "kai@acme.test", displayName: "Kai" },
+      ],
+      onclose,
+      onpick,
+    });
+    await tick();
+    await typeEmail();
+    $<HTMLButtonElement>('[data-testid="chat-create-email-row"]')!.click();
+    await tick();
+    type($<HTMLTextAreaElement>('[data-testid="chat-create-email-body"]')!, "hey");
+    await tick();
+    press($('[role="dialog"]')!, "Enter", { metaKey: true });
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-email-result"]')).toBeTruthy();
+    });
+    const result = $('[data-testid="chat-create-email-result"]')!;
+    expect(result.getAttribute("data-state")).toBe("delivered");
+    expect(result.textContent).toContain("Delivered to kai@acme.test");
+
+    $<HTMLButtonElement>('[data-testid="chat-create-email-done"]')!.click();
+    expect(onpick).toHaveBeenCalledTimes(1);
+    expect(onpick.mock.calls[0][0]).toMatchObject({
+      kind: "dm",
+      personUid: "prs_kai",
+      title: "Kai",
+    });
+    expect(onclose).not.toHaveBeenCalled();
+  });
+
+  it("shows the server's refusal inline and lets the user try again", async () => {
+    const sendDmToEmail = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("[http-429] Daily invite cap reached"))
+      .mockResolvedValueOnce({ state: "connectionRequested" as const });
+    open({ api: stubApi({ sendDmToEmail }) });
+    await tick();
+    await typeEmail();
+    $<HTMLButtonElement>('[data-testid="chat-create-email-row"]')!.click();
+    await tick();
+    type($<HTMLTextAreaElement>('[data-testid="chat-create-email-body"]')!, "hey");
+    await tick();
+    $<HTMLButtonElement>('[data-testid="chat-create-email-send"]')!.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-email-error"]')).toBeTruthy();
+    });
+    const error = $('[data-testid="chat-create-email-error"]')!;
+    expect(error.getAttribute("role")).toBe("alert");
+    expect(error.textContent).toContain("Couldn't send: Daily invite cap reached");
+    expect(error.textContent).not.toContain("http-429");
+    // The draft survives the failure, and the button becomes the retry.
+    expect(
+      $<HTMLTextAreaElement>('[data-testid="chat-create-email-body"]')!.value,
+    ).toBe("hey");
+    const send = $<HTMLButtonElement>('[data-testid="chat-create-email-send"]')!;
+    expect(send.textContent).toContain("Try again");
+    send.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-email-result"]')).toBeTruthy();
+    });
+    expect(sendDmToEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it("Back and Escape return to the search with the address kept", async () => {
+    open({
+      api: stubApi({
+        sendDmToEmail: async () => ({ state: "connectionRequested" as const }),
+      }),
+    });
+    await tick();
+    await typeEmail();
+    $<HTMLButtonElement>('[data-testid="chat-create-email-row"]')!.click();
+    await tick();
+    $<HTMLButtonElement>('[data-testid="chat-create-back"]')!.click();
+    await tick();
+    expect($<HTMLInputElement>('[data-testid="chat-create-query"]')!.value).toBe(
+      "kai@acme.test",
+    );
+    await settleQuery();
+    $<HTMLButtonElement>('[data-testid="chat-create-email-row"]')!.click();
+    await tick();
+    press(window, "Escape");
+    await tick();
+    expect($('[data-testid="chat-create-query"]')).toBeTruthy();
+    expect($('[data-testid="chat-create-email-body"]')).toBeNull();
+  });
+});
