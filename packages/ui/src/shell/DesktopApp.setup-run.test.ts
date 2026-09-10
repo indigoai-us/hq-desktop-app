@@ -152,7 +152,8 @@ describe("DesktopApp native setup run wiring", () => {
     // The question itself is the agent's message, not repeated in the prompt.
     expect(prompt?.querySelector(".question-text")).toBeNull();
     expect(host.querySelector('[data-testid="agent-thinking-row"]')).toBeNull();
-    expect(host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]')?.placeholder).toContain("Setup Agent");
+    // With a question open the composer invites a typed answer (the CLI's "Other").
+    expect(host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]')?.placeholder).toBe("Type your answer…");
 
     // Typing in the normal composer answers it — nothing is posted to the channel.
     const composer = host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]')!;

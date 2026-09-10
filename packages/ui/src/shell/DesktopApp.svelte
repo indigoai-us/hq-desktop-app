@@ -1073,7 +1073,9 @@
 
   const composerPlaceholder = $derived(
     inSetupChannelWithAgent && setupAgent.listening
-      ? "Reply to Setup Agent…"
+      ? setupAgent.state?.question?.kind === "choice"
+        ? "Type your answer…"
+        : "Reply to Setup Agent…"
       : isAgentChannel && provisioning.state === "pending"
         ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
         : composerPlaceholderFor(selectedRow, headerTitle),
