@@ -305,6 +305,14 @@ async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), StageCommandFailure
     run_hq_output(args, hq_root).await.map(|_| ())
 }
 
+/// Run `hq <args>` in `hq_root` through the app's own CLI resolution (local
+/// binary or npx self-heal) with the app's child PATH, surfacing only the
+/// failure message. Shared with the Sessions setup self-heal, which has no
+/// use for the onboarding error category.
+pub(crate) async fn run_hq_plain(args: &[&str], hq_root: &Path) -> Result<(), String> {
+    run_hq(args, hq_root).await.map_err(|failure| failure.message)
+}
+
 async fn run_hq_json(
     args: &[&str],
     hq_root: &Path,

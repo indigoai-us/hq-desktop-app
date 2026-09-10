@@ -986,7 +986,7 @@ describe('probe memoization (preflight + catalog)', () => {
   it('runs the preflight probe once per window, not once per page mount', async () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'agent_session_preflight') {
-        return { hqRoot: '/hq', hooksReady: true, hooksError: null, claudeAvailable: true,
+        return { hqRoot: '/hq', hooksReady: true, hooksError: null, hqSetup: 'ready', claudeAvailable: true,
           claudeLoggedIn: true, codexAvailable: false, codexLoggedIn: false,
           grokAvailable: false, grokLoggedIn: false, companies: [] };
       }

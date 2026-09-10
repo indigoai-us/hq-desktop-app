@@ -102,6 +102,7 @@
     takeRailConversations,
     pickAutoOpenConversation,
     pickSettledBootConversation,
+    pickWelcomeFirstConversation,
     railRowScopeLabel,
     togglePin,
     type CompanyScope,
@@ -199,6 +200,11 @@
      */
     bootTimeoutMs?: number;
     /**
+     * Land on #welcome at boot even when live channels exist (setup has not
+     * been run on this machine yet). See `hasRunWelcomeSetup`.
+     */
+    welcomeFirst?: boolean;
+    /**
      * Phone-width shells keep this mounted while it is closed — it is what
      * loads the roster and falls back to #setup — and move it off screen
      * instead of unmounting it.
@@ -247,6 +253,7 @@
     oncreateagent = null,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    welcomeFirst = false,
     offscreen = false,
     onShellReady,
     projectHasPresence = () => false,
@@ -675,12 +682,52 @@
   const hasNonSetupRows = $derived(
     allRows.some((row) => !isSetupChannel(row.channelId)),
   );
+  /**
+   * The roster already names a company (created on the website or another
+   * machine). Its channel rows usually hydrate a beat after the roster, so
+   * the settled-boot fallback must not race them into #setup: give the rows
+   * one more bounded wait, and open the company's channel the moment it
+   * lands. Only after that wait does #setup win — and by then the shell
+   * renders it around the existing company, never "Create a company".
+   */
+  const hasRosterCompany = $derived(
+    (companies ?? []).some((company) => company.kind === "company"),
+  );
+  let companyRowsGraceElapsed = $state(false);
+  $effect(() => {
+    if (
+      selectedId ||
+      !bootAttempted ||
+      loading ||
+      !hasRosterCompany ||
+      hasNonSetupRows ||
+      companyRowsGraceElapsed
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      companyRowsGraceElapsed = true;
+      sidebarLog("auto-open-company-grace-elapsed", { waitedMs: bootTimeoutMs });
+    }, bootTimeoutMs);
+    return () => clearTimeout(timer);
+  });
   $effect(() => {
     if (selectedId) {
       autoOpenRequestedId = null;
       return;
     }
     if (autoOpenRequestedId) return;
+    // Until setup has been run on this machine, #welcome wins the boot pick:
+    // the person needs Run Setup before a company channel is useful.
+    if (welcomeFirst) {
+      const welcome = pickWelcomeFirstConversation(filteredRows, selectedId);
+      if (welcome) {
+        autoOpenRequestedId = welcome.id;
+        sidebarLog("auto-open-welcome-first", { id: welcome.id });
+        void openRow(welcome, undefined, true);
+        return;
+      }
+    }
     // Real conversations auto-open immediately. #setup exists from first
     // paint, so it must not win the empty-selection race against deep links
     // and rows that hydrate a beat later — but once the first fetch has
@@ -696,6 +743,7 @@
       return;
     }
     if (!bootAttempted || loading) return;
+    if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
     const fallback = pickSettledBootConversation(filteredRows, selectedId);
     if (!fallback) return;
     autoOpenRequestedId = fallback.id;
@@ -822,6 +870,20 @@
   function openCreate(): void {
     closeAllOverlays();
     createOpen = true;
+  }
+  /** The "+" button: a plain channel; the host resets the kind on its own opens. */
+  function openCreateFromButton(): void {
+    createKind = "channel";
+    openCreate();
+  }
+
+  /** What the create modal makes inside a company when opened by the host. */
+  let createKind = $state<"channel" | "project">("channel");
+
+  /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
+  export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
+    createKind = options.kind ?? "channel";
+    openCreate();
   }
 
   /** Close the create modal; optionally open the channel it just created. */
@@ -1867,7 +1929,7 @@
           : "New message or channel"}
         aria-haspopup="dialog"
         aria-expanded={createOpen}
-        onclick={openCreate}
+        onclick={openCreateFromButton}
       >
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path
@@ -2591,6 +2653,7 @@
       {oncreatecompany}
       {oncreateagent}
       {agentCompanies}
+      initialKind={createKind}
     />
   {/if}
 </aside>

@@ -83,6 +83,8 @@
   initialCompany={route.kind === 'new' ? route.company : route.kind === 'session' ? (route.company ?? null) : null}
   initialProject={route.kind === 'new' ? route.project : null}
   initialChannelId={route.kind === 'new' ? route.channelId : undefined}
+  initialPrompt={route.kind === 'new' ? (route.prompt ?? null) : null}
+  initialPrefill={route.kind === 'new' ? (route.prefill ?? null) : null}
   restorePath={restorePath === 'open' || restorePath === 'openHistory' ? restorePath : undefined}
   {restoreScroll}
   {draftKey}

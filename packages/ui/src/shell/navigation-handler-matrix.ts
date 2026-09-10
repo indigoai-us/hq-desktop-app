@@ -114,6 +114,7 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyPendingChannelOpen: "push",
   applyPendingConversation: "push",
   changeTenantCompany: "push",
+  openCompanyFromSetup: "push",
   applyChannelWake: "none",
   openAttachmentTray: "none",
   openChannelFile: "none",
@@ -226,7 +227,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "card-action-open-agent-channel",
     file: SHARED_SHELL_FILE,
-    needle: "requestChannelOpen(agentChannelId,",
+    needle: "requestChannelOpen(destination,",
     destinationKind: "channel",
     history: "push",
     host: "shared-shell",

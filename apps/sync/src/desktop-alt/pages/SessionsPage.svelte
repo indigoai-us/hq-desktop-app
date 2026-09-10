@@ -27,7 +27,9 @@
    * strip, drawer, transcript and composer read it, the cards call back into
    * it, and every `agent_session_*` invoke lives inside it.
    */
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
+  import { safeUnlisten } from '../../lib/listener-registry';
   import SessionListPanel from '../panels/SessionListPanel.svelte';
   import SessionComposer from '../../components/sessions/SessionComposer.svelte';
   import SessionTranscript from '../../components/sessions/SessionTranscript.svelte';
@@ -51,6 +53,8 @@
     readStartworkEnabled,
     rememberLastProject,
     rememberStartworkEnabled,
+    isSetupChat,
+    isSetupPrompt,
     startworkCommand,
     type ProjectEntry,
     type ProjectViewer,
@@ -134,6 +138,16 @@
     initialChannelId?: string;
     /** Durable metadata supplied by a nested project-session route. */
     initialHistorySession?: AgentSession | null;
+    /**
+     * Text to send on the person's behalf the moment the session can start
+     * (#welcome's Run Setup carries `/setup`). Seeded into the composer at
+     * once so it is visible; sent automatically once the provider is
+     * connected, HQ is set up on this Mac, and — for a slash command — the
+     * CLI's own catalog lists it.
+     */
+    initialPrompt?: string | null;
+    /** Seeded into the composer and left for the person to send; nothing is sent for them. */
+    initialPrefill?: string | null;
     /** Restore via open vs openHistory. Absent on new drafts (nothing to restore). */
     restorePath?: 'open' | 'openHistory';
     /** Unique unsent-draft identity for composer persistence. */
@@ -149,6 +163,8 @@
     initialProject = null,
     initialChannelId,
     initialHistorySession = null,
+    initialPrompt = null,
+    initialPrefill = null,
     restorePath,
     draftKey = null,
     restoreScroll = null,
@@ -165,6 +181,22 @@
   let drawerOpen = $state(false);
   /** Guards the once-per-page preflight. */
   let preflightRequested = $state(false);
+
+  /**
+   * HQ setup self-heal. A brand-new machine can reach Sessions with the HQ
+   * root half-made (the sync runner materialized `.claude/skills` and
+   * `companies/`, but the template never landed because the install wizard
+   * did not finish). Rather than tell the person to run a command, the page
+   * finishes setup itself: one automatic attempt per visit, then a Retry.
+   */
+  let setupRepair = $state<'idle' | 'running' | 'failed' | 'done'>('idle');
+  let setupProgress = $state('');
+  /** Plain-language reason from the backend; the technical one is in the app log. */
+  let setupFailure = $state('');
+  let setupAutoAttempted = false;
+  let unlistenSetupProgress: (() => void) | null = null;
+  /** The `content:progress` handle the backend installs under for this page. */
+  const SETUP_PROGRESS_HANDLE = 'sessions-setup';
   /** The tool the loaded catalog belongs to — the catalog is per CLI. */
   let catalogTool = $state<SessionToolId | null>(null);
   /**
@@ -357,11 +389,21 @@
   // unmounts so Back can restore without tearing the agent down.
   $effect(() => {
     const next = sessionId ?? null;
-    if (next === routedId) return;
+    if (next === routedId) {
+      // Mounting straight onto a fresh chat: still let go of whatever
+      // session another surface left active.
+      // (untracked: the store's active id must not re-run this effect.)
+      if (next === null) untrack(() => liveSessionStore.deselect());
+      return;
+    }
     routedId = next;
     openedId = next;
     sessionUnavailable = false;
-    if (!next) return;
+    // A fresh chat shows no session — not one another surface left active.
+    if (!next) {
+      untrack(() => liveSessionStore.deselect());
+      return;
+    }
     void restoreRoutedSession(next);
   });
 
@@ -380,6 +422,59 @@
 
   onDestroy(() => {
     routedId = null;
+    unlistenSetupProgress?.();
+    unlistenSetupProgress = null;
+  });
+
+  /** True while the HQ root on this machine cannot host a session yet. */
+  const setupNeeded = $derived(
+    Boolean(preflight) && (preflight?.hqSetup ? preflight.hqSetup !== 'ready' : !preflight?.hooksReady),
+  );
+
+  interface SetupProgressPayload {
+    handle?: string;
+    phase?: string;
+    percent?: number | null;
+    message?: string;
+  }
+
+  async function runSetupRepair() {
+    if (setupRepair === 'running') return;
+    setupRepair = 'running';
+    setupProgress = '';
+    setupFailure = '';
+    try {
+      // Progress is a nicety: a bridge without events must not fail the repair.
+      try {
+        unlistenSetupProgress?.();
+        unlistenSetupProgress = safeUnlisten(
+          await listen<SetupProgressPayload>('content:progress', (event) => {
+            const payload = event.payload;
+            if (payload?.handle !== SETUP_PROGRESS_HANDLE) return;
+            const words = payload.message ?? '';
+            setupProgress =
+              typeof payload.percent === 'number' ? `${words} ${Math.round(payload.percent)}%`.trim() : words;
+          }),
+        );
+      } catch {
+        unlistenSetupProgress = null;
+      }
+      preflight = await liveSessionStore.repairHqSetup();
+      setupRepair = 'done';
+    } catch (err) {
+      setupFailure = err instanceof Error ? err.message : String(err);
+      setupRepair = 'failed';
+    } finally {
+      unlistenSetupProgress?.();
+      unlistenSetupProgress = null;
+    }
+  }
+
+  /** Setup self-heal: one automatic attempt per page visit; Retry is by hand. */
+  $effect(() => {
+    if (!setupNeeded || setupAutoAttempted) return;
+    setupAutoAttempted = true;
+    void runSetupRepair();
   });
 
   /** Preflight: wanted once per page, best-effort. */
@@ -689,8 +784,12 @@
 
   /** The pills describe a different session than the live one — say so. */
   const newSessionPending = $derived(Boolean(sessionId) && pillsDirty);
+  /** A setup chat (`/setup` first) is never oriented with /startwork. */
+  const setupChat = $derived(
+    isSetupPrompt((initialPrompt ?? '').trim()) || isSetupChat(liveSessionStore.events),
+  );
   const orientationCommand = $derived(
-    (!sessionId || newSessionPending) && startworkEnabled
+    (!sessionId || newSessionPending) && startworkEnabled && !setupChat
       ? startworkCommand({ company, project })
       : null,
   );
@@ -746,9 +845,10 @@
   );
 
   /**
-   * The ONE blocking problem, with the exact fix. Each of these fails for a
-   * different reason, so each gets its own remedy — a user told "run `claude
-   * login` in a terminal" can act; one told "preflight failed" cannot.
+   * The ONE blocking problem, in plain words. Each of these fails for a
+   * different reason, so each names its own next step — and every next step
+   * is something on this page (the Connect buttons, the setup Retry), never a
+   * command to type. The technical reason stays in the app's support log.
    */
   const blocker = $derived.by(() => {
     if (preflightLoading || !preflight) return '';
@@ -770,12 +870,8 @@
     if (tool === 'claude' && !preflight.claudeLoggedIn) {
       return 'Claude Code is not signed in. Connect it below. If the browser does not open, run `claude login` in a terminal.';
     }
-    if (!preflight.hooksReady) {
-      return (
-        preflight.hooksError ??
-        'HQ session hooks are not ready, so a session would run unguarded.'
-      );
-    }
+    // HQ setup on this machine (`setupNeeded`) is the setup card's job:
+    // progress while it runs, Retry when it could not — not a notice here.
     return '';
   });
 
@@ -794,9 +890,15 @@
     chooseTool(provider);
     catalogRefresh += 1;
   }
-  const notice = $derived(needsProvider ? '' : blocker || actionError || liveSessionStore.error);
+  const notice = $derived(
+    needsProvider
+      ? ''
+      : blocker ||
+          actionError ||
+          liveSessionStore.error,
+  );
   const ended = $derived(phase === 'ended' || transcript.ended);
-  const sendDisabled = $derived(!preflight || Boolean(blocker) || starting || ended);
+  const sendDisabled = $derived(!preflight || Boolean(blocker) || setupNeeded || starting || ended);
 
   /**
    * "Hand off" is a `/handoff` turn the strip can send for you. It is offered
@@ -893,7 +995,51 @@
 
   let pageEl = $state<HTMLDivElement | null>(null);
   /** The composer, so the transcript's "Choose a model" can open its menu. */
-  let composer = $state<{ openModelMenu: () => void; reset: () => void } | null>(null);
+  let composer = $state<{ openModelMenu: () => void; reset: () => void; setDraft: (text: string) => void } | null>(null);
+
+  // --- a route-carried prompt (#welcome's Run Setup → `/setup`) ---------------
+  /** Seeded into the composer once, so the person sees what is about to run. */
+  let promptSeeded = $state(false);
+  /** Sent (or given up on) once; never twice for one page visit. */
+  let promptSent = $state(false);
+  const routedPrompt = $derived((initialPrompt ?? '').trim());
+  /** `/setup` → `setup`; empty for plain text. */
+  const routedCommandName = $derived(
+    routedPrompt.startsWith('/') ? routedPrompt.slice(1).split(/\s+/)[0] ?? '' : '',
+  );
+  /**
+   * The CLI's catalog has landed and does NOT list the routed command. For
+   * `/setup` that means the HQ skills are not where Claude Code / Codex reads
+   * them — the setup repair is what installs them, so offer it.
+   */
+  const routedCommandMissing = $derived(
+    Boolean(routedCommandName) &&
+      catalogLoaded &&
+      !setupNeeded &&
+      !probeCommands.some((command) => command.name === routedCommandName),
+  );
+  $effect(() => {
+    if (promptSeeded || !routedPrompt || !composer) return;
+    promptSeeded = true;
+    composer.setDraft(routedPrompt);
+  });
+  // --- a route-carried prefill (#welcome's Continue in HQ Sessions → `/startwork …`) ---
+  // Same seeding, but it stays in the composer: the person presses send.
+  let prefillSeeded = $state(false);
+  const routedPrefill = $derived((initialPrefill ?? '').trim());
+  $effect(() => {
+    if (prefillSeeded || !routedPrefill || !composer) return;
+    prefillSeeded = true;
+    composer.setDraft(routedPrefill);
+  });
+  $effect(() => {
+    if (promptSent || !routedPrompt || sessionId) return;
+    if (sendDisabled || !preflight) return;
+    if (routedCommandName && (!catalogLoaded || routedCommandMissing)) return;
+    promptSent = true;
+    composer?.reset();
+    void handleSend(routedPrompt, []);
+  });
 
   /**
    * ⌘⇧H hands off. The listener lives on the window only while this page is
@@ -1106,7 +1252,7 @@
       // Orientation, selected skill and natural-language prompt are one
       // atomic first message. The transcript splits context from the visible
       // prompt only as presentation; the CLI receives one send.
-      const first = planFirstSend(wire, { company, project }, startworkEnabled)[0]!;
+      const first = planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)[0]!;
       const firstMeta: UserTurnMeta = first.label
         ? { ...meta, hidden: false, contextLabel: first.label, displayText: first.displayText }
         : meta;
@@ -1404,6 +1550,24 @@
   />
 
   <div class="composer-dock">
+    {#if setupRepair === 'running'}
+      <div class="setup-notice" role="status" data-testid="session-setup-progress">
+        <span>Finishing HQ setup on this Mac…</span>
+        {#if setupProgress}<span class="setup-progress">{setupProgress}</span>{/if}
+      </div>
+    {:else if setupNeeded && setupRepair !== 'idle'}
+      <div class="setup-notice failed" role="alert" data-testid="session-setup-failed">
+        <span>Couldn't finish HQ setup.{setupFailure ? ` ${setupFailure}` : ''}</span>
+        <button type="button" class="setup-retry" data-testid="session-setup-retry"
+          onclick={() => void runSetupRepair()}>Retry</button>
+      </div>
+    {:else if routedCommandMissing && !promptSent}
+      <div class="setup-notice failed" role="alert" data-testid="session-command-missing">
+        <span>HQ's /{routedCommandName} command is not available in this session yet.</span>
+        <button type="button" class="setup-retry" data-testid="session-setup-retry"
+          onclick={() => { void runSetupRepair().then(() => { catalogRefresh += 1; }); }}>Retry setup</button>
+      </div>
+    {/if}
     {#if liveSessionStore.sharingNotice}
       <div class="sharing-notice" role="status">{liveSessionStore.sharingNotice}</div>
     {:else if !sessionId && sharingChannelId}
@@ -1423,7 +1587,8 @@
       {projectsLoading}
       {projectsError}
       {viewer}
-      {startworkEnabled}
+      startworkEnabled={startworkEnabled && !setupChat}
+      startworkLocked={setupChat}
       {orientationCommand}
       {catalog}
       {catalogLoading}
@@ -1495,6 +1660,37 @@
 
   /* One quiet line above the composer, aligned to its column. */
   .sharing-notice { padding: 8px 12px; font-size: 13px; color: var(--session-muted, #999); }
+
+  /* HQ setup self-heal: progress while it runs, Retry when it could not. */
+  .setup-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--v4-space-2);
+    margin: 0 0 var(--v4-space-2);
+    padding: 6px 10px;
+    border-radius: var(--v4-radius-button);
+    background: color-mix(in srgb, var(--v4-text-3, currentColor) 8%, transparent);
+    color: var(--v4-text-2);
+    font-size: var(--type-metadata);
+    line-height: 1.5;
+  }
+  .setup-notice.failed {
+    background: color-mix(in srgb, var(--v4-warn, currentColor) 10%, transparent);
+  }
+  .setup-progress { color: var(--v4-text-3); }
+  .setup-retry {
+    margin-left: auto;
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-pill, 999px);
+    background: transparent;
+    color: var(--v4-text-1);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .setup-retry:hover { background: var(--v4-active-row); }
   .checkpoint-notice {
     display: flex;
     align-items: center;

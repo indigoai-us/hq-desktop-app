@@ -1202,6 +1202,25 @@ export function pickAutoOpenConversation(
 }
 
 /**
+ * Boot pick while #welcome still owns first landing (setup not yet run on
+ * this machine): the synthetic #welcome row wins over every live channel so
+ * a new person sees Run Setup, not a company channel with nothing connected.
+ * Returns null when there is no #welcome row (or a selection already exists)
+ * so callers fall through to the normal auto-open.
+ */
+export function pickWelcomeFirstConversation(
+  rows: readonly ConversationRow[],
+  selectedId?: string | null,
+): ConversationRow | null {
+  if ((selectedId ?? "").trim()) return null;
+  for (const row of rows) {
+    if (row.browseOnly) continue;
+    if (isSetupChannel(row.channelId)) return row;
+  }
+  return null;
+}
+
+/**
  * Conversation to open once first-paint fetches have settled (or timed out).
  * Real rows still win. If the rail is only the synthetic #setup channel,
  * open that rather than leaving the conversation pane on an infinite skeleton.

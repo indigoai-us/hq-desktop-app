@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   filterProjects,
+  isSetupChat,
   forgetLastProject,
   isMine,
   isStartworkTurn,
@@ -112,6 +113,19 @@ describe('planFirstSend — the exact atomic first message', () => {
     expect(planFirstSend('go', { company: null, project: null }, true)).toEqual([
       { text: 'go', hidden: false },
     ]);
+  });
+
+  it.each(['/setup', '  /setup', '/setup hqonboardingtest', '/setup\nHelp me connect my company'])('runs explicit setup without a premature work orientation: %s', (text) => {
+    expect(planFirstSend(text, { company: 'hqonboardingtest', project: null }, true)).toEqual([
+      { text, hidden: false },
+    ]);
+  });
+
+  it('does not confuse another command or prose with setup', () => {
+    for (const text of ['/setup-tools', 'Explain /setup']) {
+      expect(planFirstSend(text, { company: 'hqonboardingtest', project: null }, true)[0].text)
+        .toBe(`/startwork hqonboardingtest\n\n${text}`);
+    }
   });
 });
 
@@ -316,5 +330,17 @@ describe('the project picker\'s decisions', () => {
     expect(storyPercent({ storyCounts: { total: 4, done: 1 } })).toBe(25);
     expect(storyPercent({ storyCounts: { total: 0, done: 0 } })).toBe(0);
     expect(storyPercent({ storyCounts: { total: 3, done: 3 } })).toBe(100);
+  });
+});
+
+describe('isSetupChat', () => {
+  it('is a setup chat when the first operator turn was /setup', () => {
+    expect(isSetupChat([{ kind: 'started' }, { kind: 'userMessage', text: '/setup' }])).toBe(true);
+    expect(isSetupChat([{ kind: 'userMessage', text: '/setup hqtestco' }])).toBe(true);
+  });
+  it('is not a setup chat for other first turns or an empty transcript', () => {
+    expect(isSetupChat([{ kind: 'userMessage', text: 'hello' }, { kind: 'userMessage', text: '/setup' }])).toBe(false);
+    expect(isSetupChat([{ kind: 'userMessage', text: '/setupx' }])).toBe(false);
+    expect(isSetupChat([])).toBe(false);
   });
 });

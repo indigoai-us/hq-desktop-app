@@ -67,6 +67,14 @@ pub fn detect_ai_tools() -> AiTools {
         tools.codex_cli = true;
         tools.any = true;
     }
+    // Same for Claude: the desktop app manages a verified Claude Code CLI under
+    // Application Support and never adds it to PATH. Sessions spawn that
+    // binary directly (see agent_session::claude::claude_program), so it is an
+    // installed CLI in every sense that matters to the user.
+    if !tools.claude_cli && crate::commands::launch::bundled_claude_bin().is_some() {
+        tools.claude_cli = true;
+        tools.any = true;
+    }
     if let Some(home) = dirs::home_dir() {
         tools.claude_last_used_ms = last_used_ms_in(&cli_config_dir_in(&home, "claude"));
         tools.codex_last_used_ms = last_used_ms_in(&cli_config_dir_in(&home, "codex"));

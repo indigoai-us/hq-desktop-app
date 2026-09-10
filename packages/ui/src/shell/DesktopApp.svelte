@@ -45,7 +45,24 @@
     isAgentUid as isAgentTaskUid,
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
-  import { isSetupChannel, SETUP_CHANNEL_ID } from "../chat/setup-channel.js";
+  import SetupRunCard from "../chat/SetupRunCard.svelte";
+  import SetupConnectStep from "../chat/SetupConnectStep.svelte";
+  import SetupFinale from "../chat/SetupFinale.svelte";
+  import { SETUP_FAILURE_COPY } from "../chat/setup-run";
+  import type { SetupRunApi } from "../chat/setup-run.js";
+  import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
+  import { createLaunchActions } from "../settings/launch-actions";
+  import {
+    hasRunWelcomeSetup,
+    isSetupChannel,
+    markWelcomeSetupRun,
+    SETUP_CHANNEL_ID,
+    setupCompanies,
+    setupCompanyActionLabel,
+    setupRosterLoading,
+    withoutCompaniesSummaryCards,
+    withoutSeededCreateCompanyCards,
+  } from "../chat/setup-channel.js";
   import {
     findLifecycleCardElement,
     runAddAgentEntry,
@@ -349,6 +366,7 @@
     type SelfIdentity,
   } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
+  import type { RosterStatus } from "../identity/roster-refresh.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
   import "../chat/messaging/messaging-tokens.css";
@@ -384,6 +402,14 @@
     wakes?: ChatWakeBus | null;
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
+    /**
+     * Where the host is in loading `companies` for this session. #setup
+     * hides the seeded "Create a company" card and the create hero copy
+     * until the roster has loaded once (`ready` | `failed`). Omitted = ready.
+     */
+    rosterStatus?: RosterStatus | null;
+    /** Re-run the host's roster fetch after `rosterStatus === "failed"`. */
+    onretryroster?: () => void;
     /**
      * Verified signed-in principal (host-supplied: web = Cognito session,
      * desktop = its auth source). Drives "you" tagging + admin gating in the
@@ -506,6 +532,22 @@
         detail?: string;
         /** Optional host-owned create action in the window header. */
         createAction?: { label: string; param: () => string | null };
+        /**
+         * Optional host-owned "Run Setup" destination for #welcome: a fresh
+         * session whose param carries the setup prompt so the page can send
+         * it as soon as the provider is ready. Falls back to `createAction`.
+         */
+        setupAction?: { label: string; param: () => string | null };
+        /**
+         * Optional host guided-run API. When present, #welcome's Run Setup
+         * runs `/setup` natively inside the hero (stepper + question cards)
+         * and only falls back to `setupAction` when the host's preflight says
+         * the Sessions page must go first. "Show details" opens the session
+         * on this page with its id as the param.
+         */
+        setupRun?: SetupRunApi;
+        /** After setup: a fresh session with `/startwork <company>` as its first turn. */
+        startworkAction?: { label: string; param: (company: string | null) => string | null };
         component: Component<{
           param?: string | null;
           restoreScroll?: NavigationScrollState | null;
@@ -537,6 +579,8 @@
     oncardaction,
     wakes = null,
     companies = null,
+    rosterStatus = null,
+    onretryroster,
     self = null,
     tenantAccountId = null,
     tenantGeneration = 0,
@@ -1001,13 +1045,96 @@
   );
 
   /** Real ChannelView composer placeholder (verbatim from the desktop source). */
+  /**
+   * The Setup Agent: the guided `/setup` run as a conversation in #welcome.
+   * Its turns stream into the channel timeline as messages, the composer
+   * replies to it while it is listening, and the prompt under the messages
+   * carries choices / cards / the finish buttons. The hero shows its stepper.
+   */
+  // Starting is not finishing: a relaunch mid-run must still land on
+  // #welcome, so only the finish graduates welcome-first boot.
+  const setupAgent = new SetupAgent(extraPages?.sessions?.setupRun ?? null, {
+    onfinished: recordWelcomeSetupRun,
+  });
+  $effect(() => () => setupAgent.dispose());
+  const inSetupChannelWithAgent = $derived(
+    Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupAgent.active),
+  );
+  /** First-seen wall clock per session: synthetic turns need stable, ordered timestamps. */
+  const setupAgentClock = new Map<string, number>();
+  const setupAgentWires = $derived.by((): ConversationMessageWire[] => {
+    const sessionId = setupAgent.sessionId;
+    if (!setupAgent.active || !sessionId) return [];
+    let base = setupAgentClock.get(sessionId);
+    if (base === undefined) {
+      base = Date.now();
+      setupAgentClock.set(sessionId, base);
+    }
+    const start = base;
+    return setupAgent.transcript.map((turn) => ({
+      eventId: turn.id,
+      fromPersonUid: turn.role === "agent" ? SETUP_AGENT_UID : (self?.uid ?? null),
+      fromDisplayName: turn.role === "agent" ? SETUP_AGENT_NAME : (self?.displayName ?? "You"),
+      body: turn.text,
+      createdAt: new Date(start + turn.seq * 1000).toISOString(),
+      direction: turn.role === "agent" ? "in" : "out",
+      replyCount: 0,
+    }));
+  });
+  /** Between the person's turns the agent shows as "thinking", like any other agent. */
+  let setupThinkingSince = 0;
+  const setupThinking = $derived.by((): ThinkingEntry | null => {
+    if (!inSetupChannelWithAgent || setupAgent.mode !== "live") return null;
+    const state = setupAgent.state;
+    const phase = setupAgent.snapshot?.phase;
+    // Thinking is only while the engine is actually working on a turn — not
+    // while it waits for the person, and not once it has finished or stopped.
+    // The reported phase can lag or be missed; the event stream is the tiebreak.
+    const working = phase === "working" || phase === "starting" || (phase !== "needsYou" && phase !== "ended" && state?.inFlight);
+    if (!state || state.done || state.ended || state.question || !working) {
+      setupThinkingSince = 0;
+      return null;
+    }
+    if (!setupThinkingSince) setupThinkingSince = Date.now();
+    return { agentUid: SETUP_AGENT_UID, agentName: SETUP_AGENT_NAME, startedAt: setupThinkingSince, phase: "thinking" };
+  });
+  let setupLaunchError = $state<string | null>(null);
+  /** The company `/startwork` orients on after setup: the first company in the roster. */
+  const startworkCompany = $derived(setupCompanies(companies).find((c) => c.kind === "company")?.slug ?? null);
+  const startworkPrompt = $derived(startworkCompany ? `/startwork ${startworkCompany}` : "/startwork");
+  /** The finish buttons: open the HQ folder in a coding tool with `/startwork` ready to go. */
+  async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
+    setupLaunchError = null;
+    const res = await adapter.settings.getSetupStatus();
+    const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
+    if (!folder) {
+      setupLaunchError = "HQ folder is not ready yet.";
+      return;
+    }
+    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt: startworkPrompt });
+    const error = key === "claude" ? await actions.launchClaude() : await actions.launchCodex();
+    if (error) setupLaunchError = error;
+  }
+  /** The run has finished (marker or the person's own "I'm all set"): the finale replaces the prompt. */
+  const setupAgentDone = $derived(
+    inSetupChannelWithAgent && (setupAgent.mode === "done" || Boolean(setupAgent.state?.done)),
+  );
+  /** Once setup is done the composer rests; the finale carries every next step. */
+  const composerDisabled = $derived(setupAgentDone);
+  const SETUP_DONE_PLACEHOLDER = "Setup is complete — pick a next step above.";
   const composerPlaceholder = $derived(
-    isAgentChannel && provisioning.state === "pending"
-      ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
-      : composerPlaceholderFor(selectedRow, headerTitle),
+    setupAgentDone
+      ? SETUP_DONE_PLACEHOLDER
+      : inSetupChannelWithAgent && setupAgent.listening
+      ? setupAgent.state?.question?.kind === "choice"
+        ? "Type your answer…"
+        : "Reply to Setup Agent…"
+      : isAgentChannel && provisioning.state === "pending"
+        ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
+        : composerPlaceholderFor(selectedRow, headerTitle),
   );
   const composerLocked = $derived(
-    isAgentChannel && provisioning.state === "pending",
+    composerDisabled || (isAgentChannel && provisioning.state === "pending"),
   );
   const agentChannelUid = $derived(
     selectedRow?.members?.find((m) => m.personUid.startsWith("agt_"))
@@ -1222,6 +1349,7 @@
   async function applyFetchedTimeline(
     row: ConversationRow,
     raw: unknown | null,
+    pendingCardId?: string,
   ): Promise<void> {
     // Apply whenever this row is still selected. Do not require matching
     // timelineSeq — MQTT catch-up / a re-run of the hydrate effect used to
@@ -1231,7 +1359,18 @@
     timelineHydrating = false;
     if (raw == null) return;
     historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
-    const incoming = messagesForDisplay(raw);
+    let incoming = messagesForDisplay(raw);
+    // An immediate readback can lag the accepted mutation. Preserve its
+    // pending receipt over a stale open card, but accept any newer state.
+    if (pendingCardId && incoming.some((message) => {
+      const envelope = message.systemEvent;
+      return !!envelope && typeof envelope === "object" &&
+        "type" in envelope && envelope.type === "lifecycle_card" &&
+        "cardId" in envelope && envelope.cardId === pendingCardId &&
+        "state" in envelope && envelope.state === "open";
+    })) {
+      incoming = patchLifecycleCardState(incoming, pendingCardId, { state: "pending", reason: null });
+    }
     commitTimeline(row, incoming);
     clearThinkingFromIncoming(incoming);
   }
@@ -1428,12 +1567,52 @@
     void loadProjectActivity(row);
   });
 
+  // Diagnostic: what the setup channel is showing and why. Logged only when
+  // the picture changes, so the log is not spammed on every timeline poll.
+  let lastSetupStateLog = "";
+  $effect(() => {
+    const hqLog = (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog;
+    if (!hqLog || !selectedRow || !isSetupChannel(selectedRow.channelId)) return;
+    const snapshot = JSON.stringify({
+        selected: selectedRow?.channelId ?? null,
+        isSetup: selectedRow ? isSetupChannel(selectedRow.channelId) : null,
+        companies: (companies ?? []).map((c) => `${c.kind}:${c.slug}:${c.state}`),
+        rosterCompanies: rosterCompanies.map((c) => c.slug),
+        rosterStatus: rosterStatus ?? null,
+        hasRosterCompany,
+        createCompanyRequested,
+        timeline: timeline.length,
+        shown: timelineWithActivity.length,
+        kinds: timeline.map((m) => {
+          const ev = (m as { systemEvent?: { type?: string; kind?: string } }).systemEvent;
+          return ev ? `${ev.type}/${ev.kind}` : "msg";
+        }),
+      });
+    if (snapshot === lastSetupStateLog) return;
+    lastSetupStateLog = snapshot;
+    hqLog("setup-state", snapshot);
+  });
+
   /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
-  const timelineWithActivity = $derived.by(() =>
-    projectActivityRows.length > 0
-      ? mergeActivityIntoTimeline(timeline, projectActivityRows)
-      : timeline,
-  );
+  const timelineWithActivity = $derived.by(() => {
+    const merged =
+      projectActivityRows.length > 0
+        ? mergeActivityIntoTimeline(timeline, projectActivityRows)
+        : timeline;
+    if (!selectedRow || !isSetupChannel(selectedRow.channelId)) return merged;
+    // #welcome must not lead with "Create a company" for an account whose
+    // roster already holds one (created on the website / another machine).
+    const welcome = withoutCompaniesSummaryCards(
+      withoutSeededCreateCompanyCards(merged, {
+        hasCompany: hasRosterCompany,
+        createRequested: createCompanyRequested,
+        rosterLoading: setupRosterLoading(companies, rosterStatus),
+      }),
+    );
+    // The Setup Agent's turns are local to this Mac: they render in the
+    // channel but are never posted to it.
+    return setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
+  });
 
   /**
    * A project channel with no chat AND no work-mesh events is empty of
@@ -2284,6 +2463,8 @@
         agentChannelId:
           typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
         agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
+        companyChannelId: typeof raw?.companyChannelId === "string" ? raw.companyChannelId : undefined,
+        companyUid: typeof raw?.companyUid === "string" ? raw.companyUid : undefined,
         focusCardId:
           typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
         // Entry points: the summary card's create_company action answers with
@@ -2434,11 +2615,72 @@
     typeof adapter.messaging.runCardAction === "function",
   );
 
-  /** Sidebar / switcher "New company": summary card action, then #setup. */
+  /**
+   * Companies the roster already knows about, whatever their sync state. Any
+   * of them means the account is NOT a blank slate: #welcome leads with that
+   * company and hides the seeded create_company card.
+   */
+  const rosterCompanies = $derived(setupCompanies(companies));
+  /**
+   * Boot lands on #welcome until Run Setup has been used on this machine
+   * (persisted; see `hasRunWelcomeSetup`). Flips in-session the moment the
+   * person starts setup so a later re-open goes to the company channel.
+   */
+  let welcomeSetupRun = $state(hasRunWelcomeSetup());
+  /**
+   * An explicit conversation deep link (`?channel=` / `?person=`) is a
+   * stronger intent than first landing: it must never be swallowed by the
+   * welcome-first boot pick.
+   */
+  const bootDeepLink = conversationDeepLinkFromLocation();
+  const hasBootDeepLink = Boolean(
+    bootDeepLink.channelId?.trim() || bootDeepLink.personUid?.trim(),
+  );
+  function recordWelcomeSetupRun(): void {
+    markWelcomeSetupRun();
+    welcomeSetupRun = true;
+  }
+  const hasRosterCompany = $derived(rosterCompanies.length > 0);
+  /** The finale's "Open <Company>" button: the roster's first company, or nothing. */
+  const finaleCompany = $derived.by(() => {
+    const company = rosterCompanies[0];
+    if (!company) return null;
+    return { label: setupCompanyActionLabel(company), onopen: () => openCompanyFromSetup(company) };
+  });
+  /** The user explicitly asked for another company this session. */
+  let createCompanyRequested = $state(false);
+
+  /** Sidebar / switcher / #welcome "New company": summary card action, then #setup. */
   async function createCompanyEntry(): Promise<EntryPointResult> {
-    const result = await runCreateCompanyEntry(conversationApi);
+    const result = await runCreateCompanyEntry(conversationApi, {
+      hasCompanies: hasRosterCompany,
+    });
+    createCompanyRequested = result.ok;
     if (result.ok) navigateToEntryTarget(result.target, null);
     return result;
+  }
+
+  /**
+   * #welcome "Open <Company>" / "Continue setup for <Company>": select the
+   * company's own channel when the rail already has it, otherwise switch the
+   * sidebar into that company's scope so its rows hydrate and auto-open.
+   */
+  function openCompanyFromSetup(company: Workspace): void {
+    const uid = company.cloudUid?.trim() ?? "";
+    const row = uid
+      ? railRows.find(
+          (candidate) =>
+            candidate.kind === "channel" &&
+            !candidate.browseOnly &&
+            candidate.channelScope === "company" &&
+            candidate.companyUid === uid,
+        )
+      : undefined;
+    if (row) {
+      handleSelect(row);
+      return;
+    }
+    if (uid) changeTenantCompany(uid);
   }
 
   /** Sidebar / header "New agent": Team tab action, then the company channel. */
@@ -2490,7 +2732,7 @@
 
   const cardActionKeys: CardActionIdempotencyStore = new Map();
 
-  function applyCardActionFailure(cardId: string, message: string): void {
+  function applyCardActionFailure(cardId: string, message: string, values?: Record<string, string>): void {
     const row = selectedRow;
     if (!row) return;
     const current =
@@ -2500,8 +2742,9 @@
     commitTimeline(
       row,
       patchLifecycleCardState(current, cardId, {
-        state: "blocked",
+        state: /timed? out|timeout|network|connection|unavailable|fetch failed|could not reach|\b50[234]\b/i.test(message) ? "open" : "blocked",
         reason: message,
+        values,
       }),
     );
   }
@@ -2597,22 +2840,33 @@
   }
 
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
+    const actionRow = selectedRow;
     oncardaction?.(event);
     if (typeof adapter.messaging.runCardAction !== "function") return;
     const result = await submitLifecycleCardAction({
       event,
       store: cardActionKeys,
       run: conversationApi.runCardAction,
-      onFailure: applyCardActionFailure,
+      onFailure: (cardId, message) => applyCardActionFailure(cardId, message, event.values),
     });
-    const agentChannelId =
-      result && typeof result.agentChannelId === "string"
-        ? result.agentChannelId.trim()
-        : "";
-    if (agentChannelId.startsWith("chn_")) {
-      requestChannelOpen(agentChannelId, {
-        title: headerTitle,
-        companyUid: selectedRow?.companyUid ?? null,
+    // The HTTP response settles this interaction; MQTT is supplementary.
+    // Otherwise a missed lifecycle wake leaves localPending stuck forever.
+    if (result && actionRow && selectedRow?.id === actionRow.id) {
+      const state = result.state;
+      if (state === "open" || state === "pending" || state === "done" || state === "skipped" || state === "blocked") {
+        commitTimeline(actionRow, patchLifecycleCardState(liveTimeline, event.cardId, { state, reason: null }));
+      }
+      // Fetch newly created steps even when no live event arrives. Failure
+      // must not turn an already-saved choice into a failed mutation.
+      void fetchTimelineRaw(actionRow)
+        .then((raw) => applyFetchedTimeline(actionRow, raw, state === "pending" ? event.cardId : undefined))
+        .catch(() => {});
+    }
+    const destination = result?.companyChannelId?.trim() || result?.agentChannelId?.trim();
+    if (destination?.startsWith("chn_")) {
+      requestChannelOpen(destination, {
+        title: result?.companyChannelId ? "Company channel" : headerTitle,
+        companyUid: result?.companyUid ?? selectedRow?.companyUid ?? null,
       });
       return;
     }
@@ -2979,6 +3233,18 @@
     cancelScrollRestore = null;
   }
 
+  /**
+   * The one live session that is legitimately company-less: #welcome's
+   * native setup run, which exists before the company it creates. "Open setup
+   * chat" lands on it by bare id while the run is in flight; it needs no
+   * company key because this app started it for this account. Everything
+   * else on the Sessions extra keeps needing its key.
+   */
+  function isSetupRunSessionParam(param: string | null | undefined): boolean {
+    const id = setupAgent.sessionId?.trim() ?? "";
+    return Boolean(id) && setupAgent.active && (param?.trim() ?? "") === id;
+  }
+
   function companyAccess(
     companyKey: string | null | undefined,
   ): "ok" | "unknown" | "denied" {
@@ -3066,7 +3332,8 @@
       if (
         destination.page === "sessions" &&
         sessionExtraRequiresCompany(destination.param) &&
-        !extraCompany
+        !extraCompany &&
+        !isSetupRunSessionParam(destination.param)
       ) {
         if (companies == null) {
           return {
@@ -3411,7 +3678,8 @@
       shownExtra &&
         shownExtra.page === "sessions" &&
         sessionExtraRequiresCompany(shownExtra.param) &&
-        !shownKey,
+        !shownKey &&
+        !isSetupRunSessionParam(shownExtra.param),
     );
     if (!extraPruned && !lostCompany && !extraUnscoped) return;
     if (
@@ -3953,6 +4221,12 @@
     const row = selectedRow;
     if (!row || (!body.trim() && files.length === 0)) {
       throw new Error("Nothing to send");
+    }
+    // While the Setup Agent is listening, the composer is its reply box.
+    if (isSetupChannel(row.channelId) && setupAgent.listening && files.length === 0) {
+      await setupAgent.reply(body.trim());
+      if (setupAgent.error) throw new Error(setupAgent.error);
+      return;
     }
     try {
       let attachments:
@@ -4754,6 +5028,7 @@
             directorySettled = true;
           }}
           {bootTimeoutMs}
+          welcomeFirst={!welcomeSetupRun && !hasBootDeepLink && !initialRow}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
           {rowExtrasLoading}
@@ -5287,6 +5562,62 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if inSetupChannelWithAgent}
+                    {@const agentState = setupAgent.state}
+                    {@const stopFailure = setupAgent.failure}
+                    <div class="setup-agent-prompt" data-testid="setup-agent-prompt">
+                      {#if setupAgentDone}
+                        <!-- Finished: one calm block with every next step. -->
+                        <SetupFinale
+                          onsessions={extraPages?.sessions
+                            ? () =>
+                                openExtraPage(
+                                  "sessions",
+                                  extraPages!.sessions.startworkAction?.param(startworkCompany) ??
+                                    extraPages!.sessions.createAction?.param() ??
+                                    setupAgent.sessionId,
+                                )
+                            : undefined}
+                          onclaude={() => void launchSetupIn("claude")}
+                          oncodex={() => void launchSetupIn("codex")}
+                          launchError={setupLaunchError}
+                          {onopenurl}
+                          company={finaleCompany}
+                          onrunagain={() => void setupAgent.runAgain()}
+                        />
+                      {:else if stopFailure && setupAgent.api && setupAgent.providers}
+                        <!-- The run stopped: say why, and offer the agents right
+                             here — sign in to one, or run again with one that is. -->
+                        <SetupConnectStep
+                          variant="surface"
+                          api={setupAgent.api}
+                          providers={setupAgent.providers}
+                          lead={SETUP_FAILURE_COPY[stopFailure.kind].title}
+                          detail={stopFailure.message || undefined}
+                          onrefresh={() => setupAgent.refreshProviders(true)}
+                          onrun={(tool) => void setupAgent.runAgain(tool)}
+                          runBusy={setupAgent.busy}
+                        />
+                      {:else}
+                      <SetupRunCard
+                        variant="prompt"
+                        mode={setupAgent.mode === "starting" || setupAgent.mode === "idle" ? "live" : setupAgent.mode}
+                        run={agentState}
+                        resumeStep={setupAgent.resumeStep}
+                        busy={setupAgent.busy || setupAgent.mode === "starting"}
+                        error={setupAgent.error}
+                        onanswer={(requestId, questionId, values) => void setupAgent.answerChoice(requestId, questionId, values)}
+                        onpermission={(requestId, decision) => void setupAgent.answerPermission(requestId, decision)}
+                        onsend={(text) => void setupAgent.send(text)}
+                        oncontinue={() => void setupAgent.continueRun()}
+                        onrunagain={() => void setupAgent.runAgain()}
+                        onfinish={() => setupAgent.finish()}
+                        idle={setupAgent.snapshot?.phase === "idle"}
+                        onstoresecret={setupAgent.canStoreSecrets ? (card, value) => setupAgent.storeSecret(card, value) : undefined}
+                      />
+                      {/if}
+                    </div>
+                  {/if}
                   {#if isAgentChannel && provisioning.state}
                     <div
                       class="agent-provision-status"
@@ -5314,7 +5645,7 @@
                       {/if}
                     </div>
                   {/if}
-                  <AgentThinkingRow entries={agentThinking} />
+                  <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
                   <AgentTaskStrip tasks={mainPaneTasks} />
                 {/snippet}
                 {#snippet setupHeader()}
@@ -5322,6 +5653,23 @@
                     settings={adapter.settings}
                     shell={adapter.shell}
                     {onopenurl}
+                    onopensessions={extraPages?.sessions?.setupAction || extraPages?.sessions?.createAction
+                      ? () =>
+                          openExtraPage(
+                            "sessions",
+                            (extraPages!.sessions.setupAction ?? extraPages!.sessions.createAction!).param(),
+                          )
+                      : undefined}
+                    companies={rosterCompanies}
+                    onopencompany={openCompanyFromSetup}
+                    oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+                    {rosterStatus}
+                    {onretryroster}
+                    onsetupstarted={recordWelcomeSetupRun}
+                    agent={setupAgent}
+                    onopensessiondetails={extraPages?.sessions
+                      ? (sessionId) => openExtraPage("sessions", sessionId)
+                      : undefined}
                   />
                 {/snippet}
                 {#snippet companyHeader()}
@@ -5370,6 +5718,7 @@
                   activeRootEventId={openReplyRootId}
                   loading={(timelineHydrating || projectActivityLoading) &&
                     timelineWithActivity.length === 0}
+                  landAt={isSetupChannel(selectedRow.channelId) ? "top" : "bottom"}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
                     : isCompanyChannel
@@ -6068,5 +6417,19 @@
     position: relative;
     z-index: 21;
     flex: 0 0 auto;
+  }
+  /* ---- Setup Agent prompt (under the #welcome messages) ---------------- */
+  /* No box: the block sits under the last message on the message-text
+     column — left = row padding 8px + avatar 36px + gap 8px; right = the
+     row's 8px padding — so its edges match the messages above. */
+  .setup-agent-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: none;
+    margin: 8px 8px 8px 52px;
+  }
+  .setup-agent-prompt:empty {
+    display: none;
   }
 </style>

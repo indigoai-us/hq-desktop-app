@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { setTheme } from '@tauri-apps/api/app';
 import { mount } from 'svelte';
@@ -21,6 +22,9 @@ document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
 installDesktopZoom();
 installAppearancePreferences({
   applyNativeTheme: (theme) => setTheme(theme),
+  // Pre-Tahoe Macs get the vibrancy fallback, not Liquid Glass; the surfaces
+  // must stay nearly solid there or the whole window reads as washed-out grey.
+  readMaterial: () => invoke<string>('window_material_capability'),
 });
 
 const target = document.getElementById('desktop-alt');

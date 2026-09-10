@@ -181,11 +181,20 @@ export interface PreflightCompany {
   cloudUid?: string | null;
 }
 
+/**
+ * What the page must do before a session can run on this machine: nothing,
+ * install the HQ template (the wizard's `content` stage never landed), or
+ * rescue the `.claude` layer. Mirrors `HqSetupReadiness` on the Rust side.
+ */
+export type HqSetupReadiness = 'ready' | 'needs_install' | 'needs_rescue';
+
 /** Can this machine run an in-app session at all, and what is missing? */
 export interface Preflight {
   hqRoot: string;
   hooksReady: boolean;
+  /** Technical reason for the support log; never shown on screen. */
   hooksError: string | null;
+  hqSetup: HqSetupReadiness;
   claudeAvailable: boolean;
   claudeLoggedIn: boolean;
   codexAvailable: boolean;
@@ -807,6 +816,18 @@ async function loadEarlier(): Promise<void> {
  * close/open pair is exactly what a route change does, and the message the
  * user just sent has to survive it.
  */
+/**
+ * Show no session, without dropping any. A fresh chat on the Sessions page
+ * must not inherit whichever session another surface (#welcome's native
+ * setup run) left active — that surface still watches its entry by id.
+ */
+function deselect(): void {
+  if (activeId === null) return;
+  activeId = null;
+  foldCache = null;
+  revision += 1;
+}
+
 function close(sessionId: string): void {
   const { [sessionId]: _dropped, ...rest } = entries;
   entries = rest;
@@ -1137,6 +1158,20 @@ async function preflight(): Promise<Preflight> {
   const promise = invoke<Preflight>('agent_session_preflight');
   preflightCache = { at: now, promise };
   // A failed probe must not poison the cache for the next attempt.
+  promise.catch(() => {
+    if (preflightCache?.promise === promise) preflightCache = null;
+  });
+  return promise;
+}
+
+/**
+ * Finish HQ setup on this machine (template install and/or `.claude` rescue)
+ * and return the fresh preflight. The result replaces the cached preflight so
+ * the page and any later reader agree on the repaired state.
+ */
+async function repairHqSetup(): Promise<Preflight> {
+  const promise = invoke<Preflight>('agent_session_repair_hq_setup');
+  preflightCache = { at: Date.now(), promise };
   promise.catch(() => {
     if (preflightCache?.promise === promise) preflightCache = null;
   });
@@ -1493,6 +1528,23 @@ export const liveSessionStore = {
   get isHistorical(): boolean {
     return activeEntry()?.history !== null && activeEntry()?.history !== undefined;
   },
+  /**
+   * Per-session reads for a surface that watches ONE session regardless of
+   * which one the Sessions page has active (#welcome's native setup run).
+   * Empty / `idle` for a session this store has not opened.
+   */
+  eventsOf(sessionId: string): SessionEvent[] {
+    void revision;
+    return entries[sessionId]?.events ?? [];
+  },
+  phaseOf(sessionId: string): SessionPhase {
+    return entries[sessionId]?.phase ?? 'idle';
+  },
+  /** Request ids this client already answered on `sessionId`. */
+  resolvedRequestIdsOf(sessionId: string): string[] {
+    void revision;
+    return Object.keys(entries[sessionId]?.resolutions ?? {});
+  },
   isOpen: (sessionId: string): boolean => Boolean(entries[sessionId]),
   companyOf: (sessionId: string): string | null => {
     const live = sessions.find((row) => row.sessionId === sessionId);
@@ -1503,6 +1555,7 @@ export const liveSessionStore = {
     if (entries[sessionId]) activeId = sessionId;
   },
   open,
+  deselect,
   openHistory,
   close,
   refreshList,
@@ -1520,6 +1573,7 @@ export const liveSessionStore = {
   openInApp,
   shareToChannel,
   preflight,
+  repairHqSetup,
   providerLoginStart: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_start', { tool }),
   providerLoginStatus: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_status', { tool }),
   providerLoginCancel: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_cancel', { tool }),

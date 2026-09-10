@@ -356,6 +356,19 @@ export function createSyncPlatformAdapter(
       listWorkspaces: async () => {
         const result = await call<unknown>('list_syncable_workspaces');
         if (!result.ok) return result;
+        // `list_syncable_workspaces` never rejects on a cloud failure: it
+        // resolves `{ workspaces: [], cloudReachable: false, error }` so the
+        // menubar can say "Cloud unreachable". For the company roster that is
+        // a failed fetch, not an empty one — reporting it as `ok([])` left a
+        // brand-new owner on "Create a company" until they relaunched.
+        const envelope = asRecord(result.value);
+        if (envelope && envelope.cloudReachable === false) {
+          const message =
+            typeof envelope.error === 'string' && envelope.error.trim()
+              ? envelope.error.trim()
+              : 'Couldn’t reach HQ cloud to load your companies.';
+          return failure('cloud-unreachable', message);
+        }
         return ok(unwrapNamedArray(result.value, ['workspaces', 'memberships']));
       },
       // Same REST route the web adapter uses (`WEB_PATHS.profile`); Sync has no

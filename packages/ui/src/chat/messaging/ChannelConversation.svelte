@@ -199,6 +199,14 @@
      */
     header?: Snippet;
     /**
+     * Where the pane lands when it opens. Chat lands on the newest message
+     * (`"bottom"`, default). A pane whose point is its header — #welcome's
+     * hero with Run Setup — lands at the top so the header is what the
+     * person sees first; the timeline below is reachable by scrolling and
+     * new arrivals still raise the "New messages" pill.
+     */
+    landAt?: "top" | "bottom";
+    /**
      * Optional status row rendered INSIDE the `.dm-thread` scroller, after the
      * newest message (typing-indicator position). Must live in the scroll flow
      * — `.chat-stage` is a horizontal flexbox, so a sibling of this component
@@ -230,6 +238,7 @@
     placeholder = "Reply…",
     onopenurl,
     channelId = null,
+    landAt = "bottom",
     oncardaction,
     ontogglereaction,
     onsend,
@@ -399,10 +408,11 @@
    * NOTHING may move their offset — not the host's periodic message refresh,
    * not live arrivals, not a timeline merge.
    */
-  // Remounted per conversation; only the landing restore matters.
+  // Remounted per conversation; only the landing restore matters. A `landAt`
+  // of "top" (#welcome) never pins to the newest row.
   const restoreAtMount = restoreScroll;
   let stickToBottom = $state(
-    !restoreAtMount || isScrollNearBottom(restoreAtMount),
+    landAt !== "top" && (!restoreAtMount || isScrollNearBottom(restoreAtMount)),
   );
   let restoreScrollPending = $state(restoreAtMount != null);
   /** New rows landed while scrolled up — drives the "jump to latest" pill. */
@@ -1002,6 +1012,8 @@
    * untrack so flipping the flag never re-runs the effect on its own.
    */
   let prevTimelineLength = 0;
+  /** True once the timeline has painted at least one row. */
+  let historyPopulated = false;
   $effect(() => {
     const length = timeline.length;
     void timeline.at(-1)?.eventId;
@@ -1014,9 +1026,12 @@
       if (restoreScrollPending) return;
       if (stickToBottom) {
         el.scrollTop = el.scrollHeight;
-      } else if (grew) {
+      } else if (grew && historyPopulated) {
+        // Only arrivals AFTER the first populated paint are "unseen"; the
+        // initial history landing under a top-anchored pane is not news.
         hasUnseenBelow = true;
       }
+      if (length > 0) historyPopulated = true;
     });
   });
 
@@ -1437,7 +1452,7 @@
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}
       </div>
-      {#if !stickToBottom}
+      {#if !stickToBottom && (landAt !== "top" || hasUnseenBelow)}
         <button
           type="button"
           class="new-messages-jump"

@@ -247,9 +247,26 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
     expect(PAGE).toContain('claudeLoggedIn');
     expect(PAGE).toContain('grokLoggedIn');
     expect(PAGE).toContain('hooksReady');
+    // HQ setup on this Mac is the page's own job (the self-heal card), never a
+    // raw rescue command or a config path on screen; the technical
+    // `hooksError` is for the support log.
+    expect(PAGE).not.toContain('hq rescue');
+    expect(PAGE).not.toContain('settings.json');
+    expect(PAGE).not.toContain('{preflight.hooksError}');
+    expect(PAGE).not.toContain('preflight.hooksError ??');
     // One inline notice above the composer — not a screen that replaces it.
     expect(PAGE).toContain('{notice}');
     expect(COMPOSER).toContain('session-composer-notice');
+  });
+
+  it('finishes HQ setup itself instead of asking for a terminal', () => {
+    expect(PAGE).toContain('hqSetup');
+    expect(PAGE).toContain('repairHqSetup');
+    expect(PAGE).toContain('Finishing HQ setup on this Mac…');
+    expect(PAGE).toContain("Couldn't finish HQ setup.");
+    expect(PAGE).toContain('session-setup-retry');
+    // One automatic attempt per visit; Retry is by hand.
+    expect(PAGE).toContain('setupAutoAttempted');
   });
 });
 
@@ -898,7 +915,8 @@ describe('company / project start-work — the first send orients the session', 
     );
     const fn = PAGE.slice(PAGE.indexOf('async function handleSend('));
     const body = fn.slice(0, fn.indexOf('\n  }\n'));
-    expect(body).toContain('planFirstSend(wire, { company, project }, startworkEnabled)');
+    // A setup chat is never oriented, so the page passes the effective flag.
+    expect(body).toContain('planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)');
     const planAt = body.indexOf('const first = planFirstSend(');
     const wordsAt = body.indexOf('started = await liveSessionStore.startAndSend(');
     const routeAt = body.indexOf('onopensession?.(started', wordsAt);

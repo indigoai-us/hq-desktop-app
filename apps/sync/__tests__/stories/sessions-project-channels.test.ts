@@ -149,7 +149,7 @@ describe('spawn a session from a channel, bound to that project', () => {
     expect(PAGE).toContain('project = projectNameFor(projects, slug) ?? slug;');
     // The first send orients with `/startwork {company} {project}`, and the
     // spec carries the directory slug the channel is named from.
-    expect(PAGE).toContain('planFirstSend(wire, { company, project }, startworkEnabled)');
+    expect(PAGE).toContain('planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)');
     expect(PAGE).toContain('project: projectSlugFor(projects, project),');
     expect(AGENT_RS).toContain('spec.project.as_deref(),');
   });

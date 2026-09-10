@@ -132,9 +132,23 @@ export function startworkLabelFromText(text: string): string {
 /**
  * Build the ONE atomic first message: orientation, then the user's selected
  * skill and prompt. Return the text alone when the toggle is off, there is
- * nothing to orient on, or the user already typed `/startwork` themselves
- * (never double-send the orientation).
+ * nothing to orient on, or the user explicitly requested `/startwork` or
+ * `/setup`. Setup must run before ordinary workspace orientation is possible.
  */
+/** `/setup` as a session's first turn: setup chats are never oriented with /startwork. */
+export function isSetupPrompt(text: string): boolean {
+  return /^\/setup(?:\s|$)/.test(text.trimStart());
+}
+
+/**
+ * Whether a session's transcript makes it a setup chat: its first operator
+ * turn was `/setup`. Used to keep the /startwork setting off on that session.
+ */
+export function isSetupChat(events: readonly { kind: string; text?: string }[]): boolean {
+  const first = events.find((event) => event.kind === 'userMessage');
+  return Boolean(first?.text) && isSetupPrompt(first!.text!);
+}
+
 export function planFirstSend(
   text: string,
   target: StartworkTarget,
@@ -143,6 +157,7 @@ export function planFirstSend(
   const user: PlannedTurn = { text, hidden: false };
   if (!enabled) return [user];
   if (isStartworkTurn(text)) return [user];
+  if (isSetupPrompt(text)) return [user];
   const command = startworkCommand(target);
   if (!command) return [user];
   return [{

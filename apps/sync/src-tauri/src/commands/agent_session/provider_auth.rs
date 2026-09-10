@@ -57,7 +57,7 @@ async fn program(tool: SessionTool) -> Result<String, String> {
     tokio::time::timeout(
         PROBE_TIMEOUT,
         tauri::async_runtime::spawn_blocking(move || match tool {
-            SessionTool::Claude => paths::resolve_bin("claude"),
+            SessionTool::Claude => super::claude::claude_program(),
             SessionTool::Codex => super::codex::codex_program(),
             SessionTool::Grok => super::grok::grok_program(),
         }),
