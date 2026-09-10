@@ -16,7 +16,7 @@
    * stand-in drawn to the shipping metrics, not the real AppKit one.
    */
   import { dev } from "$app/environment";
-  import { WEB_CAPABILITIES, ok, type PlatformAdapter } from "@hq/platform";
+  import { TAURI_CAPABILITIES, ok, type PlatformAdapter } from "@hq/platform";
   import {
     DesktopApp,
     FIXTURE_COMPANIES,
@@ -34,6 +34,7 @@
     seedFixturePins,
     settingsArea,
   } from "@hq/ui";
+  import HostPagePlaceholder from "./HostPagePlaceholder.svelte";
 
   /**
    * The shell only reaches the adapter for host concerns (contacts, history
@@ -41,29 +42,69 @@
    * visible comes from the injected fixtures below, so the surface is
    * deterministic and reloads identically every time.
    *
-   * Capabilities are the web set with `hasWindowControls` flipped on: that one
-   * flag is what makes the titlebar reserve its 78px macOS traffic-light
-   * gutter, so the chrome lays out the way it does on the desktop instead of
-   * flush-left the way it does on the web. The rest stay web-false — this is a
-   * browser tab with no local machine behind it.
+   * Capabilities are the desktop set, not the web set. This is the difference
+   * between previewing the shipped shell and previewing a subset of it: half
+   * the window chrome is capability-gated, so a web-capability harness
+   * silently drops the Launch pill, the HQ folder and Console buttons, the
+   * Core popover, and the local-only rails — none of which announce that they
+   * are missing. Design review then happens against a window the product
+   * never renders.
+   *
+   * `isAvailable` has to agree with the table: several controls ask through it
+   * rather than reading `capabilities` directly.
    */
-  const adapter = {
-    kind: "web",
-    isAvailable: () => false,
-    capabilities: { ...WEB_CAPABILITIES, hasWindowControls: true },
-    messaging: {
-      listContacts: async () => ok({ contacts: [] }),
-      fetchChannel: async () => ok({ messages: [], nextCursor: null }),
-      fetchDmThread: async () => ok({ messages: [], nextCursor: null }),
-      listChannelMembers: async () => ok({ members: [] }),
+  /**
+   * Turning the desktop capabilities on turns on the code paths behind them —
+   * sync status, packages, sessions, local files — so the slices they reach
+   * for have to exist. Rather than model eighteen host APIs, unknown slices
+   * fall through to `emptySlice`, which answers any method with an empty
+   * `ok()`: `list*` yields `[]`, everything else `{}`.
+   *
+   * Explicit slices are for the ones whose shape the UI actually reads. They
+   * are layered *over* the fallback rather than replacing it, so naming one
+   * method on a slice does not silently remove the other seventeen.
+   */
+  const emptySlice = new Proxy(
+    {},
+    {
+      get:
+        (_target, method) =>
+        async () =>
+          typeof method === "string" && method.startsWith("list")
+            ? ok([])
+            : ok({}),
     },
-    // The Meetings page polls on mount; answering it keeps the console clean.
-    meetings: {
-      listUpcoming: async () => ok([]),
-      listMemberships: async () => ok([]),
-      listAccounts: async () => ok([]),
+  );
+
+  /** An explicit slice that still answers everything else with an empty ok(). */
+  const slice = (methods: Record<string, unknown>) =>
+    new Proxy(methods, {
+      get: (target, method) =>
+        method in target
+          ? target[method as keyof typeof target]
+          : emptySlice[method as keyof typeof emptySlice],
+    });
+
+  const adapter = new Proxy(
+    {
+      kind: "tauri",
+      isAvailable: (capability: keyof typeof TAURI_CAPABILITIES) =>
+        TAURI_CAPABILITIES[capability] ?? false,
+      capabilities: TAURI_CAPABILITIES,
+      messaging: slice({
+        listContacts: async () => ok({ contacts: [] }),
+        fetchChannel: async () => ok({ messages: [], nextCursor: null }),
+        fetchDmThread: async () => ok({ messages: [], nextCursor: null }),
+        listChannelMembers: async () => ok({ members: [] }),
+      }),
+      meetings: slice({
+        listUpcoming: async () => ok([]),
+      }),
+    } as Record<string | symbol, unknown>,
+    {
+      get: (target, prop) => (prop in target ? target[prop] : emptySlice),
     },
-  } as unknown as PlatformAdapter;
+  ) as unknown as PlatformAdapter;
 
   const self = {
     uid: "prs_designer",
@@ -169,6 +210,14 @@
           filesByRow={fixtureFilesFor}
           channelStatusByRow={fixtureChannelStatusFor}
           coreFixtures={true}
+        extraPages={{
+          sessions: {
+            label: "Sessions",
+            detail: "Run a Codex or Claude session inside the app",
+            createAction: { label: "New session", param: () => "new" },
+            component: HostPagePlaceholder,
+          },
+        }}
           onopenurl={(url) => window.open(url, "_blank", "noopener")}
         />
       {:catch error}
