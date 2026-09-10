@@ -661,6 +661,20 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         )),
         "watcher_job_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
         "watcher_child_kind" => Some(matches!(value, "cmd_shim" | "launcher" | "direct_executable")),
+        // Shim-vs-runner discriminator (HQ-DESKTOP-66): the images of the watcher Job
+        // Object's processes STILL LIVE at the exit boundary, plus their count. The
+        // producer renders a closed vocabulary that reuses the watcher-fault image
+        // tokens (node_exe/cmd_exe/other) plus none/mixed/unavailable, and a bare
+        // integer count. Registering BOTH here is what makes them fail CLOSED — an
+        // unregistered key falls through the `_ => None` arm below and would ship
+        // verbatim; an off-vocabulary token or a path-shaped count degrades to
+        // `[Filtered]` instead. The numeric extra reaches this check as `""` for a
+        // non-string `Value` (type-safe by construction).
+        "watcher_job_survivors" => Some(matches!(
+            value,
+            "none" | "node_exe" | "cmd_exe" | "other" | "mixed" | "unavailable"
+        )),
+        "watcher_job_survivor_count" => Some(value.is_empty() || value.parse::<u32>().is_ok()),
         // Disposition of the signal that terminated an auto-sync watcher
         // (HQ-DESKTOP-5Y). A fixed, closed vocabulary; the bare signal integer
         // rides `watcher_exit_signal`. These independent egress checks degrade a
@@ -3437,6 +3451,10 @@ mod tests {
             ("watcher_job_peak_commit_bucket", "512mb_to_1gb:/Users/Ada"),
             ("watcher_job_process_count", "2 processes /Users/Ada"),
             ("watcher_child_kind", "launcher:/Users/Ada"),
+            // Shim-vs-runner discriminator (HQ-DESKTOP-66): an off-vocabulary token
+            // or a path-shaped count must degrade to `[Filtered]`.
+            ("watcher_job_survivors", "node_exe:/Users/Ada"),
+            ("watcher_job_survivor_count", "2 processes /Users/Ada"),
             ("rss_scope", "shim/secret"),
             // The runner heap-ceiling channels: a non-integer MB or an
             // out-of-vocabulary provenance must degrade to `[Filtered]`.
@@ -3475,6 +3493,16 @@ mod tests {
             ("watcher_child_kind", "cmd_shim"),
             ("watcher_child_kind", "launcher"),
             ("watcher_child_kind", "direct_executable"),
+            // Shim-vs-runner discriminator (HQ-DESKTOP-66): every closed-vocabulary
+            // survivor token and a bare-integer count survive egress.
+            ("watcher_job_survivors", "none"),
+            ("watcher_job_survivors", "node_exe"),
+            ("watcher_job_survivors", "cmd_exe"),
+            ("watcher_job_survivors", "other"),
+            ("watcher_job_survivors", "mixed"),
+            ("watcher_job_survivors", "unavailable"),
+            ("watcher_job_survivor_count", "0"),
+            ("watcher_job_survivor_count", "3"),
             ("rss_scope", "shim"),
             ("rss_scope", "launcher"),
             ("rss_scope", "runner"),
