@@ -29,12 +29,23 @@
     delay?: number;
     /** Horizontal alignment of the bubble relative to the trigger. */
     align?: "center" | "start" | "end";
+    /**
+     * Silence the tooltip while the trigger owns something else on screen.
+     * A pill that opens a menu must not also describe itself: the bubble
+     * covers the first row of the menu it just opened.
+     */
+    suppressed?: boolean;
     /** The control this tooltip describes. Receives the tooltip element id. */
     trigger: Snippet<[string]>;
   }
 
-  let { label = null, delay = 400, align = "center", trigger }: Props =
-    $props();
+  let {
+    label = null,
+    delay = 400,
+    align = "center",
+    suppressed = false,
+    trigger,
+  }: Props = $props();
 
   const id = `tooltip-${Math.random().toString(36).slice(2, 10)}`;
   let open = $state(false);
@@ -84,8 +95,8 @@
   onfocusout={hide}
   onkeydown={onKeyDown}
 >
-  {@render trigger(label ? id : "")}
-  {#if open && label}
+  {@render trigger(label && !suppressed ? id : "")}
+  {#if open && label && !suppressed}
     <span
       class="tooltip-bubble"
       class:align-start={align === "start"}

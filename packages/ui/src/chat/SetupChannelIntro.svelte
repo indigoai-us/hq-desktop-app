@@ -227,8 +227,9 @@
   .setup-intro {
     flex: 0 0 auto;
     overflow: visible;
+    /* Full width of the channel. The 760px cap left the hero and the cards
+       floating in a column narrower than every message beneath them. */
     width: 100%;
-    max-width: 760px;
     padding: var(--space-2, 8px) 0 var(--space-3, 12px);
     margin-bottom: var(--space-3, 12px);
     display: flex;
@@ -243,6 +244,8 @@
     position: relative;
     isolation: isolate;
     overflow: hidden;
+    /* Same 10px the resource cards, run cards and composer carry. */
+    border-radius: 10px;
     min-height: 248px;
     /* Wallpaper panels are always dark; the eyebrow/title sit on white. The
        fallback color covers the frame before the art decodes. */
@@ -356,18 +359,22 @@
 
   /* Buttons live on the wallpaper, so they are image-relative (white on
      dark), not theme-relative — the same in light and dark shells. */
+  /* The shell's button metrics — 31px tall, 8px radius, 12px/500 with a 6px
+     gap. Only the palette differs, because the hero is a dark photograph. */
   .launch-btn {
     display: inline-flex;
     align-items: center;
     align-self: flex-start;
-    min-height: 30px;
+    gap: 6px;
+    height: 31px;
+    min-height: 31px;
     padding: 0 12px;
     border: 1px solid rgba(255, 255, 255, 0.38);
-    border-radius: 0;
+    border-radius: 8px;
     background: rgba(6, 6, 6, 0.28);
     color: #ffffff;
     font: inherit;
-    font-size: var(--text-base, 13px);
+    font-size: 12px;
     font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
@@ -508,16 +515,16 @@
     color: var(--t3, var(--muted));
   }
 
-  /* `.su-link-go` */
+  /* `.su-link-go`: quiet at rest, one step up under the pointer. */
   .resource-arrow {
-    color: var(--t3, var(--muted-2));
+    color: var(--t3);
     transition:
       color 140ms ease,
       transform 160ms ease;
   }
 
   .resource-link:hover .resource-arrow {
-    color: var(--t2, var(--muted));
+    color: var(--t2);
   }
 
   .resource-link:hover .resource-title,

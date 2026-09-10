@@ -107,6 +107,12 @@
           ok(await fixtureConversation.fetchChannel(args)),
         fetchDmThread: async (args: { withPersonUid: string }) =>
           ok(await fixtureConversation.fetchDmThread(args)),
+        // Without this the reply panel asks the fallback slice, gets an empty
+        // ok(), and every thread opens on "No replies yet".
+        fetchReplyThread: async (args: {
+          scope: "channel" | "dm";
+          rootEventId: string;
+        }) => ok(await fixtureConversation.fetchReplyThread(args)),
         listChannelMembers: async () => ok({ members: [] }),
       }),
       meetings: slice({
