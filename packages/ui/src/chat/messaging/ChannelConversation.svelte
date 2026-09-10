@@ -1875,13 +1875,17 @@
     opacity: 1;
   }
 
+  /* No reading measure. The design lets the message column fill the pane, and
+     the timestamp rides its right edge — capping the column at 720px parked
+     the timestamp mid-pane on a wide window, which read as a stray label
+     rather than as the row's trailing metadata. The window's own max width
+     keeps line length in hand. */
   .dm-msg-column {
     position: relative;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
     min-width: 0;
-    max-width: 720px;
   }
 
   .dm-msg-meta {

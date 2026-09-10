@@ -16,6 +16,14 @@
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import Tooltip from "../common/Tooltip.svelte";
   import Caret from "../common/Caret.svelte";
+  import Bell from "phosphor-svelte/lib/Bell";
+  import CaretLeft from "phosphor-svelte/lib/CaretLeft";
+  import CaretRight from "phosphor-svelte/lib/CaretRight";
+  import FolderOpen from "phosphor-svelte/lib/FolderOpen";
+  import Globe from "phosphor-svelte/lib/Globe";
+  import Plus from "phosphor-svelte/lib/Plus";
+  import SidebarSimple from "phosphor-svelte/lib/SidebarSimple";
+  import VideoCamera from "phosphor-svelte/lib/VideoCamera";
   import "./tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -554,18 +562,7 @@
       aria-pressed={!sidebarCollapsed}
       onclick={() => ontogglesidebar?.()}
     >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <rect
-          x="1.75"
-          y="2.25"
-          width="12.5"
-          height="11.5"
-          rx="2"
-          stroke="currentColor"
-          stroke-width="1.2"
-        />
-        <path d="M5.25 2.5v11" stroke="currentColor" stroke-width="1.2" />
-      </svg>
+      <SidebarSimple class="v4-icon" size={15} aria-hidden="true" />
     </button>
     <span
       class="v4-wordmark"
@@ -596,15 +593,7 @@
             disabled={!canGoBack}
             onclick={() => onback?.()}
           >
-            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path
-                d="M10 3.5 5.5 8 10 12.5"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <CaretLeft class="v4-icon" size={15} aria-hidden="true" />
           </button>
         {/snippet}
       </Tooltip>
@@ -620,15 +609,7 @@
             disabled={!canGoForward}
             onclick={() => onforward?.()}
           >
-            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path
-                d="M6 3.5 10.5 8 6 12.5"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <CaretRight class="v4-icon" size={15} aria-hidden="true" />
           </button>
         {/snippet}
       </Tooltip>
@@ -644,9 +625,7 @@
   <div class="v4-title-actions" data-no-drag data-tauri-drag-region="false">
     {#if primaryAction}
       <button type="button" class="v4-core-pill" data-testid="titlebar-primary-action" onclick={primaryAction.onselect}>
-        <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.3" />
-        </svg>
+        <Plus class="v4-icon" size={15} aria-hidden="true" />
         {primaryAction.label}
       </button>
     {/if}
@@ -713,19 +692,7 @@
             disabled={revealing || hqFolderConfigured === false}
             onclick={() => void revealHqFolder()}
           >
-            <svg
-              class="v4-icon"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h2.6l1.4 1.6h5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5h-9a1.5 1.5 0 0 1-1.5-1.5v-7.6Z"
-                stroke="currentColor"
-                stroke-width="1.2"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <FolderOpen class="v4-icon" size={15} aria-hidden="true" />
           </button>
         {/snippet}
       </Tooltip>
@@ -740,26 +707,7 @@
           aria-describedby={describedBy || undefined}
           onclick={openHqConsole}
         >
-          <svg
-            class="v4-icon"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <circle
-              cx="8"
-              cy="8"
-              r="5.75"
-              stroke="currentColor"
-              stroke-width="1.2"
-            />
-            <path
-              d="M2.5 8h11M8 2.25c1.6 1.7 2.4 3.6 2.4 5.75S9.6 12.05 8 13.75c-1.6-1.7-2.4-3.6-2.4-5.75S6.4 3.95 8 2.25Z"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <Globe class="v4-icon" size={15} aria-hidden="true" />
         </button>
       {/snippet}
     </Tooltip>
@@ -776,28 +724,7 @@
             onopenMeetings?.();
           }}
         >
-          <svg
-            class="v4-icon"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <rect
-              x="1.75"
-              y="4.25"
-              width="8.5"
-              height="7.5"
-              rx="1.5"
-              stroke="currentColor"
-              stroke-width="1.2"
-            />
-            <path
-              d="M10.75 6.2 14.25 4.4v7.2l-3.5-1.8V6.2Z"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <VideoCamera class="v4-icon" size={15} aria-hidden="true" />
         </button>
       {/snippet}
     </Tooltip>
@@ -814,25 +741,7 @@
             onopenNotifications?.();
           }}
         >
-          <svg
-            class="v4-icon"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M8 2.25a3.5 3.5 0 0 0-3.5 3.5v2.1l-1.2 1.8h9.4l-1.2-1.8V5.75A3.5 3.5 0 0 0 8 2.25Z"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-            />
-            <path
-              d="M6.5 12.25a1.5 1.5 0 0 0 3 0"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linecap="round"
-            />
-          </svg>
+          <Bell class="v4-icon" size={15} aria-hidden="true" />
           {#if hasUnread}
             <span
               class="v4-notif-dot"
