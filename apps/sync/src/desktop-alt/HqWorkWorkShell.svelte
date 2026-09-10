@@ -50,7 +50,11 @@
   } from './pages/sessions-route-param';
   import { liveSessionStore } from './lib/live-session-store.svelte';
   import { parseMeshProjectView } from '@hq/core';
-  import { backgroundJobFailure } from './lib/background-job';
+  import {
+    GENERATE_TASK_TIMEOUT_MS,
+    backgroundJobFailure,
+    createdStoryTitle,
+  } from './lib/background-job';
   import { readRememberedTool } from '../components/sessions/session-models';
   import {
     isPermissionGranted as isNotifyPermissionGranted,
@@ -922,31 +926,36 @@
             },
             seed.prompt,
           );
-          const deadline = Date.now() + 180_000;
+          const deadline = Date.now() + GENERATE_TASK_TIMEOUT_MS;
+          const lookForCreated = async (): Promise<string | null> => {
+            const nextRes = await adapter.workMesh.getProjectView(seed.projectId, seed.companyUid);
+            if (!nextRes.ok) return null;
+            const after = parseMeshProjectView(nextRes.value);
+            return createdStoryTitle(known, after?.stories ?? []);
+          };
+          const finish = async (title: string) => {
+            try {
+              if (await isNotifyPermissionGranted()) {
+                sendNotification({ title: 'Task created', body: title });
+              }
+            } catch {
+              /* in-chat status is the required signal */
+            }
+            return { title };
+          };
           while (Date.now() < deadline) {
+            const created = await lookForCreated();
+            if (created) return finish(created);
             const status = await liveSessionStore.backgroundStatus(sessionId);
             const failed = backgroundJobFailure(status.events);
-            if (failed) throw new Error(failed);
-            if (status.gone) {
-              throw new Error('Session ended before the task was created.');
-            }
-            const nextRes = await adapter.workMesh.getProjectView(seed.projectId, seed.companyUid);
-            if (nextRes.ok) {
-              const after = parseMeshProjectView(nextRes.value);
-              const created = (after?.stories ?? []).find((story) => !known.has(story.id));
-              if (created?.title) {
-                try {
-                  if (await isNotifyPermissionGranted()) {
-                    sendNotification({ title: 'Task created', body: created.title });
-                  }
-                } catch {
-                  /* in-chat status is the required signal */
-                }
-                return { title: created.title };
-              }
-            }
+            // The CLI often exits before mesh/PRD has caught up. Keep polling
+            // the Board unless this is a real auth/tool failure.
+            if (failed && !status.gone) throw new Error(failed);
+            if (failed && /authenticate|sign in/i.test(failed)) throw new Error(failed);
             await new Promise((resolve) => setTimeout(resolve, 1500));
           }
+          const late = await lookForCreated();
+          if (late) return finish(late);
           throw new Error('Timed out creating the task');
         }}
         data={{ user: capabilities.hostIdentity }}
