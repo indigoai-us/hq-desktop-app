@@ -39,6 +39,35 @@ impl IdeasError {
     }
 }
 
+/// Reject any string that must not be able to escape, redirect, or truncate a
+/// vault path when joined into one.
+///
+/// Company slugs and record ids are attacker-influenceable in principle (an id
+/// can arrive from a synced record, a slug from user input), and
+/// `Path::join` happily accepts `..` or an absolute path — the latter
+/// *replaces* the whole path built so far. Everything that becomes a path
+/// component is screened here before any filesystem call.
+pub(crate) fn validate_path_component(label: &str, value: &str) -> Result<(), IdeasError> {
+    if value.is_empty() {
+        return Err(IdeasError::Invalid(format!("{label} must not be empty")));
+    }
+    if value == "." || value == ".." {
+        return Err(IdeasError::Invalid(format!(
+            "{label} must not be a relative path segment, got {value:?}"
+        )));
+    }
+    if value.contains('/')
+        || value.contains('\\')
+        || value.contains(std::path::MAIN_SEPARATOR)
+        || value.contains('\0')
+    {
+        return Err(IdeasError::Invalid(format!(
+            "{label} must be a single path component without separators, got {value:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// What the capture appears to be. `Unknown` is the pre-extraction default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -126,14 +155,14 @@ impl CaptureRecord {
 
     /// Validate the invariants that are not encoded in the type system.
     pub fn validate(&self) -> Result<(), IdeasError> {
-        if self.id.is_empty() {
-            return Err(IdeasError::Invalid("id must not be empty".into()));
-        }
-        if self.company_slug.is_empty() {
-            return Err(IdeasError::Invalid("company_slug must not be empty".into()));
-        }
+        // id and company_slug are joined into vault paths; screen them here so
+        // an invalid record can never be persisted, wherever it came from.
+        validate_path_component("id", &self.id)?;
+        validate_path_component("company_slug", &self.company_slug)?;
         if let Some(c) = self.confidence {
-            if !(0.0..=1.0).contains(&c) || c.is_nan() {
+            // `RangeInclusive::contains` uses PartialOrd, so NaN already fails
+            // every comparison and is rejected here — no separate is_nan check.
+            if !(0.0..=1.0).contains(&c) {
                 return Err(IdeasError::Invalid(format!(
                     "confidence must be within 0.0..=1.0, got {c}"
                 )));

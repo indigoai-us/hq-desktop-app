@@ -23,5 +23,6 @@ pub use record::{
     CaptureKind, CaptureRecord, CaptureStatus, IdeasError, Provenance, MAX_IMAGE_EDGE,
 };
 pub use storage::{
-    create_record, ideas_dir, load_record, move_record, record_dir, save_record, NewCapture,
+    create_record, downsample, ideas_dir, load_record, move_record, record_dir, save_record,
+    CaptureImage, NewCapture,
 };

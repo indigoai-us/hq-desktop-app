@@ -16,10 +16,9 @@
 use std::collections::BTreeSet;
 
 use chrono::DateTime;
-use hq_desktop_core::ideas::storage::CaptureImage;
 use hq_desktop_core::ideas::{
-    create_record, load_record, move_record, record_dir, CaptureKind, CaptureRecord, CaptureStatus,
-    NewCapture, Provenance,
+    create_record, load_record, move_record, record_dir, CaptureImage, CaptureKind, CaptureRecord,
+    CaptureStatus, NewCapture, Provenance,
 };
 use image::{DynamicImage, RgbaImage};
 use serde_json::Value;

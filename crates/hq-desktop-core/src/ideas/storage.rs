@@ -21,10 +21,25 @@ use image::{DynamicImage, ImageFormat};
 use ulid::Ulid;
 
 use super::record::{
-    CaptureKind, CaptureRecord, CaptureStatus, IdeasError, Provenance, MAX_IMAGE_EDGE,
+    validate_path_component, CaptureKind, CaptureRecord, CaptureStatus, IdeasError, Provenance,
+    MAX_IMAGE_EDGE,
 };
 
+/// Reject a string that must not escape or redirect a vault path when joined
+/// into one (empty, `.`, `..`, anything with a separator or NUL).
+///
+/// Every public entry point runs this on `company_slug` and `id` *before* the
+/// first filesystem call, so [`ideas_dir`] / [`record_dir`] only ever see
+/// screened components. Those two are path builders, not I/O, and stay
+/// infallible.
+fn validate_component(s: &str) -> Result<(), IdeasError> {
+    validate_path_component("path component", s)
+}
+
 /// `{hq_root}/companies/{slug}/ideas`
+///
+/// Pure path construction — callers that touch the filesystem must have run
+/// [`validate_component`] on `company_slug` first.
 pub fn ideas_dir(hq_root: &Path, company_slug: &str) -> PathBuf {
     hq_root
         .join("companies")
@@ -33,6 +48,8 @@ pub fn ideas_dir(hq_root: &Path, company_slug: &str) -> PathBuf {
 }
 
 /// `{hq_root}/companies/{slug}/ideas/{id}`
+///
+/// Pure path construction — see [`ideas_dir`] on component validation.
 pub fn record_dir(hq_root: &Path, company_slug: &str, id: &str) -> PathBuf {
     ideas_dir(hq_root, company_slug).join(id)
 }
@@ -80,6 +97,10 @@ impl NewCapture {
 }
 
 /// Downsample so the longest edge is at most [`MAX_IMAGE_EDGE`]. Never upscales.
+///
+/// Uses Lanczos3: highest fidelity, slowest filter. Capture volume here is one
+/// image per hotkey press, so quality wins; if the capture path ever needs to
+/// be faster (US-003/US-004 latency work), this is the knob to turn.
 pub fn downsample(image: DynamicImage) -> DynamicImage {
     let (w, h) = (image.width(), image.height());
     if w.max(h) <= MAX_IMAGE_EDGE {
@@ -97,6 +118,7 @@ pub fn downsample(image: DynamicImage) -> DynamicImage {
 /// Create a record: downsample + PNG-encode the image, then atomically write
 /// `image.png` and `record.json` under the company's ideas directory.
 pub fn create_record(hq_root: &Path, new: NewCapture) -> Result<CaptureRecord, IdeasError> {
+    validate_component(&new.company_slug)?;
     let decoded = match new.image {
         CaptureImage::Decoded(img) => img,
         CaptureImage::Png(bytes) => image::load_from_memory_with_format(&bytes, ImageFormat::Png)
@@ -133,13 +155,21 @@ pub fn create_record(hq_root: &Path, new: NewCapture) -> Result<CaptureRecord, I
 
     let dir = record_dir(hq_root, &new.company_slug, &id);
     fs::create_dir_all(&dir).map_err(|e| IdeasError::io(&dir, e))?;
-    atomic_write(&dir.join("image.png"), &png)?;
-    write_record_json(&dir, &record)?;
+    // If either write fails the record is half-formed, so tear the whole
+    // directory down rather than leave an image with no record.json (which a
+    // later scan would read as a corrupt capture). Best-effort: a failed
+    // cleanup must not mask the original error.
+    if let Err(e) = atomic_write(&dir.join("image.png"), &png).and_then(|()| write_record_json(&dir, &record)) {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(e);
+    }
     Ok(record)
 }
 
 /// Read a record back from the vault.
 pub fn load_record(hq_root: &Path, company_slug: &str, id: &str) -> Result<CaptureRecord, IdeasError> {
+    validate_component(company_slug)?;
+    validate_component(id)?;
     let path = record_dir(hq_root, company_slug, id).join("record.json");
     let raw = match fs::read(&path) {
         Ok(raw) => raw,
@@ -157,6 +187,7 @@ pub fn load_record(hq_root: &Path, company_slug: &str, id: &str) -> Result<Captu
 
 /// Persist a revised record, bumping `updated_at`. Atomic.
 pub fn save_record(hq_root: &Path, record: &mut CaptureRecord) -> Result<(), IdeasError> {
+    // `validate` screens id + company_slug as path components too.
     record.validate()?;
     record.updated_at = Utc::now();
     let dir = record_dir(hq_root, &record.company_slug, &record.id);
@@ -168,13 +199,24 @@ pub fn save_record(hq_root: &Path, record: &mut CaptureRecord) -> Result<(), Ide
 /// `company_slug` / `image_path`.
 ///
 /// The directory move is a single `rename`, so the record is never half-present
-/// in both companies. Fails if the destination already holds this id.
+/// in both companies. Fails if the destination already holds this id. Moving a
+/// record to the company it is already in is a no-op that just reloads it.
+///
+/// Note the two-step: `rename` first, then rewrite `record.json` in place. In
+/// the window between them the files are already under `to_company` while the
+/// JSON still names `from_company`. Attribution is therefore
+/// **authoritative-by-path** — a reader that disagrees with the on-disk
+/// `company_slug` should trust the directory the record was found in, and
+/// re-running `move_record` for the same target repairs the JSON.
 pub fn move_record(
     hq_root: &Path,
     id: &str,
     from_company: &str,
     to_company: &str,
 ) -> Result<CaptureRecord, IdeasError> {
+    validate_component(id)?;
+    validate_component(from_company)?;
+    validate_component(to_company)?;
     let src = record_dir(hq_root, from_company, id);
     if !src.is_dir() {
         return Err(IdeasError::NotFound {
@@ -182,12 +224,15 @@ pub fn move_record(
             company_slug: from_company.to_string(),
         });
     }
+    // Must precede the `dest.exists()` check: for a same-company move src and
+    // dest are the same directory, which would otherwise report
+    // DestinationExists for what is really a no-op.
+    if from_company == to_company {
+        return load_record(hq_root, from_company, id);
+    }
     let dest = record_dir(hq_root, to_company, id);
     if dest.exists() {
         return Err(IdeasError::DestinationExists(dest.display().to_string()));
-    }
-    if from_company == to_company {
-        return load_record(hq_root, from_company, id);
     }
 
     let dest_parent = ideas_dir(hq_root, to_company);
@@ -214,9 +259,20 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), IdeasError> {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "record".to_string());
-    let tmp = target.with_file_name(format!("{name}.tmp"));
+    // Per-call unique suffix: two writers racing on the same target must not
+    // share a scratch file, or one truncates the other's half-written bytes.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = target.with_file_name(format!("{name}.{}.{nanos}.tmp", std::process::id()));
     fs::write(&tmp, bytes).map_err(|e| IdeasError::io(&tmp, e))?;
-    fs::rename(&tmp, target).map_err(|e| IdeasError::io(target, e))
+    if let Err(e) = fs::rename(&tmp, target) {
+        // Don't leave scratch files behind when the rename is what failed.
+        let _ = fs::remove_file(&tmp);
+        return Err(IdeasError::io(target, e));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -378,6 +434,84 @@ mod tests {
             save_record(root.path(), &mut record),
             Err(IdeasError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn traversal_components_are_rejected_and_write_nothing_outside_the_root() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("hq");
+        fs::create_dir_all(&root).unwrap();
+
+        // A slug that would escape the vault root entirely.
+        assert!(matches!(
+            create_record(
+                &root,
+                NewCapture::pending(
+                    "../../evil",
+                    CaptureImage::Decoded(gradient(32, 32)),
+                    provenance(),
+                ),
+            ),
+            Err(IdeasError::Invalid(_))
+        ));
+
+        let record = create_record(
+            &root,
+            NewCapture::pending("a", CaptureImage::Decoded(gradient(32, 32)), provenance()),
+        )
+        .unwrap();
+        assert!(matches!(
+            move_record(&root, &record.id, "a", "../b"),
+            Err(IdeasError::Invalid(_))
+        ));
+        assert!(matches!(
+            move_record(&root, "../../../etc", "a", "b"),
+            Err(IdeasError::Invalid(_))
+        ));
+        assert!(matches!(
+            load_record(&root, "..", &record.id),
+            Err(IdeasError::Invalid(_))
+        ));
+        assert!(matches!(
+            load_record(&root, "a/b", &record.id),
+            Err(IdeasError::Invalid(_))
+        ));
+        assert!(matches!(
+            create_record(
+                &root,
+                NewCapture::pending("", CaptureImage::Decoded(gradient(32, 32)), provenance()),
+            ),
+            Err(IdeasError::Invalid(_))
+        ));
+
+        // Nothing landed beside the vault root, and the escaped paths do not exist.
+        let siblings: Vec<_> = fs::read_dir(outer.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(siblings, vec![std::ffi::OsString::from("hq")], "{siblings:?}");
+        assert!(!outer.path().join("evil").exists());
+        assert!(!root.join("companies/../../evil").exists());
+        // The one legitimate record is still the only thing under the root.
+        assert!(record_dir(&root, "a", &record.id).join("record.json").is_file());
+    }
+
+    #[test]
+    fn same_company_move_is_a_no_op() {
+        let root = tempfile::tempdir().unwrap();
+        let record = create_record(
+            root.path(),
+            NewCapture::pending("a", CaptureImage::Decoded(gradient(64, 64)), provenance()),
+        )
+        .unwrap();
+
+        let moved = move_record(root.path(), &record.id, "a", "a").unwrap();
+        assert_eq!(moved.company_slug, "a");
+        assert_eq!(moved, record);
+
+        let dir = record_dir(root.path(), "a", &record.id);
+        assert!(dir.join("record.json").is_file());
+        assert!(dir.join("image.png").is_file());
     }
 
     #[test]
