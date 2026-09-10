@@ -329,7 +329,36 @@ fn no_local_path_survives_scrubbing_into_a_captured_envelope() {
 
     assert_eq!(events.len(), 1);
     let serialized = serde_json::to_string(&events[0]).expect("serialize scrubbed event");
-    assert!(!serialized.contains(private_path));
-    assert!(!serialized.contains("/Users/ada"));
-    assert!(!serialized.contains("ada"));
+
+    // Every needle below is the SAME condition this test has always asserted —
+    // full path, user-scoped prefix, bare username. Only the diagnostics
+    // changed: a bare `assert!(!contains)` prints nothing but a line number,
+    // and this test has failed intermittently on CI (run 34266375386) in a way
+    // that a re-run of the identical commit passed. That left no evidence at
+    // all of WHICH needle survived or what carried it, and it could not be
+    // reproduced locally on macOS or Linux across ~20 attempts.
+    //
+    // Failing loudly with the offending window — and the whole envelope — turns
+    // the next occurrence into a diagnosis instead of another mystery. The
+    // safety property is unchanged: any leak still fails, everywhere.
+    for needle in [private_path, "/Users/ada", "ada"] {
+        if let Some(at) = serialized.find(needle) {
+            let from = serialized[..at]
+                .char_indices()
+                .rev()
+                .nth(120)
+                .map_or(0, |(i, _)| i);
+            let to = serialized[at..]
+                .char_indices()
+                .nth(120)
+                .map_or(serialized.len(), |(i, _)| at + i);
+            panic!(
+                "a local path survived scrubbing into the envelope.\n\
+                 needle: {needle:?}\n\
+                 context: …{context}…\n\
+                 full envelope: {serialized}",
+                context = &serialized[from..to],
+            );
+        }
+    }
 }
