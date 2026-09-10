@@ -16,6 +16,7 @@ import {
   clearSetupRunRecord,
   interpretSetupRun,
   loadSetupRunRecord,
+  SETUP_TRANSIENT_MESSAGE,
   saveSetupRunRecord,
   setupRunContinueLabel,
   setupRunStatusSentence,
@@ -360,11 +361,25 @@ describe("interpretSetupRun — finish and stop", () => {
     expect(classifySetupFailure("All set — you're done. ".repeat(30))).toBeNull();
     expect(classifySetupFailure("   ")).toBeNull();
   });
+
+  it("classifySetupFailure marks a sign-in refresh clash transient with plain words, never as sign-in trouble", () => {
+    const clash = classifySetupFailure("Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh");
+    expect(clash).toEqual({ kind: "other", message: SETUP_TRANSIENT_MESSAGE, transient: true });
+    expect(classifySetupFailure("token refresh failed: try again in a moment")?.transient).toBe(true);
+    expect(classifySetupFailure("OAuth session expired")?.transient).toBeUndefined();
+  });
 });
 
 describe("resume record", () => {
   beforeEach(() => {
     window.localStorage.clear();
+  });
+
+  it("keeps a transient stop's flag, so a remembered clash is not shown as sign-in trouble", () => {
+    saveSetupRunRecord({ sessionId: "sess-1", step: 1, status: "ended", failure: { kind: "other", message: SETUP_TRANSIENT_MESSAGE, transient: true } });
+    expect(loadSetupRunRecord()?.failure).toEqual({ kind: "other", message: SETUP_TRANSIENT_MESSAGE, transient: true });
+    saveSetupRunRecord({ sessionId: "sess-2", step: 1, status: "ended", failure: { kind: "auth", message: "expired" } });
+    expect(loadSetupRunRecord()?.failure).toEqual({ kind: "auth", message: "expired" });
   });
 
   it("round-trips the session id and step", () => {

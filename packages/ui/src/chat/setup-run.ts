@@ -115,6 +115,11 @@ export interface SetupRunFailure {
   kind: "auth" | "limit" | "other";
   /** The engine's own words (kept for support; the channel says it plainly). */
   message: string;
+  /**
+   * A passing clash, not a real stop: two of the agent's processes refreshed
+   * the same sign-in at once. The channel retries once on its own.
+   */
+  transient?: boolean;
 }
 
 // Deliberately narrow: "you're signed in to HQ Cloud" in a summary is not a failure.
@@ -123,11 +128,20 @@ const AUTH_FAILURE =
 /** Longer than this and the text is a reply, not an error the engine surfaced. */
 const FAILURE_TEXT_MAX = 400;
 const LIMIT_FAILURE = /usage[_ ]limit|rate[_ ]limit|quota|credits|too many requests|spend control/i;
+/**
+ * The CLI refused because another of its own processes held the sign-in
+ * refresh lock (a probe and the session starting within the same second, or a
+ * stuck process from an earlier run). Nothing for the person to fix.
+ */
+const TRANSIENT_FAILURE = /another [\w ]*process is refreshing|exited mid-refresh|try again in a (?:moment|minute|few seconds)/i;
+/** What the channel says when a transient clash stops the run for good. */
+export const SETUP_TRANSIENT_MESSAGE = "Your coding agent hit a hiccup refreshing its sign-in.";
 
 /** Classify an error the engine surfaced (an `error` event or the agent's last words before exiting). */
 export function classifySetupFailure(message: string): SetupRunFailure | null {
   const text = message.trim();
   if (!text || text.length > FAILURE_TEXT_MAX) return null;
+  if (TRANSIENT_FAILURE.test(text)) return { kind: "other", message: SETUP_TRANSIENT_MESSAGE, transient: true };
   const kind = LIMIT_FAILURE.test(text) ? "limit" : AUTH_FAILURE.test(text) ? "auth" : "other";
   return { kind, message: text };
 }
@@ -698,9 +712,10 @@ export function loadSetupRunRecord(storage?: StorageLike | null): SetupRunRecord
       step: Math.min(Math.max(Math.floor(step), 0), SETUP_RUN_STEPS.length - 1),
       status,
     };
-    const failure = parsed.failure as { kind?: unknown; message?: unknown } | undefined;
+    const failure = parsed.failure as { kind?: unknown; message?: unknown; transient?: unknown } | undefined;
     if (status === "ended" && failure && (failure.kind === "auth" || failure.kind === "limit" || failure.kind === "other")) {
       record.failure = { kind: failure.kind, message: typeof failure.message === "string" ? failure.message : "" };
+      if (failure.transient === true) record.failure.transient = true;
     }
     return record;
   } catch {
@@ -800,6 +815,11 @@ export interface SetupRunApi {
   respondPermission(sessionId: string, requestId: string, decision: SetupRunPermissionDecision): Promise<void>;
   /** Send a plain user turn (a free-text answer). */
   send(sessionId: string, text: string): Promise<void>;
+  /**
+   * End a session's process for good (a stopped run whose CLI is still
+   * alive would fight the next one over the sign-in). Optional; idempotent.
+   */
+  stop?(sessionId: string): Promise<void>;
   /**
    * Store a credential the secret card collected, straight into the vault.
    * The value goes from the field to `hq secrets set --from-stdin` and is

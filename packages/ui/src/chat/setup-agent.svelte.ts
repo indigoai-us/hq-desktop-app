@@ -44,6 +44,8 @@ export interface SetupAgentTurn {
 export const SETUP_AGENT_NAME = "Setup Agent";
 /** An `agt_` id so the channel draws it with the agent identity mark. */
 export const SETUP_AGENT_UID = "agt_setup-agent";
+/** How long a stuck process gets to go before a transient stop is retried. */
+export const SETUP_RETRY_DELAY_MS = 3000;
 
 export interface SetupAgentHooks {
   /** A run started or finished — the host graduates welcome-first boot. */
@@ -189,6 +191,13 @@ export class SetupAgent {
   private unsubscribe: (() => void) | null = null;
   private finished = false;
   private providersRefreshedForFailure = false;
+  /** Sessions whose process this agent already asked the host to end. */
+  private readonly stopped = new Set<string>();
+  /** The pick behind the current run, so an automatic retry uses the same agent. */
+  private lastTool: SetupProviderTool | undefined;
+  /** One automatic retry per click: a clash that repeats is a real stop. */
+  private retriedTransient = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   mode = $state<SetupAgentMode>("idle");
   sessionId = $state<string | null>(null);
@@ -198,6 +207,10 @@ export class SetupAgent {
   error = $state<string | null>(null);
   /** Which agents this Mac can run setup with; null until the host answers. */
   providers = $state<SetupProviderStatus | null>(null);
+  /** Runs started since the last click (an automatic retry counts). */
+  attempts = $state(0);
+  /** A passing clash is being retried on its own: the channel thinks, it does not stop. */
+  retrying = $state(false);
   /** Answers given through requests (chips, typed replies to choices, permissions), by request id. */
   answers = $state<Map<string, string>>(new Map());
   /** What the channel showed last time, when the engine no longer has the session. */
@@ -215,6 +228,8 @@ export class SetupAgent {
   readonly providersReady: boolean;
   /** Why the run stopped, once it has; the channel offers the fix (sign in / run again). */
   readonly failure: SetupRunFailure | null;
+  /** The stop's plain detail, plus a word when a second try hit the same wall. */
+  readonly failureDetail: string | null;
 
   constructor(api: SetupRunApi | null, hooks: SetupAgentHooks = {}) {
     this.api = api;
@@ -232,10 +247,17 @@ export class SetupAgent {
       this.mode === "live" && this.state !== null && !this.state.done && !this.state.ended,
     );
     this.failure = $derived.by(() => {
+      if (this.retrying) return null;
       if (this.state) return this.state.ended ? (this.state.failure ?? null) : null;
       // Remembered as stopped, and the engine no longer has the session.
       if (this.mode === "stopped" && this.sessionId) return this.recordFailure ?? { kind: "other", message: "" };
       return null;
+    });
+    this.failureDetail = $derived.by(() => {
+      const failure = this.failure;
+      if (!failure) return null;
+      const note = this.attempts > 1 ? "Tried again just now — same thing happened." : "";
+      return [failure.message, note].filter(Boolean).join(" ") || null;
     });
     this.transcript = $derived.by(() => {
       const live = this.snapshot
@@ -310,13 +332,61 @@ export class SetupAgent {
       const failure = this.state?.failure ?? null;
       const turns = setupAgentTranscript(snapshot.sessionId, snapshot.events, this.answers, failure);
       if (turns.length > 0) saveTranscriptCache(snapshot.sessionId, turns);
+      if (!failure) return;
+      // A stopped run's CLI can sit there alive, holding the sign-in refresh
+      // lock the next run needs: end it for good, every time.
+      this.endSession(snapshot.sessionId);
+      // Two of its processes refreshed the sign-in at once: nothing for the
+      // person to fix, so try once more on our own before saying anything.
+      if (failure.transient && !this.retriedTransient) {
+        this.retryTransient(snapshot);
+        return;
+      }
       // The run stopped: find out afresh which agents are signed in so the
       // channel can offer them right there instead of a bare Run Setup.
-      if (failure && !this.providersRefreshedForFailure) {
+      if (!this.providersRefreshedForFailure) {
         this.providersRefreshedForFailure = true;
         void this.refreshProviders(true);
       }
     });
+  }
+
+  /** Ask the host to end a session's process; once per session, never blocking. */
+  private endSession(sessionId: string): void {
+    const api = this.api;
+    if (!api?.stop || this.stopped.has(sessionId)) return;
+    this.stopped.add(sessionId);
+    api.stop(sessionId).catch((err) => console.warn("[setup-agent] could not end session", sessionId, err));
+  }
+
+  /**
+   * Retry a transient stop once, after the stuck process has had a moment to
+   * go: the channel keeps thinking meanwhile. If the retry cannot even start,
+   * the original stop comes back with its fix.
+   */
+  private retryTransient(failed: SetupRunSnapshot): void {
+    this.retriedTransient = true;
+    this.retrying = true;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+    this.snapshot = { sessionId: failed.sessionId, events: [], phase: "starting" };
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.relaunch(this.lastTool, true).then((result) => {
+        if (result === "started") return;
+        this.retrying = false;
+        this.sessionId = failed.sessionId;
+        this.snapshot = failed;
+        this.mode = "live";
+        this.watch(failed.sessionId);
+      });
+    }, SETUP_RETRY_DELAY_MS);
+  }
+
+  private cancelRetry(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.retrying = false;
   }
 
   /** Resume record follows the run; finishing fires the host hook once. */
@@ -345,11 +415,20 @@ export class SetupAgent {
    * the caller opens it; nothing is duplicated here.
    */
   async start(tool?: SetupProviderTool): Promise<"started" | "needs-sessions-page" | "busy"> {
+    return this.launch(tool, false);
+  }
+
+  private async launch(tool: SetupProviderTool | undefined, auto: boolean): Promise<"started" | "needs-sessions-page" | "busy"> {
     const api = this.api;
     if (!api) return "needs-sessions-page";
     if (this.busy) return "busy";
     this.busy = true;
     this.error = null;
+    if (!auto) {
+      this.retriedTransient = false;
+      this.attempts = 0;
+    }
+    this.lastTool = tool;
     try {
       const readiness = await api.preflight();
       if (readiness !== "ready") return "needs-sessions-page";
@@ -361,6 +440,8 @@ export class SetupAgent {
       this.answers = new Map();
       this.cachedTurns = [];
       this.snapshot = { sessionId, events: [], phase: "starting" };
+      this.attempts += 1;
+      this.retrying = false;
       saveSetupRunRecord({ sessionId, step: 0, status: "running" });
       this.watch(sessionId);
       this.mode = "live";
@@ -417,12 +498,27 @@ export class SetupAgent {
   }
 
   async runAgain(tool?: SetupProviderTool): Promise<"started" | "needs-sessions-page" | "busy"> {
+    return this.relaunch(tool, false);
+  }
+
+  /**
+   * Start over from whatever run is showing. The previous session's process
+   * is ended first so it cannot hold the sign-in refresh lock against the new
+   * one, and the channel goes straight to "starting" — never through a blank
+   * hero on the way.
+   */
+  private async relaunch(tool: SetupProviderTool | undefined, auto: boolean): Promise<"started" | "needs-sessions-page" | "busy"> {
+    if (this.busy) return "busy";
+    if (!auto) this.cancelRetry();
     this.unsubscribe?.();
     this.unsubscribe = null;
+    if (this.sessionId) this.endSession(this.sessionId);
     this.snapshot = null;
     this.sessionId = null;
-    this.mode = "idle";
-    return this.start(tool);
+    this.mode = "starting";
+    const result = await this.launch(tool, auto);
+    if (result !== "started" && this.mode === "starting") this.mode = "idle";
+    return result;
   }
 
   private async withRun(action: (api: SetupRunApi, sessionId: string) => Promise<void>): Promise<void> {
@@ -489,6 +585,7 @@ export class SetupAgent {
   }
 
   dispose(): void {
+    this.cancelRetry();
     this.unsubscribe?.();
     this.unsubscribe = null;
   }

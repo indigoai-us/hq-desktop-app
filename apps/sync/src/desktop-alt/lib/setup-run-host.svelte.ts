@@ -89,6 +89,16 @@ export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunAp
     return store.startAndSend(spec, prompt);
   }
 
+  /**
+   * End a session's process for good. A stopped run whose CLI is still alive
+   * holds the sign-in refresh lock the next run needs; the Rust side closes
+   * stdin, waits, then kills — and treats a session already gone as ended.
+   */
+  async function stop(sessionId: string): Promise<void> {
+    await (options.invoke ?? invoke)('agent_session_end', { sessionId });
+    await store.refreshList();
+  }
+
   async function attach(sessionId: string): Promise<boolean> {
     await store.refreshList();
     if (!store.sessions.some((session) => session.sessionId === sessionId)) return false;
@@ -176,6 +186,7 @@ export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunAp
     answerQuestion,
     respondPermission,
     send,
+    stop,
     storeSecret,
     providers,
     providerLoginStart: (tool) => store.providerLoginStart(tool),
