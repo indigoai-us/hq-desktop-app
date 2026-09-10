@@ -213,7 +213,11 @@
 
   // --- company / project start-work -----------------------------------------
   /** The company pill's second level: a project NAME, or null for company mode. */
-  let project = $state<string | null>(null);
+  // A project-channel "New session" is already bound. Seed the pill from the
+  // route so the first send cannot race the projects-list effect and pick up
+  // a remembered last project instead.
+  const routeBoundProject = Boolean(!sessionId && initialCompany && initialProject);
+  let project = $state<string | null>(routeBoundProject ? initialProject : null);
   let projects = $state<ProjectEntry[]>([]);
   let projectsLoading = $state(false);
   let projectsError = $state('');
@@ -243,6 +247,10 @@
   });
   $effect(() => {
     const slug = routeProjectPending;
+    // Wait until this company's list has finished loading. Applying while
+    // `projectsCompany` is set but `projectsLoading` is still false (the
+    // gap before the fetch flag flips) consumes the pending slug, after which
+    // the last-project restore can wipe it.
     if (!slug || projectsLoading || projectsCompany !== company) return;
     routeProjectPending = null;
     // A project-channel route is authoritative even when its older PRD falls
@@ -564,7 +572,7 @@
     projectsCompany = wanted;
     projects = [];
     projectsError = '';
-    project = readLastProject(wanted);
+    if (!routeBoundProject) project = readLastProject(wanted);
     if (!wanted) return;
     projectsLoading = true;
     void liveSessionStore
@@ -572,6 +580,10 @@
       .then((rows) => {
         if (projectsCompany !== wanted) return;
         projects = rows;
+        if (routeBoundProject && initialProject) {
+          project = projectNameFor(rows, initialProject) ?? initialProject;
+          return;
+        }
         // A remembered project that no longer exists falls back to "No project".
         if (project && !rows.some((row) => row.name === project)) project = null;
       })

@@ -42,6 +42,7 @@ import type { SessionEvent } from '../../components/sessions/session-events';
 import type { AgentSession } from '../lib/sessions';
 import { stopSessionsStore } from '../lib/sessions-store.svelte';
 import {
+  LAST_COMPANY_KEY,
   LAST_EFFORT_KEY,
   LAST_MODEL_KEY,
   LAST_TOOL_KEY,
@@ -50,6 +51,7 @@ import {
   readRemembered,
   remember,
 } from '../../components/sessions/session-models';
+import { rememberLastProject } from '../../components/sessions/startwork';
 import {
   MODEL_NOT_FOUND_CODE,
   MODEL_NOT_FOUND_TEXT,
@@ -129,6 +131,7 @@ interface Backend {
     history: never[];
     outpost: null;
   }>> | null;
+  projects: { name: string; path: string; description: string; branchName: null; storyCounts: { total: number; done: number }; updatedAt: null; owner: null; lastActivityAt: null; status: 'active' }[];
 }
 
 let backend: Backend;
@@ -139,6 +142,7 @@ function mockBackend() {
     starts: [], sends: [], list: [], replay: [], observed: [], claudeCatalog: null,
     providerCatalog: null,
     historyPage: { events: [], before: null },
+    projects: [],
   };
   invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
     switch (command) {
@@ -174,6 +178,7 @@ function mockBackend() {
       case 'hq_skill_catalog':
         return Promise.resolve({ workers: [], skills: [] });
       case 'hq_company_projects':
+        return Promise.resolve(backend.projects);
       case 'session_mention_candidates':
         return Promise.resolve([]);
       default:
@@ -677,6 +682,43 @@ describe('first-message orientation', () => {
     expect(backend.sends[0]).toMatchObject({
       sessionId: 'sess-1',
       text: '/startwork indigo hq-agent-workspace\n\nhi',
+    });
+  });
+
+  it('keeps the clicked project when a different lastProject is in the picker feed', async () => {
+    remember(LAST_TOOL_KEY, 'codex');
+    remember(LAST_COMPANY_KEY, 'indigo');
+    rememberLastProject('indigo', 'hq-desktop-back-forward-nav');
+    backend.projects = [
+      {
+        name: 'hq-desktop-back-forward-nav',
+        path: '/hq/companies/indigo/projects/hq-desktop-back-forward-nav',
+        description: '',
+        branchName: null,
+        storyCounts: { total: 1, done: 0 },
+        updatedAt: null,
+        owner: null,
+        lastActivityAt: null,
+        status: 'active',
+      },
+    ];
+    render({
+      initialCompany: 'indigo',
+      initialProject: 'hq-desktop-sessions-testing',
+      initialChannelId: 'chn_sessions',
+    });
+    await settle();
+
+    send('pick the next issue');
+
+    await vi.waitFor(() => expect(backend.sends).toHaveLength(1));
+    expect(backend.starts[0]).toMatchObject({
+      company: 'indigo',
+      project: 'hq-desktop-sessions-testing',
+      projectChannelId: 'chn_sessions',
+    });
+    expect(backend.sends[0]).toMatchObject({
+      text: '/startwork indigo hq-desktop-sessions-testing\n\npick the next issue',
     });
   });
 });
