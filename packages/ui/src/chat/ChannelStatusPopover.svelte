@@ -779,7 +779,9 @@
     width: 20px;
     height: 20px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.11);
+    /* `--line2`, not the dark theme's literal — that value is a white wash,
+       so in light mode the disc all but vanished. */
+    background: var(--line2);
     color: var(--t1);
     font-size: 9px;
     font-weight: 600;
@@ -813,8 +815,11 @@
     background: rgba(0, 0, 0, 0.08);
   }
 
+  /* Concept `.m-ava.ai`: the ice TILE, the same pale plate every other agent
+     mark in the shell wears. Mixing toward a dark literal painted a navy disc
+     that read as a different component in light mode. */
   .m-ava.ai {
-    background: color-mix(in srgb, var(--ice-ink) 22%, #2c3d52);
+    background: var(--ice-tile);
     color: var(--ice-ink);
   }
 

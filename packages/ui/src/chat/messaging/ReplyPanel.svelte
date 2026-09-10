@@ -1712,8 +1712,11 @@
     padding: 0;
     border: none;
     border-radius: 6px;
-    background: #c9d6e4;
-    color: #101014;
+    /* Concept `.cmp-send`: the ice INK fill with the badge foreground on it.
+       These were the dark theme's literals, so in light mode the button came
+       out a pale chip with a dark arrow instead of a solid one. */
+    background: var(--ice-ink);
+    color: var(--badge-fg);
     cursor: pointer;
     transition:
       opacity 0.15s,

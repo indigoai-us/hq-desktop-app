@@ -1227,14 +1227,16 @@ describe("rail scope labels", () => {
     ).toEqual({ kind: "company", text: "Indigo" });
   });
 
-  it("company rows never do — the row is already titled with the company", () => {
+  it("company rows show it too — the rail titles them with their own name", () => {
+    // A company can hold several company-scoped channels, so the rail keeps
+    // each one's own name and the company rides the hover label.
     expect(
       railRowScopeLabel(channelRow("hq-desktop", "cmp_indigo"), {
         scope: "all",
         companies,
         enabled: true,
       }),
-    ).toBeNull();
+    ).toEqual({ kind: "company", text: "Indigo" });
   });
 
   it("agent DMs in All scope show the company name", () => {

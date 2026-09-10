@@ -106,7 +106,6 @@
     pickAutoOpenConversation,
     pickSettledBootConversation,
     railRowScopeLabel,
-    resolveRailCompanyName,
     togglePin,
     type CompanyScope,
     type ConversationRow,
@@ -561,13 +560,16 @@
   }
 
   /**
-   * A company channel IS the company's room, so the rail names the company
-   * rather than the slug — and then the hover company label beside it would be
-   * saying the same word twice, so `railRowScopeLabel` drops it for these rows.
+   * The rail shows a row's own name.
+   *
+   * NOT the company name for company-scoped rows: a company can hold several
+   * of them (the fixture set alone has #gtm-standup and #finance, both scope
+   * "company", both Indigo), and titling each with its company turns them into
+   * a run of identical rows. The channel HEADER does name the company, because
+   * there only one row is selected at a time.
    */
   function railRowTitle(row: ConversationRow): string {
-    if (!isCompanyScopedRow(row)) return row.title;
-    return resolveRailCompanyName(row.companyUid, scopeCompanies) ?? row.title;
+    return row.title;
   }
 
   /**
@@ -2871,7 +2873,7 @@
           {@render draftMark()}
         {/if}
         <span class="chat-row-copy">
-          <span class="chat-row-title">{row.title}</span>
+          <span class="chat-row-title">{railRowTitle(row)}</span>
           {#if extras?.badge}
             <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
               {extras.badge}
@@ -4365,24 +4367,30 @@
     /* Dim, never wash: text-1 is near-white in dark mode, so a text-1 scrim
        BRIGHTENED the app behind modals. A black scrim is the convention in
        both themes. */
-    background: rgba(0, 0, 0, 0.45);
+    background: rgba(0, 0, 0, 0.28);
   }
 
   .chat-overlay.top {
     align-items: flex-start;
-    padding-top: 88px;
+    padding-top: 72px;
   }
 
+  /* Same card as every other panel in the shell — concept `.search-modal`:
+     12px, the panel border and fill, the blur that fill expects. It was 14px
+     on the flat window surface, so the one popover the user opens most read as
+     a different component from the menus around it. */
   .chat-switcher {
     display: flex;
     flex-direction: column;
-    width: min(560px, 100%);
-    max-height: min(60vh, 460px);
+    width: min(560px, 86%);
+    max-height: min(62vh, 460px);
     overflow: hidden;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 14px;
-    background: var(--v4-surface-solid, #fff);
-    box-shadow: var(--v4-shadow-window, var(--panel-shadow));
+    border: 1px solid var(--panel-border, var(--v4-hairline));
+    border-radius: 12px;
+    background: var(--panel-bg, var(--v4-surface-solid, #fff));
+    box-shadow: var(--panel-shadow, var(--v4-shadow-window));
+    backdrop-filter: blur(40px) saturate(1.5);
+    -webkit-backdrop-filter: blur(40px) saturate(1.5);
   }
 
   .chat-switcher-close {

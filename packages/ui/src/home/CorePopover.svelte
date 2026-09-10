@@ -628,7 +628,11 @@
     </button>
   </div>
 
-  <section class="core-packs" data-testid="core-popover-packs">
+  <section
+    class="core-packs"
+    class:open={packsExpanded}
+    data-testid="core-popover-packs"
+  >
     <button
       type="button"
       class="core-packs-toggle"
@@ -861,12 +865,15 @@
     gap: 2px;
   }
 
+  /* Every row in this panel is the same height — a 28px minimum let the two
+     version rows grow to 30px on their mono meta while Library and Packs
+     stayed at 29, so the pitch jogged down the list. */
   .core-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    min-height: 28px;
+    min-height: 30px;
     padding: 6px 8px;
     border-radius: 8px;
   }
@@ -1055,16 +1062,33 @@
     outline-offset: var(--v4-focus-offset, 2px);
   }
 
+  /* Concept `.packs-box`: collapsed, Packs is a plain menu row like Library
+     above it — the boxed sub-list chrome only appears once it has a sub-list
+     to hold. The box was painted unconditionally, so a closed Packs sat in a
+     grey slab with nothing in it. */
   .core-packs {
     display: flex;
     flex-direction: column;
     gap: 0;
     border: none;
     border-radius: 10px;
+    transition: background 0.12s;
+  }
+
+  .core-packs.open {
     background: var(--raised);
     padding: 4px 0;
     margin-top: 4px;
-    transition: background 0.12s;
+  }
+
+  /* Open, the box owns the hover: brightening the whole thing beats a pill
+     around a row that is now a header. */
+  .core-packs.open:has(.core-packs-toggle:hover) {
+    background: var(--btn-bg);
+  }
+
+  .core-packs.open .core-packs-toggle:hover {
+    background: transparent;
   }
 
   .core-packs-toggle {
@@ -1073,7 +1097,8 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    padding: 8px;
+    min-height: 30px;
+    padding: 6px 8px;
     border: 0;
     border-radius: 8px;
     background: transparent;
@@ -1082,13 +1107,15 @@
     cursor: pointer;
   }
 
-  .core-packs-toggle:hover {
-    background: transparent;
+  /* Collapsed it is a menu row, so it gets the row hover pill. */
+  .core-packs:not(.open) .core-packs-toggle:hover {
+    background: var(--hover);
   }
 
-  .core-packs:has(.core-packs-toggle:hover) {
-    background: var(--btn-bg);
+  .core-packs.open .core-packs-toggle {
+    padding: 8px;
   }
+
 
   .core-packs-label {
     font-size: 12px;
