@@ -937,6 +937,19 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "report_not_requested"
                 | "report_disabled_by_user_options"
         )),
+        // Report-directory delivery provenance (HQ-DESKTOP-5W): whether the
+        // crash-surviving report directory was delivered to the child through the
+        // escaped NODE_OPTIONS value only (production), through both NODE_OPTIONS and an
+        // argv mirror (bare-`node` path), withheld by a user `--report-*`, or not
+        // requested. Fixed producer vocabulary; this independent egress check degrades a
+        // producer bug that shipped a path or raw byte to `[Filtered]` instead of
+        // projecting it into a tag. Mirrors `RunnerReportDirDelivery::as_str` in
+        // hq-desktop-core (kept an independent local mirror, like the other
+        // runner-diagnostic axes above).
+        "runner_report_dir_delivery" => Some(matches!(
+            value,
+            "env_escaped" | "env_and_argv" | "disabled_by_user_options" | "not_requested"
+        )),
         _ => None,
     }
 }
@@ -1986,6 +1999,33 @@ mod tests {
                 valid_runner_diagnostic_field(key, leak),
                 Some(false),
                 "{key} must reject raw event-log text"
+            );
+        }
+    }
+
+    #[test]
+    fn every_report_dir_delivery_token_survives_and_lookalikes_fail_closed() {
+        use hq_desktop_core::daemon::RunnerReportDirDelivery;
+        // Driven from the producer's OWN vocabulary (HQ-DESKTOP-5W) so the egress check
+        // can never fall behind a newly-added delivery token.
+        for token in RunnerReportDirDelivery::ALL.map(|d| d.as_str()) {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_dir_delivery", token),
+                Some(true),
+                "delivery token {token:?} must survive egress"
+            );
+        }
+        // A path, a raw report byte, or any off-vocabulary value fails closed.
+        for bad in [
+            r#"C:\Users\ada\.hq\runner-reports\watcher\12"#,
+            "env_escaped_plus_extra",
+            "report_absent",
+            "",
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_dir_delivery", bad),
+                Some(false),
+                "off-vocabulary delivery value {bad:?} must fail closed"
             );
         }
     }

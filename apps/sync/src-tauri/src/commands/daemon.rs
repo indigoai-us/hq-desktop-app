@@ -1048,6 +1048,14 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     );
     let runner_hq_cloud_version =
         hq_desktop_core::runner_target::runner_hq_cloud_version(&runner_spawn_target);
+    // Whether this spawn ALSO mirrors the report flags into argv — true only on the
+    // bare-`node` local-runner path. Both production routes (npx/cmd_shim) deliver
+    // through NODE_OPTIONS only, so this is the one bit distinguishing `env_escaped`
+    // from `env_and_argv` for the delivery provenance at exit (HQ-DESKTOP-5W).
+    let report_delivers_argv = matches!(
+        &runner_spawn_target,
+        hq_desktop_core::runner_target::RunnerSpawnTarget::Local { .. }
+    );
 
     log("daemon", "spawn: hq-sync-runner --watch");
     // Stamp the spawn so the Exit handler can tell a fast crash-loop failure
@@ -1310,6 +1318,18 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             );
                         exit_context.runner_report_read =
                             report_request.seed_read_token().to_string();
+                        // Delivery provenance (HQ-DESKTOP-5W): the SAME request, crossed
+                        // with whether this spawn route also mirrored the flags into
+                        // argv, resolves how the report directory was delivered to the
+                        // child — so a future `report_absent` is attributable to a
+                        // correctly-armed channel rather than a broken one.
+                        exit_context.runner_report_dir_delivery =
+                            hq_desktop_core::daemon::resolve_runner_report_dir_delivery(
+                                report_request,
+                                report_delivers_argv,
+                            )
+                            .as_str()
+                            .to_string();
                         let deferred_report_dir = matches!(
                             report_request,
                             hq_desktop_core::daemon::RunnerReportRequest::Requested
@@ -1596,6 +1616,14 @@ struct WatcherExitCaptureContext {
     /// upgrades this in-place to `report_read`/`report_absent`/`report_unreadable`
     /// after it reads the report; other exits keep the seed. Diagnostic-only.
     runner_report_read: String,
+    /// Where this generation's report directory was delivered to the child
+    /// (HQ-DESKTOP-5W): `env_escaped` on the production npx/cmd_shim path,
+    /// `env_and_argv` on the bare-`node` local path, `disabled_by_user_options`, or
+    /// `not_requested`. Seeded `not_requested`; the exit callback overwrites it from
+    /// the resolved request + spawn route. Additive to `runner_report_read`, it lets
+    /// the next occurrence tell "Node was asked correctly and still wrote nothing"
+    /// from "Node was never asked correctly". Fixed vocabulary; diagnostic-only.
+    runner_report_dir_delivery: String,
     runner_stack_shape: String,
     runner_stack_signature: String,
     runner_stack_depth: u8,
@@ -1794,6 +1822,7 @@ impl Default for WatcherExitCaptureContext {
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             watcher_launch_origin: "renderer".to_string(),
             runner_report_read: "report_not_requested".to_string(),
+            runner_report_dir_delivery: "not_requested".to_string(),
             runner_stack_shape: "all_redacted".to_string(),
             runner_stack_signature: "unknown".to_string(),
             runner_stack_depth: 0,
@@ -1982,6 +2011,8 @@ fn watcher_exit_capture_context(
         // generation's report directory) overwrites it with the resolved request,
         // and the deferred worker upgrades it after the report read.
         runner_report_read: "report_not_requested".to_string(),
+        // Same seeding discipline (HQ-DESKTOP-5W delivery provenance).
+        runner_report_dir_delivery: "not_requested".to_string(),
         runner_stack_shape: stack.shape,
         runner_stack_signature: stack.signature,
         runner_stack_depth: stack.depth,
@@ -4081,6 +4112,16 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         if runner_fatal_class_seen { "stderr" } else { "none" }.to_string(),
     ));
     tags.push(("runner_report_read", context.runner_report_read.clone()));
+    // Report-directory delivery provenance (HQ-DESKTOP-5W): how the per-generation
+    // report directory was delivered to the child (env_escaped on the production npx
+    // path, env_and_argv on the bare-`node` path, disabled_by_user_options, or
+    // not_requested). Makes a `report_absent` recurrence decisive — a correctly-armed
+    // channel that still wrote nothing vs. a channel that never reached Node. Fixed
+    // vocabulary, re-validated at the telemetry egress; diagnostic-only.
+    tags.push((
+        "runner_report_dir_delivery",
+        context.runner_report_dir_delivery.clone(),
+    ));
     // Name the terminating signal's disposition as a fixed, closed-vocabulary
     // token so a signal-only watcher exit — e.g. a macOS SIGHUP — is filterable in
     // Sentry without parsing the message text. Always present (`none` for a

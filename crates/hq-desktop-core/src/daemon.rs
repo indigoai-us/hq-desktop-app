@@ -518,6 +518,99 @@ pub fn resolve_runner_report_request(
     }
 }
 
+/// Where the runner's report directory was delivered to the child (HQ-DESKTOP-5W).
+/// The prior recurrence recorded `report_absent` with no way to tell "Node was asked
+/// correctly and still wrote nothing" (a crash class with no in-process channel) from
+/// "Node was never asked correctly" (the escaping defect [`node_options_quoted_value`]
+/// fixes). This fixed-vocabulary provenance, emitted at both routes' exits and
+/// allow-listed at egress, makes the next occurrence decisive. Additive to
+/// `runner_report_read`, which keeps its own vocabulary and seeding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerReportDirDelivery {
+    /// The report directory was delivered ONLY through the escaped `NODE_OPTIONS`
+    /// value (the production npx / cmd_shim watcher path and the manual route). The
+    /// value round-trips through Node's `ParseNodeOptionsEnvVar` byte-for-byte.
+    EnvEscaped,
+    /// Delivered through BOTH the escaped `NODE_OPTIONS` value AND an unquoted argv
+    /// mirror (the bare-`node` local-runner path, which double-applies the flags so a
+    /// host that strips `NODE_OPTIONS` still yields a report).
+    EnvAndArgv,
+    /// The child's inherited `NODE_OPTIONS` already set a `--report-*` option, so ours
+    /// were withheld — the user's report configuration wins, nothing was delivered.
+    DisabledByUserOptions,
+    /// No report directory existed for this generation; none was delivered.
+    NotRequested,
+}
+
+impl RunnerReportDirDelivery {
+    /// Every variant, so content-safety tests enumerate the emitter's own token set.
+    pub const ALL: [RunnerReportDirDelivery; 4] = [
+        Self::EnvEscaped,
+        Self::EnvAndArgv,
+        Self::DisabledByUserOptions,
+        Self::NotRequested,
+    ];
+
+    /// Fixed vocabulary, safe for a Sentry tag.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EnvEscaped => "env_escaped",
+            Self::EnvAndArgv => "env_and_argv",
+            Self::DisabledByUserOptions => "disabled_by_user_options",
+            Self::NotRequested => "not_requested",
+        }
+    }
+}
+
+/// Resolve the report-directory delivery provenance from the report request and
+/// whether the spawn route ALSO mirrors the flags into argv (the bare-`node` local
+/// path; both production routes deliver through `NODE_OPTIONS` only). Shared by the
+/// spawn composer and the exit reader so both derive the SAME token from the SAME
+/// inputs. A `Requested` report is `env_escaped` on the `NODE_OPTIONS`-only routes
+/// (positive evidence the channel was armed and delivered correctly) and
+/// `env_and_argv` where the argv mirror is also applied.
+pub fn resolve_runner_report_dir_delivery(
+    request: RunnerReportRequest,
+    delivers_argv: bool,
+) -> RunnerReportDirDelivery {
+    match request {
+        RunnerReportRequest::NotRequested => RunnerReportDirDelivery::NotRequested,
+        RunnerReportRequest::DisabledByUserOptions => {
+            RunnerReportDirDelivery::DisabledByUserOptions
+        }
+        RunnerReportRequest::Requested if delivers_argv => RunnerReportDirDelivery::EnvAndArgv,
+        RunnerReportRequest::Requested => RunnerReportDirDelivery::EnvEscaped,
+    }
+}
+
+/// Render a filesystem path as a `NODE_OPTIONS` value token that Node's
+/// `ParseNodeOptionsEnvVar` decodes back to the EXACT same bytes. Node
+/// whitespace-splits `NODE_OPTIONS` and, INSIDE a double-quoted region, consumes a
+/// backslash as an escape for the FOLLOWING character (any character) — so a bare
+/// double-quoted Windows report directory silently loses every `\` separator. That is
+/// the HQ-DESKTOP-5W recurrence defect: the prior fix quoted the value for paths with
+/// a space but did not escape it, so `C:\Users\a\.hq\runner-reports\watcher\12`
+/// reached Node as `C:Usersa.hqrunner-reportswatcher12`, the exit reader probed the
+/// correct app-owned path, found nothing, and the seed stayed `report_absent`.
+/// Wrapping in double quotes AND escaping every backslash and every double quote makes
+/// the value survive verbatim, including a path that contains a space (the case the
+/// original quoting was added for). A POSIX path carries no backslash, so it
+/// round-trips unchanged apart from the surrounding quotes. An argv element is a single
+/// OS argument and is NEVER re-parsed, so [`runner_report_argv_flags`] stays unquoted
+/// and unescaped — only this `NODE_OPTIONS` rendering is escaped.
+fn node_options_quoted_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        if ch == '\\' || ch == '"' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('"');
+    out
+}
+
 /// The report flags as passed in argv (bare-`node` path): the directory value is a
 /// SINGLE argv element, so it is never quoted (a quote would become a literal).
 /// On POSIX the signal-triggered report is armed too (see
@@ -541,10 +634,12 @@ fn runner_report_argv_flags(report_dir: &Path) -> Vec<String> {
 }
 
 /// The report flags as composed into NODE_OPTIONS: Node whitespace-splits
-/// NODE_OPTIONS, so the directory value is quoted to survive a path with a space
-/// (e.g. a Windows profile name with a space). Node's NODE_OPTIONS parser honours
-/// quoting — the same property `parse_max_old_space_mb` relies on. On POSIX the
-/// signal-triggered report is armed too (see [`runner_report_signal_flag`]).
+/// NODE_OPTIONS, so the directory value is quoted AND backslash/quote-escaped via
+/// [`node_options_quoted_value`] to survive Node's own unescaping (a Windows path's
+/// separators and a path containing a space both round-trip byte-for-byte). Node's
+/// NODE_OPTIONS parser honours quoting — the same property `parse_max_old_space_mb`
+/// relies on. On POSIX the signal-triggered report is armed too (see
+/// [`runner_report_signal_flag`]).
 fn runner_report_node_options_flags(report_dir: &Path) -> Vec<String> {
     let mut flags = vec!["--report-on-fatalerror".to_string()];
     // Arm the uncaught-exception trigger on EVERY platform (HQ-DESKTOP-66); see
@@ -555,7 +650,10 @@ fn runner_report_node_options_flags(report_dir: &Path) -> Vec<String> {
         flags.push(signal_flag.to_string());
     }
     flags.push("--report-compact".to_string());
-    flags.push(format!("--report-directory=\"{}\"", report_dir.display()));
+    flags.push(format!(
+        "--report-directory={}",
+        node_options_quoted_value(&report_dir.display().to_string())
+    ));
     flags.push(format!("--report-filename={RUNNER_DIAGNOSTIC_REPORT_FILENAME}"));
     flags
 }
@@ -2348,6 +2446,160 @@ mod tests {
         let node_options = flags.node_options.clone().expect("ceiling still composed");
         assert!(!node_options.contains("--report-filename=runner-fatal.json"));
         assert!(!flags.node_argv.iter().any(|a| a.contains("runner-fatal.json")));
+    }
+
+    /// Faithful test-only port of Node's `ParseNodeOptionsEnvVar` tokenizer
+    /// (`src/node_options.cc`): split on an ASCII space OUTSIDE double quotes; a
+    /// double quote toggles quote state and is dropped; INSIDE quotes a backslash
+    /// escapes the FOLLOWING character (any character) and is itself dropped. This is
+    /// the oracle the prior fix's suite lacked — every prior spawn-flag fixture path
+    /// was POSIX, so no backslash was ever decoded and the unescaped double-quoting
+    /// passed review while being destroyed in transit on Windows. A trailing backslash
+    /// inside a quoted region is an error in Node; the encoder never emits one, so the
+    /// oracle asserts against it. Hand-verified against node v22.23.1 during planning.
+    fn node_options_tokenize(node_options: &str) -> Vec<String> {
+        let chars: Vec<char> = node_options.chars().collect();
+        let mut args: Vec<String> = Vec::new();
+        let mut in_string = false;
+        let mut will_start_new_arg = true;
+        let mut i = 0;
+        while i < chars.len() {
+            let mut c = chars[i];
+            if c == '\\' && in_string {
+                assert!(
+                    i + 1 < chars.len(),
+                    "invalid trailing backslash inside a NODE_OPTIONS string: {node_options:?}"
+                );
+                i += 1;
+                c = chars[i];
+            } else if c == ' ' && !in_string {
+                will_start_new_arg = true;
+                i += 1;
+                continue;
+            } else if c == '"' {
+                in_string = !in_string;
+                i += 1;
+                continue;
+            }
+            if will_start_new_arg {
+                args.push(c.to_string());
+                will_start_new_arg = false;
+            } else {
+                args.last_mut().expect("arg started").push(c);
+            }
+            i += 1;
+        }
+        args
+    }
+
+    /// Recover the `--report-directory` value from a composed NODE_OPTIONS string by
+    /// decoding it exactly as Node would, then stripping the flag prefix.
+    fn recover_report_directory(node_options: &str) -> String {
+        node_options_tokenize(node_options)
+            .into_iter()
+            .find_map(|tok| tok.strip_prefix("--report-directory=").map(str::to_string))
+            .expect("composed NODE_OPTIONS carries a --report-directory token")
+    }
+
+    #[test]
+    fn node_options_report_directory_round_trips_through_the_node_tokenizer() {
+        // The assertion the prior fix's suite lacked (HQ-DESKTOP-5W): compose the ACTUAL
+        // NODE_OPTIONS the app emits, decode it with a faithful port of Node's own
+        // tokenizer, and require the recovered directory to equal the input
+        // byte-for-byte across a Windows path, a Windows path with a space, a
+        // trailing-separator path, a POSIX path, a POSIX path with a space, and an
+        // embedded-quote path. On Unix `Path::display` keeps backslashes verbatim, so
+        // the Windows-shaped inputs exercise the exact bytes production composes.
+        let ceiling = RunnerHeapCeiling {
+            mb: 3584,
+            source: RunnerHeapCeilingSource::DeclaredDefault,
+        };
+        for dir in [
+            r"C:\Users\donal\.hq\runner-reports\watcher\12",
+            r"C:\Users\Ada Lovelace\.hq\rr\7",
+            r"C:\Users\donal\.hq\rr\7\",
+            "/home/ada/.hq/runner-reports/7",
+            "/home/ada/Ada Lovelace/.hq/rr/7",
+            r#"C:\weird"name\rr"#,
+        ] {
+            let path = Path::new(dir);
+            let flags = compose_runner_spawn_flags(None, Some(ceiling), Some(path));
+            let node_options = flags.node_options.clone().expect("NODE_OPTIONS composed");
+            assert_eq!(
+                recover_report_directory(&node_options),
+                path.display().to_string(),
+                "report directory did not survive Node's NODE_OPTIONS parser for {dir:?}"
+            );
+            assert!(node_options.contains("--max-old-space-size=3584"));
+        }
+    }
+
+    #[test]
+    fn node_options_broken_prior_quoting_is_proven_to_lose_windows_separators() {
+        // Non-vacuity guard: the prior rendering (double-quoted but UNESCAPED) decoded by
+        // the SAME oracle MUST mangle a Windows path — otherwise the round-trip test
+        // above could pass against the very defect it exists to catch.
+        let dir = r"C:\Users\donal\.hq\rr\12";
+        let broken = format!("--report-directory=\"{dir}\"");
+        assert_eq!(recover_report_directory(&broken), r"C:Usersdonal.hqrr12");
+        assert_ne!(recover_report_directory(&broken), dir);
+    }
+
+    #[test]
+    fn argv_report_directory_is_unquoted_while_node_options_is_escaped_and_both_decode_same() {
+        // The argv mirror is a single OS argument, never re-parsed, so it stays
+        // unquoted and unescaped; the NODE_OPTIONS rendering is escaped. For a Windows
+        // path the two encodings DIFFER textually yet decode to the same directory.
+        let dir = Path::new(r"C:\Users\donal\.hq\rr\12");
+        let flags = compose_runner_spawn_flags(None, None, Some(dir));
+        let node_options = flags.node_options.clone().expect("composed");
+        let argv_dir = flags
+            .node_argv
+            .iter()
+            .find_map(|a| a.strip_prefix("--report-directory="))
+            .expect("argv carries the report directory");
+        assert_eq!(argv_dir, dir.display().to_string());
+        assert!(!argv_dir.contains('"'));
+        assert!(!argv_dir.contains("\\\\"));
+        let node_options_dir_token = node_options
+            .split(' ')
+            .find(|t| t.starts_with("--report-directory="))
+            .expect("NODE_OPTIONS carries the report directory");
+        assert_ne!(
+            node_options_dir_token,
+            format!("--report-directory={argv_dir}")
+        );
+        assert_eq!(recover_report_directory(&node_options), argv_dir.to_string());
+    }
+
+    #[test]
+    fn resolve_runner_report_dir_delivery_maps_request_and_route() {
+        use RunnerReportDirDelivery as D;
+        use RunnerReportRequest as R;
+        // NODE_OPTIONS-only routes (production npx/cmd_shim watcher + manual) →
+        // env_escaped; the bare-`node` local path double-applies into argv →
+        // env_and_argv.
+        assert_eq!(
+            resolve_runner_report_dir_delivery(R::Requested, false),
+            D::EnvEscaped
+        );
+        assert_eq!(
+            resolve_runner_report_dir_delivery(R::Requested, true),
+            D::EnvAndArgv
+        );
+        for delivers_argv in [true, false] {
+            assert_eq!(
+                resolve_runner_report_dir_delivery(R::DisabledByUserOptions, delivers_argv),
+                D::DisabledByUserOptions
+            );
+            assert_eq!(
+                resolve_runner_report_dir_delivery(R::NotRequested, delivers_argv),
+                D::NotRequested
+            );
+        }
+        for token in D::ALL.map(|d| d.as_str()) {
+            assert!(token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        }
     }
 
     #[test]
