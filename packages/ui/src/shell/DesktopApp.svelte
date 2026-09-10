@@ -93,6 +93,12 @@
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
+  import SessionThreadPanel from "../chat/messaging/SessionThreadPanel.svelte";
+  import {
+    createSessionThread,
+    excerptFromBody,
+    type SessionThread,
+  } from "../chat/messaging/session-thread.js";
   import ArtifactPanel from "../chat/messaging/ArtifactPanel.svelte";
   import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
@@ -740,6 +746,10 @@
   /** Company display name from the settings tab appearance, when fetched. */
   let companyAppearanceName = $state<string | null>(null);
   let openReplyRootId = $state<string | null>(null);
+  /** In-channel session pane (spike) — same column as Thread. */
+  let openSessionThread = $state<SessionThread | null>(null);
+  let sessionThreadsById = $state<Record<string, SessionThread>>({});
+  let localSessionWires = $state<ConversationMessageWire[]>([]);
   /** Right side pane in ARTIFACT mode. Supersedes thread/profile while open;
    *  closing it falls back to whatever pane was open underneath. */
   let openArtifactView = $state<ChatArtifact | null>(null);
@@ -1608,19 +1618,22 @@
       projectActivityRows.length > 0
         ? mergeActivityIntoTimeline(timeline, projectActivityRows)
         : timeline;
-    if (!selectedRow || !isSetupChannel(selectedRow.channelId)) return merged;
-    // #welcome must not lead with "Create a company" for an account whose
-    // roster already holds one (created on the website / another machine).
-    const welcome = withoutCompaniesSummaryCards(
-      withoutSeededCreateCompanyCards(merged, {
-        hasCompany: hasRosterCompany,
-        createRequested: createCompanyRequested,
-        rosterLoading: setupRosterLoading(companies, rosterStatus),
-      }),
-    );
-    // The Setup Agent's turns are local to this Mac: they render in the
-    // channel but are never posted to it.
-    return setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
+    let rows = merged;
+    if (selectedRow && isSetupChannel(selectedRow.channelId)) {
+      // #welcome must not lead with "Create a company" for an account whose
+      // roster already holds one (created on the website / another machine).
+      const welcome = withoutCompaniesSummaryCards(
+        withoutSeededCreateCompanyCards(merged, {
+          hasCompany: hasRosterCompany,
+          createRequested: createCompanyRequested,
+          rosterLoading: setupRosterLoading(companies, rosterStatus),
+        }),
+      );
+      rows =
+        setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
+    }
+    if (localSessionWires.length === 0) return rows;
+    return [...rows, ...localSessionWires];
   });
 
   /**
@@ -1838,6 +1851,7 @@
   function openMemberProfile(row: StatusPersonRow): void {
     // One right panel at a time — a profile/agent pane supersedes a reply.
     openReplyRootId = null;
+    openSessionThread = null;
     openArtifactView = null;
     if (isAgentUid(row.personUid)) {
       openProfileMember = null;
@@ -2905,12 +2919,119 @@
     }
   }
 
+  function revealSessionThread(thread: SessionThread): void {
+    openReplyRootId = null;
+    openProfileMember = null;
+    openAgentMember = null;
+    openArtifactView = null;
+    openSessionThread = thread;
+    if (tab !== "chat") tab = "chat";
+  }
+
+  function startSessionFromMessage(eventId: string): void {
+    const row = selectedRow;
+    if (!row) return;
+    const msg = timelineWithActivity.find((m) => m.eventId === eventId);
+    const thread = createSessionThread({
+      origin: {
+        kind: "message",
+        eventId,
+        excerpt: excerptFromBody(msg?.body ?? ""),
+        author:
+          (msg?.fromDisplayName ?? "").trim() ||
+          displayNameByUid[msg?.fromPersonUid ?? ""] ||
+          "Message",
+      },
+      actorKind: "human",
+      actorName: self?.displayName?.trim() || "You",
+    });
+    sessionThreadsById = { ...sessionThreadsById, [thread.id]: thread };
+    revealSessionThread(thread);
+  }
+
+  function startSessionFromChannel(): void {
+    const row = selectedRow;
+    if (!row?.channelId) return;
+    const thread = createSessionThread({
+      origin: {
+        kind: "channel",
+        channelId: row.channelId,
+        channelTitle: row.title || "channel",
+      },
+      actorKind: "human",
+      actorName: self?.displayName?.trim() || "You",
+    });
+    sessionThreadsById = { ...sessionThreadsById, [thread.id]: thread };
+    const wire: ConversationMessageWire = {
+      eventId: `local-session-${thread.id}`,
+      createdAt: thread.startedAt,
+      messageKind: "system",
+      fromDisplayName: thread.actorName,
+      fromPersonUid: self?.uid ?? null,
+      body: "",
+      systemEvent: {
+        v: 1,
+        type: "work_session",
+        title: thread.title,
+        note: thread.title,
+        status: "started",
+        harness: "hq-desktop",
+        actorType: thread.actorKind,
+        displayName: thread.actorName,
+        sessionId: thread.id,
+        turnCount: 0,
+      },
+    };
+    localSessionWires = [...localSessionWires, wire];
+    revealSessionThread(thread);
+  }
+
+  function openSessionFromCard(sessionId: string): void {
+    const known = sessionThreadsById[sessionId];
+    if (known) {
+      revealSessionThread(known);
+      return;
+    }
+    const row = selectedRow;
+    const thread = createSessionThread({
+      origin: {
+        kind: "channel",
+        channelId: row?.channelId ?? "",
+        channelTitle: row?.title || "channel",
+      },
+      actorKind: "human",
+      actorName: self?.displayName?.trim() || "You",
+    });
+    thread.id = sessionId;
+    sessionThreadsById = { ...sessionThreadsById, [sessionId]: thread };
+    revealSessionThread(thread);
+  }
+
+  function promptOpenSession(thread: SessionThread, text: string): void {
+    const next: SessionThread = {
+      ...thread,
+      status: "idle",
+      turns: [
+        ...thread.turns,
+        { id: `${thread.id}-u-${thread.turns.length}`, role: "user", text },
+        {
+          id: `${thread.id}-a-${thread.turns.length}`,
+          role: "assistant",
+          text: "Spike: this pane would stream the live session here. Open full to use the existing Sessions surface.",
+        },
+      ],
+    };
+    sessionThreadsById = { ...sessionThreadsById, [thread.id]: next };
+    if (openSessionThread?.id === thread.id) openSessionThread = next;
+  }
+
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
     if (!id || !selectedRow) return;
     openProfileMember = null;
     openAgentMember = null;
     openArtifactView = null;
+    openSessionThread = null;
     openReplyRootId = id;
     pushConversationSurface({
       replyRootEventId: id,
@@ -5527,6 +5648,7 @@
               class:is-setup={isSetupChannel(selectedRow.channelId)}
               data-testid="chat-stage"
               data-reply-open={openReplyRootId ||
+                openSessionThread ||
                 openProfileMember ||
                 openAgentMember
                 ? "true"
@@ -5680,6 +5802,11 @@
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
+                  onstartsession={startSessionFromMessage}
+                  onopensession={openSessionFromCard}
+                  onstartchannelsession={
+                    selectedRow.channelId ? startSessionFromChannel : undefined
+                  }
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
                   onopenartifact={openArtifact}
@@ -5763,6 +5890,19 @@
                     saveError={agentAvatarSaveError}
                     onsaveavatar={saveOpenAgentAvatar}
                     onclose={closeMemberProfile}
+                  />
+                </div>
+              {:else if openSessionThread}
+                <div
+                  class="reply-column"
+                  class:overlay={narrowViewport}
+                  data-testid="session-thread-column"
+                  data-reply-layout={narrowViewport ? "overlay" : "column"}
+                >
+                  <SessionThreadPanel
+                    thread={openSessionThread}
+                    onclose={() => (openSessionThread = null)}
+                    onprompt={promptOpenSession}
                   />
                 </div>
               {:else if openReplyRootId && replyScope}

@@ -20,6 +20,8 @@
     time?: string;
     /** Roster-resolved actor label for cards (overrides opaque uids). */
     actorLabel?: string | null;
+    /** Open the in-channel session pane for this card. */
+    onopensession?: (sessionId: string) => void;
   }
 
   let {
@@ -27,6 +29,7 @@
     card = null,
     time = "",
     actorLabel = null,
+    onopensession,
   }: Props = $props();
 
   let expanded = $state(false);
@@ -119,13 +122,23 @@
 </script>
 
 {#if card}
+  {@const canOpen = Boolean(card.sessionId && onopensession)}
   <div
     class="work-mesh-block"
     data-testid="work-mesh-card"
     data-actor-type={card.actorType}
-    role="status"
+    data-session-id={card.sessionId ?? undefined}
+    role={canOpen ? undefined : "status"}
   >
-    <div class="sys-line work-mesh-row work-mesh-card">
+    <button
+      type="button"
+      class="sys-line work-mesh-row work-mesh-card"
+      data-testid="work-mesh-card-open"
+      disabled={!canOpen}
+      onclick={() => {
+        if (card.sessionId) onopensession?.(card.sessionId);
+      }}
+    >
       <span class="sys-icon" aria-hidden="true">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <circle
@@ -155,7 +168,7 @@
           <span class="sys-sep"> — </span><span class="sys-meta">{cardTitle}</span>
         {/if}
       </span>
-    </div>
+    </button>
   </div>
 {:else if activity}
   <div class="work-mesh-block">
@@ -265,6 +278,18 @@
 
   .work-mesh-card {
     cursor: default;
+  }
+
+  button.work-mesh-card:not(:disabled) {
+    cursor: pointer;
+  }
+
+  button.work-mesh-card:disabled {
+    cursor: default;
+  }
+
+  button.work-mesh-card:not(:disabled):hover .sys-who {
+    color: var(--t2, var(--muted-2, var(--pop-muted)));
   }
 
   /* The one accent on an otherwise fully muted row: attention states get the

@@ -218,6 +218,8 @@ export interface WorkSessionCardModel {
   /** Display name when the envelope carried one; otherwise null (resolve via roster). */
   principalDisplay: string | null;
   note: string | null;
+  /** Local / spike: open this session in the side pane. */
+  sessionId: string | null;
 }
 
 export type SystemEventModel =
@@ -605,6 +607,7 @@ export function parseSystemEvent(raw: unknown): SystemEventModel | null {
       principalDisplay:
         asOptionalString(raw.displayName) ?? principal?.display ?? null,
       note,
+      sessionId: asOptionalString(raw.sessionId),
     };
   }
 
