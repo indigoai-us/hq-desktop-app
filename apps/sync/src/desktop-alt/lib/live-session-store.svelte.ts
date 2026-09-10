@@ -418,10 +418,16 @@ function applyEvent(
   if (!entry) return; // Not a session this store has open — nothing to fold into.
   if (seq < entry.nextSeq) return; // Duplicate (a replay already covered it).
   if (seq > entry.nextSeq) {
-    // A gap. Rendering the newer event would silently drop the missing span,
-    // so catch up from the last contiguous seq instead.
-    void replayFrom(sessionId, entry.nextSeq);
-    return;
+    // startAndSend never replays: the first live event is often seq 1 against
+    // nextSeq 0. Treating that as a gap wipes the transcript with an empty
+    // replay (flash, then a dead pane). Accept the first event as the start
+    // of the stream; only hole-fill once we already have events.
+    if (entry.events.length === 0) {
+      entry.nextSeq = seq;
+    } else {
+      void replayFrom(sessionId, entry.nextSeq);
+      return;
+    }
   }
   entry.events.push(event);
   // The backend's stamp is authoritative — it is the same instant a later

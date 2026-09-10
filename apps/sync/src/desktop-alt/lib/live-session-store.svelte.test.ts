@@ -927,6 +927,22 @@ describe('liveSessionStore.startAndSend', () => {
     expect(bubbleText()).toEqual([]);
   });
 
+  it('keeps the first live event when it lands at seq 1 with no replay yet', async () => {
+    mockStart();
+    await liveSessionStore.startAndSend({ ...spec }, 'hello');
+    emit(AGENT_SESSION_EVENT, {
+      sessionId: 'fresh',
+      seq: 1,
+      receivedAtMs: T0,
+      event: { kind: 'assistantMessage', text: 'on it' },
+    });
+    expect(proseText()).toContain('on it');
+    expect(invoke).not.toHaveBeenCalledWith(
+      'agent_session_replay',
+      expect.objectContaining({ sessionId: 'fresh', sinceSeq: 0 }),
+    );
+  });
+
   it('keeps the bubble across the remount that follows the first send', async () => {
     mockStart();
     const id = await liveSessionStore.startAndSend({ ...spec }, 'hello');

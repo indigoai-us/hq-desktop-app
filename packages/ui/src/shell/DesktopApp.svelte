@@ -596,6 +596,7 @@
       projectId: string;
       taskId: string;
       contextPrompt: string;
+      channelId?: string | null;
     }) => Promise<{ sessionId: string }>;
     channelSessionBody?: Snippet<[SessionThread]>;
   }
@@ -3136,6 +3137,7 @@
         projectId,
         taskId: task.taskId,
         contextPrompt: contextPromptForThread(thread),
+        channelId: row?.channelId ?? null,
       });
       patchSessionThread(thread.id, {
         liveSessionId: started.sessionId,

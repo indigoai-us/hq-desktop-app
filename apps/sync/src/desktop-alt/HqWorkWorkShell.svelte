@@ -62,6 +62,7 @@
     createdStoryTitle,
   } from './lib/background-job';
   import { readRememberedTool } from '../components/sessions/session-models';
+  import { planFirstSend } from '../components/sessions/startwork';
   import {
     isPermissionGranted as isNotifyPermissionGranted,
     sendNotification,
@@ -945,6 +946,11 @@
       <WorkShell
         {channelSessionBody}
         onstartlivesession={async (input) => {
+          const first = planFirstSend(
+            input.contextPrompt,
+            { company: input.companySlug, project: input.projectId },
+            true,
+          )[0]!;
           const sessionId = await liveSessionStore.startAndSend(
             {
               sessionId: '',
@@ -958,8 +964,13 @@
               resume: null,
               permissionMode: 'prompt',
               hidden: false,
+              ...(input.channelId ? { projectChannelId: input.channelId } : {}),
             },
-            input.contextPrompt,
+            first.text,
+            [],
+            first.label
+              ? { hidden: false, contextLabel: first.label, displayText: first.displayText }
+              : {},
           );
           return { sessionId };
         }}

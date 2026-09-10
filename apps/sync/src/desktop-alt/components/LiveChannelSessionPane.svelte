@@ -43,7 +43,7 @@
     <SessionTranscript
       blocks={transcript.blocks}
       status={phase === 'working' ? 'tools' : starting ? 'starting' : ''}
-      loading={Boolean(sessionId) && liveSessionStore.loading}
+      loading={Boolean(sessionId) && liveSessionStore.loading && transcript.blocks.length === 0}
       hasEarlier={liveSessionStore.hasEarlier}
       loadingEarlier={liveSessionStore.loadingEarlier}
       onloadearlier={() => liveSessionStore.loadEarlier()}
