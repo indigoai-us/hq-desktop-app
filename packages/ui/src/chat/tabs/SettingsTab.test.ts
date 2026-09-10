@@ -176,6 +176,9 @@ describe("CompanyHero", () => {
     const hero = host.querySelector('[data-testid="company-hero"]');
     expect(hero?.getAttribute("data-wallpaper")).toBe("easel");
     expect(hero?.textContent).toContain("Ramen Bae");
-    expect(hero?.textContent).toContain("Artist's easel");
+    // The eyebrow names what the card IS, not the art behind it — naming the
+    // wallpaper ("Artist's easel") labelled the picture, not the company.
+    expect(hero?.textContent).toContain("Company");
+    expect(hero?.textContent).not.toContain("Artist's easel");
   });
 });

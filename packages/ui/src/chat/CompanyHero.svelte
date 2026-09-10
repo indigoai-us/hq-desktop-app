@@ -17,20 +17,17 @@
       ? SETUP_HERO_ART.light
       : SETUP_HERO_ART.dark,
   );
-  const label = $derived(
-    wallpaper === "easel"
-      ? "Artist's easel"
-      : wallpaper === "monoliths"
-        ? "Chrome monoliths"
-        : "Aurora",
-  );
+
 </script>
 
 <div class="company-hero" data-testid="company-hero" data-wallpaper={wallpaper ?? "aurora"}>
   <img class="company-hero-art" src={src} alt="" />
   <div class="company-hero-scrim" aria-hidden="true"></div>
   <div class="company-hero-copy">
-    <div class="company-hero-k">{label}</div>
+    <!-- The eyebrow names what the card IS. It used to name the wallpaper art
+         behind it ("Aurora", "Chrome monoliths"), which labelled the picture
+         rather than the company under it. -->
+    <div class="company-hero-k">Company</div>
     <h2 class="company-hero-title">{title}</h2>
   </div>
 </div>

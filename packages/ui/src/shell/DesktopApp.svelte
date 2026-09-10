@@ -966,9 +966,6 @@
             ? "personal channel"
             : "channel";
     const name = companyDisplayName(row.companyUid, companyNames);
-    // A company channel is TITLED with the company name, so the subtitle says
-    // only what kind of room it is.
-    if (scope === "company") return kindLabel;
     return name ? `${name} · ${kindLabel}` : kindLabel;
   });
 
@@ -1001,22 +998,16 @@
   );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
-  const resolvedTitle = $derived(
-    resolveConversationTitle(selectedRow, railRows),
-  );
-
   /**
-   * A company channel IS the company's room, so it is titled with the company
-   * — "Indigo", not the slug "gtm-standup". The slug moves to the subtitle so
-   * nothing is lost. Every other conversation keeps its own name.
+   * A conversation's own name, company channels included.
+   *
+   * NOT the company name for those: `channelScope === "company"` is not one
+   * channel per company (#gtm-standup and #finance are both company-scoped in
+   * the same workspace), so naming them after their company gives a run of
+   * identical rows in the rail and a header that no longer says which of them
+   * you are in. The company rides the subtitle instead.
    */
-  const headerTitle = $derived(
-    selectedIsCompanyChannel
-      ? companyAppearanceName ||
-          companyDisplayName(selectedRow?.companyUid, companyNames) ||
-          resolvedTitle
-      : resolvedTitle,
-  );
+  const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
 
   /**
    * Company hero shows the company's display name ("Ramen Bae"), not the

@@ -636,11 +636,22 @@
     background: var(--ice-ink);
   }
 
+  /* Concept `.p-sec`: 12px of air ABOVE each caption so PROJECT / SESSIONS /
+     MEMBERS / AGENTS read as separate sections, the same break the filter
+     dropdown puts above its own captions. 5px ran them together. */
   .p-sec {
-    padding: 5px 8px 3px;
+    padding: 12px 8px 3px;
     color: var(--t3);
     font: 600 9px/1.4 var(--font-mono);
-    letter-spacing: 0.9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  /* …except the one straight after the status card, which already has the
+     card's own gap above it. NOT `:first-child` — every caption opens its own
+     <section>, so that matched all of them and quietly undid the rule above. */
+  .p-card + section .p-sec {
+    padding-top: 5px;
   }
 
   .status-company-val {

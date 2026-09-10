@@ -107,13 +107,15 @@ async function mountApp(companies: Workspace[] | null): Promise<void> {
 }
 
 describe("DesktopApp company hero title", () => {
-  it("titles a company channel with the company, and says only what kind it is", async () => {
+  it("uses the company display name in the hero while the header keeps the slug", async () => {
     await mountApp([acmeWorkspace]);
-    // A company channel IS the company's room, so the header names the
-    // company — and the subtitle then has nothing left to add but the kind.
-    expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toBe("Acme");
+    // `channelScope === "company"` is not one channel per company, so the
+    // header keeps the channel's own name and the company rides the subtitle.
+    // Only the hero — which is about the workspace, not the room — is titled
+    // with the company.
+    expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toBe("acme");
     expect(host.querySelector('[data-testid="channel-sub"]')?.textContent).toBe(
-      "company channel",
+      "Acme · company channel",
     );
     const hero = host.querySelector('[data-testid="company-hero"]');
     expect(hero, "company hero renders for a company channel").toBeTruthy();
