@@ -181,6 +181,19 @@ describe('createSetupRunApi', () => {
     expect(order.indexOf('agent_session_list')).toBeGreaterThan(order.indexOf('agent_session_end'));
   });
 
+  it('start bypasses permissions when the person chose that on the Sessions page, and prompts otherwise', async () => {
+    mockBackend({ list: [summary(SETUP)], preflight: preflight(), commands: ['setup'] });
+    window.localStorage.setItem('hq.sessions.lastPermission', 'bypassAll');
+    const api = createSetupRunApi();
+    await api.preflight();
+    await api.start('/setup');
+    expect(calls('agent_session_start')[0]!.spec).toMatchObject({ permissionMode: 'bypassAll' });
+
+    window.localStorage.removeItem('hq.sessions.lastPermission');
+    await api.start('/setup');
+    expect(calls('agent_session_start')[1]!.spec).toMatchObject({ permissionMode: 'prompt' });
+  });
+
   it('start honours the tool the person picked over what preflight chose', async () => {
     mockBackend({ list: [summary(SETUP)], preflight: preflight({ codexAvailable: true, codexLoggedIn: true }), commands: ['setup'] });
     const api = createSetupRunApi();

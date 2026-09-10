@@ -454,6 +454,23 @@ export const TOOL_OPTIONS: ReadonlyArray<{
 
 export const LAST_TOOL_KEY = 'hq.sessions.lastTool';
 
+/**
+ * The permission pill's last explicit choice. One memory for every CLI: the
+ * choice is about how much the person wants to be asked, not about a tool.
+ */
+export const LAST_PERMISSION_KEY = 'hq.sessions.lastPermission';
+
+export type RememberedPermissionMode = 'prompt' | 'bypassAll';
+
+/** `bypassAll` only when that was chosen on purpose; anything else prompts. */
+export function readRememberedPermission(): RememberedPermissionMode {
+  return readRemembered(LAST_PERMISSION_KEY) === 'bypassAll' ? 'bypassAll' : 'prompt';
+}
+
+export function rememberPermission(mode: RememberedPermissionMode): void {
+  remember(LAST_PERMISSION_KEY, mode === 'bypassAll' ? mode : null);
+}
+
 const SESSION_TOOLS = new Set<SessionToolId>(TOOL_OPTIONS.map((option) => option.value));
 
 /** The remembered tool, defended down to the only tool that always exists. */

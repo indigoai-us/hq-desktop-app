@@ -266,7 +266,8 @@ describe("DesktopApp native setup run wiring", () => {
     expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeNull();
     const finish = host.querySelector<HTMLButtonElement>('[data-testid="setup-agent-prompt"] [data-testid="setup-run-finish"]');
     expect(finish?.textContent?.trim()).toBe("I'm all set");
-    expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-again"]')).toBeTruthy();
+    // Starting over is never offered between turns — only on the finale.
+    expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-again"]')).toBeNull();
     finish!.click();
     await settle();
     expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeTruthy();
@@ -287,8 +288,8 @@ describe("DesktopApp native setup run wiring", () => {
     await settle();
     expect(host.querySelector('[data-testid="setup-run-finish"]')).toBeNull();
     expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeNull();
-    // Run again stays available; the composer is the way to answer.
-    expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-again"]')).toBeTruthy();
+    // Nothing else is offered either; the composer is the way to answer.
+    expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-again"]')).toBeNull();
     expect(host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]')?.disabled).toBe(false);
 
     // On the last step the way out is back.

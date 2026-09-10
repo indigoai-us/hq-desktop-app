@@ -30,11 +30,13 @@ import {
   readRemembered,
   readRememberedEffort,
   readRememberedModel,
+  readRememberedPermission,
   readRememberedTool,
   readSessionModels,
   remember,
   rememberEffort,
   rememberModel,
+  rememberPermission,
   selectableModels,
   shortenModelLabel,
   validateModel,
@@ -482,6 +484,17 @@ describe('the model is remembered per tool', () => {
     expect(lastEffortKey('claude')).toBe('hq.sessions.lastEffort.claude');
     expect(lastEffortKey('codex')).toBe('hq.sessions.lastEffort.codex');
     expect(lastEffortKey('grok')).toBe('hq.sessions.lastEffort.grok');
+  });
+
+  it('remembers only a deliberate bypass choice, and forgets it when prompting is chosen again', () => {
+    expect(readRememberedPermission()).toBe('prompt');
+    rememberPermission('bypassAll');
+    expect(readRememberedPermission()).toBe('bypassAll');
+    rememberPermission('prompt');
+    expect(readRememberedPermission()).toBe('prompt');
+    expect(globalThis.localStorage.getItem('hq.sessions.lastPermission')).toBeNull();
+    globalThis.localStorage.setItem('hq.sessions.lastPermission', 'anything-else');
+    expect(readRememberedPermission()).toBe('prompt');
   });
 
   it('never hands one CLI the other’s choice', () => {
