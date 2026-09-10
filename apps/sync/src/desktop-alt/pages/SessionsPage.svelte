@@ -27,7 +27,7 @@
    * strip, drawer, transcript and composer read it, the cards call back into
    * it, and every `agent_session_*` invoke lives inside it.
    */
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import SessionListPanel from '../panels/SessionListPanel.svelte';
   import SessionComposer from '../../components/sessions/SessionComposer.svelte';
   import SessionTranscript from '../../components/sessions/SessionTranscript.svelte';
@@ -363,14 +363,25 @@
 
   // Open the routed session. Background buffers stay resident while this view
   // unmounts so Back can restore without tearing the agent down.
+  // A blank `new?…` route must still detach the *view* — otherwise the
+  // leftover active transcript paints into a composer that already says
+  // "New session".
   $effect(() => {
     const next = sessionId ?? null;
-    if (next === routedId) return;
-    routedId = next;
-    openedId = next;
-    sessionUnavailable = false;
-    if (!next) return;
-    void restoreRoutedSession(next);
+    untrack(() => {
+      if (!next) {
+        routedId = null;
+        openedId = null;
+        sessionUnavailable = false;
+        liveSessionStore.activate(null);
+        return;
+      }
+      if (next === routedId) return;
+      routedId = next;
+      openedId = next;
+      sessionUnavailable = false;
+      void restoreRoutedSession(next);
+    });
   });
 
   $effect(() => {

@@ -723,6 +723,32 @@ describe('first-message orientation', () => {
   });
 });
 
+describe('new session from another project', () => {
+  it('clears the previous transcript when the route remounts as a blank new chat', async () => {
+    backend.list = [{
+      sessionId: 'live-fast', tool: 'codex', company: 'indigo', title: 'Speed check',
+      phase: 'idle', startedAt: '2026-09-04T21:55:44Z',
+      model: 'gpt-5.6-sol', requestedModel: 'gpt-5.6-sol',
+      permissionMode: 'prompt', pendingCount: 0,
+      effort: null, cwd: '/hq', lastActivityAt: '2026-09-04T21:55:44Z', lastSeq: 0,
+    }];
+    backend.replay = [{ kind: 'assistantMessage', text: 'Startup verified.' }];
+    render({ sessionId: 'live-fast' });
+    await vi.waitFor(() => expect(host.textContent).toContain('Startup verified.'));
+
+    unmount(component!);
+    component = null;
+    render({ initialCompany: 'indigo', initialProject: 'hq-desktop-sessions-testing' });
+    await settle();
+
+    expect(text('sessions-strip-title')).toBe('New session');
+    expect(host.textContent).not.toContain('Startup verified.');
+    expect(at('session-orientation-preview')?.textContent).toContain('/startwork indigo');
+    expect(liveSessionStore.isOpen('live-fast')).toBe(true);
+    expect(liveSessionStore.activeSessionId).toBeNull();
+  });
+});
+
 describe('resuming history', () => {
   it('opens live replay without waiting for the global provider history scan', async () => {
     backend.providerCatalog = deferred();

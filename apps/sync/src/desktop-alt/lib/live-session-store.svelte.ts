@@ -1499,8 +1499,23 @@ export const liveSessionStore = {
     if (live?.company) return live.company;
     return entries[sessionId]?.history?.company || null;
   },
-  activate: (sessionId: string): void => {
-    if (entries[sessionId]) activeId = sessionId;
+  /**
+   * Point the view at a buffered session, or `null` to show a blank new chat
+   * without dropping buffers (Back can re-activate them).
+   */
+  activate: (sessionId: string | null): void => {
+    if (sessionId == null) {
+      if (activeId == null) return;
+      activeId = null;
+      foldCache = null;
+      revision += 1;
+      return;
+    }
+    if (entries[sessionId] && activeId !== sessionId) {
+      activeId = sessionId;
+      foldCache = null;
+      revision += 1;
+    }
   },
   open,
   openHistory,
