@@ -21,16 +21,15 @@ describe('Settings > Appearance', () => {
     });
   });
 
-  it('offers theme, full-range window opacity, and global interface size without a card shell', () => {
+  it('offers theme and global interface size without a card shell', () => {
     const page = source('src/desktop-alt/pages/SettingsPage.svelte');
 
     expect(page).toContain('data-testid="settings-appearance"');
     expect(page).toContain('<strong>Theme</strong>');
-    expect(page).toContain('<strong>Window opacity</strong>');
-    expect(page).toContain('100% is fully solid');
-    expect(page).toContain('aria-label="Window opacity"');
-    expect(page).toContain('windowTransparencyFromOpacity(');
     expect(page).toContain('<strong>Interface size</strong>');
+    // Window opacity is deliberately absent: surface alpha is fixed in the
+    // design tokens, so there is no user control to render here.
+    expect(page).not.toContain('Window opacity');
     expect(page).toContain('requestAppearancePreferenceChange');
     expect(page).toContain('requestDesktopZoom');
     expect(page).toMatch(

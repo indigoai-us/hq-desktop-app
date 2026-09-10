@@ -8,8 +8,6 @@ import {
   normalizeAppearancePreferences,
   readAppearancePreferences,
   requestAppearancePreferenceChange,
-  windowOpacityFromTransparency,
-  windowTransparencyFromOpacity,
 } from './appearancePreferences';
 
 function memoryStorage(seed?: string): Storage {
@@ -52,36 +50,18 @@ function fakeRoot() {
 }
 
 describe('appearance preferences', () => {
-  it('defaults to system, useful glass, and clamps malformed values', () => {
+  it('defaults to system and clamps malformed values', () => {
     expect(readAppearancePreferences(memoryStorage())).toEqual({
       colorTheme: 'system',
-      windowTransparency: 65,
     });
     expect(
-      normalizeAppearancePreferences({
-        colorTheme: 'sepia' as never,
-        windowTransparency: 500,
-      }),
-    ).toEqual({
-      colorTheme: 'system',
-      windowTransparency: 100,
-    });
-  });
-
-  it('exposes a full 0–100 opacity scale with a true solid endpoint', () => {
-    expect(windowOpacityFromTransparency(0)).toBe(100);
-    expect(windowTransparencyFromOpacity(100)).toBe(0);
-    expect(windowOpacityFromTransparency(100)).toBe(0);
-    expect(windowTransparencyFromOpacity(0)).toBe(100);
-    expect(windowTransparencyFromOpacity(500)).toBe(0);
-    expect(windowTransparencyFromOpacity(-500)).toBe(100);
-    expect(windowTransparencyFromOpacity('not-a-number')).toBe(65);
+      normalizeAppearancePreferences({ colorTheme: 'sepia' as never }),
+    ).toEqual({ colorTheme: 'system' });
   });
 
   it('uses safe defaults when appearance storage is absent', () => {
     expect(readAppearancePreferences(null)).toEqual({
       colorTheme: 'system',
-      windowTransparency: 65,
     });
     expect(() =>
       requestAppearancePreferenceChange(
@@ -91,26 +71,19 @@ describe('appearance preferences', () => {
     ).not.toThrow();
   });
 
-  it('applies forced themes and neutral material alpha without disabling glass', () => {
+  it('applies forced themes and leaves surface alpha to the tokens', () => {
     const { root, value } = fakeRoot();
-    applyAppearancePreferences(root, {
-      colorTheme: 'dark',
-      windowTransparency: 70,
-    });
+    applyAppearancePreferences(root, { colorTheme: 'dark' });
 
     expect(root.dataset.forceTheme).toBe('dark');
-    expect(root.dataset.windowTransparency).toBe('70');
-    expect(value('--hq-window-transparency-factor')).toBe('0.70');
-    expect(value('--hq-window-alpha-light')).toBe('0.30');
-    expect(value('--hq-window-alpha-dark')).toBe('0.43');
+    // Surface alpha is fixed in tokens.css at the design's values. Nothing
+    // here may write it back onto <html> — that is how it became adjustable.
+    expect(root.dataset.windowTransparency).toBeUndefined();
+    expect(value('--hq-window-transparency-factor')).toBe('');
+    expect(value('--hq-window-alpha-light')).toBe('');
 
-    applyAppearancePreferences(root, {
-      colorTheme: 'system',
-      windowTransparency: 0,
-    });
+    applyAppearancePreferences(root, { colorTheme: 'system' });
     expect(root.dataset.forceTheme).toBeUndefined();
-    expect(value('--hq-window-transparency-factor')).toBe('0.00');
-    expect(value('--hq-window-alpha-light')).toBe('1.00');
   });
 
   it('persists and applies same-window requests immediately', () => {
@@ -129,11 +102,11 @@ describe('appearance preferences', () => {
     });
 
     const next = requestAppearancePreferenceChange(
-      { colorTheme: 'light', windowTransparency: 42 },
+      { colorTheme: 'light' },
       { target, storage },
     );
 
-    expect(next).toEqual({ colorTheme: 'light', windowTransparency: 42 });
+    expect(next).toEqual({ colorTheme: 'light' });
     expect(JSON.parse(storage.getItem(APPEARANCE_STORAGE_KEY) ?? '{}')).toEqual(next);
     expect(root.dataset.forceTheme).toBe('light');
     expect(changes.at(-1)).toEqual(next);
@@ -239,21 +212,15 @@ describe('appearance preferences', () => {
         { colorTheme: 'dark' },
         { target, storage },
       ),
-    ).toEqual({
-      colorTheme: 'dark',
-      windowTransparency: 65,
-    });
+    ).toEqual({ colorTheme: 'dark' });
+    // A second request still applies in-window even though nothing persisted.
     expect(
       requestAppearancePreferenceChange(
-        { windowTransparency: 20 },
+        { colorTheme: 'light' },
         { target, storage },
       ),
-    ).toEqual({
-      colorTheme: 'dark',
-      windowTransparency: 20,
-    });
-    expect(root.dataset.forceTheme).toBe('dark');
-    expect(root.dataset.windowTransparency).toBe('20');
+    ).toEqual({ colorTheme: 'light' });
+    expect(root.dataset.forceTheme).toBe('light');
 
     cleanup();
   });
@@ -270,10 +237,7 @@ describe('appearance preferences', () => {
 
     storage.setItem(
       APPEARANCE_STORAGE_KEY,
-      JSON.stringify({
-        colorTheme: 'dark',
-        windowTransparency: 30,
-      }),
+      JSON.stringify({ colorTheme: 'dark' }),
     );
     target.dispatchEvent(
       Object.assign(new Event('storage'), { key: 'unrelated.preference' }),
@@ -284,7 +248,6 @@ describe('appearance preferences', () => {
       Object.assign(new Event('storage'), { key: APPEARANCE_STORAGE_KEY }),
     );
     expect(root.dataset.forceTheme).toBe('dark');
-    expect(root.dataset.windowTransparency).toBe('30');
 
     cleanup();
   });
