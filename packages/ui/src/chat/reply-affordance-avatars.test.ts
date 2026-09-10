@@ -126,7 +126,7 @@ describe("thread-reply affordance avatars", () => {
     });
     await tick();
     const stamp = host.querySelector(".dm-replies-preview");
-    expect(stamp?.textContent).toMatch(/Last reply .*/);
+    expect(stamp?.textContent).toMatch(/Last .*/);
   });
 
   it("renders count-only when no preview is known yet", async () => {

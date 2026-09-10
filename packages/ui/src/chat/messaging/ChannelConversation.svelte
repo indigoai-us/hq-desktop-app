@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CaretRight from "phosphor-svelte/lib/CaretRight";
   import PaperPlaneRight from "phosphor-svelte/lib/PaperPlaneRight";
   import Paperclip from "phosphor-svelte/lib/Paperclip";
   import Smiley from "phosphor-svelte/lib/Smiley";
@@ -1437,9 +1438,10 @@
                     {replyLabel(msg.replyCount ?? 0)}
                     {#if preview.at}
                       <span class="dm-replies-preview">
-                        Last reply {formatRelative(preview.at)}
+                        Last {formatRelative(preview.at)}
                       </span>
                     {/if}
+                    <CaretRight size={10} weight="bold" aria-hidden="true" />
                   </button>
                 {/if}
                 {#if reactionsFor(msg.eventId).length > 0}
@@ -2250,49 +2252,60 @@
     background: color-mix(in srgb, var(--t1) 5%, transparent);
   }
 
+  /* The concept's `.replies`: a quiet pill carrying the faces, the count in
+     ice ink, when the last one landed, and a chevron. It was a bare 13px/600
+     label — the loudest line in the message, and no affordance at all. */
   .dm-replies-count {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    margin: 4px 0 0;
-    padding: 4px 8px;
+    gap: 8px;
+    margin: 8px 0 0 -7px;
+    padding: 5px 9px 5px 6px;
     border: 1px solid transparent;
-    border-radius: 8px;
+    border-radius: 999px;
     background: transparent;
-    /* Neutral text tokens, not link blue: primary weight for the count, the
-       trailing preview stays muted (--t3 below). */
-    color: var(--t1);
-    font: 600 13px/1.3 var(--font-ui);
+    color: var(--ice-ink);
+    font: 500 11px/1.3 var(--font-ui);
     cursor: pointer;
+    transition:
+      background 0.12s,
+      border-color 0.12s;
+  }
+
+  .dm-replies-count:hover {
+    border-color: var(--line2);
+    background: var(--btn-bg);
   }
 
   .dm-replies-count:hover,
   .dm-replies-count:focus-visible {
-    border-color: var(--line);
-    background: var(--hover, color-mix(in srgb, var(--t1) 5%, transparent));
+    border-color: var(--line2);
+    background: var(--btn-bg);
     outline: none;
   }
 
   .dm-replies-preview {
     color: var(--t3);
+    font-size: 11px;
     font-weight: 400;
   }
 
+  .dm-replies-count :global(svg) {
+    color: var(--t3);
+  }
+
   /* Slack-style overlapping participant avatars, left of "N replies". */
+  /* `.replies-faces`: side by side on a 3px gap, not overlapped. */
   .dm-replies-avatars {
     display: inline-flex;
     align-items: center;
+    gap: 3px;
   }
 
   .dm-replies-avatar {
     display: inline-flex;
-    margin-left: -6px;
+    flex-shrink: 0;
     border-radius: 999px;
-    box-shadow: 0 0 0 2px var(--v4-ground, var(--raised, #161618));
-  }
-
-  .dm-replies-avatar:first-child {
-    margin-left: 0;
   }
 
   /* Slack-style hover toolbar pinned to the message. */

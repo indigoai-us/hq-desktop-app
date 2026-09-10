@@ -257,6 +257,12 @@ const TIMELINES: Record<string, ConversationMessageWire[]> = {
       createdAt: new Date(now - 52 * 60_000).toISOString(),
       direction: "out",
       replyCount: THREAD_REPLIES.length,
+      replyAuthors: [
+        { personUid: "agt_fleet", displayName: "Fleet Agent", agent: true },
+        { personUid: "prs_ada", displayName: "Ada Lovelace" },
+        { displayName: "Stefan" },
+      ],
+      lastReplyAt: new Date(now - 38 * 60_000).toISOString(),
     },
     {
       eventId: "ao-run-started",

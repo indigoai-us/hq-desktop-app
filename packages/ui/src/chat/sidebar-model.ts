@@ -144,7 +144,12 @@ export type ShowFilter =
   "mine" | "all" | "projects" | "dms" | "company-projects";
 
 /** Default Show filter for users with no persisted choice. */
-export const DEFAULT_SHOW_FILTER: ShowFilter = "mine";
+/**
+ * "All", per the concept — its `typeScope` starts at `'all'`. Opening on
+ * "My projects" hid a first-run user's DMs and every channel they had not
+ * started, which reads as an empty app rather than a filtered one.
+ */
+export const DEFAULT_SHOW_FILTER: ShowFilter = "all";
 
 const SHOW_FILTER_VALUES: readonly ShowFilter[] = [
   "mine",

@@ -4138,7 +4138,10 @@
   .chat-sort-toggle {
     display: flex;
     gap: 2px;
-    margin: 2px 8px 6px;
+    /* Flush with the rows below: the concept insets the track 8px, but here it
+       sits above full-width rows whose hover fill runs edge to edge, and the
+       two disagreeing reads as a misalignment. */
+    margin: 2px 0 6px;
     padding: 2px;
     border-radius: 8px;
     background: var(--raised);

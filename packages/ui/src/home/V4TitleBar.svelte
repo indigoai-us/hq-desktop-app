@@ -611,10 +611,11 @@
   <div class="v4-title-actions" data-no-drag data-tauri-drag-region="false">
     {#if primaryAction}
       <button type="button" class="v4-core-pill" data-testid="titlebar-primary-action" onclick={primaryAction.onselect}>
-        <!-- 13, not the bar's standalone-icon 15: Phosphor's plus fills ~69% of
-             its box, so beside a 12px label a 15px one out-measures the cap
-             height next to it and reads oversized. -->
-        <Plus class="v4-icon" size={13} aria-hidden="true" />
+        <!-- 12, not the bar's standalone-icon 15. Phosphor's plus fills ~69%
+             of its box, so it draws larger than its size suggests: at 15 it
+             out-measured the 12px label beside it, and at 13 it still read
+             heavier than the 10px caret in the pill next door. -->
+        <Plus class="v4-icon" size={12} aria-hidden="true" />
         {primaryAction.label}
       </button>
     {/if}

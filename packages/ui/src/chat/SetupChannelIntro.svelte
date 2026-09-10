@@ -207,7 +207,9 @@
             <span class="resource-glyph" aria-hidden="true">
               <ResourceGlyph size={15} aria-hidden="true" />
             </span>
-            <ArrowUpRight class="resource-arrow" size={14} aria-hidden="true" />
+            <span class="resource-arrow" aria-hidden="true">
+              <ArrowUpRight size={14} aria-hidden="true" />
+            </span>
           </span>
           <span class="resource-text">
             <span class="resource-title">{resource.title}</span>
@@ -235,7 +237,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4, 16px);
-    border-bottom: 1px solid var(--border);
   }
 
   /* ---- Hero ------------------------------------------------------------ */
@@ -317,18 +318,19 @@
 
   .eyebrow {
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-    font-size: var(--text-micro, 11px);
+    font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: rgba(255, 255, 255, 0.62);
   }
 
+  /* No `max-width`: the measure caps broke both lines mid-sentence while the
+     card had room to spare. The hero runs the width of the card. */
   .hero-title {
     margin: 0;
-    max-width: 22ch;
-    font-size: var(--type-detail, 24px);
-    font-weight: 500;
+    font-size: 24px;
+    font-weight: 600;
     line-height: 1.15;
     letter-spacing: -0.012em;
     color: #ffffff;
@@ -336,9 +338,8 @@
 
   .hero-body {
     margin: 0;
-    max-width: 52ch;
-    font-size: var(--text-base, 13px);
-    line-height: 1.55;
+    font-size: 13px;
+    line-height: 1.5;
     color: rgba(255, 255, 255, 0.74);
   }
 
@@ -517,6 +518,8 @@
 
   /* `.su-link-go`: quiet at rest, one step up under the pointer. */
   .resource-arrow {
+    display: inline-flex;
+    align-items: center;
     color: var(--t3);
     transition:
       color 140ms ease,
@@ -551,7 +554,7 @@
 
   /* `.su-note` */
   .support-note {
-    margin: 22px 0 0;
+    margin: 10px 0 0;
     padding-top: 14px;
     border-top: 1px solid var(--line, var(--border));
     font-size: 11px;

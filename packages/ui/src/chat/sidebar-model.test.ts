@@ -927,13 +927,15 @@ describe("sort + show filters", () => {
 });
 
 describe("pin persistence", () => {
-  it("loadShowFilter defaults to mine and persists a choice", () => {
+  it("loadShowFilter defaults to all and persists a choice", () => {
+    // The rail opens unfiltered, like the concept — "mine" hid a first-run
+    // user's DMs and every channel they had not started.
     const storage = memoryStorage();
-    expect(loadShowFilter(storage)).toBe("mine");
+    expect(loadShowFilter(storage)).toBe("all");
     saveShowFilter("dms", storage);
     expect(loadShowFilter(storage)).toBe("dms");
     const bad = memoryStorage({ "hq.chat.show-filter": "nope" });
-    expect(loadShowFilter(bad)).toBe("mine");
+    expect(loadShowFilter(bad)).toBe("all");
   });
 
   it("loadPins / savePins / togglePin round-trip through localStorage", () => {

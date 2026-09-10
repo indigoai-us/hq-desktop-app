@@ -150,7 +150,7 @@ describe("first render without opening the thread", () => {
       ),
     ).toHaveLength(2);
     expect(host.querySelector(".dm-replies-preview")?.textContent).toMatch(
-      /Last reply/,
+      /Last /,
     );
   });
 
