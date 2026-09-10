@@ -160,7 +160,8 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
     const fn = STORE.slice(STORE.indexOf('async function startAndSend'));
     const body = fn.slice(0, fn.indexOf('\n}'));
     expect(body.indexOf('await start(spec)')).toBeLessThan(body.indexOf("'agent_session_send'"));
-    expect(PAGE).toContain('onopensession?.(started)');
+    // The route carries the company the session started with (`?company=`).
+    expect(PAGE).toContain('onopensession?.(encodeLiveSessionParam(started, company))');
   });
 
   it('keeps tool / company / model / effort / permission as composer pills', () => {
@@ -919,7 +920,7 @@ describe('company / project start-work — the first send orients the session', 
     expect(body).toContain('planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)');
     const planAt = body.indexOf('const first = planFirstSend(');
     const wordsAt = body.indexOf('started = await liveSessionStore.startAndSend(');
-    const routeAt = body.indexOf('onopensession?.(started', wordsAt);
+    const routeAt = body.indexOf('onopensession?.(encodeLiveSessionParam(started, company)', wordsAt);
     expect(planAt).toBeGreaterThan(-1);
     expect(wordsAt).toBeGreaterThan(planAt);
     expect(routeAt).toBeGreaterThan(wordsAt);
