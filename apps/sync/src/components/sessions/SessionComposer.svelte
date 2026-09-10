@@ -172,6 +172,8 @@
     viewer?: ProjectViewer | null;
     /** "Run /startwork on first message". */
     startworkEnabled?: boolean;
+    /** Setup chats never orient with /startwork; the setting is shown off and cannot be toggled. */
+    startworkLocked?: boolean;
     /** The automatic orientation that will run before this fresh session's message. */
     orientationCommand?: string | null;
     models?: SessionModel[];
@@ -264,6 +266,7 @@
     projectsError = '',
     viewer = null,
     startworkEnabled = true,
+    startworkLocked = false,
     orientationCommand = null,
     models = [],
     model = null,
@@ -538,6 +541,11 @@
    * images, the mention and context chips and the command chip all go; the
    * pills (company, tool, model…) stay, they are props.
    */
+  /** Seed the composer with text on the person's behalf (Run Setup's `/setup`). */
+  export function setDraft(text: string): void {
+    draft = text;
+  }
+
   export function reset(): void {
     draft = '';
     attached = [];
@@ -1068,19 +1076,25 @@
                   <button
                     type="button"
                     role="menuitemcheckbox"
-                    aria-checked={startworkEnabled}
+                    aria-checked={startworkEnabled && !startworkLocked}
+                    aria-disabled={startworkLocked}
                     class="menu-item"
                     data-testid="session-menu-startwork-toggle"
                     onclick={(event) => {
                       event.stopPropagation();
+                      if (startworkLocked) return;
                       onstartworktoggle?.(!startworkEnabled);
                     }}
                   >
                     <span class="menu-label">
-                      <span class="check" aria-hidden="true">{startworkEnabled ? '✓' : ''}</span>
+                      <span class="check" aria-hidden="true">{startworkEnabled && !startworkLocked ? '✓' : ''}</span>
                       Run /startwork on first message
                     </span>
-                    <span class="menu-sub">Orients the session in HQ before your first message</span>
+                    <span class="menu-sub">
+                      {startworkLocked
+                        ? 'Not used in a setup chat'
+                        : 'Orients the session in HQ before your first message'}
+                    </span>
                   </button>
                   <div class="menu-rule"></div>
                   {#each companies as option (option.slug)}

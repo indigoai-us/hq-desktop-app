@@ -174,7 +174,11 @@ describe("US-005: Restore sessions without send, fork, or draft loss", () => {
     expect(parseSessionsParam(created.param).kind).toBe("session");
 
     const page = readRepo("apps/sync/src/desktop-alt/pages/SessionsPage.svelte");
-    expect(page).toContain("onopensession?.(started, sessionId ? undefined : { replace: true })");
+    // The route carries the company the session started with, so the shell
+    // never has to guess it from a store list that may not have caught up.
+    expect(page).toContain(
+      "onopensession?.(encodeLiveSessionParam(started, company), sessionId ? undefined : { replace: true })",
+    );
   });
 
   it("Given a shared and a historical session, when each is opened then Back is pressed, then neither path calls send", () => {

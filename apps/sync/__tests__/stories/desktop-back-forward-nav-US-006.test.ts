@@ -270,8 +270,12 @@ describe("US-006: Restore scroll, lifecycle, and tenant isolation", () => {
     expect(shell).toContain("navigation.filterAccessible(allowed)");
     expect(shell).toContain("currentIsShownExtra");
     expect(shell).toContain("shownExtra && !currentIsShownExtra");
-    expect(shell).toContain("sessionExtraRequiresCompany");
-    expect(shell).toContain("extraUnscoped");
+    // Only a company key that is no longer in the membership blanks a
+    // session. One with no key at all (a personal chat, or a fresh one whose
+    // company the page has not learned yet) is a real place — blanking it
+    // is what turned "Continue in HQ Sessions" + Enter into a dead end.
+    expect(shell).toContain("lostCompany");
+    expect(shell).not.toContain("extraUnscoped");
     expect(shell).toContain("extraDestination(");
     const host = readRepo("apps/sync/src/desktop-alt/HqWorkWorkShell.svelte");
     expect(host).toContain("companyUid: row.companyUid ?? company");

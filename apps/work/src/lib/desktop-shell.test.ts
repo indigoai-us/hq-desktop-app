@@ -370,7 +370,7 @@ describe("Tauri attachment handlers", () => {
     expect(source).toMatch(/const nativeListen = hostListen \?\? tauriListen;/);
     expect(source).toMatch(/let self = \$state\(hostSelf\)/);
     expect(source).toMatch(
-      /const \[hydratedSelf\] = await Promise\.all\(\[\s*hydrateDesktopSelf\(hostSelf, adapter\)/,
+      /const hydratedSelf = await hydrateDesktopSelf\(hostSelf, adapter\)/,
     );
     expect(source).toMatch(/self = hydratedSelf/);
     expect(source).toMatch(/await nativeInvoke\("get_auth_session"\)/);

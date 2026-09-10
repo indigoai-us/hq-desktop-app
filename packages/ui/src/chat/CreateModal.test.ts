@@ -65,6 +65,7 @@ function personRow(partial: Partial<ConversationRow> = {}): ConversationRow {
 
 interface MountArgs {
   api?: ChatSidebarApi;
+  initialKind?: "channel" | "project";
   rows?: ConversationRow[];
   contacts?: DmContactInput[];
   scopeCompanies?: Array<{ companyUid: string; label: string }>;
@@ -87,6 +88,7 @@ function open(args: MountArgs = {}) {
     onclose: args.onclose ?? (() => {}),
     onpick: args.onpick ?? (() => {}),
     oncreated: args.oncreated ?? (() => {}),
+    ...(args.initialKind ? { initialKind: args.initialKind } : {}),
   };
   component = mount(CreateModal, { target: host, props });
   return props;
@@ -1363,5 +1365,44 @@ describe("CreateModal accessibility", () => {
     );
     await tick();
     expect($('[data-testid="chat-channel-slug-open"]')).toBeTruthy();
+  });
+});
+
+describe("CreateModal project channels", () => {
+  it("creates a project-scoped, invite-only channel when opened in project mode", async () => {
+    const createChannel = vi.fn(async () => ({ channelId: "chn_proj_new" }));
+    const oncreated = vi.fn();
+    open({ api: stubApi({ createChannel }), initialKind: "project", oncreated });
+    await tick();
+    await gotoCreate("Website relaunch");
+    expect($('[data-testid="chat-channel-kind-project"]')?.getAttribute("aria-checked")).toBe("true");
+    expect($('[data-testid="chat-channel-kind-help"]')?.textContent).toContain("Invite-only");
+
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => expect(createChannel).toHaveBeenCalled());
+    expect(createChannel).toHaveBeenCalledWith({
+      name: "Website relaunch",
+      scope: "project",
+      companyUid: "cmp_indigo",
+      projectId: "website-relaunch",
+      visibility: "invite",
+    });
+    await vi.waitFor(() => expect(oncreated).toHaveBeenCalled());
+    expect(oncreated.mock.calls[0]?.[0]).toMatchObject({ channelId: "chn_proj_new", scope: "project" });
+  });
+
+  it("defaults to a company channel and lets the person switch to a project channel", async () => {
+    const createChannel = vi.fn(async (_args: { scope: string; projectId?: string }) => ({
+      channelId: "chn_plain",
+    }));
+    open({ api: stubApi({ createChannel }) });
+    await tick();
+    await gotoCreate("Growth");
+    expect($('[data-testid="chat-channel-kind-channel"]')?.getAttribute("aria-checked")).toBe("true");
+    $<HTMLButtonElement>('[data-testid="chat-channel-kind-project"]')?.click();
+    await tick();
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => expect(createChannel).toHaveBeenCalled());
+    expect(createChannel.mock.calls[0]?.[0]).toMatchObject({ scope: "project", projectId: "growth" });
   });
 });

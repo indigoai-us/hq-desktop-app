@@ -16,12 +16,14 @@
     applyRecommendBanner,
     clearRecommendBanner,
     createChatWakeBus,
+    createRosterRefresher,
     dispatchEmbeddedNavigation,
     markDownloaded,
     markInstallStarted,
     reportDownloadProgress,
     reportIdleWait,
     reportInstallFailed,
+    subscribeRosterRefreshEvents,
     toSelfIdentity,
     workspacesFromMembershipRows,
     type ConversationRow,
@@ -47,6 +49,8 @@
     encodeHistorySessionParam,
     encodeLiveSessionParam,
     parseSessionsParam,
+    prefilledSessionParam,
+    setupSessionParam,
   } from './pages/sessions-route-param';
   import { liveSessionStore } from './lib/live-session-store.svelte';
   import { parseMeshProjectView } from '@hq/core';
@@ -58,6 +62,8 @@
   } from '@tauri-apps/plugin-notification';
   import { configureSessionStarterCache } from '../components/sessions/session-starter';
   import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
+  import { SETUP_PROMPT } from './lib/setup-launch';
+  import { createSetupRunApi } from './lib/setup-run-host.svelte';
   import { projectLinksStore } from './lib/project-links-store.svelte';
   import {
     newSessionParam,
@@ -77,11 +83,14 @@
     invokeFn?: SyncInvokeFn;
     /** Tests shorten the first-paint bound so a hung fetch cannot stall. */
     bootTimeoutMs?: number;
+    /** Backoff between failed workspace-roster fetches (tests shorten it). */
+    rosterRetryDelaysMs?: readonly number[];
   }
 
   let {
     invokeFn = tauriInvoke as SyncInvokeFn,
     bootTimeoutMs,
+    rosterRetryDelaysMs,
   }: Props = $props();
 
   const adapter = createSyncPlatformAdapter({
@@ -123,12 +132,17 @@
   let notificationWakeSeq = $state(0);
   let hydration = $state(0);
   let authGeneration = $state(0);
+  // Diagnostic bridge for the shared shell: writes to ~/.hq/logs/hq-sync.log.
+  (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog = (tag, message) => {
+    void invokeFn('frontend_log', { tag, message }).catch(() => undefined);
+  };
   let authAccountId = $state<string | null>(null);
   let revalidationPending = false;
   let detachNavigation: (() => void) | null = null;
   let updateWakeSeq = $state(0);
   // Sessions are generally available, independent of legacy machine preferences.
   type HostExtraPages = NonNullable<ComponentProps<typeof WorkShell>['extraPages']>;
+  const setupRun = createSetupRunApi();
   const extraPages = $derived<HostExtraPages>({
     sessions: {
       label: 'Sessions',
@@ -136,6 +150,19 @@
       // A unique draft route also resets an already-open empty composer.
       // Global creation is standalone; project actions bind explicitly.
       createAction: { label: 'New session', param: () => `new?draft=${crypto.randomUUID()}` },
+      // #welcome's Run Setup: a fresh session that sends /setup itself once
+      // Claude Code (or Codex) is connected and HQ is set up on this Mac.
+      setupAction: { label: 'Run Setup', param: () => setupSessionParam(SETUP_PROMPT) },
+      // After setup: a fresh session oriented on the company, `/startwork` sent.
+      startworkAction: {
+        label: 'Start work',
+        // Left in the composer, unsent — the same as Claude Code and Codex get.
+        param: (company: string | null) => prefilledSessionParam(company ? `/startwork ${company}` : '/startwork'),
+      },
+      // The native run: /setup drives a stepper + question cards inside the
+      // #welcome hero; `setupAction` stays the fallback when preflight says
+      // this page's Connect / self-heal UI must go first.
+      setupRun,
       component: SessionsExtraPage,
     },
   });
@@ -382,29 +409,46 @@
     }
   }
 
-  async function refreshWorkspaces(request: number, generation = authGeneration): Promise<void> {
+  /**
+   * Resolves `true` when the roster applied (or the session moved on — nothing
+   * left to retry) and `false` when the fetch failed for the session that asked.
+   */
+  async function refreshWorkspaces(request: number, generation = authGeneration): Promise<boolean> {
     try {
       const result = await bounded(
         adapter.identity.listWorkspaces(),
         'Workspace lookup',
       );
-      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return;
+      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return true;
       if (!result.ok) {
-        companies = null;
+        // Keep a previously good roster on screen; the refresher retries.
         workspaceError = result.message ?? 'Couldn’t load company workspaces.';
-        return;
+        return false;
       }
       companies = workspacesFromMembershipRows(result.value);
       workspaceError = null;
+      return true;
     } catch (error) {
-      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return;
-      companies = null;
+      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return true;
       workspaceError = readableError(error, 'Couldn’t load company workspaces.');
+      return false;
     }
   }
 
+  // One bounded refresher serves the first fetch, its backoff retries, the
+  // manual Retry button, and the sync runner's company events. Before this,
+  // a failed first fetch left the roster empty until the user retried by hand.
+  const rosterRefresher = createRosterRefresher({
+    load: () => {
+      if (lifecycle !== 'ready') return Promise.resolve(true);
+      return refreshWorkspaces(hydration, authGeneration);
+    },
+    delaysMs: rosterRetryDelaysMs,
+  });
+
   async function hydrateSession(expectedGeneration = authGeneration): Promise<void> {
     const request = ++hydration;
+    rosterRefresher.cancel();
     lifecycle = 'loading';
     identityError = null;
     workspaceError = null;
@@ -462,7 +506,7 @@
       });
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       lifecycle = 'ready';
-      void refreshWorkspaces(request, expectedGeneration);
+      void rosterRefresher.refresh();
     } catch (error) {
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       identityError = readableError(error, 'Couldn’t verify your account.');
@@ -479,7 +523,7 @@
   async function retryWorkspaces(): Promise<void> {
     if (lifecycle !== 'ready') return;
     workspaceError = null;
-    await refreshWorkspaces(hydration, authGeneration);
+    await rosterRefresher.refresh();
   }
 
   function requestRevalidation(options: { automatic?: boolean } = {}): void {
@@ -498,6 +542,7 @@
     try {
       await invokeFn('sign_out');
       navigation.clear();
+      rosterRefresher.cancel();
       authGeneration += 1;
       authAccountId = null;
       configureSessionStarterCache(null);
@@ -688,6 +733,11 @@
     const unlistenAuthReadyPromise = listen('auth:session-ready', () => {
       if (!cancelled) requestRevalidation();
     }).catch(() => () => {});
+    // Website-created companies are provisioned by the sync runner after
+    // sign-in; re-read the roster when it says so instead of after a restart.
+    const unsubscribeRosterEvents = subscribeRosterRefreshEvents(listen, () => {
+      if (!cancelled && lifecycle === 'ready') void rosterRefresher.refresh();
+    });
 
     const updateEvents = [
       'update:available',
@@ -800,6 +850,8 @@
       cancelled = true;
       clearTimeout(bootRevealTimeoutId);
       hydration += 1;
+      unsubscribeRosterEvents();
+      rosterRefresher.dispose();
       detachNavigation?.();
       detachNavigation = null;
       void unlistenSetupPromise.then((unlisten) => safeUnlisten(unlisten)());

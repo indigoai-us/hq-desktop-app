@@ -113,12 +113,31 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
   });
 
   describe('Dock click', () => {
-    it('routes Reopen to the desktop window, not the compact popover', () => {
+    it('routes Reopen through the primary surface (desktop window unless setup still owns main)', () => {
       const src = readMain();
       expect(src).toMatch(/tauri::RunEvent::Reopen/);
       expect(src).toMatch(/ActivationSource::DockIconClick/);
-      expect(src).toMatch(/tray::show_desktop_window\(_app_handle\)/);
+      // Regression: a Dock click used to call `show_desktop_window` directly,
+      // bypassing the onboarding guard every other activation source honours.
+      // A machine whose lifecycle is still NeedsInstall landed in a workspace
+      // with no HQ tree underneath it and hit the Sessions dead end.
+      expect(src).toMatch(/RunEvent::Reopen[\s\S]{0,1200}?tray::activate_primary_surface\(_app_handle\)/);
+      expect(src).not.toMatch(/RunEvent::Reopen[\s\S]{0,1200}?tray::show_desktop_window\(_app_handle\)/);
       expect(src).not.toMatch(/RunEvent::Reopen[\s\S]{0,900}?show_window_at_tray/);
+    });
+
+    it('opens the setup card at launch whenever HQ is not installed yet, not only on a brand-new machine', () => {
+      const main = readMain();
+      expect(main).toMatch(/commands::lifecycle::launch_should_show_setup_card\(/);
+      const lifecycle = readRepo('src-tauri/src/commands/lifecycle.rs');
+      expect(lifecycle).toMatch(/pub fn launch_should_show_setup_card\(first_run: bool, state: Option<LifecycleState>\) -> bool/);
+      expect(lifecycle).toMatch(/first_run \|\| state\.is_some_and\(lifecycle_keeps_main_window_visible\)/);
+    });
+
+    it('advances the cached lifecycle verdict when setup finishes so the same launch routes to the desktop', () => {
+      const firstRun = readRepo('src-tauri/src/commands/first_run.rs');
+      expect(firstRun).toMatch(/pub fn mark_first_run_complete\(app: AppHandle\)/);
+      expect(firstRun).toMatch(/set_lifecycle_state\([\s\S]*?LifecycleState::SteadyState/);
     });
 
     it('declares DockIconClick as its own activation source mapping to ShowDesktop', () => {

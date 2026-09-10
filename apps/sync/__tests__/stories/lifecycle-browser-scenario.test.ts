@@ -68,6 +68,16 @@ function cards(rows: Array<{ systemEvent?: unknown }>) {
 }
 
 describe('lifecycle scenario wire shapes', () => {
+  it('returns the company destination and completes Starter without an agent card', async () => {
+    const { invokeFn, inspect } = createLifecycleInvoke({ delayScale: 0 });
+    const created = await invokeFn('run_card_action', { cardId: 'card_create_company', actionId: 'submit', values: { name: 'Ramen Bae', slug: 'ramen-bae' } });
+    expect(created).toMatchObject({ companyChannelId: COMPANY_CHANNEL_ID });
+    await vi.waitFor(() => expect(cards(inspect.messages(COMPANY_CHANNEL_ID)).map(parseLifecycleCard).some(c => c?.cardKind === 'upgrade_plan')).toBe(true));
+    await invokeFn('run_card_action', { cardId: 'card_upgrade_plan', actionId: 'stay', values: {} });
+    const models = cards(inspect.messages(COMPANY_CHANNEL_ID)).map(parseLifecycleCard);
+    expect(models.some(c => c?.cardKind === 'create_agent')).toBe(false);
+    expect(models.find(c => c?.cardKind === 'upgrade_plan')?.title).toBe('Your company is ready');
+  });
   it('parses ?role= and ?state= from the harness query', () => {
     expect(resolveLifecycleOptions('?view=lifecycle')).toEqual({ role: 'owner', state: 'default' });
     expect(resolveLifecycleOptions('?view=lifecycle&role=member').role).toBe('member');

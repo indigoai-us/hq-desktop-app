@@ -6,6 +6,8 @@ vi.mock('@tauri-apps/plugin-http', () => ({
 
 import {
   __INTERNALS__,
+  CONNECTOR_IMPORT_OUTCOMES,
+  CONNECTOR_IMPORT_SOURCE_SETS,
   createOnboardingStepTelemetry,
   desktopPropertiesForOnboardingStep,
   type InstallerStepPingPayload,
@@ -160,6 +162,70 @@ describe('onboarding step telemetry', () => {
     });
     expect(completion.failedStages).toEqual(['content', 'deps', 'indexing']);
     expect(completion.setupRunId).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  });
+
+  it('records the bounded Claude Desktop config source and each distinguishable connector outcome', () => {
+    const expectedOutcomes = [
+      'tool_not_installed',
+      'config_path_unavailable',
+      'config_missing',
+      'config_unreadable',
+      'config_invalid',
+      'zero_servers',
+      'imported',
+      'import_failed',
+      'command_failed',
+      'user_skipped',
+      'unknown',
+    ];
+
+    expect(CONNECTOR_IMPORT_OUTCOMES).toEqual(expectedOutcomes);
+    expect(CONNECTOR_IMPORT_SOURCE_SETS).toEqual([
+      'claude_desktop_config',
+      'unknown',
+    ]);
+
+    for (const outcome of expectedOutcomes) {
+      const properties = desktopPropertiesForOnboardingStep({
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        occurredAt: '2026-09-10T10:00:00.000Z',
+        properties: {
+          step: 'connector-import',
+          action: outcome === 'import_failed' || outcome === 'command_failed' ? 'failed' : 'skipped',
+          outcome,
+          detectedSourceSet: 'claude_desktop_config',
+          errorCategory: outcome === 'import_failed' ? 'exit-nonzero' : undefined,
+          surface: 'desktop_installer',
+          platform: 'windows',
+        },
+      });
+      expect(properties.outcome).toBe(outcome);
+      expect(properties.detectedSourceSet).toBe('claude_desktop_config');
+    }
+  });
+
+  it('normalizes unrecognized connector labels and raw importer errors before transport', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-10T10:00:00.000Z',
+      properties: {
+        step: 'connector-import',
+        action: 'failed',
+        outcome: 'all_my_connectors_are_here',
+        detectedSourceSet: '/Users/alice/Library/Application Support/Claude' as never,
+        errorCategory: 'raw importer error from alice@work.example' as never,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+
+    expect(properties).toMatchObject({
+      outcome: 'unknown',
+      detectedSourceSet: 'unknown',
+      errorCategory: 'unknown',
+    });
+    expect(JSON.stringify(properties)).not.toContain('alice');
+    expect(JSON.stringify(properties)).not.toContain('work.example');
   });
 
   it('keeps an opaque setup run identifier across its events and changes it for a new run', async () => {

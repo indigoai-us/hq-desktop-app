@@ -406,9 +406,14 @@ where
         if by_slug.contains_key(&entity.slug) {
             continue;
         }
+        // The name the owner typed lives on the membership row when the
+        // entity carries none; only humanize the slug as a last resort
+        // ("HQTestCo" must not render as "Hqtestco").
         let display_name = entity
             .name
             .clone()
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| mem.company_name.clone().filter(|name| !name.trim().is_empty()))
             .or_else(|| {
                 local_by_slug
                     .get(entity.slug.as_str())
@@ -502,6 +507,126 @@ type CloudOutcome = Result<
     String,
 >;
 
+/// Cloud half of `list_syncable_workspaces`: the caller's person row, every
+/// membership they hold, and the live company entity behind each membership.
+///
+/// Memberships come from `GET /membership/me` — "memberships across every
+/// person the caller owns". The previous implementation listed person rows,
+/// took the OLDEST one, and asked `GET /membership/person/{uid}`. A company
+/// created on the website can attach its membership to a DIFFERENT person row
+/// than the one the desktop auto-created at first sign-in, and that path
+/// returned an empty roster: the shell then greeted an owner with "Create a
+/// company" even though their company already existed. The person lookup is
+/// kept only for what the Personal row needs (uid, bucket, display name).
+///
+/// The three independent reads (persons, memberships, pending-by-email) run
+/// concurrently; only the entity fan-out depends on the membership list.
+pub(crate) async fn fetch_cloud_roster(
+    vault: &VaultClient,
+) -> Result<
+    (
+        Option<EntityInfo>,
+        Vec<MembershipInfo>,
+        BTreeMap<String, EntityInfo>,
+    ),
+    String,
+> {
+    let (persons, my_memberships, pending_by_email) = tokio::join!(
+        vault.list_entities_by_type("person"),
+        vault.list_my_memberships(),
+        vault.list_pending_invites_by_email(),
+    );
+
+    let mut persons = persons.map_err(|e| format!("list person entities: {e}"))?;
+    persons.sort_by(|a, b| match a.created_at.cmp(&b.created_at) {
+        std::cmp::Ordering::Equal => a.uid.cmp(&b.uid),
+        ord => ord,
+    });
+    let person = persons.into_iter().next();
+
+    let mut memberships = my_memberships.map_err(|e| format!("list memberships: {e}"))?;
+
+    // Modern email-keyed invites only live on pending-by-email until
+    // claim-by-email rewrites them onto the person. Merge as synthetic
+    // pending memberships so desktop NEEDS YOU / company Accept work.
+    let pending_by_email = pending_by_email.unwrap_or_else(|e| {
+        log(
+            "workspaces",
+            &format!("list pending-by-email failed (non-fatal): {e}"),
+        );
+        Vec::new()
+    });
+    let existing_company_uids: std::collections::HashSet<String> =
+        memberships.iter().map(|m| m.company_uid.clone()).collect();
+    let person_uid_for_synth = person
+        .as_ref()
+        .map(|p| p.uid.clone())
+        .unwrap_or_else(|| "email-pending".to_string());
+    for inv in pending_by_email {
+        if existing_company_uids.contains(&inv.company_uid) {
+            continue;
+        }
+        memberships.push(MembershipInfo {
+            uid: String::new(),
+            person_uid: person_uid_for_synth.clone(),
+            company_uid: inv.company_uid.clone(),
+            status: "pending".to_string(),
+            role: inv.role.clone(),
+            created_at: inv.invited_at.clone(),
+            membership_key: inv.membership_key.clone(),
+            company_name: None,
+            invited_by: inv.invited_by.clone(),
+            invited_at: inv.invited_at.clone(),
+            // Synthesized pending-invite rows never carry branding.
+            branding_enabled: false,
+            brand: None,
+        });
+    }
+
+    let ids = memberships.iter().map(|mem| mem.company_uid.clone()).collect();
+    let fetched = fetch_workspace_entities(ids, |uid| async {
+        match vault.find_entity_by_uid(&uid).await {
+            Ok(entity) => Ok((uid, entity)),
+            Err(error) => {
+                let membership = memberships.iter().find(|mem| mem.company_uid == uid)
+                    .map(|mem| mem.display_id()).unwrap_or_else(|| uid.clone());
+                Err(format!("fetch entity {uid} for membership {membership}: {error}"))
+            }
+        }
+    }).await?;
+    let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
+    for (uid, entity) in fetched {
+        if let Some(e) = entity {
+            // Tombstoned (DELETE /entity/{uid} via hq-console) — the
+            // vault still returns the row but the company is "gone"
+            // from the user's perspective. Drop it so downstream
+            // assembly + the prune-dangling-cloud-uids pass treat
+            // this slug as missing-from-cloud and surface LocalOnly.
+            if e.deleted {
+                log(
+                    "workspaces",
+                    &format!(
+                        "drop tombstoned entity {} (slug='{}') from cloud view",
+                        e.uid, e.slug
+                    ),
+                );
+                continue;
+            }
+            entities.insert(uid, e);
+        }
+    }
+
+    // Drop memberships whose entity got filtered out above (tombstoned
+    // or 404). Keeps `assemble_workspaces` invariants clean — every
+    // membership it sees has a live entity in `entities`.
+    let memberships: Vec<MembershipInfo> = memberships
+        .into_iter()
+        .filter(|m| entities.contains_key(&m.company_uid))
+        .collect();
+
+    Ok((person, memberships, entities))
+}
+
 #[tauri::command]
 pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let hq_root = resolve_hq_folder_path()?;
@@ -514,112 +639,25 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         let vault_url = resolve_vault_api_url()?;
         let jwt = resolve_jwt().await?;
         let vault = VaultClient::new(&vault_url, &jwt);
-
-        let mut persons = vault
-            .list_entities_by_type("person")
-            .await
-            .map_err(|e| format!("list person entities: {e}"))?;
-        persons.sort_by(|a, b| match a.created_at.cmp(&b.created_at) {
-            std::cmp::Ordering::Equal => a.uid.cmp(&b.uid),
-            ord => ord,
-        });
-        let person = persons.into_iter().next();
-
-        let mut memberships = match &person {
-            Some(p) => vault
-                .list_memberships(&p.uid)
-                .await
-                .map_err(|e| format!("list memberships: {e}"))?,
-            None => Vec::new(),
-        };
-
-        // Modern email-keyed invites only live on pending-by-email until
-        // claim-by-email rewrites them onto the person. Merge as synthetic
-        // pending memberships so desktop NEEDS YOU / company Accept work.
-        let pending_by_email = vault
-            .list_pending_invites_by_email()
-            .await
-            .unwrap_or_else(|e| {
-                log(
-                    "workspaces",
-                    &format!("list pending-by-email failed (non-fatal): {e}"),
-                );
-                Vec::new()
-            });
-        let existing_company_uids: std::collections::HashSet<String> =
-            memberships.iter().map(|m| m.company_uid.clone()).collect();
-        let person_uid_for_synth = person
-            .as_ref()
-            .map(|p| p.uid.clone())
-            .unwrap_or_else(|| "email-pending".to_string());
-        for inv in pending_by_email {
-            if existing_company_uids.contains(&inv.company_uid) {
-                continue;
-            }
-            memberships.push(MembershipInfo {
-                uid: String::new(),
-                person_uid: person_uid_for_synth.clone(),
-                company_uid: inv.company_uid.clone(),
-                status: "pending".to_string(),
-                role: inv.role.clone(),
-                created_at: inv.invited_at.clone(),
-                membership_key: inv.membership_key.clone(),
-                company_name: None,
-                invited_by: inv.invited_by.clone(),
-                invited_at: inv.invited_at.clone(),
-                // Synthesized pending-invite rows never carry branding.
-                branding_enabled: false,
-                brand: None,
-            });
-        }
-
-        let ids = memberships.iter().map(|mem| mem.company_uid.clone()).collect();
-        let fetched = fetch_workspace_entities(ids, |uid| async {
-            match vault.find_entity_by_uid(&uid).await {
-                Ok(entity) => Ok((uid, entity)),
-                Err(error) => {
-                    let membership = memberships.iter().find(|mem| mem.company_uid == uid)
-                        .map(|mem| mem.display_id()).unwrap_or_else(|| uid.clone());
-                    Err(format!("fetch entity {uid} for membership {membership}: {error}"))
-                }
-            }
-        }).await?;
-        let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
-        for (uid, entity) in fetched {
-            if let Some(e) = entity {
-                    // Tombstoned (DELETE /entity/{uid} via hq-console) — the
-                    // vault still returns the row but the company is "gone"
-                    // from the user's perspective. Drop it so downstream
-                    // assembly + the prune-dangling-cloud-uids pass treat
-                    // this slug as missing-from-cloud and surface LocalOnly.
-                    if e.deleted {
-                        log(
-                            "workspaces",
-                            &format!(
-                                "drop tombstoned entity {} (slug='{}') from cloud view",
-                                e.uid, e.slug
-                            ),
-                        );
-                        continue;
-                    }
-                    entities.insert(uid, e);
-            }
-        }
-
-        // Drop memberships whose entity got filtered out above (tombstoned
-        // or 404). Keeps `assemble_workspaces` invariants clean — every
-        // membership it sees has a live entity in `entities`.
-        let memberships: Vec<MembershipInfo> = memberships
-            .into_iter()
-            .filter(|m| entities.contains_key(&m.company_uid))
-            .collect();
-
-        Ok((person, memberships, entities))
+        fetch_cloud_roster(&vault).await
     }
     .await;
 
     let (cloud_reachable, error, person, memberships, entities) = match cloud_outcome {
-        Ok((p, m, e)) => (true, None, p, m, e),
+        Ok((p, m, e)) => {
+            // Answer "did the app see my company" from the support log.
+            let slugs: Vec<String> = e.values().map(|entity| entity.slug.clone()).collect();
+            log(
+                "workspaces",
+                &format!(
+                    "cloud roster: person={} memberships={} companies={:?}",
+                    p.as_ref().map(|person| person.uid.as_str()).unwrap_or("none"),
+                    m.len(),
+                    slugs
+                ),
+            );
+            (true, None, p, m, e)
+        }
         Err(e) => {
             // Surface cloud errors to the persistent log alongside the UI
             // tooltip — the menubar's "Cloud unreachable" notice gives the
@@ -1408,6 +1446,148 @@ mod tests {
         assert_eq!(result[0].kind, WorkspaceKind::Personal);
     }
 
+    /// Regression (fresh-Mac onboarding): a company created on the website can
+    /// attach its membership to a person row that is NOT the oldest one the
+    /// desktop sees. Assembly must not care which person the membership hangs
+    /// off — the company row still appears.
+    #[test]
+    fn membership_attached_to_a_different_person_still_yields_company_row() {
+        let tmp = TempDir::new().unwrap();
+        let oldest = person("prs_oldest", Some("hq-vault-prs-oldest"));
+        let mems = vec![membership("mem_1", "prs_newer", "cmp_acme", "active")];
+        let mut entities = BTreeMap::new();
+        entities.insert(
+            "cmp_acme".to_string(),
+            company_entity("cmp_acme", "acme", Some("Acme")),
+        );
+        let result = assemble_workspaces(
+            tmp.path(),
+            Some(&oldest),
+            &mems,
+            &entities,
+            &[],
+            true,
+            |_| None,
+        );
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].kind, WorkspaceKind::Personal);
+        assert_eq!(result[0].cloud_uid.as_deref(), Some("prs_oldest"));
+        let acme = &result[1];
+        assert_eq!(acme.kind, WorkspaceKind::Company);
+        assert_eq!(acme.slug, "acme");
+        assert_eq!(acme.state, WorkspaceState::CloudOnly);
+        assert_eq!(acme.membership_status.as_deref(), Some("active"));
+    }
+
+    /// The roster must come from `GET /membership/me` (every person the caller
+    /// owns), never from `GET /membership/person/{oldest}`. Here the oldest
+    /// person row has no memberships at all; the website attached the owner
+    /// membership to a newer person row.
+    #[tokio::test]
+    async fn cloud_roster_uses_membership_me_not_oldest_person() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entities": [
+                    {
+                        "uid": "prs_newer",
+                        "slug": "newer",
+                        "type": "person",
+                        "status": "active",
+                        "createdAt": "2026-09-02T00:00:00Z",
+                        "bucketName": "hq-vault-prs-newer"
+                    },
+                    {
+                        "uid": "prs_oldest",
+                        "slug": "oldest",
+                        "type": "person",
+                        "name": "Stefan",
+                        "status": "active",
+                        "createdAt": "2026-09-01T00:00:00Z",
+                        "bucketName": "hq-vault-prs-oldest"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/membership/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "memberships": [{
+                    "personUid": "prs_newer",
+                    "companyUid": "cmp_acme",
+                    "status": "active",
+                    "role": "owner",
+                    "membershipKey": "prs_newer#cmp_acme",
+                    "companyName": "Acme"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/membership/pending-by-email"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "invites": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_acme"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": {
+                    "uid": "cmp_acme",
+                    "slug": "acme",
+                    "type": "company",
+                    "name": "Acme",
+                    "status": "active",
+                    "createdAt": "2026-09-02T00:00:00Z",
+                    "bucketName": "hq-vault-cmp-acme"
+                }
+            })))
+            .mount(&server)
+            .await;
+        // The old endpoint must not be consulted at all.
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/membership/person/.*$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "memberships": []
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let vault = VaultClient::new(&server.uri(), "test-token");
+        let (person, memberships, entities) = fetch_cloud_roster(&vault).await.unwrap();
+
+        // Personal row still keys off the oldest person.
+        assert_eq!(person.as_ref().map(|p| p.uid.as_str()), Some("prs_oldest"));
+        assert_eq!(memberships.len(), 1);
+        assert_eq!(memberships[0].company_uid, "cmp_acme");
+        assert_eq!(memberships[0].person_uid, "prs_newer");
+        assert!(entities.contains_key("cmp_acme"));
+
+        let tmp = TempDir::new().unwrap();
+        let rows = assemble_workspaces(
+            tmp.path(),
+            person.as_ref(),
+            &memberships,
+            &entities,
+            &[],
+            true,
+            |_| None,
+        );
+        assert_eq!(rows.len(), 2, "personal + the website-created company");
+        assert_eq!(rows[1].slug, "acme");
+        assert_eq!(rows[1].kind, WorkspaceKind::Company);
+        assert_eq!(rows[1].role.as_deref(), Some("owner"));
+        server.verify().await;
+    }
+
     #[test]
     fn personal_present_without_person_entity() {
         let tmp = TempDir::new().unwrap();
@@ -1626,6 +1806,22 @@ mod tests {
             assemble_workspaces(tmp.path(), Some(&p), &[mem], &entities, &[], true, |_| None);
         assert_eq!(result[1].state, WorkspaceState::CloudOnly);
         assert_eq!(result[1].membership_status.as_deref(), Some("pending"));
+    }
+
+    /// Regression: a website-created company whose entity carries no name
+    /// rendered as "Hqtestco" on the welcome screen; the owner typed
+    /// "HQTestCo", which the membership row still carries.
+    #[test]
+    fn cloud_only_row_uses_the_membership_company_name_before_the_slug() {
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let mut mem = membership("mem_1", "prs_x", "cmp_t", "active");
+        mem.company_name = Some("HQTestCo".to_string());
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_t".to_string(), company_entity("cmp_t", "hqtestco", None));
+        let result =
+            assemble_workspaces(tmp.path(), Some(&p), &[mem], &entities, &[], true, |_| None);
+        assert_eq!(result[1].display_name, "HQTestCo");
     }
 
     #[test]

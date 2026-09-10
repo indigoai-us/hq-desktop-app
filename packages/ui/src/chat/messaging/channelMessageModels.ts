@@ -218,6 +218,8 @@ export interface WorkSessionCardModel {
   /** Display name when the envelope carried one; otherwise null (resolve via roster). */
   principalDisplay: string | null;
   note: string | null;
+  /** Local / spike: open this session in the side pane. */
+  sessionId: string | null;
 }
 
 export type SystemEventModel =
@@ -345,6 +347,13 @@ export function parseLifecycleCard(raw: unknown): LifecycleCardModel | null {
   for (const field of raw.fields) {
     const parsed = parseLifecycleField(field);
     if (!parsed) return null;
+    // Older provisioning cards expose a routing UID as the whole readonly
+    // value. Keep identity in the envelope/actions, not in visible form rows.
+    if (parsed.control === "readonly" && /^(?:agt|cmp|prs|chn)_[A-Za-z0-9_-]+$/.test(parsed.value.trim())) continue;
+    // Old summaries put routing metadata in a visible progress field.
+    if (raw.kind === "companies_summary" && parsed.control === "readonly" && /^(company|cloud|plan|agent|complete):chn_/.test(parsed.value)) {
+      parsed.value = parsed.value.startsWith("complete:") ? "Ready" : "Continue setup";
+    }
     fields.push(parsed);
   }
   const actions: LifecycleCardAction[] = [];
@@ -598,6 +607,7 @@ export function parseSystemEvent(raw: unknown): SystemEventModel | null {
       principalDisplay:
         asOptionalString(raw.displayName) ?? principal?.display ?? null,
       note,
+      sessionId: asOptionalString(raw.sessionId),
     };
   }
 

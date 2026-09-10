@@ -33,6 +33,7 @@ function card(
     status: "active",
     principalDisplay: "Ada Lovelace",
     note: null,
+    sessionId: null,
     ...over,
   };
 }

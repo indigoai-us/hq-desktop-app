@@ -572,6 +572,47 @@ describe('onboarding launch handoff', () => {
     expect(done?.getAttribute('aria-busy')).toBe('false');
   });
 
+  it('consent-only mode asks just the consent question and finishes on the answer: no sign-in, folder, setup, or Not now', async () => {
+    const onfinish = vi.fn(async () => {});
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 3, mode: 'consent', onfinish },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    // Consent is compulsory here: dismissing is only for the stale re-prompt.
+    expect(host.querySelector('[data-testid="consent-dismiss"]')).toBeNull();
+    // No setup run was started behind the consent step.
+    expect(tauri.invoke.mock.calls.map(([command]) => command)).not.toContain('read_install_manifest');
+
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => onfinish.mock.calls.length > 0);
+
+    expect(onfinish).toHaveBeenCalledTimes(1);
+    // The wizard closed on the answer: the consent panel is still the one
+    // showing, and the ready screen never became the active panel.
+    expect(host.querySelector('[data-testid="onboarding-consent"]')?.classList.contains('on')).toBe(true);
+    expect(host.querySelector('[data-testid="onboarding-summary"]')?.classList.contains('on')).toBe(false);
+    expect(tauri.invoke.mock.calls.map(([command]) => command)).not.toContain('read_install_manifest');
+  });
+
   it('copies a user-facing path, stripping Windows verbatim prefixes', () => {
     expect(wizardSource).toContain('toUserFacingPath');
     expect(wizardSource).toContain('userFacingInstallPath');
@@ -715,6 +756,53 @@ describe('onboarding launch handoff', () => {
 });
 
 describe('onboarding connector telemetry', () => {
+  it('forwards connector source and failure category through the wizard adapter', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'detect_claude_desktop_connectors':
+          return {
+            present: true,
+            count: 1,
+            outcome: 'servers_detected',
+            inspectedSources: 'claude_desktop_config',
+          };
+        case 'import_claude_desktop_connectors':
+          return { ok: false, message: 'import failed', errorCategory: 'exit-nonzero' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX },
+    });
+
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
+    await flush();
+
+    const connectorEvents = tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
+      )
+      .map(([, args]) => (args as { properties: Record<string, unknown> }).properties);
+    expect(connectorEvents).toContainEqual(
+      expect.objectContaining({
+        action: 'failed',
+        detectedToolCount: 1,
+        detectedSourceSet: 'claude_desktop_config',
+        outcome: 'import_failed',
+        errorCategory: 'exit-nonzero',
+      }),
+    );
+  });
+
   it('delivers each auto-skip terminal outcome once and drains its delivery queue', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {

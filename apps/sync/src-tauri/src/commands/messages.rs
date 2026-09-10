@@ -874,6 +874,14 @@ pub struct CardActionResult {
     pub navigate_to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus_card_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company_channel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_channel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_uid: Option<String>,
     /// Channel that received the card an entry-point action posted
     /// (`companies_summary/create_company` → `setup`; `team:spend/add_agent`
     /// → the company channel).
@@ -926,6 +934,10 @@ fn card_action_from_body(body: &serde_json::Value, replayed: bool) -> CardAction
             .get("focusCardId")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        company_channel_id: body.get("companyChannelId").and_then(|v| v.as_str()).map(str::to_owned),
+        company_uid: body.get("companyUid").and_then(|v| v.as_str()).map(str::to_owned),
+        agent_channel_id: body.get("agentChannelId").and_then(|v| v.as_str()).map(str::to_owned),
+        agent_uid: body.get("agentUid").and_then(|v| v.as_str()).map(str::to_owned),
         channel_id: body
             .get("channelId")
             .and_then(|v| v.as_str())
@@ -1030,13 +1042,16 @@ pub async fn run_card_action(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let map = values.unwrap_or_default();
     let (base, token) = auth_and_base("MESSAGES_CARD_ACTION").await?;
-    run_card_action_with(&base, &token, id, card, action, &map, &key, || {
-        reconcile_after_card_action(&base, &token)
+    let reconcile_base = base.clone();
+    let reconcile_token = token.clone();
+    run_card_action_with(&base, &token, id, card, action, &map, &key, move || async move {
+        reconcile_after_card_action(&reconcile_base, &reconcile_token).await
     })
     .await
 }
 
-/// Posts the card action and, only when it succeeds, runs `after_success`.
+/// Posts the card action and, only when it succeeds, schedules `after_success`.
+/// Local company synchronization must not delay an already-saved server result.
 ///
 /// Card ids are server-minted (`setup:activate_cloud:cmp_x`, `card_7f…`) and
 /// the action response carries no card kind, so there is no reliable local
@@ -1055,8 +1070,8 @@ async fn run_card_action_with<F, Fut>(
     after_success: F,
 ) -> Result<CardActionResult, String>
 where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = ()>,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let out = post_card_action(
         base,
@@ -1075,7 +1090,7 @@ where
             out.replayed
         ),
     );
-    after_success().await;
+    tauri::async_runtime::spawn(async move { after_success().await });
     Ok(out)
 }
 
@@ -1652,6 +1667,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn card_action_returns_before_background_reconcile_finishes() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/notify/channels/chn_1/cards/upgrade_plan/actions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "cardId": "upgrade_plan", "actionId": "stay_starter", "state": "skipped"
+            })))
+            .mount(&server).await;
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let (finished, completion) = tokio::sync::oneshot::channel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1),
+            run_card_action_with(&server.uri(), "test-token", "chn_1", "upgrade_plan",
+                "stay_starter", &HashMap::new(), "idem-starter", move || async move {
+                    wait.await.expect("test releases reconciliation");
+                    let _ = finished.send(());
+                })
+        ).await.expect("saved action must not wait for company synchronization").unwrap();
+        assert_eq!(result.state, "skipped");
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), completion)
+            .await.expect("reconciliation still runs").unwrap();
+    }
+
+    #[tokio::test]
     async fn reconcile_runs_after_successful_card_action_and_not_after_failed_one() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
@@ -1671,6 +1712,7 @@ mod tests {
             .mount(&ok_server)
             .await;
         let ok_calls = Arc::new(AtomicUsize::new(0));
+        let (finished, completion) = tokio::sync::oneshot::channel();
         let out = run_card_action_with(
             &ok_server.uri(),
             "test-token",
@@ -1683,12 +1725,15 @@ mod tests {
                 let ok_calls = ok_calls.clone();
                 move || async move {
                     ok_calls.fetch_add(1, Ordering::SeqCst);
+                    let _ = finished.send(());
                 }
             },
         )
         .await
         .expect("success");
         assert_eq!(out.card_id, "card_7f3a");
+        tokio::time::timeout(std::time::Duration::from_secs(1), completion)
+            .await.expect("successful action schedules reconciliation").unwrap();
         assert_eq!(ok_calls.load(Ordering::SeqCst), 1);
 
         // Failure: a 500 from the server must not run the hook.
@@ -1765,6 +1810,22 @@ mod tests {
         assert_eq!(body["actionId"], "submit");
         assert_eq!(body["idempotencyKey"], "idem-fresh");
         assert_eq!(body["values"]["name"], "Acme");
+    }
+
+    #[test]
+    fn card_action_destinations_survive_native_roundtrip() {
+        for replayed in [false, true] {
+            let body = serde_json::json!({
+                "cardId": "create_company", "state": "done",
+                "companyChannelId": "chn_acme", "companyUid": "cmp_acme",
+                "agentChannelId": "chn_polar", "agentUid": "agt_polar"
+            });
+            let output = serde_json::to_value(card_action_from_body(&body, replayed)).unwrap();
+            for field in ["companyChannelId", "companyUid", "agentChannelId", "agentUid"] {
+                assert_eq!(output[field], body[field], "native response dropped {field}");
+            }
+            assert_eq!(output["replayed"], replayed);
+        }
     }
 
     #[tokio::test]

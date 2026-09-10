@@ -25,6 +25,8 @@ export * from "./chat/live-catchup.js";
 export * from "./chat/reply-layout.js";
 export * from "./chat/channels.js";
 export * from "./chat/setup-channel.js";
+export * from "./chat/setup-run.js";
+export * from "./chat/setup-agent.svelte.js";
 // Agent "thinking" indicator state machine. Explicit list: `isAgentUid` is
 // intentionally NOT re-exported here — the barrel already ships the
 // mesh-overlay `isAgentUid`; import the agent-thinking one from the module
@@ -111,6 +113,17 @@ export {
   type SettingsProfileChrome,
   type ResolveShellCompaniesInput,
 } from "./identity/self.js";
+export {
+  createRosterRefresher,
+  ROSTER_REFRESH_EVENTS,
+  ROSTER_RETRY_DELAYS_MS,
+  subscribeRosterRefreshEvents,
+  type RosterListenFn,
+  type RosterRefresher,
+  type RosterRefreshEvent,
+  type RosterSettledOutcome,
+  type RosterStatus,
+} from "./identity/roster-refresh.js";
 export { createTenantStorage } from "./identity/tenant-storage.js";
 
 export {

@@ -13,6 +13,7 @@
     type LifecycleCardModel,
     type LifecycleCardState,
   } from "./channelMessageModels";
+  import { requestChannelOpen } from "../open-target";
 
   interface Props {
     model: LifecycleCardModel;
@@ -28,17 +29,16 @@
   let values = $state<Record<string, string>>({});
   let localErrors = $state<Record<string, string>>({});
   let lastSeed = "";
+  let addressEdited = $state(false);
 
   const displayState = $derived<LifecycleCardState>(
-    localPending && model.state === "open" ? "pending" : model.state,
+    localPending ? "pending" : model.state,
   );
   const collapsed = $derived(
-    displayState === "done" || displayState === "skipped",
+    (displayState === "done" || displayState === "skipped") && !model.actions.length && !model.summary,
   );
   const canRetry = $derived(
-    model.viewer.canAct &&
-      displayState === "blocked" &&
-      model.actions.some((action) => action.id === "retry"),
+    model.viewer.canAct && displayState === "blocked" && model.actions.some((action) => action.id === "retry"),
   );
   const canEdit = $derived(
     (model.viewer.canAct && displayState === "open" && !localPending) ||
@@ -64,14 +64,18 @@
   const askLabel = $derived(askWho(model.viewer.actorName));
 
   $effect.pre(() => {
-    const key = `${model.cardId}:${model.state}:${model.fields
+    const key = `${model.cardId}:${model.state}:${model.reason ?? ""}:${model.fields
       .map((field) => `${field.id}=${field.value}:${field.error ?? ""}`)
       .join("|")}`;
+    // A repeated failure can carry identical fields/reason. A fresh server or
+    // host response still settles this attempt and must release its controls.
+    localPending = false;
     if (key === lastSeed) return;
     lastSeed = key;
     const seed: Record<string, string> = {};
     for (const field of model.fields) seed[field.id] = field.value ?? "";
     values = seed;
+    addressEdited = Boolean(seed.slug);
     localErrors = {};
     localPending = false;
   });
@@ -80,8 +84,9 @@
     card: LifecycleCardModel,
     state: LifecycleCardState,
   ): string | null {
+    if (state === "pending" && localPending) return card.cardKind === "create_company" ? "Creating your company…" : "Saving your choice…";
     if (card.statusLabel) return card.statusLabel;
-    if (state === "pending") return "Pending";
+    if (state === "pending") return "In progress…";
     if (state === "done") return "Done";
     if (state === "blocked") return "Blocked";
     if (state === "skipped") return "Skipped";
@@ -106,6 +111,14 @@
 
   function setValue(fieldId: string, value: string): void {
     values = { ...values, [fieldId]: value };
+    if (model.cardKind === "create_company") {
+      if (fieldId === "slug") addressEdited = true;
+      if (fieldId === "name" && !addressEdited && model.fields.some((field) => field.id === "slug" && field.control === "text")) {
+        const normalized = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+        values.slug = (/^[a-z]/.test(normalized) ? normalized : `company-${normalized}`).slice(0, 30).replace(/-+$/g, "");
+      }
+    }
     if (localErrors[fieldId]) {
       const next = { ...localErrors };
       delete next[fieldId];
@@ -121,6 +134,16 @@
   function openUrl(url: string | null): void {
     const href = url?.trim();
     if (!href) return;
+    const channel = /^\/v1\/notify\/channels\/(chn_[A-Za-z0-9_-]+|setup)$/.exec(href);
+    if (channel) {
+      const action = model.actions.find((item) => item.href === href);
+      const company = model.fields.find((field) => field.id === action?.id);
+      requestChannelOpen(channel[1], {
+        title: company?.label || (channel[1] === "setup" ? "welcome" : "Company channel"),
+        companyUid: model.companyUid || (company?.id.startsWith("cmp_") ? company.id : null),
+      });
+      return;
+    }
     if (onopenurl) {
       onopenurl(href);
       return;
@@ -136,9 +159,11 @@
   }
 
   function submitAction(action: LifecycleCardAction): void {
-    if (action.style === "link") {
-      if (action.href) openUrl(action.href);
-      else emitAction(action.id);
+    // A server-pending checkout retains its retry/cancel controls from main.
+    // Only a newly submitted form locks all actions while saving.
+    if (localPending && model.state !== "pending") return;
+    if (action.href) {
+      openUrl(action.href);
       return;
     }
     if (displayState === "pending") {
@@ -248,7 +273,7 @@
       <p class="lc-summary-copy">{model.summary}</p>
     {/if}
 
-    {#if displayState === "blocked" && model.reason}
+    {#if (displayState === "blocked" || displayState === "open") && model.reason}
       <p class="lc-reason" role="alert" data-testid="lifecycle-card-reason">
         {model.reason}
       </p>
@@ -436,9 +461,8 @@
             class:row={action.style === "link"}
             data-size={action.style === "link" ? "28" : "32"}
             data-testid={`lifecycle-action-${action.id}`}
-            disabled={action.style !== "link" &&
-              displayState !== "pending" &&
-              (displayState === "blocked" || !canEdit)}
+            disabled={(localPending && model.state !== "pending") || (!action.href && action.style !== "link" &&
+              displayState !== "pending" && !canEdit)}
             onclick={() => submitAction(action)}
           >
             {action.label}
@@ -463,6 +487,8 @@
     flex-direction: column;
     gap: 12px;
     width: 100%;
+    max-width: 640px;
+    box-sizing: border-box;
     margin-top: 12px;
     padding-top: 12px;
     border-top: 1px solid var(--line, var(--pop-border));
@@ -480,24 +506,25 @@
 
   .lc-hd {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
     min-width: 0;
   }
 
   .lc-k {
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
+    flex-basis: 100%;
+    font-family: inherit;
+    font-size: 13px;
     font-weight: 500;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    letter-spacing: normal;
     color: var(--t2, var(--pop-muted));
     white-space: nowrap;
   }
 
   .lc-title {
     margin: 0;
-    font-size: 15px;
+    font-size: 20px;
     font-weight: 500;
     letter-spacing: -0.005em;
     color: var(--t1, var(--pop-text));
@@ -509,11 +536,10 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
+    font-family: inherit;
+    font-size: 13px;
     font-weight: 500;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    letter-spacing: normal;
     color: var(--t3, var(--pop-muted));
     white-space: nowrap;
   }

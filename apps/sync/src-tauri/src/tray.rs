@@ -163,9 +163,8 @@ fn onboarding_window_requires_blur_suppression(app: &AppHandle) -> bool {
         .try_state::<crate::commands::first_run::LaunchKindState>()
         .map(|state| crate::commands::first_run::should_autoshow_on_launch(state.0))
         .unwrap_or(false);
-    let setup_lifecycle = app
-        .try_state::<crate::commands::lifecycle::LifecycleStateHandle>()
-        .map(|state| crate::commands::lifecycle::lifecycle_keeps_main_window_visible(state.0))
+    let setup_lifecycle = crate::commands::lifecycle::current_lifecycle_state(app)
+        .map(crate::commands::lifecycle::lifecycle_keeps_main_window_visible)
         .unwrap_or(false);
     // Browser OAuth steals key focus; do not dismiss the sign-in surface under it.
     let oauth_in_flight = crate::commands::oauth::oauth_flow_keeps_window_visible();

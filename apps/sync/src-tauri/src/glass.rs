@@ -209,3 +209,4 @@ pub fn refresh_liquid_glass_window(window: &tauri::WebviewWindow) {
         );
     }
 }
+

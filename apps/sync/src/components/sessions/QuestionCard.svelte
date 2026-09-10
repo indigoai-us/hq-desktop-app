@@ -31,6 +31,14 @@
 
   /** questionId → picked option labels. Rebuilt whenever the request changes. */
   let picks = $state<Record<string, string[]>>({});
+  /**
+   * questionId → typed "Other" answer. `AskUserQuestion` always accepts a
+   * free-text answer beside its options (the CLI's "Other" row); a card that
+   * only draws the options strands questions like "What's your name?".
+   */
+  let others = $state<Record<string, string>>({});
+  /** questionId → whether the "Other" row is the active choice. */
+  let otherOn = $state<Record<string, boolean>>({});
 
   // A new request id means a different set of questions: start from a clean
   // selection rather than carrying the previous request's answers forward.
@@ -41,14 +49,25 @@
     const seed: Record<string, string[]> = {};
     for (const question of questions) seed[question.id] = [];
     picks = seed;
+    others = {};
+    otherOn = {};
   });
 
   function selectedFor(questionId: string): string[] {
     return picks[questionId] ?? [];
   }
 
+  function otherTextFor(questionId: string): string {
+    return (others[questionId] ?? '').trim();
+  }
+
+  function otherActive(questionId: string): boolean {
+    return otherOn[questionId] === true;
+  }
+
   function chooseSingle(questionId: string, label: string) {
     picks = { ...picks, [questionId]: [label] };
+    otherOn = { ...otherOn, [questionId]: false };
   }
 
   function toggleMulti(questionId: string, label: string) {
@@ -59,8 +78,29 @@
     picks = { ...picks, [questionId]: next };
   }
 
+  function chooseOther(question: SessionQuestion) {
+    if (question.multiSelect) {
+      otherOn = { ...otherOn, [question.id]: !otherActive(question.id) };
+      return;
+    }
+    picks = { ...picks, [question.id]: [] };
+    otherOn = { ...otherOn, [question.id]: true };
+  }
+
+  /** Typing in the Other field is choosing it. */
+  function typeOther(question: SessionQuestion, value: string) {
+    others = { ...others, [question.id]: value };
+    if (!otherActive(question.id)) chooseOther(question);
+  }
+
+  /** What this question would send: picked labels plus the typed answer. */
+  function valuesFor(questionId: string): string[] {
+    const typed = otherActive(questionId) ? otherTextFor(questionId) : '';
+    return typed ? [...selectedFor(questionId), typed] : selectedFor(questionId);
+  }
+
   /** Submitting a half-answered request would send the agent a lie by omission. */
-  const complete = $derived(questions.every((q) => selectedFor(q.id).length > 0));
+  const complete = $derived(questions.every((q) => valuesFor(q.id).length > 0));
 
   function submit() {
     if (!complete) return;
@@ -68,9 +108,15 @@
       requestId,
       questions.map((question) => ({
         questionId: question.id,
-        values: selectedFor(question.id),
+        values: valuesFor(question.id),
       })),
     );
+  }
+
+  function submitOnEnter(event: KeyboardEvent) {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    event.preventDefault();
+    if (!busy) submit();
   }
 </script>
 
@@ -122,6 +168,34 @@
             </span>
           </label>
         {/each}
+        <label
+          class="option option--other"
+          class:picked={otherActive(question.id)}
+          data-testid="session-question-other"
+        >
+          <input
+            type={question.multiSelect ? 'checkbox' : 'radio'}
+            name={`${requestId}-${question.id}`}
+            value="__other__"
+            checked={otherActive(question.id)}
+            onchange={() => chooseOther(question)}
+          />
+          <span class="option-body">
+            <span class="option-label">Type your own answer</span>
+            <input
+              class="other-input"
+              type="text"
+              autocomplete="off"
+              placeholder="Type here…"
+              aria-label={`Your own answer: ${question.text}`}
+              data-testid="session-question-other-input"
+              value={others[question.id] ?? ''}
+              disabled={busy}
+              oninput={(event) => typeOther(question, (event.currentTarget as HTMLInputElement).value)}
+              onkeydown={submitOnEnter}
+            />
+          </span>
+        </label>
       </div>
     </fieldset>
   {/each}
@@ -236,6 +310,32 @@
     font-size: var(--type-metadata);
     line-height: 1.4;
     color: var(--v4-text-3);
+  }
+
+  .option--other .option-body {
+    flex: 1;
+    gap: 6px;
+  }
+
+  .other-input {
+    width: 100%;
+    max-width: 480px;
+    font: inherit;
+    font-size: var(--type-body);
+    padding: 6px 10px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+  }
+
+  .other-input::placeholder {
+    color: var(--v4-text-3);
+  }
+
+  .other-input:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-hairline));
+    outline-offset: 1px;
   }
 
   .question-actions {

@@ -5,9 +5,11 @@ import {
   encodeLiveSessionParam,
   encodeSharedSessionParam,
   parseSessionsParam,
+  prefilledSessionParam,
   sessionDraftStorageKey,
   sessionNavigateMode,
   sessionRestorePath,
+  setupSessionParam,
 } from './sessions-route-param';
 
 describe('parseSessionsParam', () => {
@@ -112,5 +114,25 @@ describe('parseSessionsParam', () => {
     );
     expect(encodeLiveSessionParam('ses_live', 'indigo')).toBe('ses_live?company=indigo');
     expect(encodeLiveSessionParam('ses_live')).toBe('ses_live');
+  });
+});
+
+describe('setupSessionParam', () => {
+  it('carries the setup prompt into a fresh-session route and back out', () => {
+    const param = setupSessionParam('/setup');
+    expect(param.startsWith('new?')).toBe(true);
+    const route = parseSessionsParam(param);
+    expect(route).toMatchObject({ kind: 'new', company: null, project: null, prompt: '/setup' });
+  });
+
+  it('an ordinary New session has no prompt', () => {
+    expect(parseSessionsParam('new?draft=abc')).not.toHaveProperty('prompt');
+    expect(parseSessionsParam('new?draft=abc')).not.toHaveProperty('prefill');
+  });
+
+  it('a prefilled route seeds the composer without sending: prefill, never prompt', () => {
+    const route = parseSessionsParam(prefilledSessionParam('/startwork acme'));
+    expect(route).toMatchObject({ kind: 'new', prefill: '/startwork acme' });
+    expect(route).not.toHaveProperty('prompt');
   });
 });

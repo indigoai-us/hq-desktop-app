@@ -252,9 +252,36 @@ fn inherited_agent_env() -> Vec<String> {
     names
 }
 
+/// Where the `claude` binary lives.
+///
+/// A CLI the user installed themselves (PATH, `~/.local/bin`, npm global) wins:
+/// it carries their own settings and is what `claude login` in a terminal
+/// talks to. When nothing is resolvable that way, fall back to the Claude Code
+/// build managed by the Claude desktop app, which is what a fresh machine with
+/// only Claude.app has. Detection (`ai_tools::detect_ai_tools`) counts that
+/// same bundled binary as an installed CLI, so "installed" and "launchable"
+/// stay one definition.
+pub fn claude_program() -> String {
+    select_claude_program(paths::resolve_bin_with_kind("claude"), || {
+        crate::commands::launch::bundled_claude_bin()
+    })
+}
+
+fn select_claude_program(
+    resolved: paths::ResolvedProgram,
+    bundled: impl FnOnce() -> Option<PathBuf>,
+) -> String {
+    if resolved.is_resolved() {
+        return resolved.path;
+    }
+    bundled()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(resolved.path)
+}
+
 /// Spawn the real `claude` CLI for `spec`.
 pub async fn spawn_claude(spec: &SessionSpec, cwd: PathBuf) -> Result<StdioChild, String> {
-    let program = paths::resolve_bin("claude");
+    let program = claude_program();
     let launch = claude_launch(program, spec, cwd);
     log(
         LOG_TAG,
@@ -664,7 +691,9 @@ pub async fn probe_command_catalog(cwd: PathBuf) -> Result<CommandCatalog, Strin
         permission_mode: hq_desktop_core::agent_session::types::PermissionMode::Prompt,
         hidden: false,
     };
-    let mut launch = claude_launch(paths::resolve_bin("claude"), &spec, cwd);
+    // Same resolution as a real session: PATH first, then the Claude Desktop
+    // bundled CLI. A PATH-only lookup fails on a Mac that only has the app.
+    let mut launch = claude_launch(claude_program(), &spec, cwd);
     launch.args.extend(catalog_probe_args());
     let mut child = StdioChild::spawn(&launch).await
         .map_err(|e| format!("Could not start Claude model discovery: {e}"))?;
@@ -1430,5 +1459,39 @@ async function drain() { while (!closed || queue.length) await take(); }
                 "the fake claude (pid {pid}) outlived the session"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod claude_program_tests {
+    use super::select_claude_program;
+    use hq_desktop_core::paths::{ResolvedProgram, ResolvedProgramKind};
+    use std::path::PathBuf;
+
+    #[test]
+    fn user_installed_cli_wins_over_desktop_managed_copy() {
+        let resolved = ResolvedProgram {
+            path: "/opt/homebrew/bin/claude".into(),
+            kind: ResolvedProgramKind::Extensionless,
+        };
+        assert_eq!(
+            select_claude_program(resolved, || panic!("bundled must not be consulted")),
+            "/opt/homebrew/bin/claude"
+        );
+    }
+
+    /// Regression: with nothing on PATH, Sessions must spawn the Claude Code
+    /// build the Claude desktop app manages — the same binary detection counts.
+    #[test]
+    fn desktop_managed_copy_backs_an_empty_path() {
+        let bundled = PathBuf::from("/Users/me/Library/Application Support/Claude/claude-code/2.1.260/claude.app/Contents/MacOS/claude");
+        assert_eq!(
+            select_claude_program(ResolvedProgram::not_resolved("claude"), || Some(bundled.clone())),
+            bundled.to_string_lossy()
+        );
+        assert_eq!(
+            select_claude_program(ResolvedProgram::not_resolved("claude"), || None),
+            "claude"
+        );
     }
 }

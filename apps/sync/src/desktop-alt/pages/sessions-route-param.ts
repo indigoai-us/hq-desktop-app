@@ -18,7 +18,24 @@ export type SessionsRoute =
       title: string;
       startedAt: string;
     }
-  | { kind: 'new'; company: string | null; project: string | null; channelId?: string };
+  | {
+      kind: 'new';
+      company: string | null;
+      project: string | null;
+      channelId?: string;
+      /**
+       * Text the page should send on the person's behalf as soon as the
+       * session can start (#welcome's Run Setup carries `/setup`). Absent for
+       * an ordinary "New session".
+       */
+      prompt?: string;
+      /**
+       * Text seeded into the composer and left there for the person to send
+       * (#welcome's "Continue in HQ Sessions" carries `/startwork <company>`).
+       * Unlike `prompt`, nothing is sent on their behalf.
+       */
+      prefill?: string;
+    };
 
 export const NEW_SESSION_PREFIX = 'new?';
 export const HISTORY_SESSION_PREFIX = 'history?';
@@ -68,6 +85,8 @@ export function parseSessionsParam(param: string | null | undefined): SessionsRo
       company: clean(query.get('company')),
       project: clean(query.get('project')),
       ...(clean(query.get('channel')) ? { channelId: clean(query.get('channel'))! } : {}),
+      ...(clean(query.get('prompt')) ? { prompt: clean(query.get('prompt'))! } : {}),
+      ...(clean(query.get('prefill')) ? { prefill: clean(query.get('prefill'))! } : {}),
     };
   }
   const queryAt = raw.indexOf('?');
@@ -83,6 +102,18 @@ export function parseSessionsParam(param: string | null | undefined): SessionsRo
     }
   }
   return { kind: 'session', sessionId: raw };
+}
+
+/** The #welcome "Continue in HQ Sessions" destination: a fresh session with `text` waiting in the composer, unsent. */
+export function prefilledSessionParam(text: string): string {
+  const query = new URLSearchParams({ draft: crypto.randomUUID(), prefill: text });
+  return `${NEW_SESSION_PREFIX}${query.toString()}`;
+}
+
+/** The #welcome "Run Setup" destination: a fresh session that sends `prompt` itself. */
+export function setupSessionParam(prompt: string): string {
+  const query = new URLSearchParams({ draft: crypto.randomUUID(), prompt });
+  return `${NEW_SESSION_PREFIX}${query.toString()}`;
 }
 
 export function sessionRestorePath(route: SessionsRoute): SessionRestorePath {

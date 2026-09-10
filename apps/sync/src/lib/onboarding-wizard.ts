@@ -193,7 +193,24 @@ export function initialStepForLifecycle(state: string): number {
       return WELCOME_SIGNIN_STEP_INDEX;
     case 'InstallResume':
       return SETUP_STEP_INDEX;
+    case 'InstalledFirstRun':
+      // Already installed and signed in; only the compulsory consent answer is
+      // missing (an older build, or a settings file that lost its markers).
+      // Ask that one question — never the sign-in, folder, or install again.
+      return CONSENT_STEP_INDEX;
     default:
       return WELCOME_SIGNIN_STEP_INDEX;
   }
+}
+
+/**
+ * `'onboarding'` runs the whole wizard; `'consent'` shows only the consent step
+ * and then completes first run (an installed machine whose consent answer is
+ * missing); `'reprompt'` is the launch-time re-ask for a stale answer and must
+ * not touch first-run state.
+ */
+export type WizardMode = 'onboarding' | 'reprompt' | 'consent';
+
+export function wizardModeForLifecycle(state: string): WizardMode {
+  return state === 'InstalledFirstRun' ? 'consent' : 'onboarding';
 }

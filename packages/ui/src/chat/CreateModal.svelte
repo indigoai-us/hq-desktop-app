@@ -102,6 +102,13 @@
     oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
+    /**
+     * What to create inside a company: a company channel (default) or a
+     * project channel — an invite-only channel that is the home of one
+     * project (its files, work, and people). #welcome's "Start a project
+     * channel" opens the modal in project mode.
+     */
+    initialKind?: "channel" | "project";
   }
 
   let {
@@ -118,7 +125,11 @@
     oncreatecompany = null,
     oncreateagent = null,
     agentCompanies = null,
+    initialKind = "channel",
   }: Props = $props();
+
+  /** Company channel vs project channel; only meaningful inside a company. */
+  let channelKind = $state<"channel" | "project">(initialKind);
 
   // ── lifecycle entry points (New company / New agent) ─────────────────────
   const agentTargets = $derived<ScopeCompany[]>(
@@ -1131,7 +1142,12 @@
 
     const name = slugOverride ? channelSlug(slugOverride) : channelName.trim();
     const slug = slugCanonical;
-    const scope: "personal" | "company" = companyUid ? "company" : "personal";
+    const asProject = Boolean(companyUid) && channelKind === "project";
+    const scope: "personal" | "company" | "project" = asProject
+      ? "project"
+      : companyUid
+        ? "company"
+        : "personal";
 
     let channelId = "";
     try {
@@ -1139,6 +1155,9 @@
         name,
         scope,
         ...(companyUid ? { companyUid } : {}),
+        // A project channel is invite-only and keyed by its project id — the
+        // channel's slug is the project's handle until a PRD claims it.
+        ...(asProject ? { projectId: slug, visibility: "invite" as const } : {}),
       });
       channelId = created?.channelId ?? "";
     } catch (err) {
@@ -1795,6 +1814,43 @@
           </p>
         {/if}
 
+        {#if companyUid}
+          <div class="create-field">
+            <span class="create-label" id="create-kind-label">Type</span>
+            <div class="create-kind" role="radiogroup" aria-labelledby="create-kind-label">
+              <button
+                type="button"
+                role="radio"
+                class="create-kind-option"
+                class:selected={channelKind === "channel"}
+                aria-checked={channelKind === "channel"}
+                data-testid="chat-channel-kind-channel"
+                disabled={creating}
+                onclick={() => (channelKind = "channel")}
+              >
+                Channel
+              </button>
+              <button
+                type="button"
+                role="radio"
+                class="create-kind-option"
+                class:selected={channelKind === "project"}
+                aria-checked={channelKind === "project"}
+                data-testid="chat-channel-kind-project"
+                disabled={creating}
+                onclick={() => (channelKind = "project")}
+              >
+                Project channel
+              </button>
+            </div>
+          </div>
+          <p class="create-help" data-testid="chat-channel-kind-help">
+            {channelKind === "project"
+              ? "One home for a project: its work, files, and people. Invite-only."
+              : "A shared channel everyone in the company can find."}
+          </p>
+        {/if}
+
         {#if canAddMembers}
           <div class="create-members">
             <div class="create-cell">
@@ -2174,6 +2230,32 @@
   .create-submit:focus-visible,
   .create-inline-btn:focus-visible,
   .create-chip-x:focus-visible,
+  .create-kind {
+    display: inline-flex;
+    gap: 4px;
+    padding: 3px;
+    border: 1px solid var(--v4-control-border, var(--border));
+    border-radius: 8px;
+  }
+  .create-kind-option {
+    font: inherit;
+    font-size: 13px;
+    padding: 4px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-2, inherit);
+    cursor: pointer;
+  }
+  .create-kind-option.selected {
+    background: var(--v4-active-row, rgba(127, 127, 127, 0.18));
+    color: var(--text-1, inherit);
+  }
+  .create-kind-option:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: 1px;
+  }
+
   .create-select:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: var(--v4-focus-offset, 2px);
