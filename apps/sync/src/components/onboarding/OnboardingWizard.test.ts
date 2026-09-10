@@ -715,6 +715,53 @@ describe('onboarding launch handoff', () => {
 });
 
 describe('onboarding connector telemetry', () => {
+  it('forwards connector source and failure category through the wizard adapter', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'detect_claude_desktop_connectors':
+          return {
+            present: true,
+            count: 1,
+            outcome: 'servers_detected',
+            inspectedSources: 'claude_desktop_config',
+          };
+        case 'import_claude_desktop_connectors':
+          return { ok: false, message: 'import failed', errorCategory: 'exit-nonzero' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX },
+    });
+
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
+    await flush();
+
+    const connectorEvents = tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
+      )
+      .map(([, args]) => (args as { properties: Record<string, unknown> }).properties);
+    expect(connectorEvents).toContainEqual(
+      expect.objectContaining({
+        action: 'failed',
+        detectedToolCount: 1,
+        detectedSourceSet: 'claude_desktop_config',
+        outcome: 'import_failed',
+        errorCategory: 'exit-nonzero',
+      }),
+    );
+  });
+
   it('delivers each auto-skip terminal outcome once and drains its delivery queue', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {

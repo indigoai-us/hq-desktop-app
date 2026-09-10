@@ -929,6 +929,7 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
         return Value::Object(Map::new());
     };
 
+    let connector_import = input.get("step").and_then(Value::as_str) == Some("connector-import");
     let mut out = Map::new();
 
     for (key, value) in input {
@@ -946,6 +947,9 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
             ))),
             ("detectedSourceSet", Value::String(value)) => Some(Value::String(
                 normalize_closed_label(&value, CONNECTOR_IMPORT_SOURCE_SET_VALUES),
+            )),
+            ("outcome", Value::String(value)) if connector_import => Some(Value::String(
+                normalize_closed_label(&value, CONNECTOR_IMPORT_OUTCOME_VALUES),
             )),
             ("failedStages", Value::Array(values)) => {
                 Some(Value::Array(normalize_failed_stages(&values)))

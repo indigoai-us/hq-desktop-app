@@ -112,7 +112,11 @@ pub fn detect_claude_ready() -> ClaudeReady {
 #[tauri::command]
 pub fn detect_claude_desktop_connectors() -> ClaudeDesktopConnectors {
     let config_path = claude_desktop_config_path();
-    detect_claude_desktop_connectors_in(claude_desktop_installed(), config_path.as_deref())
+    let desktop_installed = claude_desktop_installed();
+    #[cfg(target_os = "linux")]
+    let desktop_installed =
+        linux_connector_config_indicates_desktop(desktop_installed, config_path.as_deref());
+    detect_claude_desktop_connectors_in(desktop_installed, config_path.as_deref())
 }
 
 /// Run the existing CLI importer from the configured HQ root. Its output is
@@ -256,6 +260,17 @@ fn linux_claude_desktop_config_path_in(
         .map(PathBuf::from)
         .or_else(|| home.map(|home| home.join(".config")))
         .map(|config_home| config_home.join("Claude/claude_desktop_config.json"))
+}
+
+/// Linux distributions do not install a macOS-style application bundle. A
+/// Claude Desktop config at the documented XDG location is therefore the
+/// supported local signal that its connector probe can run.
+#[cfg(target_os = "linux")]
+fn linux_connector_config_indicates_desktop(
+    desktop_installed: bool,
+    config_path: Option<&Path>,
+) -> bool {
+    desktop_installed || config_path.is_some_and(Path::is_file)
 }
 
 #[cfg(windows)]
@@ -671,6 +686,28 @@ mod tests {
                     .join("Claude/claude_desktop_config.json")
             )
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_connector_probe_uses_supported_config_as_desktop_evidence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("Claude/claude_desktop_config.json");
+
+        assert!(!linux_connector_config_indicates_desktop(
+            false,
+            Some(&config)
+        ));
+        fs::create_dir_all(config.parent().expect("config parent")).expect("create config parent");
+        fs::write(&config, r#"{"mcpServers":{"linear":{}}}"#).expect("write config");
+
+        let detected = detect_claude_desktop_connectors_in(
+            linux_connector_config_indicates_desktop(false, Some(&config)),
+            Some(&config),
+        );
+        assert!(detected.present);
+        assert_eq!(detected.count, 1);
+        assert_eq!(detected.outcome, "servers_detected");
     }
 
     #[test]
