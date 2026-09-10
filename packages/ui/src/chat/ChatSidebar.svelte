@@ -129,10 +129,16 @@
   import "./tokens.css";
   import "./chat-tokens.css";
   import Caret from "../common/Caret.svelte";
+  import Buildings from "phosphor-svelte/lib/Buildings";
   import CaretRight from "phosphor-svelte/lib/CaretRight";
   import Chat from "phosphor-svelte/lib/Chat";
+  import ChatCircle from "phosphor-svelte/lib/ChatCircle";
+  import Check from "phosphor-svelte/lib/Check";
+  import Clock from "phosphor-svelte/lib/Clock";
   import FunnelSimple from "phosphor-svelte/lib/FunnelSimple";
   import GearSix from "phosphor-svelte/lib/GearSix";
+  import Hash from "phosphor-svelte/lib/Hash";
+  import House from "phosphor-svelte/lib/House";
   import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
   import PencilSimple from "phosphor-svelte/lib/PencilSimple";
   import Plus from "phosphor-svelte/lib/Plus";
@@ -1941,7 +1947,7 @@
                 aria-pressed={sortMode === "recent"}
                 onclick={() => (sortMode = "recent")}
               >
-                <span class="chat-sort-ic" aria-hidden="true">🕐</span>
+                <Clock size={12} aria-hidden="true" />
                 Recent
               </button>
               <button
@@ -1951,7 +1957,7 @@
                 aria-pressed={sortMode === "type"}
                 onclick={() => (sortMode = "type")}
               >
-                <span class="chat-sort-ic" aria-hidden="true">≣</span>
+                <Stack size={12} aria-hidden="true" />
                 Type
               </button>
             </div>
@@ -1964,10 +1970,10 @@
               data-testid="chat-filter-mine"
               onclick={() => setShowFilter("mine")}
             >
-              <span class="chat-filter-lead" aria-hidden="true">⌂</span>
+              <span class="chat-filter-lead" aria-hidden="true"><House size={14} /></span>
               <span class="chat-filter-text">My projects</span>
               {#if showFilter === "mine"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true"><Check size={12} weight="bold" /></span>
               {/if}
             </button>
             <button
@@ -1979,10 +1985,10 @@
                 setShowFilter("all");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">≣</span>
+              <span class="chat-filter-lead" aria-hidden="true"><Stack size={14} /></span>
               <span class="chat-filter-text">All</span>
               {#if showFilter === "all"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true"><Check size={12} weight="bold" /></span>
               {/if}
             </button>
             <button
@@ -1994,10 +2000,10 @@
                 setShowFilter("projects");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">#</span>
+              <span class="chat-filter-lead" aria-hidden="true"><Hash size={14} /></span>
               <span class="chat-filter-text">Project channels</span>
               {#if showFilter === "projects"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true"><Check size={12} weight="bold" /></span>
               {/if}
             </button>
             <button
@@ -2009,10 +2015,10 @@
                 setShowFilter("dms");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">💬</span>
+              <span class="chat-filter-lead" aria-hidden="true"><ChatCircle size={14} /></span>
               <span class="chat-filter-text">DMs &amp; groups</span>
               {#if showFilter === "dms"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true"><Check size={12} weight="bold" /></span>
               {/if}
             </button>
             {#if canSeeCompanyProjects}
@@ -2029,10 +2035,10 @@
                   setShowFilter("company-projects");
                 }}
               >
-                <span class="chat-filter-lead" aria-hidden="true">⌾</span>
+                <span class="chat-filter-lead" aria-hidden="true"><Buildings size={14} /></span>
                 <span class="chat-filter-text">Company projects</span>
                 {#if showFilter === "company-projects"}
-                  <span class="chat-filter-check" aria-hidden="true">✓</span>
+                  <span class="chat-filter-check" aria-hidden="true"><Check size={12} weight="bold" /></span>
                 {/if}
               </button>
             {/if}
@@ -3910,89 +3916,94 @@
   }
 
   /* ===== Filter popover (?view=v2) ===== */
-  .chat-filter-menu {
+  /* Double-class for the same reason `.chat-scope-menu` needs it: `.chat-popover`
+     is authored later in this sheet. The concept's `.filter-panel` is 252px,
+     the same width as the scope panel above it. */
+  .chat-popover.chat-filter-menu {
     box-sizing: border-box;
-    gap: 2px;
+    gap: 0;
+    width: 252px;
     min-width: 0;
-    max-width: min(360px, calc(100vw - 16px));
+    max-width: min(252px, calc(100vw - 16px));
     padding: 6px;
     overflow-x: hidden;
     z-index: 80;
   }
 
+  /* `.p-sec` */
   .chat-filter-caption {
     margin: 0;
-    padding: 2px 6px 4px;
+    padding: 5px 8px 3px;
     color: var(--t3);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
   .chat-filter-caption.pad-top {
-    padding-top: 8px;
+    padding-top: 12px;
   }
 
   .chat-sort-toggle {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 4px;
+    display: flex;
+    gap: 2px;
+    margin: 2px 8px 6px;
+    padding: 2px;
+    border-radius: 8px;
+    background: var(--raised);
   }
 
+  /* `.fp-seg-btn` */
   .chat-sort-pill {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    height: 26px;
-    padding: 0 8px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill, 980px);
+    gap: 5px;
+    flex: 1;
+    padding: 4px 10px;
+    border: none;
+    border-radius: 6px;
     background: transparent;
     color: var(--t2);
     font: inherit;
-    font-size: var(--type-metadata, 13px);
+    font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition:
-      background 0.12s,
-      color 0.12s,
-      border-color 0.12s;
+    transition: color 0.12s;
   }
 
   .chat-sort-pill:hover {
-    background: var(--hover);
     color: var(--t1);
   }
 
   .chat-sort-pill.active {
-    border-color: transparent;
-    background: var(--v4-control-bg);
+    background: var(--sel);
     color: var(--t1);
   }
 
-  .chat-sort-ic {
-    font-size: 11px;
-    line-height: 1;
-  }
-
+  /* `.p-item` */
   .chat-filter-row {
     display: flex;
     align-items: center;
     gap: 8px;
+    box-sizing: border-box;
     width: 100%;
-    padding: 5px 6px;
+    padding: 6px 8px;
     border: none;
     border-radius: 8px;
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: var(--type-metadata, 13px);
+    font-size: 12px;
     font-weight: 400;
     text-align: left;
     cursor: pointer;
+  }
+
+  .chat-filter-row:hover {
+    background: var(--hover);
   }
 
   .chat-filter-row:hover,
@@ -4000,12 +4011,14 @@
     background: var(--hover);
   }
 
+  /* `.p-item .pi` — a fixed 14px glyph gutter so the labels line up. */
   .chat-filter-lead {
-    display: inline-grid;
-    place-items: center;
-    width: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 14px;
     color: var(--t2);
-    font-size: 12px;
     line-height: 1;
   }
 
@@ -4014,9 +4027,15 @@
     min-width: 0;
   }
 
+  /* `.p-check` */
   .chat-filter-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-shrink: 0;
+    width: 13px;
+    margin-left: auto;
     color: var(--t2);
-    font-size: 12px;
     line-height: 1;
   }
 
@@ -4030,17 +4049,22 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    box-sizing: border-box;
     width: 100%;
-    padding: 5px 6px;
+    padding: 6px 8px;
     border: none;
     border-radius: 8px;
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: var(--type-metadata, 13px);
+    font-size: 12px;
     font-weight: 400;
     text-align: left;
     cursor: pointer;
+  }
+
+  .chat-person-row:hover {
+    background: var(--hover);
   }
 
   .chat-person-row:hover,
@@ -4051,12 +4075,13 @@
   .chat-person-avatar {
     display: grid;
     place-items: center;
-    width: 22px;
-    height: 22px;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
-    background: var(--v4-control-bg);
-    color: var(--t2);
-    font-size: 9px;
+    background: var(--line2);
+    color: var(--t1);
+    font-size: 8px;
     font-weight: 600;
     letter-spacing: 0.02em;
   }
@@ -4065,13 +4090,15 @@
     flex: 1 1 auto;
   }
 
+  /* `.p-item .you` — a quiet aside on the name, not a pill of its own. */
   .chat-person-tag {
-    padding: 1px 6px;
-    border-radius: var(--v4-radius-pill, 980px);
-    background: var(--v4-control-bg);
+    margin-left: -4px;
+    padding: 0;
+    border-radius: 0;
+    background: none;
     color: var(--t3);
     font-size: 10px;
-    font-weight: 500;
+    font-weight: 400;
   }
 
   /* ===== Top-anchored overlays: search switcher + history (?view=v2) ===== */

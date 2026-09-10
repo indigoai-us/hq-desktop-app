@@ -36,15 +36,21 @@ describe("ChatSidebar identity footer layout", () => {
     expect(src).toMatch(/browseOnly:\s*true/);
   });
 
-  it("sizes the filter popover for the rail and keeps it in the viewport", () => {
+  it("sizes the filter popover to the concept's panel width", () => {
     expect(src).toContain("FILTER_POPOVER_MAX_PX");
     expect(src).toContain("FILTER_POPOVER_RAIL_OVERHANG_PX");
     expect(src).toContain('placement: "bottom-end"');
+    // 252px, the same width as the scope panel above it. Double-classed so the
+    // later `.chat-popover` block cannot win on equal specificity.
     expect(src).toMatch(
-      /max-width:\s*min\(360px,\s*calc\(100vw - 16px\)\)/,
+      /\.chat-popover\.chat-filter-menu\s*\{[\s\S]*?width:\s*252px;/,
     );
     expect(src).toMatch(
-      /\.chat-filter-row\s*\{[\s\S]*?font-size:\s*var\(--type-metadata,\s*13px\)/,
+      /max-width:\s*min\(252px,\s*calc\(100vw - 16px\)\)/,
+    );
+    // Menu rows are the concept's `.p-item`: 12px on a 6px/8px inset.
+    expect(src).toMatch(
+      /\.chat-filter-row\s*\{[\s\S]*?padding:\s*6px 8px;[\s\S]*?font-size:\s*12px;/,
     );
   });
 

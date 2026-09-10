@@ -1050,6 +1050,64 @@
   });
 </script>
 
+<!--
+  The hover bar. Rendered from every message branch — a card message can be
+  reacted to and replied to like any other, and only the plain-bubble branch
+  used to carry it, so anything with a run card or a lifecycle card had no
+  affordance at all.
+-->
+{#snippet quickReact(eventId: string)}
+  <div class="dm-quick-react" role="group" aria-label="Message actions">
+    {#each QUICK_REACT_EMOJI as emoji (emoji)}
+      <button
+        type="button"
+        class="dm-quick-react-btn"
+        onclick={() => toggle(eventId, emoji)}
+        aria-label={`React with ${emoji}`}
+      >
+        {emoji}
+      </button>
+    {/each}
+    <span class="dm-quick-react-picker-wrap">
+      <button
+        type="button"
+        class="dm-quick-react-btn dm-quick-react-more"
+        data-testid="message-react-more"
+        aria-label="Add a reaction"
+        title="Add a reaction"
+        aria-haspopup="menu"
+        aria-expanded={reactPickerFor === eventId}
+        onclick={() =>
+          (reactPickerFor = reactPickerFor === eventId ? null : eventId)}
+      >
+        <!-- Smiley, like the concept's `.rb-ic.glyph` — the same mark the
+             reaction row's add pill carries. -->
+        <Smiley size={14} aria-hidden="true" />
+      </button>
+      {#if reactPickerFor === eventId}
+        <EmojiPicker
+          onpick={(emoji) => {
+            reactPickerFor = null;
+            toggle(eventId, emoji);
+          }}
+          onclose={() => (reactPickerFor = null)}
+        />
+      {/if}
+    </span>
+    <button
+      type="button"
+      class="dm-quick-react-btn dm-quick-reply"
+      data-testid="message-reply-quick"
+      aria-label="Reply in thread"
+      title="Reply in thread"
+      onclick={() => openReply(eventId)}
+    >
+      Reply
+    </button>
+  </div>
+{/snippet}
+
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
@@ -1159,6 +1217,7 @@
                   >
                 </div>
                 <RunCompleteCard model={systemModel} {onopenurl} />
+                {@render quickReact(msg.eventId)}
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
                     {selfPersonUid}
@@ -1198,6 +1257,7 @@
                   {onopenurl}
                   {oncardaction}
                 />
+                {@render quickReact(msg.eventId)}
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
                     {selfPersonUid}
@@ -1373,60 +1433,7 @@
                     {/if}
                   </button>
                 {/if}
-                <!-- Quick reactions (tap-visible affordance). -->
-                <div
-                  class="dm-quick-react"
-                  role="group"
-                  aria-label="Message actions"
-                >
-                  {#each QUICK_REACT_EMOJI as emoji (emoji)}
-                    <button
-                      type="button"
-                      class="dm-quick-react-btn"
-                      onclick={() => toggle(msg.eventId, emoji)}
-                      aria-label={`React with ${emoji}`}
-                    >
-                      {emoji}
-                    </button>
-                  {/each}
-                  <span class="dm-quick-react-picker-wrap">
-                    <button
-                      type="button"
-                      class="dm-quick-react-btn dm-quick-react-more"
-                      data-testid="message-react-more"
-                      aria-label="Add a reaction"
-                      title="Add a reaction"
-                      aria-haspopup="menu"
-                      aria-expanded={reactPickerFor === msg.eventId}
-                      onclick={() =>
-                        (reactPickerFor =
-                          reactPickerFor === msg.eventId ? null : msg.eventId)}
-                    >
-                      <!-- Smiley, like the concept's `.rb-ic.glyph` — the
-                           same mark the reaction row's add pill carries. -->
-                      <Smiley size={14} aria-hidden="true" />
-                    </button>
-                    {#if reactPickerFor === msg.eventId}
-                      <EmojiPicker
-                        onpick={(emoji) => {
-                          reactPickerFor = null;
-                          toggle(msg.eventId, emoji);
-                        }}
-                        onclose={() => (reactPickerFor = null)}
-                      />
-                    {/if}
-                  </span>
-                  <button
-                    type="button"
-                    class="dm-quick-react-btn dm-quick-reply"
-                    data-testid="message-reply-quick"
-                    aria-label="Reply in thread"
-                    title="Reply in thread"
-                    onclick={() => openReply(msg.eventId)}
-                  >
-                    Reply
-                  </button>
-                </div>
+                {@render quickReact(msg.eventId)}
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
                     {selfPersonUid}

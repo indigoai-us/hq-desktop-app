@@ -43,13 +43,15 @@
 
 <div class="reaction-bar" class:compact>
   {#each reactions as r (r.emoji)}
+    <!-- No `title` attribute: `.reaction-tooltip` below already says this, and
+         the OS tooltip drew a second copy of the same sentence a beat later,
+         in a different place. -->
     <button
       class="reaction-pill"
       class:reacted={r.reactedByMe}
       type="button"
       onclick={() => toggle(r.emoji)}
       aria-pressed={r.reactedByMe}
-      title={reactorTitle(r)}
       aria-label={reactorTitle(r) ??
         `${r.emoji} ${r.count} ${r.count === 1 ? "reaction" : "reactions"}${r.reactedByMe ? ", you reacted" : ""}`}
     >
