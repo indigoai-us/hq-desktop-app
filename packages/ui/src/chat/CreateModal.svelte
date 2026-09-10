@@ -1,6 +1,7 @@
 <script lang="ts">
   import Buildings from "phosphor-svelte/lib/Buildings";
-  import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
+  import CaretLeft from "phosphor-svelte/lib/CaretLeft";
+  import X from "phosphor-svelte/lib/X";
   import Robot from "phosphor-svelte/lib/Robot";
   /**
    * The unified create modal — one search-first dialog behind the sidebar "+".
@@ -1429,13 +1430,44 @@
          about the very workspace this form edits, so nothing under it may be
          tabbed to, clicked, or read out as if it were live. -->
     <div class="create-head" inert={confirmSubject !== null}>
-      {#if step === "find"}
-        <span class="create-search-ic" aria-hidden="true">
-          <MagnifyingGlass size={16} aria-hidden="true" />
-        </span>
-        <h2 id="create-modal-title" class="create-sr">
-          New message or channel
-        </h2>
+      {#if step === "create"}
+        <button
+          type="button"
+          class="create-back"
+          data-testid="chat-create-back"
+          aria-label="Back to search"
+          disabled={creating}
+          onclick={backToFind}
+        >
+          <CaretLeft size={13} weight="bold" aria-hidden="true" />
+        </button>
+      {/if}
+      <h2 id="create-modal-title" class="create-title">
+        {step === "find"
+          ? "New message"
+          : step === "create"
+            ? "New channel"
+            : "Channel created"}
+      </h2>
+      <span class="create-spacer"></span>
+      <button
+        type="button"
+        class="create-close"
+        aria-label="Close"
+        disabled={creating}
+        onclick={closeAll}
+      >
+        <X size={13} weight="bold" aria-hidden="true" />
+      </button>
+    </div>
+
+    {#if step === "find"}
+      <!-- Concept `.cm-to`: a labelled recipient row under the title, not a
+           bare search box wearing the title's slot. Copy and behaviour are
+           production's — this is still the one field that both finds an
+           existing conversation and names a new channel. -->
+      <div class="create-to" inert={confirmSubject !== null}>
+        <span class="create-to-label" aria-hidden="true">To</span>
         <input
           class="create-query"
           type="text"
@@ -1453,34 +1485,8 @@
           bind:value={query}
           onkeydown={onFindKey}
         />
-      {:else}
-        {#if step === "create"}
-          <button
-            type="button"
-            class="create-back"
-            data-testid="chat-create-back"
-            aria-label="Back to search"
-            disabled={creating}
-            onclick={backToFind}
-          >
-            <span aria-hidden="true">‹</span>
-          </button>
-        {/if}
-        <h2 id="create-modal-title" class="create-title">
-          {step === "create" ? "New channel" : "Channel created"}
-        </h2>
-        <span class="create-spacer"></span>
-      {/if}
-      <button
-        type="button"
-        class="create-close"
-        aria-label="Close"
-        disabled={creating}
-        onclick={closeAll}
-      >
-        <span aria-hidden="true">×</span>
-      </button>
-    </div>
+      </div>
+    {/if}
 
     {#if step === "find"}
       <div
@@ -2040,70 +2046,79 @@
 </div>
 
 <style>
+  /* Concept `.search-overlay`: the card hangs from the top of the window, so
+     the conversation stays legible behind it, under a scrim that dims rather
+     than washes (a text-1 scrim BRIGHTENS the app in dark mode). */
   .create-overlay {
     position: fixed;
     inset: 0;
     z-index: 60;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    padding: 12px;
-    /* Dim, never wash: a text-1 scrim BRIGHTENS the app in dark mode. */
-    background: rgba(0, 0, 0, 0.45);
+    padding: 72px 12px 12px;
+    background: rgba(0, 0, 0, 0.28);
   }
 
-  /* One width for every step so the card never jumps between them. */
+  /* Concept `.search-modal` / `.compose-modal`. One width for every step so
+     the card never jumps between them. */
   .create-card {
     position: relative;
     display: flex;
     flex-direction: column;
-    width: min(520px, 100%);
-    max-height: min(78vh, 620px);
+    width: min(560px, 86%);
+    max-height: min(76vh, 620px);
     overflow: hidden;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 14px;
+    border: 1px solid var(--panel-border, var(--v4-hairline));
+    border-radius: 12px;
     /* Never --v4-ground here — that token is glass and lets timeline text
        bleed through. */
-    background: var(--v4-surface-solid, #fff);
-    box-shadow: var(--v4-shadow-window, var(--panel-shadow));
+    background: var(--panel-bg, var(--v4-surface-solid, #fff));
+    box-shadow: var(--panel-shadow, var(--v4-shadow-window));
+    /* `--panel-bg` is translucent by design, so it needs the same blur every
+       other panel in the shell pairs with it — without one, the channel header
+       and composer read straight through the card. */
+    backdrop-filter: blur(40px) saturate(1.5);
+    -webkit-backdrop-filter: blur(40px) saturate(1.5);
     outline: none;
   }
 
+  /* `.sm-head` */
   .create-head {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--v4-hairline);
-  }
-
-  .create-search-ic {
-    display: grid;
-    place-items: center;
+    flex-shrink: 0;
+    gap: 10px;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--line, var(--v4-hairline));
     color: var(--t3);
   }
 
-  .create-search-ic svg {
-    width: 16px;
-    height: 16px;
-  }
-
-  .create-sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-
+  /* `.cm-title` */
   .create-title {
     margin: 0;
     color: var(--t1);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
+  }
+
+  /* `.cm-to` */
+  .create-to {
+    display: flex;
+    align-items: flex-start;
+    flex-shrink: 0;
+    gap: 10px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--line, var(--v4-hairline));
+  }
+
+  /* `.cm-label` */
+  .create-to-label {
+    flex-shrink: 0;
+    padding-top: 4.5px;
+    color: var(--t3);
+    font-size: 12px;
+    line-height: 15.6px;
   }
 
   .create-spacer {
@@ -2113,11 +2128,11 @@
   .create-query {
     flex: 1 1 auto;
     min-width: 0;
+    padding: 4px 0;
     border: none;
     background: transparent;
     color: var(--t1);
-    font: inherit;
-    font-size: 15px;
+    font: 400 13px var(--font-ui);
     outline: none;
   }
 
@@ -2125,19 +2140,24 @@
     color: var(--t3);
   }
 
+  /* `.sd-close` — the same 24px quiet square used by every other panel close
+     in the shell. These were 26px, one radius step off, and drawn with text
+     glyphs rather than the icon set. */
   .create-back,
   .create-close {
     display: grid;
     place-items: center;
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
     border: none;
-    border-radius: 7px;
+    border-radius: 6px;
     background: transparent;
-    color: var(--t2);
-    font-size: 18px;
-    line-height: 1;
+    color: var(--t3);
+    line-height: 0;
     cursor: pointer;
+    transition:
+      color 0.12s,
+      background 0.12s;
   }
 
   .create-back:hover,
@@ -2157,13 +2177,17 @@
     outline-offset: var(--v4-focus-offset, 2px);
   }
 
+  /* `.sm-list`: the extra right margin/padding floats the 4px thumb clear of
+     the card edge, the way every other scroller in the design does. */
   .create-list {
     display: flex;
     flex-direction: column;
     gap: 1px;
+    min-height: 0;
     max-height: 320px;
     overflow-y: auto;
-    padding: 6px;
+    margin-right: 8px;
+    padding: 8px 6px 8px 8px;
   }
 
   .create-body {
@@ -2173,11 +2197,12 @@
     overflow-y: auto;
   }
 
+  /* `.mn-lab` */
   .create-group {
-    padding: 10px 10px 4px;
+    padding: 9px 8px 4px;
     color: var(--t3);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
+    font: 600 9px/1 var(--font-mono);
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
@@ -2250,7 +2275,8 @@
     flex: 0 0 auto;
     margin-left: auto;
     color: var(--t2);
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: 10px;
   }
 
   .create-note {
@@ -2344,12 +2370,13 @@
     font-size: 12px;
   }
 
+  /* `.cm-to`: one labelled row per field, hairline between. */
   .create-field {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--v4-hairline);
+    gap: 10px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--line, var(--v4-hairline));
   }
 
   .create-field-wrap {
@@ -2359,19 +2386,21 @@
   /* A field row owns its helper copy: one hairline under the whole group,
      so the caption reads as belonging to the field above it. */
   .create-cell {
-    border-bottom: 1px solid var(--v4-hairline);
+    border-bottom: 1px solid var(--line, var(--v4-hairline));
   }
 
   .create-field-flush {
     border-bottom: 0;
   }
 
+  /* `.cm-label`. The fixed column is production's — three fields stacked read
+     as a form only if their labels line up, where the concept has two. */
   .create-label {
     flex: 0 0 auto;
     min-width: 72px;
     color: var(--t3);
-    font-size: 13px;
-    font-weight: 500;
+    font-size: 12px;
+    font-weight: 400;
   }
 
   .create-hash {
@@ -2380,14 +2409,15 @@
     font-size: 13px;
   }
 
+  /* `.np-name` */
   .create-input {
     flex: 1 1 auto;
     min-width: 0;
+    padding: 4px 0;
     border: none;
     background: transparent;
     color: var(--t1);
-    font: inherit;
-    font-size: 14px;
+    font: 400 13px var(--font-ui);
     outline: none;
   }
 
@@ -2406,9 +2436,9 @@
 
   .create-help {
     margin: 0;
-    padding: 0 16px 8px 96px;
+    padding: 0 16px 9px 98px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 11px;
   }
 
   .create-slug-echo {
@@ -2416,17 +2446,29 @@
     font-family: var(--font-mono);
   }
 
+  /* The concept has no scope picker, so this follows the shell's standard
+     small control (`.btn-secondary`) instead of inventing a third box style:
+     31px, 8px radius, filled, hairline only on hover. */
   .create-select {
-    flex: 1 1 auto;
+    /* Hugs its own value, like every other control in the design — stretched
+       to the full row it read as a text field, not a picker. */
+    flex: 0 1 auto;
+    max-width: 100%;
     appearance: none;
     -webkit-appearance: none;
-    padding: 6px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
+    height: 31px;
+    padding: 0 10px;
+    border: 1px solid transparent;
     border-radius: 8px;
-    background: transparent;
+    background: var(--btn-bg);
     color: var(--t1);
-    font: inherit;
+    font: 500 12px var(--font-ui);
     cursor: pointer;
+    transition: border-color 0.12s;
+  }
+
+  .create-select:hover {
+    border-color: var(--line2);
   }
 
   .create-chips {
@@ -2443,26 +2485,28 @@
     min-width: 140px;
   }
 
+  /* `.cm-chip` */
   .create-chip {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 3px 4px 3px 4px;
-    border-radius: 999px;
-    background: var(--v4-control-bg);
+    gap: 5px;
+    padding: 3px 5px 3px 4px;
+    border-radius: 6px;
+    background: var(--btn-bg, var(--v4-control-bg));
     color: var(--t1);
     font-size: 12px;
   }
 
+  /* `.cm-chip-av` */
   .create-chip-mono {
     display: grid;
     place-items: center;
     width: 16px;
     height: 16px;
     border-radius: 999px;
-    background: var(--hover);
+    background: var(--line2);
     color: var(--t2);
-    font-size: 7px;
+    font-size: 9px;
     font-weight: 600;
   }
 
@@ -2591,12 +2635,15 @@
     font-size: 12px;
   }
 
+  /* `.cm-foot` */
   .create-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 14px;
-    border-top: 1px solid var(--v4-hairline);
+    flex-shrink: 0;
+    gap: 10px;
+    padding: 12px;
+    border-top: 1px solid var(--line, var(--v4-hairline));
   }
 
   .create-hint {
@@ -2614,22 +2661,28 @@
     text-transform: none;
   }
 
+  /* The shell's standard `.btn-secondary`, same as the hero and welcome
+     buttons: 31px tall, 8px radius, 12px label, hairline on hover only. */
   .create-submit {
-    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 31px;
     padding: 0 12px;
-    border: 0;
-    border-radius: 9px;
-    background: var(--v4-control-bg);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg, var(--v4-control-bg));
     color: var(--t1);
-    font: 500 13px/1 var(--font-ui);
+    font: 500 12px/1 var(--font-ui);
     cursor: pointer;
     transition:
+      border-color 0.12s,
       background 0.12s,
       color 0.12s;
   }
 
   .create-submit:hover:not(:disabled) {
-    background: var(--hover);
+    border-color: var(--line2);
   }
 
   .create-submit:disabled {
