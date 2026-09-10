@@ -34,7 +34,7 @@
     seedFixturePins,
     settingsArea,
   } from "@hq/ui";
-  import HostPagePlaceholder from "./HostPagePlaceholder.svelte";
+  import SessionsHarnessPage from "./SessionsHarnessPage.svelte";
 
   /**
    * The shell only reaches the adapter for host concerns (contacts, history
@@ -162,9 +162,31 @@
    * before DesktopApp is created — otherwise the sidebar paints its empty
    * state and never backfills. Await the fixture feed first.
    */
+  /**
+   * The shipped fixtures carry no #welcome row, so the setup pane — the
+   * onboarding surface a new user meets first — had no way to render here.
+   * The shell keys it off the channel id, so one synthetic row is enough.
+   */
+  const SETUP_ROW = {
+    channelId: "setup",
+    type: "project",
+    scope: "personal",
+    companyUid: null,
+    name: "welcome",
+    subtitle: "getting started",
+    lastActivityAt: new Date().toISOString(),
+    unreadCount: 0,
+    memberCount: 1,
+  };
+
   const directory = sidebarApi
     .fetchChannelDirectory(null)
-    .then((feed) => feed.rows);
+    .then((feed) => {
+      const rows = feed.rows ?? [];
+      return rows.some((r) => r.channelId === "setup")
+        ? rows
+        : [SETUP_ROW as (typeof rows)[number], ...rows];
+    });
 </script>
 
 <svelte:head>
@@ -215,7 +237,7 @@
             label: "Sessions",
             detail: "Run a Codex or Claude session inside the app",
             createAction: { label: "New session", param: () => "new" },
-            component: HostPagePlaceholder,
+            component: SessionsHarnessPage,
           },
         }}
           onopenurl={(url) => window.open(url, "_blank", "noopener")}
