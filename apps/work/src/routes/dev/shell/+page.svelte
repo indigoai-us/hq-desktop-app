@@ -112,6 +112,37 @@
     theme = settingsArea.applyColorTheme(next) as Theme;
   }
 
+  /**
+   * Window transparency, 0–100. Every surface token is an alpha derived from
+   * this, so it is the single strongest lever on how much desktop shows
+   * through — and at the shipping default of 65 the light ground lands around
+   * 34% opaque, which is why light mode reads as wallpaper-with-a-haze rather
+   * than tinted white.
+   *
+   * The three properties below are the same ones the desktop's appearance
+   * preferences write at boot (apps/sync/src/lib/appearancePreferences.ts);
+   * duplicated rather than imported because that module is a `@hq/sync`
+   * internal, not a package export. Keep the arithmetic in lockstep.
+   */
+  const DEFAULT_TRANSPARENCY = 65;
+  let transparency = $state(DEFAULT_TRANSPARENCY);
+
+  function applyTransparency(value: number) {
+    transparency = Math.min(100, Math.max(0, Math.round(value)));
+    const root = document.documentElement;
+    const lightAlpha = Math.max(0.15, 1 - transparency / 100);
+    const darkAlpha = Math.min(1, lightAlpha + 0.13);
+    root.style.setProperty(
+      "--hq-window-transparency-factor",
+      (transparency / 100).toFixed(2),
+    );
+    root.style.setProperty("--hq-window-alpha-light", lightAlpha.toFixed(2));
+    root.style.setProperty("--hq-window-alpha-dark", darkAlpha.toFixed(2));
+    root.dataset.windowTransparency = String(transparency);
+  }
+
+  if (dev) applyTransparency(DEFAULT_TRANSPARENCY);
+
   const sidebarApi = createFixtureChatSidebarApi();
   const notificationsApi = createFixtureNotificationsApi();
   const wakes = createChatWakeBus();
@@ -188,6 +219,20 @@
           {option}
         </button>
       {/each}
+
+      <span class="divider" aria-hidden="true"></span>
+
+      <label class="slider">
+        <span>Transparency</span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={transparency}
+          oninput={(e) => applyTransparency(e.currentTarget.valueAsNumber)}
+        />
+        <output>{transparency}</output>
+      </label>
     </div>
   </div>
 {:else}
@@ -313,6 +358,34 @@
   .harness-bar button.on {
     background: rgb(255 255 255 / 16%);
     color: #fff;
+  }
+
+  .divider {
+    align-self: stretch;
+    width: 1px;
+    margin: 4px 6px;
+    background: rgb(255 255 255 / 16%);
+  }
+
+  .slider {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px 0 4px;
+    color: rgb(255 255 255 / 62%);
+    font-size: 12px;
+  }
+
+  .slider input {
+    width: 108px;
+    accent-color: #fff;
+  }
+
+  .slider output {
+    min-width: 2ch;
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
 
   .off {
