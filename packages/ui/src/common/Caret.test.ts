@@ -4,8 +4,9 @@
 // character U+2304 DOWN ARROWHEAD, whose ink is drawn low inside its em box —
 // flex centring aligned the glyph's line box, not its ink, so the arrow hung
 // below its label. Six controls had independently inherited that defect.
-// These tests lock the geometry that replaced it, plus the source-level guard
-// that stops the glyph coming back.
+// These tests lock what replaced it — a Phosphor CaretDown centred by its
+// wrapper, matching the V2 concept — plus the source-level guard that stops
+// the text glyph coming back.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -27,34 +28,39 @@ function mountCaret(props: Record<string, unknown> = {}) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(Caret, { target: host, props: props as never });
-  return host.querySelector<SVGElement>('[data-testid="caret"]')!;
+  return host.querySelector<HTMLElement>('[data-testid="caret"]')!;
 }
 
 describe("Caret geometry", () => {
-  it("is SVG geometry centred in its viewBox, not a text glyph", () => {
+  it("draws a Phosphor icon, not a text glyph", () => {
     const caret = mountCaret();
     expect(caret).toBeTruthy();
-    expect(caret.tagName.toLowerCase()).toBe("svg");
-    expect(caret.getAttribute("viewBox")).toBe("0 0 10 10");
-    // Ink spans x 2.5-7.5, y 3.75-6.25 — centred on 5, the box centre.
-    // Verified in a browser against the real pill: a box-centred caret lands
-    // on the label's ink centre (residual < 0.1px). An ink centre of 5.25
-    // reads low; correcting further for "optical centre" reads high.
-    expect(caret.querySelector("path")?.getAttribute("d")).toBe(
-      "M2.5 3.75 5 6.25 7.5 3.75",
-    );
-    const [top, bottom] = [3.75, 6.25];
-    expect((top + bottom) / 2).toBe(5);
+    const svg = caret.querySelector("svg");
+    // Phosphor's grid. The point of the assertion is that the caret is an
+    // icon from the shared set — the original defect was a font glyph.
+    expect(svg?.getAttribute("viewBox")).toBe("0 0 256 256");
     // No text content: a glyph would reintroduce the original defect.
     expect(caret.textContent?.trim()).toBe("");
   });
 
-  it("strokes with currentColor so dark and light need no override", () => {
+  it("centres the icon box inside the wrapper", () => {
+    // Phosphor's ink sits marginally below its own box centre; the wrapper
+    // centring is what keeps the caret on the label's optical centre. If this
+    // ever regresses to baseline-aligned inline layout, the arrow hangs low
+    // again — the exact defect this component exists to prevent.
+    const caret = mountCaret();
+    const style = getComputedStyle(caret);
+    expect(style.display).toBe("inline-flex");
+    expect(style.alignItems).toBe("center");
+    expect(style.justifyContent).toBe("center");
+  });
+
+  it("takes its colour from the caller so dark and light need no override", () => {
     const caret = mountCaret({ tone: "var(--t3)" });
-    expect(caret.querySelector("path")?.getAttribute("stroke")).toBe(
+    expect(caret.getAttribute("style")).toContain("var(--t3)");
+    expect(caret.querySelector("svg")?.getAttribute("fill")).toBe(
       "currentColor",
     );
-    expect(caret.getAttribute("style")).toContain("var(--t3)");
   });
 
   it("sizes in em by default so it tracks the label's font scale", () => {

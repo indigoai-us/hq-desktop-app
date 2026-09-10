@@ -10,18 +10,17 @@
    * margin would only have papered over it at one font size. Six controls had
    * independently inherited the same defect.
    *
-   * The fix is geometry instead of typography: the ink is centred inside the
-   * `0 0 10 10` viewBox — it spans y 3.75→6.25, so its centre is exactly 5.
-   * That 0.25-unit detail matters. An earlier attempt drew the arms at y 4 and
-   * the apex at 6.5, whose centre is 5.25, and it still read a hair low; a
-   * later attempt overcorrected upward for the label's optical centre and read
-   * high. Measured against the real 12px pill in a browser, the caret's ink
-   * centre wants to land on the label's ink centre, and plain box-centring
-   * does exactly that (residual < 0.1px). Keep the ink symmetric about 5.
-   *
-   * `display: block` takes the SVG off the text baseline; inline SVGs sit on
-   * it by default, which would reintroduce the original low hang.
+   * The fix was a hand-drawn SVG whose ink was centred inside a 0 0 10 10
+   * viewBox. That is now Phosphor's CaretDown, on the designer's call and
+   * matching the V2 concept, which draws its carets the same way:
+   * `<CaretDown size={10} weight="bold" />` inside an inline-flex box that
+   * centres it. Phosphor's ink sits a hair below its own box centre — about
+   * 3% of the box, so under half a pixel at these sizes — and the centring
+   * wrapper below absorbs it. The failure mode being avoided is the text
+   * glyph, not the icon set.
    */
+  import CaretDown from "phosphor-svelte/lib/CaretDown";
+
   interface Props {
     /**
      * Disclosure state. `false` rotates the caret to point right, for
@@ -42,29 +41,24 @@
     $props();
 </script>
 
-<svg
+<span
   class="caret"
   class:closed={!open}
-  viewBox="0 0 10 10"
-  fill="none"
   aria-hidden="true"
   data-testid="caret"
   style="color: {tone}; --caret-size: {size};"
 >
-  <path
-    d="M2.5 3.75 5 6.25 7.5 3.75"
-    stroke="currentColor"
-    stroke-width="1.3"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
-</svg>
+  <CaretDown size="var(--caret-size, 0.85em)" weight="bold" />
+</span>
 
 <style>
   .caret {
     flex: 0 0 auto;
-    /* Off the text baseline — see the component comment. */
-    display: block;
+    /* Off the text baseline, and centring the icon box within it — see the
+       component comment. */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: var(--caret-size, 0.85em);
     height: var(--caret-size, 0.85em);
     transition: transform 120ms ease;
