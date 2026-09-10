@@ -1054,16 +1054,25 @@
   const artifactActions = tauriArtifactActions((path) => void handleSend(deployCommandFor(path), []));
 
   /** What the mirrored bubble says rode along — the tags, never the block. */
-  function contextTurnMeta(context: LoadedAttachment[]): UserTurnMeta {
-    if (context.length === 0) return {};
+  function contextTurnMeta(
+    context: LoadedAttachment[],
+    images: ComposerImage[] = [],
+  ): UserTurnMeta {
     const root = preflight?.hqRoot ?? '';
-    return {
-      attachments: context.map(({ kind, title, path }) => ({
+    const attachments = [
+      ...images.map((image) => ({
+        kind: 'image' as const,
+        title: image.name,
+        path: `pasted/${image.name}`,
+      })),
+      ...context.map(({ kind, title, path }) => ({
         kind,
         title,
         path: hqRelativePath(path, root),
       })),
-    };
+    ];
+    if (attachments.length === 0) return {};
+    return { attachments };
   }
 
   /**
@@ -1087,7 +1096,7 @@
     mentionStatus = null;
     const attachments = images.map(({ mediaType, base64 }) => ({ mediaType, base64 }));
     const wire = composeWithContext(text, context, preflight?.hqRoot ?? '');
-    const meta = contextTurnMeta(context);
+    const meta = contextTurnMeta(context, images);
 
     if (sessionId && !newSessionPending && liveSessionStore.isHistorical) {
       starting = true;

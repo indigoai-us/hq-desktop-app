@@ -647,3 +647,102 @@ describe('unsent draft persistence', () => {
     expect(must('session-composer-attachments').textContent).toContain('shot.png');
   });
 });
+
+function pasteFiles(el: HTMLElement, files: File[]): void {
+  const event = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'clipboardData', {
+    value: { files, items: [], types: ['Files'] },
+  });
+  el.dispatchEvent(event);
+}
+
+describe('paste images and files into the composer', () => {
+  it('attaches a pasted image to the draft', async () => {
+    render();
+    const png = new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' });
+    pasteFiles(must('session-composer'), [png]);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    flushSync();
+    expect(must('session-composer-attachments').textContent).toContain('shot.png');
+    expect(at('session-attach-error')).toBeNull();
+  });
+
+  it('attaches a pasted file as a context chip', async () => {
+    render();
+    const notes = new File(['hello from paste'], 'notes.txt', { type: 'text/plain' });
+    pasteFiles(must('session-composer'), [notes]);
+    await tick();
+    flushSync();
+    expect(must('session-context-chips').textContent).toContain('notes.txt');
+  });
+
+  it('keeps the draft and reports unsupported pastes', async () => {
+    render();
+    const input = must('session-composer-input') as HTMLTextAreaElement;
+    input.value = 'keep me';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const exe = new File([new Uint8Array(16)], 'payload.exe', { type: 'application/x-msdownload' });
+    pasteFiles(input, [exe]);
+    await tick();
+    flushSync();
+    expect(input.value).toBe('keep me');
+    expect(must('session-attach-error').textContent).toContain("isn't a supported file type");
+    expect(at('session-composer-attachments')).toBeNull();
+  });
+
+  it('keeps the draft and reports oversized pastes', async () => {
+    render();
+    const input = must('session-composer-input') as HTMLTextAreaElement;
+    input.value = 'still here';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const huge = new File([new Uint8Array(4 * 1024 * 1024 + 1)], 'big.png', { type: 'image/png' });
+    pasteFiles(input, [huge]);
+    await tick();
+    flushSync();
+    expect(input.value).toBe('still here');
+    expect(must('session-attach-error').textContent).toContain('too large');
+  });
+
+  it('sends pasted images with the turn', async () => {
+    const onsend = vi.fn();
+    render({ onsend });
+    const png = new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' });
+    pasteFiles(must('session-composer'), [png]);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    flushSync();
+    const input = must('session-composer-input') as HTMLTextAreaElement;
+    input.value = 'look';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    must('session-composer-send').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(onsend).toHaveBeenCalled();
+    const images = onsend.mock.calls[0]![1] as Array<{ name: string; base64: string }>;
+    expect(images[0]?.name).toBe('shot.png');
+    expect(images[0]?.base64.length).toBeGreaterThan(0);
+  });
+
+  it('sends a pasted file as a context attachment', async () => {
+    const onsend = vi.fn();
+    render({ onsend });
+    const notes = new File(['hello from paste'], 'notes.txt', { type: 'text/plain' });
+    pasteFiles(must('session-composer'), [notes]);
+    await tick();
+    flushSync();
+    const input = must('session-composer-input') as HTMLTextAreaElement;
+    input.value = 'read this';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    must('session-composer-send').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    const attachments = onsend.mock.calls[0]![3] as Array<{ kind: string; title: string; text: string }>;
+    expect(attachments[0]?.kind).toBe('file');
+    expect(attachments[0]?.title).toBe('notes.txt');
+    expect(attachments[0]?.text).toContain('hello from paste');
+  });
+});
+
