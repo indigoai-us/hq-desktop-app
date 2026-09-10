@@ -155,7 +155,16 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `push-transport` and its test, plus `watcher` and its test — so no new
 /// desktop vocabulary arm is needed, but the source-version marker moves with
 /// the verified runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.34";
+///
+/// The `~6.16.34` -> `~6.16.35` bump (packed `JournalStore` rows and frozen
+/// public-boundary rows, hq-cloud#516/#517) was re-derived from both hq-cloud
+/// trees: all 56 identities remain at each tag, with no identity-set diff, and
+/// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). The release touches 20 files for journal representation,
+/// public-row freezing, and related sync-runner memory behavior; it adds no
+/// runner event or error-emission change. No new vocabulary arm is needed, but
+/// the source-version marker moves with the verified runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.35";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new

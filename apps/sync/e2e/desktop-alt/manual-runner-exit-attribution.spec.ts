@@ -215,7 +215,7 @@ describe('manual runner-exit attribution — shared classifier source', () => {
     // internal named error, but it is caught before runner-event serialization,
     // so the desktop vocabulary is unchanged and only the source-version marker
     // moves with the pin.
-    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.34"');
+    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.35"');
     expect(shapeSource).toMatch(/const _: \(\) = assert!\(\s*const_str_eq\(/);
 
     // (5) The new filesystem errno CLASSES (sync_outcome), added as new variants so
