@@ -1,5 +1,15 @@
 import type { SessionEvent } from '../../components/sessions/session-events';
 
+export const GENERATE_TASK_TIMEOUT_MS = 10 * 60 * 1000;
+
+export function createdStoryTitle(
+  knownIds: ReadonlySet<string>,
+  stories: ReadonlyArray<{ id?: string; title?: string }>,
+): string | null {
+  const created = stories.find((story) => story.id && !knownIds.has(story.id) && story.title?.trim());
+  return created?.title?.trim() ?? null;
+}
+
 /** Fail a hidden generate-task session as soon as the CLI reports a hard error. */
 export function backgroundJobFailure(events: ReadonlyArray<SessionEvent>): string | null {
   for (const event of events) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { backgroundJobFailure } from './background-job';
+import { backgroundJobFailure, createdStoryTitle } from './background-job';
 
 describe('backgroundJobFailure', () => {
   it('surfaces a revoked OAuth token immediately', () => {
@@ -26,5 +26,14 @@ describe('backgroundJobFailure', () => {
     expect(
       backgroundJobFailure([{ kind: 'textDelta', text: 'working', parentToolUseId: null }]),
     ).toBeNull();
+  });
+
+  it('treats a new Board story id as success', () => {
+    expect(
+      createdStoryTitle(new Set(['US-001']), [
+        { id: 'US-001', title: 'Old' },
+        { id: 'US-019', title: 'Cache provider model lists across provider switches' },
+      ]),
+    ).toBe('Cache provider model lists across provider switches');
   });
 });
