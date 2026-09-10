@@ -112,37 +112,6 @@
     theme = settingsArea.applyColorTheme(next) as Theme;
   }
 
-  /**
-   * Window transparency, 0–100. Every surface token is an alpha derived from
-   * this, so it is the single strongest lever on how much desktop shows
-   * through — and at the shipping default of 65 the light ground lands around
-   * 34% opaque, which is why light mode reads as wallpaper-with-a-haze rather
-   * than tinted white.
-   *
-   * The three properties below are the same ones the desktop's appearance
-   * preferences write at boot (apps/sync/src/lib/appearancePreferences.ts);
-   * duplicated rather than imported because that module is a `@hq/sync`
-   * internal, not a package export. Keep the arithmetic in lockstep.
-   */
-  const DEFAULT_TRANSPARENCY = 65;
-  let transparency = $state(DEFAULT_TRANSPARENCY);
-
-  function applyTransparency(value: number) {
-    transparency = Math.min(100, Math.max(0, Math.round(value)));
-    const root = document.documentElement;
-    const lightAlpha = Math.max(0.15, 1 - transparency / 100);
-    const darkAlpha = Math.min(1, lightAlpha + 0.13);
-    root.style.setProperty(
-      "--hq-window-transparency-factor",
-      (transparency / 100).toFixed(2),
-    );
-    root.style.setProperty("--hq-window-alpha-light", lightAlpha.toFixed(2));
-    root.style.setProperty("--hq-window-alpha-dark", darkAlpha.toFixed(2));
-    root.dataset.windowTransparency = String(transparency);
-  }
-
-  if (dev) applyTransparency(DEFAULT_TRANSPARENCY);
-
   const sidebarApi = createFixtureChatSidebarApi();
   const notificationsApi = createFixtureNotificationsApi();
   const wakes = createChatWakeBus();
@@ -219,20 +188,6 @@
           {option}
         </button>
       {/each}
-
-      <span class="divider" aria-hidden="true"></span>
-
-      <label class="slider">
-        <span>Transparency</span>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={transparency}
-          oninput={(e) => applyTransparency(e.currentTarget.valueAsNumber)}
-        />
-        <output>{transparency}</output>
-      </label>
     </div>
   </div>
 {:else}
@@ -269,25 +224,39 @@
     inset: 0;
     display: grid;
     place-items: center;
-    padding: clamp(16px, 3vw, 48px);
+    padding: 44px 44px 92px;
     background-image: var(--wallpaper);
     background-size: cover;
     background-position: center;
   }
 
-  /* The window: rounded, shadowed, and blurring what is behind it with the
-     app's own glass values — the browser's nearest equivalent to the AppKit
-     material the real window sits on. */
+  /* The window material, copied from the V2 concept harness
+     (apps/sync/dev-harness/Harness.svelte, `.mac-window.v2-window`) on the
+     design/desktop-os-redesign branch — the same values the preview at
+     hq-desktop-preview-v2.indigo-hq.com renders.
+
+     This matters more than it looks: the window carries most of the opacity
+     (0.82 light / 0.86 dark) and the shell's own surfaces are thin alphas on
+     top. Get the window wrong and every surface above it reads wrong. In the
+     shipped app this backing is the native macOS glass, which CSS cannot set
+     — which is exactly why it has to be emulated faithfully here. */
   .stage.staged .harness-root {
-    height: 100%;
-    max-width: 1440px;
-    max-height: 900px;
-    border-radius: 12px;
+    width: min(1180px, 100%);
+    height: min(800px, 100%);
+    border-radius: 18px;
+    background: rgba(250, 250, 252, 0.82);
+    backdrop-filter: blur(60px) saturate(1.6);
+    -webkit-backdrop-filter: blur(60px) saturate(1.6);
     box-shadow:
-      0 1px 0 rgb(255 255 255 / 12%) inset,
-      0 30px 80px rgb(0 0 0 / 45%);
-    backdrop-filter: blur(28px) saturate(122%) contrast(102%);
-    -webkit-backdrop-filter: blur(28px) saturate(122%) contrast(102%);
+      0 0 0 1px rgba(0, 0, 0, 0.23),
+      0 16px 48px rgba(0, 0, 0, 0.35);
+  }
+
+  :global(html[data-force-theme="dark"]) .stage.staged .harness-root {
+    background: rgba(14, 14, 18, 0.86);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.12),
+      0 16px 48px rgba(0, 0, 0, 0.55);
   }
 
   /* ── Window controls ─────────────────────────────────────────────────
@@ -358,34 +327,6 @@
   .harness-bar button.on {
     background: rgb(255 255 255 / 16%);
     color: #fff;
-  }
-
-  .divider {
-    align-self: stretch;
-    width: 1px;
-    margin: 4px 6px;
-    background: rgb(255 255 255 / 16%);
-  }
-
-  .slider {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 10px 0 4px;
-    color: rgb(255 255 255 / 62%);
-    font-size: 12px;
-  }
-
-  .slider input {
-    width: 108px;
-    accent-color: #fff;
-  }
-
-  .slider output {
-    min-width: 2ch;
-    color: #fff;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
   }
 
   .off {
