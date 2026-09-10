@@ -431,7 +431,7 @@ fn redact_bearer_tokens(value: &str) -> String {
 }
 
 fn redact_prefixed_api_keys(value: &str) -> String {
-    const PREFIXES: &[&str] = &["sk-", "sk_", "AKIA", "AIza", "ghp_", "github_pat_", "xoxb-", "xoxp-", "npm_"];
+    const PREFIXES: &[&str] = &["sk-", "sk_", "AKIA", "AIza", "ghp_", "github_pat_", "xoxb-", "xoxp-"];
     let mut ranges = Vec::new();
     for index in 0..value.len() {
         for prefix in PREFIXES {
@@ -451,6 +451,23 @@ fn redact_prefixed_api_keys(value: &str) -> String {
     replace_ranges(value, ranges, FILTERED)
 }
 
+fn redact_npm_prefixed_tokens(value: &str) -> String {
+    let mut ranges = Vec::new();
+    for index in 0..value.len() {
+        if !has_ascii_case_insensitive_prefix_at(value, index, "npm_") {
+            continue;
+        }
+        let end = value[index..]
+            .find(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-')))
+            .map(|relative| index + relative)
+            .unwrap_or(value.len());
+        if end.saturating_sub(index) >= "npm_".len() + 12 {
+            ranges.push((index, end));
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
 /// Remove credentials and account names from raw setup diagnostics at the
 /// shared Sentry egress boundary, rather than relying on callers to sanitize.
 fn scrub_sensitive_text(value: &str) -> String {
@@ -459,6 +476,13 @@ fn scrub_sensitive_text(value: &str) -> String {
     let value = redact_labeled_secret_values(&value);
     let value = redact_prefixed_api_keys(&value);
     redact_home_path_accounts(&value)
+}
+
+/// Setup diagnostics intentionally contain raw command output. Apply the
+/// setup-only npm-token shape here so closed legacy `npm_*` telemetry labels
+/// remain stable while a bare npm access token cannot leave this channel.
+fn scrub_setup_diagnostic_text(value: &str) -> String {
+    redact_npm_prefixed_tokens(&scrub_sensitive_text(value))
 }
 
 fn valid_runner_stack_shape(value: &str) -> bool {
@@ -1312,6 +1336,27 @@ fn scrub_sensitive_in_value(v: &mut Value) {
     }
 }
 
+fn scrub_setup_diagnostic_in_value(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if is_sensitive_key(key) {
+                    *child = Value::String(FILTERED.into());
+                } else {
+                    scrub_setup_diagnostic_in_value(child);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for child in items.iter_mut() {
+                scrub_setup_diagnostic_in_value(child);
+            }
+        }
+        Value::String(value) => *value = scrub_setup_diagnostic_text(value),
+        _ => {}
+    }
+}
+
 /// Scrub a single `Context` value. Extracted as `pub(crate)` so the test
 /// module can exercise the fail-closed branch directly without needing
 /// to build a whole `Event`. `before_send` below calls this helper for
@@ -1595,6 +1640,8 @@ fn before_send_with_native_context(
     for (k, v) in event.extra.iter_mut() {
         if is_sensitive_key(k) {
             *v = Value::String("[Filtered]".into());
+        } else if k.starts_with("setup_") {
+            scrub_setup_diagnostic_in_value(v);
         } else {
             scrub_sensitive_in_value(v);
         }
@@ -1796,7 +1843,7 @@ mod tests {
     #[test]
     fn setup_diagnostic_secret_shapes_are_scrubbed_at_egress() {
         let mut event = Event::default();
-        event.extra.insert("setup_environment".into(), Value::String("API_KEY=sk_live_abcdefghijklmnopqrstuv".into()));
+        event.extra.insert("setup_environment".into(), Value::String("API_KEY=sk_live_abcdefghijklmnopqrstuv npm_abcdefghijklmnopqrstuvwxyz".into()));
         event.extra.insert("setup_command".into(), Value::String("npm --token=Bearer-token-value-123456".into()));
         event.extra.insert("setup_stderr".into(), Value::String("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature\nhttps://ada:hunter2@registry.example/private".into()));
 
@@ -1805,7 +1852,7 @@ mod tests {
             Value::String(text) => text.as_str(),
             _ => "",
         }).collect::<Vec<_>>().join("\n");
-        for secret in ["sk_live_abcdefghijklmnopqrstuv", "Bearer-token-value-123456", "eyJhbGciOiJIUzI1NiJ9.payload.signature", "ada:hunter2"] {
+        for secret in ["sk_live_abcdefghijklmnopqrstuv", "npm_abcdefghijklmnopqrstuvwxyz", "Bearer-token-value-123456", "eyJhbGciOiJIUzI1NiJ9.payload.signature", "ada:hunter2"] {
             assert!(!sent.contains(secret), "credential-shaped text {secret:?} must not leave the process");
         }
     }
