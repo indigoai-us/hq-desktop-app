@@ -1319,6 +1319,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: PermissionMode::Prompt,
+            hidden: false,
         };
         registry
             .insert(LiveSession::new(spec, "2026-09-02T00:00:00Z".into()))
@@ -1539,6 +1540,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: PermissionMode::Prompt,
+            hidden: false,
         };
         state()
             .lock()

@@ -789,8 +789,12 @@ impl SessionRegistry {
     /// The session list, newest-started first so the UI order is stable across
     /// calls (a `HashMap` iteration order is not).
     pub fn snapshot(&self) -> Vec<SessionSummary> {
-        let mut rows: Vec<SessionSummary> =
-            self.sessions.values().map(LiveSession::summary).collect();
+        let mut rows: Vec<SessionSummary> = self
+            .sessions
+            .values()
+            .filter(|session| !session.spec.hidden)
+            .map(LiveSession::summary)
+            .collect();
         rows.sort_by(|a, b| {
             b.started_at
                 .cmp(&a.started_at)
@@ -822,6 +826,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: mode,
+            hidden: false,
         }
     }
 
@@ -1220,6 +1225,23 @@ mod tests {
         resumed.title = Some("Native Codex task title".into());
         let session = LiveSession::new(resumed, now());
         assert_eq!(session.summary().title, "Native Codex task title");
+    }
+
+    #[test]
+    fn snapshot_omits_hidden_sessions() {
+        let mut registry = SessionRegistry::new();
+        registry.insert(session("visible")).unwrap();
+        let mut hidden_spec = spec("hidden", PermissionMode::Prompt);
+        hidden_spec.hidden = true;
+        registry
+            .insert(LiveSession::new(hidden_spec, now()))
+            .unwrap();
+        let ids: Vec<_> = registry
+            .snapshot()
+            .into_iter()
+            .map(|row| row.session_id)
+            .collect();
+        assert_eq!(ids, vec!["visible".to_string()]);
     }
 
     #[test]

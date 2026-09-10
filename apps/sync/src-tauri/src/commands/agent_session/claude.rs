@@ -662,6 +662,7 @@ pub async fn probe_command_catalog(cwd: PathBuf) -> Result<CommandCatalog, Strin
         effort: None,
         resume: None,
         permission_mode: hq_desktop_core::agent_session::types::PermissionMode::Prompt,
+        hidden: false,
     };
     let mut launch = claude_launch(paths::resolve_bin("claude"), &spec, cwd);
     launch.args.extend(catalog_probe_args());
@@ -822,6 +823,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: mode,
+            hidden: false,
         }
     }
 

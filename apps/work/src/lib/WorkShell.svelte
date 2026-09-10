@@ -178,7 +178,7 @@
       projectId: string;
       channelId?: string | null;
       prompt: string;
-    }) => Promise<void>;
+    }) => Promise<{ title: string }>;
   };
 
   // A non-SvelteKit host can supply its runtime kind and public API URL. The

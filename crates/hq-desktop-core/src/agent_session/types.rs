@@ -87,6 +87,9 @@ pub struct SessionSpec {
     /// `--session-id`.
     pub resume: Option<String>,
     pub permission_mode: PermissionMode,
+    /// Background jobs (e.g. generate-task) must not appear in the Sessions list.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// What the operator's composer pills say the NEXT turn should use.
@@ -647,6 +650,7 @@ mod tests {
             effort: Some("high".into()),
             resume: None,
             permission_mode: PermissionMode::Prompt,
+            hidden: false,
         };
         let raw = serde_json::to_value(&spec).expect("serialize");
         assert_eq!(raw["sessionId"], "s1");
