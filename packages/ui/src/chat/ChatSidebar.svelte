@@ -220,6 +220,12 @@
      * in that project is online via the presence store — never from timestamps.
      */
     projectHasPresence?: (row: ConversationRow) => boolean;
+    /**
+     * Host-owned presence for DM rows with a personal local bot (local-bots
+     * US-009): "online" / "offline" from the server's heartbeat verdict, null
+     * for every other row. Never derived from timestamps here.
+     */
+    dmPresence?: (row: ConversationRow) => "online" | "offline" | null;
     /** Host decoration per row: badge, hover card, context-menu actions.
      *  Session metadata may still be loading — never hide the rail for it. */
     rowExtrasLoading?: boolean;
@@ -257,6 +263,7 @@
     offscreen = false,
     onShellReady,
     projectHasPresence = () => false,
+    dmPresence = () => null,
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
@@ -2768,16 +2775,28 @@
           </span>
         {:else}
           {@const avatar = rowAvatar(row, avatarByUid)}
-          <span
-            class="chat-avatar"
-            aria-hidden="true"
-            data-testid="chat-dm-avatar"
-            data-avatar={avatar.kind}
-          >
-            {#if avatar.src}
-              <img src={avatar.src} alt="" />
-            {:else}
-              {avatar.initials}
+          {@const botPresence = dmPresence(row)}
+          <span class="chat-avatar-wrap" aria-hidden="true">
+            <span
+              class="chat-avatar"
+              data-testid="chat-dm-avatar"
+              data-avatar={avatar.kind}
+              data-bot-presence={botPresence ?? undefined}
+            >
+              {#if avatar.src}
+                <img src={avatar.src} alt="" />
+              {:else}
+                {avatar.initials}
+              {/if}
+            </span>
+            {#if botPresence}
+              <span
+                class="chat-presence-dot"
+                class:offline={botPresence === "offline"}
+                data-testid="chat-bot-presence-dot"
+                data-presence={botPresence}
+                aria-label={botPresence === "online" ? "Bot online" : "Bot offline"}
+              ></span>
             {/if}
           </span>
         {/if}
@@ -3515,6 +3534,16 @@
     border: 1.5px solid var(--v4-ground, var(--panel-bg, #151515));
     border-radius: 50%;
     background: var(--v4-ok, #42d77d);
+  }
+
+  .chat-avatar-wrap {
+    position: relative;
+    display: inline-grid;
+    flex: 0 0 16px;
+  }
+
+  .chat-presence-dot.offline {
+    background: var(--t3, #8a8a8a);
   }
 
   .chat-avatar {

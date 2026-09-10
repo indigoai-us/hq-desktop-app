@@ -238,6 +238,13 @@
     tick,
     type ThinkingEntry,
   } from "../chat/agent-thinking.js";
+  import {
+    LOCAL_BOTS_POLL_MS,
+    localBotForRow,
+    localBotOfflineNotice,
+    localBotPresence,
+  } from "../chat/local-bots.js";
+  import type { LocalBotRow } from "@hq/platform";
   import type {
     ChatSidebarApi,
     ChatWakeBus,
@@ -767,6 +774,41 @@
   })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+
+  // ── Personal local bots (local-bots US-009) ────────────────────────────────
+  // The host's bots API shells to `hq bot list --json`; rows carry the server's
+  // online verdict. Polled while the shell is mounted so the DM rail dot and the
+  // thread notice track the bot without any CLI on the user's side.
+  let localBots = $state<LocalBotRow[]>([]);
+  let localBotBusy = $state<string | null>(null);
+  let localBotActionError = $state<string | null>(null);
+  async function refreshLocalBots(): Promise<void> {
+    const api = adapter.bots;
+    if (!api) return;
+    const result = await api.list();
+    if (result.ok) localBots = result.value.bots ?? [];
+  }
+  onMount(() => {
+    if (!adapter.bots) return;
+    void refreshLocalBots();
+    const handle = window.setInterval(() => void refreshLocalBots(), LOCAL_BOTS_POLL_MS);
+    return () => clearInterval(handle);
+  });
+  const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
+  const selectedLocalBotOffline = $derived(
+    Boolean(selectedLocalBot && selectedLocalBot.online !== true),
+  );
+  async function startSelectedLocalBot(): Promise<void> {
+    const bot = selectedLocalBot;
+    const api = adapter.bots;
+    if (!bot || !api || localBotBusy) return;
+    localBotBusy = bot.name;
+    localBotActionError = null;
+    const result = await api.start(bot.name);
+    if (!result.ok) localBotActionError = result.message || `Could not start ${bot.name}.`;
+    await refreshLocalBots();
+    localBotBusy = null;
+  }
   let directorySettled = $state(false);
   let conversationBootTimedOut = $state(false);
   $effect(() => {
@@ -5006,6 +5048,7 @@
           welcomeFirst={!welcomeSetupRun && !hasBootDeepLink && !initialRow}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
+          dmPresence={(row) => localBotPresence(localBots, row)}
           {rowExtrasLoading}
           {rowExtrasError}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
@@ -5650,6 +5693,27 @@
                 {#snippet companyHeader()}
                   <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
                 {/snippet}
+                {#snippet localBotHeader()}
+                  {#if selectedLocalBot && selectedLocalBotOffline}
+                    <div class="local-bot-notice" data-testid="local-bot-offline-notice" role="status">
+                      <span class="local-bot-notice-text">{localBotOfflineNotice(selectedLocalBot)}</span>
+                      {#if !selectedLocalBot.processAlive}
+                        <button
+                          type="button"
+                          class="local-bot-notice-start"
+                          data-testid="local-bot-start"
+                          disabled={localBotBusy === selectedLocalBot.name}
+                          onclick={() => void startSelectedLocalBot()}
+                        >
+                          {localBotBusy === selectedLocalBot.name ? "Starting…" : "Start"}
+                        </button>
+                      {/if}
+                      {#if localBotActionError}
+                        <span class="local-bot-notice-error" role="alert">{localBotActionError}</span>
+                      {/if}
+                    </div>
+                  {/if}
+                {/snippet}
                 <ChannelConversation
                   restoreScroll={pendingRestoreScroll}
                   messages={timelineWithActivity}
@@ -5698,7 +5762,9 @@
                     ? setupHeader
                     : isCompanyChannel
                       ? companyHeader
-                      : undefined}
+                      : selectedLocalBot && selectedLocalBotOffline
+                        ? localBotHeader
+                        : undefined}
                   belowMessages={agentThinkingBelow}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
@@ -6406,5 +6472,41 @@
   }
   .setup-agent-prompt:empty {
     display: none;
+  }
+  .local-bot-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 16px 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line2);
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .local-bot-notice-text {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .local-bot-notice-start {
+    font: inherit;
+    font-weight: 600;
+    padding: 4px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-bg, transparent);
+    color: var(--t1);
+    cursor: pointer;
+  }
+  .local-bot-notice-start:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .local-bot-notice-error {
+    flex-basis: 100%;
+    color: var(--danger, #d05f5f);
   }
 </style>

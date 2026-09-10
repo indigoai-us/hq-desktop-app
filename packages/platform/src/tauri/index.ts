@@ -659,6 +659,14 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     loginCancel: (tool) => this.call("agent_provider_login_cancel", { tool }),
   };
 
+  readonly bots: NonNullable<PlatformAdapter["bots"]> = {
+    list: () => this.call("local_bots_list"),
+    create: (input) => this.call("local_bots_create", { name: input.name, runtime: input.runtime }),
+    start: (name) => this.call("local_bots_start", { name }),
+    stop: (name) => this.call("local_bots_stop", { name }),
+    remove: (name) => this.call("local_bots_remove", { name }),
+  };
+
   readonly settings: PlatformAdapter["settings"] = {
     getConfig: () => this.call("get_config"),
     getSettings: () => this.call("get_settings"),

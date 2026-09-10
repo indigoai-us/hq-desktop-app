@@ -1020,6 +1020,41 @@ export interface SessionsApi {
   loginCancel?(tool: SessionProviderId): AdapterPromise<Json>;
 }
 
+/** A personal local bot (local-bots US-009) as reported by `hq bot list --json`. */
+export interface LocalBotRow {
+  name: string;
+  agentUid: string;
+  ownerUid: string;
+  runtime: "claude" | "codex" | "grok";
+  model?: string;
+  /** Local process state: running | stopped | failed. */
+  state: string;
+  pid: number | null;
+  processAlive: boolean;
+  /** Server-side liveness (heartbeat < 90 s); null when hq-pro was unreachable. */
+  online: boolean | null;
+  lastHeartbeatAt: string | null;
+  daemonInstalled: boolean;
+  daemonLoaded: boolean;
+  dir: string;
+}
+
+/**
+ * Desktop-only group (local-bots US-009): personal bots that run on THIS
+ * computer under the user's own model login. Every call shells to the hq CLI
+ * through the host's launch boundary; nothing here talks to hq-pro directly.
+ */
+export interface LocalBotsApi {
+  list(): AdapterPromise<{ bots: LocalBotRow[] }>;
+  create(input: {
+    name: string;
+    runtime: "claude" | "codex" | "grok";
+  }): AdapterPromise<Json>;
+  start(name: string): AdapterPromise<Json>;
+  stop(name: string): AdapterPromise<Json>;
+  remove(name: string): AdapterPromise<Json>;
+}
+
 /** Local per-platform settings. */
 export interface SettingsApi {
   getConfig(): AdapterPromise<Json>;
@@ -1127,6 +1162,8 @@ export interface PlatformAdapter {
   readonly updates: UpdatesApi;
   readonly packages: PackagesApi;
   readonly sessions: SessionsApi;
+  /** Optional: only the desktop host can run bots on this machine. */
+  readonly bots?: LocalBotsApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
 }
