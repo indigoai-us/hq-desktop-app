@@ -172,6 +172,15 @@ describe('createSetupRunApi', () => {
     expect(liveSessionStore.activeSessionId).toBe(SETUP);
   });
 
+  it('stop ends the session process on the Rust side and refreshes the list', async () => {
+    mockBackend({ list: [summary(SETUP)], preflight: preflight(), commands: ['setup'] });
+    const api = createSetupRunApi();
+    await api.stop!(SETUP);
+    expect(calls('agent_session_end')).toEqual([{ sessionId: SETUP }]);
+    const order = invoke.mock.calls.map(([command]) => command);
+    expect(order.indexOf('agent_session_list')).toBeGreaterThan(order.indexOf('agent_session_end'));
+  });
+
   it('start honours the tool the person picked over what preflight chose', async () => {
     mockBackend({ list: [summary(SETUP)], preflight: preflight({ codexAvailable: true, codexLoggedIn: true }), commands: ['setup'] });
     const api = createSetupRunApi();

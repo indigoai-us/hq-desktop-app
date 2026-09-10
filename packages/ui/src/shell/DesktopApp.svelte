@@ -1084,7 +1084,17 @@
   /** Between the person's turns the agent shows as "thinking", like any other agent. */
   let setupThinkingSince = 0;
   const setupThinking = $derived.by((): ThinkingEntry | null => {
-    if (!inSetupChannelWithAgent || setupAgent.mode !== "live") return null;
+    if (!inSetupChannelWithAgent) return null;
+    // Starting a run (or quietly retrying a passing clash) is thinking too:
+    // the person clicked and must see the agent at work, not a blank beat.
+    if (setupAgent.mode === "starting" || setupAgent.retrying) {
+      if (!setupThinkingSince) setupThinkingSince = Date.now();
+      return { agentUid: SETUP_AGENT_UID, agentName: SETUP_AGENT_NAME, startedAt: setupThinkingSince, phase: "thinking" };
+    }
+    if (setupAgent.mode !== "live") {
+      setupThinkingSince = 0;
+      return null;
+    }
     const state = setupAgent.state;
     const phase = setupAgent.snapshot?.phase;
     // Thinking is only while the engine is actually working on a turn — not
@@ -5593,7 +5603,7 @@
                           api={setupAgent.api}
                           providers={setupAgent.providers}
                           lead={SETUP_FAILURE_COPY[stopFailure.kind].title}
-                          detail={stopFailure.message || undefined}
+                          detail={setupAgent.failureDetail ?? undefined}
                           onrefresh={() => setupAgent.refreshProviders(true)}
                           onrun={(tool) => void setupAgent.runAgain(tool)}
                           runBusy={setupAgent.busy}

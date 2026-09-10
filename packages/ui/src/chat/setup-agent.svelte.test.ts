@@ -4,7 +4,7 @@
 // answer / finish, the resume record, and the transcript the channel shows.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SetupAgent, loadTranscriptCache, setupAgentProse, setupAgentTranscript } from "./setup-agent.svelte";
+import { SETUP_RETRY_DELAY_MS, SetupAgent, loadTranscriptCache, setupAgentProse, setupAgentTranscript } from "./setup-agent.svelte";
 import {
   loadSetupRunRecord,
   SETUP_FAILURE_COPY,
@@ -313,6 +313,102 @@ describe("SetupAgent", () => {
     expect(texts[texts.length - 1]).toContain("sign-in for your coding agent has expired");
     expect(providers).toHaveBeenCalledWith(true);
     expect(agent.providersReady).toBe(false);
+  });
+
+  const REFRESH_CLASH = "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh";
+
+  it("a sign-in refresh clash ends the stuck process and retries once on its own, thinking meanwhile", async () => {
+    vi.useFakeTimers();
+    try {
+      const stop = vi.fn(async (_sessionId: string) => {});
+      const api = fakeSetupRun({ stop });
+      const agent = new SetupAgent(api);
+      await agent.start("claude");
+      api.emit("sess-1", say("Checking tools."));
+      api.emit("sess-1", { kind: "error", message: REFRESH_CLASH }, "ended");
+      await settle();
+      // Not a stop from the person's point of view: the channel keeps thinking.
+      expect(stop).toHaveBeenCalledWith("sess-1");
+      expect(agent.retrying).toBe(true);
+      expect(agent.failure).toBeNull();
+      expect(agent.active).toBe(true);
+      expect(api.start).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(SETUP_RETRY_DELAY_MS);
+      await settle();
+      expect(api.start).toHaveBeenCalledTimes(2);
+      expect(api.start).toHaveBeenLastCalledWith(expect.any(String), "claude");
+      expect(agent.sessionId).toBe("sess-2");
+      expect(agent.retrying).toBe(false);
+      expect(agent.mode).toBe("live");
+      expect(agent.attempts).toBe(2);
+      expect(loadSetupRunRecord()).toMatchObject({ sessionId: "sess-2", status: "running" });
+
+      // The same clash twice is a real stop: say so, with a word that we tried.
+      api.emit("sess-2", { kind: "error", message: REFRESH_CLASH }, "ended");
+      await vi.advanceTimersByTimeAsync(SETUP_RETRY_DELAY_MS * 2);
+      await settle();
+      expect(api.start).toHaveBeenCalledTimes(2);
+      expect(stop).toHaveBeenCalledWith("sess-2");
+      expect(agent.failure).toMatchObject({ kind: "other", transient: true });
+      expect(agent.failureDetail).toContain("hiccup refreshing its sign-in");
+      expect(agent.failureDetail).toContain("Tried again just now");
+      expect(agent.transcript.map((turn) => turn.text)).not.toContain(REFRESH_CLASH);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a fresh click resets the retry budget, and run again ends the previous session first", async () => {
+    vi.useFakeTimers();
+    try {
+      const stop = vi.fn(async (_sessionId: string) => {});
+      const api = fakeSetupRun({ stop });
+      const agent = new SetupAgent(api);
+      await agent.start();
+      api.emit("sess-1", { kind: "error", message: REFRESH_CLASH }, "ended");
+      await settle();
+      expect(agent.retrying).toBe(true);
+      // The person clicks Run Setup during the countdown: their pick wins, once.
+      await agent.runAgain("codex");
+      expect(agent.retrying).toBe(false);
+      expect(api.start).toHaveBeenCalledTimes(2);
+      expect(api.start).toHaveBeenLastCalledWith(expect.any(String), "codex");
+      expect(agent.attempts).toBe(1);
+      await vi.advanceTimersByTimeAsync(SETUP_RETRY_DELAY_MS * 2);
+      expect(api.start).toHaveBeenCalledTimes(2);
+      // A clash on the new run gets its own single retry.
+      api.emit("sess-2", { kind: "error", message: REFRESH_CLASH }, "ended");
+      await settle();
+      expect(agent.retrying).toBe(true);
+      await vi.advanceTimersByTimeAsync(SETUP_RETRY_DELAY_MS);
+      await settle();
+      expect(api.start).toHaveBeenCalledTimes(3);
+      expect(stop.mock.calls.map(([id]) => id)).toEqual(["sess-1", "sess-2"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a real stop ends the stuck process too, and run again goes straight to starting, never through idle", async () => {
+    const stop = vi.fn(async (_sessionId: string) => {});
+    const api = fakeSetupRun({ stop });
+    const agent = new SetupAgent(api);
+    await agent.start();
+    api.emit("sess-1", say("Failed to authenticate: OAuth session expired and could not be refreshed"));
+    api.emit("sess-1", { kind: "turnDone", status: "error", error: null }, "ended");
+    await settle();
+    expect(stop).toHaveBeenCalledWith("sess-1");
+    expect(agent.failure?.kind).toBe("auth");
+    expect(agent.failureDetail).not.toContain("Tried again");
+    const modes: string[] = [];
+    const pending = agent.runAgain("claude");
+    modes.push(agent.mode);
+    await pending;
+    expect(modes).toEqual(["starting"]);
+    expect(agent.mode).toBe("live");
+    expect(agent.sessionId).toBe("sess-2");
+    expect(stop).toHaveBeenCalledTimes(1);
   });
 
   it("a remembered run whose last words were the finish is done, even if an older build recorded it as ended", async () => {
