@@ -101,7 +101,11 @@ export interface ChatSidebarApi {
     toEmail?: string;
     toPersonUid?: string;
     body: string;
-  }): Promise<{ state: "delivered" | "connectionRequested" }>;
+  }): Promise<{
+    state: "delivered" | "connectionRequested";
+    /** The recipient's person uid when the server resolved one. */
+    personUid?: string | null;
+  }>;
   /**
    * GET /v1/notify/thread — newest-first page of one 1:1 DM. Optional: the
    * rail uses it only to resolve a display name for a peer the contacts

@@ -62,3 +62,55 @@ describe("createChatSidebarApi DM connection requests", () => {
     expect(api.respondDmRequest).toBeUndefined();
   });
 });
+
+describe("createChatSidebarApi sendDmToEmail", () => {
+  it("omits sendDmToEmail when the platform adapter lacks the seam", () => {
+    const api = createChatSidebarApi(stub({}));
+    expect(api.sendDmToEmail).toBeUndefined();
+  });
+
+  it("forwards the args and maps the outcome discriminant + personUid", async () => {
+    const sendDmToEmail = vi
+      .fn()
+      .mockResolvedValueOnce(ok({ state: "connectionRequested" }))
+      .mockResolvedValueOnce(ok({ delivered: true, personUid: "prs_kai" }))
+      .mockResolvedValueOnce(failure("http-429", "Daily invite cap reached"));
+    const api = createChatSidebarApi(stub({ sendDmToEmail }));
+    await expect(
+      api.sendDmToEmail!({ toEmail: "kai@acme.test", body: "hi" }),
+    ).resolves.toEqual({ state: "connectionRequested", personUid: null });
+    await expect(
+      api.sendDmToEmail!({ toEmail: "kai@acme.test", body: "hi" }),
+    ).resolves.toEqual({ state: "delivered", personUid: "prs_kai" });
+    await expect(
+      api.sendDmToEmail!({ toEmail: "kai@acme.test", body: "hi" }),
+    ).rejects.toThrow(/Daily invite cap reached/);
+    expect(sendDmToEmail).toHaveBeenNthCalledWith(1, {
+      toEmail: "kai@acme.test",
+      body: "hi",
+    });
+  });
+
+  it("reaches /v1/notify/dm through the web adapter end to end", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const adapter = new WebPlatformAdapter({
+      baseUrl: "https://api.test",
+      fetch: async (input, init) => {
+        calls.push({
+          path: String(input).replace("https://api.test", ""),
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response(JSON.stringify({ state: "connection_requested" }), {
+          status: 202,
+        });
+      },
+    });
+    const api = createChatSidebarApi(adapter);
+    await expect(
+      api.sendDmToEmail!({ toEmail: "kai@acme.test", body: "hi" }),
+    ).resolves.toEqual({ state: "connectionRequested", personUid: null });
+    expect(calls).toEqual([
+      { path: "/v1/notify/dm", body: { toEmail: "kai@acme.test", body: "hi" } },
+    ]);
+  });
+});
