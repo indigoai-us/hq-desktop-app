@@ -268,6 +268,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         : this.call("list_contacts");
     },
     listDmRequests: () => this.call("list_dm_requests"),
+    respondDmRequest: ({ pairKey, action }) =>
+      this.call("respond_dm_request", { pairKey, action }),
     markChannelRead: (id) => this.call("mark_channel_read", { id }),
     markDmThreadRead: (personUid) =>
       this.call("mark_dm_thread_read", { personUid }),

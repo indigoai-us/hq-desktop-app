@@ -12,7 +12,7 @@
  */
 
 import type { Channel } from "./channels";
-import type { DmRequest } from "./dm-requests";
+import type { DmRequest, RequestAction } from "./dm-requests";
 import type { ChannelDirectoryFeed } from "./channel-directory-reconciler";
 import type { InboxDmActivity } from "./live-catchup";
 import type { DmContactInput, MessageSearchResult } from "./sidebar-model";
@@ -45,6 +45,15 @@ export interface ChatSidebarApi {
   listCompanyMembers?(companyUid: string): Promise<ContactsResponse>;
   /** the desktop `list_dm_requests` command. */
   listDmRequests(): Promise<RequestsResponse>;
+  /**
+   * the desktop `respond_dm_request` command
+   * (`POST /v1/notify/connections/{accept|decline|block}` body `{ pairKey }`).
+   * Optional: hosts without it render pending requests read-only.
+   */
+  respondDmRequest?(args: {
+    pairKey: string;
+    action: RequestAction;
+  }): Promise<void>;
   /** the desktop `list_channels` command (US-021). */
   listChannels(args: {
     companyUid: string;
