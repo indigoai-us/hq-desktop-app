@@ -43,7 +43,6 @@ use hq_desktop_core::agent_session::types::{
     PermissionDecision, PermissionMode, QuestionAnswer, SessionEvent, SessionPhase, SessionSpec,
     SessionTool, TurnOverrides,
 };
-use hq_desktop_core::agent_session_flags::ensure_in_app_sessions_allowed;
 use hq_desktop_core::claude_launch::{probe_hq_setup, HqSetupReadiness};
 use hq_desktop_core::workspaces::{
     discover_local_companies, humanize_slug, resolve_hq_folder_path,
@@ -265,7 +264,6 @@ async fn preflight_local_lookup<T: Send + 'static>(
 
 #[tauri::command]
 pub async fn agent_session_preflight() -> Result<Preflight, String> {
-    ensure_in_app_sessions_allowed()?;
     let (hq_root, setup, tools, entries) = preflight_local_lookup(
         || {
             let hq_root = resolve_hq_folder_path()?;
@@ -352,7 +350,6 @@ const SETUP_RESCUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// log under `LOG_TAG`.
 #[tauri::command]
 pub async fn agent_session_repair_hq_setup(app: tauri::AppHandle) -> Result<Preflight, String> {
-    ensure_in_app_sessions_allowed()?;
     let hq_root = preflight_local_lookup(
         resolve_hq_folder_path,
         std::time::Duration::from_secs(8),
@@ -488,7 +485,6 @@ pub async fn agent_session_start(
     spec: SessionSpec,
     project_channel_id: Option<String>,
 ) -> Result<StartedSession, String> {
-    ensure_in_app_sessions_allowed()?;
 
     let hq_root = resolve_hq_folder_path()?;
     // The session always runs from the HQ root. Anywhere else is a different
@@ -686,7 +682,6 @@ pub async fn agent_session_send(
     images: Option<Vec<ImageAttachment>>,
     overrides: Option<TurnOverrides>,
 ) -> Result<(), String> {
-    ensure_in_app_sessions_allowed()?;
     let attachments: Vec<(String, String)> = images
         .unwrap_or_default()
         .into_iter()
@@ -810,7 +805,6 @@ pub async fn agent_session_respond_permission(
     request_id: String,
     decision: PermissionDecision,
 ) -> Result<(), String> {
-    ensure_in_app_sessions_allowed()?;
     let state = state();
     let mut guard = state.lock().await;
 
@@ -877,7 +871,6 @@ pub async fn agent_session_answer_question(
     request_id: String,
     answers: Vec<QuestionAnswer>,
 ) -> Result<(), String> {
-    ensure_in_app_sessions_allowed()?;
     let state = state();
     let mut guard = state.lock().await;
 
@@ -923,7 +916,6 @@ pub async fn agent_session_answer_question(
 /// Stop the current turn without ending the session.
 #[tauri::command]
 pub async fn agent_session_interrupt(session_id: String) -> Result<(), String> {
-    ensure_in_app_sessions_allowed()?;
     // The driver marks the normalizer interrupted before it writes the request
     // — the ordering is why this is an instruction rather than two calls.
     state().lock().await.send(&session_id, Outbound::Interrupt)
@@ -947,7 +939,6 @@ pub async fn agent_session_set_permission_mode(
     session_id: String,
     mode: PermissionMode,
 ) -> Result<(), String> {
-    ensure_in_app_sessions_allowed()?;
     let state = state();
     let mut guard = state.lock().await;
 
@@ -968,7 +959,6 @@ pub async fn agent_session_set_permission_mode(
 /// End a session: EOF on stdin, then a bounded wait, then a kill.
 #[tauri::command]
 pub async fn agent_session_end(session_id: String) -> Result<(), String> {
-    ensure_in_app_sessions_allowed()?;
     let state = state();
     {
         let guard = state.lock().await;
@@ -1008,14 +998,12 @@ pub async fn agent_session_end(session_id: String) -> Result<(), String> {
 /// Every session this app is driving.
 #[tauri::command]
 pub async fn agent_session_list() -> Result<Vec<SessionSummary>, String> {
-    ensure_in_app_sessions_allowed()?;
     Ok(state().lock().await.registry.snapshot())
 }
 
 /// Catch a reconnecting UI up from `since_seq`.
 #[tauri::command]
 pub async fn agent_session_replay(session_id: String, since_seq: u64) -> Result<Replay, String> {
-    ensure_in_app_sessions_allowed()?;
     let state = state();
     let guard = state.lock().await;
     let session = guard
@@ -1034,7 +1022,6 @@ pub async fn agent_session_history_page(
     before: Option<u64>,
     tool: Option<SessionTool>,
 ) -> Result<history_replay::HistoryPage, String> {
-    ensure_in_app_sessions_allowed()?;
     // A dormant provider conversation is readable without becoming a live HQ
     // process. Its native id and provider are already known by the history
     // scanner, so no registry entry is needed just to render the transcript.
@@ -1078,7 +1065,6 @@ pub async fn agent_session_history_page(
 /// the event ring has dropped it.
 #[tauri::command]
 pub async fn agent_session_cli_session_id(session_id: String) -> Result<Option<String>, String> {
-    ensure_in_app_sessions_allowed()?;
     let state = state();
     let guard = state.lock().await;
     cli_session_id_of(&guard.registry, &session_id)
@@ -1101,7 +1087,6 @@ fn cli_session_id_of(
 pub async fn agent_session_slash_commands(
     tool: SessionTool,
 ) -> Result<claude::CommandCatalog, String> {
-    ensure_in_app_sessions_allowed()?;
     let hq_root = resolve_hq_folder_path()?;
     let started = std::time::Instant::now();
     let outcome = match tool {
@@ -1232,7 +1217,6 @@ fn read_session_context(root: &Path, id: &str) -> SessionContext {
 
 #[tauri::command]
 pub async fn agent_session_context(session_id: String) -> Result<SessionContext, String> {
-    ensure_in_app_sessions_allowed()?;
     let root = resolve_hq_folder_path()?;
     let spec = state()
         .lock()

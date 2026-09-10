@@ -14,9 +14,7 @@ This file remains the source of truth for the combined-app embed
 
 **The retired `hqWorkHandoff` key is ignored and stripped.** Launch migrates
 `~/.hq/menubar.json` by removing `hqWorkHandoff`, including an explicit
-`false` left by an upgraded install. `get_hq_work_handoff` always returns
-true. `hqWorkHandoffEnabled` is always true. Settings does not re-persist the
-key.
+`false` left by an upgraded install. Settings does not re-persist the key.
 
 The window always mounts `@hq/ui` DesktopApp via `HqWorkWorkShell` +
 `createSyncPlatformAdapter`. Live `maybe_intercept_desktop_alt_handoff` is a
@@ -46,29 +44,22 @@ widget, and sync engine are unchanged.
 
 ## Default-off sites that are still default-off
 
-The cohort default lives entirely in `get_hq_work_handoff` +
-`hq_work_handoff_visible`. Everything below is deliberately untouched, so
-non-cohort users and the retained two-app readers stay off. Flipping any of
-these would take the embed past the cohort — that is the bake step, not this
-one.
+The retired choice no longer selects a shell. The entries below are historical
+rollout notes, not active product controls.
 
 | Site | Default-off |
 | --- | --- |
 | `MenubarPrefs.hq_work_handoff` | `Option<bool>`, absent → `None` (`crates/hq-desktop-core/src/config.rs`) comment "Absent → false" |
 | `get_settings` no-file branch | `hq_work_handoff: Some(false)` |
 | `get_settings` file-present branch | `prefs.hq_work_handoff.unwrap_or(false)` |
-| `hq_work_handoff_enabled` | `.unwrap_or(false)` |
 | `get_hq_work_handoff` missing file | `Ok(false)` |
-| `hq_work_handoff_from_json` untyped fallback | `.unwrap_or(false)` |
 | `crates/hq-desktop-core/src/settings.rs` `apply_defaults` | `unwrap_or(false)` |
-| frontend `hqWorkHandoffEnabled` | `flag === true` (null/undefined → false) |
 
 ## Default-on (copy-paste when baking)
 
 When alpha is baked and the embed is a config change, flip **all** of these
 in the same Sync release. These one-liners now enable the embed in **this**
-desktop-alt window (not launch a second app). The boot path reads
-`get_hq_work_handoff` / `hq_work_handoff_enabled`, not only Settings.
+desktop-alt window (not launch a second app).
 
 **Canonical one-liners** (same flag as US-006; they now enable the embed):
 
@@ -84,18 +75,9 @@ apps/sync/src-tauri/src/commands/settings.rs
   → hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(true))
 
 apps/sync/src-tauri/src/commands/config.rs
-  hq_work_handoff_enabled:
-    prefs.and_then(|p| p.hq_work_handoff).unwrap_or(false)
-  → prefs.and_then(|p| p.hq_work_handoff).unwrap_or(true)
-
-apps/sync/src-tauri/src/commands/config.rs
   get_hq_work_handoff missing file:
     return Ok(false);
   → return Ok(true);
-
-  hq_work_handoff_from_json untyped fallback:
-    .unwrap_or(false)
-  → .unwrap_or(true)
 
 crates/hq-desktop-core/src/settings.rs
   apply_defaults:
@@ -104,9 +86,7 @@ crates/hq-desktop-core/src/settings.rs
 ```
 
 Then update the unit tests that assert default-off
-(`test_hq_work_handoff_defaults_false`, `hq_work_handoff_enabled_none_prefs_is_false`,
-`hq_work_handoff_from_json_absent_is_false`, frontend
-`hqWorkHandoffEnabled(undefined) === false`).
+(`test_hq_work_handoff_defaults_false`).
 
 An explicit `"hqWorkHandoff": false` on disk must still restore the legacy
 window after default-on.
@@ -132,13 +112,8 @@ window after default-on.
 Product rollback is the webview boot branch, not `launch_hq_work`. Cite
 existing proof on this branch (do not invent new runtime code):
 
-- `resolveDesktopAltShell` / `bootDesktopAltWindow` in
-  `apps/sync/src/desktop-alt/boot.ts`: `getHandoff` false → `'legacy'`
-- Vitest: `hq-work-sync-handoff-US-103.test.ts` "Given flag off, when the
-  tray desktop-view action runs, then legacy desktop-alt mounts"
-- `hqWorkHandoffEnabled(undefined/null/false) === false`
-- Cargo: `hq_work_handoff_enabled_none_prefs_is_false`;
-  `test_hq_work_handoff_defaults_false`
+- `bootDesktopAltWindow` in `apps/sync/src/desktop-alt/boot.ts` mounts the
+  embedded workspace directly.
 - Two-app leftover `plan_desktop_alt_open(false, …) == OpenDesktopAlt` still
   exists in `hq_work.rs` (`flag_off_opens_desktop_alt_regardless_of_install`)
   but live `maybe_intercept_desktop_alt_handoff` is a no-op; the product

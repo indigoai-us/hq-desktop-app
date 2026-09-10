@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  GENUI_ENABLED,
   extractRichContentFromBody,
   parseRichContent,
   richContentForMessage,
@@ -478,11 +477,7 @@ describe("sanitization — a payload can never inject executable content", () =>
   });
 });
 
-describe("GenUI is design-only, behind a disabled flag", () => {
-  it("the flag is OFF", () => {
-    expect(GENUI_ENABLED).toBe(false);
-  });
-
+describe("GenUI is design-only", () => {
   it("drops a genui block so no agent-authored markup is rendered", () => {
     const model = parseRichContent({
       v: 1,

@@ -24,15 +24,14 @@
 //! reads the transcript: the body is the one message the user typed, clamped,
 //! and the context line is built from four bounded, non-secret fields.
 //!
-//! Both commands sit behind the in-app-sessions feature flag and the same
-//! sign-in check the messaging commands use. The candidate list is cached for
+//! Both commands use the same sign-in check as the messaging commands. The
+//! candidate list is cached for
 //! 60 s per company so reopening the picker does not refetch the directory.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use hq_desktop_core::agent_session_flags::ensure_in_app_sessions_allowed;
 use hq_desktop_core::messages::Contact;
 use hq_desktop_core::workspaces::{discover_local_companies, resolve_hq_folder_path};
 use serde::{Deserialize, Serialize};
@@ -431,7 +430,6 @@ fn self_person_uid() -> Option<String> {
 /// directory call); cached 60 s per company.
 #[tauri::command]
 pub async fn session_mention_candidates(company: String) -> Result<Vec<MentionCandidate>, String> {
-    ensure_in_app_sessions_allowed()?;
     let slug = company.trim().to_string();
     if slug.is_empty() {
         return Err("company must not be empty".to_string());
@@ -496,7 +494,6 @@ pub async fn session_mention_notify(
     text: String,
     tool: Option<String>,
 ) -> Result<Vec<MentionDelivery>, String> {
-    ensure_in_app_sessions_allowed()?;
     let Some(body) = clamp_body(&text) else {
         return Err("Message body must not be empty".to_string());
     };

@@ -15,15 +15,11 @@ describe("/setup load", () => {
   const saved = {
     jwks: process.env.COGNITO_TEST_JWKS,
     vercel: process.env.VERCEL,
-    skip: process.env.HQ_WORK_MESH_SKIP_SETUP,
-    force: process.env.HQ_WORK_MESH_FORCE_SETUP,
   };
 
   afterEach(() => {
     process.env.COGNITO_TEST_JWKS = saved.jwks;
     process.env.VERCEL = saved.vercel;
-    process.env.HQ_WORK_MESH_SKIP_SETUP = saved.skip;
-    process.env.HQ_WORK_MESH_FORCE_SETUP = saved.force;
   });
 
   it("sends signed-out visitors to sign-in", async () => {
@@ -49,7 +45,6 @@ describe("/setup load", () => {
 
   it("bounces every signed-in session to the shell (no local-cache gate)", async () => {
     process.env.COGNITO_TEST_JWKS = "{}";
-    process.env.HQ_WORK_MESH_FORCE_SETUP = "1";
     try {
       await load(event("/setup", { sub: "person-test" }));
       throw new Error("expected redirect");

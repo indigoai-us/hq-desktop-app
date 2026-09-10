@@ -43,14 +43,6 @@ describe('US-006 HQ Work handoff rollout defaults, logs, rollback', () => {
       );
     });
 
-    it('hq_work_handoff_enabled is always true', () => {
-      const idx = config.indexOf('pub fn hq_work_handoff_enabled');
-      expect(idx).toBeGreaterThan(-1);
-      const body = config.slice(idx, idx + 280);
-      expect(body).toContain('true');
-      expect(body).not.toContain('.unwrap_or(false)');
-    });
-
     it('get_hq_work_handoff always returns true', () => {
       const idx = config.indexOf('fn get_hq_work_handoff');
       expect(idx).toBeGreaterThan(-1);

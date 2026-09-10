@@ -45,16 +45,13 @@ shows the US-003 card. Flag on + installed launches HQ Work.
 | `MenubarPrefs.hq_work_handoff` | `Option<bool>`, absent → `None` (`crates/hq-desktop-core/src/config.rs`) |
 | `get_settings` no-file branch | `hq_work_handoff: Some(false)` |
 | `get_settings` file-present branch | `prefs.hq_work_handoff.unwrap_or(false)` |
-| `hq_work_handoff_enabled` | `.unwrap_or(false)` |
 | `get_hq_work_handoff` missing file | `Ok(false)` |
-
-Frontend `hqWorkHandoffEnabled` is `flag === true` (null/undefined → false).
 
 ## Default-on (copy-paste when baking)
 
 When alpha is baked and launch is a config change, flip **all** of these in
-the same Sync release. The intercept path reads `get_hq_work_handoff` /
-`hq_work_handoff_enabled`, not only Settings.
+the same Sync release. The intercept path reads `get_hq_work_handoff`, not
+only Settings.
 
 **Canonical one-liners** (US-006):
 
@@ -69,10 +66,6 @@ apps/sync/src-tauri/src/commands/settings.rs
     hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false))
   → hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(true))
 
-apps/sync/src-tauri/src/commands/config.rs
-  hq_work_handoff_enabled:
-    prefs.and_then(|p| p.hq_work_handoff).unwrap_or(false)
-  → prefs.and_then(|p| p.hq_work_handoff).unwrap_or(true)
 ```
 
 **Lockstep** (otherwise Settings vs Open HQ disagree):
@@ -83,10 +76,6 @@ apps/sync/src-tauri/src/commands/config.rs
     return Ok(false);
   → return Ok(true);
 
-  hq_work_handoff_from_json untyped fallback:
-    .unwrap_or(false)
-  → .unwrap_or(true)
-
 crates/hq-desktop-core/src/settings.rs
   apply_defaults:
     hq_work_handoff: Some(prefs.hq_work_handoff.unwrap_or(false))
@@ -94,9 +83,7 @@ crates/hq-desktop-core/src/settings.rs
 ```
 
 Then update the unit tests that assert default-off
-(`test_hq_work_handoff_defaults_false`, `hq_work_handoff_enabled_none_prefs_is_false`,
-`hq_work_handoff_from_json_absent_is_false`, frontend
-`hqWorkHandoffEnabled(undefined) === false`).
+(`test_hq_work_handoff_defaults_false`).
 
 An explicit `"hqWorkHandoff": false` on disk must still restore desktop-alt
 after default-on.

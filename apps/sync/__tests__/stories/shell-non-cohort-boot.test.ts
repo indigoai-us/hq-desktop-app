@@ -32,7 +32,6 @@ vi.mock('@tauri-apps/api/app', () => ({
 import { flushSync, mount, unmount } from 'svelte';
 import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
 import { resolveLaunchShell } from '../../src/lib/desktop-shell';
-import { hqWorkHandoffEnabled } from '../../src/lib/hq-work';
 import type { SyncInvokeFn } from '@hq/platform';
 
 const MICHEL = {
@@ -270,7 +269,6 @@ describe('desktop workspace boot for non-cohort identities', () => {
         hqWorkHandoff: false,
       }),
     ).toBe('desktop-alt');
-    expect(hqWorkHandoffEnabled(false)).toBe(true);
     await mountShell({ getSettings: { hqWorkHandoff: false, stagingChannel: true } });
     expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
     await vi.waitFor(() => {

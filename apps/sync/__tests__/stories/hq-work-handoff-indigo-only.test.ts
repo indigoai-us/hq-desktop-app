@@ -38,15 +38,6 @@ describe('desktop workspace is the only UI', () => {
     expect(body).not.toContain('is_hq_work_cohort_user');
   });
 
-  it('hq_work_handoff_visible ignores choice and cohort', () => {
-    const body = config.slice(
-      config.indexOf('pub fn hq_work_handoff_visible('),
-      config.indexOf('/// Strip `hqWorkHandoff`'),
-    );
-    expect(body).toContain('true');
-    expect(body).not.toContain('is_cohort_member &&');
-  });
-
   it('set_hq_work_handoff strips the retired key instead of refusing a domain', () => {
     const body = config.slice(config.indexOf('pub async fn set_hq_work_handoff('));
     expect(body).toContain('migrate_retired_hq_work_handoff');
@@ -62,8 +53,7 @@ describe('desktop workspace is the only UI', () => {
   });
 
   it('boot always mounts the hq-work shell', () => {
-    expect(boot).toContain("export type DesktopAltShell = 'hq-work'");
-    expect(boot).not.toContain("'legacy'");
+    expect(boot).not.toContain('mountLegacy');
     expect(boot).toContain('await deps.mountHqWork()');
   });
 

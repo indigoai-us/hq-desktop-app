@@ -115,18 +115,6 @@ pub async fn get_config() -> Result<ConfigState, String> {
     })
 }
 
-/// Retired preference. The desktop workspace is the only UI, so this is
-/// always on — email domain, company affiliation, and any leftover
-/// `hqWorkHandoff` key in `menubar.json` cannot select a different shell.
-pub fn hq_work_handoff_enabled(_prefs: Option<&MenubarPrefs>) -> bool {
-    true
-}
-
-/// Retired reader. Always `true`; the on-disk key is ignored.
-pub fn hq_work_handoff_from_json(_contents: &str) -> bool {
-    true
-}
-
 /// Detect the retired on-disk choice so the launch migration can strip it.
 /// `None` means the key is already gone (or the file is unreadable).
 pub fn hq_work_handoff_choice(contents: &str) -> Option<bool> {
@@ -138,12 +126,6 @@ pub fn hq_work_handoff_choice(contents: &str) -> Option<bool> {
     serde_json::from_str::<serde_json::Value>(contents)
         .ok()
         .and_then(|v| v.get("hqWorkHandoff").and_then(|b| b.as_bool()))
-}
-
-/// The desktop workspace is the only shell. Choice and cohort no longer
-/// compose a second UI.
-pub fn hq_work_handoff_visible(_choice: Option<bool>, _is_cohort_member: bool) -> bool {
-    true
 }
 
 /// Strip `hqWorkHandoff` from `~/.hq/menubar.json` if it is still present.
@@ -173,26 +155,6 @@ pub async fn set_hq_work_handoff(_enabled: bool) -> Result<(), String> {
 #[cfg(test)]
 mod hq_work_handoff_tests {
     use super::*;
-
-    #[test]
-    fn handoff_is_on_for_a_ga_user_with_no_company() {
-        assert!(hq_work_handoff_visible(None, false));
-        assert!(hq_work_handoff_visible(Some(false), false));
-        assert!(hq_work_handoff_enabled(None));
-        assert!(hq_work_handoff_from_json(r#"{"hqWorkHandoff":false}"#));
-        assert!(hq_work_handoff_from_json(r#"{}"#));
-        assert!(hq_work_handoff_from_json("not-json"));
-    }
-
-    #[test]
-    fn upgraded_install_false_key_is_ignored() {
-        assert_eq!(
-            hq_work_handoff_choice(r#"{"hqWorkHandoff":false}"#),
-            Some(false)
-        );
-        assert!(hq_work_handoff_visible(Some(false), true));
-        assert!(hq_work_handoff_from_json(r#"{"hqWorkHandoff":false}"#));
-    }
 
     #[test]
     fn choice_still_detects_the_retired_key_so_migration_can_strip_it() {

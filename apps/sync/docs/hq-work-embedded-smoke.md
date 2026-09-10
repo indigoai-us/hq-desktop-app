@@ -171,7 +171,7 @@ No embed, no extra handoff probes.
 ### Expected
 
 - Same desktop-alt WINDOW label (`desktop-alt`).
-- Boot resolved `'legacy'` (`boot.ts` / `resolveDesktopAltShell`).
+- Boot mounted the embedded workspace directly (`boot.ts`).
 - No new `[handoff] launched` / `card_shown` / `co_installed`.
 
 - [x] Pass — Scenario 1: Cold start, flag off (legacy)
