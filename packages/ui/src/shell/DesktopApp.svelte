@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { parseMeshProjectView, projectViewToBoard } from "@hq/core";
+  import {
+    parseMeshProjectView,
+    projectViewToBoard,
+    channelSessionOriginKey,
+    channelSessionStoryDraft,
+    findDuplicateChannelSessionStory,
+    nextUsStoryId,
+  } from "@hq/core";
   /**
    * DesktopApp — the windowed V2 shell (design source: hq-sync desktop-alt +
    * its dev-harness ?view=v2 preview).
@@ -95,10 +102,12 @@
   } from "../chat/messaging/ReplyPanel.svelte";
   import SessionThreadPanel from "../chat/messaging/SessionThreadPanel.svelte";
   import {
+    contextPromptForThread,
     createSessionThread,
     excerptFromBody,
     type SessionThread,
   } from "../chat/messaging/session-thread.js";
+  import type { Snippet } from "svelte";
   import ArtifactPanel from "../chat/messaging/ArtifactPanel.svelte";
   import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
@@ -577,6 +586,18 @@
       channelId?: string | null;
       prompt: string;
     }) => Promise<{ title: string }>;
+    /**
+     * Desktop host starts the real agent session for an in-channel pane.
+     * Web omits this; the pane falls back to a notice.
+     */
+    onstartlivesession?: (input: {
+      thread: SessionThread;
+      companySlug: string;
+      projectId: string;
+      taskId: string;
+      contextPrompt: string;
+    }) => Promise<{ sessionId: string }>;
+    channelSessionBody?: Snippet<[SessionThread]>;
   }
 
   let {
@@ -633,6 +654,8 @@
     rowExtrasError = false,
     rowExtras = null,
     onGenerateTask,
+    onstartlivesession,
+    channelSessionBody,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -3042,7 +3065,86 @@
     openAgentMember = null;
     openArtifactView = null;
     openSessionThread = thread;
+    sessionThreadsById = { ...sessionThreadsById, [thread.id]: thread };
     if (tab !== "chat") tab = "chat";
+  }
+
+  function patchSessionThread(id: string, patch: Partial<SessionThread>): void {
+    const current = sessionThreadsById[id];
+    if (!current) return;
+    const next = { ...current, ...patch };
+    sessionThreadsById = { ...sessionThreadsById, [id]: next };
+    if (openSessionThread?.id === id) openSessionThread = next;
+  }
+
+  async function ensureChannelSessionTask(thread: SessionThread): Promise<{
+    taskId: string;
+    created: boolean;
+  }> {
+    const row = selectedRow;
+    const companyUid = row?.companyUid?.trim();
+    const projectId = row ? projectIdForRow(row) : null;
+    const create = adapter.workMesh.createProjectStory;
+    if (!row || !companyUid || !projectId || !create) {
+      throw new Error("Project unavailable");
+    }
+    const originKey = channelSessionOriginKey(thread.origin);
+    const view = parseMeshProjectView(
+      unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)),
+    );
+    const stories = view?.stories ?? [];
+    const existing = findDuplicateChannelSessionStory(
+      stories,
+      originKey,
+      thread.title,
+    );
+    if (existing) return { taskId: existing.id, created: false };
+    const id = nextUsStoryId(stories);
+    const draft = channelSessionStoryDraft({
+      originKey,
+      title: thread.title,
+      excerpt:
+        thread.origin.kind === "message" ? thread.origin.excerpt : thread.title,
+    });
+    unwrapAdapter(
+      await create(projectId, companyUid, { id, ...draft }),
+    );
+    return { taskId: id, created: true };
+  }
+
+  async function bindLiveSession(thread: SessionThread): Promise<void> {
+    patchSessionThread(thread.id, { status: "starting" });
+    const row = selectedRow;
+    const companyUid = row?.companyUid?.trim();
+    const projectId = row ? projectIdForRow(row) : null;
+    const companySlug =
+      (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyUid)
+        ?.slug ?? "";
+    try {
+      const task = await ensureChannelSessionTask(thread);
+      patchSessionThread(thread.id, {
+        taskId: task.taskId,
+        taskCreated: task.created,
+      });
+      if (!onstartlivesession || !projectId || !companySlug) {
+        patchSessionThread(thread.id, { status: "idle" });
+        return;
+      }
+      const started = await onstartlivesession({
+        thread: { ...thread, taskId: task.taskId, taskCreated: task.created },
+        companySlug,
+        projectId,
+        taskId: task.taskId,
+        contextPrompt: contextPromptForThread(thread),
+      });
+      patchSessionThread(thread.id, {
+        liveSessionId: started.sessionId,
+        status: "running",
+      });
+    } catch (err) {
+      patchSessionThread(thread.id, { status: "idle" });
+      console.error("[hq-desktop] channel session", err);
+    }
   }
 
   function startSessionFromMessage(eventId: string): void {
@@ -3062,8 +3164,8 @@
       actorKind: "human",
       actorName: self?.displayName?.trim() || "You",
     });
-    sessionThreadsById = { ...sessionThreadsById, [thread.id]: thread };
     revealSessionThread(thread);
+    void bindLiveSession(thread);
   }
 
   function startSessionFromChannel(): void {
@@ -3078,7 +3180,6 @@
       actorKind: "human",
       actorName: self?.displayName?.trim() || "You",
     });
-    sessionThreadsById = { ...sessionThreadsById, [thread.id]: thread };
     const wire: ConversationMessageWire = {
       eventId: `local-session-${thread.id}`,
       createdAt: thread.startedAt,
@@ -3101,12 +3202,14 @@
     };
     localSessionWires = [...localSessionWires, wire];
     revealSessionThread(thread);
+    void bindLiveSession(thread);
   }
 
   function openSessionFromCard(sessionId: string): void {
     const known = sessionThreadsById[sessionId];
     if (known) {
       revealSessionThread(known);
+      if (!known.liveSessionId) void bindLiveSession(known);
       return;
     }
     const row = selectedRow;
@@ -3120,26 +3223,8 @@
       actorName: self?.displayName?.trim() || "You",
     });
     thread.id = sessionId;
-    sessionThreadsById = { ...sessionThreadsById, [sessionId]: thread };
     revealSessionThread(thread);
-  }
-
-  function promptOpenSession(thread: SessionThread, text: string): void {
-    const next: SessionThread = {
-      ...thread,
-      status: "idle",
-      turns: [
-        ...thread.turns,
-        { id: `${thread.id}-u-${thread.turns.length}`, role: "user", text },
-        {
-          id: `${thread.id}-a-${thread.turns.length}`,
-          role: "assistant",
-          text: "Spike: this pane would stream the live session here. Open full to use the existing Sessions surface.",
-        },
-      ],
-    };
-    sessionThreadsById = { ...sessionThreadsById, [thread.id]: next };
-    if (openSessionThread?.id === thread.id) openSessionThread = next;
+    void bindLiveSession(thread);
   }
 
   function openReply(rootEventId: string): void {
@@ -6020,7 +6105,21 @@
                   <SessionThreadPanel
                     thread={openSessionThread}
                     onclose={() => (openSessionThread = null)}
-                    onprompt={promptOpenSession}
+                    onexpand={
+                      extraPages?.sessions?.createAction
+                        ? (thread) => {
+                            const param =
+                              thread.liveSessionId ??
+                              extraPages!.sessions.createAction!.param();
+                            void navigate({
+                              kind: "extra",
+                              page: "sessions",
+                              param,
+                            });
+                          }
+                        : undefined
+                    }
+                    body={channelSessionBody}
                   />
                 </div>
               {:else if openReplyRootId && replyScope}

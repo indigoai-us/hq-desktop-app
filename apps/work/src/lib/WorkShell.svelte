@@ -8,7 +8,7 @@
    *   session → direct hq-pro REST + MeshClient MQTT wakes → shallow cache.
    * Tauri selects its native adapter. Neither target reads ~/.hq here.
    */
-  import { onMount, type Component } from "svelte";
+  import { onMount, type Component, type ComponentProps } from "svelte";
   import {
     createSyncPlatformAdapter,
     resolveHostPlatform,
@@ -189,6 +189,8 @@
       channelId?: string | null;
       prompt: string;
     }) => Promise<{ title: string }>;
+    onstartlivesession?: ComponentProps<typeof DesktopApp>["onstartlivesession"];
+    channelSessionBody?: ComponentProps<typeof DesktopApp>["channelSessionBody"];
     /**
      * Backoff between failed company-roster fetches (tests shorten it). The
      * default is bounded; a roster that keeps failing stops retrying.
@@ -228,6 +230,8 @@
     rowExtrasError = false,
     rowExtras = null,
     onGenerateTask,
+    onstartlivesession,
+    channelSessionBody,
     rosterRetryDelaysMs,
   }: WorkShellProps = $props();
 
@@ -853,6 +857,8 @@
       {rowExtrasError}
       {rowExtras}
       {onGenerateTask}
+      {onstartlivesession}
+      {channelSessionBody}
     />
   {/key}
   {#if externalLinkError}

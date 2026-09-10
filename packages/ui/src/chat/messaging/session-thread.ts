@@ -40,6 +40,11 @@ export interface SessionThread {
   status: "starting" | "running" | "idle";
   startedAt: string;
   turns: SessionThreadTurn[];
+  /** Live agent-session id once the host has started it. */
+  liveSessionId?: string | null;
+  /** Work-mesh story id this session is bound to. */
+  taskId?: string | null;
+  taskCreated?: boolean;
 }
 
 export function excerptFromBody(body: string, max = 180): string {
@@ -87,5 +92,25 @@ export function createSessionThread(input: {
     status: "idle",
     startedAt,
     turns,
+    liveSessionId: null,
+    taskId: null,
+    taskCreated: false,
   };
+}
+
+export function contextPromptForThread(thread: SessionThread): string {
+  if (thread.origin.kind === "message") {
+    return [
+      `Continue this work in the current project channel.`,
+      ``,
+      `${thread.origin.author} wrote:`,
+      `> ${thread.origin.excerpt.replace(/\n/g, "\n> ")}`,
+      ``,
+      `Work that request. Stay in this session.`,
+    ].join("\n");
+  }
+  return [
+    `A session was started from #${thread.origin.channelTitle}.`,
+    `Work in this project. Ask if the next step is unclear.`,
+  ].join("\n");
 }

@@ -53,6 +53,8 @@
     setupSessionParam,
   } from './pages/sessions-route-param';
   import { liveSessionStore } from './lib/live-session-store.svelte';
+  import LiveChannelSessionPane from './components/LiveChannelSessionPane.svelte';
+  import type { SessionThread } from '@hq/ui';
   import { parseMeshProjectView } from '@hq/core';
   import {
     GENERATE_TASK_TIMEOUT_MS,
@@ -932,8 +934,34 @@
         <span>{signOutError}</span>
       </div>
     {/if}
+    {#snippet channelSessionBody(thread: SessionThread)}
+      <LiveChannelSessionPane
+        {thread}
+        starting={thread.status === 'starting' && !thread.liveSessionId}
+      />
+    {/snippet}
     {#key authGeneration}
       <WorkShell
+        {channelSessionBody}
+        onstartlivesession={async (input) => {
+          const sessionId = await liveSessionStore.startAndSend(
+            {
+              sessionId: '',
+              title: input.thread.title,
+              tool: readRememberedTool(),
+              cwd: '',
+              company: input.companySlug,
+              project: input.projectId,
+              model: null,
+              effort: null,
+              resume: null,
+              permissionMode: 'prompt',
+              hidden: false,
+            },
+            input.contextPrompt,
+          );
+          return { sessionId };
+        }}
         onGenerateTask={async (seed) => {
           const company = (companies ?? []).find((row) => row.cloudUid === seed.companyUid);
           const slug = company?.slug?.trim();
