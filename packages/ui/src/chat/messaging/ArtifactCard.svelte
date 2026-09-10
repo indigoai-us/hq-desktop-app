@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FileText from "phosphor-svelte/lib/FileText";
+  import Terminal from "phosphor-svelte/lib/Terminal";
   /**
    * ArtifactCard — the collapsed tile under a chat bubble for a long
    * structured artifact (`hq dm --details` / `--prompt`, delegation + handoff
@@ -78,28 +80,9 @@
   <span class="artifact-tile" aria-hidden="true">
     <span class="artifact-tile-mesh"></span>
     {#if kind === "prompt"}
-      <svg viewBox="0 0 16 16" width="16" height="16" focusable="false">
-        <path
-          d="M3.5 4.75l3.5 3.25-3.5 3.25M8.5 11.25h4"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <Terminal size={16} aria-hidden="true" />
     {:else}
-      <svg viewBox="0 0 16 16" width="16" height="16" focusable="false">
-        <path
-          d="M4 2h5.2L12.5 5.3V14H4z"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linejoin="round"
-        />
-        <path d="M9.2 2.2v3.3h3.3" fill="none" stroke="currentColor" stroke-width="1.3" />
-        <path d="M6 8.25h4.5M6 10.75h4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-      </svg>
+      <FileText size={16} aria-hidden="true" />
     {/if}
   </span>
   <span class="artifact-copy">

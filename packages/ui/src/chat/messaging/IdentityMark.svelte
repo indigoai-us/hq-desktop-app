@@ -1,4 +1,7 @@
 <script lang="ts">
+  import FileText from "phosphor-svelte/lib/FileText";
+  import Lock from "phosphor-svelte/lib/Lock";
+  import Sparkle from "phosphor-svelte/lib/Sparkle";
   import { agentAvatarFor } from "./agent-avatars";
   import { paintableAvatarSrc } from "../../avatars/csp-image-src.js";
 
@@ -77,42 +80,14 @@
     </span>
   {:else if kind === "channel"}
     {#if privateChannel}
-      <svg class="channel-lock" viewBox="0 0 16 16" fill="none">
-        <rect
-          x="3.5"
-          y="7"
-          width="9"
-          height="6.5"
-          rx="1.5"
-          stroke="currentColor"
-          stroke-width="1.4"
-        />
-        <path
-          d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linecap="round"
-        />
-      </svg>
+      <Lock class="channel-lock" size={16} weight="fill" aria-hidden="true" />
     {:else}
       <span class="channel-glyph">#</span>
     {/if}
   {:else if kind === "agent"}
-    <span class="agent-glyph">✦</span>
+    <span class="agent-glyph"><Sparkle size={12} weight="fill" aria-hidden="true" /></span>
   {:else if kind === "file"}
-    <svg viewBox="0 0 16 16" fill="none"
-      ><path
-        d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
-        stroke="currentColor"
-        stroke-width="1.35"
-        stroke-linejoin="round"
-      /><path
-        d="M9 1.5V5.5H13"
-        stroke="currentColor"
-        stroke-width="1.35"
-        stroke-linejoin="round"
-      /></svg
-    >
+    <FileText size={16} aria-hidden="true" />
   {:else}
     <span class="monogram">{initials(label)}</span>
   {/if}

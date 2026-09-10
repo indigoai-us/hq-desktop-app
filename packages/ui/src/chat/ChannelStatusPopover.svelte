@@ -1,4 +1,7 @@
 <script lang="ts">
+  import ArrowUpRight from "phosphor-svelte/lib/ArrowUpRight";
+  import Trash from "phosphor-svelte/lib/Trash";
+  import User from "phosphor-svelte/lib/User";
   /**
    * ChannelStatusPopover (US-005) — opened from the channel-header member pill.
    *
@@ -322,18 +325,7 @@
         <span class="k">Preview</span>
         <span class="preview-link">
           {shortPreview(model.project.previewUrl)}
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="11"
-            height="11"
-            fill="currentColor"
-            viewBox="0 0 256 256"
-            aria-hidden="true"
-          >
-            <path
-              d="M204,64V168a12,12,0,0,1-24,0V93L72.49,200.49a12,12,0,0,1-17-17L163,76H88a12,12,0,0,1,0-24H192A12,12,0,0,1,204,64Z"
-            ></path>
-          </svg>
+          <ArrowUpRight size={11} weight="fill" aria-hidden="true" />
         </span>
       </button>
     {:else}
@@ -485,17 +477,7 @@
               onclick={() => onopenprofile?.(a)}
             >
               <span class="m-ava ai" aria-hidden="true">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="11"
-                  height="11"
-                  fill="currentColor"
-                  viewBox="0 0 256 256"
-                >
-                  <path
-                    d="M230.92,212c-15.23-26.33-38.7-45.21-66.09-54.16a72,72,0,1,0-73.66,0C63.78,166.78,40.31,185.66,25.08,212a8,8,0,1,0,13.85,8c18.84-32.56,52.14-52,89.07-52s70.23,19.44,89.07,52a8,8,0,1,0,13.85-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z"
-                  ></path>
-                </svg>
+                <User size={11} weight="fill" />
                 {#if a.online}
                   <span
                     class="presence-dot"
@@ -511,17 +493,7 @@
             </button>
           {:else}
             <span class="m-ava ai" aria-hidden="true">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="11"
-                height="11"
-                fill="currentColor"
-                viewBox="0 0 256 256"
-              >
-                <path
-                  d="M230.92,212c-15.23-26.33-38.7-45.21-66.09-54.16a72,72,0,1,0-73.66,0C63.78,166.78,40.31,185.66,25.08,212a8,8,0,1,0,13.85,8c18.84-32.56,52.14-52,89.07-52s70.23,19.44,89.07,52a8,8,0,1,0,13.85-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z"
-                ></path>
-              </svg>
+              <User size={11} weight="fill" />
               {#if a.online}
                 <span
                   class="presence-dot"
@@ -551,18 +523,7 @@
         {#if deleting}
           …
         {:else}
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="13"
-            height="13"
-            fill="currentColor"
-            viewBox="0 0 256 256"
-            aria-hidden="true"
-          >
-            <path
-              d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z"
-            ></path>
-          </svg>
+          <Trash size={13} weight="fill" aria-hidden="true" />
         {/if}
       </button>
     </div>

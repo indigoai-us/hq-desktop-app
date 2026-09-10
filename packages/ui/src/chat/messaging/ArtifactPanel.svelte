@@ -1,4 +1,5 @@
 <script lang="ts">
+  import X from "phosphor-svelte/lib/X";
   /**
    * ArtifactPanel — artifact mode for the host's right side pane (the same
    * `.reply-column` slot the Thread panel uses; there is no second overlay
@@ -121,14 +122,7 @@
         onclick={onclose}
         aria-label="Close artifact"
       >
-        <svg viewBox="0 0 12 12" width="12" height="12" focusable="false" aria-hidden="true">
-          <path
-            d="M3 3l6 6M9 3l-6 6"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linecap="round"
-          />
-        </svg>
+        <X size={12} aria-hidden="true" />
       </button>
     </span>
   </header>

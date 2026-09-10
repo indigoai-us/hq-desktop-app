@@ -1,4 +1,6 @@
 <script lang="ts">
+  import PaperPlaneRight from "phosphor-svelte/lib/PaperPlaneRight";
+  import Paperclip from "phosphor-svelte/lib/Paperclip";
   /**
    * ReplyPanel — Slack-style reply column (port of hq-desktop-app ThreadPanel).
    * Chrome says “Thread” (Slack). Overlay vs third-column lives in the
@@ -1175,21 +1177,7 @@
                 input.value = "";
               }}
             />
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M13.2 8.2 8.05 13.35a3.25 3.25 0 0 1-4.6-4.6l5.9-5.9a2.15 2.15 0 1 1 3.04 3.04L6.5 11.7a1 1 0 1 1-1.42-1.42l5.15-5.15"
-                stroke="currentColor"
-                stroke-width="1.35"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <Paperclip size={15} aria-hidden="true" />
           </label>
         {/if}
         <button
@@ -1202,17 +1190,7 @@
           title="Send"
           onclick={() => void send(draft)}
         >
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 16 16"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z"
-            />
-          </svg>
+          <PaperPlaneRight size={13} weight="fill" aria-hidden="true" />
         </button>
       </div>
     </div>

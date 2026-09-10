@@ -1,4 +1,10 @@
 <script lang="ts">
+  import type { Component } from "svelte";
+  import ArrowUpRight from "phosphor-svelte/lib/ArrowUpRight";
+  import BookOpen from "phosphor-svelte/lib/BookOpen";
+  import CalendarBlank from "phosphor-svelte/lib/CalendarBlank";
+  import Compass from "phosphor-svelte/lib/Compass";
+  import FileText from "phosphor-svelte/lib/FileText";
   /**
    * SetupChannelIntro — the welcome experience at the top of the synthetic
    * #setup support channel in the live desktop shell: a wallpaper hero with
@@ -122,13 +128,12 @@
   }
 
   /** Inline stroke glyphs per resource kind (no emoji in product UI). */
-  const GLYPHS: Record<SetupResourceKind, string> = {
-    guide:
-      '<circle cx="8" cy="8" r="6.25"/><path d="M10.6 5.4 9.2 9.2 5.4 10.6 6.8 6.8z"/>',
-    book: '<path d="M2.75 3.25h4.1c.9 0 1.65.55 1.9 1.35.25-.8 1-1.35 1.9-1.35h4.1v9.5h-4.35c-.75 0-1.4.45-1.65 1.1-.25-.65-.9-1.1-1.65-1.1H2.75z"/><path d="M8.75 4.6v9.15"/>',
-    training:
-      '<rect x="2.25" y="3.25" width="11.5" height="10.5"/><path d="M2.25 6.75h11.5M5.25 1.75v3M10.75 1.75v3"/>',
-    docs: '<path d="M4 1.75h5.25L12.5 5v9.25H4z"/><path d="M9 1.75V5h3.5M6 8.25h4M6 10.75h4"/>',
+  /** One Phosphor glyph per resource kind. */
+  const GLYPHS: Record<SetupResourceKind, Component> = {
+    guide: Compass,
+    book: BookOpen,
+    training: CalendarBlank,
+    docs: FileText,
   };
 </script>
 
@@ -188,6 +193,7 @@
 
   <ul class="resources" aria-label="Learn HQ">
     {#each SETUP_RESOURCES as resource (resource.id)}
+      {@const ResourceGlyph = GLYPHS[resource.kind]}
       <li class="resource">
         <a
           class="resource-link"
@@ -197,39 +203,13 @@
           data-testid={`setup-resource-${resource.id}`}
           onclick={(event) => openResourceLink(event, resource.href)}
         >
-          <svg
-            class="resource-glyph"
-            viewBox="0 0 16 16"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            {@html GLYPHS[resource.kind]}
-          </svg>
+          <ResourceGlyph class="resource-glyph" size={16} aria-hidden="true" />
           <span class="resource-text">
             <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
             <span class="resource-title">{resource.title}</span>
             <span class="resource-desc">{resource.description}</span>
           </span>
-          <svg
-            class="resource-arrow"
-            viewBox="0 0 16 16"
-            width="14"
-            height="14"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" />
-          </svg>
+          <ArrowUpRight class="resource-arrow" size={14} aria-hidden="true" />
         </a>
       </li>
     {/each}

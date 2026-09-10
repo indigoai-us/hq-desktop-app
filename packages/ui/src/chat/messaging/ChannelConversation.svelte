@@ -1,4 +1,7 @@
 <script lang="ts">
+  import PaperPlaneRight from "phosphor-svelte/lib/PaperPlaneRight";
+  import Paperclip from "phosphor-svelte/lib/Paperclip";
+  import Smiley from "phosphor-svelte/lib/Smiley";
   /**
    * ChannelConversation — the real channel timeline + composer, ported faithfully
    * from the hq-sync desktop `Conversation.svelte` message-row + reply-composer
@@ -1539,21 +1542,7 @@
               input.value = "";
             }}
           />
-          <svg
-            width="15"
-            height="15"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M13.2 8.2 8.05 13.35a3.25 3.25 0 0 1-4.6-4.6l5.9-5.9a2.15 2.15 0 1 1 3.04 3.04L6.5 11.7a1 1 0 1 1-1.42-1.42l5.15-5.15"
-              stroke="currentColor"
-              stroke-width="1.35"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <Paperclip size={15} aria-hidden="true" />
         </label>
         <div class="dm-tool-emoji-wrap">
           <button
@@ -1566,29 +1555,7 @@
             aria-haspopup="menu"
             data-testid="composer-emoji"
           >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <circle
-                cx="8"
-                cy="8"
-                r="6.25"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <circle cx="5.75" cy="6.75" r="0.85" fill="currentColor" />
-              <circle cx="10.25" cy="6.75" r="0.85" fill="currentColor" />
-              <path
-                d="M5.5 9.75c.7 1 1.55 1.5 2.5 1.5s1.8-.5 2.5-1.5"
-                stroke="currentColor"
-                stroke-width="1.3"
-                stroke-linecap="round"
-              />
-            </svg>
+            <Smiley size={15} aria-hidden="true" />
           </button>
           {#if composerEmojiOpen}
             <EmojiPicker
@@ -1626,17 +1593,7 @@
         title="Send"
         data-testid="composer-send"
       >
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 16 16"
-          fill="currentColor"
-          aria-hidden="true"
-        >
-          <path
-            d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z"
-          />
-        </svg>
+        <PaperPlaneRight size={13} weight="fill" aria-hidden="true" />
       </button>
     </div>
   </div>

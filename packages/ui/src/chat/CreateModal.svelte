@@ -1,4 +1,7 @@
 <script lang="ts">
+  import Buildings from "phosphor-svelte/lib/Buildings";
+  import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
+  import Robot from "phosphor-svelte/lib/Robot";
   /**
    * The unified create modal — one search-first dialog behind the sidebar "+".
    *
@@ -1416,21 +1419,7 @@
     <div class="create-head" inert={confirmSubject !== null}>
       {#if step === "find"}
         <span class="create-search-ic" aria-hidden="true">
-          <svg viewBox="0 0 16 16" fill="none">
-            <circle
-              cx="7"
-              cy="7"
-              r="4.5"
-              stroke="currentColor"
-              stroke-width="1.25"
-            />
-            <path
-              d="m10.5 10.5 3 3"
-              stroke="currentColor"
-              stroke-width="1.25"
-              stroke-linecap="round"
-            />
-          </svg>
+          <MagnifyingGlass size={16} aria-hidden="true" />
         </span>
         <h2 id="create-modal-title" class="create-sr">
           New message or channel
@@ -1581,14 +1570,7 @@
               onclick={newCompany}
             >
               <span class="create-entry-ic" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M3 13.5V4.5l5-2 5 2v9M6 7h1M9 7h1M6 9.5h1M9 9.5h1M6.5 13.5v-2h3v2"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                    stroke-linejoin="round"
-                  />
-                </svg>
+                <Buildings size={16} aria-hidden="true" />
               </span>
               <span class="create-entry-label">New company</span>
               <span class="create-entry-hint">Opens the setup step in #setup</span>
@@ -1609,23 +1591,7 @@
               onclick={newAgent}
             >
               <span class="create-entry-ic" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <rect
-                    x="3"
-                    y="5"
-                    width="10"
-                    height="8"
-                    rx="1.5"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                  />
-                  <path
-                    d="M8 2.5V5M6 8.5h.5M9.5 8.5h.5M6 11h4"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                    stroke-linecap="round"
-                  />
-                </svg>
+                <Robot size={16} aria-hidden="true" />
               </span>
               <span class="create-entry-label">New agent</span>
               <span class="create-entry-hint">

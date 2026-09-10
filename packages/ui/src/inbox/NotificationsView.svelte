@@ -1,4 +1,10 @@
 <script lang="ts">
+  import At from "phosphor-svelte/lib/At";
+  import ChatCircle from "phosphor-svelte/lib/ChatCircle";
+  import Eye from "phosphor-svelte/lib/Eye";
+  import FileText from "phosphor-svelte/lib/FileText";
+  import Flag from "phosphor-svelte/lib/Flag";
+  import Robot from "phosphor-svelte/lib/Robot";
   /**
    * Unified Notifications feed (US-012).
    *
@@ -363,113 +369,19 @@
                       data-icon={row.typeIcon}
                       aria-hidden="true"
                     >
-                      <svg
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        width="14"
-                        height="14"
-                      >
-                        {#if row.typeIcon === "mention"}
-                          <circle
-                            cx="8"
-                            cy="8"
-                            r="5.25"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                          />
-                          <path
-                            d="M5.5 8.5c0 1.5 1 2.5 2.5 2.5s2.5-1 2.5-2.5"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linecap="round"
-                          />
-                          <path
-                            d="M10.5 5.5v3.5"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linecap="round"
-                          />
+                      {#if row.typeIcon === "mention"}
+                          <At size={14} aria-hidden="true" />
                         {:else if row.typeIcon === "agent"}
-                          <rect
-                            x="3"
-                            y="4"
-                            width="10"
-                            height="8"
-                            rx="1.5"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                          />
-                          <circle
-                            cx="6.25"
-                            cy="8"
-                            r="0.9"
-                            fill="currentColor"
-                          />
-                          <circle
-                            cx="9.75"
-                            cy="8"
-                            r="0.9"
-                            fill="currentColor"
-                          />
+                          <Robot size={14} aria-hidden="true" />
                         {:else if row.typeIcon === "review"}
-                          <circle
-                            cx="8"
-                            cy="8"
-                            r="5.25"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                          />
-                          <path
-                            d="M5.5 8.2l1.7 1.7 3.3-3.5"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                          />
+                          <Eye size={14} aria-hidden="true" />
                         {:else if row.typeIcon === "file"}
-                          <path
-                            d="M5 2.75h4.2L12 5.55V13.25H5V2.75Z"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linejoin="round"
-                          />
-                          <path
-                            d="M9.1 2.9v2.8H12"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linejoin="round"
-                          />
+                          <FileText size={14} aria-hidden="true" />
                         {:else if row.typeIcon === "dm"}
-                          <path
-                            d="M2.75 4.25h10.5v7.5H6.5L3.5 13.5V4.25Z"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linejoin="round"
-                          />
-                        {:else if row.typeIcon === "flag"}
-                          <path
-                            d="M4.25 2.75v10.5"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linecap="round"
-                          />
-                          <path
-                            d="M4.25 3.25h7L9.5 6.25l1.75 3H4.25"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linejoin="round"
-                          />
+                          <ChatCircle size={14} aria-hidden="true" />
                         {:else}
-                          <circle
-                            cx="8"
-                            cy="8"
-                            r="5.25"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                          />
-                          <circle cx="8" cy="8" r="1.1" fill="currentColor" />
+                          <Flag size={14} aria-hidden="true" />
                         {/if}
-                      </svg>
                     </span>
                     {#if row.timestampLabel}
                       <time class="notif-ts" datetime={row.createdAt}>

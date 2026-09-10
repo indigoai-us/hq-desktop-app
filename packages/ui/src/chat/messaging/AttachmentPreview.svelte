@@ -1,4 +1,5 @@
 <script lang="ts">
+  import DownloadSimple from "phosphor-svelte/lib/DownloadSimple";
   /**
    * Typed attachment preview + download. Shared by the message strip tray
    * and the right-side attachments browser.
@@ -193,12 +194,7 @@
         void download();
       }}
     >
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-        <path
-          fill="currentColor"
-          d="M8 1.5a.75.75 0 0 1 .75.75v6.19l1.72-1.72a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 1.06-1.06l1.72 1.72V2.25A.75.75 0 0 1 8 1.5Zm-4.5 10a.75.75 0 0 0-1.5 0V13A1.5 1.5 0 0 0 3.5 14.5h9A1.5 1.5 0 0 0 14 13v-1.5a.75.75 0 0 0-1.5 0V13h-9v-1.5Z"
-        />
-      </svg>
+      <DownloadSimple size={14} aria-hidden="true" />
     </button>
     {#if kind === "image" && (src || (!error && !thumbnailFailed && thumbnailUrl))}
       <img
