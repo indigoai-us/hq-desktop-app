@@ -109,7 +109,7 @@ use windows::Win32::System::Threading::{
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::daemon::{
-    build_watch_runner_args, event_push_eligible, is_autostart_enabled, is_instant_sync_enabled,
+    build_watch_runner_args, is_autostart_enabled, is_instant_sync_enabled,
     is_pid_alive, is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
     resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push,
     should_force_clear_stalled_start, should_respawn_daemon, should_respawn_daemon_gated,

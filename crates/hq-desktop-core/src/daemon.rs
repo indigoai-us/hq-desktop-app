@@ -117,17 +117,6 @@ pub fn should_event_push(runner_supports_event_push: bool, instant_sync: bool) -
     runner_supports_event_push && instant_sync
 }
 
-/// Compatibility export for app shells built against the old desktop API.
-///
-/// The former implementation returned `true` for every signed-in user. That
-/// universal enrollment decision is intentionally gone: callers that have not
-/// yet moved to the runner-capability seam receive `false` and cannot select
-/// any V2 path. Server inventory and leases remain the only enrollment
-/// authority.
-pub fn event_push_eligible() -> bool {
-    false
-}
-
 pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     let target = match crate::runner_target::local_runner_override() {
         Some(script) => crate::runner_target::RunnerSpawnTarget::Local { script },
@@ -2925,11 +2914,6 @@ mod tests {
         assert!(!should_event_push(true, false));
         assert!(!should_event_push(false, true));
         assert!(!should_event_push(false, false));
-    }
-
-    #[test]
-    fn test_legacy_event_push_eligibility_export_fails_closed() {
-        assert!(!event_push_eligible());
     }
 
     #[test]

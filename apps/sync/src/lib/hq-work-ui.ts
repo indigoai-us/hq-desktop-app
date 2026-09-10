@@ -8,11 +8,7 @@ export {
   type SyncInvokeFn,
   type SyncPlatformAdapterConfig,
 } from '@hq/platform';
-export {
-  bootDesktopAltWindow,
-  resolveDesktopAltShell,
-  type DesktopAltShell,
-} from '../desktop-alt/boot';
+export { bootDesktopAltWindow } from '../desktop-alt/boot';
 export {
   hqworkQueryToken,
   isValidHqWorkDeepLink,

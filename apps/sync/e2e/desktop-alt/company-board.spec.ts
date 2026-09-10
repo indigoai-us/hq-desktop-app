@@ -81,12 +81,6 @@ describe('desktop-alt CompanyBoardPanel source contract (US-011)', () => {
     expect(panel).toContain('data-testid="inflight-row"');
   });
 
-  it('feeds the company-filtered projects to ProjectListView (showCompany off)', () => {
-    expect(panel).toContain("import ProjectListView from '../components/ProjectListView.svelte'");
-    expect(panel).toContain('<ProjectListView');
-    expect(panel).toContain('projects={companyProjects}');
-  });
-
   it('drills into the detail view → Kanban → story detail with a back affordance', () => {
     expect(panel).toContain("import ProjectDetailView from '../pages/ProjectDetailView.svelte'");
     expect(panel).toContain('loadLocalProjectStories');

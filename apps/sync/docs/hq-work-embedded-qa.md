@@ -67,11 +67,6 @@ proxy. `HqWorkWorkShell` must pass both hops.
 | `workMesh.readLocalSnapshot` | HQ Work *host* `App.svelte` reads the on-disk mesh overlay. Embedded Sync uses `createHqWorkSidebarApi` over REST (`list_channels` / directory). DesktopApp does not call this. | N/A (`not-yet-mapped`) |
 | `shell.pickFile` | Marketplace creator avatar (`ProfilePanel`) only. Not in the dogfood list. | N/A (`not-yet-mapped`) |
 
-## Flag
-
-`hqWorkHandoffEnabled(undefined \| null \| false)` is false. Do not change
-that in this story.
-
 ## Related
 
 - Adapter: [`sync-adapter.ts`](../../../packages/platform/src/tauri/sync-adapter.ts)
