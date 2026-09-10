@@ -15,6 +15,24 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import type { SetupRunApi, SetupRunEvent, SetupRunSnapshot } from "../chat/setup-run.js";
+import type { Workspace } from "../chat/workspaces.js";
+
+const ACME: Workspace = {
+  slug: "acme",
+  displayName: "Acme",
+  kind: "company",
+  state: "cloud-only",
+  cloudUid: "cmp_acme",
+  bucketName: null,
+  hasLocalFolder: false,
+  localPath: null,
+  membershipStatus: "active",
+  role: "owner",
+  lastSyncedAt: null,
+  brokenReason: null,
+  invitedBy: null,
+  invitedAt: null,
+};
 
 function adapter(): PlatformAdapter {
   return {
@@ -78,12 +96,17 @@ async function settle(times = 6): Promise<void> {
   }
 }
 
-async function mountApp(setupRun: SetupRunApi, setupParam = vi.fn(() => "new?draft=x&prompt=%2Fsetup")) {
+async function mountApp(
+  setupRun: SetupRunApi,
+  setupParam = vi.fn(() => "new?draft=x&prompt=%2Fsetup"),
+  extra: { companies?: Workspace[] } = {},
+) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
     target: host,
     props: {
+      ...extra,
       adapter: adapter(),
       sidebarApi: createFixtureChatSidebarApi(),
       notificationsApi: createEmptyNotificationsApi(),
@@ -270,20 +293,54 @@ describe("DesktopApp native setup run wiring", () => {
 
   it("finishing offers Continue in HQ Sessions, Claude Code, and Codex under the last message", async () => {
     const api = fakeSetupRun();
+    await mountApp(api, undefined, { companies: [ACME] });
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await settle();
+    // Mid-run: the composer talks to the agent and the hero carries no first moves yet.
+    const composer = host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]');
+    expect(composer?.disabled).toBe(false);
+    expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeNull();
+    api.emit({ kind: "assistantMessage", text: "You're all set — here's your welcome page (private to you): https://x.example/w" });
+    api.emit({ kind: "turnDone", status: "success" }, "idle");
+    await settle();
+    // One finale block under the last message holds every next step.
+    const finish = host.querySelector('[data-testid="setup-agent-finish"]');
+    expect(finish).toBeTruthy();
+    expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-agent-finish"]')).toBe(finish);
+    expect(finish!.textContent).toContain("You're set up");
+    expect(finish!.querySelector('[data-testid="setup-agent-open-sessions"]')?.textContent?.trim()).toBe("Continue in HQ Sessions");
+    expect(finish!.querySelector('[data-testid="setup-agent-open-claude"]')?.textContent?.trim()).toBe("Continue in Claude Code");
+    expect(finish!.querySelector('[data-testid="setup-agent-open-codex"]')?.textContent?.trim()).toBe("Continue in Codex");
+    expect(finish!.querySelector('[data-testid="setup-run-again"]')).toBeTruthy();
+    expect(finish!.querySelector('[data-testid="setup-run-details"]')).toBeTruthy();
+    expect(host.querySelectorAll('[data-testid="setup-run-again"]')).toHaveLength(1);
+    expect(host.querySelector('[data-testid="setup-run-done-title"]')).toBeNull();
+    expect(finish!.querySelectorAll('[data-testid^="setup-finale-resource-"]').length).toBeGreaterThan(0);
+    // The composer rests: setup is over, the finale is the way forward.
+    expect(composer?.disabled).toBe(true);
+    expect(composer?.getAttribute("placeholder")).toBe("Setup is complete — pick a next step above.");
+    expect(host.querySelector('[data-testid="composer-send"]')?.getAttribute("aria-disabled")).toBe("true");
+    // First moves live in the finale now, not in the hero.
+    expect(finish!.querySelector('[data-testid="first-moves"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="setup-channel-intro"] [data-testid="first-moves"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="first-moves"]')).toHaveLength(1);
+    // Open in Sessions starts a fresh session with /startwork ready, not the setup transcript.
+    finish!.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-sessions"]')!.click();
+    await settle();
+    expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("new?draft=y");
+  });
+
+  it("the finale's Open setup chat opens the finished session on the Sessions page by id", async () => {
+    const api = fakeSetupRun();
     await mountApp(api);
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
     await settle();
     api.emit({ kind: "assistantMessage", text: "You're all set — here's your welcome page (private to you): https://x.example/w" });
     api.emit({ kind: "turnDone", status: "success" }, "idle");
     await settle();
-    const finish = host.querySelector('[data-testid="setup-agent-finish"]');
-    expect(finish).toBeTruthy();
-    expect(host.querySelector('[data-testid="setup-agent-open-claude"]')).toBeTruthy();
-    expect(host.querySelector('[data-testid="setup-agent-open-codex"]')).toBeTruthy();
-    // Open in Sessions starts a fresh session with /startwork ready, not the setup transcript.
-    host.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-sessions"]')!.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-agent-finish"] [data-testid="setup-run-details"]')!.click();
     await settle();
-    expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("new?draft=y");
+    expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("sess-42");
   });
 
   it("Open setup chat opens the session on the Sessions page by id", async () => {
@@ -304,7 +361,8 @@ describe("DesktopApp native setup run wiring", () => {
     api.emit({ kind: "assistantMessage", text: "You're all set — here's your welcome page (private to you): https://x.example/w" });
     api.emit({ kind: "turnDone", status: "success" }, "idle");
     await settle();
-    expect(host.querySelector('[data-testid="setup-run-done-title"]')).toBeTruthy();
+    // The finale (not the run card's done face) marks the finish under the chat.
+    expect(host.querySelector('[data-testid="setup-agent-finish"] [data-testid="setup-finale-title"]')).toBeTruthy();
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
   });
 

@@ -46,7 +46,7 @@
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import SetupRunCard from "../chat/SetupRunCard.svelte";
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
-  import SetupButton from "../chat/SetupButton.svelte";
+  import SetupFinale from "../chat/SetupFinale.svelte";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -1071,9 +1071,26 @@
     const error = key === "claude" ? await actions.launchClaude() : await actions.launchCodex();
     if (error) setupLaunchError = error;
   }
+  /** The run has finished (marker or the person's own "I'm all set"): the finale replaces the prompt. */
+  const setupAgentDone = $derived(
+    inSetupChannelWithAgent && (setupAgent.mode === "done" || Boolean(setupAgent.state?.done)),
+  );
+  /** Once setup is done the composer rests; the finale carries every next step. */
+  const composerDisabled = $derived(setupAgentDone);
+  const SETUP_DONE_PLACEHOLDER = "Setup is complete — pick a next step above.";
+  /** First moves from the finale: coding-tools is the finish launch, recorded as done; the rest are the shell's. */
+  async function finaleFirstMove(id: FirstMoveId, key: "claude" | "codex" = "claude"): Promise<string | null | void> {
+    if (id !== "coding-tools") return performFirstMove(id);
+    await launchSetupIn(key);
+    if (setupLaunchError) return setupLaunchError;
+    recordFirstMoveDone("coding-tools");
+    return null;
+  }
 
   const composerPlaceholder = $derived(
-    inSetupChannelWithAgent && setupAgent.listening
+    setupAgentDone
+      ? SETUP_DONE_PLACEHOLDER
+      : inSetupChannelWithAgent && setupAgent.listening
       ? setupAgent.state?.question?.kind === "choice"
         ? "Type your answer…"
         : "Reply to Setup Agent…"
@@ -1082,7 +1099,7 @@
         : composerPlaceholderFor(selectedRow, headerTitle),
   );
   const composerLocked = $derived(
-    isAgentChannel && provisioning.state === "pending",
+    composerDisabled || (isAgentChannel && provisioning.state === "pending"),
   );
   const agentChannelUid = $derived(
     selectedRow?.members?.find((m) => m.personUid.startsWith("agt_"))
@@ -4929,10 +4946,33 @@
                        flex-row column floating top-right. -->
                   {#if inSetupChannelWithAgent}
                     {@const agentState = setupAgent.state}
-                    {@const agentDone = setupAgent.mode === "done" || Boolean(agentState?.done)}
                     {@const stopFailure = setupAgent.failure}
                     <div class="setup-agent-prompt" data-testid="setup-agent-prompt">
-                      {#if stopFailure && setupAgent.api && setupAgent.providers}
+                      {#if setupAgentDone}
+                        <!-- Finished: one calm block with every next step. -->
+                        <SetupFinale
+                          onsessions={extraPages?.sessions
+                            ? () =>
+                                openExtraPage(
+                                  "sessions",
+                                  extraPages!.sessions.startworkAction?.param(startworkCompany) ??
+                                    extraPages!.sessions.createAction?.param() ??
+                                    setupAgent.sessionId,
+                                )
+                            : undefined}
+                          onclaude={() => void launchSetupIn("claude")}
+                          oncodex={() => void launchSetupIn("codex")}
+                          launchError={setupLaunchError}
+                          {onopenurl}
+                          onshowdetails={extraPages?.sessions && setupAgent.sessionId
+                            ? () => openExtraPage("sessions", setupAgent.sessionId!)
+                            : undefined}
+                          onrunagain={() => void setupAgent.runAgain()}
+                          {firstMoves}
+                          onmove={(id) => finaleFirstMove(id)}
+                          onmovecodex={() => finaleFirstMove("coding-tools", "codex")}
+                        />
+                      {:else if stopFailure && setupAgent.api && setupAgent.providers}
                         <!-- The run stopped: say why, and offer the agents right
                              here — sign in to one, or run again with one that is. -->
                         <SetupConnectStep
@@ -4962,34 +5002,6 @@
                         idle={setupAgent.snapshot?.phase === "idle"}
                         onstoresecret={setupAgent.canStoreSecrets ? (card, value) => setupAgent.storeSecret(card, value) : undefined}
                       />
-                      {/if}
-                      {#if agentDone}
-                        <div class="setup-agent-finish" data-testid="setup-agent-finish" role="group" aria-label="Keep going">
-                          {#if extraPages?.sessions}
-                            <SetupButton
-                              variant="primary"
-                              data-testid="setup-agent-open-sessions"
-                              onclick={() =>
-                                openExtraPage(
-                                  "sessions",
-                                  extraPages!.sessions.startworkAction?.param(startworkCompany) ??
-                                    extraPages!.sessions.createAction?.param() ??
-                                    setupAgent.sessionId,
-                                )}
-                            >
-                              Continue in HQ Sessions
-                            </SetupButton>
-                          {/if}
-                          <SetupButton variant="primary" data-testid="setup-agent-open-claude" onclick={() => void launchSetupIn("claude")}>
-                            Continue in Claude Code
-                          </SetupButton>
-                          <SetupButton variant="primary" data-testid="setup-agent-open-codex" onclick={() => void launchSetupIn("codex")}>
-                            Continue in Codex
-                          </SetupButton>
-                        </div>
-                        {#if setupLaunchError}
-                          <p class="setup-agent-error" role="alert">{setupLaunchError}</p>
-                        {/if}
                       {/if}
                     </div>
                   {/if}
@@ -5041,7 +5053,7 @@
                     {rosterStatus}
                     {onretryroster}
                     onsetupstarted={recordWelcomeSetupRun}
-                    {firstMoves}
+                    firstMoves={setupAgentDone ? [] : firstMoves}
                     onfirstmove={performFirstMove}
                     onfirstmovedone={recordFirstMoveDone}
                     agent={setupAgent}
@@ -5780,17 +5792,5 @@
   }
   .setup-agent-prompt:empty {
     display: none;
-  }
-  /* The same SetupButtons as Run Setup on the hero, in one action row. */
-  .setup-agent-finish {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-  }
-  .setup-agent-error {
-    margin: 0;
-    font-size: 12px;
-    color: var(--danger, #d9534f);
   }
 </style>
