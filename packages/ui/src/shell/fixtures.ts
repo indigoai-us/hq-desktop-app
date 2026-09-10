@@ -260,7 +260,7 @@ const TIMELINES: Record<string, ConversationMessageWire[]> = {
       replyAuthors: [
         { personUid: "agt_fleet", displayName: "Fleet Agent", agent: true },
         { personUid: "prs_ada", displayName: "Ada Lovelace" },
-        { displayName: "Stefan" },
+        { personUid: "prs_stefan", displayName: "Stefan" },
       ],
       lastReplyAt: new Date(now - 38 * 60_000).toISOString(),
     },
