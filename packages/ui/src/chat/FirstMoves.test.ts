@@ -28,7 +28,7 @@ describe("FirstMoves", () => {
     const moves = firstMovesFor({ hasCompany: true, hasProjectChannel: false, done: new Set() });
     const el = render({ moves, onmove: vi.fn() });
     expect(el.querySelectorAll('[data-testid^="first-move-"][data-state]')).toHaveLength(4);
-    expect(el.querySelectorAll(".btn.primary")).toHaveLength(1);
+    expect(el.querySelectorAll('[data-variant="primary"]')).toHaveLength(1);
     expect(el.querySelector('[data-testid="first-move-action-project-channel"]')?.textContent).toContain(
       "New project channel",
     );

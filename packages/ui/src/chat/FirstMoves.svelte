@@ -11,6 +11,7 @@
     type FirstMove,
     type FirstMoveId,
   } from "./first-moves";
+  import SetupButton from "./SetupButton.svelte";
 
   interface Props {
     moves: readonly FirstMove[];
@@ -71,27 +72,24 @@
           {#if move.state === "current"}
             <p class="body">{move.body}</p>
             <div class="actions">
-              <button
-                type="button"
-                class="btn primary"
+              <SetupButton
+                variant="primary"
                 data-testid={`first-move-action-${move.id}`}
                 disabled={busy !== null}
                 aria-busy={busy === move.id}
                 onclick={() => void run(move.id, () => onmove(move.id))}
               >
                 {busy === move.id ? "Opening…" : FIRST_MOVES_COPY[move.id].cta}
-              </button>
+              </SetupButton>
               {#if move.id === "coding-tools" && oncodex}
-                <button
-                  type="button"
-                  class="btn"
+                <SetupButton
                   data-testid="first-move-action-codex"
                   disabled={busy !== null}
                   aria-busy={busy === "codex"}
                   onclick={() => void run("coding-tools", () => oncodex!(), "codex")}
                 >
                   {busy === "codex" ? "Opening…" : "Open in Codex"}
-                </button>
+                </SetupButton>
               {/if}
             </div>
             {#if errors[move.id]}
@@ -190,31 +188,8 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+    align-items: center;
     margin: 12px 0 0 28px;
-  }
-  .btn {
-    font: inherit;
-    font-size: 13px;
-    min-height: 34px;
-    padding: 6px 14px;
-    border-radius: 8px;
-    border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
-    background: transparent;
-    color: var(--text-1, inherit);
-    cursor: pointer;
-  }
-  .btn.primary {
-    background: var(--text-1, #111);
-    color: var(--bg, #fff);
-    border-color: transparent;
-  }
-  .btn:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .btn:focus-visible {
-    outline: 2px solid var(--text-2, currentColor);
-    outline-offset: 2px;
   }
   .error {
     margin: 8px 0 0 28px;

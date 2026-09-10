@@ -9,9 +9,10 @@
    * view. Presentational only: the state comes from `interpretSetupRun`, the
    * answers go back up through callbacks (the intro owns the host API).
    *
-   * Lives on the wallpaper, so colours are image-relative (white on dark)
-   * exactly like the hero's `.launch-btn` / `.quiet-btn`.
+   * Every button is a `SetupButton`; the `steps` face (on the wallpaper)
+   * sets the white-on-art button colours, the others use shell tokens.
    */
+  import SetupButton from "./SetupButton.svelte";
   import {
     SETUP_FAILURE_COPY,
     SETUP_RUN_DONE,
@@ -297,15 +298,15 @@
               bind:value={secretValue}
               disabled={busy || secretBusy}
             />
-            <button
+            <SetupButton
+              variant="primary"
               type="submit"
-              class="launch-btn primary"
               data-testid="setup-run-secret-store"
               disabled={busy || secretBusy || secretValue.trim().length === 0}
               aria-busy={secretBusy}
             >
               {secretBusy ? "Storing…" : "Store securely"}
-            </button>
+            </SetupButton>
           </div>
           <p class="secret-hint">
             {card.hint || "Stored in your HQ vault on save. It never goes into the chat."}
@@ -316,9 +317,9 @@
           {#if spareOptions.length > 0}
             <div class="choices" role="group" aria-label="Other choices">
               {#each spareOptions as option (option.label)}
-                <button type="button" class="quiet-btn" data-testid="setup-run-choice" disabled={busy || secretBusy} onclick={() => choose(option.label)}>
+                <SetupButton variant="quiet" data-testid="setup-run-choice" disabled={busy || secretBusy} onclick={() => choose(option.label)}>
                   {option.label}
-                </button>
+                </SetupButton>
               {/each}
             </div>
           {/if}
@@ -357,20 +358,19 @@
         </div>
         <div class="choices" role="group" aria-label="Your answer">
           {#if question.multiSelect}
-            <button
-              type="button"
-              class="launch-btn primary"
+            <SetupButton
+              variant="primary"
               data-testid="setup-run-send-choices"
               disabled={busy || picked.length === 0}
               onclick={sendPicked}
             >
               {picked.length > 1 ? `Connect ${picked.length} apps` : "Connect"}
-            </button>
+            </SetupButton>
           {/if}
           {#each spareOptions as option (option.label)}
-            <button type="button" class="quiet-btn" data-testid="setup-run-choice" disabled={busy} onclick={() => choose(option.label)}>
+            <SetupButton variant="quiet" data-testid="setup-run-choice" disabled={busy} onclick={() => choose(option.label)}>
               {option.label}
-            </button>
+            </SetupButton>
           {/each}
         </div>
       {:else if question.kind === "choice" && question.options.length > 0}
@@ -381,13 +381,12 @@
           aria-label="Your answer"
         >
           {#each question.options as option (option.label)}
-            <button
-              type="button"
-              class="launch-btn choice"
-              class:choice--picked={picked.includes(option.label)}
+            <SetupButton
+              variant="primary"
+              class="choice"
               data-testid="setup-run-choice"
               title={variant === "prompt" ? (option.description ?? undefined) : undefined}
-              aria-pressed={question.multiSelect ? picked.includes(option.label) : undefined}
+              pressed={question.multiSelect ? picked.includes(option.label) : undefined}
               disabled={busy}
               onclick={() => choose(option.label)}
             >
@@ -395,19 +394,18 @@
               {#if option.description && variant !== "prompt"}
                 <span class="choice-desc">{option.description}</span>
               {/if}
-            </button>
+            </SetupButton>
           {/each}
         </div>
         {#if question.multiSelect}
-          <button
-            type="button"
-            class="launch-btn primary"
+          <SetupButton
+            variant="primary"
             data-testid="setup-run-send-choices"
             disabled={busy || picked.length === 0}
             onclick={sendPicked}
           >
             Send
-          </button>
+          </SetupButton>
         {/if}
         {#if variant !== "prompt"}
         <form class="answer answer--other" onsubmit={sendText}>
@@ -421,45 +419,40 @@
             bind:value={answerText}
             disabled={busy}
           />
-          <button
+          <SetupButton
             type="submit"
-            class="launch-btn"
             data-testid="setup-run-send"
             disabled={busy || answerText.trim().length === 0}
           >
             Send
-          </button>
+          </SetupButton>
         </form>
         {/if}
       {:else if question.kind === "permission"}
         <div class="choices" role="group" aria-label="Your answer">
-          <button
-            type="button"
-            class="launch-btn primary"
+          <SetupButton
+            variant="primary"
             data-testid="setup-run-allow-session"
             disabled={busy}
             onclick={() => onpermission?.(question.requestId, "allowSession")}
           >
             {SETUP_RUN_PERMISSION.allowSession}
-          </button>
-          <button
-            type="button"
-            class="launch-btn"
+          </SetupButton>
+          <SetupButton
             data-testid="setup-run-allow-once"
             disabled={busy}
             onclick={() => onpermission?.(question.requestId, "allowOnce")}
           >
             {SETUP_RUN_PERMISSION.allowOnce}
-          </button>
-          <button
-            type="button"
-            class="quiet-btn"
+          </SetupButton>
+          <SetupButton
+            variant="quiet"
             data-testid="setup-run-deny"
             disabled={busy}
             onclick={() => onpermission?.(question.requestId, "deny")}
           >
             {SETUP_RUN_PERMISSION.deny}
-          </button>
+          </SetupButton>
         </div>
       {:else if variant === "prompt"}
         <!-- A plain question: the composer under the messages is the reply box. -->
@@ -475,14 +468,14 @@
             bind:value={answerText}
             disabled={busy}
           />
-          <button
+          <SetupButton
+            variant="primary"
             type="submit"
-            class="launch-btn primary"
             data-testid="setup-run-send"
             disabled={busy || answerText.trim().length === 0}
           >
             Send
-          </button>
+          </SetupButton>
         </form>
       {/if}
     </div>
@@ -494,48 +487,45 @@
 
   <div class="run-actions">
     {#if mode === "resume"}
-      <button
-        type="button"
-        class="launch-btn primary"
+      <SetupButton
+        variant="primary"
         data-testid="setup-run-continue"
         disabled={busy}
         aria-busy={busy}
         onclick={() => oncontinue?.()}
       >
         {busy ? "Reconnecting…" : setupRunContinueLabel(resumeStep)}
-      </button>
+      </SetupButton>
     {:else if stopped}
-      <button
-        type="button"
-        class="launch-btn primary"
+      <SetupButton
+        variant="primary"
         data-testid="setup-run-again"
         disabled={busy}
         onclick={() => onrunagain?.()}
       >
         Run Setup
-      </button>
+      </SetupButton>
     {:else if done && onrunagain}
-      <button
-        type="button"
-        class="quiet-btn"
+      <SetupButton
+        variant="quiet"
         data-testid="setup-run-again"
         disabled={busy}
         onclick={() => onrunagain?.()}
       >
         Run again
-      </button>
+      </SetupButton>
     {/if}
     {#if onshowdetails && mode !== "resume"}
-      <button type="button" class="quiet-btn" data-testid="setup-run-details" onclick={() => onshowdetails?.()}>
+      <SetupButton variant="quiet" data-testid="setup-run-details" onclick={() => onshowdetails?.()}>
         Open setup chat
-      </button>
+      </SetupButton>
     {/if}
   </div>
   {/if}
   {#if variant === "steps" && onshowdetails && mode !== "resume"}
-    <button type="button" class="quiet-btn" data-testid="setup-run-details" onclick={() => onshowdetails?.()}>
+    <SetupButton variant="quiet" data-testid="setup-run-details" onclick={() => onshowdetails?.()}>
       Open setup chat
-    </button>
+    </SetupButton>
   {/if}
 </div>
 
@@ -545,8 +535,13 @@
   .run-card {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
     color: var(--text-1, inherit);
+  }
+  /* Column parents: a lone button keeps its own width. */
+  .run-card > :global(.setup-btn),
+  .question > :global(.setup-btn) {
+    align-self: flex-start;
   }
 
   /* Under the messages: no box, no repeated question — just small chips,
@@ -562,12 +557,7 @@
     font-weight: 600;
     color: var(--text-2, inherit);
   }
-  .run-card[data-setup-run-variant="prompt"] .choices {
-    gap: 6px;
-  }
-  /* Same shape and weight as the Connect / Continue buttons: readable, not a pill. */
-  .run-card[data-setup-run-variant="prompt"] .choice,
-  .run-card[data-setup-run-variant="prompt"] .launch-btn,
+  /* Same shape and weight as the setup buttons: readable, not a pill. */
   .run-card[data-setup-run-variant="prompt"] .app {
     min-height: 30px;
     padding: 0 12px;
@@ -575,22 +565,6 @@
     font-size: 13px;
     font-weight: 500;
     max-width: none;
-  }
-  .run-card[data-setup-run-variant="prompt"] .choice {
-    border: 1px solid var(--text-1, #111);
-    background: var(--text-1, #111);
-    color: var(--bg, #fff);
-  }
-  .run-card[data-setup-run-variant="prompt"] .choice:hover {
-    opacity: 0.9;
-  }
-  .run-card[data-setup-run-variant="prompt"] .choice.choice--picked {
-    outline: 2px solid var(--accent, #6b5bff);
-    outline-offset: 1px;
-  }
-  .run-card[data-setup-run-variant="prompt"] .choice {
-    flex-direction: row;
-    align-items: center;
   }
   .run-card[data-setup-run-variant="prompt"] .apps {
     display: flex;
@@ -620,16 +594,18 @@
     border-radius: 0;
     font-size: 13px;
   }
-  .run-card[data-setup-run-variant="prompt"] .run-actions {
-    gap: 8px;
-  }
-
   /* Over the hero art the stepper is always on dark wallpaper. */
   .run-card[data-setup-run-variant="steps"] {
     --text-1: #ffffff;
     --text-2: rgba(255, 255, 255, 0.82);
     --text-3: rgba(255, 255, 255, 0.6);
     --border: rgba(255, 255, 255, 0.35);
+    --setup-btn-fg: #fff;
+    --setup-btn-line: rgba(255, 255, 255, 0.6);
+    --setup-btn-primary-bg: #fff;
+    --setup-btn-primary-fg: #111;
+    --setup-btn-muted: rgba(255, 255, 255, 0.8);
+    --setup-btn-hover: rgba(255, 255, 255, 0.14);
     gap: 10px;
   }
   .run-card[data-setup-run-variant="steps"] .steps {
@@ -740,6 +716,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+    align-items: center;
   }
 
   .choices--stacked {
@@ -747,19 +724,21 @@
     align-items: stretch;
   }
 
-  .choice {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    min-height: 34px;
-    padding: 7px 12px;
+  /* Choice chips are SetupButtons (secondary, `pressed` when picked); the
+     chip itself is rendered by the child, so its layout is addressed here. */
+  .choices :global(.choice) {
     white-space: normal;
     text-align: left;
     max-width: 22rem;
     min-width: 0;
   }
 
-  .choices--stacked .choice {
+  /* Label over description: a stacked, full-width row per option. */
+  .choices--stacked :global(.choice) {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 2px;
     width: 100%;
     max-width: 100%;
     height: auto;
@@ -770,11 +749,6 @@
   .choices--stacked .choice-label {
     white-space: normal;
     overflow-wrap: anywhere;
-  }
-
-  .choice--picked {
-    border-color: var(--text-1, currentColor);
-    background: var(--raised, rgba(127, 127, 127, 0.12));
   }
 
   .choice-label {
@@ -949,68 +923,12 @@
     outline-offset: 1px;
   }
 
-  .launch-btn {
-    display: inline-flex;
-    align-items: center;
-    align-self: flex-start;
-    min-height: 34px;
-    padding: 0 14px;
-    border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
-    border-radius: 8px;
-    background: transparent;
-    color: var(--text-1, inherit);
-    font: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    white-space: nowrap;
-    cursor: pointer;
-    transition:
-      background 140ms ease,
-      color 140ms ease,
-      border-color 140ms ease;
-  }
-  .launch-btn:hover:not(:disabled) {
-    background: var(--raised, rgba(127, 127, 127, 0.1));
-  }
-  .launch-btn.primary {
-    border-color: transparent;
-    background: var(--text-1, #111);
-    color: var(--bg, #fff);
-  }
-  .launch-btn.primary:hover:not(:disabled) {
-    background: var(--text-1, #111);
-    opacity: 0.92;
-  }
-  .launch-btn:disabled,
-  .quiet-btn:disabled,
   .app:disabled {
     cursor: default;
   }
-  .launch-btn:disabled {
-    opacity: 0.55;
-  }
-  .launch-btn:focus-visible,
-  .quiet-btn:focus-visible,
-  .app:focus-visible,
-  .choice:focus-visible {
+  .app:focus-visible {
     outline: 2px solid var(--text-2, currentColor);
     outline-offset: 2px;
-  }
-
-  .quiet-btn {
-    display: inline-flex;
-    align-items: center;
-    align-self: flex-start;
-    min-height: 24px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--text-2, inherit);
-    font: inherit;
-    font-size: 13px;
-    text-decoration: underline;
-    text-underline-offset: 0.16em;
-    cursor: pointer;
   }
 
   .reply-hint {
@@ -1031,12 +949,6 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 12px;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .launch-btn {
-      transition: none;
-    }
+    gap: 8px;
   }
 </style>

@@ -6,6 +6,7 @@
    * host only through `SetupRunApi` (provider status + browser sign-in).
    */
   import { onDestroy } from "svelte";
+  import SetupButton from "./SetupButton.svelte";
   import type { SetupProviderLoginState, SetupProviderStatus, SetupProviderTool, SetupRunApi } from "./setup-run";
 
   interface Props {
@@ -154,31 +155,29 @@
           </span>
         </span>
         {#if connected(tool.id) && onrun}
-          <button
-            type="button"
-            class="launch-btn primary"
+          <SetupButton
+            variant="primary"
             data-testid={`setup-connect-${tool.id}-run`}
             disabled={runBusy || busy}
             onclick={() => onrun?.(tool.id)}
           >
             Run Setup with {tool.name}
-          </button>
+          </SetupButton>
         {:else if connected(tool.id)}
           <span class="provider-check" aria-hidden="true">✓</span>
         {:else if available(tool.id)}
-          <button
-            type="button"
-            class="launch-btn primary"
+          <SetupButton
+            variant="primary"
             data-testid={`setup-connect-${tool.id}-signin`}
             disabled={busy || loginState === "waiting"}
             onclick={() => void connect(tool.id)}
           >
             {busy && active === tool.id ? "Opening sign-in…" : `Connect ${tool.app}`}
-          </button>
+          </SetupButton>
         {:else}
-          <button type="button" class="launch-btn" data-testid={`setup-connect-${tool.id}-install`} onclick={() => void install(tool.id)}>
+          <SetupButton data-testid={`setup-connect-${tool.id}-install`} onclick={() => void install(tool.id)}>
             Get the {tool.app} app
-          </button>
+          </SetupButton>
         {/if}
       </li>
     {/each}
@@ -187,18 +186,18 @@
     <div class="flow" aria-live="polite" data-testid="setup-connect-flow">
       {#if loginState === "waiting"}
         <span>Finish signing in in your browser — HQ will notice on its own.</span>
-        <button type="button" class="quiet-btn" disabled={busy} onclick={() => void cancel()}>Cancel</button>
+        <SetupButton variant="quiet" disabled={busy} onclick={() => void cancel()}>Cancel</SetupButton>
       {:else}
         <span class:error={loginState === "error"}>{message || "Sign-in did not complete."}</span>
-        <button type="button" class="quiet-btn" disabled={busy} onclick={() => void connect(active!)}>Try again</button>
+        <SetupButton variant="quiet" disabled={busy} onclick={() => void connect(active!)}>Try again</SetupButton>
       {/if}
     </div>
   {:else if message}
     <p class="flow" aria-live="polite">{message}</p>
   {/if}
-  <button type="button" class="quiet-btn" data-testid="setup-connect-check" disabled={busy || loginState === "waiting"} onclick={() => void checkAgain()}>
+  <SetupButton variant="quiet" data-testid="setup-connect-check" disabled={busy || loginState === "waiting"} onclick={() => void checkAgain()}>
     {busy ? "Checking…" : "Already signed in? Check again"}
-  </button>
+  </SetupButton>
 </div>
 
 <style>
@@ -207,8 +206,6 @@
     --c-text-2: var(--text-2, inherit);
     --c-text-3: var(--text-3, rgba(127, 127, 127, 0.9));
     --c-line: var(--border, rgba(127, 127, 127, 0.25));
-    --c-btn-bg: var(--text-1, #111);
-    --c-btn-fg: var(--bg, #fff);
     --c-error: var(--danger, #d9534f);
     color: var(--c-text);
     max-width: 48ch;
@@ -233,19 +230,6 @@
   .connect--surface .provider-state {
     color: var(--c-text-3);
   }
-  .connect--surface .launch-btn {
-    border-color: var(--c-line);
-    background: transparent;
-    color: var(--c-text);
-  }
-  .connect--surface .launch-btn.primary {
-    border-color: var(--c-btn-bg);
-    background: var(--c-btn-bg);
-    color: var(--c-btn-fg);
-  }
-  .connect--surface .quiet-btn {
-    color: var(--c-text-2);
-  }
   .connect--surface .error {
     color: var(--c-error);
   }
@@ -256,6 +240,19 @@
     gap: 10px;
     max-width: 56ch;
     color: #ffffff;
+  }
+  /* On the wallpaper the buttons are white on art (see SetupButton). */
+  .connect:not(.connect--surface) {
+    --setup-btn-fg: #fff;
+    --setup-btn-line: rgba(255, 255, 255, 0.6);
+    --setup-btn-primary-bg: #fff;
+    --setup-btn-primary-fg: #111;
+    --setup-btn-muted: rgba(255, 255, 255, 0.8);
+    --setup-btn-hover: rgba(255, 255, 255, 0.14);
+  }
+  /* Column parent: keep the standalone check button its own width. */
+  .connect > :global(.setup-btn) {
+    align-self: flex-start;
   }
   .lead {
     margin: 0;
@@ -300,50 +297,12 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     margin: 0;
     font-size: 12px;
     color: rgba(255, 255, 255, 0.78);
   }
   .error {
     color: #ffb4b4;
-  }
-  .launch-btn {
-    display: inline-flex;
-    align-items: center;
-    min-height: 30px;
-    padding: 0 12px;
-    border: 1px solid rgba(255, 255, 255, 0.38);
-    border-radius: 0;
-    background: rgba(6, 6, 6, 0.28);
-    color: #ffffff;
-    font: inherit;
-    font-size: var(--text-base, 13px);
-    font-weight: 500;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .launch-btn.primary {
-    border-color: #ffffff;
-    background: #ffffff;
-    color: #0a0b0d;
-  }
-  .launch-btn:disabled,
-  .quiet-btn:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .quiet-btn {
-    align-self: flex-start;
-    min-height: 22px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: rgba(255, 255, 255, 0.72);
-    font: inherit;
-    font-size: 12px;
-    text-decoration: underline;
-    text-underline-offset: 0.16em;
-    cursor: pointer;
   }
 </style>

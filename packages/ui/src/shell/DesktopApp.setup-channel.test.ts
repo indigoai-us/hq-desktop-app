@@ -468,6 +468,6 @@ describe("#welcome first moves", () => {
       "done",
     );
     expect(host.querySelector('[data-testid="first-move-invite"]')?.getAttribute("data-state")).toBe("current");
-    expect(host.querySelectorAll('[data-testid="first-moves"] .btn.primary')).toHaveLength(1);
+    expect(host.querySelectorAll('[data-testid="first-moves"] [data-variant="primary"]')).toHaveLength(1);
   });
 });

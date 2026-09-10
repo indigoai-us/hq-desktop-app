@@ -46,6 +46,7 @@
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
   import SetupRunCard from "../chat/SetupRunCard.svelte";
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
+  import SetupButton from "../chat/SetupButton.svelte";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -4963,9 +4964,8 @@
                       {#if agentDone}
                         <div class="setup-agent-finish" data-testid="setup-agent-finish" role="group" aria-label="Keep going">
                           {#if extraPages?.sessions}
-                            <button
-                              type="button"
-                              class="setup-agent-btn"
+                            <SetupButton
+                              variant="primary"
                               data-testid="setup-agent-open-sessions"
                               onclick={() =>
                                 openExtraPage(
@@ -4976,14 +4976,14 @@
                                 )}
                             >
                               Continue in HQ Sessions
-                            </button>
+                            </SetupButton>
                           {/if}
-                          <button type="button" class="setup-agent-btn" data-testid="setup-agent-open-claude" onclick={() => void launchSetupIn("claude")}>
+                          <SetupButton variant="primary" data-testid="setup-agent-open-claude" onclick={() => void launchSetupIn("claude")}>
                             Continue in Claude Code
-                          </button>
-                          <button type="button" class="setup-agent-btn" data-testid="setup-agent-open-codex" onclick={() => void launchSetupIn("codex")}>
+                          </SetupButton>
+                          <SetupButton variant="primary" data-testid="setup-agent-open-codex" onclick={() => void launchSetupIn("codex")}>
                             Continue in Codex
-                          </button>
+                          </SetupButton>
                         </div>
                         {#if setupLaunchError}
                           <p class="setup-agent-error" role="alert">{setupLaunchError}</p>
@@ -5772,33 +5772,19 @@
   .setup-agent-prompt {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 12px;
     max-width: 760px;
     margin: 2px 0 6px 44px;
   }
   .setup-agent-prompt:empty {
     display: none;
   }
+  /* The same SetupButtons as Run Setup on the hero, in one action row. */
   .setup-agent-finish {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-  }
-  /* The same white, square buttons as Run Setup on the hero. */
-  .setup-agent-btn {
-    font: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    min-height: 30px;
-    padding: 0 12px;
-    border-radius: 0;
-    border: 1px solid var(--text-1, #111);
-    background: var(--text-1, #111);
-    color: var(--bg, #fff);
-    cursor: pointer;
-  }
-  .setup-agent-btn:hover {
-    opacity: 0.9;
+    gap: 8px;
+    align-items: center;
   }
   .setup-agent-error {
     margin: 0;

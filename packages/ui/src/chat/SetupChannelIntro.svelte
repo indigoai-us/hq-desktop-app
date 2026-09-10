@@ -56,6 +56,7 @@
   import type { FirstMove, FirstMoveId } from "./first-moves";
   import SetupRunCard from "./SetupRunCard.svelte";
   import SetupConnectStep from "./SetupConnectStep.svelte";
+  import SetupButton from "./SetupButton.svelte";
   import { SETUP_RUN_STEPS } from "./setup-run";
   import type { SetupAgent } from "./setup-agent.svelte";
   import type { EntryPointResult } from "./lifecycle-entry-points";
@@ -378,14 +379,13 @@
         <p class="roster-failed" role="alert" data-testid="setup-roster-failed">
           <span>{SETUP_ROSTER_FAILED.body}</span>
           {#if onretryroster}
-            <button
-              type="button"
-              class="quiet-btn"
+            <SetupButton
+              variant="quiet"
               data-testid="setup-roster-retry"
               onclick={() => onretryroster?.()}
             >
               {SETUP_ROSTER_FAILED.retry}
-            </button>
+            </SetupButton>
           {/if}
         </p>
       {/if}
@@ -395,16 +395,15 @@
         <SetupConnectStep api={agent.api} providers={agent.providers} onrefresh={() => agent!.refreshProviders(true)} />
       {:else}
       <div class="hero-actions" role="group" aria-label="Set up this Mac">
-        <button
-          type="button"
-          class="launch-btn primary"
+        <SetupButton
+          variant="primary"
           data-testid="setup-run"
           disabled={Boolean(agent?.busy) || (!agent?.api && !onopensessions && (!canLaunch || launching !== null))}
           aria-busy={Boolean(agent?.busy) || (!onopensessions && launching === "claude")}
           onclick={runSetup}
         >
           {agent?.busy ? "Starting…" : SETUP_RUN_LABEL}
-        </button>
+        </SetupButton>
       </div>
       {/if}
       {#if !onopensessions && launchErrors.claude}
@@ -421,16 +420,14 @@
           <div class="hero-actions" role="group" aria-label="Open setup in a separate tool">
             {#each LAUNCHES as launch (launch.key)}
               <div class="setup-action">
-                <button
-                  type="button"
-                  class="launch-btn"
+                <SetupButton
                   data-testid={`setup-launch-${launch.key}`}
                   disabled={!canLaunch || launching !== null}
                   aria-busy={launching === launch.key}
                   onclick={() => void runLaunch(launch.key)}
                 >
                   {launching === launch.key ? "Opening…" : launch.label}
-                </button>
+                </SetupButton>
                 {#if launchErrors[launch.key]}
                   <p class="launch-error" role="alert">
                     {launchErrors[launch.key]}
@@ -448,29 +445,26 @@
               data-testid="setup-company-actions"
             >
               {#each rosterCompanies as company (company.cloudUid ?? company.slug)}
-                <button
-                  type="button"
-                  class="launch-btn"
+                <SetupButton
                   data-testid={`setup-open-company-${company.slug}`}
                   data-company-uid={company.cloudUid ?? ""}
                   onclick={() => onopencompany?.(company)}
                 >
                   {setupCompanyActionLabel(company)}
-                </button>
+                </SetupButton>
               {/each}
             </div>
             {#if oncreatecompany}
               <div class="setup-action">
-                <button
-                  type="button"
-                  class="quiet-btn"
+                <SetupButton
+                  variant="quiet"
                   data-testid="setup-create-another-company"
                   aria-busy={createAnotherBusy}
                   disabled={createAnotherBusy}
                   onclick={() => void createAnotherCompany()}
                 >
                   {createAnotherBusy ? "Opening…" : "Create another company"}
-                </button>
+                </SetupButton>
                 {#if createAnotherError}
                   <p
                     class="launch-error"
@@ -604,6 +598,14 @@
        fallback color covers the frame before the art decodes. */
     background: #0a0b0d;
     color: #ffffff;
+    /* Buttons live on the wallpaper, so they are image-relative (white on
+       dark), not theme-relative — the same in light and dark shells. */
+    --setup-btn-fg: #fff;
+    --setup-btn-line: rgba(255, 255, 255, 0.6);
+    --setup-btn-primary-bg: #fff;
+    --setup-btn-primary-fg: #111;
+    --setup-btn-muted: rgba(255, 255, 255, 0.8);
+    --setup-btn-hover: rgba(255, 255, 255, 0.14);
   }
 
   .hero-art {
@@ -714,7 +716,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: 8px;
     margin: 0;
     font-size: var(--text-base, 13px);
     line-height: 1.4;
@@ -748,12 +750,17 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* Action rows: 8px between buttons; the hero-copy gap (8px) plus this
+     margin puts 12px between a message and its actions. */
   .hero-actions {
     display: flex;
     flex-wrap: wrap;
-    align-items: flex-start;
-    gap: var(--space-2, 8px);
-    margin-top: var(--space-2, 8px);
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .advanced-body .hero-actions {
+    margin-top: 2px;
   }
 
   .setup-action {
@@ -762,91 +769,12 @@
     gap: 0.25rem;
     max-width: 100%;
   }
-
-  /* Buttons live on the wallpaper, so they are image-relative (white on
-     dark), not theme-relative — the same in light and dark shells. */
-  .launch-btn {
-    display: inline-flex;
-    align-items: center;
+  .setup-action > :global(.setup-btn) {
     align-self: flex-start;
-    min-height: 30px;
-    padding: 0 12px;
-    border: 1px solid rgba(255, 255, 255, 0.38);
-    border-radius: 0;
-    background: rgba(6, 6, 6, 0.28);
-    color: #ffffff;
-    font: inherit;
-    font-size: var(--text-base, 13px);
-    font-weight: 500;
-    white-space: nowrap;
-    cursor: pointer;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    transition:
-      background 140ms ease,
-      color 140ms ease,
-      border-color 140ms ease;
-  }
-
-  .launch-btn:hover:not(:disabled) {
-    border-color: rgba(255, 255, 255, 0.7);
-    background: rgba(255, 255, 255, 0.12);
-  }
-
-  .launch-btn.primary {
-    border-color: #ffffff;
-    background: #ffffff;
-    color: #0a0b0d;
-  }
-
-  .launch-btn.primary:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.9);
-    border-color: rgba(255, 255, 255, 0.9);
-  }
-
-  .launch-btn:disabled {
-    opacity: 0.55;
-    cursor: default;
   }
 
   .company-actions {
     margin-top: var(--space-3, 12px);
-  }
-
-  /* Secondary affordance beside an existing company: text-only, no chrome. */
-  .quiet-btn {
-    display: inline-flex;
-    align-items: center;
-    align-self: flex-start;
-    min-height: 24px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: rgba(255, 255, 255, 0.72);
-    font: inherit;
-    font-size: var(--text-base, 13px);
-    text-decoration: underline;
-    text-underline-offset: 0.16em;
-    cursor: pointer;
-  }
-
-  .quiet-btn:hover:not(:disabled) {
-    color: #ffffff;
-  }
-
-  .quiet-btn:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-
-  .quiet-btn:focus-visible {
-    outline: 2px solid #ffffff;
-    outline-offset: 2px;
-  }
-
-  .launch-btn:focus-visible {
-    outline: 2px solid #ffffff;
-    outline-offset: 2px;
   }
 
   .launch-error {
@@ -956,7 +884,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .launch-btn,
     .resource-glyph,
     .resource-title,
     .resource-arrow {

@@ -100,7 +100,7 @@ describe("SetupChannelIntro welcome experience", () => {
     expect(SETUP_HERO.body).not.toContain("/setup");
     expect(host.textContent).toContain("Create or choose a company below");
     // Exactly one primary action above the fold.
-    const primaries = host.querySelectorAll(".hero-copy .launch-btn.primary");
+    const primaries = host.querySelectorAll('.hero-copy [data-variant="primary"]');
     expect(primaries).toHaveLength(1);
     expect(primaries[0]?.getAttribute("data-testid")).toBe("setup-run");
     expect(primaries[0]?.textContent).toContain("Run Setup");
