@@ -1,4 +1,9 @@
 <script lang="ts">
+  import FileImage from "phosphor-svelte/lib/FileImage";
+  import FileMd from "phosphor-svelte/lib/FileMd";
+  import FilePdf from "phosphor-svelte/lib/FilePdf";
+  import FileText from "phosphor-svelte/lib/FileText";
+  import Lock from "phosphor-svelte/lib/Lock";
   /**
    * ChannelFilesTab — the project channel's Files view, ported faithfully from
    * the hq-sync desktop `components/messaging/ChannelFilesTab.svelte` MARKUP +
@@ -274,17 +279,17 @@
     );
   }
 
-  function iconPaths(kind: ChannelFileIconKind): string {
-    // Compact 16×16 glyphs — same document silhouette family as the desktop.
+  /** One Phosphor glyph per file kind, in the same document family. */
+  function fileIcon(kind: ChannelFileIconKind) {
     switch (kind) {
       case "image":
-        return "M3 3.5h10A1.5 1.5 0 0 1 14.5 5v6A1.5 1.5 0 0 1 13 12.5H3A1.5 1.5 0 0 1 1.5 11V5A1.5 1.5 0 0 1 3 3.5Zm1.2 7.2 2.4-2.8 1.6 1.5 2.3-2.7 2.3 4H4.2Z";
+        return FileImage;
       case "pdf":
-        return "M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5ZM5.5 9.5h5M5.5 7h3M5.5 12h4";
+        return FilePdf;
       case "markdown":
-        return "M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5ZM5 10.5V6.5l1.5 2L8 6.5v4M9.5 10.5 11 8.5l1.5 2";
+        return FileMd;
       default:
-        return "M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z";
+        return FileText;
     }
   }
 </script>
@@ -327,47 +332,10 @@
           >
             <span class="file-icon" aria-hidden="true">
               {#if item.accessDenied}
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <rect
-                    x="3.5"
-                    y="7"
-                    width="9"
-                    height="6.5"
-                    rx="1"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                  />
-                  <path
-                    d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linecap="round"
-                  />
-                </svg>
+                <Lock size={16} aria-hidden="true" />
               {:else}
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <path
-                    d={iconPaths(item.iconKind)}
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linejoin="round"
-                    stroke-linecap="round"
-                  />
-                  {#if item.iconKind === "file" || item.iconKind === "text" || item.iconKind === "pdf" || item.iconKind === "markdown"}
-                    <path
-                      d="M9 1.5V5.5H13"
-                      stroke="currentColor"
-                      stroke-width="1.3"
-                      stroke-linejoin="round"
-                    />
-                  {/if}
-                </svg>
+                {@const FileGlyph = fileIcon(item.iconKind)}
+                  <FileGlyph size={16} aria-hidden="true" />
               {/if}
             </span>
             <span class="file-name" title={item.vaultPath || item.name}

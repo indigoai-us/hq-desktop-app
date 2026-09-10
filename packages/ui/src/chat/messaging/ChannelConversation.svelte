@@ -1,4 +1,7 @@
 <script lang="ts">
+  import PaperPlaneRight from "phosphor-svelte/lib/PaperPlaneRight";
+  import Paperclip from "phosphor-svelte/lib/Paperclip";
+  import Smiley from "phosphor-svelte/lib/Smiley";
   /**
    * ChannelConversation — the real channel timeline + composer, ported faithfully
    * from the hq-sync desktop `Conversation.svelte` message-row + reply-composer
@@ -1539,21 +1542,7 @@
               input.value = "";
             }}
           />
-          <svg
-            width="15"
-            height="15"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M13.2 8.2 8.05 13.35a3.25 3.25 0 0 1-4.6-4.6l5.9-5.9a2.15 2.15 0 1 1 3.04 3.04L6.5 11.7a1 1 0 1 1-1.42-1.42l5.15-5.15"
-              stroke="currentColor"
-              stroke-width="1.35"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <Paperclip size={15} aria-hidden="true" />
         </label>
         <div class="dm-tool-emoji-wrap">
           <button
@@ -1566,29 +1555,7 @@
             aria-haspopup="menu"
             data-testid="composer-emoji"
           >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <circle
-                cx="8"
-                cy="8"
-                r="6.25"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <circle cx="5.75" cy="6.75" r="0.85" fill="currentColor" />
-              <circle cx="10.25" cy="6.75" r="0.85" fill="currentColor" />
-              <path
-                d="M5.5 9.75c.7 1 1.55 1.5 2.5 1.5s1.8-.5 2.5-1.5"
-                stroke="currentColor"
-                stroke-width="1.3"
-                stroke-linecap="round"
-              />
-            </svg>
+            <Smiley size={15} aria-hidden="true" />
           </button>
           {#if composerEmojiOpen}
             <EmojiPicker
@@ -1626,17 +1593,7 @@
         title="Send"
         data-testid="composer-send"
       >
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 16 16"
-          fill="currentColor"
-          aria-hidden="true"
-        >
-          <path
-            d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z"
-          />
-        </svg>
+        <PaperPlaneRight size={13} weight="fill" aria-hidden="true" />
       </button>
     </div>
   </div>
@@ -1740,6 +1697,10 @@
     /* 16px bottom so the last message's reaction bar doesn't kiss the
        composer frame. */
     padding: 8px 16px 16px;
+    /* Float the 4px thumb 8px off the window edge, the way every other
+       scroller in the design does — the sidebar already did this and the
+       timeline did not, so the two rails disagreed down the same window. */
+    margin-right: 8px;
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -1815,9 +1776,12 @@
   .dm-msg {
     position: relative;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr);
+    /* 32px avatar + 12px gutter, per the design. The wider avatar and tighter
+       gutter it replaced pushed the text column right while leaving less air
+       around the mark. */
+    grid-template-columns: 32px minmax(0, 1fr);
     align-items: start;
-    gap: 8px;
+    gap: 12px;
     width: 100%;
     max-width: none;
     margin-top: 0;
@@ -1825,13 +1789,16 @@
     border-radius: 6px;
   }
 
-  .dm-msg:hover,
+  /* No hover fill. The design's timeline never moves under the pointer — it
+     reveals the timestamp and the reaction bar instead, and tinting the row
+     as well made both readings compete. Focus still needs a visible target,
+     so keyboard focus keeps a wash that the mouse does not get. */
   .dm-msg:focus-within {
     background: color-mix(in srgb, var(--t1) 4%, transparent);
   }
 
   .dm-msg-group-start {
-    margin-top: var(--msg-group-gap, 12px);
+    margin-top: var(--msg-group-gap, 18px);
     padding-top: 3px;
   }
 
@@ -1843,8 +1810,8 @@
   .dm-msg-avatar-spacer {
     display: grid;
     place-items: start center;
-    flex: 0 0 36px;
-    width: 36px;
+    flex: 0 0 32px;
+    width: 32px;
     min-height: 1px;
     padding-top: var(--msg-avatar-pad-top, 2px);
   }
@@ -1865,13 +1832,17 @@
     opacity: 1;
   }
 
+  /* No reading measure. The design lets the message column fill the pane, and
+     the timestamp rides its right edge — capping the column at 720px parked
+     the timestamp mid-pane on a wide window, which read as a stray label
+     rather than as the row's trailing metadata. The window's own max width
+     keeps line length in hand. */
   .dm-msg-column {
     position: relative;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
     min-width: 0;
-    max-width: 720px;
   }
 
   .dm-msg-meta {
@@ -1879,6 +1850,9 @@
     align-items: baseline;
     gap: 0.4375rem;
     margin: 0 0 var(--msg-name-body-gap, 0.1875rem);
+    /* Full width so the timestamp can ride the right edge rather than sitting
+       against the name. */
+    width: 100%;
     min-width: 0;
   }
 
@@ -1886,7 +1860,7 @@
     max-width: 42ch;
     overflow: hidden;
     color: var(--t1);
-    font-size: 14px;
+    font-size: 13px;
     /* 600 is the heaviest Geist face the shell ships; asking for 700 only
        rounds down (or synthesizes a smeared bold on fallback fonts). */
     font-weight: 600;
@@ -1914,13 +1888,34 @@
     border-radius: 4px;
   }
 
+  /* Timestamps are quiet furniture in the design: 10px mono, parked on the
+     right edge, and invisible until the row is hovered. Production showed
+     them always, at 12px, immediately after the name — so every message
+     carried a permanent piece of metadata the eye had to skip past.
+
+     The follow-up-message gutter time below already behaved this way, so this
+     also makes the first message in a run agree with the rest of it. */
   .dm-msg-header-time {
     flex: 0 0 auto;
+    margin-left: auto;
     color: var(--t3);
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-variant-numeric: tabular-nums;
     line-height: 1.45;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+
+  .dm-msg:hover .dm-msg-header-time,
+  .dm-msg:focus-within .dm-msg-header-time {
     opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dm-msg-header-time {
+      transition: none;
+    }
   }
 
   /* Plain text row — no bubble background/border for either direction. Only
@@ -1972,11 +1967,12 @@
     max-width: 100%;
     margin: 0;
     font-family: var(--font-ui);
-    /* Reading size. The shell chrome stays 13px; the timeline is prose and
-       sits one step up (14px) with a slightly looser leading so the light
-       weight on a dark ground reads crisp rather than heavy. */
-    font-size: 14px;
-    line-height: 1.55;
+    /* Reading size. One step for the whole shell: 13px on a 19px line, the
+       design's body setting. The timeline used to sit a step above the rest
+       of the chrome, which is what made the app read larger than the design
+       everywhere it mattered most. */
+    font-size: 13px;
+    line-height: 19px;
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;

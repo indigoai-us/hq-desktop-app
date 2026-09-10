@@ -26,8 +26,9 @@ describe("shared message-row name→body spacing", () => {
   it("pins the compact intra-group padding and inter-group gap tokens", () => {
     // 3px top + 3px bottom on adjacent same-author rows → ~6px stacked gap.
     expect(messageRowCss).toContain("--msg-row-pad-y: 3px");
-    // Larger gap before a re-headered new-author group.
-    expect(messageRowCss).toContain("--msg-group-gap: 12px");
+    // A new author group opens at the design's 18px, so a new speaker reads
+    // as a break rather than as more of the previous run.
+    expect(messageRowCss).toContain("--msg-group-gap: 18px");
   });
 
   it("wires the row-rhythm tokens into the main-column message rows", () => {
@@ -35,9 +36,9 @@ describe("shared message-row name→body spacing", () => {
     expect(channelConversationSrc).toMatch(
       /\.dm-msg\s*\{[\s\S]*?margin-top:\s*0;[\s\S]*?padding:\s*var\(--msg-row-pad-y, 3px\) 8px;/,
     );
-    // A new author group gets the modest inter-group gap, not the old 10px.
+    // A new author group gets the inter-group gap, not the old 10px.
     expect(channelConversationSrc).toMatch(
-      /\.dm-msg-group-start\s*\{[\s\S]*?margin-top:\s*var\(--msg-group-gap, 12px\);/,
+      /\.dm-msg-group-start\s*\{[\s\S]*?margin-top:\s*var\(--msg-group-gap, 18px\);/,
     );
     expect(channelConversationSrc).not.toContain("margin-top: 10px");
   });

@@ -1,4 +1,8 @@
 <script lang="ts">
+  import FileText from "phosphor-svelte/lib/FileText";
+  import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
+  import Package from "phosphor-svelte/lib/Package";
+  import User from "phosphor-svelte/lib/User";
   /**
    * Library full-screen overlay (US-017).
    *
@@ -230,51 +234,11 @@
         >
           <span class="lo-nav-ic" aria-hidden="true">
             {#if row.id === "skills"}
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path
-                  d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linejoin="round"
-                />
-                <path
-                  d="M9 1.5V5.5H13"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <FileText size={14} aria-hidden="true" />
             {:else if row.id === "workers"}
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <circle
-                  cx="8"
-                  cy="5.25"
-                  r="2.25"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                />
-                <path
-                  d="M3.5 13c.4-2.3 2.1-3.5 4.5-3.5s4.1 1.2 4.5 3.5"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linecap="round"
-                />
-              </svg>
+              <User size={14} aria-hidden="true" />
             {:else}
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path
-                  d="M3 5.5 8 2.5 13 5.5v5L8 13.5 3 10.5v-5Z"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linejoin="round"
-                />
-                <path
-                  d="M8 2.5v11M3 5.5l5 3 5-3"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <Package size={14} aria-hidden="true" />
             {/if}
           </span>
           <span class="lo-nav-label">{row.label}</span>
@@ -290,21 +254,7 @@
         <div class="lo-search-row">
           <div class="lo-search-wrap">
             <span class="lo-search-ic" aria-hidden="true">
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                <circle
-                  cx="7"
-                  cy="7"
-                  r="4.25"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                />
-                <path
-                  d="M10.4 10.4 13.5 13.5"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linecap="round"
-                />
-              </svg>
+              <MagnifyingGlass size={13} aria-hidden="true" />
             </span>
             <input
               type="search"
@@ -357,20 +307,7 @@
                   onclick={() => selectSkill(card.path)}
                 >
                   <span class="lo-card-ic" aria-hidden="true">
-                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                      <path
-                        d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
-                        stroke="currentColor"
-                        stroke-width="1.3"
-                        stroke-linejoin="round"
-                      />
-                      <path
-                        d="M9 1.5V5.5H13"
-                        stroke="currentColor"
-                        stroke-width="1.3"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
+                    <FileText size={15} aria-hidden="true" />
                   </span>
                   <div class="lo-card-title">{card.name}</div>
                   <div class="lo-card-slug">{card.slug}</div>
@@ -422,21 +359,7 @@
                   onclick={() => selectWorker(card.path)}
                 >
                   <span class="lo-card-ic" aria-hidden="true">
-                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                      <circle
-                        cx="8"
-                        cy="5.25"
-                        r="2.25"
-                        stroke="currentColor"
-                        stroke-width="1.3"
-                      />
-                      <path
-                        d="M3.5 13c.4-2.3 2.1-3.5 4.5-3.5s4.1 1.2 4.5 3.5"
-                        stroke="currentColor"
-                        stroke-width="1.3"
-                        stroke-linecap="round"
-                      />
-                    </svg>
+                    <User size={15} aria-hidden="true" />
                   </span>
                   <div class="lo-card-title">{card.name}</div>
                   <div class="lo-card-slug">{card.type}</div>
@@ -661,7 +584,7 @@
     min-width: 0;
     min-height: 40px;
     padding: 10px 14px;
-    border: 1px solid var(--line);
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised);
     color: inherit;
@@ -672,7 +595,6 @@
 
   .lo-card:hover {
     background: var(--btn-bg);
-    border-color: var(--line2);
   }
 
   .lo-card:focus-visible {

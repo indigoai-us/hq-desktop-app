@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Check from "phosphor-svelte/lib/Check";
   /**
    * Server-stamped lifecycle card (US-008). Markup follows the locked
    * storyboard: a hairline step, mono label, title, controls, one action row.
@@ -221,22 +222,7 @@
         {#if displayState === "pending"}
           <span class="lc-spin" aria-hidden="true"></span>
         {:else if displayState === "done"}
-          <svg
-            class="lc-check"
-            width="14"
-            height="14"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="m3.5 8.5 3 3 6-7"
-              stroke="currentColor"
-              stroke-width="1.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <Check size={14} class="lc-check" aria-hidden="true" />
         {/if}
         {statusText}
       </span>
@@ -396,22 +382,7 @@
                 <span class="lc-ro-label">{field.label}</span>
                 <span class="lc-ro-value">
                   {#if field.hint === "done" || current === "done"}
-                    <svg
-                      class="lc-check"
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="m3.5 8.5 3 3 6-7"
-                        stroke="currentColor"
-                        stroke-width="1.6"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
+                    <Check size={14} class="lc-check" aria-hidden="true" />
                   {/if}
                   <span title={isIsoTimestampValue(current) ? current : undefined}
                     >{formatReadonlyTimestamp(current) || field.description || ""}</span
@@ -599,7 +570,7 @@
     gap: 8px;
     height: 32px;
     padding: 0 10px;
-    border: 1px solid var(--line2, var(--pop-border));
+    border: 1px solid transparent;
     border-radius: 6px;
     background: var(--raised, var(--pop-hover));
     box-sizing: border-box;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CaretLeft from "phosphor-svelte/lib/CaretLeft";
   /**
    * Shared overlay / destination header: Back · title · subtitle, on the
    * same height and centre line as `V4TitleBar`, with the same leading
@@ -62,21 +63,7 @@
       data-tauri-drag-region="false"
       onclick={() => onback?.()}
     >
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-      >
-        <path
-          d="M10 3.5 5.5 8 10 12.5"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <CaretLeft size={12} aria-hidden="true" />
       Back
     </button>
   {/if}

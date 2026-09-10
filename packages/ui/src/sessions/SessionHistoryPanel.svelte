@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Clock from "phosphor-svelte/lib/Clock";
   /**
    * History timeline panel (US-008) — the chronological feed of what the fleet
    * *did* over time (tasks dispatched, stories completed, checkpoints, handoffs),
@@ -170,19 +171,7 @@
     <!-- Empty — history (design.md "States"). -->
     <div class="hi-empty">
       <div class="hi-empty-glyph" aria-hidden="true">
-        <svg
-          viewBox="0 0 24 24"
-          width="24"
-          height="24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 7v5l3 2" />
-        </svg>
+        <Clock size={24} aria-hidden="true" />
       </div>
       <p class="hi-empty-title">No activity yet</p>
       <p class="hi-empty-help">

@@ -67,7 +67,7 @@
     max-width: none;
     margin: 6px 0 0;
     padding: 12px 14px;
-    border: 1px solid var(--line, var(--pop-border));
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised, var(--pop-hover));
     color: var(--t1, var(--pop-text));

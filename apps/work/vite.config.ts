@@ -20,6 +20,13 @@ export default defineConfig({
           "@tauri-apps/api/event": webTauriCoreFallback,
         },
   },
+  optimizeDeps: {
+    // phosphor-svelte resolves its icons through the `svelte` export
+    // condition. Prebundling picks the wrong one and the components arrive as
+    // undefined, so the shell renders a blank page rather than an error worth
+    // reading. Excluding it hands resolution back to the Svelte plugin.
+    exclude: ["phosphor-svelte"],
+  },
   // TAURI is intentionally public to the client bundle: the shell selects
   // the injected TauriPlatformAdapter when this static build is launched.
   envPrefix: ["VITE_", "TAURI"],

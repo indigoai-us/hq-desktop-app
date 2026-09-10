@@ -1,4 +1,6 @@
 <script lang="ts">
+  import CaretLeft from "phosphor-svelte/lib/CaretLeft";
+  import X from "phosphor-svelte/lib/X";
   /**
    * FilesModeSidebar — the file-explorer sidebar that REPLACES the 220px V4
    * primary sidebar when the app is in top-level Files mode (US-009, reworked in
@@ -122,16 +124,7 @@
   <div class="fs-header">
     <button type="button" class="fs-exit" onclick={() => onexit?.()}>
       <span class="fs-exit-icon" aria-hidden="true">
-        <svg viewBox="0 0 16 16" width="14" height="14">
-          <path
-            d="M10 3.5 L5.5 8 L10 12.5"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <CaretLeft size={14} aria-hidden="true" />
       </span>
       <span class="fs-exit-label">Back</span>
     </button>
@@ -172,15 +165,7 @@
           title="Clear filter"
           onclick={() => onselectcompany?.(null)}
         >
-          <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">
-            <path
-              d="M3 3 L9 9 M9 3 L3 9"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.4"
-              stroke-linecap="round"
-            />
-          </svg>
+          <X size={11} aria-hidden="true" />
         </button>
       </span>
     {:else}
@@ -304,7 +289,7 @@
   }
 
   .fs-company-list::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
   }
 
   .fs-company-list::-webkit-scrollbar-thumb {
@@ -475,7 +460,7 @@
   }
 
   .fs-tree-area::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
   }
 
   .fs-tree-area::-webkit-scrollbar-thumb {

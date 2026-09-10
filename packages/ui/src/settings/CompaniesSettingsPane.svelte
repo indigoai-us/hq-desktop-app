@@ -193,7 +193,7 @@
     align-items: center;
     gap: 12px;
     background: var(--raised);
-    border: 1px solid var(--line);
+    border: 1px solid transparent;
     border-radius: 10px;
     padding: 14px 16px;
   }

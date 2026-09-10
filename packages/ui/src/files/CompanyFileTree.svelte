@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CaretRight from "phosphor-svelte/lib/CaretRight";
   /**
    * CompanyFileTree — Obsidian-style collapsible folder tree (US-002, made LAZY
    * in US-010; DESKTOP-008 keyboard + filter).
@@ -372,16 +373,7 @@
               class:open={filtering || expanded.has(node.path)}
               class:hidden={!node.hasChildren && !node.loaded}
             >
-              <svg viewBox="0 0 12 12" width="12" height="12">
-                <path
-                  d="M4.5 2.5 L8 6 L4.5 9.5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.4"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <CaretRight size={12} aria-hidden="true" />
             </span>
             <span class="ft-copy title-stack">
               <span class="ft-label">{node.name}</span>

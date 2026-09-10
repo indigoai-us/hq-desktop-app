@@ -1,4 +1,7 @@
 <script lang="ts">
+  import Check from "phosphor-svelte/lib/Check";
+  import Info from "phosphor-svelte/lib/Info";
+  import Warning from "phosphor-svelte/lib/Warning";
   /**
    * Trusted renderer for structured agent message content (stat / table /
    * chart / markdown blocks). See richMessageContent.ts for the security model:
@@ -371,13 +374,13 @@
       >
         <span class="rich-callout-icon" aria-hidden="true">
           {#if block.tone === "success"}
-            <svg viewBox="0 0 16 16" width="15" height="15"><path d="M6.5 11L3.5 8l1-1 2 2 5-5 1 1z" fill="currentColor" /></svg>
+            <Check size={15} weight="bold" aria-hidden="true" />
           {:else if block.tone === "warning"}
-            <svg viewBox="0 0 16 16" width="15" height="15"><path d="M8 2l6.5 11.5h-13z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" /><rect x="7.35" y="6" width="1.3" height="3.6" fill="currentColor" /><rect x="7.35" y="10.4" width="1.3" height="1.3" fill="currentColor" /></svg>
+            <Warning size={15} aria-hidden="true" />
           {:else if block.tone === "danger"}
-            <svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.3" /><rect x="7.35" y="4.4" width="1.3" height="4.6" fill="currentColor" /><rect x="7.35" y="10.2" width="1.3" height="1.3" fill="currentColor" /></svg>
+            <Info size={15} aria-hidden="true" />
           {:else}
-            <svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.3" /><rect x="7.35" y="7" width="1.3" height="4.6" fill="currentColor" /><rect x="7.35" y="4.4" width="1.3" height="1.3" fill="currentColor" /></svg>
+            <Info size={15} aria-hidden="true" />
           {/if}
         </span>
         <div class="rich-callout-content">
@@ -466,7 +469,7 @@
     flex: 1 1 120px;
     min-width: 110px;
     padding: 9px 11px;
-    border: 1px solid var(--line, var(--pop-border));
+    border: 1px solid transparent;
     border-radius: 8px;
     background: var(--raised, var(--pop-hover));
   }
@@ -539,7 +542,7 @@
   .rich-chart {
     margin: 0;
     padding: 10px 12px;
-    border: 1px solid var(--line, var(--pop-border));
+    border: 1px solid transparent;
     border-radius: 8px;
     background: var(--raised, var(--pop-hover));
   }
@@ -694,7 +697,7 @@
     height: 6px;
     border-radius: 999px;
     background: var(--raised, var(--pop-hover));
-    border: 1px solid var(--line, var(--pop-border));
+    border: 1px solid transparent;
     overflow: hidden;
   }
   .rich-progress-fill {

@@ -129,6 +129,14 @@
   import "./tokens.css";
   import "./chat-tokens.css";
   import Caret from "../common/Caret.svelte";
+  import CaretRight from "phosphor-svelte/lib/CaretRight";
+  import Chat from "phosphor-svelte/lib/Chat";
+  import FunnelSimple from "phosphor-svelte/lib/FunnelSimple";
+  import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
+  import PencilSimple from "phosphor-svelte/lib/PencilSimple";
+  import Plus from "phosphor-svelte/lib/Plus";
+  import PushPin from "phosphor-svelte/lib/PushPin";
+  import Stack from "phosphor-svelte/lib/Stack";
   import {
     BootTimeoutError,
     DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -762,6 +770,11 @@
   const historyHasQuery = $derived(historyQuery.trim().length > 0);
   const scopeLabel = $derived(scopePillLabel(scope, scopeCompanies));
   const scopeOptions = $derived(buildScopeOptions(scopeCompanies));
+  const scopeTones = $derived(
+    scopeAvatarTones(
+      scopeOptions.filter((o) => o.id !== "all").map((o) => o.label),
+    ),
+  );
   const displayName = $derived(accountLabel?.trim() || "Account");
   /** Footer shows the first name only (D-17). */
   const firstName = $derived(displayName.split(/\s+/)[0] || displayName);
@@ -938,11 +951,45 @@
   }
 
   // Avatar hue from stable hash of label (monochrome-friendly tint via CSS vars).
-  function scopeAvatarTone(label: string): number {
+  const SCOPE_TONE_COUNT = 6;
+
+  function scopeToneSeed(label: string): number {
     let h = 0;
     for (let i = 0; i < label.length; i++)
       h = (h * 31 + label.charCodeAt(i)) | 0;
-    return Math.abs(h) % 6;
+    return Math.abs(h) % SCOPE_TONE_COUNT;
+  }
+
+  /**
+   * Company marks, resolved across the whole list rather than one at a time.
+   *
+   * Hashing each name independently is stable but not distinct: with two
+   * companies the odds of a collision are one in six, and "Indigo" and
+   * "Personal" happened to be a collision — both rendered the same green, so
+   * the colour told you nothing. Seeding from the hash and then probing to the
+   * next free tone keeps a company's colour stable while guaranteeing that no
+   * two visible companies share one, up to the six the palette holds.
+   *
+   * "All companies" is a scope, not a tenant, and stays neutral.
+   */
+  function scopeAvatarTones(labels: string[]): Map<string, number> {
+    const taken = new Set<number>();
+    const tones = new Map<string, number>();
+    for (const label of labels) {
+      if (tones.has(label)) continue;
+      const seed = scopeToneSeed(label);
+      let tone = seed;
+      for (let step = 0; step < SCOPE_TONE_COUNT; step++) {
+        const candidate = (seed + step) % SCOPE_TONE_COUNT;
+        if (!taken.has(candidate)) {
+          tone = candidate;
+          break;
+        }
+      }
+      taken.add(tone);
+      tones.set(label, tone);
+    }
+    return tones;
   }
 
   $effect(() => {
@@ -1731,39 +1778,12 @@
       >
         {#if scope === "all"}
           <span class="chat-scope-tile all" aria-hidden="true">
-            <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
-              <rect
-                x="1.75"
-                y="8.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <rect
-                x="8.75"
-                y="8.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <rect
-                x="5.25"
-                y="2.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-            </svg>
+            <Stack size={11} aria-hidden="true" />
           </span>
         {:else}
-          <span class="chat-scope-tile" aria-hidden="true"
-            >{initialsFor(scopeLabel)}</span
+          <span
+            class={`chat-scope-tile tone-${scopeTones.get(scopeLabel) ?? 0}`}
+            aria-hidden="true">{initialsFor(scopeLabel)}</span
           >
         {/if}
         {scopeLabel}
@@ -1800,7 +1820,9 @@
                 <CompanyIcon iconUrl={scopeOptionIcon(option.id)} size={24} />
               {:else}
                 <span
-                  class={`chat-scope-avatar tone-${scopeAvatarTone(option.label)}`}
+                  class={option.id === "all"
+                    ? "chat-scope-avatar"
+                    : `chat-scope-avatar tone-${scopeTones.get(option.label) ?? 0}`}
                   aria-hidden="true"
                 >
                   {scopeAvatarLabel(option)}
@@ -1828,14 +1850,7 @@
               onclick={() => void newCompanyFromSwitcher()}
             >
               <span class="chat-scope-avatar chat-scope-plus" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M8 3.5v9M3.5 8h9"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linecap="round"
-                  />
-                </svg>
+                <Plus size={14} aria-hidden="true" />
               </span>
               <span class="chat-scope-row-label">New company</span>
             </button>
@@ -1869,14 +1884,7 @@
         aria-expanded={createOpen}
         onclick={openCreate}
       >
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path
-            d="M8 3v10M3 8h10"
-            stroke="currentColor"
-            stroke-width="1.3"
-            stroke-linecap="round"
-          />
-        </svg>
+        <Plus size={16} aria-hidden="true" />
       </button>
       <button
         type="button"
@@ -1887,21 +1895,7 @@
         onclick={openSearch}
         bind:this={searchButton}
       >
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <circle
-            cx="7"
-            cy="7"
-            r="4.5"
-            stroke="currentColor"
-            stroke-width="1.25"
-          />
-          <path
-            d="m10.5 10.5 3 3"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-          />
-        </svg>
+        <MagnifyingGlass size={16} aria-hidden="true" />
       </button>
       <div class="chat-filter-wrap" bind:this={filterWrapEl}>
         <button
@@ -1914,14 +1908,7 @@
           title="Filter"
           onclick={openFilterMenu}
         >
-          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path
-              d="M2.5 4h11M4.5 8h7M6.5 12h3"
-              stroke="currentColor"
-              stroke-width="1.25"
-              stroke-linecap="round"
-            />
-          </svg>
+          <FunnelSimple size={16} aria-hidden="true" />
         </button>
         {#if filterOpen}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2118,11 +2105,7 @@
     {#if grouped.pinned.length > 0}
       <div class="chat-section-label" id="chat-pinned-label">
         <span class="chat-pin-ic" aria-hidden="true">
-          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-            <path
-              d="M10.2 2.4 13.6 5.8a.8.8 0 0 1-.15 1.26l-2.2 1.27-.7 3.15a.6.6 0 0 1-.98.32L7.2 9.43 4.3 12.32a.55.55 0 0 1-.78-.78L6.4 8.66 4.05 6.3a.6.6 0 0 1 .32-.98l3.15-.7 1.27-2.2A.8.8 0 0 1 10.2 2.4Z"
-            />
-          </svg>
+          <PushPin size={10} weight="fill" aria-hidden="true" />
         </span>
         PINNED
       </div>
@@ -2343,21 +2326,7 @@
       >
         <div class="chat-switcher-search">
           <span class="chat-switcher-search-ic" aria-hidden="true">
-            <svg viewBox="0 0 16 16" fill="none">
-              <circle
-                cx="7"
-                cy="7"
-                r="4.5"
-                stroke="currentColor"
-                stroke-width="1.25"
-              />
-              <path
-                d="m10.5 10.5 3 3"
-                stroke="currentColor"
-                stroke-width="1.25"
-                stroke-linecap="round"
-              />
-            </svg>
+            <MagnifyingGlass size={16} aria-hidden="true" />
           </span>
           <input
             class="chat-switcher-input"
@@ -2509,21 +2478,7 @@
       >
         <div class="chat-switcher-search">
           <span class="chat-switcher-search-ic" aria-hidden="true">
-            <svg viewBox="0 0 16 16" fill="none">
-              <circle
-                cx="7"
-                cy="7"
-                r="4.5"
-                stroke="currentColor"
-                stroke-width="1.25"
-              />
-              <path
-                d="m10.5 10.5 3 3"
-                stroke="currentColor"
-                stroke-width="1.25"
-                stroke-linecap="round"
-              />
-            </svg>
+            <MagnifyingGlass size={16} aria-hidden="true" />
           </span>
           <input
             class="chat-switcher-input"
@@ -2619,12 +2574,7 @@
     aria-label="Draft"
     title="Draft"
   >
-    <svg viewBox="0 0 256 256" width="12" height="12" aria-hidden="true">
-      <path
-        d="M227.31 73.37 182.63 28.68a16 16 0 0 0-22.63 0L36.69 152A15.86 15.86 0 0 0 32 163.31V208a16 16 0 0 0 16 16h44.69a15.86 15.86 0 0 0 11.31-4.69L227.31 96a16 16 0 0 0 0-22.63ZM92.69 208H48v-44.69l88-88L180.69 120ZM192 108.68 147.31 64l24-24L216 84.68Z"
-        fill="currentColor"
-      />
-    </svg>
+    <PencilSimple size={12} aria-hidden="true" />
   </span>
 {/snippet}
 
@@ -2663,9 +2613,7 @@
           aria-expanded={childrenOpen}
           onclick={() => toggleChildren(row.id, extras?.childrenExpandedByDefault === true)}
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M3 2 7 5 3 8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
+          <CaretRight size={10} weight="bold" aria-hidden="true" />
         </button>
       {/if}
       <button
@@ -2769,15 +2717,7 @@
         data-testid="chat-pin"
         onclick={() => handlePin(row)}
       >
-        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M6.2 1.8h3.6l.4 4.2 2.2 1.4v1.4H8.6v5.4h-1.2V8.8H3.6V7.4l2.2-1.4.4-4.2Z"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <PushPin size={12} aria-hidden="true" />
       </button>
     </div>
     {#if hasChildren && childrenOpen}
@@ -2807,13 +2747,9 @@
               aria-hidden="true"
             >
               {#if child.kind === "action"}
-                <svg width="12" height="12" viewBox="0 0 10 10">
-                  <path d="M5 1v8M1 5h8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-                </svg>
+                <Plus size={12} aria-hidden="true" />
               {:else}
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
-                  <path d="M3 3h10v7H7l-4 3V3Z" />
-                </svg>
+                <Chat size={14} aria-hidden="true" />
               {/if}
             </span>
             <span class="chat-row-child-label">{child.label}</span>
@@ -2836,9 +2772,9 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    flex: 0 0 var(--sidebar-width, 260px);
+    flex: 0 0 var(--sidebar-width, 280px);
     align-self: stretch;
-    width: var(--sidebar-width, 260px);
+    width: var(--sidebar-width, 280px);
     min-height: 0;
     height: auto;
     overflow: hidden;
@@ -2999,23 +2935,51 @@
     letter-spacing: 0.02em;
   }
 
+  /* Company marks. Six 135deg pairs from the V2 concept — the point is that
+     two companies never look alike at a glance, which a single neutral fill
+     cannot do however many slots it has. White ink on all six; they are dark
+     enough at both ends to carry it in either theme.
+
+     `scopeAvatarTone()` hashes the label into a slot, so the assignment is
+     stable per company but arbitrary across them. Pinning a specific company
+     to a specific pair is a host decision, not a UI-package one. */
+  .chat-scope-tile.tone-0,
   .chat-scope-avatar.tone-0 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #6d5efc 0%, #c86bf0 100%);
+    color: #fff;
   }
+  .chat-scope-tile.tone-1,
   .chat-scope-avatar.tone-1 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #ff9f43 0%, #ff5f6d 100%);
+    color: #fff;
   }
+  .chat-scope-tile.tone-2,
   .chat-scope-avatar.tone-2 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #12c2a0 0%, #7ad86b 100%);
+    color: #fff;
   }
+  .chat-scope-tile.tone-3,
   .chat-scope-avatar.tone-3 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #2f80ed 0%, #56ccf2 100%);
+    color: #fff;
   }
+  .chat-scope-tile.tone-4,
   .chat-scope-avatar.tone-4 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #f2529b 0%, #f7b42c 100%);
+    color: #fff;
   }
+  .chat-scope-tile.tone-5,
   .chat-scope-avatar.tone-5 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #0f8fa8 0%, #6a5af9 100%);
+    color: #fff;
+  }
+
+  /* "All companies" is not a company — it keeps the neutral fill and the
+     Stack glyph so it reads as a scope, not another tenant. */
+  .chat-scope-tile.all,
+  .chat-scope-avatar.chat-scope-plus {
+    background: var(--btn-bg);
+    color: var(--t2);
   }
 
   .chat-scope-row-label {
@@ -3315,9 +3279,10 @@
     background: transparent;
     color: var(--t2);
     font: inherit;
-    /* Same step as the timeline body (14px) so the rail and the conversation
-       share one reading size. */
-    font-size: 14px;
+    /* Same step as the timeline body so the rail and the conversation share
+       one reading size. 13px is the design's body step; the rail sat a step
+       above it, which made the sidebar the loudest column on screen. */
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.2;
     text-align: left;

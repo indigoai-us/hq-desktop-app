@@ -1,4 +1,9 @@
 <script lang="ts">
+  import Chat from "phosphor-svelte/lib/Chat";
+  import FileText from "phosphor-svelte/lib/FileText";
+  import Info from "phosphor-svelte/lib/Info";
+  import Kanban from "phosphor-svelte/lib/Kanban";
+  import UsersThree from "phosphor-svelte/lib/UsersThree";
   import { parseMeshProjectView, projectViewToBoard } from "@hq/core";
   /**
    * DesktopApp — the windowed V2 shell (design source: hq-sync desktop-alt +
@@ -719,8 +724,8 @@
   let phoneViewport = $state(startsAsOverlay);
   let sidebarCollapsed = $state(startsAsOverlay);
   let sidebarWidth = $state((() => {
-    try { const saved = Number(localStorage.getItem('hq.sidebar.width')); return saved >= 220 && saved <= 440 ? saved : 260; }
-    catch { return 260; }
+    try { const saved = Number(localStorage.getItem('hq.sidebar.width')); return saved >= 220 && saved <= 440 ? saved : 280; }
+    catch { return 280; }
   })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
@@ -4919,33 +4924,7 @@
                         aria-label="Project description"
                         onclick={() => (projectAboutOpen = !projectAboutOpen)}
                       >
-                        <svg
-                          viewBox="0 0 16 16"
-                          width="14"
-                          height="14"
-                          fill="none"
-                          aria-hidden="true"
-                        >
-                          <circle
-                            cx="8"
-                            cy="8"
-                            r="5.25"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                          />
-                          <path
-                            d="M8 7.15v3.2"
-                            stroke="currentColor"
-                            stroke-width="1.3"
-                            stroke-linecap="round"
-                          />
-                          <circle
-                            cx="8"
-                            cy="5.35"
-                            r="0.7"
-                            fill="currentColor"
-                          />
-                        </svg>
+                        <Info size={14} aria-hidden="true" />
                       </button>
                     {/if}
                   </span>
@@ -5026,65 +5005,11 @@
                     >
                       <span class="project-tab-icon" aria-hidden="true">
                         {#if t.id === "chat"}
-                          <svg
-                            viewBox="0 0 16 16"
-                            width="14"
-                            height="14"
-                            fill="none"
-                          >
-                            <path
-                              d="M2.75 3.5h10.5v7.25H7.2L4 13.25V10.75H2.75V3.5Z"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                              stroke-linejoin="round"
-                            />
-                          </svg>
+                          <Chat size={14} aria-hidden="true" />
                         {:else if t.id === "board"}
-                          <svg
-                            viewBox="0 0 16 16"
-                            width="14"
-                            height="14"
-                            fill="none"
-                          >
-                            <rect
-                              x="2.5"
-                              y="2.5"
-                              width="4"
-                              height="11"
-                              rx="0.75"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                            />
-                            <rect
-                              x="9.5"
-                              y="2.5"
-                              width="4"
-                              height="7"
-                              rx="0.75"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                            />
-                          </svg>
+                          <Kanban size={14} aria-hidden="true" />
                         {:else}
-                          <svg
-                            viewBox="0 0 16 16"
-                            width="14"
-                            height="14"
-                            fill="none"
-                          >
-                            <path
-                              d="M4 2.75h4.2L12 5.55V13.25H4V2.75Z"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                              stroke-linejoin="round"
-                            />
-                            <path
-                              d="M8.2 2.9v2.8H12"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                              stroke-linejoin="round"
-                            />
-                          </svg>
+                          <FileText size={14} aria-hidden="true" />
                         {/if}
                       </span>
                       <span>{t.label}</span>
@@ -5110,39 +5035,7 @@
                     onclick={() => (membersOpen = !membersOpen)}
                   >
                     <span class="member-count-icon" aria-hidden="true">
-                      <svg
-                        viewBox="0 0 16 16"
-                        width="14"
-                        height="14"
-                        fill="none"
-                      >
-                        <circle
-                          cx="6"
-                          cy="5.5"
-                          r="2.25"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                        />
-                        <path
-                          d="M2.5 12.5c.4-2 1.9-3 3.5-3s3.1 1 3.5 3"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                          stroke-linecap="round"
-                        />
-                        <circle
-                          cx="11"
-                          cy="6"
-                          r="1.75"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                        />
-                        <path
-                          d="M11.5 9.5c1.2.2 2.2 1.1 2.5 2.5"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                          stroke-linecap="round"
-                        />
-                      </svg>
+                      <UsersThree size={14} aria-hidden="true" />
                     </span>
                     <span class="member-count-num"
                       >{memberPillCount || "·"}</span

@@ -265,7 +265,7 @@
     flex-direction: column;
     gap: 2px;
     padding: 10px 12px;
-    border: 1px solid var(--line);
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised);
   }

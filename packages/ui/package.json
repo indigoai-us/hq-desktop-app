@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@hq/core": "workspace:*",
-    "@hq/platform": "workspace:*"
+    "@hq/platform": "workspace:*",
+    "phosphor-svelte": "^3.1.0"
   }
 }

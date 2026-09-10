@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Check from "phosphor-svelte/lib/Check";
+  import Sparkle from "phosphor-svelte/lib/Sparkle";
   /**
    * OpenFileInClaudeCode — desktop-alt drill-in affordance that opens a single
    * file in Claude Code (US-012).
@@ -141,38 +143,9 @@
     {#if dispatching}
       <span class="button-spinner" aria-hidden="true"></span>
     {:else if dispatched}
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        aria-hidden="true"
-      >
-        <path
-          d="M3.5 8.5l3 3 6-6.5"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <Check size={12} aria-hidden="true" />
     {:else}
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        aria-hidden="true"
-      >
-        <path
-          d="M8 2.5l1.4 3.6 3.6 1.4-3.6 1.4L8 12.5 6.6 8.9 3 7.5l3.6-1.4L8 2.5z"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <Sparkle size={12} aria-hidden="true" />
     {/if}
     <span class="open-claude-label">
       {#if dispatching}

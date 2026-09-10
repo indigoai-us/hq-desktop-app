@@ -109,19 +109,24 @@
   }
   .reaction-pill:hover .reaction-tooltip,
   .reaction-pill:focus-visible .reaction-tooltip { display: block; }
+  /* The design's pill: 22px tall, 7px of side padding, an 11px emoji and a
+     10px count. At 28px with 13px text these were nearly the height of a line
+     of body copy, so a message with three reactions read as two paragraphs.
+     22px still clears the 24px pointer target once the 4px row gap is counted,
+     and the emoji itself stays a comfortable hit area. */
   .reaction-pill {
     position: relative;
     display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
-    min-height: 1.75rem; /* 28px tap target */
-    padding: 0.125rem 0.5rem;
+    gap: 5px;
+    height: 22px;
+    padding: 0 7px;
     border: 1px solid var(--pop-border);
     border-radius: 999px;
     background: var(--pop-hover);
     color: var(--pop-text);
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: 11px;
     line-height: 1;
     cursor: pointer;
     transition:
@@ -147,12 +152,15 @@
   }
 
   .reaction-emoji {
-    font-size: var(--text-base);
+    font-size: 11px;
     line-height: 1;
   }
 
+  /* The count is subordinate to the emoji, not equal to it. */
   .reaction-count {
-    font-weight: 600;
+    color: var(--pop-muted);
+    font-size: 10px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
   }
 
@@ -161,14 +169,15 @@
     display: inline-flex;
   }
 
+  /* Matches the pill it sits beside. */
   .reaction-add {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.0625rem;
-    min-width: 1.75rem; /* 28px tap target */
-    min-height: 1.75rem;
-    padding: 0 0.375rem;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 7px;
     border: 1px solid var(--pop-border);
     border-radius: 999px;
     background: var(--pop-hover);

@@ -33,7 +33,9 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ['@hq/ui', '@hq/platform', '@hq/core', '@hq/work'],
+    // phosphor-svelte resolves icons through the `svelte` export condition;
+    // prebundling picks the wrong one and hands back undefined components.
+    exclude: ['@hq/ui', '@hq/platform', '@hq/core', '@hq/work', 'phosphor-svelte'],
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
