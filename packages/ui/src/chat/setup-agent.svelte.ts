@@ -398,6 +398,24 @@ export class SetupAgent {
     }
   }
 
+  /**
+   * The person says they are done. A skill without guided markers never
+   * tells the desktop it finished; this is the honest way out — mark the
+   * run finished, keep the conversation, and offer the Continue buttons.
+   */
+  finish(): void {
+    const sessionId = this.sessionId;
+    if (!sessionId || this.mode === "done") return;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+    this.mode = "done";
+    if (!this.finished) {
+      this.finished = true;
+      saveSetupRunRecord({ sessionId, step: SETUP_RUN_STEPS.length - 1, status: "done" });
+      this.hooks.onfinished?.();
+    }
+  }
+
   async runAgain(tool?: SetupProviderTool): Promise<"started" | "needs-sessions-page" | "busy"> {
     this.unsubscribe?.();
     this.unsubscribe = null;

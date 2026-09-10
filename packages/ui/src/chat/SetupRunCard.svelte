@@ -54,6 +54,10 @@
     onshowdetails?: () => void;
     oncontinue?: () => void;
     onrunagain?: () => void;
+    /** The person declares the run finished (no marker came). */
+    onfinish?: () => void;
+    /** The engine has ended its turn and is waiting on the person, with nothing asked. */
+    idle?: boolean;
     /**
      * Store a credential from the secret card into the vault. Resolves when
      * stored; rejects with a plain message otherwise. Without it the secret
@@ -75,8 +79,11 @@
     onshowdetails,
     oncontinue,
     onrunagain,
+    onfinish,
+    idle = false,
     onstoresecret,
   }: Props = $props();
+
 
   /** The guided component paired with the open question, when the host can serve it. */
   const card = $derived.by((): SetupCard | null => {
@@ -90,6 +97,8 @@
   const done = $derived(mode === "done" || (mode === "live" && Boolean(run?.done)));
   const stopped = $derived(mode === "stopped" || (mode === "live" && Boolean(run?.ended)));
   const question = $derived(mode === "live" && !done && !stopped ? (run?.question ?? null) : null);
+  /** Live, quiet, nothing asked: offer a way to close it out or start over. */
+  const waiting = $derived(mode === "live" && idle && !done && !stopped && !question && Boolean(run) && !run?.inFlight);
   const currentStep = $derived(mode === "resume" ? resumeStep : (run?.step ?? 0));
 
   function statusOf(index: number): "pending" | "running" | "done" {
@@ -514,6 +523,17 @@
       >
         Run again
       </SetupButton>
+    {:else if waiting}
+      {#if onfinish}
+        <SetupButton variant="primary" data-testid="setup-run-finish" disabled={busy} onclick={() => onfinish?.()}>
+          I'm all set
+        </SetupButton>
+      {/if}
+      {#if onrunagain}
+        <SetupButton variant="quiet" data-testid="setup-run-again" disabled={busy} onclick={() => onrunagain?.()}>
+          Run again
+        </SetupButton>
+      {/if}
     {/if}
     {#if onshowdetails && mode !== "resume"}
       <SetupButton variant="quiet" data-testid="setup-run-details" onclick={() => onshowdetails?.()}>

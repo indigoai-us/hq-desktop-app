@@ -4958,6 +4958,8 @@
                         onsend={(text) => void setupAgent.send(text)}
                         oncontinue={() => void setupAgent.continueRun()}
                         onrunagain={() => void setupAgent.runAgain()}
+                        onfinish={() => setupAgent.finish()}
+                        idle={setupAgent.snapshot?.phase === "idle"}
                         onstoresecret={setupAgent.canStoreSecrets ? (card, value) => setupAgent.storeSecret(card, value) : undefined}
                       />
                       {/if}

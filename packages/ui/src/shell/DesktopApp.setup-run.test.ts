@@ -218,6 +218,32 @@ describe("DesktopApp native setup run wiring", () => {
     expect(last?.querySelector("strong")?.textContent).toBe("Everything's working:");
   });
 
+  it("when the agent goes quiet without a finish marker, the person can close it out themselves", async () => {
+    const api = fakeSetupRun();
+    await mountApp(api);
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await settle();
+    // Nothing offered while it works…
+    api.emit({ kind: "assistantMessage", text: "You're synced and ready. Ball's in your court — /startwork when you're ready." });
+    await settle();
+    expect(host.querySelector('[data-testid="setup-run-finish"]')).toBeNull();
+    // …but once the turn ends with nothing asked, the way out is explicit.
+    api.emit({ kind: "turnDone", status: "success", error: null }, "idle");
+    await settle();
+    expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeNull();
+    const finish = host.querySelector<HTMLButtonElement>('[data-testid="setup-agent-prompt"] [data-testid="setup-run-finish"]');
+    expect(finish?.textContent?.trim()).toBe("I'm all set");
+    expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-again"]')).toBeTruthy();
+    finish!.click();
+    await settle();
+    expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="setup-run-finish"]')).toBeNull();
+    // The conversation stays.
+    const messages = Array.from(host.querySelectorAll('[data-testid="conversation-message"]')).map((el) => el.textContent ?? "");
+    expect(messages.some((text) => text.includes("Ball's in your court"))).toBe(true);
+    expect(window.localStorage.getItem("hq.welcome.setup-run.v1")).toBeTruthy();
+  });
+
   it("a usage-limit stop names the reason and offers the other agent right there", async () => {
     const api = fakeSetupRun();
     api.providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: true, codexAvailable: true, codexLoggedIn: true }));
