@@ -1,6 +1,7 @@
 <script lang="ts">
   import PaperPlaneRight from "phosphor-svelte/lib/PaperPlaneRight";
   import X from "phosphor-svelte/lib/X";
+  import Smiley from "phosphor-svelte/lib/Smiley";
   import Paperclip from "phosphor-svelte/lib/Paperclip";
   /**
    * ReplyPanel — Slack-style reply column (port of hq-desktop-app ThreadPanel).
@@ -1016,6 +1017,7 @@
                 {/if}
                 <span class="reply-time">{formatTime(msg.createdAt)}</span>
               </div>
+              <div class="reply-main">
               {#if replyRich.text.trim()}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
@@ -1058,16 +1060,6 @@
                 resolveUrl={resolveAttachmentUrl}
                 {onreleaseurl}
               />
-              {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
-                <ReactionBar
-                    {selfPersonUid}
-                    {displayNameByUid}
-                  messageId={msg.eventId}
-                  reactions={reactionsFor(msg.eventId)}
-                  ontoggle={toggle}
-                  compact
-                />
-              {/if}
               {#if !msg.eventId.startsWith("local-")}
                 <div
                   class="reply-quick-react"
@@ -1096,7 +1088,7 @@
                         (reactPickerFor =
                           reactPickerFor === msg.eventId ? null : msg.eventId)}
                     >
-                      +
+                      <Smiley size={14} aria-hidden="true" />
                     </button>
                     {#if reactPickerFor === msg.eventId}
                       <EmojiPicker
@@ -1109,6 +1101,17 @@
                     {/if}
                   </span>
                 </div>
+              {/if}
+              </div>
+              {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
+                <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
+                  messageId={msg.eventId}
+                  reactions={reactionsFor(msg.eventId)}
+                  ontoggle={toggle}
+                  compact
+                />
               {/if}
               {#if msg.sendStatus === "sending"}
                 <span class="reply-send-state" role="status">Sending…</span>
@@ -1272,14 +1275,14 @@
     position: relative;
     flex-shrink: 0;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr);
-    gap: 8px;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 12px;
     align-items: start;
     padding: 12px 18px 4px;
   }
 
   .reply-root:hover .reply-quick-react-root,
-  .reply-root:focus-within .reply-quick-react-root,
+  .reply-root:has(:focus-visible) .reply-quick-react-root,
   .reply-quick-react-root:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
@@ -1448,41 +1451,63 @@
     gap: 0;
   }
 
+  /* Same geometry as the main chat's `.dm-msg`: 32px avatar, 12px gutter,
+     3px/8px padding, and the group gap between turns. The panel used a 36px
+     mark on an 8px gutter packed 10px apart, so the same conversation read
+     tighter and shifted right the moment it moved into the thread. */
   .reply-row {
     position: relative;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr);
-    gap: 8px;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 12px;
     align-items: start;
-    padding: 5px 8px;
+    box-sizing: border-box;
+    width: 100%;
+    padding: var(--msg-row-pad-y, 3px) 8px;
     border-radius: 6px;
+  }
+
+  /* Every reply carries its own header, so each one is a group start in the
+     main chat's terms and takes the same 18px of air. */
+  .reply-row + .reply-row {
+    margin-top: var(--msg-group-gap, 18px);
   }
 
   .reply-avatar {
     display: grid;
     place-items: start center;
-    flex: 0 0 36px;
-    width: 36px;
+    flex: 0 0 32px;
+    width: 32px;
     min-height: 1px;
     padding-top: var(--msg-avatar-pad-top, 2px);
   }
 
-  .reply-row:hover {
-    background: color-mix(in srgb, var(--t1) 4%, transparent);
+  /* The concept's `.msg-main`: the box the hover bar hangs off. It wraps the
+     body only — never the reaction row — so the bar lands on the bottom edge
+     of the content it belongs to. */
+  .reply-main {
+    position: relative;
+    align-self: stretch;
+    width: 100%;
+    min-width: 0;
   }
 
-  /* Hover quick-react toolbar — matches the main-chat .dm-quick-react: an
-     opaque floating bar (quick emojis + picker) that takes no layout space, so
-     rows stay tight and the affordance only appears on hover/focus. */
+  /* Identical to the main chat's `.dm-quick-react`, which the panel's version
+     had drifted from: it sat ABOVE the row at `top: -12px`, overlapping the
+     message before it, and right-aligned to the row rather than the body. Now
+     it hangs 4px off the bottom-right corner of its own message, same as the
+     main chat and the concept's `.react-bar`. */
   .reply-quick-react {
     position: absolute;
-    top: -12px;
-    right: 8px;
+    top: 100%;
+    right: 0;
     z-index: 2;
     display: flex;
-    gap: 2px;
+    align-items: center;
+    gap: 1px;
+    margin-top: 4px;
     padding: 2px;
-    border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--panel-border, var(--line));
     border-radius: 8px;
     background-color: var(--v4-ground, #1c1c1f);
     background-image: linear-gradient(var(--panel-bg), var(--panel-bg));
@@ -1492,8 +1517,18 @@
     transition: opacity 0.12s ease;
   }
 
+  /* Bridges the 4px offset so the pointer never crosses dead space. */
+  .reply-quick-react::before {
+    content: "";
+    position: absolute;
+    inset: -6px -4px -4px;
+    z-index: -1;
+  }
+
+  /* `:focus-visible`, not `:focus-within` — a mouse click inside the message
+     otherwise left the bar hanging there after the pointer moved away. */
   .reply-row:hover .reply-quick-react,
-  .reply-row:focus-within .reply-quick-react,
+  .reply-row:has(:focus-visible) .reply-quick-react,
   .reply-quick-react:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
@@ -1513,26 +1548,28 @@
 
   .reply-quick-react-more {
     color: var(--t2, var(--pop-muted));
-    font-weight: 600;
   }
 
+  /* Concept `.rb-ic`: a 24px transparent square that fills on hover. The
+     panel's chips were pre-filled, so the bar read as four pressed buttons. */
   .reply-quick-react-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 26px;
+    display: grid;
+    place-items: center;
+    width: 24px;
     height: 24px;
-    padding: 0 0.25rem;
+    padding: 0;
     border: 0;
     border-radius: 6px;
-    background: var(--pop-hover);
-    font-size: 12px;
+    background: transparent;
+    color: var(--t1);
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
   }
 
   .reply-quick-react-btn:hover {
-    background: var(--c-field-bg);
+    background: var(--hover);
+    color: var(--t1);
   }
 
   .reply-col {

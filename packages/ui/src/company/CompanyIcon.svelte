@@ -48,6 +48,15 @@
   const showImage = $derived(Boolean(safeSrc) && brokenSrc !== safeSrc);
 
   const alt = $derived(decorative ? "" : (label?.trim() || "Company"));
+
+  /**
+   * The glyph draws smaller than its box. A favicon is a filled plate that
+   * fills the 16px square edge to edge; line art at the same nominal size has
+   * ink reaching every corner, so it out-weighed the 16px avatar circle beside
+   * it in the rail. The concept sets its own rail hash to 13 in a 16px box —
+   * same 0.8 ratio.
+   */
+  const glyphSize = $derived(Math.round(size * 0.8));
 </script>
 
 <span
@@ -71,11 +80,11 @@
          currentColor, round joins. Same office mark as the Settings
          "companies" nav icon so the two never disagree. -->
     <Buildings
-    class="company-icon-glyph"
-    size={size}
-    role={decorative ? "presentation" : "img"}
-    aria-label={decorative ? undefined : label}
-  />
+      class="company-icon-glyph"
+      size={glyphSize}
+      role={decorative ? "presentation" : "img"}
+      aria-label={decorative ? undefined : label}
+    />
   {/if}
 </span>
 
@@ -100,10 +109,5 @@
     /* A favicon on a white plate next to dark chrome needs no extra frame,
        but a hairline keeps a transparent PNG from floating. */
     box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 12%, transparent);
-  }
-  .company-icon-glyph {
-    display: block;
-    width: 100%;
-    height: 100%;
   }
 </style>

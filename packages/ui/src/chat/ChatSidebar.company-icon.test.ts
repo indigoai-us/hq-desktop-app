@@ -124,8 +124,10 @@ function mark(channelId: string): HTMLElement | null {
 }
 
 function hash(channelId: string): HTMLElement | null {
+  // The rail's `#` is a 13px Hash icon in a 16px box, not a text glyph — a
+  // text `#` set to fill the box out-weighed the 16px avatar beside it.
   return host.querySelector(
-    `[data-conversation-id="ch:${channelId}"] .chat-glyph`,
+    `[data-conversation-id="ch:${channelId}"] .chat-glyph[data-glyph="hash"] svg`,
   );
 }
 
@@ -179,9 +181,9 @@ describe("ChatSidebar rail — company channel marks", () => {
     });
     // Only company-scoped rows change; the design system does not otherwise
     // differentiate project/personal channels.
-    expect(hash("chn_project")?.textContent).toBe("#");
+    expect(hash("chn_project")).toBeTruthy();
     expect(mark("chn_project")).toBeNull();
-    expect(hash("chn_personal")?.textContent).toBe("#");
+    expect(hash("chn_personal")).toBeTruthy();
     expect(mark("chn_personal")).toBeNull();
   });
 
@@ -245,6 +247,6 @@ describe("ChatSidebar rail — company channel marks", () => {
     expect(mark("chn_company_noicon")?.getAttribute("data-company-icon")).toBe(
       "glyph",
     );
-    expect(hash("chn_project")?.textContent).toBe("#");
+    expect(hash("chn_project")).toBeTruthy();
   });
 });

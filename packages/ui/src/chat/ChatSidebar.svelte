@@ -145,7 +145,6 @@
   import PencilSimple from "phosphor-svelte/lib/PencilSimple";
   import Plus from "phosphor-svelte/lib/Plus";
   import PushPin from "phosphor-svelte/lib/PushPin";
-  import Robot from "phosphor-svelte/lib/Robot";
   import SignOut from "phosphor-svelte/lib/SignOut";
   import Stack from "phosphor-svelte/lib/Stack";
   import {
@@ -416,8 +415,6 @@
   /** Which face of CreateModal the New menu asked for. */
   let createStep = $state<"find" | "create">("find");
   let newMenuOpen = $state(false);
-  let newEntryBusy = $state<"company" | "agent" | null>(null);
-  let newEntryError = $state<string | null>(null);
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
   let newWrapEl = $state<HTMLElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
@@ -878,48 +875,12 @@
   function openNewMenu(): void {
     const next = !newMenuOpen;
     closeAllOverlays();
-    newEntryError = null;
     newMenuOpen = next;
   }
 
   function newFromMenu(step: "find" | "create"): void {
     newMenuOpen = false;
     openCreate(step);
-  }
-
-  async function runNewEntry(
-    kind: "company" | "agent",
-    run: () => Promise<EntryPointResult>,
-  ): Promise<void> {
-    if (newEntryBusy) return;
-    newEntryBusy = kind;
-    newEntryError = null;
-    try {
-      const result = await run();
-      if (result.ok) {
-        newMenuOpen = false;
-        return;
-      }
-      newEntryError = result.reason;
-    } catch (err) {
-      newEntryError = err instanceof Error ? err.message : String(err);
-    } finally {
-      newEntryBusy = null;
-    }
-  }
-
-  function newCompanyFromMenu(): void {
-    if (!oncreatecompany) return;
-    void runNewEntry("company", oncreatecompany);
-  }
-
-  /** One company: straight there. Several: the active scope, else the first. */
-  function newAgentFromMenu(): void {
-    if (!oncreateagent) return;
-    const target =
-      agentCompanies.find((c) => c.companyUid === scope) ?? agentCompanies[0];
-    if (!target) return;
-    void runNewEntry("agent", () => oncreateagent!(target.companyUid));
   }
 
   /** Close the create modal; optionally open the channel it just created. */
@@ -2015,43 +1976,6 @@
               </span>
               New project
             </button>
-            {#if oncreatecompany}
-              <button
-                type="button"
-                class="chat-popover-row"
-                role="menuitem"
-                data-testid="chat-new-company-item"
-                aria-busy={newEntryBusy === "company" ? "true" : undefined}
-                disabled={newEntryBusy != null}
-                onclick={newCompanyFromMenu}
-              >
-                <span class="chat-popover-ic" aria-hidden="true">
-                  <Buildings size={14} />
-                </span>
-                New company
-              </button>
-            {/if}
-            {#if oncreateagent && agentCompanies.length > 0}
-              <button
-                type="button"
-                class="chat-popover-row"
-                role="menuitem"
-                data-testid="chat-new-agent-item"
-                aria-busy={newEntryBusy === "agent" ? "true" : undefined}
-                disabled={newEntryBusy != null}
-                onclick={newAgentFromMenu}
-              >
-                <span class="chat-popover-ic" aria-hidden="true">
-                  <Robot size={14} />
-                </span>
-                New agent
-              </button>
-            {/if}
-            {#if newEntryError}
-              <p class="chat-scope-error" role="alert" data-testid="chat-new-error">
-                {newEntryError}
-              </p>
-            {/if}
           </div>
         {/if}
       </div>
@@ -2535,7 +2459,7 @@
                     onclick={() => openSearchHit(hit)}
                   >
                     {#if row.kind === "channel"}
-                      <span class="chat-glyph" aria-hidden="true">#</span>
+                      <span class="chat-glyph" data-glyph="hash" aria-hidden="true"><Hash size={13} /></span>
                     {:else if row.kind === "group"}
                       <span class="chat-avatar group" aria-hidden="true">
                         {row.memberCount ?? row.members?.length ?? 0}
@@ -2817,7 +2741,7 @@
             {#if !hasChildren && isCompanyScopedRow(row)}
               <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
             {:else if !hasChildren}
-              <span class="chat-glyph">#</span>
+              <span class="chat-glyph" data-glyph="hash" aria-hidden="true"><Hash size={13} /></span>
             {/if}
             {#if showProjectPresence}
               <span
@@ -3588,13 +3512,18 @@
     justify-content: center;
   }
 
+  /* The concept draws a 13px Hash inside a 16px box. This was a text `#` set
+     at 16px, whose ink overshot the box and read heavier than the 16px avatar
+     circle on the row below it. */
   .chat-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex: 0 0 16px;
     width: 16px;
+    height: 16px;
     color: var(--t3);
-    font-size: 16px;
-    font-weight: 400;
-    text-align: center;
+    line-height: 0;
   }
 
   .chat-presence-dot {

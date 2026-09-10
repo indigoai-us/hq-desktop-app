@@ -1742,17 +1742,28 @@
     transform: translateX(-50%);
     z-index: 2;
     padding: 5px 12px;
-    border: 1px solid var(--line);
+    border: 1px solid var(--panel-border, var(--line));
     border-radius: 999px;
-    background: var(--bg2, var(--bg1));
+    /* Opaque, floated. `--bg2` is translucent in this theme, so history
+       scrolled visibly through the pill and neither the pill nor the message
+       under it stayed readable. Same composite the hover bar uses: a solid
+       colour underneath, the themed panel fill painted over it, so the pill is
+       opaque in both themes without hard-coding either one. */
+    background-color: var(--v4-ground, #1c1c1f);
+    background-image: linear-gradient(var(--panel-bg), var(--panel-bg));
+    box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
     color: var(--t2, var(--t1));
     font: 500 12px/1.3 var(--font-ui);
     white-space: nowrap;
     cursor: pointer;
-    box-shadow: 0 2px 8px color-mix(in srgb, var(--t1) 14%, transparent);
   }
+  /* Only the image layer changes on hover — the opaque base stays. The old
+     `background` shorthand reset it and made the pill see-through again the
+     moment the pointer landed on it. */
   .new-messages-jump:hover {
-    background: var(--hover, color-mix(in srgb, var(--t1) 6%, transparent));
+    background-image:
+      linear-gradient(var(--hover), var(--hover)),
+      linear-gradient(var(--panel-bg), var(--panel-bg));
     color: var(--t1);
   }
   .new-messages-jump.has-unseen {
@@ -2248,8 +2259,12 @@
     background: none;
   }
 
-  .dm-msg-reply-active {
-    background: color-mix(in srgb, var(--t1) 5%, transparent);
+  /* Concept `.replies.on`: opening a thread lights the button that opened it,
+     not the message behind it. Tinting the whole block made the open message
+     read as selected and washed out its own hover state. */
+  .dm-msg-reply-active .dm-replies-count {
+    border-color: var(--line2);
+    background: var(--btn-bg);
   }
 
   /* The concept's `.replies`: a quiet pill carrying the faces, the count in
@@ -2308,6 +2323,16 @@
     border-radius: 999px;
   }
 
+  /* Concept `.m-ava.sm`: 18px, a step below the 20px used inline and well
+     below the 32px message avatar, so the pill stays subordinate to the
+     message it hangs off. */
+  .dm-replies-avatar :global(.identity.small) {
+    width: 18px;
+    height: 18px;
+    flex-basis: 18px;
+    font-size: 7px;
+  }
+
   /* Slack-style hover toolbar pinned to the message. */
   /* Concept `.react-bar`: hangs off the bottom edge of the bubble or card,
      right-aligned with it, 4px clear.
@@ -2359,8 +2384,12 @@
     z-index: -1;
   }
 
+  /* `:focus-within` kept the bar up after any click inside the message — most
+     visibly after "View replies", where it hung over the thread you had just
+     opened. `:focus-visible` still reveals it for keyboard users, but a mouse
+     click leaves no residue. Concept: hover, or picker open. */
   .dm-msg:hover .dm-quick-react,
-  .dm-msg:focus-within .dm-quick-react,
+  .dm-msg:has(:focus-visible) .dm-quick-react,
   .dm-quick-react:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
