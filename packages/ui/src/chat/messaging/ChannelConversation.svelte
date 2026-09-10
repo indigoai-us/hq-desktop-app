@@ -1139,7 +1139,9 @@
         data-testid="conversation-thread"
       >
         {#if header}{@render header()}{/if}
-        {#if timeline.length === 0 && !loading}
+        <!-- An empty `emptyLabel` means the host has its own opening content
+             (the setup intro) and wants no empty-state at all. -->
+        {#if timeline.length === 0 && !loading && emptyLabel !== ""}
           <div
             class="dm-thread-empty"
             data-testid="conversation-empty"
@@ -1216,8 +1218,10 @@
                     >{formatTime(msg.createdAt)}</span
                   >
                 </div>
-                <RunCompleteCard model={systemModel} {onopenurl} />
-                {@render quickReact(msg.eventId)}
+                <div class="dm-msg-main">
+                  <RunCompleteCard model={systemModel} {onopenurl} />
+                  {@render quickReact(msg.eventId)}
+                </div>
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
                     {selfPersonUid}
@@ -1251,13 +1255,15 @@
                     >{formatTime(msg.createdAt)}</span
                   >
                 </div>
-                <LifecycleCard
-                  model={systemModel}
-                  channelId={channelId ?? ""}
-                  {onopenurl}
-                  {oncardaction}
-                />
-                {@render quickReact(msg.eventId)}
+                <div class="dm-msg-main">
+                  <LifecycleCard
+                    model={systemModel}
+                    channelId={channelId ?? ""}
+                    {onopenurl}
+                    {oncardaction}
+                  />
+                  {@render quickReact(msg.eventId)}
+                </div>
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
                     {selfPersonUid}
@@ -1334,6 +1340,7 @@
                     >
                   </div>
                 {/if}
+                <div class="dm-msg-main">
                 <div class="dm-bubble">
                   {#if rich.text.trim()}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1394,6 +1401,8 @@
                     {onreleaseurl}
                   />
                 </div>
+                  {@render quickReact(msg.eventId)}
+                </div>
                 {#if (msg.replyCount ?? 0) > 0}
                   {@const preview = replyMetaFor(msg)}
                   <button
@@ -1433,7 +1442,6 @@
                     {/if}
                   </button>
                 {/if}
-                {@render quickReact(msg.eventId)}
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
                     {selfPersonUid}
@@ -2288,13 +2296,29 @@
   }
 
   /* Slack-style hover toolbar pinned to the message. */
-  /* Concept `.react-bar`: opens BELOW the row on the message's own right
-     edge, 4px clear. Floating it at `top: -14px` sat it over the message
-     above and made the bar look like it belonged to that one. */
+  /* Concept `.react-bar`: hangs off the bottom edge of the bubble or card,
+     right-aligned with it, 4px clear.
+     Anchored to `.dm-msg-main`, not to the whole message: measuring the
+     message put the bar below the reaction row on anything already reacted
+     to, where it read as belonging to nothing. Reactions are left-aligned, so
+     the two never collide. */
+  /* The concept's `.msg-main`: the positioning box the hover bar hangs off.
+     It wraps the bubble or card only — never the reaction row — so the bar
+     lands on the bottom edge of the content it belongs to. */
+  .dm-msg-main {
+    position: relative;
+    /* The column is `align-items: flex-start`, so without this the wrapper
+       would shrink-wrap the bubble and take every `width: 100%` card down
+       with it. The concept's `.msg-main` is a plain block filling `.msg-body`. */
+    align-self: stretch;
+    width: 100%;
+    min-width: 0;
+  }
+
   .dm-quick-react {
     position: absolute;
     top: 100%;
-    right: 8px;
+    right: 0;
     z-index: 2;
     display: flex;
     align-items: center;

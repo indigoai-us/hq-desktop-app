@@ -137,6 +137,7 @@
   import Clock from "phosphor-svelte/lib/Clock";
   import FunnelSimple from "phosphor-svelte/lib/FunnelSimple";
   import GearSix from "phosphor-svelte/lib/GearSix";
+  import X from "phosphor-svelte/lib/X";
   import Hash from "phosphor-svelte/lib/Hash";
   import House from "phosphor-svelte/lib/House";
   import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
@@ -2508,6 +2509,17 @@
             aria-activedescendant={switcherResults.length ? `conversation-search-${activeSearchIndex}` : undefined}
             onkeydown={searchKeydown}
           />
+          <!-- `.sd-close`, as on every dismissable surface in the concept. -->
+          <button
+            type="button"
+            class="chat-switcher-close"
+            data-testid="chat-search-close"
+            aria-label="Close search"
+            title="Close"
+            onclick={() => (searchOpen = false)}
+          >
+            <X size={13} weight="bold" aria-hidden="true" />
+          </button>
         </div>
         <div class="chat-switcher-list" id="conversation-search-results" role="listbox" aria-label="Conversations">
           {#each switcherResults as row, index (row.id)}
@@ -4132,12 +4144,38 @@
     box-shadow: var(--v4-shadow-window, var(--panel-shadow));
   }
 
+  .chat-switcher-close {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t3);
+    cursor: pointer;
+    transition:
+      color 0.12s,
+      background 0.12s;
+  }
+
+  .chat-switcher-close:hover,
+  .chat-switcher-close:focus-visible {
+    color: var(--t1);
+    background: var(--hover);
+    outline: none;
+  }
+
+  /* `.sm-head` */
   .chat-switcher-search {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--v4-hairline);
+    gap: 10px;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--line, var(--v4-hairline));
+    color: var(--t3);
   }
 
   .chat-switcher-search-ic {

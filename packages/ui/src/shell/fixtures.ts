@@ -193,6 +193,61 @@ const CONTACTS: DmContactInput[] = [
  * agent IdentityMark (✦) renders, and person/agent bubbles. INJECTED into the
  * shell — never fetched. Ported from the hq-sync dev-harness chat-fixtures.
  */
+/**
+ * Replies for `ao-1`, so the thread panel opens with a real conversation in it
+ * rather than "No replies yet" — the panel's spacing, grouping and divider are
+ * only judgeable against several turns.
+ */
+const THREAD_REPLIES: ConversationMessageWire[] = [
+  {
+    eventId: "ao-1-r1",
+    rootEventId: "ao-1",
+    fromPersonUid: "agt_fleet",
+    fromEmail: "fleet@agents.getindigo.ai",
+    fromDisplayName: "Fleet Agent",
+    body: "Starting now — I'll take the backlog oldest-first and stop at anything that needs a human.",
+    createdAt: new Date(now - 48 * 60_000).toISOString(),
+    direction: "in",
+  },
+  {
+    eventId: "ao-1-r2",
+    rootEventId: "ao-1",
+    fromDisplayName: "Ada Lovelace",
+    fromPersonUid: "prs_ada",
+    body: "Skip anything tagged `needs-design` please, I want to look at those myself.",
+    createdAt: new Date(now - 44 * 60_000).toISOString(),
+    direction: "in",
+  },
+  {
+    eventId: "ao-1-r3",
+    rootEventId: "ao-1",
+    fromPersonUid: "agt_fleet",
+    fromEmail: "fleet@agents.getindigo.ai",
+    fromDisplayName: "Fleet Agent",
+    body: "Noted — `needs-design` is excluded.",
+    createdAt: new Date(now - 43 * 60_000).toISOString(),
+    direction: "in",
+  },
+  {
+    eventId: "ao-1-r4",
+    rootEventId: "ao-1",
+    fromPersonUid: "agt_fleet",
+    fromEmail: "fleet@agents.getindigo.ai",
+    fromDisplayName: "Fleet Agent",
+    body: "Three auto-closed, one left for review: the duplicate-session report.",
+    createdAt: new Date(now - 41 * 60_000).toISOString(),
+    direction: "in",
+  },
+  {
+    eventId: "ao-1-r5",
+    rootEventId: "ao-1",
+    fromDisplayName: "Stefan",
+    body: "Perfect. I'll take the review one after standup.",
+    createdAt: new Date(now - 38 * 60_000).toISOString(),
+    direction: "out",
+  },
+];
+
 const TIMELINES: Record<string, ConversationMessageWire[]> = {
   "agent-orchestrator": [
     {
@@ -201,6 +256,7 @@ const TIMELINES: Record<string, ConversationMessageWire[]> = {
       body: "Kick off the nightly triage sweep when you get a sec.",
       createdAt: new Date(now - 52 * 60_000).toISOString(),
       direction: "out",
+      replyCount: THREAD_REPLIES.length,
     },
     {
       eventId: "ao-run-started",
@@ -576,12 +632,20 @@ export function createFixtureConversationApi(): ConversationApi {
       nextCursor: null,
     }),
     sendDm: async () => {},
-    fetchReplyThread: async () => ({
-      scope: "channel" as const,
-      root: null,
-      replies: [],
-      replyCount: 0,
-    }),
+    fetchReplyThread: async ({ rootEventId }) => {
+      const root =
+        Object.values(TIMELINES)
+          .flat()
+          .find((m) => m.eventId === rootEventId) ?? null;
+      const replies =
+        rootEventId === "ao-1" ? THREAD_REPLIES.map((r) => ({ ...r })) : [];
+      return {
+        scope: "channel" as const,
+        root,
+        replies,
+        replyCount: replies.length,
+      };
+    },
     sendReply: async () => {},
     runCardAction: async (args) => ({
       cardId: args.cardId,

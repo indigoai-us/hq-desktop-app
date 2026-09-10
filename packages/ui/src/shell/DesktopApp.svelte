@@ -952,6 +952,9 @@
     if (!row) return null;
     if (row.kind === "dm") return "Direct message";
     if (row.kind === "group") return "Group message";
+    // #welcome is HQ's own channel — it carries setup and help, so it reads as
+    // support rather than inheriting the personal-channel label.
+    if (isSetupChannel(row.channelId)) return "support channel";
     const scope = row.channelScope ?? "channel";
     const kindLabel =
       scope === "project"
@@ -1446,7 +1449,13 @@
    * ACTIVITY, not of messages — the label has to say so.
    */
   const conversationEmptyLabel = $derived(
-    isProjectChannel ? "No activity yet" : "No messages yet",
+    // #welcome opens with the setup intro above the thread, so it is never
+    // actually empty — an empty-state under all of that just reads as a fault.
+    isSetupChannel(selectedRow?.channelId)
+      ? ""
+      : isProjectChannel
+        ? "No activity yet"
+        : "No messages yet",
   );
 
   const messageScope = $derived(messageScopeForRow(selectedRow));
@@ -2191,7 +2200,11 @@
       : (channelStatus?.memberCount ?? 0),
   );
   const showMemberPill = $derived(
-    Boolean(selectedRow) && (memberPillCount > 0 || channelStatus != null),
+    Boolean(selectedRow) &&
+      // #welcome is a support channel between you and HQ, not a room with a
+      // roster — a member count there is meaningless.
+      !isSetupChannel(selectedRow?.channelId) &&
+      (memberPillCount > 0 || channelStatus != null),
   );
 
   function unwrapAdapter<T>(

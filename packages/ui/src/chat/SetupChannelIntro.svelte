@@ -203,13 +203,16 @@
           data-testid={`setup-resource-${resource.id}`}
           onclick={(event) => openResourceLink(event, resource.href)}
         >
-          <ResourceGlyph class="resource-glyph" size={16} aria-hidden="true" />
+          <span class="resource-top">
+            <span class="resource-glyph" aria-hidden="true">
+              <ResourceGlyph size={15} aria-hidden="true" />
+            </span>
+            <ArrowUpRight class="resource-arrow" size={14} aria-hidden="true" />
+          </span>
           <span class="resource-text">
-            <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
             <span class="resource-title">{resource.title}</span>
             <span class="resource-desc">{resource.description}</span>
           </span>
-          <ArrowUpRight class="resource-arrow" size={14} aria-hidden="true" />
         </a>
       </li>
     {/each}
@@ -412,33 +415,75 @@
 
   /* ---- Resources (ghost rows, no card chrome) ------------------------- */
 
+  /* `.su-links`: two filled cards per row on an 8px gutter, not a hairline
+     grid. Same links, same copy — the concept treats them as cards. */
   .resources {
-    margin: 0;
+    margin: 6px 0 0;
     padding: 0;
     list-style: none;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    column-gap: var(--space-6, 24px);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  @media (max-width: 620px) {
+    .resources {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   .resource {
-    border-top: 1px solid var(--border);
+    display: flex;
+    min-width: 0;
   }
 
+  /* `.su-link` */
   .resource-link {
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) 14px;
-    align-items: start;
-    gap: var(--space-3, 12px);
-    padding: var(--space-3, 12px) 0 var(--space-4, 16px);
-    color: var(--fg);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding: 13px 14px 15px;
+    border-radius: 10px;
+    background: var(--raised);
+    color: var(--t1, var(--fg));
+    text-align: left;
     text-decoration: none;
+    transition: background 0.12s;
   }
 
+  .resource-link:hover {
+    background: var(--btn-bg);
+  }
+
+  /* `.su-link-top` */
+  .resource-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 9px;
+  }
+
+  /* `.su-link-ic`: the glyph sits in its own 28px chip. */
   .resource-glyph {
-    margin-top: 2px;
-    color: var(--muted);
-    transition: color 140ms ease;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--btn-bg);
+    color: var(--t2, var(--muted));
+    transition:
+      background 0.12s,
+      color 0.12s;
+  }
+
+  .resource-link:hover .resource-glyph {
+    background: var(--line);
+    color: var(--t1, var(--fg));
   }
 
   .resource-text {
@@ -448,33 +493,31 @@
     min-width: 0;
   }
 
-  .eyebrow--muted {
-    color: var(--muted-2);
-  }
-
+  /* `.su-link-name` */
   .resource-title {
-    font-size: var(--text-base, 13px);
+    font-size: 12px;
     font-weight: 500;
     line-height: 1.35;
-    color: var(--fg);
-    text-decoration: underline;
-    text-decoration-color: transparent;
-    text-underline-offset: 0.16em;
-    transition: text-decoration-color 140ms ease;
+    color: var(--t1, var(--fg));
   }
 
+  /* `.su-link-desc` */
   .resource-desc {
-    font-size: var(--text-base, 13px);
-    line-height: 1.5;
-    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--t3, var(--muted));
   }
 
+  /* `.su-link-go` */
   .resource-arrow {
-    margin-top: 3px;
-    color: var(--muted-2);
+    color: var(--t3, var(--muted-2));
     transition:
       color 140ms ease,
       transform 160ms ease;
+  }
+
+  .resource-link:hover .resource-arrow {
+    color: var(--t2, var(--muted));
   }
 
   .resource-link:hover .resource-title,
@@ -499,13 +542,14 @@
 
   /* ---- Support note --------------------------------------------------- */
 
+  /* `.su-note` */
   .support-note {
-    margin: 0;
-    padding-top: var(--space-3, 12px);
-    border-top: 1px solid var(--border);
-    font-size: var(--text-base, 13px);
+    margin: 22px 0 0;
+    padding-top: 14px;
+    border-top: 1px solid var(--line, var(--border));
+    font-size: 11px;
     line-height: 1.5;
-    color: var(--muted-2);
+    color: var(--t3, var(--muted-2));
   }
 
   @media (prefers-reduced-motion: reduce) {
