@@ -262,6 +262,14 @@ describe("interpretSetupRun — questions", () => {
   });
 });
 
+describe("interpretSetupRun — guided", () => {
+  it("is guided once any step marker has been spoken, and not from prose alone", () => {
+    expect(interpretSetupRun([say("Checking tools.")]).guided).toBe(false);
+    expect(interpretSetupRun([say("[hq-setup] step=tools status=running\nChecking tools.")]).guided).toBe(true);
+    expect(interpretSetupRun([say("`[hq-setup] step=cloud status=done`\nSigned in.")]).guided).toBe(true);
+  });
+});
+
 describe("interpretSetupRun — in flight", () => {
   it("is in flight after words, tool calls, or the person's message; not after a turn end, exit, or a request", () => {
     expect(interpretSetupRun([]).inFlight).toBe(false);

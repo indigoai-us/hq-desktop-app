@@ -99,6 +99,13 @@
   const question = $derived(mode === "live" && !done && !stopped ? (run?.question ?? null) : null);
   /** Live, quiet, nothing asked: offer a way to close it out or start over. */
   const waiting = $derived(mode === "live" && idle && !done && !stopped && !question && Boolean(run) && !run?.inFlight);
+  /**
+   * "I'm all set" only when the finish could plausibly be here: a skill that
+   * never spoke the protocol (its wrap-up is prose), or a guided run on its
+   * last step. Mid-run, a guided agent waiting on a typed reply gets the
+   * composer, not a way to declare the whole thing finished by mistake.
+   */
+  const canFinish = $derived(waiting && Boolean(run) && (!run!.guided || run!.step >= SETUP_RUN_STEPS.length - 1));
   const currentStep = $derived(mode === "resume" ? resumeStep : (run?.step ?? 0));
 
   function statusOf(index: number): "pending" | "running" | "done" {
@@ -524,7 +531,7 @@
         Run again
       </SetupButton>
     {:else if waiting}
-      {#if onfinish}
+      {#if onfinish && canFinish}
         <SetupButton variant="primary" data-testid="setup-run-finish" disabled={busy} onclick={() => onfinish?.()}>
           I'm all set
         </SetupButton>

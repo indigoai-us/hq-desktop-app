@@ -277,6 +277,27 @@ describe("DesktopApp native setup run wiring", () => {
     expect(window.localStorage.getItem("hq.welcome.setup-run.v1")).toBeTruthy();
   });
 
+  it("a guided run waiting on a typed reply mid-way never offers I'm all set", async () => {
+    const api = fakeSetupRun();
+    await mountApp(api);
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await settle();
+    api.emit({ kind: "assistantMessage", text: "[hq-setup] step=you status=running\n\nLet's get to know you. A few quick things about you:\n1. What's your name?\n2. What do you do?\nTake your time." });
+    api.emit({ kind: "turnDone", status: "success", error: null }, "idle");
+    await settle();
+    expect(host.querySelector('[data-testid="setup-run-finish"]')).toBeNull();
+    expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeNull();
+    // Run again stays available; the composer is the way to answer.
+    expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-again"]')).toBeTruthy();
+    expect(host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]')?.disabled).toBe(false);
+
+    // On the last step the way out is back.
+    api.emit({ kind: "assistantMessage", text: "[hq-setup] step=moves status=running\n\nHere's where to jump in." });
+    api.emit({ kind: "turnDone", status: "success", error: null }, "idle");
+    await settle();
+    expect(host.querySelector('[data-testid="setup-run-finish"]')).toBeTruthy();
+  });
+
   it("a usage-limit stop names the reason and offers the other agent right there", async () => {
     const api = fakeSetupRun();
     api.providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: true, codexAvailable: true, codexLoggedIn: true }));

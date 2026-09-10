@@ -167,6 +167,8 @@ export interface SetupRunState {
    * end, an exit, or a request waiting on the person.
    */
   inFlight: boolean;
+  /** The skill has spoken the guided protocol (at least one step marker): its markers, not prose, decide the finish. */
+  guided: boolean;
   /** Why it stopped, when the engine said; null for a clean finish or an unexplained stop. */
   failure: SetupRunFailure | null;
   /** Short closing line for the done state. */
@@ -429,6 +431,7 @@ export function interpretSetupRun(
   /** The turn ended after the latest assistant words — the agent is waiting on the person. */
   let turnDoneSinceAssistant = false;
   let lastKind = "";
+  let guided = false;
 
   const advanceTo = (id: SetupRunStepId, status: "running" | "done") => {
     const index = STEP_INDEX[id];
@@ -470,6 +473,7 @@ export function interpretSetupRun(
         let marked = false;
         for (const match of text.matchAll(MARKER)) {
           marked = true;
+          guided = true;
           const id = match[1]!.toLowerCase() as SetupRunStepId;
           const status = match[2]?.toLowerCase() === "done" ? "done" : "running";
           advanceTo(id, status);
@@ -628,6 +632,7 @@ export function interpretSetupRun(
     done,
     ended,
     failure,
+    guided,
     inFlight:
       !done &&
       !ended &&
