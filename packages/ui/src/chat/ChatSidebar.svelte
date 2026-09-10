@@ -3284,7 +3284,9 @@
        above it, which made the sidebar the loudest column on screen. */
     font-size: 13px;
     font-weight: 400;
-    line-height: 1.2;
+    /* The shell's own line, 1.45 — at 1.2 a row measured 28px against the
+       design's 31px, so the whole rail ran denser than drawn. */
+    line-height: 1.45;
     text-align: left;
     cursor: pointer;
   }
@@ -3459,8 +3461,12 @@
     border-radius: 999px;
     background: var(--ice-ink);
     color: var(--badge-fg);
+    /* Counts are mono in the design, like every other number in the chrome —
+       and tabular figures keep a two-digit badge from wobbling. */
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 500;
+    font-variant-numeric: tabular-nums;
     line-height: 1;
   }
 

@@ -5689,6 +5689,20 @@
     min-width: 0;
   }
 
+  /* The channel name carried no rule of its own, so an <h2> fell through to
+     the document default and rendered at 13px/400 — smaller and lighter than
+     the `#` sitting next to it, which was already the design's 15px/600. */
+  .channel-title h2 {
+    margin: 0;
+    color: var(--t1);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.45;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .channel-header-avatar {
     display: inline-flex;
     flex: 0 0 auto;
