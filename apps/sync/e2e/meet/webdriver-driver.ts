@@ -111,7 +111,7 @@ async function collectRaw(options: CollectionOptions, collectionStarted?: () => 
       }));
       await new Promise<void>(resolve => setTimeout(resolve, 200));
     }
-    const transferSnapshots = await Promise.all([drivers[0].call('snapshot'), drivers[1].call('snapshot')]);
+    const transferSnapshots = await sealAndDrainNativeProbes(drivers);
     assertFileTransfer(transferSnapshots, endpoints[0].id, endpoints[1].id, fileSizeBytes);
     transferSnapshots.forEach((snapshot, i) => records[i].samples.push({
       responseReceivedMs: performance.now() - start, snapshot, finalFileReceipt: true,
@@ -150,6 +150,12 @@ export function assertFileTransfer(snapshots: unknown[], sourceId: string, recei
 }
 
 export interface ProbeClient { call(method: string, ...args: unknown[]): Promise<unknown> }
+/** Freeze every source before final drains so no received symbol lacks a source receipt. */
+export async function sealAndDrainNativeProbes(drivers: ProbeClient[]): Promise<unknown[]> {
+  const seals = await Promise.all(drivers.map(driver => driver.call('sealEmissions')));
+  if (seals.some(seal => !seal || typeof seal !== 'object' || (seal as { sealed?: unknown }).sealed !== true)) throw new Error('native source emission seal failed');
+  return Promise.all(drivers.map(driver => driver.call('snapshot')));
+}
 /** Candidate contents remain in memory and never become diagnostic artifacts or errors. */
 export async function exchangeIce(drivers: ProbeClient[], endpoints: Pick<Endpoint, 'id'>[]): Promise<void> {
   const pairs: Promise<void>[] = [];

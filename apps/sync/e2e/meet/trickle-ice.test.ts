@@ -38,3 +38,15 @@ describe('bounded trickle ICE orchestration',()=>{
     expect(f.received[1]).toEqual([]);
   });
 });
+
+it('awaits every source seal before draining all final peer evidence', async () => {
+  const {sealAndDrainNativeProbes}=await import('./webdriver-driver');
+  let release!:()=>void;const pending=new Promise<void>(r=>{release=r;});const drained:number[]=[];
+  const clients=Array.from({length:8},(_,i)=>({call:async(method:string)=>{
+    if(method==='sealEmissions'){if(i===7)await pending;return{sealed:true};}
+    drained.push(i);return{peer:i};
+  }}));
+  const result=sealAndDrainNativeProbes(clients);await Promise.resolve();expect(drained).toEqual([]);
+  release();expect(await result).toHaveLength(8);expect(drained).toEqual([0,1,2,3,4,5,6,7]);
+  await expect(sealAndDrainNativeProbes([{call:async()=>({sealed:false})}])).rejects.toThrow('source emission seal');
+});

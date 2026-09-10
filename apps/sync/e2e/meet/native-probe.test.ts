@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
-async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {}) {
+async function fixture(options: { suspended?: boolean; skipStart?: boolean; sampleRate?: number } = {}) {
   let button: any, gesture = false;
   const timers = new Map<number, () => void>();
   let injectedAudioFrame: number | undefined;
@@ -20,7 +20,7 @@ async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {
     readyState: 2, videoWidth: 1280, videoHeight: 720,
     getContext: () => canvasContext, captureStream: () => stream });
   class AudioContext {
-    state = options.suspended ? 'suspended' : 'running'; onstatechange?: () => void; currentTime = 0; sampleRate = 48000;
+    state = options.suspended ? 'suspended' : 'running'; onstatechange?: () => void; currentTime = 0; sampleRate = options.sampleRate ?? 48000;
     resume = async () => { if (!options.suspended || gesture) { this.state = 'running'; this.onstatechange?.(); } }; close = async () => {};
     createMediaStreamSource = node;
     createAnalyser() { const analyser = { smoothingTimeConstant: 0.8, fftSize: 2048, get frequencyBinCount() { return this.fftSize / 2; },
@@ -28,7 +28,7 @@ async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {
         bins.fill(-Infinity);
         const checksums: Record<number,number>={0: 7439, 1: 3374, 2: 15693, 15: 60640, 16: 3902, 20: 20410, 21: 24475, 99: 16842};
         const frame = injectedAudioFrame ?? (audio | ((checksums[audio] ^ (corrupt ? 1 : 0)) << 16));
-        if (!silent) for (let bank = 0; bank < 8; bank++) bins[Math.round((500 + bank * 900 + ((frame >>> (bank * 4)) & 15) * 50) * this.fftSize / 48000)] = -20;
+        if (!silent) for (let bank = 0; bank < 8; bank++) bins[Math.round((500 + bank * 900 + ((frame >>> (bank * 4)) & 15) * 50) * this.fftSize / (options.sampleRate ?? 48000))] = -20;
       } }; analysers.push(analyser); return analyser; }
     createMediaStreamDestination = () => ({ stream });
     decodeAudioData = async () => ({ duration: 10 });
@@ -57,7 +57,7 @@ async function fixture(options: { suspended?: boolean; skipStart?: boolean } = {
     ]);
   }
   const world: any = { performance: { now: () => ticking ? time++ : time }, Date, Float32Array, Uint8Array,
-    setTimeout: (callback: () => void, ms: number) => { timers.set(ms, callback); return ms; }, clearTimeout(ms: number) { timers.delete(ms); }, setInterval: (callback: () => void, ms: number) => { if(ms===100) observationCallback=callback; else { frameCallback=callback; frameInterval=ms; } return ms; }, clearInterval() {},
+    setTimeout: (callback: () => void, ms: number) => { timers.set(ms, callback); return ms; }, clearTimeout(ms: number) { timers.delete(ms); }, setInterval: (callback: () => void, ms: number) => { if(ms===50) observationCallback=callback; else { frameCallback=callback; frameInterval=ms; } return ms; }, clearInterval(ms: number) { if(ms===frameInterval)frameCallback=()=>{}; if(ms===50)observationCallback=()=>{}; },
     atob: () => '', AudioContext, RTCPeerConnection: Peer,
     MediaStream: class { constructor(_: unknown) {} },
     document: { createElement: (tag: string) => { const el = element(); if(tag==='button') button=el; return el; }, head: { append() {} }, body: { append() {} } },
@@ -175,7 +175,7 @@ it('buffers actual local observations across slow controller polls and drains on
   const poll=await f.sample();
   expect(poll.observations).toEqual([]);
   expect(poll.audioMarker.sequence).toBe(1);
-  for(let i=0;i<601;i++) f.observe(400+i*100);
+  for(let i=0;i<1201;i++) f.observe(400+i*100);
   await expect(f.sample()).rejects.toThrow('observation buffer exhausted');
   await f.probe.stop();
 });
@@ -216,4 +216,32 @@ it('rejects every single-bit corrupted frame and never invents a sequence during
     else expect(s.audioDecode.status).toBe('checksum-mismatch');
   }
   await f.probe.stop();
+});
+
+it('seals source emissions before the final receiver drains without erasing pending proof', async () => {
+  const f=await fixture();f.frame(500);
+  expect(await f.probe.sealEmissions()).toEqual({sealed:true});
+  f.frame(1000);const s=await f.probe.snapshot();
+  expect(s.emissions.map((e:any)=>e.sequence)).toEqual([0,1]);
+  await f.probe.stop();
+});
+
+it('reports actual detector settings and bounds spectral bins to avoid adjacent-tone overlap', async () => {
+  const f=await fixture();const s=await f.probe.snapshot();
+  expect(s.detector.sampleRate).toBe(48000);
+  expect(s.detector.observationIntervalMs).toBe(50);
+  expect(s.detector.fftSize).toBe(4096);
+  expect(50*s.detector.fftSize/s.detector.sampleRate).toBeGreaterThanOrEqual(4);
+  expect(s.peers[0].observations[0].measurementWallMs).toBeGreaterThanOrEqual(0);
+  await f.probe.stop();
+});
+
+it('keeps distinct frequency-bank bins at supported device sample rates', async () => {
+  for(const sampleRate of [32000,44100,48000,96000]){
+    const f=await fixture({sampleRate});const s=await f.probe.snapshot();
+    expect(s.detector.sampleRate).toBe(sampleRate);
+    expect(50*s.detector.fftSize/sampleRate).toBeGreaterThanOrEqual(4);
+    expect(s.peers[0].audioMarker.sequence).toBe(1);
+    await f.probe.stop();
+  }
 });

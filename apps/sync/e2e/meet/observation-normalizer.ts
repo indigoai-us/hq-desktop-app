@@ -21,7 +21,7 @@ export function normalizeMarkers(options: { emissions: Emission[]; observations:
   sourceClock: Calibration; receiverClock: Calibration }) {
   const { emissions, observations, sourceClock, receiverClock } = options;
   for (const clock of [sourceClock, receiverClock]) if (!finite(clock.offsetMs) || !finite(clock.uncertaintyMs) || clock.uncertaintyMs < 0 || clock.uncertaintyMs > 50) throw new Error('invalid calibration');
-  if (!emissions.length || emissions.length > 7201 || !observations.length || observations.length > 36001) throw new Error('invalid bounded marker observations');
+  if (!emissions.length || emissions.length > 7201 || !observations.length || observations.length > 72001) throw new Error('invalid bounded marker observations');
   for (let i = 0; i < emissions.length; i++) {
     const e = emissions[i];
     if (!finite(e.atMs) || e.atMs < 0 || !Number.isInteger(e.sequence) || e.sequence < 0 || e.sequence > 65535 ||
@@ -113,7 +113,7 @@ export function normalizeDiagnostics(diagnostic: import('./webdriver-driver').Na
         const peers = s.snapshot.peers.filter(p => p.peerId === source.id);
         if (peers.length !== 1) throw new Error('missing or duplicate receiver direction');
         if (peers[0].observations !== undefined) {
-          if (!Array.isArray(peers[0].observations) || peers[0].observations.length > 600) throw new Error('invalid native observation batch');
+          if (!Array.isArray(peers[0].observations) || peers[0].observations.length > 1200) throw new Error('invalid native observation batch');
           if (peers[0].observations.some(o => o.atMs > s.snapshot.atMs)) throw new Error('native observation is newer than its drain');
           return peers[0].observations;
         }

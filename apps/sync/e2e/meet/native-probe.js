@@ -10,6 +10,8 @@
   let surface, mask, watchdog, probeNonce, cancelAudioUnlock, observationTimer, observationFailure;
   let start = 0, stopped = false, sequence = 0, lastEmittedSequence, emitted = [], peers = new Map();
   const now = () => performance.now() - start;
+  const observationIntervalMs = 50;
+  const detectorFftSize = () => 2 ** Math.ceil(Math.log2(context.sampleRate / 12.5));
   const finite = value => typeof value === 'number' && Number.isFinite(value);
   const candidate = value => ['host', 'srflx', 'prflx', 'relay'].includes(value) ? value : 'unknown';
   function audioChecksum(value) {
@@ -49,7 +51,7 @@
     const stream = new MediaStream([track]);
     if (track.kind === 'audio') {
       const source = context.createMediaStreamSource(stream);
-      const analyser = context.createAnalyser(); analyser.fftSize = 8192;
+      const analyser = context.createAnalyser(); analyser.fftSize = detectorFftSize();
       // Markers change frequency: averaging old spectra mixes sequence banks
       // and attenuates the current symbol below the unchanged detection floor.
       analyser.smoothingTimeConstant = 0;
@@ -157,6 +159,7 @@
     return { description: pc.localDescription.toJSON(), screenTrackId: screenStream?.getVideoTracks()[0]?.id };
   }
   function observe(id, peer) {
+    const measurementStarted = performance.now();
     const atMs = now();
     const value = { peerId: id, atMs, connectionState: peer.pc.connectionState,
       receivedAudioMarkers: peer.audioCount, receivedVideoMarkers: peer.videoCount,
@@ -203,11 +206,12 @@
         value.receivedVideoMarkers = ++peer.videoCount;
       }
     }
+    value.measurementWallMs = performance.now() - measurementStarted;
     return value;
   }
   function recordObservation(id, peer) {
     if (peer.latestObservation && now() <= peer.latestObservation.atMs) return;
-    if (peer.observations.length >= 600 || peer.observationCount >= 36001) throw new Error('native observation buffer exhausted');
+    if (peer.observations.length >= 1200 || peer.observationCount >= 72001) throw new Error('native observation buffer exhausted');
     const observation = observe(id, peer);
     peer.latestObservation = observation; peer.observations.push(observation); peer.observationCount++;
   }
@@ -295,10 +299,11 @@
           try { recordObservation(id, peer); }
           catch (error) { observationFailure = error.message === 'native observation buffer exhausted' ? error.message : 'native observation failed'; clearInterval(observationTimer); return; }
         }
-      }, 100);
+      }, observationIntervalMs);
       return { provenance: 'native-probe-unattested', physicalCaptureTested: false, captureSource: 'generated-public-fixtures', wallTimeMs: Date.now(), monotonicMs: performance.now(),
         audioState: context.state, screenTrack: Boolean(screenStream?.getVideoTracks().length) };
     },
+    sealEmissions() { clearInterval(timer); return { sealed: true }; },
     offer(id, configuration) { return connect(id, configuration); },
     answer(id, configuration, remote) { return connect(id, configuration, remote); },
     async acceptAnswer(id, answer) {
@@ -334,7 +339,7 @@
       if (observationFailure) throw new Error(observationFailure);
       if (now() > 3600000) { await this.stop(); throw new Error('probe duration exceeded'); }
       for (const [id, peer] of peers) if (!peer.latestObservation) recordObservation(id, peer);
-      return { provenance: 'native-probe-unattested', physicalCaptureTested: false, captureSource: 'generated-public-fixtures', atMs: now(), wallTimeMs: Date.now(),
+      return { provenance: 'native-probe-unattested', physicalCaptureTested: false, captureSource: 'generated-public-fixtures', detector: { protocol: 'crc16-ccitt-frequency-banks/v1', sampleRate: context.sampleRate, fftSize: detectorFftSize(), observationIntervalMs }, atMs: now(), wallTimeMs: Date.now(),
         emissions: emitted.splice(0), peers: await Promise.all([...peers].map(([id, peer]) => sample(id, peer))) };
     },
     async stop() {
