@@ -142,10 +142,38 @@ pub fn setup_lifecycle(app: &AppHandle) {
         }
     }
 
+    // Setup is done on this machine; only the marker was missing. Write it
+    // back so the next launch, and a Dock click in this one, read "set up".
+    if verdict.needs_first_run_backfill {
+        match menubar_path.as_ref() {
+            Some(path) => {
+                if let Err(e) = hq_desktop_core::first_run::merge_menubar_flags(
+                    path,
+                    &[
+                        ("firstRunCompleted", Value::Bool(true)),
+                        (
+                            "firstRunBackfilledAt",
+                            Value::String(Utc::now().to_rfc3339()),
+                        ),
+                    ],
+                ) {
+                    log(
+                        "lifecycle",
+                        &format!("setup_lifecycle: first-run backfill failed: {e}"),
+                    );
+                }
+            }
+            None => log(
+                "lifecycle",
+                "setup_lifecycle: first-run backfill skipped; menubar path unavailable",
+            ),
+        }
+    }
+
     log(
         "lifecycle",
         &format!(
-            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} backfill={}",
+            "setup_lifecycle: state={} install_completed={} first_run_completed={} had_machine_id={} config_valid={} hq_root_valid={} has_auth={} install_in_progress={} consent_answered={} backfill={} first_run_backfill={}",
             lifecycle_state_str(verdict.state),
             install_completed,
             first_run_completed,
@@ -156,6 +184,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
             inputs.install_in_progress,
             consent_answered,
             verdict.needs_install_backfill,
+            verdict.needs_first_run_backfill,
         ),
     );
 
