@@ -719,8 +719,8 @@
   let phoneViewport = $state(startsAsOverlay);
   let sidebarCollapsed = $state(startsAsOverlay);
   let sidebarWidth = $state((() => {
-    try { const saved = Number(localStorage.getItem('hq.sidebar.width')); return saved >= 220 && saved <= 440 ? saved : 260; }
-    catch { return 260; }
+    try { const saved = Number(localStorage.getItem('hq.sidebar.width')); return saved >= 220 && saved <= 440 ? saved : 280; }
+    catch { return 280; }
   })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);

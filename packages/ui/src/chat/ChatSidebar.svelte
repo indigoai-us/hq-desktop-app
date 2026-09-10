@@ -762,6 +762,11 @@
   const historyHasQuery = $derived(historyQuery.trim().length > 0);
   const scopeLabel = $derived(scopePillLabel(scope, scopeCompanies));
   const scopeOptions = $derived(buildScopeOptions(scopeCompanies));
+  const scopeTones = $derived(
+    scopeAvatarTones(
+      scopeOptions.filter((o) => o.id !== "all").map((o) => o.label),
+    ),
+  );
   const displayName = $derived(accountLabel?.trim() || "Account");
   /** Footer shows the first name only (D-17). */
   const firstName = $derived(displayName.split(/\s+/)[0] || displayName);
@@ -938,11 +943,45 @@
   }
 
   // Avatar hue from stable hash of label (monochrome-friendly tint via CSS vars).
-  function scopeAvatarTone(label: string): number {
+  const SCOPE_TONE_COUNT = 6;
+
+  function scopeToneSeed(label: string): number {
     let h = 0;
     for (let i = 0; i < label.length; i++)
       h = (h * 31 + label.charCodeAt(i)) | 0;
-    return Math.abs(h) % 6;
+    return Math.abs(h) % SCOPE_TONE_COUNT;
+  }
+
+  /**
+   * Company marks, resolved across the whole list rather than one at a time.
+   *
+   * Hashing each name independently is stable but not distinct: with two
+   * companies the odds of a collision are one in six, and "Indigo" and
+   * "Personal" happened to be a collision — both rendered the same green, so
+   * the colour told you nothing. Seeding from the hash and then probing to the
+   * next free tone keeps a company's colour stable while guaranteeing that no
+   * two visible companies share one, up to the six the palette holds.
+   *
+   * "All companies" is a scope, not a tenant, and stays neutral.
+   */
+  function scopeAvatarTones(labels: string[]): Map<string, number> {
+    const taken = new Set<number>();
+    const tones = new Map<string, number>();
+    for (const label of labels) {
+      if (tones.has(label)) continue;
+      const seed = scopeToneSeed(label);
+      let tone = seed;
+      for (let step = 0; step < SCOPE_TONE_COUNT; step++) {
+        const candidate = (seed + step) % SCOPE_TONE_COUNT;
+        if (!taken.has(candidate)) {
+          tone = candidate;
+          break;
+        }
+      }
+      taken.add(tone);
+      tones.set(label, tone);
+    }
+    return tones;
   }
 
   $effect(() => {
@@ -1762,8 +1801,9 @@
             </svg>
           </span>
         {:else}
-          <span class="chat-scope-tile" aria-hidden="true"
-            >{initialsFor(scopeLabel)}</span
+          <span
+            class={`chat-scope-tile tone-${scopeTones.get(scopeLabel) ?? 0}`}
+            aria-hidden="true">{initialsFor(scopeLabel)}</span
           >
         {/if}
         {scopeLabel}
@@ -1800,7 +1840,9 @@
                 <CompanyIcon iconUrl={scopeOptionIcon(option.id)} size={24} />
               {:else}
                 <span
-                  class={`chat-scope-avatar tone-${scopeAvatarTone(option.label)}`}
+                  class={option.id === "all"
+                    ? "chat-scope-avatar"
+                    : `chat-scope-avatar tone-${scopeTones.get(option.label) ?? 0}`}
                   aria-hidden="true"
                 >
                   {scopeAvatarLabel(option)}
@@ -2836,9 +2878,9 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    flex: 0 0 var(--sidebar-width, 260px);
+    flex: 0 0 var(--sidebar-width, 280px);
     align-self: stretch;
-    width: var(--sidebar-width, 260px);
+    width: var(--sidebar-width, 280px);
     min-height: 0;
     height: auto;
     overflow: hidden;
@@ -2999,23 +3041,51 @@
     letter-spacing: 0.02em;
   }
 
+  /* Company marks. Six 135deg pairs from the V2 concept — the point is that
+     two companies never look alike at a glance, which a single neutral fill
+     cannot do however many slots it has. White ink on all six; they are dark
+     enough at both ends to carry it in either theme.
+
+     `scopeAvatarTone()` hashes the label into a slot, so the assignment is
+     stable per company but arbitrary across them. Pinning a specific company
+     to a specific pair is a host decision, not a UI-package one. */
+  .chat-scope-tile.tone-0,
   .chat-scope-avatar.tone-0 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #6d5efc 0%, #c86bf0 100%);
+    color: #fff;
   }
+  .chat-scope-tile.tone-1,
   .chat-scope-avatar.tone-1 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #ff9f43 0%, #ff5f6d 100%);
+    color: #fff;
   }
+  .chat-scope-tile.tone-2,
   .chat-scope-avatar.tone-2 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #12c2a0 0%, #7ad86b 100%);
+    color: #fff;
   }
+  .chat-scope-tile.tone-3,
   .chat-scope-avatar.tone-3 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #2f80ed 0%, #56ccf2 100%);
+    color: #fff;
   }
+  .chat-scope-tile.tone-4,
   .chat-scope-avatar.tone-4 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #f2529b 0%, #f7b42c 100%);
+    color: #fff;
   }
+  .chat-scope-tile.tone-5,
   .chat-scope-avatar.tone-5 {
-    background: var(--line2);
+    background: linear-gradient(135deg, #0f8fa8 0%, #6a5af9 100%);
+    color: #fff;
+  }
+
+  /* "All companies" is not a company — it keeps the neutral fill and the
+     Stack glyph so it reads as a scope, not another tenant. */
+  .chat-scope-tile.all,
+  .chat-scope-avatar.chat-scope-plus {
+    background: var(--btn-bg);
+    color: var(--t2);
   }
 
   .chat-scope-row-label {
@@ -3315,9 +3385,10 @@
     background: transparent;
     color: var(--t2);
     font: inherit;
-    /* Same step as the timeline body (14px) so the rail and the conversation
-       share one reading size. */
-    font-size: 14px;
+    /* Same step as the timeline body so the rail and the conversation share
+       one reading size. 13px is the design's body step; the rail sat a step
+       above it, which made the sidebar the loudest column on screen. */
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.2;
     text-align: left;

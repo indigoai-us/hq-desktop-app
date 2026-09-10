@@ -510,7 +510,7 @@
     gap: 6px;
     width: 100%;
     padding: 12px;
-    border: 1px solid var(--line);
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised);
     color: inherit;
@@ -525,7 +525,6 @@
   .board-card:hover,
   .board-card.selected {
     background: var(--btn-bg);
-    border-color: var(--line2);
   }
 
   .board-card:focus-visible {

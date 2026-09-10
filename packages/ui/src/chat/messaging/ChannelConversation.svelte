@@ -1740,6 +1740,10 @@
     /* 16px bottom so the last message's reaction bar doesn't kiss the
        composer frame. */
     padding: 8px 16px 16px;
+    /* Float the 4px thumb 8px off the window edge, the way every other
+       scroller in the design does — the sidebar already did this and the
+       timeline did not, so the two rails disagreed down the same window. */
+    margin-right: 8px;
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -1815,9 +1819,12 @@
   .dm-msg {
     position: relative;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr);
+    /* 32px avatar + 12px gutter, per the design. The wider avatar and tighter
+       gutter it replaced pushed the text column right while leaving less air
+       around the mark. */
+    grid-template-columns: 32px minmax(0, 1fr);
     align-items: start;
-    gap: 8px;
+    gap: 12px;
     width: 100%;
     max-width: none;
     margin-top: 0;
@@ -1825,13 +1832,16 @@
     border-radius: 6px;
   }
 
-  .dm-msg:hover,
+  /* No hover fill. The design's timeline never moves under the pointer — it
+     reveals the timestamp and the reaction bar instead, and tinting the row
+     as well made both readings compete. Focus still needs a visible target,
+     so keyboard focus keeps a wash that the mouse does not get. */
   .dm-msg:focus-within {
     background: color-mix(in srgb, var(--t1) 4%, transparent);
   }
 
   .dm-msg-group-start {
-    margin-top: var(--msg-group-gap, 12px);
+    margin-top: var(--msg-group-gap, 18px);
     padding-top: 3px;
   }
 
@@ -1843,8 +1853,8 @@
   .dm-msg-avatar-spacer {
     display: grid;
     place-items: start center;
-    flex: 0 0 36px;
-    width: 36px;
+    flex: 0 0 32px;
+    width: 32px;
     min-height: 1px;
     padding-top: var(--msg-avatar-pad-top, 2px);
   }
@@ -1879,6 +1889,9 @@
     align-items: baseline;
     gap: 0.4375rem;
     margin: 0 0 var(--msg-name-body-gap, 0.1875rem);
+    /* Full width so the timestamp can ride the right edge rather than sitting
+       against the name. */
+    width: 100%;
     min-width: 0;
   }
 
@@ -1886,7 +1899,7 @@
     max-width: 42ch;
     overflow: hidden;
     color: var(--t1);
-    font-size: 14px;
+    font-size: 13px;
     /* 600 is the heaviest Geist face the shell ships; asking for 700 only
        rounds down (or synthesizes a smeared bold on fallback fonts). */
     font-weight: 600;
@@ -1914,13 +1927,34 @@
     border-radius: 4px;
   }
 
+  /* Timestamps are quiet furniture in the design: 10px mono, parked on the
+     right edge, and invisible until the row is hovered. Production showed
+     them always, at 12px, immediately after the name — so every message
+     carried a permanent piece of metadata the eye had to skip past.
+
+     The follow-up-message gutter time below already behaved this way, so this
+     also makes the first message in a run agree with the rest of it. */
   .dm-msg-header-time {
     flex: 0 0 auto;
+    margin-left: auto;
     color: var(--t3);
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-variant-numeric: tabular-nums;
     line-height: 1.45;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+
+  .dm-msg:hover .dm-msg-header-time,
+  .dm-msg:focus-within .dm-msg-header-time {
     opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dm-msg-header-time {
+      transition: none;
+    }
   }
 
   /* Plain text row — no bubble background/border for either direction. Only
@@ -1972,11 +2006,12 @@
     max-width: 100%;
     margin: 0;
     font-family: var(--font-ui);
-    /* Reading size. The shell chrome stays 13px; the timeline is prose and
-       sits one step up (14px) with a slightly looser leading so the light
-       weight on a dark ground reads crisp rather than heavy. */
-    font-size: 14px;
-    line-height: 1.55;
+    /* Reading size. One step for the whole shell: 13px on a 19px line, the
+       design's body setting. The timeline used to sit a step above the rest
+       of the chrome, which is what made the app read larger than the design
+       everywhere it mattered most. */
+    font-size: 13px;
+    line-height: 19px;
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;

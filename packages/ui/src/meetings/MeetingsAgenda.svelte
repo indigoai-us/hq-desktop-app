@@ -606,7 +606,7 @@
     box-sizing: border-box;
     min-height: 46px;
     padding: 10px 14px;
-    border: 1px solid var(--line, var(--v4-hairline));
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised, var(--v4-raised));
     transition:
@@ -620,7 +620,6 @@
 
   .meeting-row:not(.empty-row):hover {
     background: var(--btn-bg, var(--v4-active-row));
-    border-color: var(--line2, var(--v4-control-border));
   }
 
   .meeting-row.live {

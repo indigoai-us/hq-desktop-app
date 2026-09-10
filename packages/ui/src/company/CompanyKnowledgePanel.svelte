@@ -255,7 +255,7 @@
   }
 
   .knowledge-tree::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
   }
 
   .knowledge-tree::-webkit-scrollbar-thumb {

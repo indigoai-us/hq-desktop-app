@@ -466,7 +466,7 @@
     flex: 1 1 120px;
     min-width: 110px;
     padding: 9px 11px;
-    border: 1px solid var(--line, var(--pop-border));
+    border: 1px solid transparent;
     border-radius: 8px;
     background: var(--raised, var(--pop-hover));
   }
@@ -539,7 +539,7 @@
   .rich-chart {
     margin: 0;
     padding: 10px 12px;
-    border: 1px solid var(--line, var(--pop-border));
+    border: 1px solid transparent;
     border-radius: 8px;
     background: var(--raised, var(--pop-hover));
   }
@@ -694,7 +694,7 @@
     height: 6px;
     border-radius: 999px;
     background: var(--raised, var(--pop-hover));
-    border: 1px solid var(--line, var(--pop-border));
+    border: 1px solid transparent;
     overflow: hidden;
   }
   .rich-progress-fill {

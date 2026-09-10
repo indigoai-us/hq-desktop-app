@@ -304,7 +304,7 @@
   }
 
   .fs-company-list::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
   }
 
   .fs-company-list::-webkit-scrollbar-thumb {
@@ -475,7 +475,7 @@
   }
 
   .fs-tree-area::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
   }
 
   .fs-tree-area::-webkit-scrollbar-thumb {

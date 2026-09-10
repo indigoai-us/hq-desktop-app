@@ -599,7 +599,7 @@
     gap: 8px;
     height: 32px;
     padding: 0 10px;
-    border: 1px solid var(--line2, var(--pop-border));
+    border: 1px solid transparent;
     border-radius: 6px;
     background: var(--raised, var(--pop-hover));
     box-sizing: border-box;

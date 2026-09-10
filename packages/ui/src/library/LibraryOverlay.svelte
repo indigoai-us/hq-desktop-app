@@ -661,7 +661,7 @@
     min-width: 0;
     min-height: 40px;
     padding: 10px 14px;
-    border: 1px solid var(--line);
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised);
     color: inherit;
@@ -672,7 +672,6 @@
 
   .lo-card:hover {
     background: var(--btn-bg);
-    border-color: var(--line2);
   }
 
   .lo-card:focus-visible {
