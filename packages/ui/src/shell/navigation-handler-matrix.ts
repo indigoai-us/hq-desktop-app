@@ -68,7 +68,7 @@ export const NAVIGATION_INVENTORY_FILES = [
 
 /** Assignments of `view` in DesktopApp.svelte. Comparisons (`view ===`) are excluded. */
 export const DESKTOP_APP_VIEW_ASSIGN_RE = /\bview = (?:view ===|"[^"]+")/g;
-export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 11;
+export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 12;
 
 /** Direct `navigation.navigate(` calls in HqWorkWorkShell (native/host seams). */
 export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
@@ -123,6 +123,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   toggleNotifications: "push",
   openSettings: "push",
   openExtraPage: "push",
+  openDmRequests: "push",
+  handleDmRequestResolved: "push",
   closeSettings: "replace",
   applyEmbeddedNavigation: "push",
   onKey: "push",
@@ -332,6 +334,26 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     history: "push",
     host: "shared-shell",
     inScope: true,
+  },
+  {
+    id: "open-dm-requests",
+    file: SHARED_SHELL_FILE,
+    needle: "function openDmRequests(pairKey?: string | null): void",
+    destinationKind: "dm-requests",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Sidebar Connection requests row and the host open-dm-requests event.",
+  },
+  {
+    id: "dm-request-resolved",
+    file: SHARED_SHELL_FILE,
+    needle: "function handleDmRequestResolved(",
+    destinationKind: "dm",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Accept opens the requester's DM; falls back to messages when the rail has no row yet.",
   },
   {
     id: "open-settings",

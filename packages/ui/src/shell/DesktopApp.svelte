@@ -3508,6 +3508,13 @@
         extraPageId = null;
         extraPageParam = null;
         break;
+      case "dm-requests":
+        dmRequestsFocusPairKey = next.pairKey ?? null;
+        view = "dm-requests";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
       case "extra":
         extraPageId = next.page;
         extraPageParam = next.param ?? null;
@@ -3764,9 +3771,7 @@
 
   /** The sidebar's "Connection requests" row (and any host deep link). */
   function openDmRequests(pairKey?: string | null): void {
-    dmRequestsFocusPairKey = pairKey?.trim() || null;
-    meetingFocusRequest = null;
-    view = "dm-requests";
+    void navigate({ kind: "dm-requests", pairKey: pairKey?.trim() || null });
   }
 
   /**
@@ -3783,13 +3788,20 @@
     if (action !== "accept") return;
     const personUid = request.fromPersonUid?.trim() ?? "";
     if (!personUid) return;
-    applyPendingConversation({
+    const target: ConversationTarget = {
       personUid,
       email: request.fromEmail ?? "",
       displayName: request.fromDisplayName ?? "",
       replyRootEventId: null,
-    });
-    view = "conversation";
+    };
+    const known = conversationRowForDeepLink(
+      { channelId: null, personUid, replyRootEventId: null },
+      [...searchRows, ...railRows],
+    );
+    // The rail may not list the new contact yet; fall back to the messages
+    // home rather than leaving the (now empty) request in view.
+    if (known) applyPendingConversation(target);
+    else void navigate({ kind: "messages" });
   }
 
   /**
@@ -5111,8 +5123,7 @@
             {wakes}
             focusPairKey={dmRequestsFocusPairKey}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
             onresolved={handleDmRequestResolved}
           />
