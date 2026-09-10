@@ -30,10 +30,21 @@ describe("ChatSidebar identity footer layout", () => {
     expect(src).toMatch(/data-testid="chat-pin"/);
   });
 
-  it("defaults the rail to member projects, chats, and DMs", () => {
-    expect(src).toMatch(/data-testid="chat-filter-mine"/);
+  it("defaults the rail to everything you are a member of", () => {
+    expect(src).toMatch(/data-testid="chat-filter-all"/);
     expect(src).toMatch(/loadShowFilter\(storage\)/);
     expect(src).toMatch(/browseOnly:\s*true/);
+  });
+
+  it("offers three Show views plus an admin-only non-member toggle", () => {
+    // The retired "My projects" row differed from All only by channels with an
+    // explicit membership:'none', and "Company projects" conflated a kind of
+    // thing with a membership question. Three views, one modifier.
+    expect(src).not.toMatch(/data-testid="chat-filter-mine"/);
+    expect(src).not.toMatch(/data-testid="chat-filter-company-projects"/);
+    expect(src).toMatch(/data-testid="chat-filter-include-non-members"/);
+    expect(src).toMatch(/role="menuitemcheckbox"/);
+    expect(src).toMatch(/\{#if canSeeCompanyProjects\}/);
   });
 
   it("sizes the filter popover to the concept's panel width", () => {

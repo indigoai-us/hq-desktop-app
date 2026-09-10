@@ -28,10 +28,12 @@ import {
   groupByDay,
   groupByType,
   historySearchScopeLabel,
+  SHOW_FILTER_STORAGE_KEY,
   initialsFor,
   isStrictlyRicherConversationRow,
   loadPins,
   loadSetupPinDismissed,
+  loadIncludeNonMemberChannels,
   loadShowFilter,
   normalizeChannel,
   normalizeConversations,
@@ -843,12 +845,19 @@ describe("sort + show filters", () => {
     browseOnly: true,
   };
 
-  it("Show 'company-projects' includes member + browse-only channel rows (US-021)", () => {
-    const result = filterByShow([...rows, browseRow], "company-projects");
-    expect(result.map((r) => r.id).sort()).toEqual(["ch:1", "ch:browse"]);
+  it("includeNonMembers keeps browse-only rows in any view (US-021)", () => {
+    const withBrowse = [...rows, browseRow];
+    expect(filterByShow(withBrowse, "projects", true).map((r) => r.id).sort()).toEqual([
+      "ch:1",
+      "ch:browse",
+    ]);
+    // The toggle is a modifier, not a view: 'all' keeps DMs alongside them.
+    expect(filterByShow(withBrowse, "all", true).map((r) => r.id)).toContain(
+      "ch:browse",
+    );
   });
 
-  it("browse-only rows are hidden from 'all', 'projects', and 'dms' (US-021)", () => {
+  it("browse-only rows are hidden from every view by default (US-021)", () => {
     const withBrowse = [...rows, browseRow];
     expect(filterByShow(withBrowse, "all").map((r) => r.id)).not.toContain(
       "ch:browse",
@@ -861,22 +870,20 @@ describe("sort + show filters", () => {
     );
   });
 
-  it("Show 'mine' keeps member channels and DMs, hides membership none", () => {
-    const noneRow: ConversationRow = {
-      id: "ch:none",
-      kind: "channel",
-      title: "Not mine",
-      companyUid: "c",
-      unreadDot: false,
-      lastActivityAt: 5,
-      pinned: false,
-      membership: "none",
-    };
-    const result = filterByShow([...rows, browseRow, noneRow], "mine");
-    expect(result.map((r) => r.id).sort()).toEqual(["ch:1", "ch:g", "dm:1"]);
+  it("the retired 'mine' value coerces to 'all' on load", () => {
+    const storage = memoryStorage();
+    storage.setItem(SHOW_FILTER_STORAGE_KEY, "mine");
+    expect(loadShowFilter(storage)).toBe("all");
   });
 
-  it("personal-scope channels never leak into 'projects' or 'company-projects'", () => {
+  it("the retired 'company-projects' value coerces to 'projects' + the toggle", () => {
+    const storage = memoryStorage();
+    storage.setItem(SHOW_FILTER_STORAGE_KEY, "company-projects");
+    expect(loadShowFilter(storage)).toBe("projects");
+    expect(loadIncludeNonMemberChannels(storage)).toBe(true);
+  });
+
+  it("personal-scope channels never leak into 'projects', toggle or not", () => {
     const personalRow: ConversationRow = {
       id: "ch:personal",
       kind: "channel",
@@ -904,7 +911,7 @@ describe("sort + show filters", () => {
       "ch:1",
       "ch:proj",
     ]);
-    expect(filterByShow(all, "company-projects").map((r) => r.id)).toEqual([
+    expect(filterByShow(all, "projects", true).map((r) => r.id)).toEqual([
       "ch:1",
       "ch:proj",
     ]);

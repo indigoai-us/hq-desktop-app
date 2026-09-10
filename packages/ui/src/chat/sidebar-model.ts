@@ -136,14 +136,18 @@ export type CompanyScope = "all" | "personal" | string;
 
 export type SortMode = "recent" | "type";
 /**
- * `mine` (default) is member project/chat channels plus DMs the caller is in.
- * `company-projects` (US-021) is the org owner/admin-only view: member project
- * channels PLUS browse-only rows for other members' project channels.
+ * One axis only: WHAT KIND of conversation the rail shows.
+ *
+ * Whether to include channels the caller is not a member of is a separate,
+ * admin-only switch (`loadIncludeNonMemberChannels`) — it is a permission
+ * question, not a kind of thing, and folding it in as `company-projects` made
+ * a filter row that silently also dropped DMs. `mine` is gone for the opposite
+ * reason: it differed from `all` only by channels with an explicit
+ * `membership: 'none'`, kept every DM despite its name, and so usually showed
+ * exactly the same list.
  */
-export type ShowFilter =
-  "mine" | "all" | "projects" | "dms" | "company-projects";
+export type ShowFilter = "all" | "projects" | "dms";
 
-/** Default Show filter for users with no persisted choice. */
 /**
  * "All", per the concept — its `typeScope` starts at `'all'`. Opening on
  * "My projects" hid a first-run user's DMs and every channel they had not
@@ -151,13 +155,13 @@ export type ShowFilter =
  */
 export const DEFAULT_SHOW_FILTER: ShowFilter = "all";
 
-const SHOW_FILTER_VALUES: readonly ShowFilter[] = [
-  "mine",
-  "all",
-  "projects",
-  "dms",
-  "company-projects",
-];
+const SHOW_FILTER_VALUES: readonly ShowFilter[] = ["all", "projects", "dms"];
+
+/** Retired values, and what a persisted one now means. */
+const LEGACY_SHOW_FILTERS: Record<string, ShowFilter> = {
+  mine: "all",
+  "company-projects": "projects",
+};
 
 export function isShowFilter(value: unknown): value is ShowFilter {
   return (
@@ -937,38 +941,24 @@ function isProjectFilterChannel(row: ConversationRow): boolean {
 }
 
 /**
- * True when a channel row counts as the current user's own under "My
- * projects": any membership except an explicit `'none'`. Absent membership
- * counts as mine (the channels endpoint only lists the caller's channels).
+ * `includeNonMembers` is the admin-only switch: browse-only rows (project
+ * channels in a company the caller administers but has not joined) are hidden
+ * unless it is on. It composes with every kind, so "DMs & groups" plus the
+ * switch is still just DMs — there are no browse-only DMs.
  */
-export function isMineChannelRow(
-  row: Pick<ConversationRow, "membership" | "browseOnly">,
-): boolean {
-  if (row.browseOnly) return false;
-  return (row.membership ?? "joined") !== "none";
-}
-
 export function filterByShow(
   rows: ConversationRow[],
   show: ShowFilter,
+  includeNonMembers = false,
 ): ConversationRow[] {
-  // US-021: browse-only rows (other members' project channels, owner view)
-  // surface ONLY under 'company-projects'; every other view hides them.
-  if (show === "company-projects") {
-    return rows.filter(isProjectFilterChannel);
+  const visible = includeNonMembers
+    ? rows.slice()
+    : rows.filter((row) => !row.browseOnly);
+  if (show === "projects") return visible.filter(isProjectFilterChannel);
+  if (show === "dms") {
+    return visible.filter((row) => row.kind === "dm" || row.kind === "group");
   }
-  const memberRows = rows.filter((row) => !row.browseOnly);
-  if (show === "all") return memberRows;
-  if (show === "mine") {
-    return memberRows.filter(
-      (row) => row.kind !== "channel" || isMineChannelRow(row),
-    );
-  }
-  if (show === "projects") {
-    return memberRows.filter(isProjectFilterChannel);
-  }
-  // DMs: 1:1 + group DMs
-  return memberRows.filter((row) => row.kind === "dm" || row.kind === "group");
+  return visible;
 }
 
 /** Filter to a single DM counterpart (personUid). */
@@ -1022,13 +1012,19 @@ export function applySidebarFilters(
   options: {
     scope?: CompanyScope;
     show?: ShowFilter;
+    /** Admin-only: keep browse-only rows for channels the caller is not in. */
+    includeNonMembers?: boolean;
     sort?: SortMode;
     personUid?: string | null;
   } = {},
 ): ConversationRow[] {
   let next = rows;
   next = filterByCompanyScope(next, options.scope ?? "all");
-  next = filterByShow(next, options.show ?? DEFAULT_SHOW_FILTER);
+  next = filterByShow(
+    next,
+    options.show ?? DEFAULT_SHOW_FILTER,
+    options.includeNonMembers ?? false,
+  );
   next = filterByPerson(next, options.personUid ?? null);
   return sortConversations(next, options.sort ?? "recent");
 }
@@ -1356,8 +1352,9 @@ export function savePins(
 }
 
 /**
- * Load the persisted Show filter. New/unset users default to `'mine'`
- * (member projects, chats, and DMs). An existing persisted choice is kept.
+ * Load the persisted Show filter. New/unset users get `'all'`. A choice saved
+ * under a retired value is carried to its nearest surviving one rather than
+ * silently reset.
  */
 export function loadShowFilter(
   storage: Pick<Storage, "getItem"> | null | undefined,
@@ -1365,9 +1362,50 @@ export function loadShowFilter(
   if (!storage) return DEFAULT_SHOW_FILTER;
   try {
     const raw = storage.getItem(SHOW_FILTER_STORAGE_KEY);
-    return isShowFilter(raw) ? raw : DEFAULT_SHOW_FILTER;
+    if (isShowFilter(raw)) return raw;
+    if (typeof raw === "string" && raw in LEGACY_SHOW_FILTERS) {
+      return LEGACY_SHOW_FILTERS[raw]!;
+    }
+    return DEFAULT_SHOW_FILTER;
   } catch {
     return DEFAULT_SHOW_FILTER;
+  }
+}
+
+export const INCLUDE_NON_MEMBER_CHANNELS_STORAGE_KEY =
+  "hq.chat.include-non-member-channels";
+
+/**
+ * The admin-only "Include channels I'm not in" switch. Someone who had the
+ * retired `company-projects` view selected was already browsing them, so carry
+ * that forward rather than turning it off under them.
+ */
+export function loadIncludeNonMemberChannels(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): boolean {
+  if (!storage) return false;
+  try {
+    const raw = storage.getItem(INCLUDE_NON_MEMBER_CHANNELS_STORAGE_KEY);
+    if (raw === "1") return true;
+    if (raw === "0") return false;
+    return storage.getItem(SHOW_FILTER_STORAGE_KEY) === "company-projects";
+  } catch {
+    return false;
+  }
+}
+
+export function saveIncludeNonMemberChannels(
+  include: boolean,
+  storage: Pick<Storage, "setItem"> | null | undefined,
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(
+      INCLUDE_NON_MEMBER_CHANNELS_STORAGE_KEY,
+      include ? "1" : "0",
+    );
+  } catch {
+    // Quota / private mode — best-effort.
   }
 }
 

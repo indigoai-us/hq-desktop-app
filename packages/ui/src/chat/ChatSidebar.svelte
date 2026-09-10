@@ -92,6 +92,8 @@
     saveRecentDms,
     saveSetupPinDismissed,
     saveShowFilter,
+    loadIncludeNonMemberChannels,
+    saveIncludeNonMemberChannels,
     scopeFromHotkey,
     scopePillLabel,
     startOfLocalDay,
@@ -139,7 +141,6 @@
   import GearSix from "phosphor-svelte/lib/GearSix";
   import X from "phosphor-svelte/lib/X";
   import Hash from "phosphor-svelte/lib/Hash";
-  import House from "phosphor-svelte/lib/House";
   import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
   import PencilSimple from "phosphor-svelte/lib/PencilSimple";
   import Plus from "phosphor-svelte/lib/Plus";
@@ -353,6 +354,8 @@
   });
   let sortMode = $state<SortMode>("recent");
   let showFilter = $state<ShowFilter>(loadShowFilter(storage));
+  /** Admin-only: browse project channels in this company you have not joined. */
+  let includeNonMembers = $state(loadIncludeNonMemberChannels(storage));
   let personFilter = $state<string | null>(null);
   // People aren't company-scoped — switching company scope clears a stale
   // person filter so it can't silently empty the newly scoped list.
@@ -362,9 +365,8 @@
   });
 
   function setShowFilter(next: ShowFilter): void {
-    const prev = showFilter;
     sidebarLog("filter-change", {
-      from: prev,
+      from: showFilter,
       to: next,
       rail: railRows.length,
       filtered: filteredRows.length,
@@ -373,9 +375,21 @@
     showFilter = next;
     saveShowFilter(next, storage);
     filterOpen = false;
-    if (next !== "company-projects" && prev === "company-projects") {
-      companyProjectChannels = [];
-    }
+  }
+
+  /**
+   * The admin-only switch. Turning it off drops the fetched browse-only rows
+   * as well as hiding them, so the rail is not holding channels it will not
+   * show.
+   */
+  function setIncludeNonMembers(next: boolean): void {
+    sidebarLog("filter-include-non-members", {
+      to: next,
+      browse: browseRows.length,
+    });
+    includeNonMembers = next;
+    saveIncludeNonMemberChannels(next, storage);
+    if (!next) companyProjectChannels = [];
   }
 
   function sidebarLog(
@@ -674,10 +688,11 @@
 
   const filteredRows = $derived(
     applySidebarFilters(
-      showFilter === "company-projects" ? [...allRows, ...browseRows] : allRows,
+      includeNonMembers ? [...allRows, ...browseRows] : allRows,
       {
         scope,
         show: showFilter,
+        includeNonMembers,
         sort: sortMode,
         personUid: personFilter,
       },
@@ -1184,11 +1199,10 @@
     return () => clearTimeout(handle);
   });
 
-  // US-021: debounced owner-scoped fetch while the company-projects view is on.
+  // US-021: debounced owner-scoped fetch while "Include channels I'm not in" is on.
   let companyProjectsSeq = 0;
   $effect(() => {
-    const wantAllCompanies =
-      showFilter === "company-projects" || searchOpen || createOpen;
+    const wantAllCompanies = includeNonMembers || searchOpen || createOpen;
     const scoped = scope !== "all" && scope !== "personal" ? [scope] : [];
     const uids = wantAllCompanies
       ? ownerCompanyUids.length > 0
@@ -1198,7 +1212,7 @@
     if (uids.length === 0) return;
     const seq = ++companyProjectsSeq;
     const started = performance.now();
-    sidebarLog("company-projects-fetch-start", {
+    sidebarLog("browse-channels-fetch-start", {
       uids: uids.length,
       wantAllCompanies,
     });
@@ -1218,7 +1232,7 @@
       }
       if (seq === companyProjectsSeq) {
         companyProjectChannels = collected;
-        sidebarLog("company-projects-fetch-done", {
+        sidebarLog("browse-channels-fetch-done", {
           count: collected.length,
           ms: Math.round(performance.now() - started),
         });
@@ -2056,7 +2070,9 @@
         <button
           type="button"
           class="chat-icon-btn"
-          class:on={showFilter !== "mine" || personFilter != null}
+          class:on={showFilter !== "all" ||
+            personFilter != null ||
+            includeNonMembers}
           data-testid="chat-filter"
           aria-label="Filter conversations"
           aria-expanded={filterOpen}
@@ -2113,20 +2129,8 @@
             <button
               type="button"
               class="chat-filter-row"
-              class:active={showFilter === "mine"}
-              data-testid="chat-filter-mine"
-              onclick={() => setShowFilter("mine")}
-            >
-              <span class="chat-filter-lead" aria-hidden="true"><House size={14} /></span>
-              <span class="chat-filter-text">My projects</span>
-              {#if showFilter === "mine"}
-                <span class="chat-filter-check" aria-hidden="true"><Check size={12} weight="bold" /></span>
-              {/if}
-            </button>
-            <button
-              type="button"
-              class="chat-filter-row"
               class:active={showFilter === "all"}
+              data-testid="chat-filter-all"
               onclick={() => {
                 personFilter = null;
                 setShowFilter("all");
@@ -2169,22 +2173,24 @@
               {/if}
             </button>
             {#if canSeeCompanyProjects}
+              <div class="chat-filter-divider" aria-hidden="true"></div>
               <!-- Owner/admin-only: browse every project channel in a company
-                     the caller administers. Gated on the shared self-admin
-                     helper (hidden when role is unknown / not admin). -->
+                     the caller administers. This is a modifier on whichever
+                     Show row is selected, not a fifth mutually-exclusive view —
+                     the old "Company projects" row conflated the two. Gated on
+                     the shared self-admin helper (hidden when role is unknown
+                     / not admin). -->
               <button
                 type="button"
                 class="chat-filter-row"
-                class:active={showFilter === "company-projects"}
-                data-testid="chat-filter-company-projects"
-                onclick={() => {
-                  personFilter = null;
-                  setShowFilter("company-projects");
-                }}
+                role="menuitemcheckbox"
+                aria-checked={includeNonMembers}
+                data-testid="chat-filter-include-non-members"
+                onclick={() => setIncludeNonMembers(!includeNonMembers)}
               >
                 <span class="chat-filter-lead" aria-hidden="true"><Buildings size={14} /></span>
-                <span class="chat-filter-text">Company projects</span>
-                {#if showFilter === "company-projects"}
+                <span class="chat-filter-text">Include channels I'm not in</span>
+                {#if includeNonMembers}
                   <span class="chat-filter-check" aria-hidden="true"><Check size={12} weight="bold" /></span>
                 {/if}
               </button>
@@ -4133,6 +4139,13 @@
 
   .chat-filter-caption.pad-top {
     padding-top: 12px;
+  }
+
+  /* `.p-divider` */
+  .chat-filter-divider {
+    height: 1px;
+    margin: 6px 8px;
+    background: var(--line);
   }
 
   .chat-sort-toggle {

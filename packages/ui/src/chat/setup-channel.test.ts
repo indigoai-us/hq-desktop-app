@@ -129,12 +129,12 @@ describe("withSetupChannel activity slot", () => {
 });
 
 describe("setup row through the sidebar derivation", () => {
-  it("lands in the PINNED group at the top under the default 'mine' filter", () => {
+  it("lands in the PINNED group at the top under the default 'all' filter", () => {
     const rows = applySidebarFilters(
       normalizeConversations(withSetupChannel([realChannel()]), [], {
         pinnedIds: withSetupPin([]),
       }),
-      { show: "mine" },
+      { show: "all" },
     );
     const grouped = groupByDay(rows);
     expect(grouped.pinned.map((r) => r.id)).toContain(SETUP_ROW_ID);
@@ -158,7 +158,7 @@ describe("setup row through the sidebar derivation", () => {
         [],
         { pinnedIds: withSetupPin([], { dismissed: true }) },
       ),
-      { show: "mine" },
+      { show: "all" },
     );
     const grouped = groupByDay(rows, now);
     expect(grouped.pinned.map((r) => r.id)).not.toContain(SETUP_ROW_ID);
