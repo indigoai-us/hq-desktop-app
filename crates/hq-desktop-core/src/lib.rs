@@ -32,6 +32,7 @@ pub mod hq_cloud;
 pub mod hq_context;
 pub mod hq_resolver;
 pub mod hq_version;
+pub mod ideas;
 pub mod ignore;
 pub mod journal;
 pub mod library_local;
