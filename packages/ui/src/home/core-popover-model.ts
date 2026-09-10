@@ -234,7 +234,9 @@ export function packsSummaryLabel(
   const n = Math.max(0, Math.floor(count));
   if (loading && n === 0) return "Loading…";
   if (n === 0) return "No packs installed";
-  return n === 1 ? "1 pack installed" : `${n} packs installed`;
+  // The row already says "Packs" — "4 PACKS INSTALLED" beside it said it
+  // twice. The concept's meta is just the count.
+  return `${n} installed`;
 }
 
 interface PackagesViewWire {

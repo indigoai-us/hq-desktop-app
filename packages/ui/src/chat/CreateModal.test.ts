@@ -152,8 +152,16 @@ describe("CreateModal find step", () => {
     open();
     await tick();
     const dialog = $<HTMLElement>('[role="dialog"]')!;
+    // Must match the dialog's OWN trap selector — the compose body is a
+    // textarea, and leaving it out of the expectation made the test disagree
+    // with the trap rather than with the DOM.
+    // Must match the dialog's OWN trap selector, disabled exclusion included:
+    // the send button starts disabled, so counting it here made the test
+    // disagree with the trap rather than with the DOM.
     const focusable = [
-      ...dialog.querySelectorAll<HTMLElement>("input, button"),
+      ...dialog.querySelectorAll<HTMLElement>(
+        "input:not([disabled]), button:not([disabled]), textarea:not([disabled])",
+      ),
     ];
     expect(focusable.length).toBeGreaterThan(1);
 

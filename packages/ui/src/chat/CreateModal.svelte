@@ -1,6 +1,8 @@
 <script lang="ts">
   import Buildings from "phosphor-svelte/lib/Buildings";
   import CaretLeft from "phosphor-svelte/lib/CaretLeft";
+  import Hash from "phosphor-svelte/lib/Hash";
+  import PaperPlaneRight from "phosphor-svelte/lib/PaperPlaneRight";
   import X from "phosphor-svelte/lib/X";
   import Robot from "phosphor-svelte/lib/Robot";
   /**
@@ -252,6 +254,23 @@
   let query = $state("");
   let queryDebounced = $state("");
   let activeIndex = $state(0);
+
+  /**
+   * The compose recipient. "New message" is a composer in the concept: you
+   * pick who it goes to, write the message, and send — not a jump list that
+   * dumps you into a conversation with an empty box. One recipient: the
+   * server has no multi-party DM create, so a chips row that accepted several
+   * would be promising something the API cannot do.
+   */
+  let composeTo = $state<FindRow | null>(null);
+  let composeBody = $state("");
+  let composeSending = $state(false);
+  let composeError = $state<string | null>(null);
+  let composeBodyEl = $state<HTMLTextAreaElement | null>(null);
+
+  const composeReady = $derived(
+    composeTo !== null && composeBody.trim().length > 0 && !composeSending,
+  );
 
   let channelName = $state("");
   /** null = derived from the name; a string = the user renamed it. */
@@ -674,10 +693,57 @@
     scrollActiveIntoView();
   }
 
+  function addRecipient(row: FindRow): void {
+    composeTo = row;
+    composeError = null;
+    query = "";
+    activeIndex = 0;
+    // Straight to the message — the recipient is the only thing the list was
+    // for, and re-focusing "To" would invite a second pick it cannot hold.
+    requestAnimationFrame(() => composeBodyEl?.focus());
+  }
+
+  /**
+   * Send, then open. A channel row posts to the channel; a person or agent row
+   * opens a DM. Both seams already exist — the channel form's "first message"
+   * uses the same pair.
+   */
+  async function sendCompose(): Promise<void> {
+    const target = composeTo;
+    const body = composeBody.trim();
+    if (!target || !body || composeSending) return;
+    composeSending = true;
+    composeError = null;
+    try {
+      const channelId = target.row.channelId?.trim();
+      const personUid = target.row.personUid?.trim();
+      if (channelId) {
+        await api.sendChannelMessage({ channelId, body });
+      } else if (personUid) {
+        await api.sendDm({ toPersonUid: personUid, body });
+      } else {
+        composeError = "That conversation cannot receive a message.";
+        return;
+      }
+      onpick(target.row);
+    } catch (err) {
+      composeError = err instanceof Error ? err.message : String(err);
+    } finally {
+      composeSending = false;
+    }
+  }
+
+  function onComposeKey(event: KeyboardEvent): void {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      void sendCompose();
+    }
+  }
+
   function activateIndex(index: number): void {
     const row = findResults.rows[index];
     if (row) {
-      onpick(row.row);
+      addRecipient(row);
       return;
     }
     // Only the trailing create row may fall through here — a stale index into
@@ -1468,27 +1534,59 @@
            existing conversation and names a new channel. -->
       <div class="create-to" inert={confirmSubject !== null}>
         <span class="create-to-label" aria-hidden="true">To</span>
-        <input
-          class="create-query"
-          type="text"
-          role="combobox"
-          data-testid="chat-create-query"
-          use:focusOnMount
-          placeholder="Search people, agents, and channels — or type a new channel name"
-          aria-label="Search people, agents, and channels, or type a new channel name"
-          aria-expanded={flatCount > 0}
-          aria-controls="create-results"
-          aria-autocomplete="list"
-          aria-activedescendant={flatCount > 0
-            ? `create-opt-${highlightIndex}`
-            : undefined}
-          bind:value={query}
-          onkeydown={onFindKey}
-        />
+        <div class="create-to-chips">
+          {#if composeTo}
+            <span class="create-chip" data-testid="chat-compose-recipient">
+              {#if composeTo.kind === "channel"}
+                <span class="create-chip-mono chip-glyph" aria-hidden="true">
+                  <Hash size={11} />
+                </span>
+              {:else}
+                <span
+                  class="create-chip-mono"
+                  class:agent={composeTo.kind === "agent"}
+                  aria-hidden="true">{initialsFor(composeTo.label)}</span
+                >
+              {/if}
+              {composeTo.label}
+              <button
+                type="button"
+                class="create-chip-x"
+                data-testid="chat-compose-recipient-remove"
+                aria-label={`Remove ${composeTo.label}`}
+                onclick={() => (composeTo = null)}
+              >
+                <X size={9} weight="bold" aria-hidden="true" />
+              </button>
+            </span>
+          {:else}
+            <input
+              class="create-query"
+              type="text"
+              role="combobox"
+              data-testid="chat-create-query"
+              use:focusOnMount
+              placeholder="Search people, agents, and channels — or type a new channel name"
+              aria-label="Search people, agents, and channels, or type a new channel name"
+              aria-expanded={flatCount > 0}
+              aria-controls="create-results"
+              aria-autocomplete="list"
+              aria-activedescendant={flatCount > 0
+                ? `create-opt-${highlightIndex}`
+                : undefined}
+              bind:value={query}
+              onkeydown={onFindKey}
+            />
+          {/if}
+        </div>
       </div>
     {/if}
 
     {#if step === "find"}
+      <!-- The result list is the recipient picker: once someone is picked it
+           has nothing left to offer, and the concept hides it to give the
+           message body the card. -->
+      {#if !composeTo}
       <div
         bind:this={listEl}
         class="create-list"
@@ -1512,7 +1610,7 @@
                 data-testid="chat-create-result"
                 aria-selected={highlightIndex === item.index}
                 onmouseenter={() => (activeIndex = item.index)}
-                onclick={() => onpick(item.row.row)}
+                onclick={() => addRecipient(item.row)}
               >
                 {#if item.row.kind === "channel"}
                   <span class="create-glyph" aria-hidden="true">#</span>
@@ -1659,6 +1757,40 @@
           {/if}
         </div>
       {/if}
+      {/if}
+
+      <!-- Concept `.cm-body` + `.cm-foot`: write it here and send it here. -->
+      <div class="create-compose" inert={confirmSubject !== null}>
+        <textarea
+          bind:this={composeBodyEl}
+          class="create-compose-body"
+          data-testid="chat-compose-body"
+          placeholder={composeTo
+            ? `Write to ${composeTo.label}…`
+            : "Write your message…"}
+          aria-label="Message"
+          bind:value={composeBody}
+          onkeydown={onComposeKey}
+        ></textarea>
+      </div>
+      {#if composeError}
+        <p class="create-note create-entry-error" role="alert" data-testid="chat-compose-error">
+          {composeError}
+        </p>
+      {/if}
+      <div class="create-footer create-compose-foot">
+        <span class="create-hint" aria-hidden="true">⌘↵ to send</span>
+        <button
+          type="button"
+          class="create-send"
+          data-testid="chat-compose-send"
+          aria-label="Send message"
+          disabled={!composeReady}
+          onclick={() => void sendCompose()}
+        >
+          <PaperPlaneRight size={13} weight="fill" aria-hidden="true" />
+        </button>
+      </div>
     {:else if step === "create"}
       <div class="create-body" inert={confirmSubject !== null}>
         <div class="create-field">
@@ -2184,10 +2316,14 @@
     flex-direction: column;
     gap: 1px;
     min-height: 0;
-    max-height: 320px;
+    /* `.cm-list`: capped so the message body always has room, and ruled off
+       from it — without the hairline the last result and the composer read as
+       one continuous column. */
+    max-height: 208px;
     overflow-y: auto;
     margin-right: 8px;
     padding: 8px 6px 8px 8px;
+    border-bottom: 1px solid var(--line, var(--v4-hairline));
   }
 
   .create-body {
@@ -2293,6 +2429,13 @@
     gap: 1px;
     padding: 4px 6px 6px;
     border-top: 1px solid var(--line, var(--panel-border));
+    /* The composer sits below, so this block needs its own floor too. */
+    border-bottom: 1px solid var(--line, var(--panel-border));
+  }
+
+  /* Its own top rule already separates it from the list. */
+  .create-list:has(+ .create-entry) {
+    border-bottom: 0;
   }
 
   .create-entry-row {
@@ -2469,6 +2612,81 @@
 
   .create-select:hover {
     border-color: var(--line2);
+  }
+
+  /* `.cm-chips` */
+  .create-to-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  /* `.cm-body`: the message itself gets the middle of the card. */
+  .create-compose {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 14px 16px 4px;
+  }
+
+  .create-compose-body {
+    flex: 1;
+    min-height: 88px;
+    resize: none;
+    border: 0;
+    background: none;
+    outline: none;
+    color: var(--t1);
+    font: 400 13px/1.6 var(--font-ui);
+  }
+
+  .create-compose-body::placeholder {
+    color: var(--t3);
+  }
+
+  /* `.cm-foot`: no top rule — the body above it is open, so a hairline here
+     would fence off the send button rather than seat it. */
+  .create-compose-foot {
+    border-top: 0;
+  }
+
+  /* `.cmp-send` */
+  .create-send {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 26px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--ice-ink);
+    color: var(--badge-fg);
+    cursor: pointer;
+    transition:
+      opacity 0.15s,
+      transform 0.1s;
+  }
+
+  .create-send:hover:not(:disabled) {
+    opacity: 0.88;
+  }
+
+  .create-send:active:not(:disabled) {
+    transform: scale(0.95);
+  }
+
+  .create-send:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  /* A channel chip carries the hash, not a monogram. */
+  .create-chip-mono.chip-glyph {
+    background: var(--ice-tile);
+    color: var(--ice-ink);
+    line-height: 0;
   }
 
   .create-chips {
@@ -2651,6 +2869,11 @@
     font: 500 10px/1 var(--font-mono);
     letter-spacing: 0.06em;
     text-transform: uppercase;
+  }
+
+  .create-compose-foot .create-hint {
+    margin-left: auto;
+    margin-right: 10px;
   }
 
   /* A disabled button with no explanation is a dead end — say why. */

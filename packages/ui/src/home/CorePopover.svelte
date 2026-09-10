@@ -22,6 +22,11 @@
     type CorePopoverPack,
   } from "./core-popover-model.js";
   import { packDisplayName } from "./pack-display-name.js";
+  import Books from "phosphor-svelte/lib/Books";
+  import Package from "phosphor-svelte/lib/Package";
+  import CaretDown from "phosphor-svelte/lib/CaretDown";
+  import CaretRight from "phosphor-svelte/lib/CaretRight";
+  import ArrowRight from "phosphor-svelte/lib/ArrowRight";
   import { type AdapterResult } from "../settings/update-orchestration.js";
   import {
     appRowActions,
@@ -618,8 +623,12 @@
         onclose?.();
       }}
     >
+      <span class="core-row-ic" aria-hidden="true"><Books size={14} /></span>
       <span class="core-row-label">Library</span>
-      <span class="core-row-chevron" aria-hidden="true">›</span>
+      <span class="core-row-spacer"></span>
+      <span class="core-row-chevron" aria-hidden="true">
+        <CaretRight size={8} weight="bold" />
+      </span>
     </button>
   </div>
 
@@ -631,13 +640,18 @@
       aria-expanded={packsExpanded}
       onclick={() => (packsExpanded = !packsExpanded)}
     >
-      <span class="core-packs-label">PACKS</span>
-      <span class="core-packs-meta">{model.packsSummary}</span>
-      <span
-        class="core-row-chevron"
-        class:open={packsExpanded}
-        aria-hidden="true">›</span
-      >
+      <span class="core-row-ic" aria-hidden="true"><Package size={14} /></span>
+      <span class="core-packs-label">Packs</span>
+      <span class="core-packs-meta">
+        {model.packsSummary}
+        <span class="core-packs-caret" aria-hidden="true">
+          {#if packsExpanded}
+            <CaretDown size={8} weight="bold" />
+          {:else}
+            <CaretRight size={8} weight="bold" />
+          {/if}
+        </span>
+      </span>
     </button>
     {#if packsExpanded}
       <ul class="core-pack-list" data-testid="core-popover-pack-list">
@@ -651,21 +665,30 @@
           {#each model.packs as pack (pack.name)}
             <li class="core-pack-row" data-testid="core-popover-pack-row">
               <span class="core-pack-name" title={pack.name}>{packDisplayName(pack)}</span>
-              {#if pack.isNew}
-                <span class="core-pack-new" data-testid="core-popover-pack-new"
-                  >NEW</span
-                >
-              {/if}
-              {#if pack.version}
-                <span class="core-pack-version">v{pack.version}</span>
-              {/if}
+              <!-- One meta on the right, `v3.0 · NEW`. The badge used to sit
+                   between the name and the version, which pulled the version
+                   column out of line on any row that carried it. -->
+              <span class="core-pack-meta" class:new={pack.isNew}>
+                {#if pack.version}<span class="core-pack-version"
+                    >v{pack.version}</span
+                  >{/if}
+                {#if pack.isNew}
+                  {#if pack.version}<span aria-hidden="true">·</span>{/if}
+                  <span class="core-pack-new" data-testid="core-popover-pack-new"
+                    >NEW</span
+                  >
+                {/if}
+              </span>
             </li>
           {/each}
         {/if}
       </ul>
+      <!-- Concept `.sub-item.muted`: the last row of the pack list, not a
+           bordered button parked under it. A secondary button here read as
+           heavier than the packs it followed. -->
       <button
         type="button"
-        class="core-btn secondary core-marketplace"
+        class="core-pack-row core-marketplace"
         data-testid="core-popover-open-marketplace"
         onclick={() => {
           onopenMarketplace?.();
@@ -673,6 +696,7 @@
         }}
       >
         Open marketplace
+        <ArrowRight size={11} aria-hidden="true" />
       </button>
     {/if}
   </section>
@@ -763,8 +787,6 @@
     padding: 0;
     border: none;
     color: var(--ice-ink);
-    font-family: var(--font-mono);
-    font-size: 10px;
     font-weight: 400;
     letter-spacing: 0;
     line-height: 1.2;
@@ -930,10 +952,26 @@
   }
 
   .core-row-chevron {
+    display: inline-flex;
+    align-items: center;
     color: var(--t3);
-    font-size: 14px;
-    line-height: 1;
-    transition: transform 120ms ease;
+    line-height: 0;
+  }
+
+  /* `.p-item .pi`: the 14px leading gutter every menu row in the concept
+     carries, so labels line up down the panel. */
+  .core-row-ic {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 14px;
+    color: var(--t2);
+    line-height: 0;
+  }
+
+  .core-row-spacer {
+    flex: 1 1 auto;
   }
 
   .core-row-chevron.open {
@@ -1079,14 +1117,24 @@
     color: var(--t1);
   }
 
+  .core-packs-caret {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 2px;
+    line-height: 0;
+  }
+
   .core-packs-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     flex: 1 1 auto;
     min-width: 0;
     margin-left: auto;
     color: var(--t3);
     font-family: var(--font-mono);
     font-size: 10px;
-    text-align: right;
+    justify-content: flex-end;
     text-transform: uppercase;
   }
 
@@ -1123,7 +1171,11 @@
     white-space: nowrap;
   }
 
-  .core-pack-version {
+  /* `.p-meta.mono`: version, then NEW, as one right-hand column. */
+  .core-pack-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     flex-shrink: 0;
     margin-left: auto;
     color: var(--t3);
@@ -1132,9 +1184,31 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .core-pack-meta.new {
+    color: var(--ice-ink);
+  }
+
+  .core-pack-version {
+    flex-shrink: 0;
+  }
+
+  /* `.sub-item.muted`: quieter than the packs above it, brightening on hover. */
   .core-marketplace {
-    align-self: flex-start;
+    justify-content: flex-start;
+    gap: 6px;
+    width: calc(100% - 12px);
     margin: 0 6px 2px;
+    border: 0;
+    background: transparent;
+    color: color-mix(in srgb, var(--t1) 55%, transparent);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .core-marketplace:hover {
+    background: var(--hover);
+    color: var(--t1);
   }
 
   .core-load-error {

@@ -62,24 +62,37 @@
     );
   }
 
+  /* Same block as the welcome channel's hero (`.hero-copy`): the copy sits on
+     the FLOOR of the art, not floating near its top edge, on the same 24/20/20
+     padding and 8px gap. */
   .company-hero-copy {
     position: relative;
     z-index: 1;
-    padding: 28px 20px 18px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: var(--space-2, 8px);
+    min-height: 140px;
+    padding: var(--space-6, 24px) var(--space-5, 20px) var(--space-5, 20px);
   }
 
+  /* `.eyebrow` */
   .company-hero-k {
     font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 11px;
-    letter-spacing: 0.06em;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgb(255 255 255 / 0.72);
+    color: rgb(255 255 255 / 0.62);
   }
 
+  /* `.hero-title` */
   .company-hero-title {
-    margin: 6px 0 0;
+    margin: 0;
     font-size: 24px;
-    font-weight: 500;
+    font-weight: 600;
+    line-height: 1.15;
+    letter-spacing: -0.012em;
     color: #fff;
   }
 </style>

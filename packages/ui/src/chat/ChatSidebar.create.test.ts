@@ -211,7 +211,7 @@ describe("ChatSidebar create flow", () => {
     expect(document.querySelector('[data-testid="chat-create-query"]')).toBeNull();
   });
 
-  it("picking a suggestion opens that conversation", async () => {
+  it("picking a suggestion addresses the message, and sending opens it", async () => {
     const onselect = vi.fn<(row: ConversationRow) => void>();
     component = mount(ChatSidebar, {
       target: host,
@@ -229,10 +229,33 @@ describe("ChatSidebar create flow", () => {
       '[data-testid="chat-create-result"]',
     );
     expect(suggestion?.textContent).toContain("Bryan");
+    const callsBeforePick = onselect.mock.calls.length;
     suggestion?.click();
     await tick();
 
-    expect(onselect).toHaveBeenCalled();
+    // "New message" is a composer: picking names the recipient, it does not
+    // dump you into the conversation with an empty box. (The rail selects a
+    // row on mount, so count the calls rather than assuming zero.)
+    expect(onselect.mock.calls.length).toBe(callsBeforePick);
+    expect(
+      document.querySelector('[data-testid="chat-compose-recipient"]')
+        ?.textContent,
+    ).toContain("Bryan");
+
+    const body = document.querySelector<HTMLTextAreaElement>(
+      '[data-testid="chat-compose-body"]',
+    )!;
+    body.value = "Morning";
+    body.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="chat-compose-send"]')
+      ?.click();
+    await tick();
+    await tick();
+
+    expect(onselect.mock.calls.length).toBeGreaterThan(callsBeforePick);
     // Null also catches a portal leak from the orphan-node sweep.
     expect(
       document.querySelector('[data-testid="chat-create-modal"]'),

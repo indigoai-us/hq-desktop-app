@@ -139,7 +139,7 @@ describe("core-popover-model (US-016)", () => {
   describe("packs section", () => {
     it("summarizes installed packs for the expandable list", () => {
       expect(packsSummaryLabel(0)).toBe("No packs installed");
-      expect(packsSummaryLabel(1)).toBe("1 pack installed");
+      expect(packsSummaryLabel(1)).toBe("1 installed");
       const vm = buildCorePopoverViewModel({
         packs: [
           { name: "engineering", version: "1.0.0" },
@@ -147,7 +147,7 @@ describe("core-popover-model (US-016)", () => {
         ],
         packsExpanded: true,
       });
-      expect(vm.packsSummary).toBe("2 packs installed");
+      expect(vm.packsSummary).toBe("2 installed");
       expect(vm.packsExpanded).toBe(true);
       expect(vm.packs.map((p) => p.name)).toEqual(["engineering", "gstack"]);
     });
@@ -185,7 +185,7 @@ describe("G6: undetected core never pairs with green NO DRIFT", () => {
     expect(vm.packs).toHaveLength(0);
     expect(vm.packsSummary).toBe("No packs installed");
     const one = buildCorePopoverViewModel({ packs: [{ name: "engineering" }] });
-    expect(one.packsSummary).toBe("1 pack installed");
+    expect(one.packsSummary).toBe("1 installed");
     expect(one.packs).toHaveLength(1);
     const loading = buildCorePopoverViewModel({
       packs: [],
