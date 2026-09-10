@@ -228,6 +228,21 @@ describe('onboarding step telemetry', () => {
     expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain(first.sessionId);
   });
 
+  it('uses the persisted first-launch gate once across a rerender and resumed wizard', async () => {
+    const first = createTelemetry({
+      newSessionId: () => '22222222-2222-4222-8222-222222222222',
+    });
+
+    expect(first.recordFirstLaunch()).toBe(true);
+    expect(first.recordFirstLaunch()).toBe(false);
+    const resumed = createTelemetry({ newSessionId: () => 'should-not-be-used' });
+    expect(resumed.recordFirstLaunch()).toBe(false);
+
+    await first.flush();
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]?.properties.flow).toBe('first_launch');
+  });
+
   it('buffers a pre-auth operational event and flushes it after authentication', async () => {
     let authenticated = false;
     const telemetry = createOnboardingStepTelemetry({

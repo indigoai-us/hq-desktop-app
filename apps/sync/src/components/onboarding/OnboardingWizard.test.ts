@@ -115,6 +115,7 @@ const CONTINUATION_CONFIG = {
 type ContinuationTestOptions = {
   config?: unknown | (() => unknown);
   identity?: unknown | (() => unknown);
+  deliver?: (args: { path: string; body: Record<string, string | number> }) => number;
 };
 
 /**
@@ -125,9 +126,10 @@ type ContinuationTestOptions = {
 function stubContinuationInvoke({
   config = CONTINUATION_CONFIG,
   identity = { email: 'placeholder account' },
+  deliver = () => 200,
 }: ContinuationTestOptions = {}) {
   let authenticated = false;
-  tauri.invoke.mockImplementation(async (command: string) => {
+  tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     switch (command) {
       case 'resolve_hq_path':
         return '/Users/placeholder/HQ';
@@ -155,7 +157,7 @@ function stubContinuationInvoke({
       case 'desktop_continuation_cancel':
         return undefined;
       case 'desktop_continuation_deliver':
-        return 200;
+        return deliver(args as { path: string; body: Record<string, string | number> });
       case 'start_oauth_login':
         return { authorizeUrl: 'https://placeholder.test/authorize', state: 'oauth-state' };
       case 'oauth_listen_for_code':
@@ -235,6 +237,59 @@ function expectedSetupDeepLink(folder: string): string {
 }
 
 describe('first-run browser session continuation', () => {
+  it('records one launch receipt and retries the same receipt after a resumed wizard', async () => {
+    const deliveredLaunches: Array<Record<string, string | number>> = [];
+    stubContinuationInvoke({
+      config: { ...CONTINUATION_CONFIG, variant: 'control' },
+      deliver: ({ path, body }) => {
+        if (path === '/v1/desktop/onboarding/launch') {
+          deliveredLaunches.push(body);
+          return deliveredLaunches.length === 1 ? 503 : 200;
+        }
+        return 200;
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => deliveredLaunches.length === 1);
+    await flush();
+    await flush();
+    expect(deliveredLaunches).toHaveLength(1);
+
+    await unmount(component);
+    component = null;
+    host.replaceChildren();
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0, onboardingFlow: 'resume' },
+    });
+
+    await flushUntil(() => deliveredLaunches.length === 2);
+    expect(deliveredLaunches[1]).toEqual(deliveredLaunches[0]);
+    expect(localStorage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('"firstLaunchRecorded":true');
+  });
+
+  it('starts provider OAuth and renders loading while rollout preparation is unresolved', async () => {
+    let resolveConfig!: (value: unknown) => void;
+    const config = new Promise<unknown>((resolve) => {
+      resolveConfig = resolve;
+    });
+    stubContinuationInvoke({ config: () => config });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_config'),
+    );
+    providerButtons()[0]?.click();
+    flushSync();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', { provider: 'Google' });
+    expect(providerButtons()[0]?.disabled).toBe(true);
+    expect(host.textContent).toContain('A browser window opened for Google sign-in.');
+
+    resolveConfig({ ...CONTINUATION_CONFIG, variant: 'control' });
+  });
+
   it('offers continuation when the enabled config accepts this build', async () => {
     stubContinuationInvoke();
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });

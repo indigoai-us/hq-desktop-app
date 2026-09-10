@@ -48,7 +48,6 @@
   let continuation = $state<ContinuationState>({ phase: 'idle' });
   let continuationDepsRef: ContinuationDeps | null = null;
   let continuationBusy = $state(false);
-  let continuationPreparation: Promise<void> | null = null;
 
   /**
    * Set the moment a provider button is pressed, and never cleared.
@@ -60,8 +59,7 @@
   let manualSignInStarted = false;
 
   $effect(() => {
-    continuationPreparation = prepareContinuation();
-    void continuationPreparation;
+    void prepareContinuation();
   });
 
   async function prepareContinuation() {
@@ -162,11 +160,8 @@
     // Claim the flow before anything awaits, so a continuation whose config
     // lands mid-click sees this rather than racing it.
     manualSignInStarted = true;
-    // Config, eligibility, or native arming can be in flight while this
-    // screen still looks idle. Let that work observe the explicit choice and
-    // clean up before provider OAuth binds its own listener.
-    await continuationPreparation?.catch(() => undefined);
-    if (!isCurrentSignInRun(run)) return;
+    // Preparation observes this claim and leaves continuation unarmed. Manual
+    // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
     loadingProvider = provider;
     error = '';
     lastProvider = provider;

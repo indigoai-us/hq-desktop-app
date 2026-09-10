@@ -92,7 +92,8 @@ export interface OnboardingStepTelemetryOptions {
 export interface OnboardingStepTelemetry {
   readonly sessionId: string;
   record(event: RecordOnboardingStep): void;
-  recordFirstLaunch(): void;
+  /** Returns whether this call recorded the installation's first launch. */
+  recordFirstLaunch(): boolean;
   /** Retry records that could not be delivered before authentication existed. */
   flush(): Promise<void>;
   /**
@@ -197,7 +198,7 @@ export function createOnboardingStepTelemetry(
       personUid = trimmed;
     },
     recordFirstLaunch() {
-      if (state.firstLaunchRecorded) return;
+      if (state.firstLaunchRecorded) return false;
       state.firstLaunchRecorded = true;
       record({
         properties: {
@@ -207,6 +208,7 @@ export function createOnboardingStepTelemetry(
         },
       });
       persist();
+      return true;
     },
   };
 }

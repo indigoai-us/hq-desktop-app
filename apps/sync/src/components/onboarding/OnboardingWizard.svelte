@@ -29,6 +29,8 @@
     cancelContinuation,
     confirmContinuation,
     flushReceipts,
+    launchReceipt,
+    recordReceipt,
     resolveRollout,
     type ContinuationDeps,
     type ContinuationState,
@@ -218,7 +220,6 @@
   let continuationDepsRef: ContinuationDeps | null = null;
   let continuationBusy = $state(false);
   let continuationPrepared = false;
-  let continuationPreparation: Promise<void> | null = null;
   let manualSignInStarted = false;
 
   let installPath = $state<string | null>(null);
@@ -385,8 +386,7 @@
       return;
     }
     continuationPrepared = true;
-    continuationPreparation = prepareContinuation();
-    void continuationPreparation;
+    void prepareContinuation();
   });
 
   $effect(() => {
@@ -440,11 +440,6 @@
       if (onboardingFlow === 'resume' && currentStep !== WELCOME_SIGNIN_STEP_INDEX) {
         recordStep(currentStep, 'resumed', {}, onboardingFlow);
       }
-      void invokeCommand<boolean>('is_first_run')
-        .then((firstLaunch) => {
-          if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
-        })
-        .catch(() => {});
       // A resumed onboarding session may already have a restored token. Its
       // operational queue is independent of consent and can resume delivery.
       void invokeCommand<{ authenticated: boolean }>('get_auth_state')
@@ -555,29 +550,8 @@
     // listener over the provider flow the person deliberately chose.
     manualSignInStarted = true;
 
-    // While the browser continuation listener is still holding the loopback
-    // port, release it before starting explicit OAuth. Once an identity is
-    // confirming, leave it to oauth_exchange_code: that shared completion
-    // marks the pending continuation AttemptEnd::Superseded only after the
-    // provider exchange succeeds.
-    if (
-      continuationDepsRef &&
-      (continuation.phase === 'opening' || continuation.phase === 'waiting')
-    ) {
-      continuationBusy = true;
-      try {
-        await cancelContinuation(continuationDepsRef, continuation, (next) => {
-          continuation = next;
-        });
-      } finally {
-        continuationBusy = false;
-      }
-    }
-    // A config or native eligibility check may still be resolving while the
-    // panel is visually idle. Wait for it to observe the manual-flow claim,
-    // so explicit OAuth cannot race a listener that continuation just armed.
-    await continuationPreparation?.catch(() => undefined);
-    if (!isCurrentSignInCall(call)) return;
+    // Preparation observes this claim and leaves continuation unarmed. Manual
+    // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
 
     loadingProvider = provider;
     signInError = '';
@@ -635,13 +609,24 @@
   }
 
   async function prepareContinuation(): Promise<void> {
+    const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
     const context = await loadContinuationContext();
-    if (!context) return;
+    if (!context) {
+      if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
+      return;
+    }
     const deps = continuationDeps(context);
     continuationDepsRef = deps;
 
     // Receipt delivery is best effort and must never delay sign-in.
     void flushReceipts(deps).catch(() => undefined);
+
+    // `firstLaunchRecorded` is the existing durable first-installation gate.
+    // It survives re-renders and a resumed wizard, while recordReceipt keeps
+    // an undelivered receipt's event id and timestamp stable for retry.
+    if (firstLaunch && onboardingTelemetry.recordFirstLaunch()) {
+      void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
+    }
 
     // Check before and after the config round trip. A provider click during
     // that wait is a deliberate choice and must win without arming another
