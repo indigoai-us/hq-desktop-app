@@ -91,6 +91,28 @@ pub fn menubar_flags(obj: &Map<String, Value>) -> (bool, bool, bool) {
     (install_completed, first_run_completed, had_machine_id)
 }
 
+/// Is the welcome channel's guided setup still owed on this machine?
+///
+/// The welcome channel (Run Setup in `#welcome`) is for people whose first
+/// run completed on a build that has it: the installer writes
+/// `welcomeSetupPending` when a brand-new install finishes. A machine that was
+/// set up before that flag existed — an existing user updating, whose
+/// `firstRunCompleted` was written by an older build or backfilled from disk
+/// — has already done its setup another way and must not be greeted with
+/// Run Setup again. Machines still mid-install are owed it.
+///
+/// `welcomeSetupPending: false` (written when the guided run finishes) wins
+/// over everything: setup is done.
+pub fn welcome_setup_owed(menubar: &Map<String, Value>, hq_root_valid: bool) -> bool {
+    match menubar.get("welcomeSetupPending").and_then(Value::as_bool) {
+        Some(pending) => pending,
+        None => {
+            let (_, first_run_completed, _) = menubar_flags(menubar);
+            !hq_root_valid || !first_run_completed
+        }
+    }
+}
+
 /// True when `root` exists and contains the installed hq-core template shape
 /// (canonical `core/core.yaml`, or legacy top-level `core.yaml`).
 pub fn hq_root_valid(root: &Path) -> bool {
@@ -498,6 +520,27 @@ mod tests {
         assert_eq!(steady_state.state, LifecycleState::SteadyState);
         assert!(!first_run.needs_install_backfill);
         assert!(!steady_state.needs_install_backfill);
+    }
+
+    #[test]
+    fn welcome_setup_is_owed_to_a_new_install_and_a_machine_still_installing() {
+        let pending = map(json!({ "firstRunCompleted": true, "welcomeSetupPending": true }));
+        assert!(welcome_setup_owed(&pending, true));
+        let installing = map(json!({}));
+        assert!(welcome_setup_owed(&installing, false));
+        let no_first_run = map(json!({ "machineId": "abc" }));
+        assert!(welcome_setup_owed(&no_first_run, true));
+    }
+
+    #[test]
+    fn welcome_setup_is_not_owed_to_an_existing_set_up_user() {
+        // An older build (or the disk backfill) wrote firstRunCompleted and never
+        // knew about the welcome channel: this person already ran setup.
+        let legacy = map(json!({ "machineId": "abc", "installCompleted": true, "firstRunCompleted": true }));
+        assert!(!welcome_setup_owed(&legacy, true));
+        // Finished the guided run: done for good, whatever else is on disk.
+        let finished = map(json!({ "welcomeSetupPending": false }));
+        assert!(!welcome_setup_owed(&finished, false));
     }
 
     #[test]

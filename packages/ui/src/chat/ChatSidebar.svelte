@@ -210,7 +210,12 @@
      * Land on #welcome at boot even when live channels exist (setup has not
      * been run on this machine yet). See `hasRunWelcomeSetup`.
      */
-    welcomeFirst?: boolean;
+    /**
+     * `true`: #welcome wins the boot pick (setup not run here yet). `false`:
+     * real conversations win. `"pending"`: the host has not yet said whether
+     * setup is owed — hold the boot pick, briefly, rather than guess.
+     */
+    welcomeFirst?: boolean | "pending";
     /**
      * Phone-width shells keep this mounted while it is closed — it is what
      * loads the roster and falls back to #setup — and move it off screen
@@ -725,6 +730,9 @@
       return;
     }
     if (autoOpenRequestedId) return;
+    // The host has not said yet whether setup is owed here: opening either
+    // #welcome or a company channel now would be a guess the person sees.
+    if (welcomeFirst === "pending") return;
     // Until setup has been run on this machine, #welcome wins the boot pick:
     // the person needs Run Setup before a company channel is useful.
     if (welcomeFirst) {

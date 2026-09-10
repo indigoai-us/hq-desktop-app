@@ -1060,7 +1060,11 @@
   // Starting is not finishing: a relaunch mid-run must still land on
   // #welcome, so only the finish graduates welcome-first boot.
   const setupAgent = new SetupAgent(extraPages?.sessions?.setupRun ?? null, {
-    onfinished: recordWelcomeSetupRun,
+    onfinished: () => {
+      recordWelcomeSetupRun();
+      // On disk too: the window's memory does not survive a reinstall.
+      void adapter.settings.markWelcomeSetupComplete?.();
+    },
   });
   $effect(() => () => setupAgent.dispose());
   const inSetupChannelWithAgent = $derived(
@@ -2643,6 +2647,39 @@
    * person starts setup so a later re-open goes to the company channel.
    */
   let welcomeSetupRun = $state(hasRunWelcomeSetup());
+  /**
+   * Whether this machine is still owed the welcome channel's guided setup,
+   * from the host's setup status. A person who set HQ up before the welcome
+   * flow existed (Caio: "I previously ran setup, but it showed me this") is
+   * not: boot goes to their channels and #welcome shows the finished state.
+   * Unknown until the host answers; unknown means owed, as before.
+   */
+  let welcomeSetupOwed = $state<boolean | null>(null);
+  /** The boot pick never waits longer than this for the host's answer. */
+  const WELCOME_OWED_TIMEOUT_MS = 2000;
+  onMount(() => {
+    let settled = false;
+    const resolve = (owed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      welcomeSetupOwed = owed;
+      if (owed) return;
+      welcomeSetupRun = true;
+      setupAgent.markAlreadySetUp();
+    };
+    const timer = window.setTimeout(() => resolve(true), WELCOME_OWED_TIMEOUT_MS);
+    void (async () => {
+      try {
+        const res = await adapter.settings.getSetupStatus();
+        const owed = res.ok ? (res.value as { welcomeSetupOwed?: unknown } | null)?.welcomeSetupOwed : undefined;
+        // Only an explicit "not owed" skips the welcome; anything else keeps today's behaviour.
+        resolve(owed !== false);
+      } catch {
+        resolve(true);
+      }
+    })();
+    return () => clearTimeout(timer);
+  });
   /**
    * An explicit conversation deep link (`?channel=` / `?person=`) is a
    * stronger intent than first landing: it must never be swallowed by the
@@ -5063,7 +5100,7 @@
             directorySettled = true;
           }}
           {bootTimeoutMs}
-          welcomeFirst={!welcomeSetupRun && !hasBootDeepLink && !initialRow}
+          welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
           {rowExtrasLoading}

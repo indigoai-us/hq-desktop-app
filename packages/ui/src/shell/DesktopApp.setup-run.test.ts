@@ -44,7 +44,7 @@ const ACME_CHANNEL_ROW = {
   lastActivityAt: new Date().toISOString(),
 };
 
-function adapter(): PlatformAdapter {
+function adapter(settings: Record<string, unknown> = {}): PlatformAdapter {
   return {
     kind: "web",
     isAvailable: () => false,
@@ -56,6 +56,7 @@ function adapter(): PlatformAdapter {
     },
     settings: {
       getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }),
+      ...settings,
     },
     shell: {
       detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
@@ -110,6 +111,7 @@ async function mountApp(
   setupRun: SetupRunApi,
   setupParam = vi.fn(() => "new?draft=x&prompt=%2Fsetup"),
   extra: Partial<ComponentProps<typeof DesktopApp>> = {},
+  options: { settings?: Record<string, unknown>; openWelcome?: boolean } = {},
 ) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -117,7 +119,7 @@ async function mountApp(
     target: host,
     props: {
       ...extra,
-      adapter: adapter(),
+      adapter: adapter(options.settings),
       sidebarApi: createFixtureChatSidebarApi(),
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_test", displayName: "Stefan Johnson", email: "stefan@example.com" },
@@ -137,8 +139,10 @@ async function mountApp(
   await settle();
   const row = host.querySelector<HTMLButtonElement>(`[data-conversation-id="${SETUP_ROW_ID}"]`);
   expect(row, "pinned #welcome row renders").toBeTruthy();
-  row!.click();
-  await settle();
+  if (options.openWelcome !== false) {
+    row!.click();
+    await settle();
+  }
   return setupParam;
 }
 
@@ -435,6 +439,27 @@ describe("DesktopApp native setup run wiring", () => {
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run-details"]')!.click();
     await settle();
     expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("sess-42");
+  });
+
+  it("a new install (setup owed) still gets Run Setup, and finishing records completion on disk", async () => {
+    const api = fakeSetupRun();
+    const markWelcomeSetupComplete = vi.fn(async () => ok(undefined));
+    await mountApp(api, undefined, {}, {
+      settings: {
+        getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: true }),
+        markWelcomeSetupComplete,
+      },
+    });
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]');
+    expect(button?.textContent).toContain("Run Setup");
+    button!.click();
+    await settle();
+    expect(markWelcomeSetupComplete).not.toHaveBeenCalled();
+    api.emit({ kind: "assistantMessage", text: "[hq-setup] step=moves status=done\n\nAll set — you're done." });
+    api.emit({ kind: "turnDone", status: "success" }, "idle");
+    await settle();
+    expect(markWelcomeSetupComplete).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
   });
 
   it("graduates welcome-first boot once the run finishes", async () => {

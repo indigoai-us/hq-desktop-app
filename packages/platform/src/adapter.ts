@@ -1039,6 +1039,11 @@ export interface SettingsApi {
   /** Persist a minimal patch over the latest host settings. */
   updateSettings(patch: Json): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
+  /**
+   * The welcome channel's guided setup finished on this machine. Optional:
+   * hosts without a native settings store have nothing to record.
+   */
+  markWelcomeSetupComplete?(): AdapterPromise<void>;
   getTelemetryConsent(): AdapterPromise<boolean | null>;
 }
 
