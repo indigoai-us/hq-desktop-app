@@ -524,6 +524,13 @@ pub fn resolve_runner_report_request(
 /// [`runner_report_signal_flag`]).
 fn runner_report_argv_flags(report_dir: &Path) -> Vec<String> {
     let mut flags = vec!["--report-on-fatalerror".to_string()];
+    // Arm the uncaught-exception trigger on EVERY platform (HQ-DESKTOP-66). Windows
+    // otherwise arms ONLY --report-on-fatalerror — the signal-triggered report below
+    // is POSIX-only — so a runner that dies on an uncaught JS exception leaves no
+    // crash-surviving artifact there while its stderr is lost on the async libuv
+    // pipe. `classify_report_fatal` already accepts an `Exception` trigger and still
+    // refuses a `Signal` trigger, so no classifier change is required.
+    flags.push("--report-uncaught-exception".to_string());
     if let Some(signal_flag) = runner_report_signal_flag() {
         flags.push(signal_flag.to_string());
     }
@@ -540,6 +547,10 @@ fn runner_report_argv_flags(report_dir: &Path) -> Vec<String> {
 /// signal-triggered report is armed too (see [`runner_report_signal_flag`]).
 fn runner_report_node_options_flags(report_dir: &Path) -> Vec<String> {
     let mut flags = vec!["--report-on-fatalerror".to_string()];
+    // Arm the uncaught-exception trigger on EVERY platform (HQ-DESKTOP-66); see
+    // [`runner_report_argv_flags`] for why Windows needs it. Kept at the same shared
+    // seam so the two spellings can never drift.
+    flags.push("--report-uncaught-exception".to_string());
     if let Some(signal_flag) = runner_report_signal_flag() {
         flags.push(signal_flag.to_string());
     }
@@ -2180,6 +2191,8 @@ mod tests {
         let node_options = flags.node_options.clone().expect("NODE_OPTIONS composed");
         assert!(node_options.contains("--max-old-space-size=3584"));
         assert!(node_options.contains("--report-on-fatalerror"));
+        // The uncaught-exception trigger is armed on every platform (HQ-DESKTOP-66).
+        assert!(node_options.contains("--report-uncaught-exception"));
         assert!(node_options.contains("--report-compact"));
         // The directory is QUOTED inside NODE_OPTIONS so a path with a space is not
         // split by Node's whitespace tokenizer.
@@ -2189,6 +2202,10 @@ mod tests {
         // with an UNQUOTED directory (a single argv element).
         assert_eq!(flags.node_argv[0], "--max-old-space-size=3584");
         assert!(flags.node_argv.iter().any(|a| a == "--report-on-fatalerror"));
+        assert!(flags
+            .node_argv
+            .iter()
+            .any(|a| a == "--report-uncaught-exception"));
         assert!(flags
             .node_argv
             .iter()
@@ -2205,8 +2222,13 @@ mod tests {
         let flags = compose_runner_spawn_flags(None, None, Some(dir));
         let node_options = flags.node_options.clone().expect("report flags composed");
         assert!(node_options.contains("--report-on-fatalerror"));
+        assert!(node_options.contains("--report-uncaught-exception"));
         assert!(!node_options.contains("--max-old-space-size"));
         assert!(flags.node_argv.iter().any(|a| a == "--report-on-fatalerror"));
+        assert!(flags
+            .node_argv
+            .iter()
+            .any(|a| a == "--report-uncaught-exception"));
         assert!(!flags.node_argv.iter().any(|a| a.contains("max-old-space")));
         assert_eq!(flags.report, RunnerReportRequest::Requested);
     }

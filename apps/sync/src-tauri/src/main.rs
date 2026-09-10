@@ -1457,6 +1457,10 @@ fn main() {
                 // with its honest `deferred` provenance rather than lose it to the
                 // deferral horizon. Bounded, panic-free, no Event Log work.
                 commands::daemon::flush_pending_watcher_fault_captures("app_quit_flush");
+                // Likewise a NON-fault capture whose deferred report read is still in
+                // flight (HQ-DESKTOP-66) names a measured crash — read + emit it now
+                // (a fast local-file read) rather than lose it to the deferral horizon.
+                commands::daemon::flush_pending_runner_report_captures("app_quit_flush");
                 #[cfg(target_os = "windows")]
                 if let Some(observer) = _app_handle
                     .try_state::<commands::session_end_observer::SessionEndObserverHandle>()
@@ -1521,6 +1525,11 @@ fn main() {
                         // honest `deferred` provenance, ahead of the capped Sentry
                         // flush below. Bounded, panic-free, no Event Log work.
                         commands::daemon::flush_pending_watcher_fault_captures("session_end_flush");
+                        // A deferred NON-fault report capture (HQ-DESKTOP-66) names a
+                        // measured crash, not a benign session end, so it must NOT be
+                        // dropped here. Read + flush it (a fast local-file read, no Event
+                        // Log work) ahead of the capped Sentry flush below.
+                        commands::daemon::flush_pending_runner_report_captures("session_end_flush");
 
                         // Corroborating signal, read BEFORE the observer is shut
                         // down (shutdown moves its readiness out of the
