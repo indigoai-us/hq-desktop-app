@@ -26,7 +26,6 @@
   } from '../../lib/desktop-continuation-tauri';
   import {
     beginContinuation,
-    cancelContinuation,
     confirmContinuation,
     flushReceipts,
     launchReceipt,
@@ -156,6 +155,11 @@
   const FADE_OUT_MS = 320;
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
+  // The native HTTP client allows a request to run for 15 seconds. Holding a
+  // first-run screen that long would make setup feel stuck, so browser-session
+  // continuation gets a short, silent head start and then yields to the
+  // unchanged provider buttons.
+  const AUTOMATIC_CONTINUATION_TIMEOUT_MS = 1_500;
   const DEFAULT_STEP: number = WIZARD_STEPS[0].index;
 
   let {
@@ -213,14 +217,15 @@
 
   // Browser session continuation belongs on the first screen someone sees
   // after downloading HQ, not only on the returning-user sign-in surfaces.
-  // It is deliberately additive: every state other than `confirming` keeps
-  // the existing provider path available, and every failure falls through to
-  // that path without surfacing an error.
+  // The first-run wizard completes an eligible session itself; it never
+  // renders a continuation prompt or account choice.
   let continuation = $state<ContinuationState>({ phase: 'idle' });
   let continuationDepsRef: ContinuationDeps | null = null;
-  let continuationBusy = $state(false);
   let continuationPrepared = false;
   let manualSignInStarted = false;
+  let automaticContinuationRun = 0;
+  let automaticContinuationActive = false;
+  let signInActionsReady = $state(false);
 
   let installPath = $state<string | null>(null);
   let resolvedPath = $state<string | null>(null);
@@ -549,6 +554,7 @@
     // settle while this click is being handled; it must not then arm a second
     // listener over the provider flow the person deliberately chose.
     manualSignInStarted = true;
+    automaticContinuationActive = false;
 
     // Preparation observes this claim and leaves continuation unarmed. Manual
     // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
@@ -609,10 +615,34 @@
   }
 
   async function prepareContinuation(): Promise<void> {
+    const run = ++automaticContinuationRun;
+    automaticContinuationActive = true;
+    const timeout = window.setTimeout(() => {
+      if (!isAutomaticContinuationCurrent(run)) return;
+      automaticContinuationActive = false;
+      signInActionsReady = true;
+
+      // Do not leave a native attempt holding its listener after the visible
+      // first-run flow has fallen back. `beginContinuation` records the single
+      // cancelled result when its pending identity wait returns.
+      const attemptId = 'attemptId' in continuation ? continuation.attemptId : undefined;
+      if (attemptId && continuationDepsRef) {
+        void continuationDepsRef.bridge.cancel({ attemptId }).catch(() => undefined);
+      }
+    }, AUTOMATIC_CONTINUATION_TIMEOUT_MS);
+
+    const finishWithProviderButtons = () => {
+      if (run !== automaticContinuationRun || currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
+      automaticContinuationActive = false;
+      window.clearTimeout(timeout);
+      signInActionsReady = true;
+    };
+
     const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
     const context = await loadContinuationContext();
     if (!context) {
       if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
+      finishWithProviderButtons();
       return;
     }
     const deps = continuationDeps(context);
@@ -631,57 +661,57 @@
     // Check before and after the config round trip. A provider click during
     // that wait is a deliberate choice and must win without arming another
     // OAuth listener.
-    if (manualSignInStarted) return;
+    if (!isAutomaticContinuationCurrent(run)) return;
     const decision = await resolveRollout(deps);
-    if (!decision.enabled || manualSignInStarted) return;
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (!decision.enabled) {
+      finishWithProviderButtons();
+      return;
+    }
 
-    await beginContinuation(
+    const next = await beginContinuation(
       deps,
       decision,
       (next) => {
-        continuation = next;
+        if (isAutomaticContinuationCurrent(run)) continuation = next;
       },
-      () => !manualSignInStarted,
+      () => isAutomaticContinuationCurrent(run),
     );
-  }
-
-  async function handleContinuationConfirm(): Promise<void> {
-    if (
-      continuation.phase !== 'confirming' ||
-      !continuationDepsRef ||
-      continuationBusy ||
-      loadingProvider
-    ) {
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (next.phase !== 'confirming') {
+      finishWithProviderButtons();
       return;
     }
-    continuationBusy = true;
-    try {
-      const next = await confirmContinuation(
-        continuationDepsRef,
-        continuation,
-        (state) => {
-          continuation = state;
-        },
-      );
-      if (next.phase !== 'activated') return;
 
-      const auth = await invokeCommand<{ authenticated: boolean }>('get_auth_state');
-      if (auth.authenticated) await completeAuthenticatedSignIn(currentSignInCall);
-    } finally {
-      continuationBusy = false;
+    const activated = await confirmContinuation(deps, next, (state) => {
+      if (isAutomaticContinuationCurrent(run)) continuation = state;
+    });
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (activated.phase !== 'activated') {
+      finishWithProviderButtons();
+      return;
     }
+
+    const auth = await invokeCommand<{ authenticated: boolean }>('get_auth_state').catch(() => null);
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (!auth?.authenticated) {
+      finishWithProviderButtons();
+      return;
+    }
+
+    automaticContinuationActive = false;
+    window.clearTimeout(timeout);
+    await completeAuthenticatedSignIn(currentSignInCall);
   }
 
-  async function handleContinuationReject(): Promise<void> {
-    if (!continuationDepsRef || continuationBusy) return;
-    continuationBusy = true;
-    try {
-      await cancelContinuation(continuationDepsRef, continuation, (next) => {
-        continuation = next;
-      });
-    } finally {
-      continuationBusy = false;
-    }
+  function isAutomaticContinuationCurrent(run: number): boolean {
+    return (
+      mounted &&
+      run === automaticContinuationRun &&
+      automaticContinuationActive &&
+      !manualSignInStarted &&
+      currentStep === WELCOME_SIGNIN_STEP_INDEX
+    );
   }
 
   /**
@@ -2035,43 +2065,6 @@
                gone on purpose: a pre-ticked box is not a real choice, and posting
                the answer here (before setup provisions the person entity) meant the
                write had nowhere to land. Consent is now its own step after setup. -->
-          {#if continuation.phase === 'confirming'}
-            <div class="continuation-card" data-testid="onboarding-continuation-confirm">
-              <p class="continuation-lead">You’re already signed in as</p>
-              <p class="continuation-email">{continuation.identity.email}</p>
-              <button
-                class="btn btn-primary"
-                type="button"
-                data-testid="onboarding-continuation-confirm-button"
-                onclick={handleContinuationConfirm}
-                disabled={continuationBusy || loadingProvider !== null}
-              >
-                {continuationBusy ? 'Signing in…' : `Continue as ${continuation.identity.email}`}
-              </button>
-              <button
-                class="continuation-dismiss"
-                type="button"
-                data-testid="onboarding-continuation-reject"
-                onclick={handleContinuationReject}
-                disabled={continuationBusy || loadingProvider !== null}
-              >
-                Use another account
-              </button>
-            </div>
-          {:else if continuation.phase === 'opening' || continuation.phase === 'waiting'}
-            <div class="continuation-card" data-testid="onboarding-continuation-waiting">
-              <p class="continuation-lead">Finishing your sign-in in the browser…</p>
-              <button
-                class="continuation-dismiss"
-                type="button"
-                data-testid="onboarding-continuation-reject"
-                onclick={handleContinuationReject}
-                disabled={continuationBusy}
-              >
-                Use another account
-              </button>
-            </div>
-          {/if}
           {#if signInError}
             <p class="inline-note error" role="alert">{signInError}</p>
           {:else if loadingProvider}
@@ -2079,13 +2072,12 @@
               A browser window opened for {loadingProvider} sign-in. Complete it there and you'll return here automatically.
             </p>
           {/if}
-          {#if continuation.phase !== 'opening' && continuation.phase !== 'waiting'}
+          {#if signInActionsReady}
             <div class="btns">
               <button
                 class="btn btn-primary"
                 type="button"
-                data-testid="onboarding-signin-google"
-                disabled={loadingProvider !== null || continuationBusy}
+                disabled={loadingProvider !== null}
                 aria-busy={loadingProvider === 'Google'}
                 onclick={() => handleSignIn('Google')}
               >
@@ -2094,8 +2086,7 @@
               <button
                 class="btn btn-secondary"
                 type="button"
-                data-testid="onboarding-signin-microsoft"
-                disabled={loadingProvider !== null || continuationBusy}
+                disabled={loadingProvider !== null}
                 aria-busy={loadingProvider === 'Microsoft'}
                 onclick={() => handleSignIn('Microsoft')}
               >
@@ -2811,37 +2802,6 @@
   .inline-note { margin:10px 0 0; color:var(--c-muted); font-size:12px; line-height:16px; }
   .inline-note.error,
   .inline-note.warning { color:var(--c-text); }
-  .continuation-card {
-    display:flex;
-    flex-direction:column;
-    align-items:flex-start;
-    gap:8px;
-    margin-top:16px;
-    padding:14px;
-    border:1px solid var(--c-field-border);
-    border-radius:10px;
-    background:var(--c-field-bg);
-  }
-  .continuation-lead,
-  .continuation-email { margin:0; color:var(--c-text); font-size:13px; line-height:18px; }
-  .continuation-lead { color:var(--c-muted); }
-  .continuation-email { font-weight:600; overflow-wrap:anywhere; }
-  .continuation-dismiss {
-    appearance:none;
-    padding:0;
-    border:0;
-    background:transparent;
-    color:var(--c-muted);
-    font:inherit;
-    font-size:12px;
-    line-height:16px;
-    text-decoration:underline;
-    text-underline-offset:2px;
-    cursor:pointer;
-  }
-  .continuation-dismiss:hover:not(:disabled) { color:var(--c-text); }
-  .continuation-dismiss:focus-visible { outline:1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset:2px; border-radius:3px; }
-  .continuation-dismiss:disabled { opacity:.55; cursor:wait; }
   .finish-action,
   .finish-action-error { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:10px 0 0; color:var(--c-text); font-size:12px; line-height:16px; }
   .finish-action button,
