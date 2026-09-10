@@ -22,8 +22,6 @@
     type CorePopoverPack,
   } from "./core-popover-model.js";
   import { packDisplayName } from "./pack-display-name.js";
-  import Books from "phosphor-svelte/lib/Books";
-  import Package from "phosphor-svelte/lib/Package";
   import CaretDown from "phosphor-svelte/lib/CaretDown";
   import CaretRight from "phosphor-svelte/lib/CaretRight";
   import ArrowRight from "phosphor-svelte/lib/ArrowRight";
@@ -623,9 +621,7 @@
         onclose?.();
       }}
     >
-      <span class="core-row-ic" aria-hidden="true"><Books size={14} /></span>
       <span class="core-row-label">Library</span>
-      <span class="core-row-spacer"></span>
       <span class="core-row-chevron" aria-hidden="true">
         <CaretRight size={8} weight="bold" />
       </span>
@@ -640,7 +636,6 @@
       aria-expanded={packsExpanded}
       onclick={() => (packsExpanded = !packsExpanded)}
     >
-      <span class="core-row-ic" aria-hidden="true"><Package size={14} /></span>
       <span class="core-packs-label">Packs</span>
       <span class="core-packs-meta">
         {model.packsSummary}
@@ -956,22 +951,6 @@
     align-items: center;
     color: var(--t3);
     line-height: 0;
-  }
-
-  /* `.p-item .pi`: the 14px leading gutter every menu row in the concept
-     carries, so labels line up down the panel. */
-  .core-row-ic {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    width: 14px;
-    color: var(--t2);
-    line-height: 0;
-  }
-
-  .core-row-spacer {
-    flex: 1 1 auto;
   }
 
   .core-row-chevron.open {

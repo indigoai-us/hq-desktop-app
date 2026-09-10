@@ -107,14 +107,13 @@ async function mountApp(companies: Workspace[] | null): Promise<void> {
 }
 
 describe("DesktopApp company hero title", () => {
-  it("titles a company channel with the company, and puts the slug in the subtitle", async () => {
+  it("titles a company channel with the company, and says only what kind it is", async () => {
     await mountApp([acmeWorkspace]);
     // A company channel IS the company's room, so the header names the
-    // company; the slug it replaced moves into the subtitle rather than being
-    // dropped.
+    // company — and the subtitle then has nothing left to add but the kind.
     expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toBe("Acme");
     expect(host.querySelector('[data-testid="channel-sub"]')?.textContent).toBe(
-      "acme · company channel",
+      "company channel",
     );
     const hero = host.querySelector('[data-testid="company-hero"]');
     expect(hero, "company hero renders for a company channel").toBeTruthy();

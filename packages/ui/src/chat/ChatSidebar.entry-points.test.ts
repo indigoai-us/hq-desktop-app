@@ -2,9 +2,11 @@
 
 /**
  * Lifecycle entry points offered by the sidebar: "New company" / "New agent"
- * rows in the "+" modal and a "New company" row in the company switcher. The
- * sidebar never runs the server action itself — it calls the host callbacks
- * and either closes (success) or shows the reason inline (blocked).
+ * rows in the "+" MENU (they used to live inside the create modal, which is
+ * now a message composer — creating a company is not a message) and a "New
+ * company" row in the company switcher. The sidebar never runs the server
+ * action itself — it calls the host callbacks and either closes (success) or
+ * shows the reason inline (blocked).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -71,10 +73,15 @@ function mountSidebar(props: Record<string, unknown>): void {
   });
 }
 
-async function openModal(): Promise<void> {
+/** Open the "+" menu, where the entry points live. */
+async function openMenu(): Promise<void> {
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
   await settle();
-  // The plus is a menu now; the finder is behind "New message".
+}
+
+/** Open the "+" menu and go through to the composer behind "New message". */
+async function openModal(): Promise<void> {
+  await openMenu();
   document
     .querySelector<HTMLButtonElement>('[data-testid="chat-new-message-item"]')!
     .click();
@@ -102,44 +109,50 @@ describe("ChatSidebar lifecycle entry points", () => {
   it("hides the rows when the host provides no entry-point callbacks", async () => {
     mountSidebar({ companies: [INDIGO] });
     await settle();
+    await openMenu();
+    expect(q('[data-testid="chat-new-message-item"]')).toBeTruthy();
+    expect(q('[data-testid="chat-new-company-item"]')).toBeNull();
+    expect(q('[data-testid="chat-new-agent-item"]')).toBeNull();
+  });
+
+  it("the composer offers no entry points — it only sends messages", async () => {
+    const oncreatecompany = vi.fn(async () => okTarget);
+    const oncreateagent = vi.fn(async () => okTarget);
+    mountSidebar({ companies: [INDIGO], oncreatecompany, oncreateagent });
+    await settle();
     await openModal();
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-entry-points"]')).toBeNull();
     expect(q('[data-testid="chat-create-new-company"]')).toBeNull();
     expect(q('[data-testid="chat-create-new-agent"]')).toBeNull();
+    expect(q('[data-testid="chat-compose-body"]')).toBeTruthy();
   });
 
-  it("New company calls the host and closes the modal on success", async () => {
+  it("New company calls the host and closes the menu on success", async () => {
     const oncreatecompany = vi.fn(async () => okTarget);
     mountSidebar({ companies: [INDIGO], oncreatecompany });
     await settle();
-    await openModal();
-    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-company"]');
+    await openMenu();
+    const row = q<HTMLButtonElement>('[data-testid="chat-new-company-item"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("New company");
     row!.click();
     await settle(10);
     expect(oncreatecompany).toHaveBeenCalledTimes(1);
-    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
-    // Focus returns to the "+" control.
-    expect(document.activeElement?.getAttribute("data-testid")).toBe(
-      "chat-new-message",
-    );
+    expect(q('[data-testid="chat-new-company-item"]')).toBeNull();
   });
 
   it("New agent with one company goes straight to it", async () => {
     const oncreateagent = vi.fn(async () => okTarget);
     mountSidebar({ companies: [INDIGO], oncreateagent });
     await settle();
-    await openModal();
-    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-agent"]');
+    await openMenu();
+    const row = q<HTMLButtonElement>('[data-testid="chat-new-agent-item"]');
     expect(row).toBeTruthy();
-    expect(row?.textContent).toContain("Indigo");
-    expect(row?.getAttribute("aria-haspopup")).toBeNull();
     row!.click();
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo");
-    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
+    expect(q('[data-testid="chat-new-agent-item"]')).toBeNull();
   });
 
   it("offers a company the directory knows before the workspace list refreshes", async () => {
@@ -167,50 +180,28 @@ describe("ChatSidebar lifecycle entry points", () => {
     } as unknown as ReturnType<typeof createFixtureChatSidebarApi>;
     mountSidebar({ api, companies: [], oncreateagent, seedDirectory: [directoryRow] });
     await settle();
-    await openModal();
-    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-agent"]');
+    await openMenu();
+    const row = q<HTMLButtonElement>('[data-testid="chat-new-agent-item"]');
     expect(row).toBeTruthy();
-    expect(row?.textContent).toContain("Ramen Bae");
     row!.click();
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_ramen_bae");
   });
 
-  it("New agent with several companies shows an inline picker, keyboard included", async () => {
+  it("New agent with several companies targets the scope you are in", async () => {
+    // The modal's inline company picker went with the modal. A menu row cannot
+    // hold one, so it resolves the target the way the rest of the rail does:
+    // the active scope, else the first company.
     const oncreateagent = vi.fn(async () => okTarget);
     mountSidebar({ companies: [INDIGO, ACME], oncreateagent });
     await settle();
-    await openModal();
-    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-agent"]');
-    expect(row?.getAttribute("aria-haspopup")).toBe("listbox");
-    expect(row?.getAttribute("aria-expanded")).toBe("false");
-    expect(q('[data-testid="chat-create-agent-picker"]')).toBeNull();
-    row!.click();
-    await settle();
-    expect(oncreateagent).not.toHaveBeenCalled();
-    expect(row?.getAttribute("aria-expanded")).toBe("true");
-    const picker = q('[data-testid="chat-create-agent-picker"]');
-    expect(picker?.getAttribute("role")).toBe("listbox");
-    const options = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(
-        '[data-testid="chat-create-agent-company"]',
-      ),
-    );
-    expect(options.map((o) => o.dataset.company)).toEqual(["cmp_indigo", "cmp_acme"]);
-    expect(options.map((o) => o.textContent?.trim())).toEqual(["I Indigo", "A Acme"]);
-
-    // Arrow keys move between the company rows.
-    options[0]!.focus();
-    picker!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(document.activeElement).toBe(options[1]);
-
-    options[1]!.click();
+    await openMenu();
+    q<HTMLButtonElement>('[data-testid="chat-new-agent-item"]')!.click();
     await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme");
-    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo");
   });
 
-  it("shows a blocked reason inline where the picker was and keeps the modal open", async () => {
+  it("shows a blocked reason inline in the menu and keeps it open", async () => {
     const oncreateagent = vi.fn(
       async (): Promise<EntryPointResult> => ({
         ok: false,
@@ -218,24 +209,16 @@ describe("ChatSidebar lifecycle entry points", () => {
         blocked: true,
       }),
     );
-    mountSidebar({ companies: [INDIGO, ACME], oncreateagent });
+    mountSidebar({ companies: [INDIGO], oncreateagent });
     await settle();
-    await openModal();
-    q<HTMLButtonElement>('[data-testid="chat-create-new-agent"]')!.click();
-    await settle();
-    document
-      .querySelector<HTMLButtonElement>('[data-company="cmp_acme"]')!
-      .click();
+    await openMenu();
+    q<HTMLButtonElement>('[data-testid="chat-new-agent-item"]')!.click();
     await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme");
-    expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
-    const error = q('[data-testid="chat-create-entry-error"]');
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo");
+    expect(q('[data-testid="chat-new-agent-item"]')).toBeTruthy();
+    const error = q('[data-testid="chat-new-error"]');
     expect(error?.getAttribute("role")).toBe("alert");
     expect(error?.textContent).toContain("Only owners can add agents.");
-    // The error sits inside the entry-point group, under the picker.
-    expect(
-      q('[data-testid="chat-create-entry-points"]')?.contains(error!),
-    ).toBe(true);
   });
 
   it("the company switcher ends with a New company row that runs the same flow", async () => {

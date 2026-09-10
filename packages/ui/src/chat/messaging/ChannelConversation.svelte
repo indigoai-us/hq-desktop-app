@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ArrowDown from "phosphor-svelte/lib/ArrowDown";
   import CaretRight from "phosphor-svelte/lib/CaretRight";
   import PaperPlaneRight from "phosphor-svelte/lib/PaperPlaneRight";
   import Paperclip from "phosphor-svelte/lib/Paperclip";
@@ -1467,7 +1468,8 @@
           data-testid="conversation-jump-latest"
           onclick={jumpToLatest}
         >
-          {hasUnseenBelow ? "New messages" : "Jump to latest"} ↓
+          {hasUnseenBelow ? "New messages" : "Jump to latest"}
+          <ArrowDown size={11} weight="bold" aria-hidden="true" />
         </button>
       {/if}
     </div>
@@ -1741,8 +1743,13 @@
     bottom: 12px;
     transform: translateX(-50%);
     z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     padding: 5px 12px;
-    border: 1px solid var(--panel-border, var(--line));
+    /* No outline: the shadow already lifts it off the timeline, and a hairline
+       on top of that read as two frames around one small pill. */
+    border: 0;
     border-radius: 999px;
     /* Opaque, floated. `--bg2` is translucent in this theme, so history
        scrolled visibly through the pill and neither the pill nor the message
@@ -1767,7 +1774,6 @@
     color: var(--t1);
   }
   .new-messages-jump.has-unseen {
-    border-color: var(--accent, var(--line));
     color: var(--accent, var(--t1));
   }
 

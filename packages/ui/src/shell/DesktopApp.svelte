@@ -966,12 +966,9 @@
             ? "personal channel"
             : "channel";
     const name = companyDisplayName(row.companyUid, companyNames);
-    // A company channel is TITLED with the company name, so the subtitle
-    // carries the channel's own slug instead of repeating it.
-    if (scope === "company") {
-      const slug = row.title?.trim();
-      return slug ? `${slug} · ${kindLabel}` : kindLabel;
-    }
+    // A company channel is TITLED with the company name, so the subtitle says
+    // only what kind of room it is.
+    if (scope === "company") return kindLabel;
     return name ? `${name} · ${kindLabel}` : kindLabel;
   });
 
@@ -2695,13 +2692,20 @@
     openProfileMember = null;
     openAgentMember = null;
     openArtifactView = null;
+    // Opening a second thread REPLACES the first: the pane only ever shows
+    // one, so pushing stacked history entries the user then had to close once
+    // per thread they had opened.
+    const mode: NavigationMode = openReplyRootId ? "replace" : "push";
     openReplyRootId = id;
-    pushConversationSurface({
-      replyRootEventId: id,
-      tab: "chat",
-      agentSurface: "chat",
-      companyTab: "chat",
-    });
+    pushConversationSurface(
+      {
+        replyRootEventId: id,
+        tab: "chat",
+        agentSurface: "chat",
+        companyTab: "chat",
+      },
+      mode,
+    );
   }
 
   /** Artifact mode for the side pane. The thread underneath is left intact so
@@ -2719,6 +2723,17 @@
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
+    // Close the pane directly rather than walking history back out of it.
+    // "Back" only lands somewhere without a thread if the thread was the last
+    // thing pushed — which stopped being true the moment opening a second
+    // thread replaced the first, and was never true when the pane was
+    // restored from a deep link with nothing behind it.
+    if (openReplyRootId && selectedRow) {
+      openReplyRootId = null;
+      pushConversationSurface({ replyRootEventId: null }, "replace");
+      return;
+    }
+    openReplyRootId = null;
     void leaveCurrentDestination();
   }
 
@@ -2954,6 +2969,7 @@
       agentSurface: AgentChannelTab;
       fileKey: string | null;
     }>,
+    mode: NavigationMode = "push",
   ): void {
     const row = selectedRow;
     if (!row) return;
@@ -2968,7 +2984,7 @@
     if (patch.agentSurface && patch.agentSurface !== "chat") {
       nested.replyRootEventId = null;
     }
-    void navigate(destinationFromConversation(row, nested));
+    void navigate(destinationFromConversation(row, nested), mode);
   }
 
   function currentShellDestination(): NavigationDestination {

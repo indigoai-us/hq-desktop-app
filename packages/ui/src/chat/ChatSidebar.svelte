@@ -106,6 +106,7 @@
     pickAutoOpenConversation,
     pickSettledBootConversation,
     railRowScopeLabel,
+    resolveRailCompanyName,
     togglePin,
     type CompanyScope,
     type ConversationRow,
@@ -140,7 +141,9 @@
   import FunnelSimple from "phosphor-svelte/lib/FunnelSimple";
   import GearSix from "phosphor-svelte/lib/GearSix";
   import X from "phosphor-svelte/lib/X";
+  import Buildings from "phosphor-svelte/lib/Buildings";
   import Hash from "phosphor-svelte/lib/Hash";
+  import Robot from "phosphor-svelte/lib/Robot";
   import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
   import PencilSimple from "phosphor-svelte/lib/PencilSimple";
   import Plus from "phosphor-svelte/lib/Plus";
@@ -352,6 +355,8 @@
     scope = scopeUid ?? "all";
   });
   let sortMode = $state<SortMode>("recent");
+  let newEntryBusy = $state<"company" | "agent" | null>(null);
+  let newEntryError = $state<string | null>(null);
   let showFilter = $state<ShowFilter>(loadShowFilter(storage));
   /** Admin-only: browse project channels in this company you have not joined. */
   let includeNonMembers = $state(loadIncludeNonMemberChannels(storage));
@@ -553,6 +558,16 @@
     return (
       row.kind === "channel" && (row.channelScope ?? "").trim() === "company"
     );
+  }
+
+  /**
+   * A company channel IS the company's room, so the rail names the company
+   * rather than the slug — and then the hover company label beside it would be
+   * saying the same word twice, so `railRowScopeLabel` drops it for these rows.
+   */
+  function railRowTitle(row: ConversationRow): string {
+    if (!isCompanyScopedRow(row)) return row.title;
+    return resolveRailCompanyName(row.companyUid, scopeCompanies) ?? row.title;
   }
 
   /**
@@ -875,12 +890,48 @@
   function openNewMenu(): void {
     const next = !newMenuOpen;
     closeAllOverlays();
+    newEntryError = null;
     newMenuOpen = next;
   }
 
   function newFromMenu(step: "find" | "create"): void {
     newMenuOpen = false;
     openCreate(step);
+  }
+
+  async function runNewEntry(
+    kind: "company" | "agent",
+    run: () => Promise<EntryPointResult>,
+  ): Promise<void> {
+    if (newEntryBusy) return;
+    newEntryBusy = kind;
+    newEntryError = null;
+    try {
+      const result = await run();
+      if (result.ok) {
+        newMenuOpen = false;
+        return;
+      }
+      newEntryError = result.reason;
+    } catch (err) {
+      newEntryError = err instanceof Error ? err.message : String(err);
+    } finally {
+      newEntryBusy = null;
+    }
+  }
+
+  function newCompanyFromMenu(): void {
+    if (!oncreatecompany) return;
+    void runNewEntry("company", oncreatecompany);
+  }
+
+  /** One company: straight there. Several: the active scope, else the first. */
+  function newAgentFromMenu(): void {
+    if (!oncreateagent) return;
+    const target =
+      agentCompanies.find((c) => c.companyUid === scope) ?? agentCompanies[0];
+    if (!target) return;
+    void runNewEntry("agent", () => oncreateagent!(target.companyUid));
   }
 
   /** Close the create modal; optionally open the channel it just created. */
@@ -1976,6 +2027,46 @@
               </span>
               New project
             </button>
+            <!-- Creating a company or an agent is not a message, so these do
+                 not belong inside the composer. They live here, beside the
+                 other two things the plus makes. -->
+            {#if oncreatecompany}
+              <button
+                type="button"
+                class="chat-popover-row"
+                role="menuitem"
+                data-testid="chat-new-company-item"
+                aria-busy={newEntryBusy === "company" ? "true" : undefined}
+                disabled={newEntryBusy != null}
+                onclick={newCompanyFromMenu}
+              >
+                <span class="chat-popover-ic" aria-hidden="true">
+                  <Buildings size={14} />
+                </span>
+                New company
+              </button>
+            {/if}
+            {#if oncreateagent && agentCompanies.length > 0}
+              <button
+                type="button"
+                class="chat-popover-row"
+                role="menuitem"
+                data-testid="chat-new-agent-item"
+                aria-busy={newEntryBusy === "agent" ? "true" : undefined}
+                disabled={newEntryBusy != null}
+                onclick={newAgentFromMenu}
+              >
+                <span class="chat-popover-ic" aria-hidden="true">
+                  <Robot size={14} />
+                </span>
+                New agent
+              </button>
+            {/if}
+            {#if newEntryError}
+              <p class="chat-scope-error" role="alert" data-testid="chat-new-error">
+                {newEntryError}
+              </p>
+            {/if}
           </div>
         {/if}
       </div>
@@ -2488,7 +2579,7 @@
                         {#if draftIdSet.has(row.id)}
                           {@render draftMark()}
                         {/if}
-                        <span class="chat-row-title">{row.title}</span>
+                        <span class="chat-row-title">{railRowTitle(row)}</span>
                       </span>
                       <span class="chat-search-snippet"
                         >{searchHitSnippet(hit)}</span
@@ -2652,9 +2743,6 @@
         void openRow(row);
       }}
       oncreated={onChannelCreated}
-      {oncreatecompany}
-      {oncreateagent}
-      {agentCompanies}
     />
   {/if}
 </aside>

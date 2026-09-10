@@ -220,12 +220,15 @@ describe("US-003: Reply affordance + ReplyPanel in the shared shell", () => {
       },
     });
     await tick();
+    // The "0 REPLIES" rule is the empty state — a prose line under it said the
+    // same thing twice in an otherwise empty pane.
     await vi.waitFor(() => {
-      expect(
-        host.querySelector('[data-testid="reply-panel-empty"]'),
-      ).not.toBeNull();
+      expect(host.querySelector('[data-testid="reply-panel-root"]')).not.toBeNull();
     });
-    expect(host.textContent).toContain("No replies yet");
+    expect(host.querySelector(".reply-root-label")?.textContent?.trim()).toBe(
+      "0\n          replies",
+    );
+    expect(host.textContent).not.toContain("No replies yet");
   });
 
   it("retries a failed send without re-GETting the reply thread", async () => {

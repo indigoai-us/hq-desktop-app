@@ -1218,14 +1218,23 @@ describe("rail scope labels", () => {
     expect(resolveRailCompanyName(null, companies)).toBeNull();
   });
 
-  it("channel rows in All scope show the company name", () => {
+  it("project rows in All scope show the company name", () => {
+    expect(
+      railRowScopeLabel(
+        { ...channelRow("hq-desktop", "cmp_indigo"), channelScope: "project" },
+        { scope: "all", companies, enabled: true },
+      ),
+    ).toEqual({ kind: "company", text: "Indigo" });
+  });
+
+  it("company rows never do — the row is already titled with the company", () => {
     expect(
       railRowScopeLabel(channelRow("hq-desktop", "cmp_indigo"), {
         scope: "all",
         companies,
         enabled: true,
       }),
-    ).toEqual({ kind: "company", text: "Indigo" });
+    ).toBeNull();
   });
 
   it("agent DMs in All scope show the company name", () => {

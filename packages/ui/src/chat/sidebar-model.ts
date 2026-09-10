@@ -1844,6 +1844,9 @@ export function railRowScopeLabel(
 
   if (row.kind === "channel" || row.kind === "group" || isAgentDmRow(row)) {
     if (!allCompanies) return null;
+    // A company channel already wears the company as its title and its mark.
+    // Repeating it on hover said the same word three times in one row.
+    if ((row.channelScope ?? "").trim() === "company") return null;
     const name = resolveRailCompanyName(row.companyUid, options.companies);
     return name ? { kind: "company", text: name } : null;
   }

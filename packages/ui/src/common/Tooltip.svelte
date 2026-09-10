@@ -151,7 +151,12 @@
     animation: tooltip-in 100ms ease-out;
   }
 
+  /* `width: max-content` is doing the work, not `max-width`. An absolutely
+     positioned box shrink-to-fits against its CONTAINING BLOCK, and that is
+     the 24px icon it hangs off — so a wrapping label folded to icon width and
+     the 280px cap never came into play. */
   .tooltip-bubble.multiline {
+    width: max-content;
     max-width: 280px;
     white-space: normal;
   }

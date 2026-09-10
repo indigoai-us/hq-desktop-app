@@ -1,8 +1,8 @@
 <script lang="ts">
   import Buildings from "phosphor-svelte/lib/Buildings";
-  import CaretLeft from "phosphor-svelte/lib/CaretLeft";
   import Hash from "phosphor-svelte/lib/Hash";
   import PaperPlaneRight from "phosphor-svelte/lib/PaperPlaneRight";
+  import CaretDown from "phosphor-svelte/lib/CaretDown";
   import X from "phosphor-svelte/lib/X";
   import Robot from "phosphor-svelte/lib/Robot";
   /**
@@ -21,7 +21,6 @@
    * is hidden entirely when the host cannot send one.
    */
   import type { Channel } from "./channels.js";
-  import type { EntryPointResult } from "./lifecycle-entry-points.js";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type { SelfIdentity } from "../identity/self.js";
   import {
@@ -99,15 +98,11 @@
     ) => void;
     onpick: (row: ConversationRow) => void;
     oncreated: (channel: Channel) => void | Promise<void>;
-    /**
-     * Lifecycle entry points (optional — hosts without the card seams omit
-     * them and the rows are hidden). The host runs the server action and
-     * navigates; the modal only closes on success or shows the reason inline.
+    /*
+     * No lifecycle entry points here. Creating a company or an agent is not a
+     * message, and this card is the composer — the rail's New menu owns those
+     * two, beside the other things the plus makes.
      */
-    oncreatecompany?: (() => Promise<EntryPointResult>) | null;
-    oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
-    /** Companies an agent can be added to (cloud companies the user is in). */
-    agentCompanies?: ScopeCompany[] | null;
     /**
      * Where the modal opens. The rail's New menu routes "New project"
      * straight to the channel form; "New message" lands on the finder.
@@ -126,82 +121,8 @@
     onclose,
     onpick,
     oncreated,
-    oncreatecompany = null,
-    oncreateagent = null,
-    agentCompanies = null,
     initialStep = "find",
   }: Props = $props();
-
-  // ── lifecycle entry points (New company / New agent) ─────────────────────
-  const agentTargets = $derived<ScopeCompany[]>(
-    (agentCompanies ?? scopeCompanies).filter((c) => c.companyUid.trim()),
-  );
-  const showEntryPoints = $derived(
-    !!oncreatecompany || (!!oncreateagent && agentTargets.length > 0),
-  );
-  let entryBusy = $state<"company" | "agent" | null>(null);
-  let entryError = $state<string | null>(null);
-  let agentPickerOpen = $state(false);
-
-  async function runEntry(
-    kind: "company" | "agent",
-    run: () => Promise<EntryPointResult>,
-  ): Promise<void> {
-    if (entryBusy) return;
-    entryBusy = kind;
-    entryError = null;
-    try {
-      const result = await run();
-      if (result.ok) {
-        agentPickerOpen = false;
-        onclose();
-        return;
-      }
-      entryError = result.reason;
-    } catch (err) {
-      entryError = err instanceof Error ? err.message : String(err);
-    } finally {
-      entryBusy = null;
-    }
-  }
-
-  function newCompany(): void {
-    if (!oncreatecompany) return;
-    void runEntry("company", oncreatecompany);
-  }
-
-  /** One company: go straight to it. Several: open the inline picker. */
-  function newAgent(): void {
-    if (!oncreateagent) return;
-    if (agentTargets.length === 1) {
-      void runEntry("agent", () => oncreateagent!(agentTargets[0]!.companyUid));
-      return;
-    }
-    entryError = null;
-    agentPickerOpen = !agentPickerOpen;
-  }
-
-  function newAgentFor(companyUid: string): void {
-    if (!oncreateagent) return;
-    void runEntry("agent", () => oncreateagent!(companyUid));
-  }
-
-  function onEntryPickerKey(event: KeyboardEvent): void {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    const buttons = Array.from(
-      (event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>(
-        "button:not([disabled])",
-      ),
-    );
-    if (buttons.length === 0) return;
-    const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    const next =
-      event.key === "ArrowDown"
-        ? buttons[(at + 1) % buttons.length]
-        : buttons[(at - 1 + buttons.length) % buttons.length];
-    event.preventDefault();
-    next?.focus();
-  }
 
   type Step = "find" | "create" | "summary";
 
@@ -644,7 +565,7 @@
     // The membership block and the unconfirmed-create notice render as their
     // own alerts right above the footer — do not say it twice.
     if (createUnconfirmed || createBlock) return null;
-    if (slugCanonical === "") return "Name the channel to create it.";
+    if (slugCanonical === "") return "Name the project to create it.";
     if (channelName.trim().length > 200) {
       return "That name is too long — 200 characters max.";
     }
@@ -872,10 +793,9 @@
         return;
       }
       if (creating) return;
-      if (step === "create") {
-        backToFind();
-        return;
-      }
+      // The create form is its own destination (the rail's New menu routes
+      // straight to it), not a sub-step behind the finder — so Escape closes
+      // rather than backing into a composer the user never asked for.
       closeAll();
     }
     window.addEventListener("keydown", onKey, true);
@@ -1496,24 +1416,12 @@
          about the very workspace this form edits, so nothing under it may be
          tabbed to, clicked, or read out as if it were live. -->
     <div class="create-head" inert={confirmSubject !== null}>
-      {#if step === "create"}
-        <button
-          type="button"
-          class="create-back"
-          data-testid="chat-create-back"
-          aria-label="Back to search"
-          disabled={creating}
-          onclick={backToFind}
-        >
-          <CaretLeft size={13} weight="bold" aria-hidden="true" />
-        </button>
-      {/if}
       <h2 id="create-modal-title" class="create-title">
         {step === "find"
           ? "New message"
           : step === "create"
-            ? "New channel"
-            : "Channel created"}
+            ? "New project"
+            : "Project created"}
       </h2>
       <span class="create-spacer"></span>
       <button
@@ -1643,7 +1551,7 @@
               >
                 <span class="create-glyph" aria-hidden="true">+</span>
                 <span class="create-row-name"
-                  >Create channel #{findResults.createSlug}</span
+                  >Create project #{findResults.createSlug}</span
                 >
               </button>
             {/if}
@@ -1664,98 +1572,6 @@
         <p class="create-note" data-testid="chat-create-empty">
           {queryDebounced.trim() ? "No matches" : "No conversations"}
         </p>
-      {/if}
-      {#if showEntryPoints}
-        <!-- Lifecycle entry points sit under the results, outside the listbox:
-             plain rows, one control scale, no nested card. -->
-        <div
-          class="create-entry"
-          role="group"
-          aria-label="Create"
-          data-testid="chat-create-entry-points"
-          inert={confirmSubject !== null}
-        >
-          <div class="create-group" role="presentation">Create</div>
-          {#if oncreatecompany}
-            <button
-              type="button"
-              class="create-row create-entry-row"
-              data-testid="chat-create-new-company"
-              aria-busy={entryBusy === "company" ? "true" : undefined}
-              disabled={entryBusy !== null}
-              onclick={newCompany}
-            >
-              <span class="create-entry-ic" aria-hidden="true">
-                <Buildings size={16} aria-hidden="true" />
-              </span>
-              <span class="create-entry-label">New company</span>
-              <span class="create-entry-hint">Opens the setup step in #setup</span>
-            </button>
-          {/if}
-          {#if oncreateagent && agentTargets.length > 0}
-            <button
-              type="button"
-              class="create-row create-entry-row"
-              data-testid="chat-create-new-agent"
-              aria-busy={entryBusy === "agent" ? "true" : undefined}
-              aria-haspopup={agentTargets.length > 1 ? "listbox" : undefined}
-              aria-expanded={agentTargets.length > 1 ? agentPickerOpen : undefined}
-              aria-controls={agentTargets.length > 1
-                ? "create-agent-company-picker"
-                : undefined}
-              disabled={entryBusy !== null}
-              onclick={newAgent}
-            >
-              <span class="create-entry-ic" aria-hidden="true">
-                <Robot size={16} aria-hidden="true" />
-              </span>
-              <span class="create-entry-label">New agent</span>
-              <span class="create-entry-hint">
-                {agentTargets.length === 1
-                  ? `In ${agentTargets[0]?.label}`
-                  : "Pick a company"}
-              </span>
-            </button>
-            {#if agentPickerOpen && agentTargets.length > 1}
-              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-              <div
-                id="create-agent-company-picker"
-                class="create-entry-picker"
-                role="listbox"
-                aria-label="Add an agent to which company?"
-                data-testid="chat-create-agent-picker"
-                onkeydown={onEntryPickerKey}
-              >
-                {#each agentTargets as company (company.companyUid)}
-                  <button
-                    type="button"
-                    class="create-row create-entry-sub"
-                    role="option"
-                    aria-selected="false"
-                    data-testid="chat-create-agent-company"
-                    data-company={company.companyUid}
-                    disabled={entryBusy !== null}
-                    onclick={() => newAgentFor(company.companyUid)}
-                  >
-                    <span class="create-entry-tile" aria-hidden="true">
-                      {company.label.trim().slice(0, 1).toUpperCase()}
-                    </span>
-                    <span class="create-entry-label">{company.label}</span>
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          {/if}
-          {#if entryError}
-            <p
-              class="create-note create-entry-error"
-              role="alert"
-              data-testid="chat-create-entry-error"
-            >
-              {entryError}
-            </p>
-          {/if}
-        </div>
       {/if}
       {/if}
 
@@ -1833,7 +1649,7 @@
           </div>
           <p class="create-help" id="create-slug-help">
             {slugOverride === null
-              ? "Lowercase, dashes only. Editing this renames the channel."
+              ? "Lowercase, dashes only. Editing this renames the project."
               : `Renamed. The channel will be called “${slugDisplay}”.`}
           </p>
           <!-- Always rendered so the live region exists BEFORE the verdict
@@ -1884,6 +1700,7 @@
 
         <div class="create-field">
           <span class="create-label" id="create-scope-label">In</span>
+          <span class="create-select-wrap">
           <select
             class="create-select"
             data-testid="chat-channel-scope"
@@ -1904,6 +1721,16 @@
                  picked — the value stays legible instead of a blank select. -->
             <option value="" disabled={!personalAllowed}>Personal</option>
           </select>
+            <!-- `appearance: none` strips the native arrow, and a picker with
+                 no arrow reads as a text field. Same caret the rail's controls
+                 use. -->
+            <CaretDown
+              size={9}
+              weight="bold"
+              class="create-select-caret"
+              aria-hidden="true"
+            />
+          </span>
         </div>
         {#if scopeUnavailable.length > 0}
           <p class="create-help" data-testid="chat-channel-scope-unavailable">
@@ -2031,8 +1858,8 @@
           <textarea
             class="create-textarea"
             data-testid="chat-channel-first-message"
-            placeholder="What's this channel for? (optional — posted as the first message)"
-            aria-label="What's this channel for?"
+            placeholder="What's this project for? (optional — posted as the first message)"
+            aria-label="What's this project for?"
             disabled={creating}
             bind:value={firstMessage}
           ></textarea>
@@ -2049,7 +1876,10 @@
         </p>
       {/if}
 
-      <div class="create-footer" inert={confirmSubject !== null}>
+      <div
+        class="create-footer create-compose-foot"
+        inert={confirmSubject !== null}
+      >
         {#if blockReason}
           <span class="create-hint create-hint-block" id="create-submit-reason"
             >{blockReason}</span
@@ -2070,7 +1900,7 @@
             ? "Creating…"
             : createUnconfirmed
               ? "Creation unconfirmed"
-              : "Create channel"}
+              : "Create project"}
         </button>
       </div>
     {:else}
@@ -2423,90 +2253,6 @@
   }
 
   /* Lifecycle entry points: a hairline, a mono label, ghost rows. */
-  .create-entry {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 4px 6px 6px;
-    border-top: 1px solid var(--line, var(--panel-border));
-    /* The composer sits below, so this block needs its own floor too. */
-    border-bottom: 1px solid var(--line, var(--panel-border));
-  }
-
-  /* Its own top rule already separates it from the list. */
-  .create-list:has(+ .create-entry) {
-    border-bottom: 0;
-  }
-
-  .create-entry-row {
-    min-height: 32px;
-  }
-
-  .create-entry-row:disabled,
-  .create-entry-sub:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-
-  .create-entry-row:focus-visible,
-  .create-entry-sub:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--t1));
-    outline-offset: -2px;
-  }
-
-  .create-entry-ic {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    color: var(--t2);
-    flex: 0 0 auto;
-  }
-
-  .create-entry-ic svg {
-    width: 16px;
-    height: 16px;
-  }
-
-  .create-entry-label {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .create-entry-hint {
-    flex: 0 0 auto;
-    color: var(--t3);
-    font-size: 11px;
-  }
-
-  .create-entry-picker {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding-left: 24px;
-  }
-
-  .create-entry-sub {
-    min-height: 28px;
-    padding-top: 4px;
-    padding-bottom: 4px;
-  }
-
-  .create-entry-tile {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 5px;
-    background: var(--raised);
-    color: var(--t2);
-    font: 600 10px/1 var(--font-ui);
-    flex: 0 0 auto;
-  }
-
   .create-entry-error {
     padding: 6px 10px 2px;
     color: var(--danger, #e5484d);
@@ -2592,15 +2338,23 @@
   /* The concept has no scope picker, so this follows the shell's standard
      small control (`.btn-secondary`) instead of inventing a third box style:
      31px, 8px radius, filled, hairline only on hover. */
-  .create-select {
-    /* Hugs its own value, like every other control in the design — stretched
-       to the full row it read as a text field, not a picker. */
+  /* Hugs its own value, like every other control in the design — stretched to
+     the full row it read as a text field, not a picker. */
+  .create-select-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
     flex: 0 1 auto;
     max-width: 100%;
+  }
+
+  /* The shell's standard `.btn-secondary`. */
+  .create-select {
     appearance: none;
     -webkit-appearance: none;
+    width: 100%;
     height: 31px;
-    padding: 0 10px;
+    padding: 0 26px 0 10px;
     border: 1px solid transparent;
     border-radius: 8px;
     background: var(--btn-bg);
@@ -2610,8 +2364,15 @@
     transition: border-color 0.12s;
   }
 
-  .create-select:hover {
+  .create-select-wrap:hover .create-select {
     border-color: var(--line2);
+  }
+
+  .create-select-wrap :global(.create-select-caret) {
+    position: absolute;
+    right: 9px;
+    color: var(--t3);
+    pointer-events: none;
   }
 
   /* `.cm-chips` */
@@ -2874,6 +2635,13 @@
   .create-compose-foot .create-hint {
     margin-left: auto;
     margin-right: 10px;
+  }
+
+  /* An explanation, not a shortcut — it reads left, beside the disabled
+     button it explains. */
+  .create-compose-foot .create-hint-block {
+    margin-left: 0;
+    margin-right: auto;
   }
 
   /* A disabled button with no explanation is a dead end — say why. */

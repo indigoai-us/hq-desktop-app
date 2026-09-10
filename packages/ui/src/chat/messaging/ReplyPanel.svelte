@@ -981,9 +981,9 @@
       {:else if loadError && replies.length === 0 && root}
         <p class="reply-status reply-error" role="alert">{loadError}</p>
       {:else if visibleReplies.length === 0}
-        <p class="reply-status" data-testid="reply-panel-empty" role="status">
-          No replies yet
-        </p>
+        <!-- The "0 REPLIES" rule above already says this; a second line
+             saying it in prose was the only thing in an otherwise empty
+             pane. -->
       {:else}
         {#each visibleReplies as msg (msg.eventId)}
           {@const replyRich = richContentForMessage(msg)}

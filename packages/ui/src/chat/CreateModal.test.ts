@@ -219,18 +219,21 @@ describe("CreateModal find step", () => {
 });
 
 describe("CreateModal create step", () => {
-  it("Escape returns to the find step with the name preserved in the query", async () => {
-    open();
+  it("Escape closes the card rather than backing into the composer", async () => {
+    // The create form is its own destination — the rail's New menu routes
+    // straight to it and it no longer carries a Back control, so Escape must
+    // not drop the user into a composer they never asked for.
+    const onclose = vi.fn();
+    open({ onclose });
     await tick();
     await gotoCreate("Q4 board");
     expect($('[data-testid="chat-channel-name"]')).toBeTruthy();
+    expect($('[data-testid="chat-create-back"]')).toBeNull();
 
     press(window, "Escape");
     await tick();
 
-    const input = $<HTMLInputElement>('[data-testid="chat-create-query"]');
-    expect(input?.value).toBe("Q4 board");
-    expect($('[data-testid="chat-channel-name"]')).toBeNull();
+    expect(onclose).toHaveBeenCalled();
   });
 
   it("renaming the slug renames the channel and says so", async () => {
@@ -527,7 +530,7 @@ describe("CreateModal submit", () => {
     );
     const button = $<HTMLButtonElement>('[data-testid="chat-channel-create"]')!;
     expect(button.disabled).toBe(false);
-    expect(button.textContent).toContain("Create channel");
+    expect(button.textContent).toContain("Create project");
   });
 
   it("locks retry when the create target now lists the name", async () => {
@@ -1329,7 +1332,7 @@ describe("CreateModal accessibility", () => {
     const reasonId = button.getAttribute("aria-describedby");
     expect(reasonId).toBe("create-submit-reason");
     expect(document.getElementById(reasonId!)?.textContent).toContain(
-      "Name the channel",
+      "Name the project",
     );
   });
 
