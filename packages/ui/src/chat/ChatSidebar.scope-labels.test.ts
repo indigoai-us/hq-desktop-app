@@ -158,9 +158,11 @@ function scopeOf(id: string): HTMLElement | null {
   );
 }
 
-function revealOf(id: string): HTMLElement | null {
-  return host.querySelector(
-    `[data-conversation-id="${id}"] [data-testid="chat-row-reveal"]`,
+function liOf(id: string): HTMLElement | null {
+  return (
+    host
+      .querySelector(`[data-conversation-id="${id}"]`)
+      ?.closest<HTMLElement>(".chat-li") ?? null
   );
 }
 
@@ -222,7 +224,7 @@ describe("ChatSidebar company / email labels", () => {
     expect(scopeOf("dm:prs_ada")).toBeNull();
   });
 
-  it("long names truncate with ellipsis styles and hover reveal keeps the full text", async () => {
+  it("long names truncate with ellipsis styles and the label is hover-only", async () => {
     component = mountSidebar();
     await vi.waitFor(() => {
       expect(row("ch:long-name")).toBeTruthy();
@@ -237,7 +239,6 @@ describe("ChatSidebar company / email labels", () => {
       "a-very-long-channel-name-that-should-truncate-in-the-narrow-rail",
     );
     expect(scope?.className).toMatch(/chat-row-scope/);
-    expect(revealOf("ch:long-name")?.textContent).toBe("Liverecover");
 
     expect(src).toMatch(
       /\.chat-row-copy\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?\}/,
@@ -245,43 +246,44 @@ describe("ChatSidebar company / email labels", () => {
     expect(src).toMatch(
       /\.chat-row-copy \.chat-row-title\s*\{[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;/,
     );
+    // Hidden at rest, revealed on hover / keyboard focus — and no second
+    // overlay copy of the same text.
     expect(src).toMatch(
-      /\.chat-row-scope\s*\{[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;[\s\S]*?font-size:\s*12px;[\s\S]*?font-weight:\s*400;/,
+      /\.chat-row-scope\s*\{[\s\S]*?display:\s*none;[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;[\s\S]*?font-size:\s*12px;[\s\S]*?font-weight:\s*400;/,
     );
     expect(src).toMatch(
-      /\.chat-li:hover \.chat-row:not\(\.has-badge\) \.chat-row-reveal/,
+      /\.chat-li:hover \.chat-row-scope,\s*\n\s*\.chat-li:focus-within \.chat-row-scope\s*\{\s*display:\s*inline;/,
     );
-    expect(src).toMatch(
-      /\.chat-li:focus-within \.chat-row:not\(\.has-badge\) \.chat-row-reveal/,
-    );
-    expect(src).toMatch(
-      /\.chat-li:hover \.chat-row:not\(\.has-badge\) \.chat-row-scope/,
-    );
-    expect(src).toMatch(
-      /\.chat-row-reveal\s*\{[\s\S]*?display:\s*none;[\s\S]*?right:\s*8px;/,
-    );
-
-    const li = row("ch:long-name").closest(".chat-li");
-    expect(li).toBeTruthy();
-    li?.dispatchEvent(new Event("mouseenter", { bubbles: true }));
-    expect(revealOf("ch:long-name")?.textContent).toBe("Liverecover");
+    expect(src).not.toMatch(/chat-row-reveal/);
   });
 
-  it("keeps unread badges and pin controls; hides the hover reveal when a badge is present", async () => {
+  it("keeps unread badges and puts the pin control to their left", async () => {
     component = mountSidebar();
     await vi.waitFor(() => {
       expect(row("ch:unread-desk")).toBeTruthy();
     });
     const unread = row("ch:unread-desk");
     expect(unread.classList.contains("has-badge")).toBe(true);
+    const li = liOf("ch:unread-desk");
+    expect(li).toBeTruthy();
     expect(
-      unread.querySelector('[data-testid="chat-unread-badge"]')?.textContent,
+      li?.querySelector('[data-testid="chat-unread-badge"]')?.textContent,
     ).toBe("3");
-    expect(
-      unread.parentElement?.querySelector('[data-testid="chat-pin"]'),
-    ).toBeTruthy();
+
+    // Row button, then pin, then badge — the pin lives inside the hover fill
+    // and never to the right of an indicator.
+    const order = [...(li?.children ?? [])].map((child) =>
+      child.getAttribute("data-testid") ?? child.className.split(" ")[0],
+    );
+    expect(order).toEqual(["chat-row", "chat-pin", "chat-unread-badge"]);
+
+    // `.chat-li` — not `.chat-row` — carries the hover and selected fills, so
+    // the trailing controls sit inside the highlighted box.
+    expect(src).toMatch(/\.chat-li:hover\s*\{\s*background:\s*var\(--hover\);/);
+    expect(src).toMatch(/\.chat-li\.active\s*\{\s*background:\s*var\(--sel\);/);
+    // Pin shows on hover or focus only — never as a resting badge.
     expect(src).toMatch(
-      /\.chat-li:hover \.chat-row:not\(\.has-badge\) \.chat-row-reveal/,
+      /\.chat-li:hover \.chat-pin-btn,\s*\n\s*\.chat-pin-btn:focus-visible\s*\{\s*opacity:\s*1;/,
     );
   });
 
@@ -294,9 +296,6 @@ describe("ChatSidebar company / email labels", () => {
       expect(row("dm:prs_ada")).toBeTruthy();
     });
     expect(host.querySelectorAll('[data-testid="chat-row-scope"]').length).toBe(
-      0,
-    );
-    expect(host.querySelectorAll('[data-testid="chat-row-reveal"]').length).toBe(
       0,
     );
   });

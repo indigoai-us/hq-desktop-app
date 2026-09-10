@@ -625,7 +625,10 @@
   <div class="v4-title-actions" data-no-drag data-tauri-drag-region="false">
     {#if primaryAction}
       <button type="button" class="v4-core-pill" data-testid="titlebar-primary-action" onclick={primaryAction.onselect}>
-        <Plus class="v4-icon" size={15} aria-hidden="true" />
+        <!-- 13, not the bar's standalone-icon 15: Phosphor's plus fills ~69% of
+             its box, so beside a 12px label a 15px one out-measures the cap
+             height next to it and reads oversized. -->
+        <Plus class="v4-icon" size={13} aria-hidden="true" />
         {primaryAction.label}
       </button>
     {/if}

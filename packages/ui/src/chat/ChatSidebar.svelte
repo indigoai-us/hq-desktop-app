@@ -132,10 +132,12 @@
   import CaretRight from "phosphor-svelte/lib/CaretRight";
   import Chat from "phosphor-svelte/lib/Chat";
   import FunnelSimple from "phosphor-svelte/lib/FunnelSimple";
+  import GearSix from "phosphor-svelte/lib/GearSix";
   import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
   import PencilSimple from "phosphor-svelte/lib/PencilSimple";
   import Plus from "phosphor-svelte/lib/Plus";
   import PushPin from "phosphor-svelte/lib/PushPin";
+  import SignOut from "phosphor-svelte/lib/SignOut";
   import Stack from "phosphor-svelte/lib/Stack";
   import {
     BootTimeoutError,
@@ -1817,7 +1819,7 @@
             >
               {#if scopeOptionIcon(option.id)}
                 <!-- Real company favicon in place of the initials tile. -->
-                <CompanyIcon iconUrl={scopeOptionIcon(option.id)} size={24} />
+                <CompanyIcon iconUrl={scopeOptionIcon(option.id)} size={20} />
               {:else}
                 <span
                   class={option.id === "all"
@@ -2229,6 +2231,9 @@
             role="menuitem"
             onclick={openSettings}
           >
+            <span class="chat-popover-ic" aria-hidden="true">
+              <GearSix size={14} />
+            </span>
             Settings
           </button>
         {/if}
@@ -2241,6 +2246,9 @@
           onmousedown={(e) => e.stopPropagation()}
           onclick={() => void signOut()}
         >
+          <span class="chat-popover-ic" aria-hidden="true">
+            <SignOut size={14} />
+          </span>
           Sign out
         </button>
       </div>
@@ -2595,11 +2603,15 @@
   {@const extras = rowExtras?.(row) ?? null}
   {@const hasChildren = Boolean(extras?.children?.length)}
   {@const childrenOpen = childrenAreOpen(row.id, extras?.childrenExpandedByDefault === true)}
+  {@const isActive =
+    activeId === row.id && !extras?.children?.some((child) => child.selected)}
   <div class="chat-row-group" data-testid="chat-row-group">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       role="listitem"
       class="chat-li"
+      class:active={isActive}
+      class:has-badge={hasBadge}
       onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
       onmouseleave={scheduleHoverCardHide}
     >
@@ -2620,7 +2632,7 @@
         type="button"
         class="chat-row"
         class:unread={!!row.unreadCount || row.unreadDot}
-        class:active={activeId === row.id && !extras?.children?.some((child) => child.selected)}
+        class:active={isActive}
         class:has-badge={hasBadge}
         data-kind={row.kind}
         data-conversation-id={row.id}
@@ -2685,29 +2697,11 @@
             >
           {/if}
         </span>
-        {#if scopeLabel}
-          <span
-            class="chat-row-reveal"
-            data-testid="chat-row-reveal"
-            aria-hidden="true">{scopeLabel.text}</span
-          >
-        {/if}
-        {#if row.unreadCount != null && row.unreadCount > 0}
-          <span
-            class="chat-unread-badge"
-            data-testid="chat-unread-badge"
-            aria-label={`${row.unreadCount} unread`}
-          >
-            {row.unreadCount > 99 ? "99+" : row.unreadCount}
-          </span>
-        {:else if row.unreadDot}
-          <span
-            class="chat-unread-dot"
-            data-testid="chat-unread-dot"
-            aria-label="Unread"
-          ></span>
-        {/if}
       </button>
+      <!-- Pin and the unread badge are siblings of the row button (a button
+           cannot nest a button), so `.chat-li` — not `.chat-row` — carries the
+           hover/selected fill. That keeps the pin inside the highlighted box
+           and lets it sit to the LEFT of any badge or unread dot. -->
       <button
         type="button"
         class="chat-pin-btn"
@@ -2719,6 +2713,21 @@
       >
         <PushPin size={12} aria-hidden="true" />
       </button>
+      {#if row.unreadCount != null && row.unreadCount > 0}
+        <span
+          class="chat-unread-badge"
+          data-testid="chat-unread-badge"
+          aria-label={`${row.unreadCount} unread`}
+        >
+          {row.unreadCount > 99 ? "99+" : row.unreadCount}
+        </span>
+      {:else if row.unreadDot}
+        <span
+          class="chat-unread-dot"
+          data-testid="chat-unread-dot"
+          aria-label="Unread"
+        ></span>
+      {/if}
     </div>
     {#if hasChildren && childrenOpen}
       <div
@@ -2779,10 +2788,13 @@
     height: auto;
     overflow: hidden;
     border-right: 1px solid var(--line);
+    /* One glass pass only. The window already blurs what is behind it; a
+       second backdrop-filter here re-blurred and re-saturated that result, so
+       `--side-bg` at 18% white painted as near-opaque white instead of the
+       translucent rail the design draws. The concept's `.sidebar` is a flat
+       `var(--side-bg)` over the window glass with no filter and no inner
+       highlight — match it. */
     background: var(--side-bg);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
-    box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-ui);
     color: var(--t1);
     /* border-box is load-bearing: without it, height + padding overflow the
@@ -2842,7 +2854,10 @@
     place-items: center;
     width: 22px;
     height: 22px;
-    margin-right: 2px;
+    /* Keeps a 22px hit target without letting it set the row's height: the
+       concept's row is 31px, driven by the 13px/1.45 title, and an unclamped
+       22px control pushed every row to 34px. */
+    margin-block: -2px;
     padding: 0;
     border: none;
     border-radius: 6px;
@@ -2852,16 +2867,20 @@
     cursor: pointer;
   }
 
+  /* Hover-only, including when already pinned — the PINNED section header is
+     what says a row is pinned; the control itself stays out of the way. */
   .chat-li:hover .chat-pin-btn,
-  .chat-pin-btn.pinned,
   .chat-pin-btn:focus-visible {
     opacity: 1;
   }
 
-  .chat-pin-btn:hover,
   .chat-pin-btn.pinned {
     color: var(--t1);
-    background: var(--hover);
+  }
+
+  .chat-pin-btn:hover {
+    color: var(--t1);
+    background: var(--btn-bg);
   }
 
   .chat-scope-pill {
@@ -2896,7 +2915,10 @@
 
   /* S3: 252px panel, 32px single-line rows (tile + label + chord inline),
      no wrap and no resting scrollbar artifact — token contract §6 scopePanel. */
-  .chat-scope-menu {
+  /* Double-class, because `.chat-popover` is authored later in this sheet and
+     would otherwise win `left` / `right` / `min-width` on equal specificity —
+     which stretched the menu edge-to-edge instead of the concept's 252px. */
+  .chat-popover.chat-scope-menu {
     left: 0;
     right: auto;
     width: 252px;
@@ -2910,10 +2932,7 @@
     display: none;
   }
 
-  /* Double-class beats the later `.chat-popover-row { display: block }`. */
   .chat-popover-row.chat-scope-row {
-    display: flex;
-    align-items: center;
     flex-wrap: nowrap;
     gap: 9px;
     box-sizing: border-box;
@@ -2925,13 +2944,13 @@
   .chat-scope-avatar {
     display: grid;
     place-items: center;
-    flex: 0 0 24px;
-    width: 24px;
-    height: 24px;
-    border-radius: 7px;
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
     background: var(--btn-bg);
     color: var(--t2);
-    font: 700 9px var(--font-ui);
+    font: 700 8px var(--font-ui);
     letter-spacing: 0.02em;
   }
 
@@ -3109,7 +3128,22 @@
     position: relative;
     display: flex;
     align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
     min-width: 0;
+    /* The concept's `.row` — 6px/8px inset, 8px radius — lives here rather
+       than on `.chat-row` so the trailing pin and badge sit inside the same
+       hover fill instead of hanging off its right edge. */
+    padding: 6px 8px;
+    border-radius: 8px;
+  }
+
+  .chat-li:hover {
+    background: var(--hover);
+  }
+
+  .chat-li.active {
+    background: var(--sel);
   }
 
   .chat-row-children-toggle {
@@ -3273,9 +3307,9 @@
     width: auto;
     min-width: 0;
     min-height: 0;
-    padding: 6px 8px;
+    padding: 0;
     border: none;
-    border-radius: 8px;
+    border-radius: 0;
     background: transparent;
     color: var(--t2);
     font: inherit;
@@ -3298,12 +3332,10 @@
   }
 
   .chat-row:hover {
-    background: var(--hover);
     color: var(--t1);
   }
 
   .chat-row.active {
-    background: var(--sel);
     box-shadow: none;
     color: var(--t1);
   }
@@ -3338,7 +3370,11 @@
     white-space: nowrap;
   }
 
+  /* Production-only affordance the concept does not draw at all. Kept, but
+     quiet: it appears only while the row is hovered or focused, so at rest the
+     rail reads as the design's plain list of names. */
   .chat-row-scope {
+    display: none;
     flex: 0 1000 auto;
     min-width: 0;
     overflow: hidden;
@@ -3349,38 +3385,9 @@
     font-weight: 400;
   }
 
-  .chat-row-reveal {
-    display: none;
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    max-width: 46%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    padding: 1px 7px;
-    border-radius: 4px;
-    background: var(--elevated);
-    box-shadow: -10px 0 8px 0 var(--elevated);
-    color: var(--t3);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.3;
-    pointer-events: none;
-    z-index: 1;
-  }
-
-  .chat-li:hover .chat-row:not(.has-badge) .chat-row-reveal,
-  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-reveal,
-  .chat-row:focus-visible:not(.has-badge) .chat-row-reveal {
-    display: inline-block;
-  }
-
-  .chat-li:hover .chat-row:not(.has-badge) .chat-row-scope,
-  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-scope,
-  .chat-row:focus-visible:not(.has-badge) .chat-row-scope {
-    visibility: hidden;
+  .chat-li:hover .chat-row-scope,
+  .chat-li:focus-within .chat-row-scope {
+    display: inline;
   }
 
   .chat-row-draft {
@@ -3713,7 +3720,10 @@
   }
 
   .chat-popover-row {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
     width: 100%;
     padding: 6px 8px;
     border: none;
@@ -3727,9 +3737,20 @@
     cursor: pointer;
   }
 
+  /* The concept's `.p-item .pi`: a fixed 14px gutter so the labels of a menu
+     line up whether or not a given item has a glyph. */
+  .chat-popover-ic {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    color: var(--t2);
+  }
+
   .chat-scope-sep {
     height: 1px;
-    margin: 4px 2px;
+    margin: 5px 8px;
     background: var(--line, var(--panel-border));
   }
 

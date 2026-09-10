@@ -491,8 +491,12 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
       createdAt: new Date().toISOString(),
     });
     await tick();
-    const row = host.querySelector('[data-conversation-id="dm:agt_deacon"]');
-    const badge = row?.querySelector('[data-testid="chat-unread-badge"]');
+    // The badge is a sibling of the row button inside `.chat-li` — it sits to
+    // the right of the pin control, inside the same hover fill.
+    const li = host
+      .querySelector('[data-conversation-id="dm:agt_deacon"]')
+      ?.closest(".chat-li");
+    const badge = li?.querySelector('[data-testid="chat-unread-badge"]');
     expect(badge?.textContent?.trim()).toBe("1");
   });
 
@@ -533,13 +537,15 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
     });
     await tick();
 
-    const row = host.querySelector('[data-conversation-id="dm:agt_deacon"]');
-    expect(row?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim()).toBe("1");
+    const li = host
+      .querySelector('[data-conversation-id="dm:agt_deacon"]')
+      ?.closest(".chat-li");
+    expect(li?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim()).toBe("1");
     // The focused conversation reports a successful read without another rail click.
     wakes.emit("conversation:read", { id: "dm:agt_deacon" });
     await tick();
-    expect(row?.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
-    expect(row?.querySelector('[data-testid="chat-unread-dot"]')).toBeNull();
+    expect(li?.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
+    expect(li?.querySelector('[data-testid="chat-unread-dot"]')).toBeNull();
   });
 });
 
