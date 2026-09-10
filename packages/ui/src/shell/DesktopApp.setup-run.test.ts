@@ -6,7 +6,7 @@
 // with its id as the param, and the finish graduates welcome-first boot.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount, tick, unmount } from "svelte";
+import { mount, tick, unmount, type ComponentProps } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
@@ -32,6 +32,16 @@ const ACME: Workspace = {
   brokenReason: null,
   invitedBy: null,
   invitedAt: null,
+};
+
+/** A company-scope channel row for ACME, so the rail can open it directly. */
+const ACME_CHANNEL_ROW = {
+  channelId: "chn_acme",
+  type: "chat",
+  scope: "company",
+  companyUid: "cmp_acme",
+  name: "acme",
+  lastActivityAt: new Date().toISOString(),
 };
 
 function adapter(): PlatformAdapter {
@@ -99,7 +109,7 @@ async function settle(times = 6): Promise<void> {
 async function mountApp(
   setupRun: SetupRunApi,
   setupParam = vi.fn(() => "new?draft=x&prompt=%2Fsetup"),
-  extra: { companies?: Workspace[] } = {},
+  extra: Partial<ComponentProps<typeof DesktopApp>> = {},
 ) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -296,7 +306,7 @@ describe("DesktopApp native setup run wiring", () => {
     await mountApp(api, undefined, { companies: [ACME] });
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
     await settle();
-    // Mid-run: the composer talks to the agent and the hero carries no first moves yet.
+    // Mid-run: the composer talks to the agent; no finale yet.
     const composer = host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]');
     expect(composer?.disabled).toBe(false);
     expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeNull();
@@ -312,7 +322,13 @@ describe("DesktopApp native setup run wiring", () => {
     expect(finish!.querySelector('[data-testid="setup-agent-open-claude"]')?.textContent?.trim()).toBe("Continue in Claude Code");
     expect(finish!.querySelector('[data-testid="setup-agent-open-codex"]')?.textContent?.trim()).toBe("Continue in Codex");
     expect(finish!.querySelector('[data-testid="setup-run-again"]')).toBeTruthy();
-    expect(finish!.querySelector('[data-testid="setup-run-details"]')).toBeTruthy();
+    // The company channel, not the setup transcript, is the bottom-row way on.
+    expect(finish!.querySelector('[data-testid="setup-finale-open-company"]')?.textContent?.trim()).toBe(
+      "Continue setup for Acme",
+    );
+    // Nowhere in #welcome — the hero's own copy goes once the run is done too.
+    expect(host.querySelector('[data-testid="setup-run-details"]')).toBeNull();
+    expect(host.textContent).not.toContain("Open setup chat");
     expect(host.querySelectorAll('[data-testid="setup-run-again"]')).toHaveLength(1);
     expect(host.querySelector('[data-testid="setup-run-done-title"]')).toBeNull();
     expect(finish!.querySelectorAll('[data-testid^="setup-finale-resource-"]').length).toBeGreaterThan(0);
@@ -320,17 +336,43 @@ describe("DesktopApp native setup run wiring", () => {
     expect(composer?.disabled).toBe(true);
     expect(composer?.getAttribute("placeholder")).toBe("Setup is complete — pick a next step above.");
     expect(host.querySelector('[data-testid="composer-send"]')?.getAttribute("aria-disabled")).toBe("true");
-    // First moves live in the finale now, not in the hero.
-    expect(finish!.querySelector('[data-testid="first-moves"]')).toBeTruthy();
-    expect(host.querySelector('[data-testid="setup-channel-intro"] [data-testid="first-moves"]')).toBeNull();
-    expect(host.querySelectorAll('[data-testid="first-moves"]')).toHaveLength(1);
+    // No first-moves list anywhere in #welcome.
+    expect(host.querySelector('[data-testid="first-moves"]')).toBeNull();
     // Open in Sessions starts a fresh session with /startwork ready, not the setup transcript.
     finish!.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-sessions"]')!.click();
     await settle();
     expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("new?draft=y");
   });
 
-  it("the finale's Open setup chat opens the finished session on the Sessions page by id", async () => {
+  it("the finale's Open <Company> selects that company's channel when the rail has it", async () => {
+    const api = fakeSetupRun();
+    const onselectrow = vi.fn();
+    await mountApp(api, undefined, {
+      companies: [{ ...ACME, state: "synced", hasLocalFolder: true }],
+      seedDirectory: [ACME_CHANNEL_ROW],
+      onselectrow,
+    });
+    host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await settle();
+    api.emit({ kind: "assistantMessage", text: "You're all set — here's your welcome page (private to you): https://x.example/w" });
+    api.emit({ kind: "turnDone", status: "success" }, "idle");
+    await settle();
+    const open = host.querySelector<HTMLButtonElement>(
+      '[data-testid="setup-agent-finish"] [data-testid="setup-finale-open-company"]',
+    );
+    expect(open?.textContent?.trim()).toBe("Open Acme");
+    expect(open?.getAttribute("data-variant")).toBe("secondary");
+    open!.click();
+    await settle(10);
+    expect(onselectrow).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: "ch:chn_acme", companyUid: "cmp_acme" }),
+    );
+    // Off #welcome and onto the company channel; no Sessions page opened.
+    expect(host.querySelector('[data-testid="setup-channel-intro"]')).toBeNull();
+    expect(host.querySelector('[data-testid="extra-page-probe"]')).toBeNull();
+  });
+
+  it("the finale has no company button when the roster is empty", async () => {
     const api = fakeSetupRun();
     await mountApp(api);
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
@@ -338,12 +380,12 @@ describe("DesktopApp native setup run wiring", () => {
     api.emit({ kind: "assistantMessage", text: "You're all set — here's your welcome page (private to you): https://x.example/w" });
     api.emit({ kind: "turnDone", status: "success" }, "idle");
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="setup-agent-finish"] [data-testid="setup-run-details"]')!.click();
-    await settle();
-    expect(host.querySelector('[data-testid="extra-page-probe"]')?.getAttribute("data-param")).toBe("sess-42");
+    expect(host.querySelector('[data-testid="setup-agent-finish"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="setup-finale-open-company"]')).toBeNull();
+    expect(host.querySelector('[data-testid="setup-run-details"]')).toBeNull();
   });
 
-  it("Open setup chat opens the session on the Sessions page by id", async () => {
+  it("Open setup chat opens the running session on the Sessions page by id (mid-run only)", async () => {
     const api = fakeSetupRun();
     await mountApp(api);
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();

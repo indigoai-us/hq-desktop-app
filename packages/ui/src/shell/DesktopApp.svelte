@@ -52,18 +52,12 @@
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
   import { createLaunchActions } from "../settings/launch-actions";
   import {
-    firstMovesFor,
-    markFirstMoveDone,
-    readFirstMovesDone,
-    type FirstMoveId,
-  } from "../chat/first-moves";
-  import { companyInviteUrl } from "../common/hq-console";
-  import {
     hasRunWelcomeSetup,
     isSetupChannel,
     markWelcomeSetupRun,
     SETUP_CHANNEL_ID,
     setupCompanies,
+    setupCompanyActionLabel,
     setupRosterLoading,
     withoutCompaniesSummaryCards,
     withoutSeededCreateCompanyCards,
@@ -1078,15 +1072,6 @@
   /** Once setup is done the composer rests; the finale carries every next step. */
   const composerDisabled = $derived(setupAgentDone);
   const SETUP_DONE_PLACEHOLDER = "Setup is complete — pick a next step above.";
-  /** First moves from the finale: coding-tools is the finish launch, recorded as done; the rest are the shell's. */
-  async function finaleFirstMove(id: FirstMoveId, key: "claude" | "codex" = "claude"): Promise<string | null | void> {
-    if (id !== "coding-tools") return performFirstMove(id);
-    await launchSetupIn(key);
-    if (setupLaunchError) return setupLaunchError;
-    recordFirstMoveDone("coding-tools");
-    return null;
-  }
-
   const composerPlaceholder = $derived(
     setupAgentDone
       ? SETUP_DONE_PLACEHOLDER
@@ -2608,55 +2593,12 @@
     welcomeSetupRun = true;
   }
   const hasRosterCompany = $derived(rosterCompanies.length > 0);
-
-  // --- #welcome first moves ---------------------------------------------------
-  /** The sidebar instance, for host entry points such as "New project channel". */
-  let sidebarRef = $state<{ openCreateChannel: (options?: { kind?: "channel" | "project" }) => void } | null>(null);
-  let firstMovesDone = $state<ReadonlySet<FirstMoveId>>(readFirstMovesDone());
-  const hasProjectChannel = $derived(
-    railRows.some(
-      (row) => row.kind === "channel" && !row.browseOnly && row.channelScope === "project",
-    ),
-  );
-  /** Shown once setup has been run from #welcome (the hero's job comes first). */
-  const firstMoves = $derived(
-    welcomeSetupRun
-      ? firstMovesFor({
-          hasCompany: hasRosterCompany,
-          hasProjectChannel,
-          done: firstMovesDone,
-        })
-      : [],
-  );
-  function recordFirstMoveDone(id: FirstMoveId): void {
-    firstMovesDone = markFirstMoveDone(id);
-  }
-  /** The company a first move acts on: the roster's first company. */
-  const firstMovesCompany = $derived(rosterCompanies[0] ?? null);
-  async function performFirstMove(id: FirstMoveId): Promise<string | null | void> {
-    if (id === "project-channel") {
-      if (!sidebarRef) return "The sidebar is not ready yet.";
-      sidebarRef.openCreateChannel({ kind: "project" });
-      // Ticks itself when the project channel appears in the rail.
-      return null;
-    }
-    if (id === "invite") {
-      const slug = firstMovesCompany?.slug?.trim() ?? "";
-      if (!slug) return "Pick a company first.";
-      onopenurl?.(companyInviteUrl(slug));
-      recordFirstMoveDone("invite");
-      return null;
-    }
-    if (id === "agent") {
-      const uid = firstMovesCompany?.cloudUid?.trim() ?? "";
-      if (!uid) return "Pick a company first.";
-      const result = await addAgentEntry(uid);
-      if (!result.ok) return result.reason;
-      recordFirstMoveDone("agent");
-      return null;
-    }
-    return null;
-  }
+  /** The finale's "Open <Company>" button: the roster's first company, or nothing. */
+  const finaleCompany = $derived.by(() => {
+    const company = rosterCompanies[0];
+    if (!company) return null;
+    return { label: setupCompanyActionLabel(company), onopen: () => openCompanyFromSetup(company) };
+  });
   /** The user explicitly asked for another company this session. */
   let createCompanyRequested = $state(false);
 
@@ -4383,7 +4325,6 @@
       {#if !sidebarCollapsed || phoneViewport}
         {#key `${tenantGeneration}:${tenantCompanyId ?? "all"}`}
         <ChatSidebar
-          bind:this={sidebarRef}
           offscreen={phoneViewport && sidebarCollapsed}
           api={sidebarApi}
           {wakes}
@@ -4964,13 +4905,8 @@
                           oncodex={() => void launchSetupIn("codex")}
                           launchError={setupLaunchError}
                           {onopenurl}
-                          onshowdetails={extraPages?.sessions && setupAgent.sessionId
-                            ? () => openExtraPage("sessions", setupAgent.sessionId!)
-                            : undefined}
+                          company={finaleCompany}
                           onrunagain={() => void setupAgent.runAgain()}
-                          {firstMoves}
-                          onmove={(id) => finaleFirstMove(id)}
-                          onmovecodex={() => finaleFirstMove("coding-tools", "codex")}
                         />
                       {:else if stopFailure && setupAgent.api && setupAgent.providers}
                         <!-- The run stopped: say why, and offer the agents right
@@ -5053,9 +4989,6 @@
                     {rosterStatus}
                     {onretryroster}
                     onsetupstarted={recordWelcomeSetupRun}
-                    firstMoves={setupAgentDone ? [] : firstMoves}
-                    onfirstmove={performFirstMove}
-                    onfirstmovedone={recordFirstMoveDone}
                     agent={setupAgent}
                     onopensessiondetails={extraPages?.sessions
                       ? (sessionId) => openExtraPage("sessions", sessionId)
@@ -5782,13 +5715,15 @@
     flex: 0 0 auto;
   }
   /* ---- Setup Agent prompt (under the #welcome messages) ---------------- */
-  /* No box: the chips sit under the last message, indented like a reply. */
+  /* No box: the block sits under the last message on the message-text
+     column — left = row padding 8px + avatar 36px + gap 8px; right = the
+     row's 8px padding — so its edges match the messages above. */
   .setup-agent-prompt {
     display: flex;
     flex-direction: column;
     gap: 12px;
-    max-width: 760px;
-    margin: 2px 0 6px 44px;
+    max-width: none;
+    margin: 8px 8px 8px 52px;
   }
   .setup-agent-prompt:empty {
     display: none;

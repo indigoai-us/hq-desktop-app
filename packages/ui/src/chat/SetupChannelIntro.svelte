@@ -52,8 +52,6 @@
   } from "./setup-channel";
   import { SETUP_HERO_ART } from "./setup-welcome-art";
   import { SETUP_RESOURCE_GLYPHS } from "./setup-resource-glyphs";
-  import FirstMoves from "./FirstMoves.svelte";
-  import type { FirstMove, FirstMoveId } from "./first-moves";
   import SetupRunCard from "./SetupRunCard.svelte";
   import SetupConnectStep from "./SetupConnectStep.svelte";
   import SetupButton from "./SetupButton.svelte";
@@ -107,17 +105,6 @@
      */
     onsetupstarted?: () => void;
     /**
-     * The self-ticking "first moves" list under the hero (see
-     * `firstMovesFor`). Omitted/empty → nothing renders. The coding-tools
-     * move is performed here (it is the same launch cascade as Advanced);
-     * every other move is the shell's, via `onfirstmove`.
-     */
-    firstMoves?: readonly FirstMove[] | null;
-    /** Perform a move; resolve a plain reason to show inline on failure. */
-    onfirstmove?: (id: FirstMoveId) => Promise<string | null | void>;
-    /** A move performed here (coding-tools) finished; the shell records it. */
-    onfirstmovedone?: (id: FirstMoveId) => void;
-    /**
      * Host-provided guided run (see `SetupRunApi`). When present, Run Setup
      * runs `/setup` natively inside this hero — stepper, one-line status,
      * questions as cards — instead of opening the Sessions page. The Sessions
@@ -149,27 +136,9 @@
     rosterStatus = null,
     onretryroster,
     onsetupstarted,
-    firstMoves = null,
-    onfirstmove,
-    onfirstmovedone,
     agent = null,
     onopensessiondetails,
   }: Props = $props();
-
-  /** First-moves "Use HQ from your coding tools": the Advanced launch cascade, recorded as done. */
-  async function firstMoveLaunch(key: "claude" | "codex"): Promise<string | null> {
-    if (!canLaunch) return "HQ folder is not ready yet. Run Setup first.";
-    await runLaunch(key);
-    const error = launchErrors[key];
-    if (error) return error;
-    onfirstmovedone?.("coding-tools");
-    return null;
-  }
-
-  async function handleFirstMove(id: FirstMoveId): Promise<string | null | void> {
-    if (id === "coding-tools") return firstMoveLaunch("claude");
-    return onfirstmove?.(id);
-  }
 
   const rosterCompanies = $derived(setupCompanies(companies));
   const hasCompany = $derived(rosterCompanies.length > 0);
@@ -336,7 +305,9 @@
           run={agent.state}
           resumeStep={agent.resumeStep}
           busy={agent.busy}
-          onshowdetails={onopensessiondetails && agent.sessionId && agent.mode !== "done" ? showRunDetails : undefined}
+          onshowdetails={onopensessiondetails && agent.sessionId && agent.mode !== "done" && !agent.state?.done
+            ? showRunDetails
+            : undefined}
         />
       </div>
     {:else}
@@ -511,15 +482,6 @@
     </div>
     {/if}
   </div>
-
-
-  {#if firstMoves && firstMoves.length > 0}
-    <FirstMoves
-      moves={firstMoves}
-      onmove={handleFirstMove}
-      oncodex={() => firstMoveLaunch("codex")}
-    />
-  {/if}
 </section>
 
 <style>

@@ -450,24 +450,3 @@ describe("DesktopApp #setup waits for the company roster", () => {
     expect(host.querySelector('[data-testid="setup-roster-loading"]')).toBeNull();
   });
 });
-
-describe("#welcome first moves", () => {
-  it("appear under the hero only after Run Setup has been used, and tick a project channel from the rail", async () => {
-    window.localStorage.removeItem("hq.welcome.setup-run.v1");
-    await mountApp({ ...setupChannelWithSeed() }, undefined, { companies: [ACME] });
-    await selectSetupRow();
-    expect(host.querySelector('[data-testid="first-moves"]')).toBeNull();
-    window.localStorage.setItem("hq.welcome.setup-run.v1", "1");
-    // A fresh mount reads the persisted flag.
-    await mountApp({ ...setupChannelWithSeed() }, undefined, { companies: [ACME] });
-    await selectSetupRow();
-    await vi.waitFor(() => expect(host.querySelector('[data-testid="first-moves"]')).toBeTruthy());
-    // The seeded rail already holds a project channel, so that move ticks
-    // itself from live state and the next one is the single expanded move.
-    expect(host.querySelector('[data-testid="first-move-project-channel"]')?.getAttribute("data-state")).toBe(
-      "done",
-    );
-    expect(host.querySelector('[data-testid="first-move-invite"]')?.getAttribute("data-state")).toBe("current");
-    expect(host.querySelectorAll('[data-testid="first-moves"] [data-variant="primary"]')).toHaveLength(1);
-  });
-});

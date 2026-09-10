@@ -3,17 +3,15 @@
    * SetupFinale — the end of setup under the Setup Agent's last message:
    * a wallpaper banner (the same art and scrim as the #welcome hero) that
    * says it's done, the three "Continue in …" actions, the Learn-HQ links
-   * and the quiet Run again / Open setup chat row; then, on the surface
-   * below it, the First Moves list. One column, one rhythm. Eases in with a
-   * CSS keyframe (the test DOM has no Web Animations API for
-   * svelte/transition). Presentational; every action goes back up.
+   * and the bottom row: "Open <Company>" (the company channel) plus the
+   * quiet Run again. One column, one rhythm. Eases in with a CSS keyframe
+   * (the test DOM has no Web Animations API for svelte/transition).
+   * Presentational; every action goes back up.
    */
   import SetupButton from "./SetupButton.svelte";
-  import FirstMoves from "./FirstMoves.svelte";
   import { SETUP_RESOURCES } from "./setup-channel";
   import { SETUP_HERO_ART } from "./setup-welcome-art";
   import { SETUP_RESOURCE_GLYPHS } from "./setup-resource-glyphs";
-  import type { FirstMove, FirstMoveId } from "./first-moves";
 
   const SETUP_FINALE_EYEBROW = "Setup complete";
   const SETUP_FINALE_TITLE = "You're set up.";
@@ -28,14 +26,9 @@
     launchError?: string | null;
     /** Open a Learn-HQ link via the host (system browser). */
     onopenurl?: (url: string) => void;
-    /** "Open setup chat": the underlying session on the Sessions page. */
-    onshowdetails?: () => void;
+    /** The company channel to open next: its action label and the opener. Null → no button. */
+    company?: { label: string; onopen: () => void } | null;
     onrunagain?: () => void;
-    /** The shell's self-ticking first moves; omitted/empty → nothing renders. */
-    firstMoves?: readonly FirstMove[] | null;
-    onmove?: (id: FirstMoveId) => Promise<string | null | void> | string | null | void;
-    /** The coding-tools first move's Codex button. */
-    onmovecodex?: () => Promise<string | null | void> | string | null | void;
   }
 
   let {
@@ -44,11 +37,8 @@
     oncodex,
     launchError = null,
     onopenurl,
-    onshowdetails,
+    company = null,
     onrunagain,
-    firstMoves = null,
-    onmove,
-    onmovecodex,
   }: Props = $props();
 
   /** External links never navigate the webview: only http(s) goes to the host. */
@@ -58,8 +48,7 @@
     onopenurl?.(href);
   }
 
-  const hasQuietRow = $derived(Boolean(onshowdetails || onrunagain));
-  const hasMoves = $derived(Boolean(firstMoves && firstMoves.length > 0 && onmove));
+  const hasBottomRow = $derived(Boolean(company || onrunagain));
 </script>
 
 <section
@@ -131,11 +120,11 @@
         </ul>
       </div>
 
-      {#if hasQuietRow}
-        <div class="quiet-row">
-          {#if onshowdetails}
-            <SetupButton variant="quiet" data-testid="setup-run-details" onclick={() => onshowdetails?.()}>
-              Open setup chat
+      {#if hasBottomRow}
+        <div class="bottom-row">
+          {#if company}
+            <SetupButton data-testid="setup-finale-open-company" onclick={() => company?.onopen()}>
+              {company.label}
             </SetupButton>
           {/if}
           {#if onrunagain}
@@ -147,12 +136,6 @@
       {/if}
     </div>
   </div>
-
-  {#if hasMoves}
-    <div class="moves">
-      <FirstMoves moves={firstMoves!} onmove={onmove!} oncodex={onmovecodex} />
-    </div>
-  {/if}
 </section>
 
 <style>
@@ -160,7 +143,6 @@
     display: flex;
     flex-direction: column;
     gap: 24px;
-    max-width: 760px;
     animation: finale-enter 240ms ease-out both;
   }
   @keyframes finale-enter {
@@ -316,17 +298,11 @@
     flex: 0 0 auto;
     opacity: 0.85;
   }
-  .quiet-row {
+  .bottom-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
-    margin: -8px 0 0 -6px; /* quiet buttons carry 6px side padding: keep the text on the column. */
-  }
-
-  /* ---- First moves sit on the surface below the banner, same column. */
-  .moves {
-    padding: 0 2px;
   }
   @media (prefers-reduced-motion: reduce) {
     .setup-finale {

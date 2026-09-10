@@ -4,14 +4,13 @@
 // the run is done. Contract: the "Continue in …" actions keep their
 // testids (the shell tests select on them), the Sessions button only shows
 // with a handler, Learn-HQ links go through the host (never the webview),
-// the quiet row fires its callbacks, and First Moves render inside it.
+// and the bottom row opens the company channel and fires Run again.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 
 import SetupFinale from "./SetupFinale.svelte";
 import { SETUP_RESOURCES } from "./setup-channel";
-import { firstMovesFor } from "./first-moves";
 
 let host: HTMLDivElement | null = null;
 let component: ReturnType<typeof mount> | null = null;
@@ -84,39 +83,40 @@ describe("SetupFinale", () => {
     expect(onopenurl).toHaveBeenCalledWith(first.href);
   });
 
-  it("fires Run again and Open setup chat, and hides them without handlers", () => {
+  it("opens the company channel from the bottom row as a secondary button, and hides it when null", () => {
+    const onopen = vi.fn();
+    const el = render({ company: { label: "Open Acme", onopen } });
+    const open = el.querySelector<HTMLButtonElement>('[data-testid="setup-finale-open-company"]');
+    expect(open?.textContent?.trim()).toBe("Open Acme");
+    expect(open?.getAttribute("data-variant")).toBe("secondary");
+    // No "Open setup chat" in the finale any more: the company channel is the way on.
+    expect(el.querySelector('[data-testid="setup-run-details"]')).toBeNull();
+    expect(el.textContent).not.toContain("Open setup chat");
+    open!.click();
+    expect(onopen).toHaveBeenCalledTimes(1);
+
+    const none = render({ company: null });
+    expect(none.querySelector('[data-testid="setup-finale-open-company"]')).toBeNull();
+  });
+
+  it("fires Run again next to the company button, and hides it without a handler", () => {
     const onrunagain = vi.fn();
-    const onshowdetails = vi.fn();
-    const el = render({ onrunagain, onshowdetails });
+    const onopen = vi.fn();
+    const el = render({ onrunagain, company: { label: "Continue setup for Acme", onopen } });
     const again = el.querySelector<HTMLButtonElement>('[data-testid="setup-run-again"]');
-    const details = el.querySelector<HTMLButtonElement>('[data-testid="setup-run-details"]');
     expect(again?.textContent?.trim()).toBe("Run again");
     expect(again?.getAttribute("data-variant")).toBe("quiet");
-    expect(details?.textContent?.trim()).toBe("Open setup chat");
-    expect(details?.getAttribute("data-variant")).toBe("quiet");
+    // Same row, company first.
+    const open = el.querySelector<HTMLButtonElement>('[data-testid="setup-finale-open-company"]');
+    expect(open?.parentElement).toBe(again?.parentElement);
+    expect(open!.compareDocumentPosition(again!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     again!.click();
-    details!.click();
     expect(onrunagain).toHaveBeenCalledTimes(1);
-    expect(onshowdetails).toHaveBeenCalledTimes(1);
+    expect(onopen).not.toHaveBeenCalled();
 
     const bare = render();
     expect(bare.querySelector('[data-testid="setup-run-again"]')).toBeNull();
-    expect(bare.querySelector('[data-testid="setup-run-details"]')).toBeNull();
-  });
-
-  it("renders the first moves inside the finale and routes their clicks", async () => {
-    const moves = firstMovesFor({ hasCompany: true, hasProjectChannel: true, done: new Set() });
-    const onmove = vi.fn(async () => null);
-    const el = render({ firstMoves: moves, onmove });
-    const list = el.querySelector('[data-testid="setup-agent-finish"] [data-testid="first-moves"]');
-    expect(list).toBeTruthy();
-    expect(list?.querySelectorAll('[data-testid^="first-move-"][data-state]')).toHaveLength(moves.length);
-    el.querySelector<HTMLButtonElement>('[data-testid="first-move-action-invite"]')!.click();
-    await Promise.resolve();
-    expect(onmove).toHaveBeenCalledWith("invite");
-
-    const empty = render({ firstMoves: [], onmove });
-    expect(empty.querySelector('[data-testid="first-moves"]')).toBeNull();
+    expect(bare.querySelector('[data-testid="setup-finale-open-company"]')).toBeNull();
   });
 
   it("shows a launch error under the actions as an alert", () => {
