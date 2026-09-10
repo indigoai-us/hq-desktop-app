@@ -48,6 +48,15 @@ use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, R
 #[cfg(windows)]
 use winreg::{RegKey, RegValue};
 
+use crate::commands::install_stages::{
+    clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
+    OnboardingFailureScope,
+};
+
+tokio::task_local! {
+    static ACTIVE_ONBOARDING_FAILURE_SCOPE: OnboardingFailureScope;
+}
+
 mod which {
     use std::env;
     use std::ffi::{OsStr, OsString};
@@ -3007,6 +3016,8 @@ async fn npm_install_global_managed(
                     "--@indigoai-us:registry=https://registry.npmjs.org/",
                     "--@tobilu:registry=https://registry.npmjs.org/",
                     "--@anthropic-ai:registry=https://registry.npmjs.org/",
+                    "--@openai:registry=https://registry.npmjs.org/",
+                    "--@xai-official:registry=https://registry.npmjs.org/",
                     spec,
                 ],
             )
@@ -3161,6 +3172,140 @@ pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
     #[cfg(windows)]
     {
         install_claude_code_windows(app).await
+    }
+}
+
+/// npm spec + bin name for a sessions provider. Unknown tools fail closed.
+pub fn session_provider_npm_spec(tool: &str) -> Result<(&'static str, &'static str), String> {
+    match tool {
+        "claude" => Ok(("@anthropic-ai/claude-code", "claude")),
+        "codex" => Ok(("@openai/codex", "codex")),
+        "grok" => Ok(("@xai-official/grok", "grok")),
+        _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
+    }
+}
+
+fn emit_session_install_line(app: &AppHandle, msg: &str) {
+    #[cfg(not(windows))]
+    emit_preflight_line(app, msg);
+    #[cfg(windows)]
+    emit_progress(app, msg);
+}
+
+async fn npm_bin_or_install_node(app: &AppHandle, tag: &str) -> Result<std::path::PathBuf, String> {
+    let lookup = || {
+        which::which_in(
+            "npm",
+            Some(extended_search_path()),
+            std::env::current_dir().unwrap_or_default(),
+        )
+    };
+    if let Ok(path) = lookup() {
+        return Ok(path);
+    }
+    emit_session_install_line(
+        app,
+        &format!("[{tag}] npm is not installed. Installing Node.js first so the agent CLI can be set up in-app."),
+    );
+    install_node(app.clone()).await?;
+    lookup().map_err(|_| {
+        format!("[{tag}] npm was not found after installing Node.js. Open Settings → Agents and try again.")
+    })
+}
+
+#[cfg(not(windows))]
+async fn install_npm_cli_macos(
+    app: AppHandle,
+    spec: &str,
+    bin: &str,
+    tag: &str,
+) -> Result<String, String> {
+    let prefix = npm_global_prefix_arg(&app, tag)?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), bin) {
+        emit_preflight_line(
+            &app,
+            &format!("[{tag}] removed an unusable leftover bin entry before reinstalling"),
+        );
+    }
+    let npm = npm_bin_or_install_node(&app, tag).await?;
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, spec, tag).await
+}
+
+#[cfg(windows)]
+async fn install_npm_cli_windows(
+    app: AppHandle,
+    spec: &str,
+    bin: &str,
+    tag: &str,
+) -> Result<String, String> {
+    emit_progress(&app, &format!("Installing {tag} via npm..."));
+    let _ = npm_bin_or_install_node(&app, tag).await?;
+    let result = run_streaming(
+        &app,
+        "npm",
+        &[
+            "install",
+            "-g",
+            "--prefix",
+            &managed_npm_prefix().to_string_lossy(),
+            spec,
+        ],
+    )
+    .await?;
+    append_user_path(&managed_npm_bin())?;
+    let _ = bin;
+    Ok(result)
+}
+
+/// Install the Codex CLI via `npm install -g @openai/codex`.
+#[tauri::command]
+pub async fn install_codex(app: AppHandle) -> Result<String, String> {
+    let (spec, bin) = session_provider_npm_spec("codex")?;
+    #[cfg(not(windows))]
+    {
+        install_npm_cli_macos(app, spec, bin, "codex").await
+    }
+    #[cfg(windows)]
+    {
+        install_npm_cli_windows(app, spec, bin, "codex").await
+    }
+}
+
+/// Install the Grok CLI via `npm install -g @xai-official/grok`.
+#[tauri::command]
+pub async fn install_grok(app: AppHandle) -> Result<String, String> {
+    let (spec, bin) = session_provider_npm_spec("grok")?;
+    #[cfg(not(windows))]
+    {
+        install_npm_cli_macos(app, spec, bin, "grok").await
+    }
+    #[cfg(windows)]
+    {
+        install_npm_cli_windows(app, spec, bin, "grok").await
+    }
+}
+
+/// In-app sessions setup: install the selected provider CLI without the user
+/// hunting binaries. Ensures npm/Node first, then the provider package.
+#[tauri::command]
+pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<String, String> {
+    match tool.as_str() {
+        "claude" => {
+            let _ = npm_bin_or_install_node(&app, "claude").await?;
+            install_claude_code(app).await
+        }
+        "codex" | "grok" => {
+            let (spec, bin) = session_provider_npm_spec(&tool)?;
+            #[cfg(not(windows))]
+            {
+                install_npm_cli_macos(app, spec, bin, &tool).await
+            }
+            #[cfg(windows)]
+            {
+                install_npm_cli_windows(app, spec, bin, &tool).await
+            }
+        }
+        _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
     }
 }
 
@@ -3700,42 +3845,57 @@ fn write_user_path_value(env: &RegKey, value: &UserPathValue) -> Result<(), Stri
 
 #[cfg(windows)]
 pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
-    let dir_str = new_dir.to_string_lossy().to_string();
+    let result = (|| {
+        let dir_str = new_dir.to_string_lossy().to_string();
 
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let env = hkcu
-        .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
-        .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let env = hkcu
+            .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
+            .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
 
-    let mut current_value = read_user_path_value(&env)?;
-    let current = current_value.value.clone();
+        let mut current_value = read_user_path_value(&env)?;
+        let current = current_value.value.clone();
 
-    let already_present = current
-        .split(';')
-        .any(|entry| entry.eq_ignore_ascii_case(&dir_str));
-    if already_present {
+        let already_present = current
+            .split(';')
+            .any(|entry| entry.eq_ignore_ascii_case(&dir_str));
+        if already_present {
+            debug_log(&format!(
+                "append_user_path: '{dir_str}' already on PATH, skipping"
+            ));
+            return Ok(());
+        }
+
+        let updated = if current.is_empty() {
+            dir_str.clone()
+        } else if current.ends_with(';') {
+            format!("{current}{dir_str}")
+        } else {
+            format!("{current};{dir_str}")
+        };
+
+        current_value.value = updated;
+        write_user_path_value(&env, &current_value)?;
+
+        broadcast_environment_change();
         debug_log(&format!(
-            "append_user_path: '{dir_str}' already on PATH, skipping"
+            "append_user_path: added '{dir_str}', broadcast sent"
         ));
-        return Ok(());
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let failure_scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
+            .try_with(|scope| scope.clone())
+            .ok();
+        record_onboarding_failure_detail(
+            "deps",
+            failure_scope.as_ref(),
+            Some("path-write"),
+            OnboardingErrorCategory::Unknown,
+        );
     }
-
-    let updated = if current.is_empty() {
-        dir_str.clone()
-    } else if current.ends_with(';') {
-        format!("{current}{dir_str}")
-    } else {
-        format!("{current};{dir_str}")
-    };
-
-    current_value.value = updated;
-    write_user_path_value(&env, &current_value)?;
-
-    broadcast_environment_change();
-    debug_log(&format!(
-        "append_user_path: added '{dir_str}', broadcast sent"
-    ));
-    Ok(())
+    result
 }
 
 /// Remove `dir` from the user's persistent PATH. Idempotent.
@@ -5424,6 +5584,21 @@ fn dep_is_satisfied(dep: &DepDef) -> bool {
     dep_status_satisfies(dep, &check_dep_impl(dep.binary, None))
 }
 
+fn finish_orchestrated_dep_install(
+    label: &str,
+    install_result: Result<String, String>,
+    found_after_install: bool,
+) -> Result<(), String> {
+    match install_result {
+        Ok(_) if found_after_install => Ok(()),
+        Ok(_) => Err(format!("{label} was not found after install")),
+        // An installer can leave a managed binary on the current process PATH
+        // while failing to persist it for future shells. Do not turn that
+        // failure into success through the post-install probe.
+        Err(err) => Err(err),
+    }
+}
+
 async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
     if dep_is_satisfied(dep) {
         return Ok(());
@@ -5443,18 +5618,15 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
 
-    if dep_is_satisfied(dep) {
-        return Ok(());
-    }
-
-    match install_result {
-        Ok(_) => Err(format!("{} was not found after install", dep.label)),
-        Err(err) => Err(err),
-    }
+    finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(dep))
 }
 
 #[tauri::command]
-pub async fn install_deps(app: AppHandle) -> Result<(), String> {
+pub async fn install_deps(
+    app: AppHandle,
+    failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
+) -> Result<(), String> {
+    clear_onboarding_failure_detail("deps", failure_scope.as_ref());
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);
     let mut ok_set: HashSet<&'static str> = HashSet::new();
@@ -5474,8 +5646,16 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
 
         let settled = join_all(ready.into_iter().map(|dep| {
             let app = app.clone();
+            let failure_scope = failure_scope.clone();
             async move {
-                let install_result = install_orchestrated_dep(&app, dep).await;
+                let install_result = match failure_scope {
+                    Some(scope) => {
+                        ACTIVE_ONBOARDING_FAILURE_SCOPE
+                            .scope(scope, install_orchestrated_dep(&app, dep))
+                            .await
+                    }
+                    None => install_orchestrated_dep(&app, dep).await,
+                };
                 result_from_install(dep, install_result)
             }
         }))
@@ -5526,6 +5706,20 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
     if failures.is_empty() {
         Ok(())
     } else {
+        if let Some(failed_dependency) = deps.iter().find_map(|dep| {
+            let result = result_by_id.get(dep.id)?;
+            (!dep.optional && result.status == DepInstallStatus::Failed).then_some(dep.id)
+        }) {
+            // Individual installers currently return their rendered errors, so
+            // no typed source remains at this aggregation point. Preserve the
+            // exact dependency but record the category as the closed fallback.
+            record_onboarding_failure_detail(
+                "deps",
+                failure_scope.as_ref(),
+                Some(failed_dependency),
+                OnboardingErrorCategory::Unknown,
+            );
+        }
         Err(format!(
             "Dependency install failed: {}",
             failures.join("; ")
@@ -5536,6 +5730,34 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod install_deps_planner_tests {
     use super::*;
+
+    #[test]
+    fn path_persistence_failure_remains_fatal_after_the_managed_binary_is_visible() {
+        let result = finish_orchestrated_dep_install(
+            "Node.js",
+            Err("PATH persistence failed".to_string()),
+            true,
+        );
+
+        assert_eq!(result, Err("PATH persistence failed".to_string()));
+    }
+
+    #[test]
+    fn session_provider_npm_spec_covers_the_three_session_clis() {
+        assert_eq!(
+            session_provider_npm_spec("claude").unwrap(),
+            ("@anthropic-ai/claude-code", "claude")
+        );
+        assert_eq!(
+            session_provider_npm_spec("codex").unwrap(),
+            ("@openai/codex", "codex")
+        );
+        assert_eq!(
+            session_provider_npm_spec("grok").unwrap(),
+            ("@xai-official/grok", "grok")
+        );
+        assert!(session_provider_npm_spec("cursor").is_err());
+    }
 
     #[test]
     fn managed_node_abi_matches_pinned_versions() {

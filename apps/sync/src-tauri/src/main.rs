@@ -553,6 +553,18 @@ fn main() {
             commands::oauth::start_oauth_login,
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
+            // Browser session continuation. Inert until the backend's rollout
+            // document says otherwise: `desktop_continuation_context`
+            // answers "off" on every failure, and the renderer only calls the
+            // rest after it answers "on".
+            commands::desktop_auth::desktop_continuation_context,
+            commands::desktop_auth::desktop_continuation_config,
+            commands::desktop_auth::desktop_continuation_deliver,
+            commands::desktop_auth::desktop_continuation_may_start,
+            commands::desktop_auth::desktop_continuation_start,
+            commands::desktop_auth::desktop_continuation_await_identity,
+            commands::desktop_auth::desktop_continuation_confirm,
+            commands::desktop_auth::desktop_continuation_cancel,
             commands::auth::get_auth_state,
             commands::auth::whoami,
             commands::auth::get_auth_session,
@@ -627,6 +639,7 @@ fn main() {
             commands::install_manifest::record_install_complete,
             commands::install_stages::git_init,
             commands::install_stages::git_probe_user,
+            commands::install_stages::take_onboarding_failure_detail,
             commands::install_stages::register_search_index,
             commands::install_stages::install_default_packages,
             commands::install_stages::personalize_hq,
@@ -643,6 +656,9 @@ fn main() {
             commands::install_deps::install_git,
             commands::install_deps::install_gh,
             commands::install_deps::install_claude_code,
+            commands::install_deps::install_codex,
+            commands::install_deps::install_grok,
+            commands::install_deps::install_session_provider,
             commands::install_deps::install_qmd,
             commands::install_deps::install_hq_cli,
             commands::install_deps::install_yq,
@@ -725,6 +741,7 @@ fn main() {
             commands::agent_session::agent_session_list,
             commands::agent_session::agent_session_replay,
             commands::agent_session::agent_session_history_page,
+            commands::agent_session::agent_session_context,
             commands::agent_session::agent_session_slash_commands,
             // Sessions composer `@`-mentions: the company directory + the DM
             // fan-out that runs after a mentioned message is sent.
@@ -1178,9 +1195,6 @@ fn main() {
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());
-            // U59: hq-cloud itself decides V2 rollout admission; this sidecar
-            // only forwards local file changes through its minimal stdin API.
-            commands::realtime_mutation::setup_realtime_mutation_watcher(app.handle());
             // Supervise the watch daemon: respawn it if it dies while auto-sync
             // is on, so a crash/kill doesn't leave sync silently quiet.
             commands::daemon::setup_daemon_supervisor(app.handle());
@@ -1663,5 +1677,96 @@ mod native_panic_tests {
             calls.borrow().is_empty(),
             "the app-initiated quit path must stay behaviourally unchanged"
         );
+    }
+}
+
+#[cfg(test)]
+mod mutation_trigger_removal_tests {
+    use std::path::{Path, PathBuf};
+
+    fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                rust_sources(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// The shapes the removed trigger took in source: its module name, the
+    /// one-string form of the hq-cloud subcommand, and a `"sync"` literal
+    /// followed within a few tokens by a `"mutation"` literal, which is how a
+    /// spawn site lists npx arguments whether it writes them as `&str`s or
+    /// `.to_string()`s. Assembled at runtime so this file does not match
+    /// itself. A bare `"mutation"` literal is deliberately not enough:
+    /// unrelated code may legitimately contain that word.
+    fn references_mutation_trigger(text: &str) -> Option<String> {
+        let module = ["realtime_", "muta", "tion"].concat();
+        let one_string = ["sync ", "muta", "tion"].concat();
+        for needle in [&module, &one_string] {
+            if text.contains(needle.as_str()) {
+                return Some(needle.clone());
+            }
+        }
+        let sync_literal = "\"sync\"";
+        let mutation_literal = ["\"muta", "tion\""].concat();
+        let mut from = 0;
+        while let Some(at) = text[from..].find(sync_literal) {
+            let start = from + at + sync_literal.len();
+            let window_end = text
+                .char_indices()
+                .map(|(index, _)| index)
+                .find(|&index| index >= start + 48)
+                .unwrap_or(text.len());
+            if text[start..window_end].contains(mutation_literal.as_str()) {
+                return Some([sync_literal, " .. ", mutation_literal.as_str()].concat());
+            }
+            from = start;
+        }
+        None
+    }
+
+    /// Negative control for the scan: the detector must fire on the exact
+    /// lines the removed module used, or the sweep below proves nothing.
+    #[test]
+    fn detector_matches_the_removed_spawn_shapes() {
+        let module_use = ["commands::realtime_", "muta", "tion::setup"].concat();
+        let arg_vec = ["\"sync\".to_string(),\n\"muta", "tion\".to_string(),"].concat();
+        let arg_slice = ["[\"sync\", \"muta", "tion\", \"--stdin-json\"]"].concat();
+        let one_string = ["\"hq-cloud sync ", "muta", "tion --stdin-json\""].concat();
+        assert!(references_mutation_trigger(&module_use).is_some());
+        assert!(references_mutation_trigger(&arg_vec).is_some());
+        assert!(references_mutation_trigger(&arg_slice).is_some());
+        assert!(references_mutation_trigger(&one_string).is_some());
+        let unrelated = ["let kind = \"", "muta", "tion\"; // GraphQL operation"].concat();
+        assert!(references_mutation_trigger(&unrelated).is_none());
+    }
+
+    /// The desktop used to spawn the hq-cloud one-shot mutation subcommand
+    /// through npx for every changed path under the HQ root (measured at 15 npx+node
+    /// pairs a minute on an active HQ, each ~0.7 s CPU and ~220 MB) while the
+    /// runner's `--event-push` watcher already delivers realtime sync. The
+    /// trigger is gone; this keeps it from creeping back under another name.
+    #[test]
+    fn no_desktop_module_spawns_hq_cloud_sync_mutation() {
+        let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_sources(&src, &mut files);
+        assert!(
+            !files.is_empty(),
+            "no Rust sources found under {}",
+            src.display()
+        );
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("read source");
+            if let Some(needle) = references_mutation_trigger(&text) {
+                panic!(
+                    "{} still references the removed realtime mutation trigger ({needle})",
+                    file.display()
+                );
+            }
+        }
     }
 }

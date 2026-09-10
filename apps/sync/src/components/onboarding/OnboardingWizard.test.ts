@@ -275,6 +275,233 @@ describe('onboarding launch handoff', () => {
     expect(primaryButton().textContent).toBe('Install Claude Code');
   });
 
+  it('restores friendly checklist labels instead of internal setup stage names', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2 },
+    });
+
+    const friendlyLabels = [
+      'Laying the groundwork',
+      'Building your workspace',
+      'Bringing in your AI workers and workflows',
+      'Making it yours',
+      'Syncing across your devices',
+    ];
+    const rawStageLabels = [
+      'Downloading HQ template',
+      'Installing dependencies',
+      'Syncing initial cloud data',
+      'Initialising workspace',
+      'Preparing personal workspace',
+      'Registering for search',
+    ];
+
+    await flushUntil(() => {
+      const checklist = host.querySelector('[data-testid="onboarding-setup"]');
+      return friendlyLabels.every((label) => checklist?.textContent?.includes(label));
+    });
+
+    const checklist = host.querySelector('[data-testid="onboarding-setup"]');
+    expect(checklist).not.toBeNull();
+    for (const label of friendlyLabels) {
+      expect(checklist?.textContent).toContain(label);
+    }
+    for (const label of rawStageLabels) {
+      expect(checklist?.textContent).not.toContain(label);
+    }
+  });
+
+  it('renders the same seamless completion screen after a failed required stage as after a clean run', async () => {
+    const claudeDesktopOnly = {
+      ...NO_AI_TOOLS,
+      claude_desktop: true,
+      any: true,
+    };
+    mountWizard(vi.fn(), 4, claudeDesktopOnly);
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
+    const cleanCompletion = host.querySelector<HTMLElement>(
+      '[data-testid="onboarding-summary"]',
+    )?.innerHTML;
+    expect(cleanCompletion).toBeTruthy();
+
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+
+    const onfinish = vi.fn();
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return claudeDesktopOnly;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
+
+    const summary = host.querySelector('[data-testid="onboarding-summary"]');
+    const launchClaude = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-launch-claude"]',
+    );
+    expect((summary as HTMLElement | null)?.innerHTML).toBe(cleanCompletion);
+    expect(summary?.textContent).not.toContain('dependency installation failed');
+    expect(summary?.textContent).not.toContain('HQ setup needs attention');
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-retry-failed-stages"]')).toBeNull();
+    expect(launchClaude?.disabled).toBe(false);
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-install-codex"]')?.disabled,
+    ).toBe(false);
+    expect(tauri.invoke).toHaveBeenCalledWith('record_install_complete');
+
+    launchClaude?.click();
+    await flush();
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', expect.any(Object));
+    expect(onfinish).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the download handoff enabled after a required setup failure while tool detection is pending', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return new Promise<never>(() => {});
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish: vi.fn() },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
+
+    const download = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-launch-download"]',
+    );
+    expect(download).not.toBeNull();
+    expect(download?.disabled).toBe(false);
+
+    download?.click();
+    await flush();
+    expect(tauri.open).toHaveBeenCalledWith('https://claude.ai/download');
+  });
+
+  it('keeps the success completion indicator after a required setup failure', async () => {
+    mountWizard();
+    await flush();
+
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
+
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+
+    const claudeDesktopOnly = {
+      ...NO_AI_TOOLS,
+      claude_desktop: true,
+      any: true,
+    };
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/placeholder/hq';
+        case 'detect_ai_tools':
+          return claudeDesktopOnly;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'detect_claude_desktop_connectors':
+          return { present: false, count: 0, path: '/placeholder/connectors' };
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2, onfinish: vi.fn() },
+    });
+
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-consent"] input[value="decline"]')),
+    );
+    host
+      .querySelector<HTMLInputElement>('[data-testid="onboarding-consent"] input[value="decline"]')
+      ?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="consent-continue"]')?.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-summary"]')));
+
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
+    ).toBeNull();
+    expect(
+      host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
+    ).not.toBeNull();
+  });
+
   it('shows Codex as installed when only the ChatGPT-bundled desktop app is present', async () => {
     // Desktop Codex ships inside ChatGPT.app; the detector reports that as
     // codex_desktop, and the Ready screen must offer to launch it rather than

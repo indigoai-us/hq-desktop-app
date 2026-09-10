@@ -23,6 +23,7 @@
   import { failure, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
+  import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import type { RowExtrasResolver } from "../chat/row-extras.js";
   import {
@@ -163,6 +164,30 @@
     type EmbeddedNavigationTarget,
     type EmbeddedSettingsSection,
   } from "./embedded-navigation.js";
+  import {
+    createNavigationEntry,
+    createNavigationHistory,
+    destinationCompanyKey,
+    destinationFromEmbeddedTarget,
+    destinationLabel,
+    extraParamCompanyKey,
+    historyNeighbor,
+    sessionExtraRequiresCompany,
+    type NavigationDestination,
+    type NavigationEntry,
+    type NavigationScrollState,
+  } from "./navigation-history.js";
+  import {
+    captureNavigationScroll,
+    scheduleNavigationScrollRestore,
+  } from "./navigation-scroll.js";
+  import {
+    createNavigationController,
+    type AppliedNavigation,
+    type NavigationMode,
+    type NavigationResolveOutcome,
+  } from "./navigation-controller.js";
+  import { consumeNavigationShortcut } from "./navigation-shortcuts.js";
   import { onDestroy, onMount, untrack, type Component } from "svelte";
   import {
     applyColorTheme,
@@ -317,7 +342,6 @@
   } from "../chat/open-target.js";
   import {
     MESSAGE_PERSON_EVENT,
-    requestConversation,
     takePendingConversation,
     type ConversationTarget,
   } from "../chat/pending-conversation.js";
@@ -526,11 +550,17 @@
         startworkAction?: { label: string; param: (company: string | null) => string | null };
         component: Component<{
           param?: string | null;
-          onnavigate?: (param: string | null) => void;
+          restoreScroll?: NavigationScrollState | null;
+          onnavigate?: (
+            param: string | null,
+            options?: { mode?: "push" | "replace" },
+          ) => void;
         }>;
       }
     >;
     /** Host decoration for sidebar rows: badge, hover card, and actions. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
   }
 
@@ -584,6 +614,8 @@
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     onShellReady,
     extraPages,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
     rowExtras = null,
   }: Props = $props();
 
@@ -680,6 +712,7 @@
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
+  let libraryItemId = $state<string | null>(null);
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
     meetingId: string;
@@ -687,7 +720,20 @@
   } | null>(null);
   let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
+  let navigationPending = $state(false);
+  let navigationUnavailable = $state<{
+    destination: NavigationDestination;
+    reason: string;
+  } | null>(null);
+  let navigationCanGoBack = $state(false);
+  let navigationCanGoForward = $state(false);
+  let navigationBackLabel = $state("");
+  let navigationForwardLabel = $state("");
+  let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
+  let cancelScrollRestore: (() => void) | null = null;
+  const DESTINATION_UNAVAILABLE = "This destination is no longer available.";
   let tab = $state<ChannelTab>("chat");
+  let channelFileKey = $state<string | null>(null);
   let companyTab = $state<CompanyChannelTabId>("chat");
   let companyTabData = $state<CompanyTabModel | null>(null);
   let companyTabLoading = $state(false);
@@ -716,8 +762,13 @@
     sidebarLayout(window.innerWidth) === "overlay";
   let phoneViewport = $state(startsAsOverlay);
   let sidebarCollapsed = $state(startsAsOverlay);
+  let sidebarWidth = $state((() => {
+    try { const saved = Number(localStorage.getItem('hq.sidebar.width')); return saved >= 220 && saved <= 440 ? saved : 260; }
+    catch { return 260; }
+  })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+  let directorySettled = $state(false);
   let conversationBootTimedOut = $state(false);
   $effect(() => {
     if (selectedRow) {
@@ -823,7 +874,7 @@
         label: "Notifications",
         detail: "Open the notifications feed",
         action: () => {
-          view = "notifications";
+          void navigate({ kind: "notifications" });
         },
       },
       {
@@ -831,7 +882,7 @@
         label: "Meetings",
         detail: "Open the meetings agenda",
         action: () => {
-          view = "meetings";
+          void navigate({ kind: "meetings" });
         },
       },
       {
@@ -840,8 +891,7 @@
         detail: "People and agents on projects, live",
         shortcut: "g a",
         action: () => {
-          view = "atlas";
-          meetingFocusRequest = null;
+          void navigate({ kind: "atlas" });
         },
       },
     ];
@@ -1095,8 +1145,6 @@
 
   $effect(() => {
     selectedRow?.id;
-    agentSurface = "chat";
-    companyTab = "chat";
     companyTabData = null;
     companyWallpaper = "aurora";
     companyAppearanceName = null;
@@ -2785,7 +2833,7 @@
       onFailure: () => {},
     });
     if (result?.navigateTo === "chat") {
-      companyTab = "chat";
+      pushConversationSurface({ companyTab: "chat" });
       return;
     }
     await loadCompanyTabSurface(companyTab);
@@ -2850,12 +2898,17 @@
 
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
-    if (id) {
-      openProfileMember = null;
-      openAgentMember = null;
-      openArtifactView = null;
-      openReplyRootId = id;
-    }
+    if (!id || !selectedRow) return;
+    openProfileMember = null;
+    openAgentMember = null;
+    openArtifactView = null;
+    openReplyRootId = id;
+    pushConversationSurface({
+      replyRootEventId: id,
+      tab: "chat",
+      agentSurface: "chat",
+      companyTab: "chat",
+    });
   }
 
   /** Artifact mode for the side pane. The thread underneath is left intact so
@@ -2870,10 +2923,10 @@
   }
 
   function closeReply(): void {
-    openReplyRootId = null;
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
+    void leaveCurrentDestination();
   }
 
   function queueReplyForRow(
@@ -2890,8 +2943,6 @@
     const row = selectedRow;
     const scope = replyScopeForRow(row);
     if (!id || !row || !scope) return;
-    view = "conversation";
-    tab = "chat";
     replyApplyInFlight = id;
     try {
       const raw = unwrapAdapter(
@@ -3016,7 +3067,7 @@
     return () => mq.removeEventListener("change", apply);
   });
 
-  function handleSelect(
+  function selectConversationRow(
     row: ConversationRow,
     options?: {
       replyRootEventId?: string | null;
@@ -3035,6 +3086,9 @@
       meetingFocusRequest = null;
     }
     tab = "chat";
+    companyTab = "chat";
+    agentSurface = "chat";
+    channelFileKey = null;
     paletteOpen = false;
     membersOpen = false;
     projectAboutOpen = false;
@@ -3048,6 +3102,608 @@
     // closing on every select shut the overlay again the instant it opened.
     if (phoneViewport && options?.automatic !== true) sidebarCollapsed = true;
     onselectrow?.(row);
+  }
+
+  function currentNavigationScope() {
+    const accountId =
+      (self?.uid ?? tenantAccountId ?? "local").trim() || "local";
+    return { accountId, companyUid: tenantCompanyId };
+  }
+
+  function destinationFromConversation(
+    row: ConversationRow,
+    nested?: {
+      replyRootEventId?: string | null;
+      tab?: ChannelTab;
+      companyTab?: CompanyChannelTabId;
+      agentSurface?: AgentChannelTab;
+      fileKey?: string | null;
+    },
+  ): NavigationDestination {
+    const replyRootEventId = nested?.replyRootEventId ?? null;
+    if (row.channelId) {
+      const nextTab = nested?.tab ?? "chat";
+      return {
+        kind: "channel",
+        channelId: row.channelId,
+        replyRootEventId,
+        tab: nextTab,
+        companyTab: nested?.companyTab ?? "chat",
+        agentSurface: nested?.agentSurface ?? "chat",
+        fileKey: nextTab === "files" ? nested?.fileKey ?? null : null,
+      };
+    }
+    if (row.personUid) {
+      return {
+        kind: "dm",
+        personUid: row.personUid,
+        replyRootEventId,
+        agentSurface: nested?.agentSurface ?? "chat",
+      };
+    }
+    return { kind: "messages" };
+  }
+
+  function currentConversationNested() {
+    return {
+      replyRootEventId: openReplyRootId,
+      tab,
+      companyTab,
+      agentSurface,
+      fileKey: channelFileKey,
+    };
+  }
+
+  function pushConversationSurface(
+    patch: Partial<{
+      replyRootEventId: string | null;
+      tab: ChannelTab;
+      companyTab: CompanyChannelTabId;
+      agentSurface: AgentChannelTab;
+      fileKey: string | null;
+    }>,
+  ): void {
+    const row = selectedRow;
+    if (!row) return;
+    const nested = { ...currentConversationNested(), ...patch };
+    if (patch.tab && patch.tab !== "chat") nested.replyRootEventId = null;
+    if (patch.tab && patch.tab !== "files") nested.fileKey = null;
+    if (patch.companyTab && patch.companyTab !== "chat") {
+      nested.tab = "chat";
+      nested.replyRootEventId = null;
+      nested.fileKey = null;
+    }
+    if (patch.agentSurface && patch.agentSurface !== "chat") {
+      nested.replyRootEventId = null;
+    }
+    void navigate(destinationFromConversation(row, nested));
+  }
+
+  function currentShellDestination(): NavigationDestination {
+    if (navigationUnavailable) return navigationUnavailable.destination;
+    switch (view) {
+      case "settings":
+        return { kind: "settings", section: settingsSection };
+      case "notifications":
+        return { kind: "notifications" };
+      case "meetings":
+        return {
+          kind: "meetings",
+          meetingId: meetingFocusRequest?.meetingId ?? null,
+        };
+      case "atlas":
+        return { kind: "atlas" };
+      case "library":
+        return { kind: "library", tab: libraryTab, itemId: libraryItemId };
+      case "shared-files":
+        return { kind: "shared-files" };
+      case "extra":
+        if (extraPageId) return extraDestination(extraPageId, extraPageParam);
+        return { kind: "messages" };
+      default:
+        if (selectedRow) {
+          return destinationFromConversation(
+            selectedRow,
+            currentConversationNested(),
+          );
+        }
+        return { kind: "messages" };
+    }
+  }
+
+  function captureCurrentNavigation(): NavigationEntry | null {
+    try {
+      return createNavigationEntry(
+        currentShellDestination(),
+        currentNavigationScope(),
+        readNavigationScroll(),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  function readNavigationScroll(): NavigationScrollState | null {
+    if (typeof document === "undefined") return null;
+    return captureNavigationScroll(document);
+  }
+
+  function stopScrollRestore(): void {
+    cancelScrollRestore?.();
+    cancelScrollRestore = null;
+  }
+
+  function companyAccess(
+    companyKey: string | null | undefined,
+  ): "ok" | "unknown" | "denied" {
+    const key = companyKey?.trim() ?? "";
+    if (!key) return "ok";
+    if (companies == null) return "unknown";
+    return companies.some((company) => {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      return uid === key || slug === key;
+    })
+      ? "ok"
+      : "denied";
+  }
+
+  function companyIsAccessible(companyUid: string | null | undefined): boolean {
+    return companyAccess(companyUid) === "ok";
+  }
+
+  function accessOutcome(
+    destination: NavigationDestination,
+    companyKey: string | null | undefined,
+  ): NavigationResolveOutcome | null {
+    const access = companyAccess(companyKey);
+    if (access === "unknown") {
+      return { status: "transient-failure", error: "Directory still loading" };
+    }
+    if (access === "denied") {
+      return {
+        status: "unavailable",
+        destination,
+        reason: DESTINATION_UNAVAILABLE,
+      };
+    }
+    return null;
+  }
+
+  function rowForDestination(
+    destination: NavigationDestination,
+  ): ConversationRow | null {
+    const rows = [
+      ...searchRows,
+      ...railRows,
+      ...(selectedRow ? [selectedRow] : []),
+    ];
+    if (destination.kind === "channel") {
+      return (
+        rows.find((row) => row.channelId === destination.channelId) ?? null
+      );
+    }
+    if (destination.kind === "dm") {
+      return (
+        rows.find(
+          (row) => row.personUid === destination.personUid && !row.channelId,
+        ) ?? null
+      );
+    }
+    return null;
+  }
+
+  function resolveShellDestination(
+    destination: NavigationDestination,
+    context: {
+      isStale: () => boolean;
+      accountId: string;
+      companyUid: string | null;
+    },
+  ): NavigationResolveOutcome | Promise<NavigationResolveOutcome> {
+    if (context.isStale()) return { status: "cancelled" };
+    if (context.accountId !== currentNavigationScope().accountId) {
+      return {
+        status: "account-changed",
+        accountId: currentNavigationScope().accountId,
+      };
+    }
+    if (destination.kind === "extra") {
+      if (!extraPages?.[destination.page]) {
+        return {
+          status: "rejected",
+          reason: `Unknown destination: ${destination.page}`,
+        };
+      }
+      const extraCompany =
+        destination.companyUid ?? extraParamCompanyKey(destination.param);
+      if (
+        destination.page === "sessions" &&
+        sessionExtraRequiresCompany(destination.param) &&
+        !extraCompany
+      ) {
+        if (companies == null) {
+          return {
+            status: "transient-failure",
+            error: "Directory still loading",
+          };
+        }
+        return {
+          status: "unavailable",
+          destination,
+          reason: DESTINATION_UNAVAILABLE,
+        };
+      }
+      const extraDenied = accessOutcome(destination, extraCompany);
+      if (extraDenied) return extraDenied;
+      return { status: "ready", destination };
+    }
+    if (destination.kind === "channel" || destination.kind === "dm") {
+      const row = rowForDestination(destination);
+      if (row) {
+        // Rows already in the rail came from the membership directory.
+        // Only blank after companies has loaded and the uid is gone.
+        if (companyAccess(row.companyUid) === "denied") {
+          return {
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          };
+        }
+        return { status: "ready", destination };
+      }
+      return waitForDestinationRow(destination, context);
+    }
+    if (destination.kind === "setup-checkout") {
+      const checkoutDenied = accessOutcome(
+        destination,
+        destination.companyUid,
+      );
+      if (checkoutDenied) return checkoutDenied;
+    }
+    return { status: "ready", destination };
+  }
+
+  function waitForDestinationRow(
+    destination: Extract<NavigationDestination, { kind: "channel" | "dm" }>,
+    context: { isStale: () => boolean },
+  ): Promise<NavigationResolveOutcome> {
+    const attempts = 16;
+    const delayMs = 50;
+    return new Promise((resolve) => {
+      let tries = 0;
+      const tick = (): void => {
+        if (context.isStale()) {
+          resolve({ status: "cancelled" });
+          return;
+        }
+        const row = rowForDestination(destination);
+        if (row) {
+          if (companyAccess(row.companyUid) === "denied") {
+            resolve({
+              status: "unavailable",
+              destination,
+              reason: DESTINATION_UNAVAILABLE,
+            });
+            return;
+          }
+          resolve({ status: "ready", destination });
+          return;
+        }
+        tries += 1;
+        const directoryReady = directorySettled && companies != null;
+        if (tries >= attempts || directoryReady) {
+          if (!directoryReady && companies == null) {
+            resolve({
+              status: "transient-failure",
+              error: "Directory still loading",
+            });
+            return;
+          }
+          resolve({
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          });
+          return;
+        }
+        setTimeout(tick, delayMs);
+      };
+      setTimeout(tick, delayMs);
+    });
+  }
+
+  const navigationHistory = createNavigationHistory();
+
+  function syncNavigationChrome(): void {
+    const snap = navigationHistory.snapshot();
+    navigationCanGoBack = navigationHistory.canGoBack();
+    navigationCanGoForward = navigationHistory.canGoForward();
+    const back = historyNeighbor(snap, "back");
+    const forward = historyNeighbor(snap, "forward");
+    navigationBackLabel = back ? destinationLabel(back.destination) : "";
+    navigationForwardLabel = forward
+      ? destinationLabel(forward.destination)
+      : "";
+  }
+
+  function applyCommittedNavigation(applied: AppliedNavigation): void {
+    syncNavigationChrome();
+    paletteOpen = false;
+    membersOpen = false;
+    projectAboutOpen = false;
+    pendingRestoreScroll = applied.entry.scroll ?? null;
+    stopScrollRestore();
+    if (applied.availability === "unavailable") {
+      navigationUnavailable = {
+        destination: applied.entry.destination,
+        reason: applied.reason ?? DESTINATION_UNAVAILABLE,
+      };
+      selectedRow = null;
+      liveTimeline = [];
+      return;
+    }
+    navigationUnavailable = null;
+    embeddedNavigationError = null;
+    const next = applied.entry.destination;
+    meetingFocusRequest = null;
+    switch (next.kind) {
+      case "messages":
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "notifications":
+        view = "notifications";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "settings":
+        view = "settings";
+        settingsSection = next.section ?? null;
+        extraPageId = null;
+        extraPageParam = null;
+        onOpenSettings?.();
+        break;
+      case "meetings":
+        view = "meetings";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        if (next.meetingId?.trim()) {
+          meetingFocusRequest = {
+            meetingId: next.meetingId.trim(),
+            sequence: ++meetingFocusSequence,
+          };
+        }
+        break;
+      case "atlas":
+        view = "atlas";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "library":
+        libraryTab = next.tab;
+        libraryItemId = next.itemId ?? null;
+        view = "library";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "shared-files":
+        view = "shared-files";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "extra":
+        extraPageId = next.page;
+        extraPageParam = next.param ?? null;
+        view = "extra";
+        settingsSection = null;
+        break;
+      case "setup-checkout": {
+        const alreadySetup =
+          selectedRow?.channelId === SETUP_CHANNEL_ID && view === "conversation";
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        requestChannelOpen(SETUP_CHANNEL_ID, { companyUid: next.companyUid });
+        const row = selectedRow;
+        if (alreadySetup && row) void catchUpTimeline(row);
+        break;
+      }
+      case "channel":
+      case "dm": {
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        libraryItemId = null;
+        const row = rowForDestination(next);
+        const reply = next.replyRootEventId ?? null;
+        const sameRow = Boolean(row && selectedRow?.id === row.id);
+        if (row && !sameRow) {
+          selectConversationRow(row, { replyRootEventId: reply });
+        } else if (row && sameRow) {
+          if ((openReplyRootId ?? null) !== (reply ?? null)) {
+            if (reply) queueReplyForRow(row, reply);
+            else {
+              openReplyRootId = null;
+              pendingReplyRootId = null;
+              pendingReplyForRowId = null;
+            }
+          }
+        }
+        if (next.kind === "channel") {
+          tab = next.tab ?? "chat";
+          companyTab = next.companyTab ?? "chat";
+          agentSurface = next.agentSurface ?? "chat";
+          channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
+        } else {
+          agentSurface = next.agentSurface ?? "chat";
+          channelFileKey = null;
+        }
+        break;
+      }
+    }
+  }
+
+  const navigation = createNavigationController({
+    history: navigationHistory,
+    getScope: () => currentNavigationScope(),
+    captureCurrent: () => captureCurrentNavigation(),
+    captureScroll: () => readNavigationScroll(),
+    resolve: (destination, context) =>
+      resolveShellDestination(destination, context),
+    apply: (applied) => applyCommittedNavigation(applied),
+    onPending: (pending) => {
+      navigationPending = pending != null;
+    },
+    onRejected: (reason) => {
+      embeddedNavigationError = reason;
+    },
+  });
+
+  $effect(() => {
+    const scroll = pendingRestoreScroll;
+    stopScrollRestore();
+    if (!scroll || navigationUnavailable) return;
+    const generation = navigation.generation();
+    cancelScrollRestore = scheduleNavigationScrollRestore(
+      () => (typeof document === "undefined" ? null : document),
+      scroll,
+      {
+        isCancelled: () => navigation.generation() !== generation,
+      },
+    );
+    return () => stopScrollRestore();
+  });
+
+  function navigate(
+    destination: NavigationDestination,
+    mode: NavigationMode = "push",
+  ) {
+    embeddedNavigationError = null;
+    return navigation.navigate(destination, mode);
+  }
+
+  function resolveDestination(
+    destination: NavigationDestination,
+    generation?: number,
+  ) {
+    return navigation.resolveDestination(destination, generation);
+  }
+
+  function commitDestination(
+    outcome: Extract<
+      NavigationResolveOutcome,
+      { status: "ready" | "unavailable" }
+    >,
+    mode: NavigationMode = "push",
+    generation: number = navigation.generation(),
+  ): boolean {
+    return navigation.commitDestination(outcome, mode, generation);
+  }
+
+  function goBack() {
+    return navigation.back();
+  }
+
+  function goForward() {
+    return navigation.forward();
+  }
+
+  function leaveCurrentDestination() {
+    if (navigationHistory.canGoBack()) return goBack();
+    return navigate({ kind: "messages" });
+  }
+
+  $effect(() => {
+    navigation.noteAccount((self?.uid ?? tenantAccountId ?? "").trim());
+  });
+
+  $effect(() => {
+    if (companies == null) return;
+    const allowed = new Set<string>();
+    for (const company of companies) {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      if (uid) allowed.add(uid);
+      if (slug) allowed.add(slug);
+    }
+    navigation.filterAccessible(allowed);
+    const current = navigationHistory.current();
+    const shownExtra =
+      extraPageId != null
+        ? {
+            kind: "extra" as const,
+            page: extraPageId,
+            param: extraPageParam,
+          }
+        : null;
+    const currentIsShownExtra = Boolean(
+      shownExtra &&
+        current?.destination.kind === "extra" &&
+        current.destination.page === shownExtra.page &&
+        (current.destination.param ?? null) === shownExtra.param,
+    );
+    const shownKey = shownExtra
+      ? extraParamCompanyKey(shownExtra.param) ??
+        (currentIsShownExtra && current
+          ? (destinationCompanyKey(current.destination) ?? current.companyUid)
+          : null)
+      : (current?.companyUid ??
+        (current ? destinationCompanyKey(current.destination) : null));
+    const extraPruned = Boolean(shownExtra && !currentIsShownExtra);
+    const lostCompany = Boolean(shownKey && !allowed.has(shownKey));
+    const extraUnscoped = Boolean(
+      shownExtra &&
+        shownExtra.page === "sessions" &&
+        sessionExtraRequiresCompany(shownExtra.param) &&
+        !shownKey,
+    );
+    if (!extraPruned && !lostCompany && !extraUnscoped) return;
+    if (
+      navigationUnavailable &&
+      !extraPruned &&
+      !lostCompany &&
+      !extraUnscoped
+    ) {
+      return;
+    }
+    navigationUnavailable = {
+      destination: current?.destination ?? shownExtra ?? { kind: "messages" },
+      reason: DESTINATION_UNAVAILABLE,
+    };
+    extraPageId = null;
+    extraPageParam = null;
+    selectedRow = null;
+    liveTimeline = [];
+  });
+
+  function handleSelect(
+    row: ConversationRow,
+    options?: {
+      replyRootEventId?: string | null;
+      preserveView?: boolean;
+      automatic?: boolean;
+    },
+  ): void {
+    if (options?.automatic || options?.preserveView) {
+      selectConversationRow(row, options);
+      return;
+    }
+    if (selectedRow?.id !== row.id) selectedRow = row;
+    void navigate(
+      destinationFromConversation(row, {
+        replyRootEventId: options?.replyRootEventId ?? null,
+      }),
+    );
   }
 
   function applyConversationDeepLink(
@@ -3181,8 +3837,10 @@
 
   function changeTenantCompany(companyUid: string | null): void {
     if (tenantCompanyId === companyUid) return;
-    // Company scope is a tenant boundary too. Remove every visible selection
-    // before the re-keyed sidebar begins reads in the replacement scope.
+    // Company switching is in-account navigation: the history stack stays.
+    // Existing tenant-generation guards still cancel in-flight company reads.
+    // Remove every visible selection before the re-keyed sidebar begins reads
+    // in the replacement scope.
     tenantCompanyId = companyUid;
     selectedRow = null;
     liveTimeline = [];
@@ -3210,6 +3868,7 @@
     startMeetingsStore();
     if (view === "meetings") setMeetingsViewActive(true);
     void prefetchMeetings();
+    void navigate({ kind: "messages" });
   }
 
   /**
@@ -3258,6 +3917,7 @@
   });
 
   onDestroy(() => {
+    stopScrollRestore();
     // Account transitions unmount the shared shell; never leave its singleton
     // cache/snapshot visible until the next identity has finished hydrating.
     configureMeetingsApi(null);
@@ -3694,6 +4354,9 @@
   });
 
   async function signOutWithImageCleanup(): Promise<void> {
+    navigation.clear();
+    stopScrollRestore();
+    pendingRestoreScroll = null;
     const cache = imagePreviewCache;
     await onsignout?.();
     try { await cache?.clearAccount(); }
@@ -3872,60 +4535,71 @@
         (searchRows ?? []).find(
           (row) => row.personUid === dest.personUid && !row.channelId,
         );
-      handleSelect(existing ?? stub);
+      handleSelect(existing ?? stub, {
+        replyRootEventId: dest.replyRootEventId,
+      });
       return;
     }
     if (dest.kind === "files") {
       // Share rows do not include a company UID. Route to the bounded,
       // server-scoped share list rather than guessing a tenant or aliasing it.
-      view = "shared-files";
-      paletteOpen = false;
-      membersOpen = false;
-      projectAboutOpen = false;
+      void navigate({ kind: "shared-files" });
     }
     if (dest.kind === "channel") {
       const row = railRows.find((candidate) => candidate.channelId === dest.channelId);
-      if (row) handleSelect(row);
+      if (row) {
+        handleSelect(row, { replyRootEventId: dest.replyRootEventId });
+      } else {
+        requestChannelOpen(dest.channelId, {
+          replyRootEventId: dest.replyRootEventId ?? null,
+        });
+      }
     }
   }
 
   function openLibrary(next: LibraryTab = "skills"): void {
-    libraryTab = next;
-    view = "library";
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
+    void navigate({ kind: "library", tab: next });
   }
 
   function toggleNotifications(): void {
-    view = view === "notifications" ? "conversation" : "notifications";
-    meetingFocusRequest = null;
+    if (view === "notifications") void navigate({ kind: "messages" });
+    else void navigate({ kind: "notifications" });
   }
 
   function openSettings(section: EmbeddedSettingsSection | null = null): void {
-    view = "settings";
-    settingsSection = section;
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
-    onOpenSettings?.();
+    void navigate({ kind: "settings", section });
+  }
+
+  function extraDestination(
+    page: string,
+    param: string | null,
+  ): NavigationDestination {
+    const fromParam = extraParamCompanyKey(param);
+    let inherited: string | null = null;
+    if (
+      !fromParam &&
+      page === extraPageId &&
+      param &&
+      param !== "new" &&
+      !param.startsWith("new?")
+    ) {
+      const current = navigationHistory.current();
+      inherited =
+        extraParamCompanyKey(extraPageParam) ??
+        (current?.destination.kind === "extra"
+          ? (current.destination.companyUid ?? null)
+          : null) ??
+        current?.companyUid ??
+        null;
+    }
+    const companyUid = fromParam ?? inherited;
+    return companyUid
+      ? { kind: "extra", page, param, companyUid }
+      : { kind: "extra", page, param };
   }
 
   function openExtraPage(id: string, param: string | null = null): void {
-    if (!extraPages?.[id]) {
-      embeddedNavigationError = `Unknown destination: ${id}`;
-      return;
-    }
-    extraPageId = id;
-    extraPageParam = param;
-    view = "extra";
-    settingsSection = null;
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
+    void navigate(extraDestination(id, param));
   }
 
   function onShellLinkEvent(event: Event): void {
@@ -3937,82 +4611,20 @@
   }
 
   function closeSettings(): void {
-    view = "conversation";
-    settingsSection = null;
-    meetingFocusRequest = null;
+    void leaveCurrentDestination();
   }
 
   /** Apply a host route after DesktopApp's event listeners have mounted. */
   function applyEmbeddedNavigation(target: EmbeddedNavigationTarget): void {
-    embeddedNavigationError = null;
-    switch (target.kind) {
-      case "home":
-      case "messages":
-        view = "conversation";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "setup-checkout": {
-        const alreadySetup =
-          selectedRow?.channelId === SETUP_CHANNEL_ID && view === "conversation";
-        view = "conversation";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        requestChannelOpen(SETUP_CHANNEL_ID, {
-          companyUid: target.companyUid,
-        });
-        const row = selectedRow;
-        if (alreadySetup && row) void catchUpTimeline(row);
-        return;
-      }
-      case "inbox":
-        view = "notifications";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "meetings":
-        view = "meetings";
-        settingsSection = null;
-        meetingFocusRequest = target.meetingId?.trim()
-          ? { meetingId: target.meetingId.trim(), sequence: ++meetingFocusSequence }
-          : null;
-        return;
-      case "atlas":
-        view = "atlas";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "library":
-        openLibrary(target.tab);
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "settings":
-        meetingFocusRequest = null;
-        openSettings(target.section ?? null);
-        return;
-      case "channel":
-        meetingFocusRequest = null;
-        requestChannelOpen(target.channelId, {
-          replyRootEventId: target.replyRootEventId,
-        });
-        return;
-      case "dm":
-        meetingFocusRequest = null;
-        requestConversation({
-          personUid: target.personUid,
-          email: "",
-          displayName: "",
-          replyRootEventId: target.replyRootEventId,
-        });
-        return;
-      case "extra":
-        openExtraPage(target.page, target.param ?? null);
-        return;
-      case "unsupported":
-        embeddedNavigationError = `${target.reason}: ${target.route}`;
-        return;
+    const destination = destinationFromEmbeddedTarget(target);
+    if (!destination) {
+      embeddedNavigationError =
+        target.kind === "unsupported"
+          ? `${target.reason}: ${target.route}`
+          : "Unsupported embedded destination";
+      return;
     }
+    void navigate(destination);
   }
 
   function sweepStaleAttachmentTrays(reason: string): void {
@@ -4081,12 +4693,24 @@
     // US-016: `g a` opens Atlas (Slack-style go chord).
     const goChord = createGoChord((letter) => {
       if (letter !== "a") return false;
-      view = "atlas";
-      meetingFocusRequest = null;
+      void navigate({ kind: "atlas" });
       return true;
     });
 
     function onKey(event: KeyboardEvent) {
+      if (
+        consumeNavigationShortcut(event, {
+          onBack: () => {
+            if (navigationHistory.canGoBack()) void goBack();
+          },
+          onForward: () => {
+            if (navigationHistory.canGoForward()) void goForward();
+          },
+        })
+      ) {
+        goChord.reset();
+        return;
+      }
       const meta = event.metaKey || event.ctrlKey;
       if (meta) {
         const key = event.key.toLowerCase();
@@ -4100,12 +4724,10 @@
           openSettings();
         } else if (key === "1") {
           event.preventDefault();
-          view = "notifications";
-          meetingFocusRequest = null;
+          void navigate({ kind: "notifications" });
         } else if (key === "2") {
           event.preventDefault();
-          view = "meetings";
-          meetingFocusRequest = null;
+          void navigate({ kind: "meetings" });
         } else if (adapter.kind !== "web" && key === "3") {
           event.preventDefault();
           openLibrary("marketplace");
@@ -4229,16 +4851,18 @@
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
     onopenNotifications={toggleNotifications}
     onopenMeetings={() => {
-      view = "meetings";
-      meetingFocusRequest = null;
-      paletteOpen = false;
-      membersOpen = false;
-      projectAboutOpen = false;
+      void navigate({ kind: "meetings" });
     }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
     {onopenurl}
+    canGoBack={navigationCanGoBack}
+    canGoForward={navigationCanGoForward}
+    backLabel={navigationBackLabel}
+    forwardLabel={navigationForwardLabel}
+    onback={() => void goBack()}
+    onforward={() => void goForward()}
   />
 
   {#if recommendBanner}
@@ -4258,6 +4882,17 @@
       role="alert"
     >
       Couldn’t open requested destination. {embeddedNavigationError}
+    </div>
+  {/if}
+
+  {#if navigationPending}
+    <div
+      class="embedded-navigation-error"
+      data-testid="navigation-pending"
+      role="status"
+      aria-busy="true"
+    >
+      Opening destination…
     </div>
   {/if}
 
@@ -4294,7 +4929,25 @@
       void confirmMigrateSession(destinationCompanyUid)}
   />
 
-  {#if view === "settings"}
+  {#if navigationUnavailable}
+    <div class="desktop-body" data-testid="navigation-unavailable-host">
+      <div
+        class="navigation-unavailable"
+        data-testid="navigation-unavailable"
+        role="alert"
+      >
+        <p>{navigationUnavailable.reason}</p>
+        <button
+          type="button"
+          data-testid="navigation-unavailable-back"
+          onclick={() => void goBack()}
+          disabled={!navigationCanGoBack}
+        >
+          Back
+        </button>
+      </div>
+    </div>
+  {:else if view === "settings"}
     <!-- Settings is a full destination: it REPLACES everything below the
          titlebar. The channel rail is hidden and the whole area becomes the
          two-column Settings surface. -->
@@ -4307,6 +4960,7 @@
         storage={tenantStorage}
         {version}
         initialSection={settingsSection}
+        onsectionchange={(section) => openSettings(section)}
         onback={closeSettings}
         onsignout={onsignout ? signOutWithImageCleanup : undefined}
         onopenconsole={onOpenConsole
@@ -4318,7 +4972,7 @@
       />
     </div>
   {:else}
-    <div class="desktop-body">
+    <div class="desktop-body" style:--sidebar-width={`${sidebarWidth}px`}>
       <!-- Kept mounted while closed at phone width: the list owns roster
            loading and the #setup fallback, so unmounting it leaves the phone
            with nothing selected. -->
@@ -4349,21 +5003,26 @@
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
           onnavigateMessages={() => {
-            view = "conversation";
-            meetingFocusRequest = null;
+            void navigate({ kind: "messages" });
           }}
           onopenSettings={() => openSettings()}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           oncreateagent={canRunEntryPoints ? addAgentEntry : null}
-          onrows={(rows) => (railRows = rows)}
+          onrows={(rows) => {
+            railRows = rows;
+            directorySettled = true;
+          }}
           {bootTimeoutMs}
           welcomeFirst={!welcomeSetupRun && !hasBootDeepLink && !initialRow}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
+          {rowExtrasLoading}
+          {rowExtrasError}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
         />
         {/key}
+        {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
@@ -4376,8 +5035,7 @@
             wakeSeq={notificationWakeSeq}
             signedIn={Boolean(self)}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
             onunreadchange={(n) => (unreadCount = n)}
             onopen={openNotification}
@@ -4387,8 +5045,7 @@
           <SharedFilesOverlay
             {adapter}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
           />
         {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
@@ -4397,8 +5054,16 @@
             {#key `${extraPageId}:${extraPageParam ?? ""}`}
               <Page
                 param={extraPageParam}
-                onnavigate={(next: string | null) => {
-                  extraPageParam = next;
+                restoreScroll={pendingRestoreScroll}
+                onnavigate={(
+                  next: string | null,
+                  options?: { mode?: NavigationMode },
+                ) => {
+                  if (!extraPageId) return;
+                  void navigate(
+                    extraDestination(extraPageId, next),
+                    options?.mode ?? "push",
+                  );
                 }}
               />
             {/key}
@@ -4410,8 +5075,7 @@
             storage={tenantStorage}
             sessionGeneration={tenantGeneration}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
             openExternal={onopenurl}
             focusRequest={meetingFocusRequest}
@@ -4429,8 +5093,7 @@
               openMigrateSession(sessionId, atlasCompanyUid)}
             migratingSessionId={migratingSessionId}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
           />
         {:else if view === "conversation" && selectedRow}
@@ -4575,7 +5238,7 @@
                       class:active={agentSurface === t.id}
                       aria-current={agentSurface === t.id ? "page" : undefined}
                       data-testid={`agent-tab-${t.id}`}
-                      onclick={() => (agentSurface = t.id)}
+                      onclick={() => pushConversationSurface({ agentSurface: t.id })}
                     >
                       <span>{t.label}</span>
                     </button>
@@ -4606,7 +5269,7 @@
                 {/if}
                 <CompanyTabs
                   active={companyTab}
-                  onselect={(id) => (companyTab = id)}
+                  onselect={(id) => pushConversationSurface({ companyTab: id })}
                 />
               {:else if isProjectChannel}
                 <nav
@@ -4620,7 +5283,7 @@
                       class="project-tab"
                       class:active={tab === t.id}
                       aria-current={tab === t.id ? "page" : undefined}
-                      onclick={() => (tab = t.id)}
+                      onclick={() => pushConversationSurface({ tab: t.id })}
                     >
                       <span class="project-tab-icon" aria-hidden="true">
                         {#if t.id === "chat"}
@@ -4828,7 +5491,7 @@
               avatarSaving={agentAvatarSaving}
               avatarSaveError={agentAvatarSaveError}
               onsaveavatar={saveOpenAgentAvatar}
-              onclose={() => (agentSurface = "chat")}
+              onclose={() => void leaveCurrentDestination()}
             />
           {:else if isCompanyChannel && companyTab !== "chat"}
             {#if companyTab === "team"}
@@ -4999,6 +5662,7 @@
                   <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
                 {/snippet}
                 <ChannelConversation
+                  restoreScroll={pendingRestoreScroll}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;
@@ -5157,16 +5821,21 @@
               onCreateTask={adapter.workMesh?.createProjectStory && selectedRow?.companyUid ? createBoardTask : undefined}
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
-              onOpenInChannel={() => (tab = "chat")}
+              onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}
             />
           {:else}
             <ChannelFilesTab
               {files}
               previewContext={channelFilePreviewContext}
+              previewKey={channelFileKey}
               onloadpreview={loadChannelFilePreview}
               onauthorizeaction={canPerformChannelFileAction}
               onreveal={revealChannelFile}
               onopen={openChannelFile}
+              onselectfile={(item) =>
+                pushConversationSurface({ tab: "files", fileKey: item.key })}
+              onclosepreview={() =>
+                pushConversationSurface({ tab: "files", fileKey: null })}
             />
           {/if}
         {:else if conversationBootTimedOut}
@@ -5185,16 +5854,18 @@
     </div>
   {/if}
 
-  {#if view === "library"}
+  {#if view === "library" && !navigationUnavailable}
     <LibraryOverlay
       {adapter}
       tab={libraryTab}
+      itemId={libraryItemId}
       {packagesEvents}
       onback={() => {
-        view = "conversation";
-        meetingFocusRequest = null;
+        void leaveCurrentDestination();
       }}
-      onnavigatetab={(next) => (libraryTab = next)}
+      onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
+      onnavigateitem={(id) =>
+        void navigate({ kind: "library", tab: libraryTab, itemId: id })}
     />
   {/if}
 
@@ -5295,6 +5966,25 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .navigation-unavailable {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+    padding: 24px;
+    color: var(--t2, rgba(255, 255, 255, 0.62));
+    font: 400 13px/1.45 var(--font-ui);
+    text-align: center;
+  }
+
+  .navigation-unavailable button:disabled {
+    opacity: 0.5;
   }
 
   .conversation-boot-error {

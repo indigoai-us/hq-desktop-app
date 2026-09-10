@@ -98,7 +98,7 @@ export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunAp
 
   /** Every send goes to the watched session, whichever one the page has active. */
   async function focus(sessionId: string): Promise<void> {
-    if (store.activeSessionId !== sessionId || !store.hasOpen(sessionId)) await store.open(sessionId);
+    if (store.activeSessionId !== sessionId || !store.isOpen(sessionId)) await store.open(sessionId);
   }
 
   function snapshotOf(sessionId: string): SetupRunSnapshot {

@@ -8,6 +8,7 @@
 // render first; bounded background requests enrich channel labels. A failed
 // cloud lookup never gates first paint or removes saved local sessions.
 
+import { untrack } from 'svelte';
 import { listen } from '@tauri-apps/api/event';
 
 import { safeUnlisten } from '../../lib/listener-registry';
@@ -24,8 +25,45 @@ import {
 const PHASE_EVENT = 'agent-session:phase';
 
 export const LINKS_REFRESH_MS = 30_000;
+export const LINKS_CACHE_KEY = 'hq.session-project-links.v1';
 
-let byCompany = $state<Record<string, ProjectLink[]>>({});
+function browserStorage(): Storage | null {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadCachedLinks(): Record<string, ProjectLink[]> {
+  const storage = browserStorage();
+  if (!storage) return {};
+  try {
+    const raw = storage.getItem(LINKS_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as { byCompany?: Record<string, ProjectLink[]> };
+    if (!parsed?.byCompany || typeof parsed.byCompany !== 'object') return {};
+    return parsed.byCompany;
+  } catch {
+    return {};
+  }
+}
+
+function persistLinks(next: Record<string, ProjectLink[]>): void {
+  const storage = browserStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(LINKS_CACHE_KEY, JSON.stringify({ byCompany: next, cachedAt: Date.now() }));
+  } catch {
+    // best-effort
+  }
+}
+
+let settledCompanies = $state<string[]>([]);
+let bootTimer: ReturnType<typeof setTimeout> | null = null;
+let watchedCompanies = $state<string[]>([]);
+let failedCompanies = $state<string[]>([]);
+let byCompany = $state<Record<string, ProjectLink[]>>(loadCachedLinks());
 let watched: string[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
 let unlisteners: Array<() => void> = [];
@@ -50,9 +88,9 @@ function refreshShared(company: string, links: ProjectLink[], mine: number): voi
         if (mine !== generation || !watched.includes(company) || !visibleSharedChannels.has(channelId)) return;
         const sessions = await loadSharedRows(link).catch(() => []);
         if (mine !== generation || !watched.includes(company) || !visibleSharedChannels.has(channelId)) return;
-        byCompany = { ...byCompany, [company]: (byCompany[company] ?? []).map(row => row.channelId !== channelId ? row : {
+        setCompanyLinks(company, (byCompany[company] ?? []).map(row => row.channelId !== channelId ? row : {
           ...row, sessions: [...row.sessions.filter(session => !session.sharedChannelId), ...sessions],
-        }) };
+        }));
       } finally {
         if (mine === generation) sharedRequests.delete(channelId);
       }
@@ -67,6 +105,11 @@ function watchSharedChannel(company: string, link: ProjectLink, visible: boolean
   if (visibleSharedChannels.has(link.channelId)) return;
   visibleSharedChannels.add(link.channelId);
   refreshShared(company, [link], generation);
+}
+
+function setCompanyLinks(company: string, links: ProjectLink[]): void {
+  byCompany = { ...byCompany, [company]: links };
+  persistLinks(byCompany);
 }
 
 function drainRemote(): void {
@@ -85,23 +128,30 @@ function enrich(company: string, mine: number): void {
     if (mine !== generation) return;
     const revision = revisions.get(company);
     try {
-      const links = await loadSessionProjectLinks(company);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const links = await Promise.race([
+        loadSessionProjectLinks(company),
+        new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('Project links timed out')), 10000); }),
+      ]).finally(() => clearTimeout(timeout));
       if (mine !== generation || !watched.includes(company)) return;
+      failedCompanies = failedCompanies.filter(item => item !== company);
       const current = byCompany[company] ?? [];
       // An intervening phase refresh owns membership/status. A slow network
       // response can enrich labels but cannot roll that newer state back.
-      byCompany = { ...byCompany, [company]: revision === revisions.get(company) ? [
+      setCompanyLinks(company, revision === revisions.get(company) ? [
         ...links.map(link => ({ ...link, sessions: [...link.sessions,
           ...(current.find(row => row.channelId === link.channelId)?.sessions.filter(session => session.sharedChannelId) ?? []),
         ] })),
         ...current.filter((link) => !links.some((row) => row.project === link.project)),
       ] : [
         ...mergeLocalProjectLinks(current, links),
-      ] };
+      ]);
       refreshShared(company, byCompany[company], mine);
     } catch {
+      if (mine === generation && !failedCompanies.includes(company)) failedCompanies = [...failedCompanies, company];
       // Local links remain usable offline.
     } finally {
+      if (mine === generation && !settledCompanies.includes(company)) settledCompanies = [...settledCompanies, company];
       if (remoteRequests.get(company) === request) remoteRequests.delete(company);
     }
   });
@@ -117,12 +167,17 @@ async function refresh(): Promise<void> {
       const request = {};
       localRequests.set(company, request);
       try {
-        const links = await loadSessionProjectLinks(company, true);
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const links = await Promise.race([
+          loadSessionProjectLinks(company, true),
+          new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('Project sessions timed out')), 10000); }),
+        ]).finally(() => clearTimeout(timeout));
         if (mine !== generation || !watched.includes(company)) return;
         revisions.set(company, (revisions.get(company) ?? 0) + 1);
         const previous = byCompany[company] ?? [];
-        byCompany = { ...byCompany, [company]: mergeLocalProjectLinks(links, previous) };
+        setCompanyLinks(company, mergeLocalProjectLinks(links, previous));
       } catch {
+        if (mine === generation && !failedCompanies.includes(company)) failedCompanies = [...failedCompanies, company];
         // Keep the last known links: the flag may be off, or hq-pro away.
       } finally {
         if (localRequests.get(company) === request) localRequests.delete(company);
@@ -166,6 +221,26 @@ function start(companies: string[]): void {
   const next = Array.from(new Set(companies.map((c) => c.trim()).filter(Boolean)));
   const changed = next.length !== watched.length || next.some((c) => !watched.includes(c));
   watched = next;
+  watchedCompanies = next;
+  const cached = loadCachedLinks();
+  const currentByCompany = untrack(() => byCompany);
+  const currentSettled = untrack(() => settledCompanies);
+  if (Object.keys(cached).length > 0) {
+    byCompany = { ...cached, ...currentByCompany };
+  }
+  const merged = untrack(() => byCompany);
+  const alreadyCached = next.filter((company) => (merged[company]?.length ?? 0) > 0 || company in merged);
+  if (alreadyCached.length > 0) {
+    settledCompanies = [...new Set([...currentSettled, ...alreadyCached])];
+  }
+  if (changed || timer === null) {
+    if (bootTimer !== null) clearTimeout(bootTimer);
+    bootTimer = setTimeout(() => {
+      const missing = watchedCompanies.filter(company => !settledCompanies.includes(company));
+      failedCompanies = [...new Set([...failedCompanies, ...missing])];
+      settledCompanies = [...new Set([...settledCompanies, ...missing])];
+    }, 10000);
+  }
   if (timer === null) {
     timer = setInterval(scheduleRefresh, LINKS_REFRESH_MS);
     window.addEventListener(PROJECT_CHANNEL_LINKED_EVENT, onLinked);
@@ -177,9 +252,14 @@ function start(companies: string[]): void {
 }
 
 function stop(): void {
+  if (bootTimer !== null) clearTimeout(bootTimer);
+  bootTimer = null;
   if (timer !== null) clearInterval(timer);
   timer = null;
   watched = [];
+  watchedCompanies = [];
+  settledCompanies = [];
+  failedCompanies = [];
   generation += 1;
   localRequests.clear();
   remoteRequests.clear();
@@ -193,6 +273,8 @@ function stop(): void {
 }
 
 export const projectLinksStore = {
+  get loading(): boolean { return watchedCompanies.some(company => !settledCompanies.includes(company)); },
+  get initialError(): boolean { return failedCompanies.some(company => watchedCompanies.includes(company)); },
   /** Links per company slug — a new object on every change (derive off it). */
   get byCompany(): Record<string, ProjectLink[]> {
     return byCompany;

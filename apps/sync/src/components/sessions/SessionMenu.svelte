@@ -28,7 +28,7 @@
   let open = $state(false);
   let root = $state<HTMLDivElement | null>(null);
 
-  const openLabel = $derived(tool === 'codex' ? 'Open in Codex' : 'Open in Claude Code');
+  const openLabel = $derived(tool === 'codex' ? 'Open in Codex' : tool === 'grok' ? 'Open in Grok' : 'Open in Claude Code');
 
   function onWindowClick(event: MouseEvent) {
     if (!open) return;

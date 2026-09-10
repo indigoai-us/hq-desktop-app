@@ -112,6 +112,7 @@
     type TurnOverrides,
   } from '../lib/live-session-store.svelte';
   import type { AgentSession } from '../lib/sessions';
+  import { encodeHistorySessionParam } from './sessions-route-param';
   import { sessionsStore } from '../lib/sessions-store.svelte';
   import ProjectCreatedCard from '../../components/sessions/ProjectCreatedCard.svelte';
   import { projectLinksStore } from '../lib/project-links-store.svelte';
@@ -127,7 +128,7 @@
     /** Route-selected session. Absent → a fresh chat that starts on first send. */
     sessionId?: string;
     /** Navigate to `sessions:<id>` (the page never touches the router itself). */
-    onopensession?: (sessionId: string) => void;
+    onopensession?: (sessionId: string, options?: { replace?: boolean }) => void;
     /** Open a channel by id after a share — the shell's own route mechanism. */
     onopenchannel?: (channelId: string) => void;
     /** A fresh chat pre-bound to this company (the sidebar's "New session"). */
@@ -147,6 +148,11 @@
     initialPrompt?: string | null;
     /** Seeded into the composer and left for the person to send; nothing is sent for them. */
     initialPrefill?: string | null;
+    /** Restore via open vs openHistory. Absent on new drafts (nothing to restore). */
+    restorePath?: 'open' | 'openHistory';
+    /** Unique unsent-draft identity for composer persistence. */
+    draftKey?: string | null;
+    restoreScroll?: import('@hq/ui').NavigationScrollState | null;
   }
 
   let {
@@ -159,11 +165,15 @@
     initialHistorySession = null,
     initialPrompt = null,
     initialPrefill = null,
+    restorePath,
+    draftKey = null,
+    restoreScroll = null,
   }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
   let preflightLoading = $state(false);
   let actionError = $state('');
+  let sessionUnavailable = $state(false);
   let starting = $state(false);
   let busyRequestId = $state<string | null>(null);
   let probeCommands = $state<SessionCommand[]>([]);
@@ -282,12 +292,14 @@
 
   async function openRoutedSession(next: string) {
     if (routedId !== next) return;
+    // Restore is open / openHistory only. Never start, send, or fork.
 
     // Project-channel links already carry the authoritative provider history
     // metadata. Open them immediately instead of blocking the transcript on
     // the slower global session catalogs, which briefly rendered a generic
     // blank session after every click or app restart.
     if (initialHistorySession?.id === next) {
+      if (companyMembershipDenied(initialHistorySession.company)) return;
       tool = initialHistorySession.tool;
       model = null;
       effort = null;
@@ -301,18 +313,22 @@
 
     // Resolve the inexpensive in-memory registry first. A live session must
     // not wait for a scan of every provider transcript before replaying.
-    await liveSessionStore.refreshList();
-    if (routedId !== next) return;
+    if (restorePath !== 'openHistory') {
+      await liveSessionStore.refreshList();
+      if (routedId !== next) return;
 
-    const appOwned = liveSessionStore.sessions.some((session) => session.sessionId === next);
-    if (appOwned) {
-      await liveSessionStore.open(next);
-      return;
+      const appOwned = liveSessionStore.sessions.some((session) => session.sessionId === next);
+      if (appOwned) {
+        if (companyMembershipDenied(liveSessionStore.companyOf(next))) return;
+        await liveSessionStore.open(next);
+        return;
+      }
     }
     await sessionsStore.refresh();
     if (routedId !== next) return;
     const providerHistory = sessionsStore.sessions.find((session) => session.id === next);
-    if (providerHistory && !appOwned) {
+    if (providerHistory) {
+      if (companyMembershipDenied(providerHistory.company)) return;
       tool = providerHistory.tool;
       model = null;
       effort = null;
@@ -323,12 +339,54 @@
       await liveSessionStore.openHistory(providerHistory);
       return;
     }
+    if (restorePath === 'open' || restorePath === 'openHistory') {
+      sessionUnavailable = true;
+      actionError = 'This session is no longer available.';
+      return;
+    }
+    if (companyMembershipDenied(liveSessionStore.companyOf(next))) return;
     await liveSessionStore.open(next);
   }
 
-  // Open / close the routed session. Runs on mount and whenever the route's id
-  // changes; the previous session's buffer is dropped so a long transcript does
-  // not sit in memory behind a session the user left.
+  function sessionCompanyIsAccessible(
+    companyKey: string | null | undefined,
+  ): boolean {
+    const key = companyKey?.trim() ?? '';
+    if (!key) return true;
+    const offered = preflight?.companies;
+    if (!offered) return false;
+    return offered.some(
+      (entry) => entry.slug === key || (entry.cloudUid ?? '').trim() === key,
+    );
+  }
+
+  function companyMembershipDenied(
+    companyKey: string | null | undefined,
+  ): boolean {
+    const key = companyKey?.trim() ?? '';
+    if (!key || !preflight) return false;
+    if (sessionCompanyIsAccessible(key)) return false;
+    sessionUnavailable = true;
+    actionError = 'This session is no longer available.';
+    return true;
+  }
+
+  async function restoreRoutedSession(next: string): Promise<void> {
+    if (routedId !== next) return;
+    const bound =
+      (initialHistorySession?.id === next ? initialHistorySession.company : null) ||
+      liveSessionStore.companyOf(next) ||
+      initialCompany;
+    if (companyMembershipDenied(bound)) return;
+    if (liveSessionStore.isOpen(next)) {
+      liveSessionStore.activate(next);
+      return;
+    }
+    await openRoutedSession(next);
+  }
+
+  // Open the routed session. Background buffers stay resident while this view
+  // unmounts so Back can restore without tearing the agent down.
   $effect(() => {
     const next = sessionId ?? null;
     if (next === routedId) {
@@ -338,18 +396,32 @@
       if (next === null) untrack(() => liveSessionStore.deselect());
       return;
     }
-    const previous = untrack(() => openedId);
     routedId = next;
     openedId = next;
-    if (previous && previous !== next) liveSessionStore.close(previous);
-    if (next) void openRoutedSession(next);
+    sessionUnavailable = false;
     // A fresh chat shows no session — not one another surface left active.
-    else untrack(() => liveSessionStore.deselect());
+    if (!next) {
+      untrack(() => liveSessionStore.deselect());
+      return;
+    }
+    void restoreRoutedSession(next);
+  });
+
+  $effect(() => {
+    const offered = preflight?.companies;
+    if (!offered) return;
+    const next = sessionId ?? null;
+    const bound =
+      (next && initialHistorySession?.id === next
+        ? initialHistorySession.company
+        : null) ||
+      (next ? liveSessionStore.companyOf(next) : null) ||
+      initialCompany;
+    if (bound) companyMembershipDenied(bound);
   });
 
   onDestroy(() => {
     routedId = null;
-    if (openedId) liveSessionStore.close(openedId);
     unlistenSetupProgress?.();
     unlistenSetupProgress = null;
   });
@@ -781,26 +853,38 @@
   const blocker = $derived.by(() => {
     if (preflightLoading || !preflight) return '';
     if (tool === 'codex' && !preflight.codexAvailable) {
-      return 'Codex is not installed on this machine. Install it, then reopen Sessions.';
+      return 'Codex is not installed. Install it below — HQ sets up the CLI for you.';
     }
     if (tool === 'codex' && !preflight.codexLoggedIn) {
-      return 'Codex is not connected yet. Use Connect Codex below to sign in.';
+      return 'Codex is not signed in. Connect it below. If the browser does not open, run `codex login` in a terminal.';
+    }
+    if (tool === 'grok' && !preflight.grokAvailable) {
+      return 'Grok is not installed. Install it below — HQ sets up the CLI for you.';
+    }
+    if (tool === 'grok' && !preflight.grokLoggedIn) {
+      return 'Grok is not signed in. Connect it below. If the browser does not open, run `grok login` in a terminal.';
     }
     if (tool === 'claude' && !preflight.claudeAvailable) {
-      return 'Claude Code is not installed on this machine. Install it, then reopen Sessions.';
+      return 'Claude Code is not installed. Install it below — HQ sets up the CLI for you.';
     }
     if (tool === 'claude' && !preflight.claudeLoggedIn) {
-      return 'Claude Code is not connected yet. Use Connect Claude below to sign in.';
+      return 'Claude Code is not signed in. Connect it below. If the browser does not open, run `claude login` in a terminal.';
     }
     // HQ setup on this machine (`setupNeeded`) is the setup card's job:
     // progress while it runs, Retry when it could not — not a notice here.
     return '';
   });
 
-  const needsProvider = $derived(Boolean(preflight) && (tool === 'claude' ? !preflight?.claudeAvailable || !preflight?.claudeLoggedIn : !preflight?.codexAvailable || !preflight?.codexLoggedIn));
+  const needsProvider = $derived(Boolean(preflight) && (
+    tool === 'claude' ? !preflight?.claudeAvailable || !preflight?.claudeLoggedIn
+    : tool === 'grok' ? !preflight?.grokAvailable || !preflight?.grokLoggedIn
+    : !preflight?.codexAvailable || !preflight?.codexLoggedIn
+  ));
   function providerConnected(provider: SessionToolId) {
     if (preflight) preflight = provider === 'claude'
       ? { ...preflight, claudeAvailable: true, claudeLoggedIn: true }
+      : provider === 'grok'
+        ? { ...preflight, grokAvailable: true, grokLoggedIn: true }
       : { ...preflight, codexAvailable: true, codexLoggedIn: true };
     liveSessionStore.invalidatePreflight();
     chooseTool(provider);
@@ -1188,7 +1272,7 @@
       // is what made a follow-up accidentally start another conversation.
       if (started) {
         openedId = started;
-        onopensession?.(started);
+        onopensession?.(started, sessionId ? undefined : { replace: true });
       }
     }
     if (started && messageAccepted) await onmentionsend(started, text, mentions);
@@ -1235,7 +1319,7 @@
       rememberEffort(tool, null);
       await liveSessionStore.openHistory(session);
       openedId = session.id;
-      onopensession?.(session.id);
+      onopensession?.(encodeHistorySessionParam(session));
       return true;
     } catch (err) {
       actionError = err instanceof Error ? err.message : String(err);
@@ -1278,22 +1362,6 @@
   function chooseProject(name: string | null) {
     project = name;
     rememberLastProject(company, name);
-  }
-
-  /**
-   * The strip's "+": a fresh draft in the same company — the project pill
-   * back to "No project" (and its remembered value dropped, so the remount
-   * the route change causes reads null too), the composer emptied of text,
-   * images and chips. When the page is already on the new-session route the
-   * route does not change and nothing remounts, so the reset is done here
-   * rather than left to the mount.
-   */
-  function startFreshDraft() {
-    drawerOpen = false;
-    project = null;
-    forgetLastProject(company);
-    composer?.reset();
-    onopensession?.('');
   }
 
   function toggleStartwork(enabled: boolean) {
@@ -1347,15 +1415,32 @@
 <svelte:window onkeydown={onPageKeydown} />
 
 <div class="sessions" data-testid="sessions-page" bind:this={pageEl}>
+  {#if sessionUnavailable}
+    <div
+      class="session-note"
+      data-testid="session-unavailable"
+      role="alert"
+    >
+      This session is no longer available.
+    </div>
+  {:else}
   <SessionsStrip
     {title}
+    startedBy={liveSessionStore.context?.startedBy}
+    sourceTitle={liveSessionStore.context?.sourceTitle}
+    sourceSessionId={liveSessionStore.context?.sourceSessionId}
+    onopensource={() => {
+      const sourceId = liveSessionStore.context?.sourceSessionId;
+      const source = sessionsStore.sessions.find(item => item.id === sourceId);
+      if (source) void handleOpenHistory(source);
+      else if (sourceId) onopensession?.(sourceId);
+    }}
     {phase}
     {phaseLabel}
     drawerOpen={drawerOpen}
     policies={sessionId ? transcript.policies : null}
     handoff={handoffState}
     ontoggledrawer={() => (drawerOpen = !drawerOpen)}
-    onnew={startFreshDraft}
     onhandoff={() => void handleHandoff()}
     tool={summary?.tool ?? tool}
     menuEnabled={Boolean(sessionId) && !ended}
@@ -1401,13 +1486,14 @@
   {#if needsProvider && preflight}
     <div class="provider-connect-scroll">
       <ProviderConnect selected={tool}
-        claudeAvailable={preflight.claudeAvailable} codexAvailable={preflight.codexAvailable}
-        claudeConnected={preflight.claudeLoggedIn} codexConnected={preflight.codexLoggedIn}
+        claudeAvailable={preflight.claudeAvailable} codexAvailable={preflight.codexAvailable} grokAvailable={preflight.grokAvailable}
+        claudeConnected={preflight.claudeLoggedIn} codexConnected={preflight.codexLoggedIn} grokConnected={preflight.grokLoggedIn}
         onconnected={providerConnected} onchoose={chooseTool}
         onrefresh={async () => { liveSessionStore.invalidatePreflight(); preflight = await liveSessionStore.preflight(); }} />
     </div>
   {/if}
   <SessionTranscript
+    restoreScroll={restoreScroll}
     blocks={transcript.blocks}
     status={workStatus}
     loading={Boolean(sessionId) && liveSessionStore.loading}
@@ -1520,11 +1606,13 @@
       {permissionMode}
       {tool}
       codexAvailable={preflight?.codexAvailable ?? false}
+      grokAvailable={preflight?.grokAvailable ?? false}
       {newSessionPending}
       {modelNote}
       {hqFolder}
       {mentionCandidates}
       {mentionStatus}
+      {draftKey}
       onsend={(text, images, mentions, context) => void handleSend(text, images, mentions, context)}
       onstop={() => void liveSessionStore.interrupt()}
       oncompany={chooseCompany}
@@ -1537,6 +1625,7 @@
       onpermission={choosePermission}
     />
   </div>
+  {/if}
 </div>
 
 <style>

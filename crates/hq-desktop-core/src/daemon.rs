@@ -2933,18 +2933,18 @@ mod tests {
     }
 
     #[test]
-    fn test_watch_runner_stays_on_sync_runner_after_u59_enables_mutation_sidecar() {
-        use crate::hq_cloud::HQ_CLOUD_RUNNER_CAPABILITIES;
-
+    fn test_watch_runner_never_invokes_sync_mutation() {
+        // The runner's `--event-push` watcher is the desktop's only realtime
+        // path. The per-file `sync mutation` trigger was removed from the app;
+        // it must not resurface as an argument to the watch runner either.
         let args = build_watch_runner_args("/any");
-        assert!(HQ_CLOUD_RUNNER_CAPABILITIES.v2_mutation);
         assert!(args.args.contains(&"hq-sync-runner".to_string()));
         assert!(
             !args
                 .args
                 .windows(2)
                 .any(|args| args == ["sync", "mutation"]),
-            "the watch runner remains V1-compatible; U59's sidecar owns mutation: {:?}",
+            "the watch runner stays on the V1 runner surface: {:?}",
             args.args
         );
     }

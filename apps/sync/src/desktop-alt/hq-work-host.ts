@@ -10,6 +10,7 @@ import type { AdapterResult, PlatformAdapter } from '@hq/platform';
 import {
   normalizeDirectoryFeed,
   dispatchEmbeddedNavigation,
+  destinationFromEmbeddedTarget,
   isEmbeddedSettingsSection,
   OPEN_SETTINGS_EVENT,
   requestChannelOpen,
@@ -22,6 +23,7 @@ import {
   type MessageSearchResult,
   type RequestsResponse,
   type EmbeddedNavigationTarget,
+  type NavigationDestination,
   type ChatWakeBus,
   type PackagesDone,
   type PackagesEvents,
@@ -495,6 +497,11 @@ export function requestDeepLinkOpen(target: HqWorkOpenTarget): void {
  * Stateful delivery boundary between native desktop routes and the mounted
  * shared shell. `attach` is called by `DesktopApp` only after its listeners
  * exist, so a cold pending route cannot disappear in the mount gap.
+ *
+ * This is not the in-app history stack — see
+ * `packages/ui/src/shell/navigation-history.ts`. Native/host targets convert
+ * into that destination union via `destinationFromEmbeddedTarget` once the
+ * shared shell commits them; this controller only queues delivery.
  */
 export class EmbeddedNavigationController {
   #pending: EmbeddedNavigationTarget | null = null;
@@ -542,6 +549,15 @@ export class EmbeddedNavigationController {
 
 export function createEmbeddedNavigationController(): EmbeddedNavigationController {
   return new EmbeddedNavigationController();
+}
+
+/** Convert a native desktop-alt route string onto the shared destination union. */
+export function navigationDestinationFromRoute(
+  route: string | null | undefined,
+): NavigationDestination | null {
+  const trimmed = route?.trim() ?? '';
+  if (!trimmed) return null;
+  return destinationFromEmbeddedTarget(routeTarget(trimmed));
 }
 
 function routeTarget(route: string): EmbeddedNavigationTarget {

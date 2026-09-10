@@ -1007,8 +1007,17 @@ export interface PackagesApi {
 }
 
 /** Desktop-only group (capability: canSpawnSessions). */
+export type SessionProviderId = "claude" | "codex" | "grok";
+
 export interface SessionsApi {
   listAgentSessions(): AdapterPromise<Json[]>;
+  /** Desktop in-app sessions: CLI installed + signed-in flags. */
+  preflight?(): AdapterPromise<Json>;
+  slashCommands?(tool: SessionProviderId): AdapterPromise<Json>;
+  installProvider?(tool: SessionProviderId): AdapterPromise<string>;
+  loginStart?(tool: SessionProviderId): AdapterPromise<Json>;
+  loginStatus?(tool: SessionProviderId): AdapterPromise<Json>;
+  loginCancel?(tool: SessionProviderId): AdapterPromise<Json>;
 }
 
 /** Local per-platform settings. */

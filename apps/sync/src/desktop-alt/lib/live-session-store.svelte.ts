@@ -1,3 +1,4 @@
+import { missingInheritedPrefix, type SessionContext } from './session-context';
 /**
  * Live in-app agent-session store (Sessions page).
  *
@@ -87,7 +88,7 @@ import type { AgentSession } from './sessions';
 export type SessionPhase = 'starting' | 'idle' | 'working' | 'needsYou' | 'ended';
 
 /** Which agent CLI a session drives (Rust `SessionTool`). */
-export type SessionTool = 'claude' | 'codex';
+export type SessionTool = 'claude' | 'codex' | 'grok';
 
 /** How tool-permission requests are handled (Rust `PermissionMode`). */
 export type PermissionMode = 'prompt' | 'bypassAll';
@@ -199,6 +200,9 @@ export interface Preflight {
   codexAvailable: boolean;
   /** The Codex CLI signs in separately from the ChatGPT desktop app. */
   codexLoggedIn: boolean;
+  grokAvailable: boolean;
+  /** The Grok CLI signs in separately from grok.com in the browser. */
+  grokLoggedIn: boolean;
   companies: PreflightCompany[];
 }
 
@@ -273,6 +277,7 @@ interface SessionEntry {
   sessionId: string;
   /** Provider metadata when this is a hydrated, dormant conversation. */
   history: AgentSession | null;
+  context: SessionContext | null;
   events: SessionEvent[];
   /**
    * Wall-clock ms each event was recorded by the backend, parallel to
@@ -304,6 +309,7 @@ function newEntry(sessionId: string): SessionEntry {
   return {
     sessionId,
     history: null,
+    context: null,
     events: [],
     receivedAt: [],
     nextSeq: 0,
@@ -653,6 +659,13 @@ async function refreshList(): Promise<void> {
   }
 }
 
+async function loadContext(sessionId: string): Promise<void> {
+  try {
+    const context = await invoke<SessionContext>('agent_session_context', { sessionId });
+    if (entries[sessionId]) { entries[sessionId].context = context ?? null; revision += 1; }
+  } catch { /* Older native builds have no provenance command. */ }
+}
+
 /**
  * Open a session: subscribe (before replaying, so no event can slip between
  * the catch-up and the live stream) then replay it in full.
@@ -672,6 +685,7 @@ async function open(sessionId: string): Promise<void> {
     entries[sessionId] = entry;
     foldCache = null;
     revision += 1;
+    await loadContext(sessionId);
     return;
   }
   if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
@@ -686,7 +700,7 @@ async function open(sessionId: string): Promise<void> {
   // lands is whatever the pre-send snapshot said — so every round trip spent
   // before that correction is a round trip the strip spends naming the wrong
   // state on a session that is mid-turn.
-  await Promise.all([replayFrom(sessionId, 0), refreshList()]);
+  await Promise.all([replayFrom(sessionId, 0), refreshList(), loadContext(sessionId)]);
 }
 
 /** Open a provider transcript without spawning or resuming its CLI process. */
@@ -705,6 +719,7 @@ async function openHistory(session: AgentSession): Promise<void> {
   foldCache = null;
   revision += 1;
   try {
+    await loadContext(session.id);
     const page = await invoke<DurableHistoryPage>('agent_session_history_page', {
       sessionId: session.id,
       before: null,
@@ -745,17 +760,27 @@ function sameDialogueEvent(left: SessionEvent | undefined, right: SessionEvent |
 async function loadEarlier(): Promise<void> {
   const sessionId = activeId;
   const entry = activeEntry();
-  if (!sessionId || !entry || entry.loadingEarlier || entry.historyBefore === null) return;
+  if (!sessionId || !entry || entry.loadingEarlier) return;
+  const inherited = entry.context;
+  const loadInherited = Boolean(inherited?.sourceSessionId && inherited.history.before != null
+    && (entry.historyBefore === null || missingInheritedPrefix(inherited, entry.events, entry.receivedAt).length > 0));
+  if (!loadInherited && entry.historyBefore === null) return;
   entry.loadingEarlier = true;
   entry.error = '';
   try {
     const page = await invoke<DurableHistoryPage>('agent_session_history_page', {
-      sessionId,
-      before: entry.historyBefore,
-      ...(entry.history ? { tool: entry.history.tool } : {}),
+      sessionId: loadInherited ? inherited!.sourceSessionId : sessionId,
+      before: loadInherited ? inherited!.history.before : entry.historyBefore,
+      ...(loadInherited ? { tool: entry.history?.tool ?? sessions.find(item => item.sessionId === sessionId)?.tool } : entry.history ? { tool: entry.history.tool } : {}),
     });
     const target = entries[sessionId];
     if (!target) return;
+    if (loadInherited && target.context) {
+      target.context = { ...target.context, history: { events: [...page.events, ...target.context.history.events], before: page.before } };
+      target.loadingEarlier = false;
+      revision += 1;
+      return;
+    }
     const olderEvents = page.events.map((item) => item.event);
     const olderStamps = page.events.map((item) => item.receivedAtMs ?? null);
     if (sameDialogueEvent(olderEvents.at(-1), target.events[0])) {
@@ -910,7 +935,7 @@ async function resumeAndSend(
     activeId = sessionId;
     if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
     await ensureListeners();
-    await Promise.all([replayFrom(sessionId, 0), refreshList()]);
+    await Promise.all([replayFrom(sessionId, 0), refreshList(), loadContext(sessionId)]);
 
     const entry = entries[sessionId]!;
     userTurnsById[sessionId] = [
@@ -1057,7 +1082,11 @@ async function cliSessionIdOf(sessionId: string, tool: SessionTool): Promise<str
   const latched = await invoke<string | null>('agent_session_cli_session_id', { sessionId });
   if (latched) return latched;
   if (tool === 'claude') return sessionId;
-  throw new Error('Codex has not announced its thread id yet — try again in a moment.');
+  throw new Error(
+    tool === 'grok'
+      ? 'Grok has not announced its session id yet — try again in a moment.'
+      : 'Codex has not announced its thread id yet — try again in a moment.',
+  );
 }
 
 /**
@@ -1083,7 +1112,9 @@ async function openInApp(): Promise<OpenInAppOutcome> {
 
 function startedToolOf(sessionId: string): SessionTool | null {
   for (const event of entries[sessionId]?.events ?? []) {
-    if (event.kind === 'started') return event.tool === 'codex' ? 'codex' : 'claude';
+    if (event.kind === 'started') {
+      if (event.tool === 'codex' || event.tool === 'grok' || event.tool === 'claude') return event.tool;
+    }
   }
   return null;
 }
@@ -1361,9 +1392,10 @@ function transcriptOf(entry: SessionEntry | null): TranscriptState {
   if (foldCache && foldCache.id === entry.sessionId && foldCache.revision === rev) {
     return foldCache.value;
   }
-  const value = safeFold(entry.sessionId, entry.events, {
-    receivedAt: entry.receivedAt,
-    userTurns: userTurnsById[entry.sessionId] ?? [],
+  const prefix = missingInheritedPrefix(entry.context, entry.events, entry.receivedAt);
+  const value = safeFold(entry.sessionId, [...prefix.map(item => item.event), ...entry.events], {
+    receivedAt: [...prefix.map(item => item.receivedAtMs), ...entry.receivedAt],
+    userTurns: (userTurnsById[entry.sessionId] ?? []).map(turn => ({ ...turn, atIndex: turn.atIndex + prefix.length })),
     resolutions: entry.resolutions,
     turnMeta: turnMetaById[entry.sessionId],
   });
@@ -1402,7 +1434,7 @@ export const liveSessionStore = {
     return activeEntry()?.truncated ?? false;
   },
   get hasEarlier(): boolean {
-    return activeEntry()?.historyBefore != null;
+    return activeEntry()?.historyBefore != null || activeEntry()?.context?.history.before != null;
   },
   get loadingEarlier(): boolean {
     return activeEntry()?.loadingEarlier ?? false;
@@ -1492,6 +1524,7 @@ export const liveSessionStore = {
       historyBefore: entry.historyBefore,
     };
   },
+  get context(): SessionContext | null { return activeEntry()?.context ?? null; },
   get isHistorical(): boolean {
     return activeEntry()?.history !== null && activeEntry()?.history !== undefined;
   },
@@ -1512,9 +1545,14 @@ export const liveSessionStore = {
     void revision;
     return Object.keys(entries[sessionId]?.resolutions ?? {});
   },
-  /** Whether the store currently holds an entry for `sessionId`. */
-  hasOpen(sessionId: string): boolean {
-    return Boolean(entries[sessionId]);
+  isOpen: (sessionId: string): boolean => Boolean(entries[sessionId]),
+  companyOf: (sessionId: string): string | null => {
+    const live = sessions.find((row) => row.sessionId === sessionId);
+    if (live?.company) return live.company;
+    return entries[sessionId]?.history?.company || null;
+  },
+  activate: (sessionId: string): void => {
+    if (entries[sessionId]) activeId = sessionId;
   },
   open,
   deselect,
@@ -1540,6 +1578,20 @@ export const liveSessionStore = {
   providerLoginStatus: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_status', { tool }),
   providerLoginCancel: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_cancel', { tool }),
   invalidatePreflight: () => { preflightCache = null; },
+  /** Install a sessions CLI in-app (npm, Node first if needed). Streams `install:progress`. */
+  installProvider: async (tool: SessionTool, onLine?: (line: string) => void) => {
+    const unlisten = await listen<{ line?: string }>('install:progress', (event) => {
+      const line = event.payload?.line?.trim();
+      if (line) onLine?.(line);
+    });
+    try {
+      return await invoke<string>('install_session_provider', { tool });
+    } finally {
+      unlisten();
+      preflightCache = null;
+      catalogCache.delete(tool);
+    }
+  },
   slashCommands,
   hqSkillCatalog,
   hqSkillMetadata,

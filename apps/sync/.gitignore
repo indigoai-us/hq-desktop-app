@@ -18,3 +18,7 @@ src-tauri/gen/schemas/windows-schema.json
 *.key
 *.cer
 *.p8
+
+# Browser regression output
+test-results/
+playwright-report/

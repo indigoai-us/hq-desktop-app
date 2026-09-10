@@ -177,6 +177,30 @@ describe("DesktopApp extraPages", () => {
     ).toBe("chosen-by-page");
   });
 
+  it("replaces the current extra destination so Back skips the previous param", async () => {
+    await mountShell(probePages);
+    await navigateEmbedded({ kind: "extra", page: "probe", param: "keep" });
+    await navigateEmbedded({ kind: "extra", page: "probe", param: "draft" });
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="extra-page-probe-replace"]')
+      ?.click();
+    await tick();
+    await tick();
+
+    expect(
+      host.querySelector('[data-testid="extra-page-probe-param"]')?.textContent,
+    ).toBe("replaced-by-page");
+
+    host.querySelector<HTMLButtonElement>('[data-testid="titlebar-back"]')?.click();
+    await tick();
+    await tick();
+
+    expect(
+      host.querySelector('[data-testid="extra-page-probe-param"]')?.textContent,
+    ).toBe("keep");
+  });
+
   it("reports an unregistered page id instead of painting a blank column", async () => {
     await mountShell(probePages);
 

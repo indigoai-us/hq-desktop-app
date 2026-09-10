@@ -138,6 +138,11 @@ export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
 export * from "./shell/embedded-navigation.js";
+export * from "./shell/navigation-history.js";
+export * from "./shell/navigation-scroll.js";
+export * from "./shell/navigation-controller.js";
+export * from "./shell/navigation-shortcuts.js";
+export * from "./shell/navigation-handler-matrix.js";
 export {
   updateStore,
   checkDesktopUpdates,

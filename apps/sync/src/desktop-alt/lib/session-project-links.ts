@@ -16,6 +16,10 @@ import type {
 } from '@hq/ui';
 
 import type { ProjectEntry } from '../../components/sessions/startwork';
+import {
+  encodeLiveSessionParam,
+  encodeSharedSessionParam,
+} from '../pages/sessions-route-param';
 
 /** One session bound to a project (Rust `LinkedSession`). */
 export interface LinkedSession {
@@ -23,7 +27,7 @@ export interface LinkedSession {
   /** Present only for someone else's shared, read-only conversation. */
   sharedChannelId?: string;
   sessionId: string;
-  /** `claude` | `codex`. */
+  /** `claude` | `codex` | `grok`. */
   tool: string;
   /** `starting` | `idle` | `working` | `needsYou` | `ended`. */
   phase: string;
@@ -232,7 +236,7 @@ function sessionStatus(phase: string): ConversationRowChild['status'] {
 function sessionLabel(session: LinkedSession): string {
   const title = session.title?.trim();
   if (title) return title;
-  return `${session.tool === 'codex' ? 'Codex' : 'Claude'} session`;
+  return `${session.tool === 'codex' ? 'Codex' : session.tool === 'grok' ? 'Grok' : 'Claude'} session`;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +249,7 @@ export function newSessionParam(company: string, project: string | null, channel
   query.set('company', company);
   if (project?.trim()) query.set('project', project.trim());
   if (channelId && project?.trim()) query.set('channel', channelId);
+  query.set('draft', crypto.randomUUID());
   return `new?${query.toString()}`;
 }
 
@@ -260,12 +265,16 @@ export function historySessionParam(
   session: LinkedSession,
 ): string {
   if (session.sharedChannelId) {
-    return `shared?${new URLSearchParams({ channel: session.sharedChannelId, id: session.sessionId })}`;
+    return encodeSharedSessionParam(
+      session.sessionId,
+      session.sharedChannelId,
+      company,
+    );
   }
   // Live rows retain the app-owned id for replay and event subscriptions.
   // Passing it to the provider-history reader produces an empty transcript:
   // only ended rows have been canonicalized to provider-native ids.
-  if (session.phase !== 'ended') return session.sessionId;
+  if (session.phase !== 'ended') return encodeLiveSessionParam(session.sessionId, company);
   const query = new URLSearchParams();
   query.set('id', session.sessionId);
   query.set('tool', session.tool);

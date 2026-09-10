@@ -44,6 +44,8 @@ function preflight(overrides: Partial<Preflight> = {}): Preflight {
     claudeLoggedIn: true,
     codexAvailable: false,
     codexLoggedIn: false,
+    grokAvailable: false,
+    grokLoggedIn: false,
     companies: [],
     ...overrides,
   };
@@ -182,12 +184,12 @@ describe('createSetupRunApi', () => {
     const backend = mockBackend({ list: [summary(SETUP)], preflight: preflight(), commands: ['setup'] });
     const api = createSetupRunApi();
     expect(await api.attach(SETUP)).toBe(true);
-    expect(liveSessionStore.hasOpen(SETUP)).toBe(true);
+    expect(liveSessionStore.isOpen(SETUP)).toBe(true);
     expect(calls('agent_session_replay')[0]).toMatchObject({ sessionId: SETUP, sinceSeq: 0 });
 
     backend.list = [];
     expect(await api.attach('sess-gone')).toBe(false);
-    expect(liveSessionStore.hasOpen('sess-gone')).toBe(false);
+    expect(liveSessionStore.isOpen('sess-gone')).toBe(false);
   });
 
   it('subscribe fires at once and then follows the event stream and phase for that session only', async () => {

@@ -182,6 +182,22 @@ describe("notifications-model (US-012)", () => {
         ),
       ).toEqual({ kind: "channel", channelId: "chn_123" });
     });
+
+    it("opens a specific reply thread from a channel targetRef", () => {
+      expect(
+        notificationDestination(
+          item({
+            id: "local:channel:evt_thread",
+            serverType: "channel_message",
+            targetRef: "/channels/chn_123/replies/evt_root",
+          }),
+        ),
+      ).toEqual({
+        kind: "channel",
+        channelId: "chn_123",
+        replyRootEventId: "evt_root",
+      });
+    });
   });
 
   describe("verb + actor", () => {

@@ -27,11 +27,12 @@
     toSelfIdentity,
     workspacesFromMembershipRows,
     type ConversationRow,
+    type EmbeddedNavigationTarget,
     type RowExtrasResolver,
     type SelfIdentity,
     type Workspace,
   } from '@hq/ui';
-  import { flushSync, onMount, tick, type ComponentProps } from 'svelte';
+  import { flushSync, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
@@ -44,7 +45,16 @@
   } from './hq-work-host';
   import { startDesktopMeshPresence } from './mesh-presence';
   import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
-  import { parseSessionsParam, prefilledSessionParam, setupSessionParam } from './pages/sessions-route-param';
+  import {
+    encodeHistorySessionParam,
+    encodeLiveSessionParam,
+    parseSessionsParam,
+    prefilledSessionParam,
+    setupSessionParam,
+  } from './pages/sessions-route-param';
+  import { liveSessionStore } from './lib/live-session-store.svelte';
+  import { configureSessionStarterCache } from '../components/sessions/session-starter';
+  import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
   import { SETUP_PROMPT } from './lib/setup-launch';
   import { createSetupRunApi } from './lib/setup-run-host.svelte';
   import { projectLinksStore } from './lib/project-links-store.svelte';
@@ -172,6 +182,57 @@
     return Object.entries(byCompany).find(([, links]) => links.includes(link))?.[0] ?? null;
   }
 
+  async function stampSessionsExtra(
+    target: EmbeddedNavigationTarget,
+  ): Promise<EmbeddedNavigationTarget> {
+    if (
+      target.kind !== 'extra' ||
+      target.page !== 'sessions' ||
+      target.companyUid ||
+      !target.param
+    ) {
+      return target;
+    }
+    const route = parseSessionsParam(target.param);
+    let company =
+      (route.kind === 'session' ? route.company : null) ||
+      (route.kind === 'history' ? route.company : null) ||
+      (route.kind === 'new' ? route.company : null) ||
+      (route.kind === 'session' || route.kind === 'history'
+        ? liveSessionStore.companyOf(route.sessionId)
+        : null);
+    if (
+      !company &&
+      (route.kind === 'session' || route.kind === 'history')
+    ) {
+      await liveSessionStore.refreshList();
+      company = liveSessionStore.companyOf(route.sessionId);
+    }
+    if (!company) return target;
+    if (route.kind === 'session') {
+      return {
+        ...target,
+        companyUid: company,
+        param: encodeLiveSessionParam(route.sessionId, company),
+      };
+    }
+    if (route.kind === 'history') {
+      return {
+        ...target,
+        companyUid: company,
+        param: encodeHistorySessionParam({
+          id: route.sessionId,
+          tool: route.tool,
+          company,
+          project: route.project,
+          title: route.title,
+          startedAt: route.startedAt,
+        }),
+      };
+    }
+    return { ...target, companyUid: company };
+  }
+
   const rowExtras = $derived.by<RowExtrasResolver | null>(() => {
     if (lifecycle !== 'ready') return null;
     const byCompany = projectLinksStore.byCompany;
@@ -192,6 +253,7 @@
             kind: 'extra',
             page: 'sessions',
             param: newSessionParam(company, link.project, link.channelId),
+            companyUid: row.companyUid ?? company,
           });
         },
         (_link, session) => {
@@ -201,6 +263,7 @@
             kind: 'extra',
             page: 'sessions',
             param: historySessionParam(company, _link.project, session),
+            companyUid: row.companyUid ?? company,
           });
         },
         selectedSessionId,
@@ -217,7 +280,9 @@
     const slugs = (companies ?? [])
       .filter((company) => company.kind === 'company' && company.slug !== 'personal')
       .map((company) => company.slug);
-    projectLinksStore.start(slugs);
+    // untrack: start() reads/writes store runes. Tracking those from this
+    // effect re-ran start → stop → start until effect_update_depth_exceeded.
+    untrack(() => projectLinksStore.start(slugs));
     return () => projectLinksStore.stop();
   });
 
@@ -285,6 +350,8 @@
     }
     authGeneration = next.generation;
     authAccountId = next.accountId;
+    configureSessionStarterCache(next.status === 'active' ? next.accountId : null);
+    setSessionComposerDraftAccount(next.status === 'active' ? next.accountId : null);
     hydration += 1;
     detachNavigation?.();
     detachNavigation = null;
@@ -294,6 +361,7 @@
     workspaceError = null;
     identityError = null;
     signOutError = null;
+    navigation.clear();
 
     if (next.status === 'credentials_absent') {
       signedOutReason = 'signed-out';
@@ -470,6 +538,8 @@
       rosterRefresher.cancel();
       authGeneration += 1;
       authAccountId = null;
+      configureSessionStarterCache(null);
+      setSessionComposerDraftAccount(null);
       self = null;
       companies = null;
       capabilities = null;
@@ -874,14 +944,20 @@
         onactivethreadchange={setActiveReplyThread}
         {extraPages}
         {rowExtras}
+        rowExtrasLoading={(companies === null && !workspaceError) || projectLinksStore.loading}
+        rowExtrasError={Boolean(workspaceError) || projectLinksStore.initialError}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');
         }}
         onembeddednavigationready={() => {
           detachNavigation?.();
+          // Pending-route bridge only: the shared shell converts `target`
+          // through destinationFromEmbeddedTarget and commits via navigate().
           const detach = navigation.attach((target) => {
-            dispatchEmbeddedNavigation(target);
+            void stampSessionsExtra(target).then((next) => {
+              dispatchEmbeddedNavigation(next);
+            });
           });
           detachNavigation = detach;
           return () => {
@@ -901,6 +977,10 @@
     width: 100%;
     height: 100%;
     margin: 0;
+    /* The document owns WebKit's viewport scrolling. Clipping only the
+       embedded shell leaves native rubber-banding free to move all chrome. */
+    overflow: hidden;
+    overscroll-behavior: none;
   }
 
   .hq-work-embedded {

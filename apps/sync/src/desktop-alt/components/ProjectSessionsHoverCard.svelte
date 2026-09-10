@@ -64,6 +64,7 @@
       kind: 'extra',
       page: 'sessions',
       param: historySessionParam(companySlug, link.project, session),
+      companyUid: companySlug,
     });
   }
 
@@ -73,6 +74,7 @@
       kind: 'extra',
       page: 'sessions',
       param: newSessionParam(companySlug, link.project, link.channelId),
+      companyUid: companySlug,
     });
   }
 </script>
@@ -100,7 +102,7 @@
             >
               <span class="dot" data-phase={session.phase} aria-hidden="true"></span>
               <span class="label">
-                {session.title ?? `${session.tool === 'codex' ? 'Codex' : 'Claude'} session`}
+                {session.title ?? `${session.tool === 'codex' ? 'Codex' : session.tool === 'grok' ? 'Grok' : 'Claude'} session`}
               </span>
               <span class="meta">
                 {PHASE_LABEL[session.phase] ?? session.phase}{when(session) ? ` · ${when(session)}` : ''}

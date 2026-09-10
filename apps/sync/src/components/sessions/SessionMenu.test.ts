@@ -69,6 +69,10 @@ describe('SessionMenu', () => {
     mountMenu({ tool: 'codex' });
     click(must('session-menu-trigger'));
     expect(must('session-menu-open-in-app').textContent?.trim()).toBe('Open in Codex');
+
+    mountMenu({ tool: 'grok' });
+    click(must('session-menu-trigger'));
+    expect(must('session-menu-open-in-app').textContent?.trim()).toBe('Open in Grok');
   });
 
   it('offers share and end beneath it', () => {
@@ -130,7 +134,7 @@ describe('SessionMenu', () => {
 });
 
 describe('SessionsStrip hosts the menu', () => {
-  it('mounts the menu before "+", disabled until a session is live, with the result line beside it', () => {
+  it('mounts the menu without a redundant new-session button, disabled until a session is live, with the result line beside it', () => {
     mountStrip();
     const trigger = must('session-menu-trigger') as HTMLButtonElement;
     expect(trigger.disabled).toBe(true);
@@ -145,7 +149,7 @@ describe('SessionsStrip hosts the menu', () => {
     const order = Array.from(right.querySelectorAll('[data-testid]')).map((el) =>
       el.getAttribute('data-testid'),
     );
-    expect(order.indexOf('session-menu')).toBeLessThan(order.indexOf('sessions-new'));
+    expect(at('sessions-new')).toBeNull();
     expect(order.indexOf('session-menu-result')).toBeLessThan(order.indexOf('session-menu'));
 
     click(must('session-menu-trigger'));

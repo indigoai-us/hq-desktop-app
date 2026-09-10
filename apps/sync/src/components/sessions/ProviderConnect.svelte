@@ -2,35 +2,31 @@
   import { onDestroy } from 'svelte';
   import type { SessionToolId } from './session-models';
   import { liveSessionStore, type ProviderLoginState } from '../../desktop-alt/lib/live-session-store.svelte';
-  import { CLAUDE_INSTALL_URL, CODEX_INSTALL_URL } from '../../lib/onboarding-summary';
-  import { open as openExternal } from '@tauri-apps/plugin-shell';
   interface Props {
     selected: SessionToolId;
     claudeAvailable: boolean;
     codexAvailable: boolean;
+    grokAvailable: boolean;
     claudeConnected: boolean;
     codexConnected: boolean;
+    grokConnected: boolean;
     onconnected: (tool: SessionToolId) => void;
     onchoose: (tool: SessionToolId) => void;
     onrefresh?: () => Promise<void>;
   }
-  let { selected, claudeAvailable, codexAvailable, claudeConnected, codexConnected, onconnected, onchoose, onrefresh }: Props = $props();
-  /**
-   * Both desktop apps carry the CLI Sessions needs: Claude.app manages a Claude
-   * Code build, ChatGPT.app ships Codex. Send people to the app download, not
-   * to a terminal install guide.
-   */
-  const installUrl = (tool: SessionToolId) => tool === 'claude' ? CLAUDE_INSTALL_URL : CODEX_INSTALL_URL;
-  const installLabel = (tool: SessionToolId) => tool === 'claude' ? 'Install the Claude app (it includes Claude Code),' : 'Install the ChatGPT app (it includes Codex),';
+  let { selected, claudeAvailable, codexAvailable, grokAvailable, claudeConnected, codexConnected, grokConnected, onconnected, onchoose, onrefresh }: Props = $props();
   let active = $state<SessionToolId | null>(null);
   let loginState = $state<ProviderLoginState['state']>('disconnected');
   let message = $state('');
   let busy = $state(false);
+  let installing = $state<SessionToolId | null>(null);
+  let installLine = $state('');
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const name = (tool: SessionToolId) => tool === 'claude' ? 'Claude Code' : 'Codex';
-  const available = (tool: SessionToolId) => tool === 'claude' ? claudeAvailable : codexAvailable;
-  const connected = (tool: SessionToolId) => available(tool) && (tool === 'claude' ? claudeConnected : codexConnected);
+  const name = (tool: SessionToolId) => tool === 'claude' ? 'Claude Code' : tool === 'grok' ? 'Grok' : 'Codex';
+  const available = (tool: SessionToolId) => tool === 'claude' ? claudeAvailable : tool === 'grok' ? grokAvailable : codexAvailable;
+  const connected = (tool: SessionToolId) => available(tool) && (tool === 'claude' ? claudeConnected : tool === 'grok' ? grokConnected : codexConnected);
+  const connectLabel = (tool: SessionToolId) => tool === 'claude' ? 'Claude' : tool === 'grok' ? 'Grok' : 'Codex';
   function stopPolling() { clearTimeout(timer); timer = undefined; }
   function apply(result: ProviderLoginState, tool: SessionToolId, token: number) {
     if (token !== generation) return;
@@ -44,7 +40,7 @@
     catch { if (token === generation) { loginState = 'error'; message = 'Could not check sign-in. Please try again.'; } }
   }
   async function start(tool: SessionToolId) {
-    if (busy || loginState === 'waiting') return;
+    if (busy || loginState === 'waiting' || installing) return;
     stopPolling(); active = tool; busy = true; message = '';
     const token = ++generation;
     try { apply(await liveSessionStore.providerLoginStart(tool), tool, token); }
@@ -60,12 +56,33 @@
     finally { busy = false; }
   }
   async function check() {
-    if (busy || loginState === 'waiting') return;
+    if (busy || loginState === 'waiting' || installing) return;
     active = selected; busy = true; message = '';
     const token = ++generation;
     try { await onrefresh?.(); apply(await liveSessionStore.providerLoginStatus(selected), selected, token); if (token === generation && loginState === 'disconnected') message = 'No sign-in found yet. Connect an agent to continue.'; }
     catch { if (token === generation) { loginState = 'error'; message = 'Could not check sign-in. Please try again.'; } }
     finally { if (token === generation) busy = false; }
+  }
+  async function install(tool: SessionToolId) {
+    if (busy || installing || loginState === 'waiting') return;
+    stopPolling();
+    installing = tool;
+    installLine = `Installing ${name(tool)}…`;
+    message = '';
+    try {
+      await liveSessionStore.installProvider(tool, (line) => { installLine = line; });
+      await onrefresh?.();
+      installLine = `${name(tool)} is installed. Connect it to sign in.`;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      loginState = 'error';
+      message = detail.trim() || `Could not install ${name(tool)}. Check your network and try again.`;
+      if (!/`(claude|codex|grok) login`/.test(message)) {
+        message += ` If this keeps failing, run \`${tool === 'claude' ? 'claude' : tool} login\` in a terminal after the CLI is on PATH.`;
+      }
+    } finally {
+      installing = null;
+    }
   }
   onDestroy(() => { ++generation; stopPolling(); });
 </script>
@@ -73,25 +90,27 @@
 <section class="connect" aria-label="Connect an agent" data-testid="provider-connect">
   <div class="eyebrow">Your agents, inside HQ</div>
   <h2>Connect an agent to continue.</h2>
-  <p>Use your Claude or ChatGPT account. You only need one to get started.</p>
+  <p>Use your Claude, ChatGPT, or Grok account. You only need one to get started.</p>
   <div class="providers">
-    {#each ['claude', 'codex'] as id}
+    {#each ['claude', 'codex', 'grok'] as id}
       {@const tool = id as SessionToolId}
       <div class="provider">
         <div class="identity"><strong>{name(tool)}</strong><span>{connected(tool) ? 'Connected on this device' : available(tool) ? 'Not connected on this device' : 'Not installed on this device'}</span></div>
         {#if connected(tool)}
-          <button disabled={busy || loginState === 'waiting'} onclick={() => onchoose(tool)}>Use {name(tool)}</button>
+          <button disabled={busy || loginState === 'waiting' || Boolean(installing)} onclick={() => onchoose(tool)}>Use {name(tool)}</button>
         {:else if available(tool)}
-          <button class:primary={tool === selected} disabled={busy || loginState === 'waiting'} onclick={() => void start(tool)}>{busy && active === tool ? 'Opening sign-in…' : `Connect ${tool === 'claude' ? 'Claude' : 'Codex'}`}</button>
+          <button class:primary={tool === selected} disabled={busy || loginState === 'waiting' || Boolean(installing)} onclick={() => void start(tool)}>{busy && active === tool ? 'Opening sign-in…' : `Connect ${connectLabel(tool)}`}</button>
         {:else}
-          <span class="install-note">
-            <a href={installUrl(tool)} target="_blank" rel="noopener noreferrer" onclick={(event) => { event.preventDefault(); void openExternal(installUrl(tool)).catch(() => { message = 'Could not open the download page. Visit ' + installUrl(tool) + ' in your browser.'; }); }}>{installLabel(tool)}</a>
-            <span>then check again.</span>
-          </span>
+          <button class:primary={tool === selected} disabled={busy || loginState === 'waiting' || Boolean(installing)} onclick={() => void install(tool)}>{installing === tool ? 'Installing…' : `Install ${connectLabel(tool)}`}</button>
         {/if}
       </div>
     {/each}
   </div>
+  {#if installing || installLine}
+    <div class="flow" aria-live="polite">
+      <p>{installLine || `Installing ${name(installing ?? selected)}…`}</p>
+    </div>
+  {/if}
   {#if active && (loginState === 'waiting' || loginState === 'error' || message)}
     <div class="flow" aria-live="polite">
       {#if loginState === 'waiting'}
@@ -106,7 +125,7 @@
       {/if}
     </div>
   {/if}
-  <div class="foot"><button class="quiet" disabled={busy || loginState === 'waiting'} onclick={() => void check()}>{busy ? 'Checking…' : 'Already signed in? Check again'}</button><span>HQ sign-in is separate. Your provider’s plan and limits apply.</span></div>
+  <div class="foot"><button class="quiet" disabled={busy || loginState === 'waiting' || Boolean(installing)} onclick={() => void check()}>{busy ? 'Checking…' : 'Already signed in? Check again'}</button><span>HQ sign-in is separate. Your provider’s plan and limits apply. Manage agents in Settings → Agents.</span></div>
 </section>
 
 <style>
@@ -116,7 +135,7 @@
   p{font-size:13px;line-height:1.6;color:var(--v4-text-2);margin:0 0 18px}
   .providers{border-top:1px solid var(--v4-hairline);margin-top:24px}
   .provider{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:18px 0;border-bottom:1px solid var(--v4-hairline)}
-  .identity{display:grid;gap:6px}.identity strong{font-size:15px;font-weight:600}.identity span,.install-note{font-size:12px;color:var(--v4-text-3)}
+  .identity{display:grid;gap:6px}.identity strong{font-size:15px;font-weight:600}.identity span{font-size:12px;color:var(--v4-text-3)}
   button{font:inherit;font-size:13px;min-height:40px;padding:8px 14px;border:1px solid var(--v4-hairline);border-radius:8px;background:var(--v4-control-bg);color:var(--v4-text-1);cursor:pointer}
   button:hover:not(:disabled){background:var(--v4-active-row)}button:focus-visible{outline:2px solid var(--v4-text-2);outline-offset:3px}button:disabled{opacity:.5;cursor:default}
   .primary{background:var(--v4-text-1);color:var(--v4-bg,var(--v4-raised));border-color:transparent}.primary:hover:not(:disabled){opacity:.85;background:var(--v4-text-1)}

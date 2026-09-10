@@ -912,3 +912,20 @@ describe("conversation search keyboard navigation", () => {
     expect(document.activeElement).toBe(trigger);
   });
 });
+
+it('paints seeded rows immediately even while the directory fetch is still pending', async () => {
+  const directory = new Promise<any>(() => {});
+  component = mount(ChatSidebar, { target: host, props: { api: stubApi({ fetchChannelDirectory: () => directory }), seedDirectory: [seedRow] } });
+  await tick();
+  expect(host.querySelector('[data-testid="sidebar-loading"]')).toBeNull();
+  expect(host.textContent).toContain('launch');
+});
+
+it('keeps a populated rail clickable while project-session metadata is still loading', async () => {
+  component = mount(ChatSidebar, { target: host, props: { api: stubApi(), seedDirectory: [seedRow], rowExtrasLoading: true } });
+  await tick();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await tick();
+  expect(host.querySelector('[data-testid="sidebar-loading"]')).toBeNull();
+  expect(host.querySelector('.chat-row-title')).not.toBeNull();
+});

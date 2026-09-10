@@ -11,21 +11,21 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use hq_desktop_core::agent_session::{SessionEvent, SessionTool};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const HISTORY_READ_CHUNK_BYTES: u64 = 1024 * 1024;
 pub(super) const HISTORY_PAGE_EVENTS: usize = 256;
 const MAX_MESSAGE_CHARS: usize = 64 * 1024;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoricalEvent {
     pub received_at_ms: u64,
     pub event: SessionEvent,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryPage {
     pub events: Vec<HistoricalEvent>,
@@ -49,6 +49,9 @@ pub(super) fn load_resume_history_before(
     let path = match tool {
         SessionTool::Claude => find_claude_transcript(session_id),
         SessionTool::Codex => find_codex_rollout(session_id),
+        // Grok's on-disk ACP transcripts are not yet mapped into the in-app
+        // event contract; resume still restores model context via session/load.
+        SessionTool::Grok => None,
     };
     let Some(path) = path else {
         return empty_page();
@@ -232,6 +235,7 @@ fn parse_history_line(
     let event = match tool {
         SessionTool::Claude => parse_claude_message(&value),
         SessionTool::Codex => parse_codex_message(&value),
+        SessionTool::Grok => None,
     }?;
     Some(HistoricalEvent {
         received_at_ms: timestamp,

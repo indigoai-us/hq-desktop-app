@@ -39,8 +39,9 @@
 
 use super::cognito::{AuthState, CognitoTokens};
 use hq_desktop_core::oauth::{
-    build_authorize_url, cognito_identity_provider, cognito_token_url, compute_code_challenge,
-    generate_code_verifier, parse_callback, COGNITO_CLIENT_ID, REDIRECT_URI,
+    build_authorize_url_from, cognito_identity_provider, cognito_token_url, compute_code_challenge,
+    generate_code_verifier, parse_callback, AuthorizeRequest, CallbackOutcome, CallbackRejection,
+    COGNITO_CLIENT_ID, REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -48,7 +49,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 /// True while a browser OAuth attempt is outstanding. The tray blur-hide
 /// handler consults this so opening the system browser does not dismiss the
@@ -215,40 +216,63 @@ fn receive_loopback_callback(
                     };
 
                     match parse_callback(&request) {
-                        Some((_code, _state, Some(error))) => {
-                            let reason = format!("Provider error: {error}");
-                            eprintln!("[oauth] callback rejected — {reason}");
-                            write_response(&mut stream, "400 Bad Request", &error_html(&reason));
-                            return Err(structured_error(
-                                "OAUTH_PROVIDER_ERROR",
-                                "Sign-in was cancelled or denied. Retry when you are ready.",
-                            ));
-                        }
-                        Some((code, state, None)) => {
-                            if state != expected_state {
-                                let reason = format!(
-                                    "State mismatch: expected {} got {}",
-                                    expected_state, state
+                        Ok(callback) => {
+                            // State is compared BEFORE the outcome is acted on,
+                            // and on both branches. An unsolicited error
+                            // delivered to this port must not be able to cancel
+                            // an attempt it has nothing to do with, which the
+                            // previous code allowed by checking state only on
+                            // the success branch.
+                            if callback.state != expected_state {
+                                eprintln!(
+                                    "[oauth] callback rejected — state does not match this attempt"
                                 );
-                                eprintln!("[oauth] callback rejected — {reason}");
                                 write_response(
                                     &mut stream,
                                     "400 Bad Request",
-                                    &error_html(&reason),
+                                    &error_html("This sign-in response does not belong to the attempt this app started."),
                                 );
                                 return Err(
                                     "OAuth state mismatch — possible CSRF, aborting.".into()
                                 );
                             }
-                            eprintln!("[oauth] callback accepted — code length {}", code.len());
-                            write_response(&mut stream, "200 OK", SUCCESS_HTML);
-                            return Ok(OAuthResult { code });
+                            match callback.outcome {
+                                CallbackOutcome::Error(error) => {
+                                    eprintln!("[oauth] callback carried provider error {error}");
+                                    write_response(
+                                        &mut stream,
+                                        "400 Bad Request",
+                                        &error_html("Sign-in did not complete. You can close this tab and retry in HQ."),
+                                    );
+                                    return Err(structured_error(
+                                        "OAUTH_PROVIDER_ERROR",
+                                        "Sign-in was cancelled or denied. Retry when you are ready.",
+                                    ));
+                                }
+                                CallbackOutcome::Code(code) => {
+                                    eprintln!("[oauth] callback accepted");
+                                    write_response(&mut stream, "200 OK", SUCCESS_HTML);
+                                    return Ok(OAuthResult { code });
+                                }
+                            }
                         }
-                        None => {
+                        Err(rejection) => {
+                            // Not a callback for us. Something else on this
+                            // machine probed the port, or a callback arrived
+                            // malformed. Answer and keep waiting rather than
+                            // failing the attempt — the real callback may still
+                            // be in flight.
+                            eprintln!("[oauth] ignored a non-callback request: {rejection:?}");
+                            let status = match rejection {
+                                CallbackRejection::WrongPath | CallbackRejection::Malformed => {
+                                    "404 Not Found"
+                                }
+                                _ => "400 Bad Request",
+                            };
                             write_response(
                                 &mut stream,
-                                "404 Not Found",
-                                "<!doctype html><title>404</title>",
+                                status,
+                                "<!doctype html><title>HQ</title>",
                             );
                         }
                     }
@@ -417,6 +441,36 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
 #[tauri::command]
 pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuthFlowInit, String> {
     let identity_provider = cognito_identity_provider(&provider)?;
+    // Explicit identity_provider tells Cognito Hosted UI to skip its own
+    // username/password form and redirect straight to the selected provider.
+    // No nonce: this path has no confirmation step to bind a token back to.
+    let armed = arm_oauth_flow(&app, Some(identity_provider), None)?;
+    Ok(OAuthFlowInit {
+        authorize_url: armed.authorize_url,
+        state: armed.state,
+    })
+}
+
+/// An armed loopback listener and the values that identify its attempt.
+pub(crate) struct ArmedOAuthFlow {
+    pub authorize_url: String,
+    pub state: String,
+}
+
+/// Bind the loopback listener, stash a fresh PKCE verifier, and build the
+/// authorize URL.
+///
+/// Shared by the provider-button flow and by browser continuation. Both need a
+/// listener that is already accepting before the browser opens — binding after
+/// would leave a window where a very fast provider redirect hits a closed port
+/// — and both need a state and verifier that belong to exactly one attempt.
+/// They differ only in whether an identity provider is named and whether a
+/// nonce is sent, which is why those are the two parameters.
+pub(crate) fn arm_oauth_flow(
+    app: &AppHandle,
+    identity_provider: Option<&str>,
+    nonce: Option<&str>,
+) -> Result<ArmedOAuthFlow, String> {
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);
@@ -460,7 +514,7 @@ pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuth
     set_oauth_flow_active(true);
     eprintln!("[oauth] listener ready; opening provider is now safe");
 
-    // Store verifier for oauth_exchange_code
+    // Store verifier for the exchange. One-time use, taken not read.
     {
         let mut guard = pkce_store()
             .lock()
@@ -468,11 +522,14 @@ pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuth
         *guard = Some(verifier);
     }
 
-    // Explicit identity_provider tells Cognito Hosted UI to skip its own
-    // username/password form and redirect straight to the selected provider.
-    let authorize_url = build_authorize_url(&state, &challenge, identity_provider);
+    let authorize_url = build_authorize_url_from(&AuthorizeRequest {
+        state: &state,
+        challenge: &challenge,
+        identity_provider,
+        nonce,
+    });
 
-    Ok(OAuthFlowInit {
+    Ok(ArmedOAuthFlow {
         authorize_url,
         state,
     })
@@ -494,8 +551,13 @@ pub fn oauth_cancel_listen(state: Option<String>) -> Result<(), String> {
 }
 
 /// Exchange an authorization code for tokens using the stored PKCE verifier.
-#[tauri::command]
-pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthState, String> {
+///
+/// Returns the tokens and writes nothing. Browser continuation needs exactly
+/// this — tokens in hand, nothing on disk — so it can show the person whose
+/// account it is about to sign in as before anything is persisted. The
+/// provider-button flow calls this and then completes immediately; that
+/// difference in what happens next is the entire feature.
+pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<CognitoTokens, String> {
     // Take the verifier out of storage (one-time use)
     let verifier = {
         let mut guard = pkce_store()
@@ -511,7 +573,7 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     let params = [
         ("grant_type", "authorization_code"),
         ("client_id", COGNITO_CLIENT_ID),
-        ("code", &code),
+        ("code", code),
         ("redirect_uri", REDIRECT_URI),
         ("code_verifier", &verifier),
     ];
@@ -558,25 +620,62 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
         expires_at,
     };
 
-    crate::commands::dm_notify::replace_notification_credentials(&app, &tokens).await?;
-    eprintln!("[oauth] token exchange completed");
+    Ok(tokens)
+}
 
-    let state = crate::commands::auth::authenticated_state_from_tokens(&tokens);
-    crate::commands::auth::publish_auth_session(
-        &app,
-        crate::commands::auth::AuthSessionEnvelope {
-            account_id: state.account_id.clone(),
-            generation: 0,
-            status: crate::commands::auth::AuthSessionStatus::Active,
-            reason: None,
-        },
+/// Exchange an authorization code and sign in with the result.
+///
+/// The provider-button path: there is no confirmation step because the person
+/// just picked their provider and typed their password, so nothing about the
+/// account is a surprise to them.
+#[tauri::command]
+pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthState, String> {
+    let tokens = exchange_code_for_tokens(&code).await?;
+
+    // The person just chose an account with a provider button. Any continuation
+    // still waiting for confirmation is about a different account and a question
+    // nobody asked any more: bumping the generation here means a stale
+    // "Continue as …" click cannot land afterwards and overwrite the account
+    // they actually picked. Done after the exchange succeeds — a failed
+    // exchange is not a sign-in and must not discard anything.
+    crate::commands::desktop_auth::note_auth_transition(
+        hq_desktop_core::session_continuation::AttemptEnd::Superseded,
     );
-    // Native credentials are durable before this event goes out. Embedded HQ
-    // Work uses this completion edge to re-hydrate account and memberships;
-    // the payload contains only the existing non-secret auth state.
-    app.emit("auth:session-ready", &state)
-        .map_err(|err| err.to_string())?;
+    // Persist, publish, announce — the shared completion browser continuation
+    // also ends on, so there is exactly one definition of "signed in".
+    let state = crate::commands::auth::complete_auth_session(&app, &tokens).await?;
+    eprintln!("[oauth] token exchange completed");
     Ok(state)
+}
+
+/// Wait on the currently-armed loopback listener without knowing its state up
+/// front.
+///
+/// The provider-button flow hands its state down from the renderer, which is
+/// fine there. Browser continuation deliberately does not: the state never
+/// leaves native memory, so there is nothing for the renderer to hand back and
+/// nothing it could substitute. This reads the state off the armed listener
+/// itself and returns the callback for the caller to check against its own
+/// attempt.
+/// Returns the callback and the state the listener validated it against, so
+/// the caller can check that state belongs to the attempt it thinks it is
+/// finishing. `OAuthResult` deliberately does not carry the state: it is a
+/// command return type, and the renderer has no business holding one.
+pub(crate) async fn oauth_listen_for_code_internal(
+    app: &AppHandle,
+) -> Result<(OAuthResult, String), String> {
+    let state = {
+        let guard = listener_store()
+            .lock()
+            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+        guard
+            .as_ref()
+            .ok_or_else(|| "No pending sign-in listener.".to_string())?
+            .state
+            .clone()
+    };
+    let result = oauth_listen_for_code(app.clone(), state.clone()).await?;
+    Ok((result, state))
 }
 
 /// Wait on the loopback listener bound by `start_oauth_login` for the OAuth

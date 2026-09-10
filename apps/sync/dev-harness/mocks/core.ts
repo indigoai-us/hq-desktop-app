@@ -49,6 +49,14 @@ function harnessScenario(): string | null {
   return null;
 }
 
+function isOnboardingCaptureScenario(): boolean {
+  const scenario = harnessScenario();
+  return (
+    scenario === 'onboarding-capture-completion-clean' ||
+    scenario === 'onboarding-capture-completion-failed-required-stage'
+  );
+}
+
 const HARNESS_UPDATE = {
   version: '0.10.36-beta.1',
   body: 'Desktop surface repairs and updater recovery.',
@@ -1133,7 +1141,37 @@ This final paragraph verifies spacing after a thematic break.
   notification_permission_state: () =>
     harnessScenario() === 'permission-denied' ? 'denied' : 'prompt',
   notification_request_permission: () => 'granted',
-  resolve_hq_path: () => '/Users/corey/Documents/HQ',
+  // Screenshot capture fixtures exercise the real wizard setup flow with
+  // placeholder-only data. The failure fixture rejects one required command;
+  // it exists only in the browser design harness, never in the desktop app.
+  resolve_hq_path: () =>
+    isOnboardingCaptureScenario() ? '/Users/Placeholder/HQ' : '/Users/corey/Documents/HQ',
+  read_install_manifest: () =>
+    isOnboardingCaptureScenario()
+      ? {
+          schemaVersion: 1,
+          installerVersion: 'preview',
+          installPath: '/Users/Placeholder/HQ',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          completedAt: null,
+          steps: {},
+        }
+      : null,
+  install_deps: () => {
+    if (
+      harnessScenario() === 'onboarding-capture-completion-failed-required-stage'
+    ) {
+      throw new Error('Preview required dependency stage failed');
+    }
+    return null;
+  },
+  // Hold the final journal write only for capture so a settled real checklist
+  // remains visible long enough for a browser screenshot.
+  record_install_complete: () =>
+    harnessScenario() === 'onboarding-capture-completion-clean' ||
+    harnessScenario() === 'onboarding-capture-completion-failed-required-stage'
+      ? new Promise<never>(() => {})
+      : null,
   // Scenarios let the Ready screen be inspected in every machine state the
   // real detector can produce: `?scenario=tools-claude-only` (the fresh-VM
   // case that has only Claude Code), `?scenario=tools-codex-only`, and
@@ -1430,6 +1468,8 @@ This final paragraph verifies spacing after a thematic break.
     claudeLoggedIn: true,
     codexAvailable: true,
     codexLoggedIn: true,
+    grokAvailable: true,
+    grokLoggedIn: true,
     companies: [
       { slug: 'indigo', displayName: 'Indigo', cloudUid: 'cmp_indigo' },
       { slug: 'ridge', displayName: 'Ridge' },
@@ -1493,9 +1533,17 @@ This final paragraph verifies spacing after a thematic break.
       departments: [{ groupId: 'grp_product', name: 'Product', skills: [{ skillUid: 'skl_launch', name: 'Review launch', tags: ['launch', 'review'] }] }],
     } }),
   }),
+  agent_session_context: (args) => ({
+    sourceSessionId: args?.sessionId === SESSION_ID ? 'session-event-sync' : null,
+    sourceTitle: 'Original planning session',
+    startedBy: new URLSearchParams(window.location.search).has('loadingTest') ? (harnessPersona()?.whoami.email ?? 'ada@getindigo.ai') : 'alex@example.test',
+    history: { before: null, events: args?.sessionId === SESSION_ID ? [{ receivedAtMs: AGENT_SESSION_T0 - 60000, event: { kind: 'userMessage', text: 'Inherited planning context', imageCount: 0 } }] : [] },
+  }),
+  agent_session_history_page: () => ({ before: null, events: [{ receivedAtMs: AGENT_SESSION_T0 - 60000, event: { kind: 'userMessage', text: 'Original planning session history', imageCount: 0 } }] }),
   agent_session_list: () => [
     {
       sessionId: SESSION_ID,
+      requestedModel: null,
       tool: 'claude',
       phase: 'working',
       company: 'indigo',
@@ -1530,6 +1578,20 @@ This final paragraph verifies spacing after a thematic break.
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (typeof window !== 'undefined') {
+    const counts = ((window as Window & { __hqInvokeCounts?: Record<string, number> })
+      .__hqInvokeCounts ??= {});
+    counts[cmd] = (counts[cmd] ?? 0) + 1;
+  }
+  if (new URLSearchParams(window.location.search).has('loadingTest')) {
+    if (cmd === 'session_project_links') await new Promise(resolve => setTimeout(resolve, 1200));
+    if (cmd === 'hq_pro_fetch' && args?.url === '/v1/profile') {
+      const state = window as unknown as { profileReads?: number };
+      state.profileReads = (state.profileReads ?? 0) + 1;
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return { status: 200, body: JSON.stringify({ profile: { displayName: 'Preview Person', avatarUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6uT8AAAAASUVORK5CYII=' } }) } as T;
+    }
+  }
   const handler = handlers[cmd];
   if (handler) return handler(args) as T;
   // Unknown command: log once and resolve null so mount paths don't throw.

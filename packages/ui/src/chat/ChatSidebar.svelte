@@ -220,7 +220,10 @@
      * in that project is online via the presence store — never from timestamps.
      */
     projectHasPresence?: (row: ConversationRow) => boolean;
-    /** Host decoration per row: badge, hover card, context-menu actions. */
+    /** Host decoration per row: badge, hover card, context-menu actions.
+     *  Session metadata may still be loading — never hide the rail for it. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
   }
 
@@ -254,6 +257,8 @@
     offscreen = false,
     onShellReady,
     projectHasPresence = () => false,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
     rowExtras = null,
   }: Props = $props();
 
@@ -458,7 +463,11 @@
   let loadError = $state<string | null>(null);
   /** First directory/contacts attempt has settled or timed out. */
   let bootAttempted = $state(false);
-  let firstRefreshSettled = false;
+  let firstRefreshSettled = $state(
+    (loadConversationCache(storage)?.channels?.length ?? 0) > 0 ||
+      (loadConversationCache(storage)?.contacts?.length ?? 0) > 0 ||
+      (seedDirectory?.length ?? 0) > 0,
+  );
   let reportedShellReady = false;
   let scopeMenuEl: HTMLDivElement | null = $state(null);
   let filterWrapEl: HTMLDivElement | null = $state(null);
@@ -1216,8 +1225,8 @@
     if (firstPaint) loading = true;
     loadError = null;
     // Channels reconcile through the directory feed; contacts + requests keep
-    // their existing reads. All three settle (or time out) before the loading
-    // gate clears so first paint cannot wait forever.
+    // their existing reads. Paint cache/seed immediately — do not wait for
+    // the directory (or session extras) before showing rows.
     const directory = directoryReconciler.reconcile("manual").catch(() => {}); // onError already surfaced it
     try {
       const [contactsResp, requestsResp] = await Promise.all([
@@ -1267,11 +1276,11 @@
       });
       console.error("chat-sidebar: refresh failed", err);
     } finally {
-      await directory;
       bootAttempted = true;
       loading = false;
       firstRefreshSettled = true;
       maybeReportShellReady();
+      void directory.finally(() => maybeReportShellReady());
     }
   }
 
@@ -1394,7 +1403,7 @@
   }
 
   onMount(() => {
-    // Cache already painted; one cursor delta in the background. Safety
+    // Reconcile cached rows before revealing the complete list. Safety
     // polling stays off until we know MQTT is down.
     maybeReportShellReady();
     void refreshLists();
@@ -2138,7 +2147,16 @@
     </div>
   </header>
 
-  <div class="chat-scroll" data-testid="chat-conversation-list">
+  <div class="chat-scroll" data-testid="chat-conversation-list" aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}>
+    {#if allRows.length === 0 && (!firstRefreshSettled || loading)}
+      <div class="sidebar-skeleton" role="status" aria-label="Loading conversations" data-testid="sidebar-loading">
+        <span class="sr-only">Loading conversations…</span>
+        {#each Array(10) as _, index}
+          <div class="skeleton-row" aria-hidden="true"><span class="skeleton-icon"></span><span class="skeleton-line" style:width={`${45 + (index % 3) * 15}%`}></span></div>
+        {/each}
+      </div>
+    {:else}
+    {#if rowExtrasError}<div role="status" class="chat-empty">Some project sessions couldn’t load. Retrying…</div>{/if}
     {#if pendingRequestCount > 0}
       <button
         type="button"
@@ -2250,6 +2268,7 @@
       <div class="chat-empty" role="status">Loading…</div>
     {:else if filteredRows.length === 0}
       <div class="chat-empty">No conversations</div>
+    {/if}
     {/if}
   </div>
 
@@ -2880,9 +2899,9 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    flex: 0 0 260px;
+    flex: 0 0 var(--sidebar-width, 260px);
     align-self: stretch;
-    width: 260px;
+    width: var(--sidebar-width, 260px);
     min-height: 0;
     height: auto;
     overflow: hidden;
@@ -3112,6 +3131,10 @@
     position: relative;
   }
 
+  .sidebar-skeleton { padding: 12px 8px; }
+  .skeleton-row { display: flex; align-items: center; gap: 10px; height: 36px; }
+  .skeleton-icon { width: 20px; height: 20px; border-radius: 5px; background: var(--line); }
+  .skeleton-line { height: 10px; border-radius: 4px; background: var(--line); }
   .chat-scroll {
     display: flex;
     flex: 1 1 auto;

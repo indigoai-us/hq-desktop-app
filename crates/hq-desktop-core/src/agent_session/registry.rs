@@ -1005,7 +1005,7 @@ mod tests {
 
     #[test]
     fn resumed_session_has_native_identity_before_any_provider_event() {
-        for tool in [SessionTool::Claude, SessionTool::Codex] {
+        for tool in [SessionTool::Claude, SessionTool::Codex, SessionTool::Grok] {
             let mut spec = session("new-app-id").spec;
             spec.tool = tool;
             spec.resume = Some("existing-native-id".into());

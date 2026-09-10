@@ -83,6 +83,15 @@ const CODEX_CATALOG = [
   { value: 'gpt-5.6-codex', displayName: 'GPT-5.6-Codex' },
 ];
 
+const GROK_CATALOG = [
+  {
+    value: 'grok-4.6',
+    displayName: 'Grok 4.6',
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh'],
+  },
+  { value: 'grok-4.5', displayName: 'Grok 4.5' },
+];
+
 const PREFLIGHT = {
   hqRoot: '/Users/x/HQ',
   hooksReady: true,
@@ -92,6 +101,8 @@ const PREFLIGHT = {
   claudeLoggedIn: true,
   codexAvailable: true,
   codexLoggedIn: true,
+  grokAvailable: true,
+  grokLoggedIn: true,
   companies: [{ slug: 'indigo', displayName: 'indigo' }],
 };
 
@@ -141,6 +152,7 @@ function mockBackend() {
         return backend.repair();
       case 'agent_session_slash_commands': {
         if (args?.tool === 'codex') return Promise.resolve({ commands: [], models: CODEX_CATALOG });
+        if (args?.tool === 'grok') return Promise.resolve({ commands: [], models: GROK_CATALOG });
         if (backend.claudeCatalog) return backend.claudeCatalog.promise;
         return Promise.resolve({ commands: [], models: CLAUDE_CATALOG });
       }
@@ -211,7 +223,7 @@ function pickMenuRow(menu: string, label: string) {
   click(hit);
 }
 
-function chooseTool(label: 'Claude' | 'Codex') {
+function chooseTool(label: 'Claude' | 'Codex' | 'Grok') {
   click(must('session-pill-tool'));
   pickMenuRow('session-menu-tool', label);
 }
@@ -223,6 +235,22 @@ async function settle() {
   flushSync();
 }
 
+function installMemoryLocalStorage(): void {
+  const data = new Map<string, string>();
+  const storage = {
+    get length() {
+      return data.size;
+    },
+    clear: () => data.clear(),
+    getItem: (key: string) => data.get(key) ?? null,
+    key: (index: number) => Array.from(data.keys())[index] ?? null,
+    removeItem: (key: string) => void data.delete(key),
+    setItem: (key: string, value: string) => void data.set(key, String(value)),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: storage });
+}
+
 function send(message: string) {
   const input = must('session-composer-input') as HTMLTextAreaElement;
   input.value = message;
@@ -232,7 +260,8 @@ function send(message: string) {
 }
 
 beforeEach(() => {
-  localStorage.clear();
+  vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ matches: query.includes('prefers-reduced-motion'), media: query, addEventListener() {}, removeEventListener() {} } as unknown as MediaQueryList));
+  installMemoryLocalStorage();
   handlers.clear();
   invoke.mockReset();
   resetLiveSessionStore();
@@ -246,7 +275,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
-  host.remove();
+  host?.remove();
   resetLiveSessionStore();
   resetProbeCaches();
   stopSessionsStore();
@@ -287,7 +316,7 @@ describe('provider readiness', () => {
     expect(host.textContent).not.toContain('Claude Code is not installed');
     chooseTool('Claude');
     await settle();
-    expect(host.textContent).toContain('Install the Claude app (it includes Claude Code), then check again.');
+    expect(host.textContent).toContain('Install Claude');
     expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
     chooseTool('Codex');
     await settle();
@@ -297,8 +326,35 @@ describe('provider readiness', () => {
     expect(backend.starts[0].tool).toBe('codex');
   });
 
+  it('starts Grok without Claude and sends the Grok model id', async () => {
+    backend.preflight.claudeAvailable = false;
+    backend.preflight.claudeLoggedIn = false;
+    remember(LAST_TOOL_KEY, 'grok');
+    remember(lastModelKey('grok'), 'grok-4.6');
+    render();
+    await settle();
+    expect(pill('session-pill-tool')).toBe('Grok');
+    send('start grok');
+    await settle();
+    expect(backend.starts).toHaveLength(1);
+    expect(backend.starts[0]).toMatchObject({ tool: 'grok', model: 'grok-4.6' });
+  });
+
   it.each([
-    ['codexAvailable', 'Install the ChatGPT app (it includes Codex), then check again.'],
+    ['grokAvailable', 'Install Grok'],
+    ['grokLoggedIn', 'Connect Grok'],
+  ] as const)('blocks Grok when %s is false', async (field, message) => {
+    backend.preflight[field] = false;
+    remember(LAST_TOOL_KEY, 'grok');
+    render();
+    await settle();
+    expect(host.textContent).toContain(message);
+    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+    expect(backend.starts).toHaveLength(0);
+  });
+
+  it.each([
+    ['codexAvailable', 'Install Codex'],
     ['codexLoggedIn', 'Connect Codex'],
   ] as const)('blocks Codex when %s is false', async (field, message) => {
     backend.preflight[field] = false;
@@ -726,7 +782,7 @@ describe('first-message orientation', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('/startwork indigo'));
     expect(host.textContent).toContain('Show me the launch plan');
     expect(backend.sends).toHaveLength(1);
-    expect(onopensession).toHaveBeenCalledWith('sess-1');
+    expect(onopensession).toHaveBeenCalledWith('sess-1', { replace: true });
     expect(at('session-composer-notice')).toBeNull();
   });
 
@@ -899,7 +955,11 @@ describe('resuming history', () => {
     await vi.waitFor(() => expect(at('session-resume')).not.toBeNull());
     click(must('session-resume'));
 
-    await vi.waitFor(() => expect(onopensession).toHaveBeenCalledWith('claude-history-1'));
+    await vi.waitFor(() =>
+      expect(onopensession).toHaveBeenCalledWith(
+        expect.stringMatching(/^history\?id=claude-history-1/),
+      ),
+    );
     expect(backend.starts).toHaveLength(0);
     expect(invoke).toHaveBeenCalledWith('agent_session_history_page', {
       sessionId: 'claude-history-1',
@@ -949,7 +1009,9 @@ describe('resuming history', () => {
     }));
     expect(backend.starts).toHaveLength(0);
     await vi.waitFor(() =>
-      expect(onopensession).toHaveBeenCalledWith('01a0640a-0c86-7a31-baad-f9d5cbfd379a'),
+      expect(onopensession).toHaveBeenCalledWith(
+        expect.stringMatching(/^history\?id=01a0640a-0c86-7a31-baad-f9d5cbfd379a/),
+      ),
     );
     expect(invoke).not.toHaveBeenCalledWith('agent_session_start', {
       spec: expect.objectContaining({
@@ -1121,7 +1183,7 @@ describe('a route-carried prefill (#welcome Continue in HQ Sessions)', () => {
     await settle();
     expect(liveSessionStore.activeSessionId).toBeNull();
     // The setup run's own entry is untouched — #welcome still watches it by id.
-    expect(liveSessionStore.hasOpen('setup-1')).toBe(true);
+    expect(liveSessionStore.isOpen('setup-1')).toBe(true);
     expect(host.querySelector('textarea')?.value).toBe('/startwork acme');
     send('/startwork acme');
     await settle();
@@ -1186,5 +1248,28 @@ describe('a route-carried prompt (#welcome Run Setup)', () => {
     expect(backend.sends).toHaveLength(0);
     repaired.resolve({ ...PREFLIGHT, hqSetup: 'ready' });
     await vi.waitFor(() => expect(backend.sends).toHaveLength(1));
+  });
+});
+
+describe('durable session context', () => {
+  it('restores inherited messages and starter after the store is discarded', async () => {
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation((command, args) => command === 'agent_session_context'
+      ? Promise.resolve({ sourceSessionId: 'parent', sourceTitle: 'Original project discussion', startedBy: 'alex@example.test',
+          history: { before: null, events: [{ receivedAtMs: 1000, event: { kind: 'userMessage', text: 'Inherited planning context', imageCount: 0 } }] } })
+      : original(command, args));
+    backend.observed = [{ id: 'child', title: 'Follow-up', tool: 'codex', origin: 'local', cwd: '/HQ', company: 'indigo', project: '', model: '', status: 'ended', startedAt: '', lastActivityAt: '', source: 'codex-rollout' }];
+    backend.historyPage = { before: null, events: [{ receivedAtMs: 2000, event: { kind: 'assistantMessage', text: 'Child reply', parentToolUseId: null } }] };
+    render({ sessionId: 'child', initialHistorySession: backend.observed[0] });
+    await settle(); await settle();
+    expect(host.textContent).toContain('Inherited planning context');
+    expect(host.textContent).toContain('Child reply');
+    expect(host.querySelector('[data-testid="session-starter"]')?.getAttribute('aria-label')).toBe('Started by alex@example.test');
+    expect(host.querySelector('[data-testid="session-source"]')?.getAttribute('aria-label')).toContain('Original project discussion');
+    await unmount(component!); component = null; resetLiveSessionStore();
+    render({ sessionId: 'child', initialHistorySession: backend.observed[0] });
+    await settle(); await settle();
+    expect(host.textContent).toContain('Inherited planning context');
+    expect(host.textContent).toContain('Child reply');
   });
 });

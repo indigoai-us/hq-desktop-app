@@ -872,6 +872,14 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
             "478e3736ac567ec3",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.33"),
+            "e7573451a374149d",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.34"),
+            "c94fa59ef239cba0",
+        );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
@@ -906,6 +914,22 @@ mod tests {
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.25"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
+        );
+        // The journal fingerprint-baseline bump (hq-cloud#513): 6.16.33
+        // SATISFIES `~6.16.26`, so a desktop that already resolved 6.16.26
+        // would retain its full cloned write baseline on semver admission
+        // alone. Moving the requested spec is what releases that runner heap.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.26"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.33"),
+        );
+        // The terminal cross-tenant-push-denial bump (hq-cloud#514): 6.16.34
+        // SATISFIES `~6.16.33`, so a desktop that already resolved 6.16.33
+        // would keep retrying a refused company scope on semver admission
+        // alone. Moving the requested spec is what delivers the terminal stop.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.33"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.34"),
         );
     }
 

@@ -51,7 +51,7 @@
    * "No project"), and the page orients the first send with `/startwork`. The
    * opt-out toggle lives in the same menu.
    */
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import ContextAttachMenu from './ContextAttachMenu.svelte';
   import MentionPicker from './MentionPicker.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
@@ -103,6 +103,11 @@
     modelMenuRows,
     modelPillLabel,
   } from './session-models';
+  import {
+    clearSessionComposerDraft,
+    loadSessionComposerDraft,
+    saveSessionComposerDraft,
+  } from './session-composer-drafts';
 
   interface CompanyOption {
     slug: string;
@@ -176,6 +181,8 @@
     tool?: SessionToolId;
     /** Preflight says the Codex CLI is on this machine. */
     codexAvailable?: boolean;
+    /** Preflight says the Grok CLI is on this machine. */
+    grokAvailable?: boolean;
 
     /** The COMPANY pill now describes a different session than the live one. */
     newSessionPending?: boolean;
@@ -222,6 +229,11 @@
     oneffort?: (value: string | null) => void;
     onpermission?: (mode: 'prompt' | 'bypassAll') => void;
     ontool?: (tool: SessionToolId) => void;
+    /**
+     * Unique unsent-draft identity (`sessions:new?draft=…`). Prompt text is
+     * persisted here, never in navigation history.
+     */
+    draftKey?: string | null;
   }
 
   let {
@@ -253,6 +265,7 @@
     permissionMode = 'prompt',
     tool = 'claude',
     codexAvailable = false,
+    grokAvailable = false,
     newSessionPending = false,
     overridesDeferred = false,
     modelNote = '',
@@ -272,12 +285,14 @@
     oneffort,
     onpermission,
     ontool,
+    draftKey = null,
   }: Props = $props();
 
-  let draft = $state('');
+  const restoredDraft = untrack(() => loadSessionComposerDraft(draftKey));
+  let draft = $state(restoredDraft.text);
   let textarea = $state<HTMLTextAreaElement | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
-  let attached = $state<ComposerImage[]>([]);
+  let attached = $state<ComposerImage[]>(restoredDraft.images);
   let attachError = $state('');
   /** Dismissed with Escape; re-armed as soon as the draft changes. */
   let suppressed = $state(false);
@@ -303,6 +318,27 @@
   // --- context chips ----------------------------------------------------------
   let contextChips = $state<ContextChip[]>([]);
   let contextError = $state('');
+
+  function persistComposerDraft(): void {
+    if (!draftKey) return;
+    saveSessionComposerDraft(draftKey, {
+      text: draft,
+      images: attached,
+    });
+  }
+
+  function discardComposerDraft(): void {
+    if (!draftKey) return;
+    clearSessionComposerDraft(draftKey);
+  }
+
+  $effect(() => {
+    void draft;
+    void attached;
+    persistComposerDraft();
+  });
+
+  onDestroy(() => persistComposerDraft());
 
   const mentionQuery = $derived(mentionSuppressed ? null : mentionQueryAt(draft, caret));
   const mentionMatches = $derived(
@@ -508,6 +544,7 @@
     contextError = '';
     commandToken = null;
     openMenu = null;
+    discardComposerDraft();
     void tick().then(autosize);
   }
 
@@ -579,6 +616,7 @@
       truncated: chip.truncated ?? false,
     }));
     onsend?.(text, attached, chips, attachments);
+    discardComposerDraft();
     draft = '';
     attached = [];
     attachError = '';
@@ -1080,7 +1118,7 @@
                   aria-checked={option.value === tool}
                   class="menu-item"
                   class:selected={option.value === tool}
-                  disabled={option.value === 'codex' && !codexAvailable}
+                  disabled={(option.value === 'codex' && !codexAvailable) || (option.value === 'grok' && !grokAvailable)}
                   onclick={() => {
                     ontool?.(option.value);
                     closeMenus();
@@ -1090,7 +1128,7 @@
                     <span class="glyph" aria-hidden="true">{option.glyph}</span>
                     {option.label}
                   </span>
-                  {#if option.value === 'codex' && !codexAvailable}
+                  {#if (option.value === 'codex' && !codexAvailable) || (option.value === 'grok' && !grokAvailable)}
                     <span class="menu-sub">not installed</span>
                   {/if}
                 </button>

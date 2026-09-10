@@ -21,6 +21,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod grok;
 mod history_replay;
 pub mod notify;
 pub mod provider_auth;
@@ -34,6 +35,7 @@ use hq_desktop_core::agent_session::claude_wire::{
     set_permission_mode_request_line, user_message_line, user_message_line_with_images,
 };
 use hq_desktop_core::agent_session::codex_wire::{approval_reply, user_input, user_input_reply};
+use hq_desktop_core::agent_session::grok_wire::prompt_blocks;
 use hq_desktop_core::agent_session::registry::{
     LiveSession, PendingRequest, Replay, SessionRegistry, SessionSummary,
 };
@@ -123,6 +125,10 @@ enum Spawned {
         hq_desktop_core::stdio::StdioChild,
         Box<codex::CodexHandshake>,
     ),
+    Grok(
+        hq_desktop_core::stdio::StdioChild,
+        Box<grok::GrokHandshake>,
+    ),
 }
 
 /// Which CLI a live session is driving.
@@ -199,6 +205,9 @@ pub struct Preflight {
     /// signed-out CLI starts fine and then fails at the model call — so this
     /// is a preflight signal for the same reason `claude_logged_in` is.
     pub codex_logged_in: bool,
+    pub grok_available: bool,
+    /// The Grok CLI signs in separately from grok.com in the browser.
+    pub grok_logged_in: bool,
     pub companies: Vec<CompanyOption>,
 }
 
@@ -268,9 +277,10 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
         std::time::Duration::from_secs(8),
     ).await?;
     // Ask each provider, not stale account markers left behind after sign-out.
-    let (claude_logged_in, codex_logged_in) = tokio::join!(
+    let (claude_logged_in, codex_logged_in, grok_logged_in) = tokio::join!(
         async { tools.claude_cli && provider_auth::logged_in(SessionTool::Claude).await },
         async { tools.codex_cli && provider_auth::logged_in(SessionTool::Codex).await },
+        async { tools.grok_cli && provider_auth::logged_in(SessionTool::Grok).await },
     );
     // One line per preflight so a support log answers "why did Sessions say
     // Claude Code is not installed" without a debug build.
@@ -310,6 +320,8 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
         claude_logged_in,
         codex_available: tools.codex_cli,
         codex_logged_in,
+        grok_available: tools.grok_cli,
+        grok_logged_in,
         companies,
     })
 }
@@ -367,6 +379,9 @@ pub async fn agent_session_repair_hq_setup(app: tauri::AppHandle) -> Result<Pref
             app.clone(),
             Some(SESSIONS_SETUP_PROGRESS_HANDLE.to_owned()),
             root,
+            // The self-heal reports through the Sessions page, not the
+            // onboarding wizard's failure ledger.
+            None,
         )
         .await
         {
@@ -395,7 +410,7 @@ pub async fn agent_session_repair_hq_setup(app: tauri::AppHandle) -> Result<Pref
         );
         let rescue = tokio::time::timeout(
             SETUP_RESCUE_TIMEOUT,
-            crate::commands::install_stages::run_hq(
+            crate::commands::install_stages::run_hq_plain(
                 &["rescue", "-y", "--paths", ".claude"],
                 &hq_root,
             ),
@@ -497,6 +512,14 @@ pub async fn agent_session_start(
         .map(|resume| history_replay::load_resume_history(spec.tool, resume))
         .unwrap_or_default();
 
+    let creator = super::auth::get_auth_state(app.clone()).await.ok()
+        .filter(|identity| identity.authenticated).and_then(|identity| identity.email);
+    let context = SessionContext {
+        source_session_id: spec.resume.clone(),
+        source_title: spec.title.clone(),
+        started_by: creator,
+        history: resumed_history.clone(),
+    };
     let state = state();
 
     // Reserve the slot BEFORE spawning: refusing after a child is already
@@ -544,6 +567,18 @@ pub async fn agent_session_start(
             },
             Err(e) => Err(e),
         },
+        SessionTool::Grok => match grok::spawn_grok(hq_root.clone()).await {
+            Ok(mut child) => match grok::handshake(&mut child, &spec).await {
+                Ok(handshake) => Ok(Spawned::Grok(child, Box::new(handshake))),
+                Err(e) => {
+                    child
+                        .shutdown_with_reap(hq_desktop_core::stdio::child::REAP_TIMEOUT)
+                        .await;
+                    Err(e)
+                }
+            },
+            Err(e) => Err(e),
+        },
     };
     let spawned = match spawned {
         Ok(spawned) => spawned,
@@ -569,6 +604,7 @@ pub async fn agent_session_start(
     let cli_session_id = match &spawned {
         Spawned::Claude(_) => None,
         Spawned::Codex(_, handshake) => Some(handshake.thread_id.clone()),
+        Spawned::Grok(_, handshake) => Some(handshake.session_id.clone()),
     };
     if let Err(e) = write_session_meta(
         &hq_root,
@@ -582,6 +618,10 @@ pub async fn agent_session_start(
             LOG_TAG,
             &format!("session={session_id} meta write failed: {e}"),
         );
+    }
+
+    if let Err(error) = save_session_context(&hq_root, &session_id, &context) {
+        log(LOG_TAG, &format!("session={session_id} context persistence failed: {error}"));
     }
 
     match spawned {
@@ -602,6 +642,20 @@ pub async fn agent_session_start(
                 session.cli_session_id = Some(handshake.thread_id.clone());
             }
             tokio::spawn(codex::run_session_loop(
+                child,
+                session_id.clone(),
+                spec.clone(),
+                *handshake,
+                state.clone(),
+                sink,
+                rx,
+            ));
+        }
+        Spawned::Grok(child, handshake) => {
+            if let Some(session) = state.lock().await.registry.get_mut(&session_id) {
+                session.cli_session_id = Some(handshake.session_id.clone());
+            }
+            tokio::spawn(grok::run_session_loop(
                 child,
                 session_id.clone(),
                 spec.clone(),
@@ -652,7 +706,7 @@ pub async fn agent_session_send(
     // would make the session list — and the strip's title — name a model that
     // is not answering. The UI tells that operator their choice lands on their
     // next session instead.
-    if let (Some(overrides), SessionTool::Codex) = (overrides, tool) {
+    if let (Some(overrides), SessionTool::Codex | SessionTool::Grok) = (overrides, tool) {
         if let Some(session) = guard.registry.get_mut(&session_id) {
             session.apply_turn_overrides(&overrides);
         }
@@ -668,6 +722,7 @@ pub async fn agent_session_send(
         // Codex takes the turn's `input` array; JSON keeps the attachments
         // intact across the string-shaped outbound channel.
         SessionTool::Codex => user_input(&text, &attachments).to_string(),
+        SessionTool::Grok => prompt_blocks(&text, &attachments).to_string(),
     };
     let result = record_and_queue_user_turn(
         &mut guard,
@@ -797,6 +852,12 @@ pub async fn agent_session_respond_permission(
             request_id: request_id.clone(),
             result: approval_reply(!matches!(decision, PermissionDecision::Deny { .. })),
         },
+        SessionTool::Grok => Outbound::Reply {
+            request_id: request_id.clone(),
+            result: serde_json::to_value(&decision).unwrap_or_else(|_| {
+                serde_json::json!({ "kind": "deny", "message": "Could not encode the decision." })
+            }),
+        },
     };
 
     guard.send(&session_id, message)?;
@@ -842,6 +903,12 @@ pub async fn agent_session_answer_question(
         SessionTool::Codex => Outbound::Reply {
             request_id: request_id.clone(),
             result: user_input_reply(questions, &answers),
+        },
+        // Grok ACP has no AskUserQuestion; answering a parked request that
+        // should not exist is still a reply so the agent is never left blocked.
+        SessionTool::Grok => Outbound::Reply {
+            request_id: request_id.clone(),
+            result: serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
         },
     };
     guard.send(&session_id, message)?;
@@ -893,7 +960,7 @@ pub async fn agent_session_set_permission_mode(
             &format!("perm_{}", uuid::Uuid::new_v4()),
             mode,
         )),
-        SessionTool::Codex => Outbound::SetPermissionMode(mode),
+        SessionTool::Codex | SessionTool::Grok => Outbound::SetPermissionMode(mode),
     };
     guard.send(&session_id, message)
 }
@@ -1040,6 +1107,7 @@ pub async fn agent_session_slash_commands(
     let outcome = match tool {
         SessionTool::Claude => claude::probe_command_catalog(hq_root).await,
         SessionTool::Codex => codex::probe_command_catalog(hq_root).await,
+        SessionTool::Grok => grok::probe_command_catalog(hq_root).await,
     };
     // The #welcome Run Setup pre-check and the composer's model menu both hang
     // off this probe; a value-free line makes a silent fallback diagnosable.
@@ -1091,6 +1159,105 @@ async fn wait_until_ended(
     }
 }
 
+/// Immutable display context survives replay-ring eviction and app restarts.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContext {
+    source_session_id: Option<String>,
+    source_title: Option<String>,
+    started_by: Option<String>,
+    history: history_replay::HistoryPage,
+}
+
+fn save_session_context(root: &Path, id: &str, context: &SessionContext) -> Result<(), String> {
+    if !is_safe_session_id(id) {
+        return Err("Invalid session id".into());
+    }
+    let dir = root.join("workspace/sessions").join(id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let tmp = dir.join("context.json.tmp");
+    std::fs::write(
+        &tmp,
+        serde_json::to_vec(context).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::rename(tmp, dir.join("context.json")).map_err(|e| e.to_string())
+}
+
+fn is_safe_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 160
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn read_session_context(root: &Path, id: &str) -> SessionContext {
+    if !is_safe_session_id(id) {
+        return SessionContext::default();
+    }
+    let sessions = root.join("workspace/sessions");
+    let direct = sessions.join(id).join("context.json");
+    if let Ok(raw) = std::fs::read(&direct) {
+        if let Ok(context) = serde_json::from_slice(&raw) {
+            return context;
+        }
+    }
+    // The history scanner navigates by provider id, while the runtime uses
+    // the app id. Resolve the durable link, never titles or current identity.
+    let Ok(entries) = std::fs::read_dir(sessions) else {
+        return SessionContext::default();
+    };
+    let mut candidates: Vec<_> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .collect();
+    candidates
+        .sort_by_key(|entry| std::cmp::Reverse(entry.metadata().and_then(|m| m.modified()).ok()));
+    for entry in candidates {
+        let matches = std::fs::read_to_string(entry.path().join("meta.yaml"))
+            .ok()
+            .and_then(|raw| serde_yaml::from_str::<serde_yaml::Value>(&raw).ok())
+            .is_some_and(|meta| meta.get("cli_session_id").and_then(|v| v.as_str()) == Some(id));
+        if matches {
+            if let Ok(raw) = std::fs::read(entry.path().join("context.json")) {
+                if let Ok(context) = serde_json::from_slice(&raw) {
+                    return context;
+                }
+            }
+        }
+    }
+    SessionContext::default()
+}
+
+#[tauri::command]
+pub async fn agent_session_context(session_id: String) -> Result<SessionContext, String> {
+    ensure_in_app_sessions_allowed()?;
+    let root = resolve_hq_folder_path()?;
+    let spec = state()
+        .lock()
+        .await
+        .registry
+        .get(&session_id)
+        .map(|session| session.spec.clone());
+    tokio::task::spawn_blocking(move || {
+        let mut context = read_session_context(&root, &session_id);
+        // Also recover a session that began before durable context was added.
+        // Its running registry still knows the source; do not guess a creator.
+        if context.source_session_id.is_none() {
+            if let Some(spec) = spec.filter(|spec| spec.resume.is_some()) {
+                context.history =
+                    history_replay::load_resume_history(spec.tool, spec.resume.as_deref().unwrap());
+                context.source_session_id = spec.resume;
+                context.source_title = spec.title;
+            }
+        }
+        context
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Stamp `workspace/sessions/<id>/meta.yaml` so the existing session-history
 /// reader can enrich this session with its company and true start time.
 fn write_session_meta(
@@ -1110,10 +1277,7 @@ fn write_session_meta(
             .map(str::to_owned),
         started_at: now_iso(),
         title: None,
-        tool: match tool {
-            SessionTool::Claude => "claude".into(),
-            SessionTool::Codex => "codex".into(),
-        },
+        tool: tool.as_str().to_owned(),
         cli_session_id: cli_session_id
             .map(str::trim)
             .filter(|id| !id.is_empty())
@@ -1331,6 +1495,28 @@ mod tests {
             Some(true)
         );
         assert!(menubar.get("installRepairedAt").and_then(serde_json::Value::as_str).is_some());
+    }
+
+    #[test]
+    fn session_context_survives_restart_and_provider_id_lookup() {
+        let root = tempfile::tempdir().unwrap();
+        let context = SessionContext {
+            source_session_id: Some("original".into()), source_title: Some("Planning".into()), started_by: Some("alex@example.test".into()),
+            history: history_replay::HistoryPage { before: Some(42), events: vec![history_replay::HistoricalEvent {
+                received_at_ms: 123, event: SessionEvent::UserMessage { text: "Inherited context".into(), image_count: 0 },
+            }] },
+        };
+        save_session_context(root.path(), "app-child", &context).unwrap();
+        std::fs::write(root.path().join("workspace/sessions/app-child/meta.yaml"), "cli_session_id: provider-child\n").unwrap();
+        for id in ["app-child", "provider-child"] {
+            let restored = read_session_context(root.path(), id);
+            assert_eq!(restored.source_session_id.as_deref(), Some("original"));
+            assert_eq!(restored.started_by.as_deref(), Some("alex@example.test"));
+            assert_eq!(restored.history.events.len(), 1);
+            assert_eq!(restored.history.before, Some(42));
+        }
+        assert!(read_session_context(root.path(), "../app-child").history.events.is_empty());
+        assert!(read_session_context(root.path(), "unknown").started_by.is_none());
     }
 
     #[test]

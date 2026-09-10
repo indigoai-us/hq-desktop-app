@@ -13,6 +13,13 @@
    */
   import { onDestroy, tick, untrack, type Snippet } from "svelte";
   import { observeConversationRead } from "./observe-conversation-read";
+  import {
+    isScrollNearBottom,
+    restoreNavigationScroll,
+    NAVIGATION_SCROLL_RETRY_LIMIT,
+    NAVIGATION_SCROLL_RETRY_MS,
+  } from "../../shell/navigation-scroll.js";
+  import type { NavigationScrollState } from "../../shell/navigation-history.js";
 
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
@@ -217,6 +224,11 @@
     draftStorage?: DraftStorage | null;
     /** US-011: lock the composer while an agent box is still provisioning. */
     composerLocked?: boolean;
+    /**
+     * History restore (US-006). When set, land on this identity/offset instead
+     * of pinning to the newest message, and do not follow live arrivals.
+     */
+    restoreScroll?: NavigationScrollState | null;
   }
 
   let {
@@ -256,6 +268,7 @@
     draftKey = null,
     draftStorage = null,
     composerLocked = false,
+    restoreScroll = null,
   }: Props = $props();
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -395,7 +408,13 @@
    * NOTHING may move their offset — not the host's periodic message refresh,
    * not live arrivals, not a timeline merge.
    */
-  let stickToBottom = $state(landAt !== "top");
+  // Remounted per conversation; only the landing restore matters. A `landAt`
+  // of "top" (#welcome) never pins to the newest row.
+  const restoreAtMount = restoreScroll;
+  let stickToBottom = $state(
+    landAt !== "top" && (!restoreAtMount || isScrollNearBottom(restoreAtMount)),
+  );
+  let restoreScrollPending = $state(restoreAtMount != null);
   /** New rows landed while scrolled up — drives the "jump to latest" pill. */
   let hasUnseenBelow = $state(false);
   /** Within this many px of the bottom still counts as pinned. */
@@ -1004,6 +1023,7 @@
       prevTimelineLength = length;
       if (!el) return;
       if (loadingEarlier) return;
+      if (restoreScrollPending) return;
       if (stickToBottom) {
         el.scrollTop = el.scrollHeight;
       } else if (grew && historyPopulated) {
@@ -1013,6 +1033,32 @@
       }
       if (length > 0) historyPopulated = true;
     });
+  });
+
+  $effect(() => {
+    const target = restoreScroll;
+    const el = scroller;
+    if (!target || !el) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tryRestore = (): void => {
+      if (cancelled) return;
+      if (restoreNavigationScroll(el, target)) {
+        stickToBottom = isScrollNearBottom(target, el);
+        restoreScrollPending = false;
+        return;
+      }
+      attempts += 1;
+      if (attempts >= NAVIGATION_SCROLL_RETRY_LIMIT) {
+        restoreScrollPending = false;
+        return;
+      }
+      setTimeout(tryRestore, NAVIGATION_SCROLL_RETRY_MS);
+    };
+    void tick().then(tryRestore);
+    return () => {
+      cancelled = true;
+    };
   });
 </script>
 

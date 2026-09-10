@@ -33,7 +33,22 @@ it('fetches teammate rows only when expanded and removes them on denied refresh'
   await projectLinksStore.refresh();
   expect(invoke.mock.calls.filter(([command]) => command === 'project_sessions_read')).toHaveLength(reads);
 });
-afterEach(() => { projectLinksStore.stop(); invoke.mockReset(); });
+afterEach(() => {
+  projectLinksStore.stop();
+  invoke.mockReset();
+  try { window.localStorage?.removeItem('hq.session-project-links.v1'); } catch { /* happy-dom */ }
+});
+
+it('hydrates project-session links from disk so the sidebar is not gated on a live fetch', async () => {
+  window.localStorage.setItem(
+    'hq.session-project-links.v1',
+    JSON.stringify({ byCompany: { indigo: [local] }, cachedAt: Date.now() }),
+  );
+  invoke.mockImplementation(() => new Promise(() => {}));
+  projectLinksStore.start(['indigo']);
+  expect(projectLinksStore.linksFor('indigo')).toEqual([local]);
+  expect(projectLinksStore.loading).toBe(false);
+});
 
 it('shows local nested sessions before the channel and provider enrichment finishes', async () => {
   let finish!: (rows: ProjectLink[]) => void;
@@ -91,4 +106,17 @@ it('bounds enrichment concurrency without delaying local company bindings', asyn
   await vi.waitFor(() => expect(invoke.mock.calls.filter(([, args]) => !args.localOnly)).toHaveLength(5));
   projectLinksStore.stop();
   finishes.forEach((finish) => finish());
+});
+
+it('holds initial loading until enriched links settle and bounds a hung boot', async () => {
+  vi.useFakeTimers();
+  try {
+    invoke.mockImplementation((_command, args) => args.localOnly ? Promise.resolve([local]) : new Promise(() => {}));
+    projectLinksStore.start(['indigo']);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(projectLinksStore.loading).toBe(true);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(projectLinksStore.loading).toBe(false);
+    expect(projectLinksStore.initialError).toBe(true);
+  } finally { vi.useRealTimers(); }
 });

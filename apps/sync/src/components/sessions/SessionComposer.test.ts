@@ -17,6 +17,10 @@ vi.mock('svelte', async () => {
 import { flushSync, mount, tick, unmount } from 'svelte';
 import SessionComposer from './SessionComposer.svelte';
 import { CODEX_EFFORT_OPTIONS, readSessionModels } from './session-models';
+import {
+  resetSessionComposerDraftsForTests,
+  saveSessionComposerDraft,
+} from './session-composer-drafts';
 
 /** The exact shape the CLI handshake sends. */
 const CATALOG = readSessionModels([
@@ -102,6 +106,7 @@ afterEach(() => {
   if (component) unmount(component);
   component = null;
   host.remove();
+  resetSessionComposerDraftsForTests();
 });
 
 describe('two rows: text on top, every control underneath', () => {
@@ -329,12 +334,33 @@ describe('the tool pill', () => {
     expect(rows[1]?.textContent).toContain('not installed');
   });
 
+  it('offers Grok but disables it when the CLI is not installed', () => {
+    render({ grokAvailable: false, codexAvailable: true });
+    click(must('session-pill-tool'));
+    const rows = must('session-menu-tool').querySelectorAll<HTMLButtonElement>('.menu-item');
+    expect([...rows].map((row) => row.textContent)).toEqual([
+      expect.stringContaining('Claude'),
+      expect.stringContaining('Codex'),
+      expect.stringContaining('Grok'),
+    ]);
+    expect(rows[2]?.disabled).toBe(true);
+    expect(rows[2]?.textContent).toContain('not installed');
+  });
+
   it('lets Codex be chosen once the preflight finds it', () => {
     const ontool = vi.fn();
     render({ codexAvailable: true, ontool });
     click(must('session-pill-tool'));
     click(must('session-menu-tool').querySelectorAll<HTMLElement>('.menu-item')[1]!);
     expect(ontool).toHaveBeenCalledWith('codex');
+  });
+
+  it('lets Grok be chosen once the preflight finds it', () => {
+    const ontool = vi.fn();
+    render({ grokAvailable: true, ontool });
+    click(must('session-pill-tool'));
+    click(must('session-menu-tool').querySelectorAll<HTMLElement>('.menu-item')[2]!);
+    expect(ontool).toHaveBeenCalledWith('grok');
   });
 });
 
@@ -611,5 +637,24 @@ describe('reset — a fresh draft for a new session', () => {
     expect(at('session-composer-attachments')).toBeNull();
     // The company pill is a prop: it stays.
     expect(must('session-pill-company').textContent).toContain('Indigo');
+  });
+});
+
+describe('unsent draft persistence', () => {
+  it('restores text and images after remount for the same draft key', async () => {
+    const key = 'sessions:new?draft=persist-1';
+    saveSessionComposerDraft(key, {
+      text: 'half a thought',
+      images: [{ mediaType: 'image/png', base64: 'QQ==', name: 'shot.png' }],
+    });
+    render({ draftKey: key });
+    expect((must('session-composer-input') as HTMLTextAreaElement).value).toBe('half a thought');
+    expect(must('session-composer-attachments').textContent).toContain('shot.png');
+    await unmount(component!);
+    component = null;
+    host.replaceChildren();
+    render({ draftKey: key });
+    expect((must('session-composer-input') as HTMLTextAreaElement).value).toBe('half a thought');
+    expect(must('session-composer-attachments').textContent).toContain('shot.png');
   });
 });

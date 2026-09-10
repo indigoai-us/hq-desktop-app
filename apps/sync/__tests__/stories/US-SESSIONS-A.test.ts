@@ -223,6 +223,7 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
     expect(PAGE).toContain('.slashCommands(wanted, forceRefresh)');
     expect(PAGE).toContain('function chooseTool');
     expect(PAGE).toContain('codexAvailable');
+    expect(PAGE).toContain('grokAvailable');
     // `tool` is the page's state, not a hard-coded literal in the spec.
     const spec = PAGE.slice(PAGE.indexOf('function specFrom'));
     expect(spec.slice(0, spec.indexOf('\n  }'))).not.toContain("tool: 'claude'");
@@ -239,20 +240,18 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
     expect(PAGE).toContain('LAST_COMPANY_KEY');
   });
 
-  it('names a plain next step for each preflight blocker, never a command to type', () => {
-    // Every blocker still has its own remedy, but the remedy is something on
-    // the page (the Connect buttons, the setup Retry) — a brand-new user is
-    // never told to run `claude login`, `codex login` or `hq rescue`.
+  it('names the exact remedy for each preflight blocker', () => {
+    expect(PAGE).toContain('claude login');
+    expect(PAGE).toContain('grok login');
     expect(PAGE).toContain('claudeAvailable');
     expect(PAGE).toContain('claudeLoggedIn');
-    expect(PAGE).toContain('codexLoggedIn');
-    expect(PAGE).toContain('Use Connect Claude below to sign in.');
-    expect(PAGE).toContain('Use Connect Codex below to sign in.');
-    expect(PAGE).not.toContain('claude login');
-    expect(PAGE).not.toContain('codex login');
+    expect(PAGE).toContain('grokLoggedIn');
+    expect(PAGE).toContain('hooksReady');
+    // HQ setup on this Mac is the page's own job (the self-heal card), never a
+    // raw rescue command or a config path on screen; the technical
+    // `hooksError` is for the support log.
     expect(PAGE).not.toContain('hq rescue');
     expect(PAGE).not.toContain('settings.json');
-    // The technical `hooksError` is for the support log, not the screen.
     expect(PAGE).not.toContain('{preflight.hooksError}');
     expect(PAGE).not.toContain('preflight.hooksError ??');
     // One inline notice above the composer — not a screen that replaces it.
@@ -866,16 +865,10 @@ describe('company / project start-work — the first send orients the session', 
   });
 
   it('a new session clears the project (and the draft) but keeps the company', () => {
-    // The strip's "+" resets in place — the route may not change.
-    expect(STRIP).toContain('data-testid="sessions-new"');
-    expect(PAGE).toContain('onnew={startFreshDraft}');
-    const fn = PAGE.slice(PAGE.indexOf('function startFreshDraft()'));
-    const body = fn.slice(0, fn.indexOf('\n  }\n'));
-    expect(body).toContain('project = null;');
-    expect(body).toContain('forgetLastProject(company);');
-    expect(body).toContain('composer?.reset();');
-    expect(body).toContain("onopensession?.('');");
-    expect(body).not.toContain('company =');
+    expect(STRIP).not.toContain('data-testid="sessions-new"');
+    const host = read('src/desktop-alt/HqWorkWorkShell.svelte');
+    expect(host).toContain("label: 'New session'");
+    expect(host).toContain('crypto.randomUUID()');
     // The id-less `sessions` route is the new-session route: a mount without
     // an id forgets the remembered project before the effect reads it.
     expect(PAGE).toContain('if (!sessionId) forgetLastProject(company);');
@@ -926,7 +919,7 @@ describe('company / project start-work — the first send orients the session', 
     expect(body).toContain('planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)');
     const planAt = body.indexOf('const first = planFirstSend(');
     const wordsAt = body.indexOf('started = await liveSessionStore.startAndSend(');
-    const routeAt = body.indexOf('onopensession?.(started);', wordsAt);
+    const routeAt = body.indexOf('onopensession?.(started', wordsAt);
     expect(planAt).toBeGreaterThan(-1);
     expect(wordsAt).toBeGreaterThan(planAt);
     expect(routeAt).toBeGreaterThan(wordsAt);
@@ -1094,17 +1087,18 @@ describe('the "⋯" session menu — open in Claude Code / Codex, share to chann
   const SHARE = read('src/components/sessions/share-channel.ts');
   const EXTRA = read('src/desktop-alt/pages/SessionsExtraPage.svelte');
 
-  it('the strip hosts the menu before "+", inert without a live session', () => {
+  it('the strip hosts the menu without a redundant new-session action, inert without a live session', () => {
     expect(STRIP).toContain("import SessionMenu from './SessionMenu.svelte';");
     expect(STRIP).toContain('disabled={!menuEnabled}');
-    expect(STRIP.indexOf('<SessionMenu')).toBeLessThan(STRIP.indexOf('data-testid="sessions-new"'));
+    expect(STRIP).toContain('<SessionMenu');
+    expect(STRIP).not.toContain('data-testid="sessions-new"');
     expect(STRIP).toContain('data-testid="session-menu-result"');
     expect(PAGE).toContain('menuEnabled={Boolean(sessionId) && !ended}');
     expect(PAGE).toContain('tool={summary?.tool ?? tool}');
   });
 
   it('the menu is labelled by the session tool and offers exactly the three actions', () => {
-    expect(MENU).toContain("tool === 'codex' ? 'Open in Codex' : 'Open in Claude Code'");
+    expect(MENU).toContain("tool === 'codex' ? 'Open in Codex' : tool === 'grok' ? 'Open in Grok' : 'Open in Claude Code'");
     expect(MENU).toContain('data-testid="session-menu-open-in-app"');
     expect(MENU).toContain('data-testid="session-menu-share"');
     expect(MENU).toContain('data-testid="session-menu-end"');
@@ -1175,7 +1169,7 @@ describe('the "⋯" session menu — open in Claude Code / Codex, share to chann
     expect(PAGE).toContain('onopenchannel?: (channelId: string) => void;');
     // HQ Work shell: the same `{ kind: 'channel' }` an hqwork://open?channel=
     // deep link resolves to in hq-work-host's routeTarget.
-    expect(EXTRA).toContain("import { dispatchEmbeddedNavigation } from '@hq/ui';");
+    expect(EXTRA).toContain("import { dispatchEmbeddedNavigation, type NavigationScrollState } from '@hq/ui';");
     expect(EXTRA).toContain("dispatchEmbeddedNavigation({ kind: 'channel', channelId })");
     expect(read('src/desktop-alt/hq-work-host.ts')).toContain("kind: 'channel',");
     // Classic shell: Messages, whose native shell has no open-by-id.

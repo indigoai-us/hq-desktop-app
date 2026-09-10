@@ -9,22 +9,46 @@
    * project channel). `SessionsPage` keeps its classic-shell props, and
    * `packages/ui` keeps its Tauri-free boundary.
    */
-  import { dispatchEmbeddedNavigation } from '@hq/ui';
+  import { dispatchEmbeddedNavigation, type NavigationScrollState } from '@hq/ui';
   import SessionsPage from './SessionsPage.svelte';
   import SharedSessionPage from './SharedSessionPage.svelte';
-  import { parseSessionsParam } from './sessions-route-param';
+  import {
+    encodeLiveSessionParam,
+    parseSessionsParam,
+    sessionDraftStorageKey,
+    sessionNavigateMode,
+    sessionRestorePath,
+  } from './sessions-route-param';
   import type { AgentSession } from '../lib/sessions';
+  import { liveSessionStore } from '../lib/live-session-store.svelte';
 
   interface Props {
     /** The shell's opaque selection — here, the routed session id. */
     param?: string | null;
+    restoreScroll?: NavigationScrollState | null;
     /** Report the session the user opened back to the shell. */
-    onnavigate?: (param: string | null) => void;
+    onnavigate?: (param: string | null, options?: { mode?: 'push' | 'replace' }) => void;
   }
 
-  let { param = null, onnavigate }: Props = $props();
+  let { param = null, restoreScroll = null, onnavigate }: Props = $props();
 
   const route = $derived(parseSessionsParam(param));
+  const restorePath = $derived(sessionRestorePath(route));
+  const draftKey = $derived(sessionDraftStorageKey(param));
+
+  function openSession(id: string | null, options?: { replace?: boolean }): void {
+    let next = id || null;
+    if (next) {
+      const parsed = parseSessionsParam(next);
+      if (parsed.kind === 'session') {
+        next = encodeLiveSessionParam(
+          parsed.sessionId,
+          parsed.company || liveSessionStore.companyOf(parsed.sessionId),
+        );
+      }
+    }
+    onnavigate?.(next, { mode: sessionNavigateMode(options) });
+  }
   const historySession = $derived<AgentSession | null>(
     route.kind === 'history'
       ? {
@@ -56,12 +80,15 @@
 <SessionsPage
   sessionId={route.kind === 'session' || route.kind === 'history' ? route.sessionId : undefined}
   initialHistorySession={historySession}
-  initialCompany={route.kind === 'new' ? route.company : null}
+  initialCompany={route.kind === 'new' ? route.company : route.kind === 'session' ? (route.company ?? null) : null}
   initialProject={route.kind === 'new' ? route.project : null}
   initialChannelId={route.kind === 'new' ? route.channelId : undefined}
   initialPrompt={route.kind === 'new' ? (route.prompt ?? null) : null}
   initialPrefill={route.kind === 'new' ? (route.prefill ?? null) : null}
-  onopensession={(id) => onnavigate?.(id || null)}
+  restorePath={restorePath === 'open' || restorePath === 'openHistory' ? restorePath : undefined}
+  {restoreScroll}
+  {draftKey}
+  onopensession={openSession}
   onopenchannel={(channelId) => dispatchEmbeddedNavigation({ kind: 'channel', channelId })}
 />
 {/if}

@@ -172,11 +172,16 @@
         detail?: string;
         component: Component<{
           param?: string | null;
-          onnavigate?: (param: string | null) => void;
+          onnavigate?: (
+            param: string | null,
+            options?: { mode?: "push" | "replace" },
+          ) => void;
         }>;
       }
     >;
     /** Native host decorations for project-channel rows. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
     /**
      * Backoff between failed company-roster fetches (tests shorten it). The
@@ -213,6 +218,8 @@
     onembeddednavigationready,
     onactivethreadchange,
     extraPages,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
     rowExtras = null,
     rosterRetryDelaysMs,
   }: WorkShellProps = $props();
@@ -835,6 +842,8 @@
       {refreshAppVersion}
       {onactivethreadchange}
       {extraPages}
+      {rowExtrasLoading}
+      {rowExtrasError}
       {rowExtras}
     />
   {/key}
