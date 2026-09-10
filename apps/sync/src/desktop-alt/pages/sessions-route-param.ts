@@ -29,6 +29,12 @@ export type SessionsRoute =
        * an ordinary "New session".
        */
       prompt?: string;
+      /**
+       * Text seeded into the composer and left there for the person to send
+       * (#welcome's "Continue in HQ Sessions" carries `/startwork <company>`).
+       * Unlike `prompt`, nothing is sent on their behalf.
+       */
+      prefill?: string;
     };
 
 export const NEW_SESSION_PREFIX = 'new?';
@@ -73,9 +79,16 @@ export function parseSessionsParam(param: string | null | undefined): SessionsRo
       project: clean(query.get('project')),
       ...(clean(query.get('channel')) ? { channelId: clean(query.get('channel'))! } : {}),
       ...(clean(query.get('prompt')) ? { prompt: clean(query.get('prompt'))! } : {}),
+      ...(clean(query.get('prefill')) ? { prefill: clean(query.get('prefill'))! } : {}),
     };
   }
   return { kind: 'session', sessionId: raw };
+}
+
+/** The #welcome "Continue in HQ Sessions" destination: a fresh session with `text` waiting in the composer, unsent. */
+export function prefilledSessionParam(text: string): string {
+  const query = new URLSearchParams({ draft: crypto.randomUUID(), prefill: text });
+  return `${NEW_SESSION_PREFIX}${query.toString()}`;
 }
 
 /** The #welcome "Run Setup" destination: a fresh session that sends `prompt` itself. */

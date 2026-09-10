@@ -1104,6 +1104,17 @@ describe('a session whose replay carries a null or hostile payload', () => {
   });
 });
 
+describe('a route-carried prefill (#welcome Continue in HQ Sessions)', () => {
+  it('seeds /startwork into the composer and leaves it there — nothing is sent for the person', async () => {
+    render({ initialPrefill: '/startwork acme' });
+    await settle();
+    expect(host.querySelector('textarea')?.value).toBe('/startwork acme');
+    await settle();
+    expect(backend.sends).toHaveLength(0);
+    expect(backend.starts ?? []).toHaveLength(0);
+  });
+});
+
 describe('a route-carried prompt (#welcome Run Setup)', () => {
   it('seeds /setup, waits for the catalog to list it, then sends it once', async () => {
     backend.claudeCatalog = deferred();

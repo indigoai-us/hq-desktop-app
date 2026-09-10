@@ -44,7 +44,7 @@
   } from './hq-work-host';
   import { startDesktopMeshPresence } from './mesh-presence';
   import SessionsExtraPage from './pages/SessionsExtraPage.svelte';
-  import { parseSessionsParam, setupSessionParam } from './pages/sessions-route-param';
+  import { parseSessionsParam, prefilledSessionParam, setupSessionParam } from './pages/sessions-route-param';
   import { SETUP_PROMPT } from './lib/setup-launch';
   import { createSetupRunApi } from './lib/setup-run-host.svelte';
   import { projectLinksStore } from './lib/project-links-store.svelte';
@@ -139,7 +139,8 @@
       // After setup: a fresh session oriented on the company, `/startwork` sent.
       startworkAction: {
         label: 'Start work',
-        param: (company: string | null) => setupSessionParam(company ? `/startwork ${company}` : '/startwork'),
+        // Left in the composer, unsent — the same as Claude Code and Codex get.
+        param: (company: string | null) => prefilledSessionParam(company ? `/startwork ${company}` : '/startwork'),
       },
       // The native run: /setup drives a stepper + question cards inside the
       // #welcome hero; `setupAction` stays the fallback when preflight says

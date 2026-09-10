@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseSessionsParam, setupSessionParam } from './sessions-route-param';
+import { parseSessionsParam, prefilledSessionParam, setupSessionParam } from './sessions-route-param';
 
 describe('parseSessionsParam', () => {
   it('reads a bare param as a session id, and nothing as the empty page', () => {
@@ -70,5 +70,12 @@ describe('setupSessionParam', () => {
 
   it('an ordinary New session has no prompt', () => {
     expect(parseSessionsParam('new?draft=abc')).not.toHaveProperty('prompt');
+    expect(parseSessionsParam('new?draft=abc')).not.toHaveProperty('prefill');
+  });
+
+  it('a prefilled route seeds the composer without sending: prefill, never prompt', () => {
+    const route = parseSessionsParam(prefilledSessionParam('/startwork acme'));
+    expect(route).toMatchObject({ kind: 'new', prefill: '/startwork acme' });
+    expect(route).not.toHaveProperty('prompt');
   });
 });

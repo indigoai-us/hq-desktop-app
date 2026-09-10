@@ -60,6 +60,7 @@
   initialProject={route.kind === 'new' ? route.project : null}
   initialChannelId={route.kind === 'new' ? route.channelId : undefined}
   initialPrompt={route.kind === 'new' ? (route.prompt ?? null) : null}
+  initialPrefill={route.kind === 'new' ? (route.prefill ?? null) : null}
   onopensession={(id) => onnavigate?.(id || null)}
   onopenchannel={(channelId) => dispatchEmbeddedNavigation({ kind: 'channel', channelId })}
 />

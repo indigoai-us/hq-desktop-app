@@ -145,6 +145,8 @@
      * CLI's own catalog lists it.
      */
     initialPrompt?: string | null;
+    /** Seeded into the composer and left for the person to send; nothing is sent for them. */
+    initialPrefill?: string | null;
   }
 
   let {
@@ -156,6 +158,7 @@
     initialChannelId,
     initialHistorySession = null,
     initialPrompt = null,
+    initialPrefill = null,
   }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
@@ -927,6 +930,15 @@
     if (promptSeeded || !routedPrompt || !composer) return;
     promptSeeded = true;
     composer.setDraft(routedPrompt);
+  });
+  // --- a route-carried prefill (#welcome's Continue in HQ Sessions → `/startwork …`) ---
+  // Same seeding, but it stays in the composer: the person presses send.
+  let prefillSeeded = $state(false);
+  const routedPrefill = $derived((initialPrefill ?? '').trim());
+  $effect(() => {
+    if (prefillSeeded || !routedPrefill || !composer) return;
+    prefillSeeded = true;
+    composer.setDraft(routedPrefill);
   });
   $effect(() => {
     if (promptSent || !routedPrompt || sessionId) return;
