@@ -880,6 +880,10 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.34"),
             "c94fa59ef239cba0",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.35"),
+            "c3b811c41ec7452d",
+        );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
@@ -930,6 +934,14 @@ mod tests {
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.33"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.34"),
+        );
+        // The packed-resident-journal bump (hq-cloud#516/#517): 6.16.35
+        // SATISFIES `~6.16.34`, so a desktop that already resolved 6.16.34
+        // would retain the larger runner representation on semver admission
+        // alone. Moving the requested spec is what delivers the reduction.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.34"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.35"),
         );
     }
 

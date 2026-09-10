@@ -565,7 +565,18 @@
 /// A desktop holding a cached 6.16.33 satisfies `~6.16.33` forever and would
 /// keep retrying the denied scope; changing this requested spec is what moves
 /// npm's cache key and delivers the terminal classification.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.34";
+///
+/// `~6.16.34` -> `~6.16.35`: floors the runner at the release that stores
+/// packed columnar journal rows behind `JournalStore` and returns frozen rows
+/// at its public boundary (hq-cloud#516/#517). This substantially reduces the
+/// sync runner's resident memory, but is runner-internal representation rather
+/// than a desktop behavior contract, so it deliberately does not add another
+/// `*_MIN_HQ_CLOUD` floor constant.
+///
+/// A desktop holding a cached 6.16.34 satisfies `~6.16.34` forever and would
+/// retain the larger resident representation; changing this requested spec is
+/// what moves npm's cache key and delivers the reduction.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.35";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -693,7 +704,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.34");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.35");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
