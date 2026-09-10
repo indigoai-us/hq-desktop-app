@@ -804,6 +804,7 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "errorKind",
     "channel",
     "desktopVersion",
+    "appVersion",
     "localCoreVersion",
     "targetCoreVersion",
     "autoUpdateEnabled",
@@ -822,6 +823,7 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "failedStageCount",
     "failedStages",
     "detectedToolCount",
+    "detectedSourceSet",
     "step",
     "component",
     "action",
@@ -858,6 +860,22 @@ const ERROR_CATEGORY_VALUES: &[&str] = &[
     "unknown",
 ];
 
+const CONNECTOR_IMPORT_OUTCOME_VALUES: &[&str] = &[
+    "tool_not_installed",
+    "config_path_unavailable",
+    "config_missing",
+    "config_unreadable",
+    "config_invalid",
+    "zero_servers",
+    "imported",
+    "import_failed",
+    "command_failed",
+    "user_skipped",
+    "unknown",
+];
+
+const CONNECTOR_IMPORT_SOURCE_SET_VALUES: &[&str] = &["claude_desktop_config", "unknown"];
+
 // Keep all nine identifiers for historical rows; packages, import, and menubar
 // are no longer emitted by setup, but readers must still normalize them.
 const ONBOARDING_STAGE_IDS: &[&str] = &[
@@ -893,7 +911,9 @@ fn normalize_failed_stages(values: &[Value]) -> Vec<Value> {
             continue;
         };
         if ONBOARDING_STAGE_IDS.contains(&stage)
-            && !stages.iter().any(|value: &Value| value.as_str() == Some(stage))
+            && !stages
+                .iter()
+                .any(|value: &Value| value.as_str() == Some(stage))
         {
             stages.push(Value::String(stage.to_string()));
         }
@@ -917,14 +937,15 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
         }
 
         let sanitized_value = match (key.as_str(), &value) {
-            ("failedDependency", Value::String(value)) => {
-                Some(Value::String(normalize_closed_label(
-                    &value,
-                    FAILED_DEPENDENCY_VALUES,
-                )))
-            }
-            ("errorCategory", Value::String(value)) => Some(Value::String(
-                normalize_closed_label(&value, ERROR_CATEGORY_VALUES),
+            ("failedDependency", Value::String(value)) => Some(Value::String(
+                normalize_closed_label(&value, FAILED_DEPENDENCY_VALUES),
+            )),
+            ("errorCategory", Value::String(value)) => Some(Value::String(normalize_closed_label(
+                &value,
+                ERROR_CATEGORY_VALUES,
+            ))),
+            ("detectedSourceSet", Value::String(value)) => Some(Value::String(
+                normalize_closed_label(&value, CONNECTOR_IMPORT_SOURCE_SET_VALUES),
             )),
             ("failedStages", Value::Array(values)) => {
                 Some(Value::Array(normalize_failed_stages(&values)))
@@ -955,7 +976,23 @@ fn build_desktop_telemetry_event(
     occurred_at: Option<String>,
     consent_basis: &str,
 ) -> RawTelemetryEvent {
-    let properties = sanitize_desktop_properties(properties);
+    let mut properties = sanitize_desktop_properties(properties);
+    if event_name == "desktop_onboarding_step"
+        && properties["step"].as_str() == Some("connector-import")
+        && properties.get("outcome").is_some()
+    {
+        let outcome = properties["outcome"].as_str().unwrap_or_default();
+        properties["outcome"] = Value::String(normalize_closed_label(
+            outcome,
+            CONNECTOR_IMPORT_OUTCOME_VALUES,
+        ));
+    }
+    if matches!(
+        event_name.as_str(),
+        "desktop_onboarding_step" | "desktop_setup_completed"
+    ) {
+        properties["appVersion"] = Value::String(env!("APP_VERSION").to_string());
+    }
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
@@ -2342,6 +2379,7 @@ mod codex_telemetry_tests {
                 "errorKind",
                 "channel",
                 "desktopVersion",
+                "appVersion",
                 "localCoreVersion",
                 "targetCoreVersion",
                 "autoUpdateEnabled",
@@ -2360,6 +2398,7 @@ mod codex_telemetry_tests {
                 "failedStageCount",
                 "failedStages",
                 "detectedToolCount",
+                "detectedSourceSet",
                 "step",
                 "component",
                 "action",
@@ -2402,6 +2441,83 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn onboarding_events_attach_the_trusted_build_version_after_property_redaction() {
+        let event = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "appVersion": "renderer-controlled-version",
+                "step": "connector-import",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+
+        assert_eq!(event.properties["appVersion"], env!("APP_VERSION"));
+        assert_eq!(event.properties["step"], "connector-import");
+
+        let completed = build_desktop_telemetry_event(
+            "desktop_setup_completed".to_string(),
+            Some(json!({"stageCount": 6})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(completed.properties["appVersion"], env!("APP_VERSION"));
+    }
+
+    #[test]
+    fn connector_import_outcome_and_source_set_are_closed_at_the_native_boundary() {
+        let event = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "connector-import",
+                "outcome": "read /Users/alice/Library/Application Support/Claude",
+                "detectedSourceSet": "unbounded-source",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+
+        assert_eq!(event.properties["outcome"], "unknown");
+        assert_eq!(event.properties["detectedSourceSet"], "unknown");
+        assert!(!event.properties.to_string().contains("alice"));
+    }
+
+    #[test]
+    fn onboarding_failure_properties_never_retain_paths_hosts_usernames_or_raw_errors() {
+        let sanitized = sanitize_desktop_properties(Some(json!({
+            "failedDependency": "C:\\\\Users\\\\alice\\\\hq",
+            "errorCategory": "import failed for alice@host.example under /Users/alice/hq",
+            "failedStages": ["deps", "/Users/alice/hq"],
+            "detectedSourceSet": "C:\\\\Users\\\\alice\\\\AppData",
+            "path": "/Users/alice/hq",
+            "hostname": "host.example",
+            "homeDirectory": "/Users/alice",
+            "message": "raw importer error",
+        })));
+        let serialized = sanitized.to_string();
+
+        assert_eq!(sanitized["failedDependency"], "unknown");
+        assert_eq!(sanitized["errorCategory"], "unknown");
+        assert_eq!(sanitized["failedStages"], json!(["deps"]));
+        assert_eq!(sanitized["detectedSourceSet"], "unknown");
+        for forbidden in [
+            "alice",
+            "host.example",
+            "importer error",
+            "Users",
+            "AppData",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "{forbidden} must not leave the app"
+            );
+        }
+    }
+
+    #[test]
     fn setup_failure_properties_drop_raw_errors_and_bound_failed_stages() {
         let sanitized = sanitize_desktop_properties(Some(json!({
             "failedStages": [
@@ -2415,7 +2531,10 @@ mod codex_telemetry_tests {
             "error": "permission denied at /Users/alice/HQ",
             "logPath": "/Users/alice/HQ/logs/setup.log",
         })));
-        assert_eq!(sanitized["failedStages"], json!(["content", "deps", "indexing"]));
+        assert_eq!(
+            sanitized["failedStages"],
+            json!(["content", "deps", "indexing"])
+        );
         assert!(sanitized["failedStages"].as_array().unwrap().len() <= MAX_FAILED_STAGES);
         assert!(sanitized.get("error").is_none());
         assert!(sanitized.get("logPath").is_none());

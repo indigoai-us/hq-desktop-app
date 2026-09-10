@@ -8,9 +8,14 @@ import {
   pingInstallerStep,
 } from './installer-step-telemetry';
 import {
+  normalizeConnectorImportOutcome,
+  normalizeConnectorImportSourceSet,
   normalizeErrorCategory,
   normalizeFailedDependency,
   normalizeFailedStageIds,
+  CONNECTOR_IMPORT_OUTCOMES,
+  CONNECTOR_IMPORT_SOURCE_SETS,
+  type ConnectorImportSourceSet,
   type ErrorCategory,
   type FailedDependency,
   type StageId,
@@ -45,6 +50,8 @@ export interface OnboardingStepProperties {
   durationMs?: number;
   attemptCount?: number;
   detectedToolCount?: number;
+  /** Source scope of a connector-import probe, never a file path. */
+  detectedSourceSet?: ConnectorImportSourceSet;
   failedStageCount?: number;
   failedStages?: StageId[];
   failedDependency?: FailedDependency;
@@ -236,6 +243,16 @@ export function desktopPropertiesForOnboardingStep(
   if (event.properties.setupRunId !== undefined) {
     properties.setupRunId = event.properties.setupRunId;
   }
+  if (event.properties.step === 'connector-import') {
+    if (event.properties.outcome !== undefined) {
+      properties.outcome = normalizeConnectorImportOutcome(event.properties.outcome);
+    }
+    if (event.properties.detectedSourceSet !== undefined) {
+      properties.detectedSourceSet = normalizeConnectorImportSourceSet(
+        event.properties.detectedSourceSet,
+      );
+    }
+  }
   if (event.properties.action === 'failed') {
     properties.errorCategory = normalizeErrorCategory(event.properties.errorCategory);
     if (event.properties.component === 'deps') {
@@ -342,5 +359,10 @@ function createUuid(): string {
     return (token === 'x' ? value : (value & 0x3) | 0x8).toString(16);
   });
 }
+
+export {
+  CONNECTOR_IMPORT_OUTCOMES,
+  CONNECTOR_IMPORT_SOURCE_SETS,
+};
 
 export const __INTERNALS__ = { STORAGE_KEY, LEGACY_STORAGE_KEY, SCHEMA_VERSION };
