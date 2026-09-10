@@ -243,14 +243,6 @@
     overflow-y: auto;
     padding: 6px;
     background: transparent;
-    scrollbar-color: var(--v4-hairline) transparent;
-    scrollbar-width: thin;
-  }
-
-  .scoped-tree::-webkit-scrollbar { width: 6px; }
-  .scoped-tree::-webkit-scrollbar-thumb {
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-hairline);
   }
 
   .scoped-preview-pane {

@@ -250,17 +250,6 @@
     overflow-y: auto;
     padding: 6px;
     background: transparent;
-    scrollbar-color: var(--v4-hairline) transparent;
-    scrollbar-width: thin;
-  }
-
-  .knowledge-tree::-webkit-scrollbar {
-    width: 4px;
-  }
-
-  .knowledge-tree::-webkit-scrollbar-thumb {
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-hairline);
   }
 
   .knowledge-preview-pane {

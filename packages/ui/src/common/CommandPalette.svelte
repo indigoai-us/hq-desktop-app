@@ -456,9 +456,7 @@
     overscroll-behavior: contain;
     padding: 6px;
     scroll-padding-block: 6px;
-    scrollbar-color: var(--pop-muted) transparent;
     scrollbar-gutter: stable;
-    scrollbar-width: thin;
   }
 
   .command-action-error {

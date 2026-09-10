@@ -1,0 +1,43 @@
+/*
+ * One scrollbar for the whole shell.
+ *
+ * The concept draws every scroller the same way: a 4px bar tucked against the
+ * pane edge, transparent track inset 10px from the ends, `--line` thumb going
+ * `--line2` on hover. Production had drifted into three variants — 4px in the
+ * rail and the timeline, 6px in the files trees and the knowledge panel, and
+ * the browser default everywhere nobody had styled.
+ *
+ * DO NOT add `scrollbar-width` or `scrollbar-color` to a scroller in this
+ * shell. Chromium and WebKit now implement the standard properties, and where
+ * both are present the standard one WINS — `scrollbar-width: thin` rendered an
+ * 11px bar straight through the 4px `::-webkit-scrollbar` rule beneath it,
+ * which is how the rail ended up nearly three times the width it was drawn at.
+ * The one legitimate use is `scrollbar-width: none` to hide a bar outright.
+ */
+.chat-shell ::-webkit-scrollbar,
+.chat-shell::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.chat-shell ::-webkit-scrollbar-track,
+.chat-shell::-webkit-scrollbar-track {
+  margin: 10px 0;
+  background: transparent;
+}
+
+.chat-shell ::-webkit-scrollbar-thumb,
+.chat-shell::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.chat-shell ::-webkit-scrollbar-thumb:hover,
+.chat-shell::-webkit-scrollbar-thumb:hover {
+  background: var(--line2);
+}
+
+.chat-shell ::-webkit-scrollbar-corner,
+.chat-shell::-webkit-scrollbar-corner {
+  background: transparent;
+}

@@ -947,7 +947,7 @@
   }
 
   function scopeAvatarLabel(option: { id: string; label: string }): string {
-    if (option.id === "all") return "AL";
+    // "all" never reaches here — it renders the Stack glyph, not initials.
     if (option.id === "personal") return "PE";
     return initialsFor(option.label);
   }
@@ -1820,11 +1820,15 @@
               {#if scopeOptionIcon(option.id)}
                 <!-- Real company favicon in place of the initials tile. -->
                 <CompanyIcon iconUrl={scopeOptionIcon(option.id)} size={20} />
+              {:else if option.id === "all"}
+                <!-- Same Stack glyph the trigger tile carries: "All" is a
+                     scope, not a tenant, so it never gets initials. -->
+                <span class="chat-scope-avatar all" aria-hidden="true">
+                  <Stack size={11} weight="bold" aria-hidden="true" />
+                </span>
               {:else}
                 <span
-                  class={option.id === "all"
-                    ? "chat-scope-avatar"
-                    : `chat-scope-avatar tone-${scopeTones.get(option.label) ?? 0}`}
+                  class={`chat-scope-avatar tone-${scopeTones.get(option.label) ?? 0}`}
                   aria-hidden="true"
                 >
                   {scopeAvatarLabel(option)}
@@ -2711,7 +2715,13 @@
         data-testid="chat-pin"
         onclick={() => handlePin(row)}
       >
-        <PushPin size={12} aria-hidden="true" />
+        <!-- Solid once it is pinned, so the control reads as ON at a glance —
+             the same filled mark the PINNED section header carries. -->
+        <PushPin
+          size={12}
+          weight={row.pinned ? "fill" : "regular"}
+          aria-hidden="true"
+        />
       </button>
       {#if row.unreadCount != null && row.unreadCount > 0}
         <span
@@ -2996,6 +3006,7 @@
   /* "All companies" is not a company — it keeps the neutral fill and the
      Stack glyph so it reads as a scope, not another tenant. */
   .chat-scope-tile.all,
+  .chat-scope-avatar.all,
   .chat-scope-avatar.chat-scope-plus {
     background: var(--btn-bg);
     color: var(--t2);
@@ -3063,23 +3074,6 @@
     overflow-y: auto;
     margin-right: -8px;
     padding: 0 8px 12px 0;
-    scrollbar-color: var(--line) transparent;
-    scrollbar-width: thin;
-  }
-
-  .chat-scroll::-webkit-scrollbar {
-    width: 4px;
-  }
-  .chat-scroll::-webkit-scrollbar-track {
-    background: transparent;
-    margin: 10px 0;
-  }
-  .chat-scroll::-webkit-scrollbar-thumb {
-    background: var(--line);
-    border-radius: 999px;
-  }
-  .chat-scroll::-webkit-scrollbar-thumb:hover {
-    background: var(--line2);
   }
 
   .chat-section-label {
@@ -3110,11 +3104,16 @@
     gap: 8px;
   }
 
+  /* The concept's `.grp .d` is a plain 10px mono date — it does NOT inherit
+     the label's 600 weight or 0.1em tracking, which is what made the date read
+     as loud as the day name beside it. */
   .chat-day-date {
     color: var(--t3);
     font-family: var(--font-mono, inherit);
     font-size: 10px;
+    font-weight: 400;
     font-variant-numeric: tabular-nums;
+    letter-spacing: normal;
   }
 
   /* Real box so the pin control can sit beside the row (not nested in it). */

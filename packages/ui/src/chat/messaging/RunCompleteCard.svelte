@@ -63,6 +63,10 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    /* There is no global border-box reset here, so `width: 100%` plus the
+       14px padding and the hairline pushed the card 30px past its column and
+       out over the window edge. */
+    box-sizing: border-box;
     width: 100%;
     max-width: none;
     margin: 6px 0 0;

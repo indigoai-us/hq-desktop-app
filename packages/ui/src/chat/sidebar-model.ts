@@ -1625,6 +1625,15 @@ export function initialsFor(title: string): string {
   return title.trim().slice(0, 2).toUpperCase() || "?";
 }
 
+/**
+ * Rail monogram: one letter. The concept's sidebar rows carry `title[0]` in a
+ * 16px disc — two letters at that size stop reading as a mark and start
+ * reading as text.
+ */
+export function monogramFor(title: string): string {
+  return title.trim().slice(0, 1).toUpperCase() || "?";
+}
+
 export type RowAvatarKind = "photo" | "generated" | "initials";
 
 export interface RowAvatar {
@@ -1648,7 +1657,7 @@ export function rowAvatar(
     const generated = agentAvatarFor(uid);
     if (generated) return { kind: "generated", src: generated };
   }
-  return { kind: "initials", initials: initialsFor(row.title) };
+  return { kind: "initials", initials: monogramFor(row.title) };
 }
 
 // ── Command palette conversation ranking (US-013) ────────────────────────────

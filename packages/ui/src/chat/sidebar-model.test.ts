@@ -2244,7 +2244,7 @@ describe("rowAvatar", () => {
     ).toMatchObject({ kind: "generated" });
     expect(
       rowAvatar(human, { prs_ada: "https://cdn.test/ada.jpg" }),
-    ).toEqual({ kind: "initials", initials: "AL" });
+    ).toEqual({ kind: "initials", initials: "A" });
   });
 
   it("uses a deterministic generated avatar for a photo-less agent", () => {
@@ -2255,8 +2255,10 @@ describe("rowAvatar", () => {
     expect(rowAvatar(agent).src).toBe(avatar.src);
   });
 
-  it("uses initials for a photo-less human", () => {
-    expect(rowAvatar(human)).toEqual({ kind: "initials", initials: "AL" });
+  it("uses a one-letter monogram for a photo-less human", () => {
+    // The rail's disc carries a single letter — `initialsFor` still returns
+    // two for the surfaces (composer, footer) that are drawn for them.
+    expect(rowAvatar(human)).toEqual({ kind: "initials", initials: "A" });
   });
 
   it("never shows bare initials for an agent while the set is bundled", () => {
@@ -2267,7 +2269,7 @@ describe("rowAvatar", () => {
   it("only generates for agent DM rows, never for channels or humans", () => {
     expect(
       rowAvatar({ kind: "channel", personUid: "agt_parker", title: "ops" }),
-    ).toEqual({ kind: "initials", initials: "OP" });
-    expect(rowAvatar(human, {})).toEqual({ kind: "initials", initials: "AL" });
+    ).toEqual({ kind: "initials", initials: "O" });
+    expect(rowAvatar(human, {})).toEqual({ kind: "initials", initials: "A" });
   });
 });

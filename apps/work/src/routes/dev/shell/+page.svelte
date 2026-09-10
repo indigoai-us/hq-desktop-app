@@ -25,6 +25,7 @@
     FIXTURE_SETTINGS_PROFILE,
     createChatWakeBus,
     createFixtureChatSidebarApi,
+    createFixtureConversationApi,
     createFixtureNotificationsApi,
     fixtureBoardFor,
     fixtureChannelStatusFor,
@@ -85,6 +86,15 @@
           : emptySlice[method as keyof typeof emptySlice],
     });
 
+  /**
+   * The shell paints `messagesByRow` first, then re-hydrates from the host and
+   * commits whatever comes back. An adapter that answered `fetchChannel` with
+   * an empty page therefore wiped the seeded thread a beat after it appeared —
+   * the conversation would flash in and fall back to "No activity yet". Answer
+   * from the same fixtures the shell was seeded with instead.
+   */
+  const fixtureConversation = createFixtureConversationApi();
+
   const adapter = new Proxy(
     {
       kind: "tauri",
@@ -93,8 +103,10 @@
       capabilities: TAURI_CAPABILITIES,
       messaging: slice({
         listContacts: async () => ok({ contacts: [] }),
-        fetchChannel: async () => ok({ messages: [], nextCursor: null }),
-        fetchDmThread: async () => ok({ messages: [], nextCursor: null }),
+        fetchChannel: async (args: { channelId: string }) =>
+          ok(await fixtureConversation.fetchChannel(args)),
+        fetchDmThread: async (args: { withPersonUid: string }) =>
+          ok(await fixtureConversation.fetchDmThread(args)),
         listChannelMembers: async () => ok({ members: [] }),
       }),
       meetings: slice({
@@ -266,6 +278,15 @@
 {/if}
 
 <style>
+  /* The shipping window sets `box-sizing: border-box` on everything
+     (desktop-alt.css); the work app does not. Without this the harness gives
+     every padded, `width: 100%` element more box than production does — cards
+     and rows bled past their panes here and nowhere else. Scoped to the stage
+     so the rest of the work app keeps its own defaults. */
+  .harness-root :global(*) {
+    box-sizing: border-box;
+  }
+
   /* Mirrors WorkShell's .shell-root so the shell lays out exactly as it does in
      the product, and fills the tab the way it fills the app window. */
   .harness-root {

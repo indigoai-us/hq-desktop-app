@@ -162,7 +162,8 @@ describe("ChatSidebar DM avatars", () => {
     );
     expect(human?.getAttribute("data-avatar")).toBe("initials");
     expect(human?.querySelector("img")).toBeNull();
-    expect(human?.textContent?.trim()).toBe("AL");
+    // One letter in the rail's disc; two would read as text at 16px.
+    expect(human?.textContent?.trim()).toBe("A");
   });
 
   it("renders a roster photo on a human DM row", async () => {

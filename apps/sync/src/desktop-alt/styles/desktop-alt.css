@@ -153,27 +153,35 @@ html[data-window='messages'] * {
   box-sizing: border-box;
 }
 
-/* Subtle dark scrollbars, scoped to the desktop + messages windows. */
+/* The window-level bar, matched to the shell's own (packages/ui chat/
+   scrollbars.css): 4px, transparent track inset from the ends, pill thumb.
+   6px with a 3px radius read as a different control on the same screen. */
 html[data-window='desktop-alt'] ::-webkit-scrollbar,
 html[data-window='messages'] ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 html[data-window='desktop-alt'] ::-webkit-scrollbar-track,
 html[data-window='messages'] ::-webkit-scrollbar-track {
+  margin: 10px 0;
   background: transparent;
 }
 
 html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb,
 html[data-window='messages'] ::-webkit-scrollbar-thumb {
+  border-radius: 999px;
   background: var(--scrollbar-thumb);
-  border-radius: 3px;
 }
 
 html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover,
 html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
+}
+
+html[data-window='desktop-alt'] ::-webkit-scrollbar-corner,
+html[data-window='messages'] ::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .desktop-shell {

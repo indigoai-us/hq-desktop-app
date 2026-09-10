@@ -356,6 +356,7 @@
   import { createTenantStorage } from "../identity/tenant-storage.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
+  import "../chat/scrollbars.css";
   import "../chat/messaging/messaging-tokens.css";
   import "../home/tokens.css";
   import Caret from "../common/Caret.svelte";
@@ -5912,7 +5913,9 @@
     font-family: inherit;
     font-size: 12px;
     font-weight: 500;
-    line-height: 1;
+    /* The shell's line, 1.45. At `line-height: 1` the group came out 26px
+       against the 29px members button sitting next to it in the same head. */
+    line-height: 1.45;
     cursor: pointer;
     transition: color 0.12s;
   }

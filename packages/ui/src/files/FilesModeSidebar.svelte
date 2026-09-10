@@ -284,17 +284,6 @@
     min-height: 0;
     overflow-y: auto;
     padding-right: 2px;
-    scrollbar-color: var(--v4-hairline) transparent;
-    scrollbar-width: thin;
-  }
-
-  .fs-company-list::-webkit-scrollbar {
-    width: 4px;
-  }
-
-  .fs-company-list::-webkit-scrollbar-thumb {
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-hairline);
   }
 
   .fs-company-row {
@@ -448,8 +437,6 @@
     min-height: 0;
     overflow-y: auto;
     padding: 0 4px 8px;
-    scrollbar-color: var(--v4-hairline) transparent;
-    scrollbar-width: thin;
   }
 
   .fs-loading {
@@ -457,15 +444,6 @@
     padding: 6px 4px;
     color: var(--v4-text-3);
     font-size: var(--type-secondary);
-  }
-
-  .fs-tree-area::-webkit-scrollbar {
-    width: 4px;
-  }
-
-  .fs-tree-area::-webkit-scrollbar-thumb {
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-hairline);
   }
 
   @media (prefers-reduced-transparency: reduce) {

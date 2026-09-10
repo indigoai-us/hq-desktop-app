@@ -479,17 +479,6 @@
     min-height: 0;
     overflow-y: auto;
     padding-bottom: 12px;
-    scrollbar-color: var(--v4-hairline) transparent;
-    scrollbar-width: thin;
-  }
-
-  .v4-company-nav::-webkit-scrollbar {
-    width: 6px;
-  }
-
-  .v4-company-nav::-webkit-scrollbar-thumb {
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-hairline);
   }
 
   .v4-company-item {

@@ -612,7 +612,6 @@
     border: 0;
     border-radius: 0;
     background: transparent;
-    scrollbar-color: var(--v4-control-border) transparent;
   }
 
   .markdown-body :global(table) {

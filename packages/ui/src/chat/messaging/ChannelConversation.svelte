@@ -1704,16 +1704,6 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    scrollbar-width: thin;
-    scrollbar-color: var(--line, var(--pop-muted)) transparent;
-  }
-
-  .dm-thread::-webkit-scrollbar {
-    width: 4px;
-  }
-  .dm-thread::-webkit-scrollbar-thumb {
-    background: var(--line);
-    border-radius: 999px;
   }
 
   .dm-thread-empty {
@@ -1782,6 +1772,10 @@
     grid-template-columns: 32px minmax(0, 1fr);
     align-items: start;
     gap: 12px;
+    /* `@hq/ui` ships into hosts with and without a border-box reset, so say
+       it here: `width: 100%` plus 8px of padding otherwise overflowed the
+       thread and carried every card in the column out past the pane edge. */
+    box-sizing: border-box;
     width: 100%;
     max-width: none;
     margin-top: 0;
@@ -2205,14 +2199,19 @@
   .date-separator {
     display: flex;
     align-items: center;
-    gap: 0;
+    /* 8px each side puts the rule on exactly the edges `.dm-msg`'s own padding
+       gives the messages, so the divider and the column agree. */
     margin: 12px 8px;
-    color: var(--t2);
-    font-family: var(--font-ui);
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0;
-    text-transform: none;
+    /* The concept's `.daysep`: two hairlines and a small mono caption between
+       them. The 13px/700 pill this replaces read as a heading and became the
+       loudest thing in the timeline. */
+    gap: 12px;
+    color: var(--t3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .date-separator::before,
@@ -2224,11 +2223,10 @@
   }
 
   .date-separator span {
-    margin: 0 12px;
-    padding: 2px 12px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: var(--v4-ground, var(--raised, #161618));
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
   }
 
   .dm-msg-reply-active {
@@ -2281,16 +2279,20 @@
   }
 
   /* Slack-style hover toolbar pinned to the message. */
+  /* Concept `.react-bar`: opens BELOW the row on the message's own right
+     edge, 4px clear. Floating it at `top: -14px` sat it over the message
+     above and made the bar look like it belonged to that one. */
   .dm-quick-react {
     position: absolute;
-    top: -14px;
+    top: 100%;
     right: 8px;
     z-index: 2;
     display: flex;
-    gap: 2px;
-    margin: 0;
+    align-items: center;
+    gap: 1px;
+    margin-top: 4px;
     padding: 2px;
-    border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--panel-border, var(--line));
     border-radius: 8px;
     /* Opaque floating bar: composite the (translucent) panel token over the
        solid window ground so the message never bleeds through it. */
@@ -2300,6 +2302,15 @@
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.12s ease;
+  }
+
+  /* Bridges the 4px offset so the pointer never crosses dead space on its
+     way from the row to the bar. */
+  .dm-quick-react::before {
+    content: "";
+    position: absolute;
+    inset: -6px -4px -4px;
+    z-index: -1;
   }
 
   .dm-msg:hover .dm-quick-react,
@@ -2324,32 +2335,39 @@
 
   .dm-quick-react-more {
     color: var(--t2, var(--pop-muted));
-    font-weight: 600;
   }
 
+  /* `.rb-ic`: a 24px transparent target that only fills under the pointer.
+     Giving every button a resting fill turned one pill into a row of chips. */
   .dm-quick-react-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 28px;
-    height: 28px;
-    padding: 0 0.25rem;
+    min-width: 24px;
+    height: 24px;
+    padding: 0;
     border: 0;
     border-radius: 6px;
-    background: var(--pop-hover);
-    font-size: 12px;
+    background: transparent;
+    color: var(--t1);
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
   }
 
   .dm-quick-react-btn:hover {
-    background: var(--c-field-bg);
+    background: var(--hover);
+    color: var(--t1);
   }
 
   .dm-quick-reply {
     padding: 0 8px;
-    color: var(--t1);
+    color: var(--t2);
     font: 500 11px/1 var(--font-ui);
+  }
+
+  .dm-quick-reply:hover {
+    color: var(--t1);
   }
 
   /* Composer (real desktop dm-reply). */
@@ -2362,10 +2380,11 @@
     align-items: stretch;
     gap: 6px;
     margin: 0 16px 20px;
-    padding: 8px 8px 8px 12px;
+    /* Concept `.composer`: 10px radius, 12px of air above the caret. */
+    padding: 12px 8px 8px 14px;
     background: var(--raised, var(--pop-hover));
     border: 1px solid var(--line2, var(--pop-border));
-    border-radius: 8px;
+    border-radius: 10px;
     transition: border-color 0.12s;
   }
 
