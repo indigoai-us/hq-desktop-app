@@ -39,6 +39,25 @@ describe('session transcript rich content', () => {
     expect(bubble.textContent).not.toContain('[Read report]');
   });
 
+  it('renders GFM tables as real tables, not display:block pipes', () => {
+    const table = [
+      '| ID | Title | Status |',
+      '| --- | --- | --- |',
+      '| US-001 | Nested restore | done |',
+      '| US-007 | Accept the matrix | in_progress |',
+    ].join('\n');
+    component = mount(SessionTranscript, { target: document.body, props: { blocks: [
+      { type: 'assistantProse', id: 'a1', at: null, text: table, streaming: false },
+    ] } });
+    flushSync();
+    const prose = document.querySelector('[data-testid="session-assistant-prose"]')!;
+    expect(prose.querySelector('.markdown-table-scroll')).not.toBeNull();
+    expect(prose.querySelectorAll('th')).toHaveLength(3);
+    expect(prose.querySelectorAll('td')).toHaveLength(6);
+    expect(prose.textContent).toContain('US-007');
+    expect(prose.textContent).not.toContain('| US-007 |');
+  });
+
   it('preserves the entire long code line and sanitizes user HTML', () => {
     const line = `hq files get ${'long-path/'.repeat(150)}`;
     component = mount(SessionTranscript, { target: document.body, props: { blocks: [

@@ -554,10 +554,55 @@
     overflow-wrap: anywhere;
   }
 
-  .prose :global(table) {
-    display: block;
+  .prose :global(.markdown-table-scroll) {
+    width: 100%;
     max-width: 100%;
+    margin: 0.7em 0;
     overflow-x: auto;
+    border: 0;
+    background: transparent;
+    scrollbar-width: thin;
+    scrollbar-color: var(--v4-hairline) transparent;
+  }
+
+  .prose :global(.markdown-table-scroll:focus-visible) {
+    outline: 2px solid var(--v4-text-2);
+    outline-offset: 2px;
+  }
+
+  .prose :global(table) {
+    width: 100%;
+    min-width: max-content;
+    border-spacing: 0;
+    border-collapse: collapse;
+    color: inherit;
+    font-size: 0.92em;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .prose :global(th),
+  .prose :global(td) {
+    padding: 0.4em 0.65em;
+    border-right: 1px solid var(--v4-hairline);
+    border-bottom: 1px solid var(--v4-hairline);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .prose :global(th) {
+    color: var(--v4-text-3);
+    font-weight: 500;
+  }
+
+  .prose :global(th:first-child),
+  .prose :global(td:first-child) {
+    padding-left: 0;
+  }
+
+  .prose :global(th:last-child),
+  .prose :global(td:last-child) {
+    border-right: 0;
   }
 
   @container (max-width: 520px) {
