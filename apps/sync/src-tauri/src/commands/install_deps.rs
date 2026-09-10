@@ -6258,7 +6258,7 @@ mod install_deps_planner_tests {
         assert!(collector.take().is_none());
     }
 
-    fn string_extra(event: &sentry::protocol::Event<'static>, key: &str) -> &str {
+    fn string_extra<'a>(event: &'a sentry::protocol::Event<'static>, key: &str) -> &'a str {
         let Some(sentry::protocol::Value::String(value)) = event.extra.get(key) else {
             panic!("{key} must be a string extra");
         };
@@ -6348,7 +6348,7 @@ mod install_deps_planner_tests {
     /// Empty DSNs in development and PR CI must leave setup able to complete.
     #[test]
     fn setup_failure_capture_is_a_noop_without_a_sentry_client() {
-        let hub = std::sync::Arc::new(sentry::Hub::new(None, std::sync::Arc::new(sentry::Scope::new())));
+        let hub = std::sync::Arc::new(sentry::Hub::new(None, std::sync::Arc::new(Default::default())));
         sentry::Hub::run(hub.clone(), || {
             queue_setup_dependency_failure(failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), vec![]);
         });
@@ -6385,13 +6385,13 @@ mod install_deps_planner_tests {
     fn setup_hub<T: sentry::Transport>(transport: std::sync::Arc<T>) -> std::sync::Arc<sentry::Hub> {
         let options = sentry::ClientOptions {
             dsn: Some("https://public@sentry.invalid/1".parse().unwrap()),
-            transport: Some(transport),
+            transport: Some(std::sync::Arc::new(transport)),
             before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
             ..Default::default()
         };
         std::sync::Arc::new(sentry::Hub::new(
             Some(std::sync::Arc::new(sentry::Client::from(options))),
-            std::sync::Arc::new(sentry::Scope::new()),
+            std::sync::Arc::new(Default::default()),
         ))
     }
 
