@@ -480,6 +480,18 @@ export class SetupAgent {
   }
 
   /**
+   * This machine finished HQ setup before the welcome channel existed (the
+   * host's setup status says the guided run is not owed). Show it as done —
+   * the finale, not Run Setup — without inventing a session. A remembered
+   * run of its own always wins; "Run again" from the finale still works.
+   */
+  markAlreadySetUp(): void {
+    if (this.mode !== "idle" || this.sessionId) return;
+    this.finished = true;
+    this.mode = "done";
+  }
+
+  /**
    * The person says they are done. A skill without guided markers never
    * tells the desktop it finished; this is the honest way out — mark the
    * run finished, keep the conversation, and offer the Continue buttons.

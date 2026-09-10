@@ -206,6 +206,10 @@ pub struct SetupStatus {
     pub hq_root_valid: bool,
     pub configured: bool,
     pub hq_folder_path: String,
+    /// The welcome channel should still offer Run Setup here. False for a
+    /// machine set up before the welcome flow existed, or once the guided run
+    /// finished. See `hq_desktop_core::lifecycle::welcome_setup_owed`.
+    pub welcome_setup_owed: bool,
 }
 
 #[tauri::command]
@@ -221,11 +225,31 @@ pub fn get_setup_status() -> SetupStatus {
         config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
         menubar.get("hqPath").and_then(Value::as_str),
     );
+    let root_valid = hq_root_valid(&hq_root);
     SetupStatus {
-        hq_root_valid: hq_root_valid(&hq_root),
+        hq_root_valid: root_valid,
         configured: config.is_some(),
         hq_folder_path: hq_root.to_string_lossy().to_string(),
+        welcome_setup_owed: hq_desktop_core::lifecycle::welcome_setup_owed(&menubar, root_valid),
     }
+}
+
+/// The welcome channel's guided setup finished: it is never owed again on
+/// this machine, whatever the window's own memory says (that lives in WebKit
+/// storage and does not survive a reinstall under another bundle id).
+#[tauri::command]
+pub fn mark_welcome_setup_complete() -> Result<(), String> {
+    let path = paths::menubar_json_path()?;
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[
+            ("welcomeSetupPending", Value::Bool(false)),
+            (
+                "welcomeSetupCompletedAt",
+                Value::String(Utc::now().to_rfc3339()),
+            ),
+        ],
+    )
 }
 
 pub fn lifecycle_keeps_main_window_visible(state: LifecycleState) -> bool {
