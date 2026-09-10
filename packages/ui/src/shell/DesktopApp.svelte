@@ -1545,7 +1545,12 @@
       prompt,
     }).then(
       (created) => upsertTaskGenLine(key, lineId, `Task created — ${created.title}`),
-      () => upsertTaskGenLine(key, lineId, "Could not create the task"),
+      (err) =>
+        upsertTaskGenLine(
+          key,
+          lineId,
+          `Could not create the task — ${err instanceof Error ? err.message : "unknown error"}`,
+        ),
     );
     const prior = createdTasks[key];
     const placeholder = projectViewToBoard({
@@ -1622,7 +1627,12 @@
       }),
     }).then(
       (created) => upsertTaskGenLine(rowKey, lineId, `Task created — ${created.title}`),
-      () => upsertTaskGenLine(rowKey, lineId, "Could not create the task"),
+      (err) =>
+        upsertTaskGenLine(
+          rowKey,
+          lineId,
+          `Could not create the task — ${err instanceof Error ? err.message : "unknown error"}`,
+        ),
     );
   }
   const files = $derived<ChannelFileItemModel[]>(

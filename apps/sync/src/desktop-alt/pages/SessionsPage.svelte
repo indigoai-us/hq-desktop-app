@@ -1404,6 +1404,10 @@
     onanswerquestion={(requestId, answers) =>
       void decide(requestId, () => liveSessionStore.answerQuestion(requestId, answers))}
     onchoosemodel={() => composer?.openModelMenu()}
+    onreauth={() => {
+      const tool = liveSessionStore.summary?.tool ?? tool;
+      void liveSessionStore.providerLoginStart(tool);
+    }}
   />
 
   {#if checkpointDue}

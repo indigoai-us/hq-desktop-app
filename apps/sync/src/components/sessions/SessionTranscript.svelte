@@ -70,6 +70,7 @@
      * offer the fix.
      */
     onchoosemodel?: () => void;
+    onreauth?: () => void;
     restoreScroll?: NavigationScrollState | null;
   }
 
@@ -88,6 +89,7 @@
     ondenypermission,
     onanswerquestion,
     onchoosemodel,
+    onreauth,
     restoreScroll = null,
   }: Props = $props();
 
@@ -344,6 +346,18 @@
                 }}
               >
                 Choose a model
+              </button>
+            {:else if block.action === 'reauth' && onreauth}
+              <button
+                type="button"
+                class="inline-fix"
+                data-testid="session-reauth"
+                onclick={(event) => {
+                  event.stopPropagation();
+                  onreauth?.();
+                }}
+              >
+                Sign in again
               </button>
             {/if}
           </p>

@@ -1068,6 +1068,19 @@ describe('foldSessionEvents — model_not_found is ONE recoverable line', () => 
     expect(errors(blocks)[0]?.action).toBe('chooseModel');
   });
 
+  it('offers sign-in again on an authentication_failed error', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'userMessage', text: 'hello', imageCount: 0 },
+      {
+        kind: 'error',
+        message: 'Authentication failed — sign in to Claude again.',
+        code: 'authentication_failed',
+      },
+    ]);
+    expect(errors(blocks)[0]?.action).toBe('reauth');
+    expect(errors(blocks)[0]?.code).toBe('authentication_failed');
+  });
+
   it('withdraws the narration even when only the streamed deltas arrived', () => {
     // Mid-stream: the prose has started, the error has not landed yet.
     const { blocks } = foldSessionEvents(failedTurn.slice(0, 3));

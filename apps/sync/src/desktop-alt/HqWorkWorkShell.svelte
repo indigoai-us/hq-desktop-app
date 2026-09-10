@@ -50,6 +50,8 @@
   } from './pages/sessions-route-param';
   import { liveSessionStore } from './lib/live-session-store.svelte';
   import { parseMeshProjectView } from '@hq/core';
+  import { backgroundJobFailure } from './lib/background-job';
+  import { readRememberedTool } from '../components/sessions/session-models';
   import {
     isPermissionGranted as isNotifyPermissionGranted,
     sendNotification,
@@ -889,17 +891,25 @@
             codexLoggedIn?: boolean;
             grokLoggedIn?: boolean;
           }>('agent_session_preflight');
-          const tool = preflight.claudeLoggedIn
-            ? 'claude'
-            : preflight.codexLoggedIn
-              ? 'codex'
-              : preflight.grokLoggedIn
-                ? 'grok'
-                : 'claude';
-          await liveSessionStore.startBackground(
+          const remembered = readRememberedTool();
+          const logged = {
+            claude: Boolean(preflight.claudeLoggedIn),
+            codex: Boolean(preflight.codexLoggedIn),
+            grok: Boolean(preflight.grokLoggedIn),
+          } as const;
+          const tool = logged[remembered]
+            ? remembered
+            : logged.grok
+              ? 'grok'
+              : logged.codex
+                ? 'codex'
+                : logged.claude
+                  ? 'claude'
+                  : remembered;
+          const sessionId = await liveSessionStore.startBackground(
             {
               sessionId: '',
-              title: 'Generate board task',
+              title: null,
               tool,
               cwd: '',
               company: slug,
@@ -909,29 +919,31 @@
               resume: null,
               permissionMode: 'bypassAll',
               hidden: true,
-              projectChannelId: seed.channelId ?? undefined,
             },
             seed.prompt,
           );
           const deadline = Date.now() + 180_000;
           while (Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, 2500));
+            const failed = backgroundJobFailure(liveSessionStore.eventsFor(sessionId));
+            if (failed) throw new Error(failed);
             const nextRes = await adapter.workMesh.getProjectView(seed.projectId, seed.companyUid);
-            if (!nextRes.ok) continue;
-            const after = parseMeshProjectView(nextRes.value);
-            const created = (after?.stories ?? []).find((story) => !known.has(story.id));
-            if (created?.title) {
-              try {
-                if (await isNotifyPermissionGranted()) {
-                  sendNotification({ title: 'Task created', body: created.title });
+            if (nextRes.ok) {
+              const after = parseMeshProjectView(nextRes.value);
+              const created = (after?.stories ?? []).find((story) => !known.has(story.id));
+              if (created?.title) {
+                try {
+                  if (await isNotifyPermissionGranted()) {
+                    sendNotification({ title: 'Task created', body: created.title });
+                  }
+                } catch {
+                  /* in-chat status is the required signal */
                 }
-              } catch {
-                /* in-chat status is the required signal */
+                return { title: created.title };
               }
-              return { title: created.title };
             }
+            await new Promise((resolve) => setTimeout(resolve, 1500));
           }
-          throw new Error('Timed out creating task');
+          throw new Error('Timed out creating the task');
         }}
         data={{ user: capabilities.hostIdentity }}
         runtimeKind={capabilities.runtimeKind}
