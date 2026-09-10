@@ -14,6 +14,7 @@ describe("task generate prompts", () => {
     expect(text).toContain("starting point");
     expect(text).toContain("Fix login");
     expect(text).toContain("acceptanceCriteria");
+    expect(text).toContain("fenced json");
     expect(text).toContain("Do not leave a UUID stub");
   });
 

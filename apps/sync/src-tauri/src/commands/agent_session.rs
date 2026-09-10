@@ -608,20 +608,20 @@ pub async fn agent_session_start(
         Spawned::Codex(_, handshake) => Some(handshake.thread_id.clone()),
         Spawned::Grok(_, handshake) => Some(handshake.session_id.clone()),
     };
-    if !spec.hidden {
-        if let Err(e) = write_session_meta(
-            &hq_root,
-            &session_id,
-            spec.company.as_deref(),
-            spec.tool,
-            cli_session_id.as_deref(),
-            spec.project.as_deref(),
-        ) {
-            log(
-                LOG_TAG,
-                &format!("session={session_id} meta write failed: {e}"),
-            );
-        }
+    // Hidden jobs stay out of the Sessions list via registry snapshot, but
+    // they still need meta so the native CLI id is on disk if the child dies.
+    if let Err(e) = write_session_meta(
+        &hq_root,
+        &session_id,
+        spec.company.as_deref(),
+        spec.tool,
+        cli_session_id.as_deref(),
+        spec.project.as_deref(),
+    ) {
+        log(
+            LOG_TAG,
+            &format!("session={session_id} meta write failed: {e}"),
+        );
     }
 
     if let Err(error) = save_session_context(&hq_root, &session_id, &context) {

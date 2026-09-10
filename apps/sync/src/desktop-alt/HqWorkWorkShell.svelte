@@ -58,8 +58,10 @@
   import { parseMeshProjectView } from '@hq/core';
   import {
     GENERATE_TASK_TIMEOUT_MS,
+    GENERATE_TASK_SETTLE_MS,
     backgroundJobFailure,
     createdStoryTitle,
+    parseGeneratedStoryFromEvents,
   } from './lib/background-job';
   import { readRememberedTool } from '../components/sessions/session-models';
   import { planFirstSend } from '../components/sessions/startwork';
@@ -1019,6 +1021,7 @@
             seed.prompt,
           );
           const deadline = Date.now() + GENERATE_TASK_TIMEOUT_MS;
+          let settleUntil = 0;
           const lookForCreated = async (): Promise<string | null> => {
             const nextRes = await adapter.workMesh.getProjectView(seed.projectId, seed.companyUid);
             if (!nextRes.ok) return null;
@@ -1040,10 +1043,23 @@
             if (created) return finish(created);
             const status = await liveSessionStore.backgroundStatus(sessionId);
             const failed = backgroundJobFailure(status.events);
-            // The CLI often exits before mesh/PRD has caught up. Keep polling
-            // the Board unless this is a real auth/tool failure.
-            if (failed && !status.gone) throw new Error(failed);
+            const draft = parseGeneratedStoryFromEvents(status.events);
+            if (draft && adapter.workMesh.createProjectStory) {
+              const posted = await adapter.workMesh.createProjectStory(
+                seed.projectId,
+                seed.companyUid,
+                draft,
+              );
+              if (posted.ok) return finish(draft.title);
+            }
             if (failed && /authenticate|sign in/i.test(failed)) throw new Error(failed);
+            if (failed && !status.gone) throw new Error(failed);
+            if (status.gone) {
+              if (!settleUntil) settleUntil = Date.now() + GENERATE_TASK_SETTLE_MS;
+              if (Date.now() >= settleUntil) {
+                throw new Error('The generator session stopped before the task landed.');
+              }
+            }
             await new Promise((resolve) => setTimeout(resolve, 1500));
           }
           const late = await lookForCreated();

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { backgroundJobFailure, createdStoryTitle } from './background-job';
+import {
+  backgroundJobFailure,
+  createdStoryTitle,
+  parseGeneratedStoryFromEvents,
+} from './background-job';
 
 describe('backgroundJobFailure', () => {
   it('surfaces a revoked OAuth token immediately', () => {
@@ -35,5 +39,19 @@ describe('backgroundJobFailure', () => {
         { id: 'US-019', title: 'Cache provider model lists across provider switches' },
       ]),
     ).toBe('Cache provider model lists across provider switches');
+  });
+
+  it('parses a fenced story json from streamed text', () => {
+    const draft = parseGeneratedStoryFromEvents([
+      {
+        kind: 'textDelta',
+        text: '```json\n{"id":"US-020","title":"Use last provider","description":"Remember model","acceptanceCriteria":["Opens with last tool"],"status":"todo"}\n```',
+        parentToolUseId: null,
+      },
+    ]);
+    expect(draft?.id).toBe('US-020');
+    expect(draft?.title).toBe('Use last provider');
+    expect(draft?.description).toContain('Remember model');
+    expect(draft?.description).toContain('Opens with last tool');
   });
 });
