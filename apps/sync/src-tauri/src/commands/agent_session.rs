@@ -412,10 +412,12 @@ pub async fn agent_session_start(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     state.lock().await.set_channel(&session_id, tx);
 
-    if let Err(error) = super::project_session_sharing::prepare(&app, &spec, project_channel_id.as_deref()).await {
-        use tauri::Emitter;
-        // Sharing is independent of running the owner's local conversation.
-        let _ = app.emit("project-session:sharing-status", serde_json::json!({ "sessionId": session_id, "error": error }));
+    if !spec.hidden {
+        if let Err(error) = super::project_session_sharing::prepare(&app, &spec, project_channel_id.as_deref()).await {
+            use tauri::Emitter;
+            // Sharing is independent of running the owner's local conversation.
+            let _ = app.emit("project-session:sharing-status", serde_json::json!({ "sessionId": session_id, "error": error }));
+        }
     }
 
     let sink: Arc<dyn SessionEventSink> = Arc::new(claude::AppSink(app));
@@ -427,18 +429,20 @@ pub async fn agent_session_start(
         Spawned::Codex(_, handshake) => Some(handshake.thread_id.clone()),
         Spawned::Grok(_, handshake) => Some(handshake.session_id.clone()),
     };
-    if let Err(e) = write_session_meta(
-        &hq_root,
-        &session_id,
-        spec.company.as_deref(),
-        spec.tool,
-        cli_session_id.as_deref(),
-        spec.project.as_deref(),
-    ) {
-        log(
-            LOG_TAG,
-            &format!("session={session_id} meta write failed: {e}"),
-        );
+    if !spec.hidden {
+        if let Err(e) = write_session_meta(
+            &hq_root,
+            &session_id,
+            spec.company.as_deref(),
+            spec.tool,
+            cli_session_id.as_deref(),
+            spec.project.as_deref(),
+        ) {
+            log(
+                LOG_TAG,
+                &format!("session={session_id} meta write failed: {e}"),
+            );
+        }
     }
 
     if let Err(error) = save_session_context(&hq_root, &session_id, &context) {

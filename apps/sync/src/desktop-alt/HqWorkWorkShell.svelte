@@ -924,8 +924,12 @@
           );
           const deadline = Date.now() + 180_000;
           while (Date.now() < deadline) {
-            const failed = backgroundJobFailure(liveSessionStore.eventsFor(sessionId));
+            const status = await liveSessionStore.backgroundStatus(sessionId);
+            const failed = backgroundJobFailure(status.events);
             if (failed) throw new Error(failed);
+            if (status.gone) {
+              throw new Error('Session ended before the task was created.');
+            }
             const nextRes = await adapter.workMesh.getProjectView(seed.projectId, seed.companyUid);
             if (nextRes.ok) {
               const after = parseMeshProjectView(nextRes.value);
