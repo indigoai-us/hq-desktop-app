@@ -3376,7 +3376,7 @@
   .row-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: var(--control-gap, 6px);
     justify-content: flex-end;
     min-width: 0;
     max-width: 100%;

@@ -847,7 +847,7 @@
   .avatar-actions {
     display: flex;
     flex-direction: column;
-    gap: var(--v4-space-1);
+    gap: var(--control-gap, 6px);
     min-width: 0;
   }
 

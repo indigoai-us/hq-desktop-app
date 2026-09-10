@@ -1030,7 +1030,7 @@
 
   .request-actions {
     display: flex;
-    gap: var(--v4-space-2);
+    gap: var(--control-gap, 6px);
     margin-top: var(--v4-space-1);
     justify-content: flex-end;
   }
@@ -1579,7 +1579,7 @@
 
   .confirm-actions {
     display: flex;
-    gap: var(--v4-space-2);
+    gap: var(--control-gap, 6px);
   }
 
   .confirm-yank {

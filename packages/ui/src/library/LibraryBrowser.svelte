@@ -479,7 +479,7 @@
   .scope-menu-actions {
     display: flex;
     align-items: center;
-    gap: var(--v4-space-1);
+    gap: var(--control-gap, 6px);
     padding: var(--v4-space-1) var(--v4-space-2) var(--v4-space-2);
     border-bottom: 1px solid var(--v4-hairline);
     margin-bottom: var(--v4-space-1);

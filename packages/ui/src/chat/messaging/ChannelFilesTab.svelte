@@ -663,7 +663,7 @@
   .files-preview-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
   }
 
   .files-preview-action {

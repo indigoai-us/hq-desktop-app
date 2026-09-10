@@ -101,7 +101,7 @@
   .run-card-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
     margin-top: 4px;
   }
 

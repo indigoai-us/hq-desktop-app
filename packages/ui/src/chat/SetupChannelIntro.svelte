@@ -347,7 +347,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: flex-start;
-    gap: var(--space-2, 8px);
+    gap: var(--control-gap, 6px);
     margin-top: var(--space-2, 8px);
   }
 

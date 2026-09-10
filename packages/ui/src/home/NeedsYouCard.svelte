@@ -131,7 +131,7 @@
   .v4-card-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
     flex: 0 0 auto;
   }
 

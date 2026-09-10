@@ -1257,7 +1257,7 @@
     flex-wrap: wrap;
     flex-shrink: 0;
     align-items: center;
-    gap: var(--v4-space-2);
+    gap: var(--control-gap, 6px);
   }
 
   #project-detail-title {

@@ -1152,7 +1152,7 @@
   .row-actions {
     display: flex;
     flex-shrink: 0;
-    gap: var(--v4-space-2);
+    gap: var(--control-gap, 6px);
   }
 
   .pill {

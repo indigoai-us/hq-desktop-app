@@ -384,7 +384,7 @@
   .row-actions {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--control-gap, 6px);
   }
 
   .icon-button {

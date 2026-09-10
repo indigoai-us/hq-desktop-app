@@ -414,7 +414,7 @@
     flex-shrink: 0;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: var(--control-gap, 6px);
     min-width: 0;
   }
 

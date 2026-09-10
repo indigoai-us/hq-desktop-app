@@ -440,7 +440,7 @@
   .company-actions {
     display: flex;
     flex: 0 0 auto;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
   }
 
   .company-actions button {

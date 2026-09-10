@@ -1158,7 +1158,7 @@
   .section-actions {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: var(--control-gap, 6px);
     min-width: 0;
   }
 

@@ -2560,7 +2560,7 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
     margin-top: 10px;
   }
 

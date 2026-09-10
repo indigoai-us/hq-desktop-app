@@ -1,0 +1,16 @@
+/*
+ * Control-cluster spacing.
+ *
+ * One gap for a row of small buttons — the concept uses 6px almost everywhere
+ * it puts controls side by side (`.mtg-actions`, `.status-btn`, `.core-btn`,
+ * `.cmp-tray`, `.search-row`, `.pk-people`). Production had drifted to 2, 4,
+ * 6, 8, 9 and 10px across thirty-odd clusters, so no two button rows in the
+ * app measured the same.
+ *
+ * Use `var(--control-gap)` for any row of labelled small buttons. Icon-only
+ * rails (the sidebar header, the titlebar's own bar) are deliberately tighter
+ * and keep their own value.
+ */
+.chat-shell {
+  --control-gap: 6px;
+}

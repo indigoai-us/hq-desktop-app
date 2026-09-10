@@ -231,7 +231,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--control-gap, 6px);
   }
 
   .setup-btn {

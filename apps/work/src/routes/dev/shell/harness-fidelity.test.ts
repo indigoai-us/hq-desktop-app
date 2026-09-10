@@ -11,7 +11,7 @@
  * Each assertion below is a pair that has actually bitten. When you find
  * another, fix the harness and add the assertion in the same commit.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const harness = readFileSync(
@@ -101,5 +101,45 @@ describe("design harness fidelity", () => {
         declarationsOnly(css).match(/scrollbar-width:\s*(?!none)[\w-]+/g) ?? [];
       expect(offenders, `${label} stylesheet`).toEqual([]);
     }
+  });
+});
+
+describe("shell control spacing", () => {
+  const shellSources = (): string[] => {
+    const out: string[] = [];
+    const walk = (dir: URL): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const child = new URL(
+          `${entry.name}${entry.isDirectory() ? "/" : ""}`,
+          dir,
+        );
+        if (entry.isDirectory()) walk(child);
+        else if (entry.name.endsWith(".svelte")) out.push(readFileSync(child, "utf8"));
+      }
+    };
+    walk(new URL("../../../../../../packages/ui/src/", import.meta.url));
+    return out;
+  };
+
+  it("gives every small-button cluster the same gap", () => {
+    // One value for a row of labelled small buttons. Production had drifted to
+    // 2, 4, 6, 8, 9 and 10px across thirty-odd clusters, so no two button rows
+    // in the app measured the same. Icon-only rails are deliberately tighter
+    // and are named here rather than silently excluded.
+    const iconRails = ["chat-header-actions", "v4-title-actions"];
+    const cluster =
+      /^[ \t]*\.([-\w]*(?:actions|action-row|btn-row|buttons|btns)[-\w]*)[^{\n]*\{([^}]*)\}/gm;
+    const offenders: string[] = [];
+    for (const src of shellSources()) {
+      for (const [, name, body] of src.matchAll(cluster)) {
+        if (iconRails.includes(name)) continue;
+        if (!body.includes("display: flex")) continue;
+        const gap = /gap:\s*([^;]+);/.exec(body)?.[1]?.trim();
+        if (gap && !gap.startsWith("var(--control-gap")) {
+          offenders.push(`${name}: ${gap}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

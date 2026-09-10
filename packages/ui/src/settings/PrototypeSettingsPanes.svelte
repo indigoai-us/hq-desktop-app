@@ -1682,7 +1682,7 @@
   .connect-actions {
     margin-left: auto;
     display: flex;
-    gap: 6px;
+    gap: var(--control-gap, 6px);
     flex-wrap: wrap;
     justify-content: flex-end;
   }

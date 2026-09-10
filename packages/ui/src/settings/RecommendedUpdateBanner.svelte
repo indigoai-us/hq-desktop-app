@@ -88,7 +88,7 @@
     display: flex;
     flex-shrink: 0;
     align-items: center;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
   }
 
   .recommend-update,

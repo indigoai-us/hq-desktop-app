@@ -357,6 +357,7 @@
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
   import "../chat/scrollbars.css";
+  import "../chat/controls.css";
   import "../chat/messaging/messaging-tokens.css";
   import "../home/tokens.css";
   import Caret from "../common/Caret.svelte";

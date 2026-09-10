@@ -728,7 +728,7 @@
   .core-recovery-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
   }
 
   .core-paused {
@@ -832,7 +832,7 @@
   .core-conflict-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
   }
 
   .core-rows {

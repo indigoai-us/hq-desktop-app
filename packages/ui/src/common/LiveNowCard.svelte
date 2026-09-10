@@ -372,7 +372,7 @@
     display: flex;
     flex: 0 0 auto;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
     margin-top: 12px;
   }
 

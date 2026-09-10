@@ -710,7 +710,7 @@
   .vp-actions {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
     margin-top: 16px;
   }
 

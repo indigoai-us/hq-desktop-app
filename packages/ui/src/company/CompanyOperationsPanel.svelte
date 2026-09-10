@@ -501,7 +501,7 @@
     display: flex;
     flex: 0 0 auto;
     align-items: center;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
   }
 
   .ops-settings-button {

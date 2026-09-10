@@ -1004,7 +1004,7 @@
     flex: 0 0 auto;
     flex-shrink: 0;
     align-items: center;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
   }
 
   .toast {
@@ -1422,7 +1422,7 @@
   .ss-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
     flex-shrink: 0;
   }
   .disconnect-btn {

@@ -442,7 +442,7 @@
   .notif-header-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--control-gap, 6px);
     margin-left: auto;
   }
 
@@ -637,7 +637,7 @@
   .notif-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: var(--control-gap, 6px);
     margin-top: 6px;
   }
 
