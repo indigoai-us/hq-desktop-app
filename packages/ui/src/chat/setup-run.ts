@@ -416,6 +416,7 @@ export function interpretSetupRun(
   let lastError = "";
 
   /** The latest open request (question/permission) and the latest assistant words. */
+  const pendingPermissions: string[] = [];
   let pendingRequest:
     | { kind: "question"; requestId: string; questions: SetupRunStructuredQuestion[] }
     | { kind: "permission"; requestId: string }
@@ -459,6 +460,7 @@ export function interpretSetupRun(
         assistantIsLatest = true;
         turnDoneSinceAssistant = false;
         pendingRequest = null;
+        pendingPermissions.length = 0;
 
         for (const match of text.matchAll(CARD_MARKER)) {
           const parsed = parseSetupCard(match[1]!);
@@ -502,19 +504,30 @@ export function interpretSetupRun(
       case "permissionRequest": {
         const requestId = String((event as { requestId?: unknown }).requestId ?? "");
         assistantIsLatest = false;
-        pendingRequest = resolved.has(requestId) ? null : { kind: "permission", requestId };
+        // Several asks can queue up (one per file the agent wants to write);
+        // the first unanswered one is what the person sees, then the next.
+        if (!resolved.has(requestId)) pendingPermissions.push(requestId);
+        pendingRequest = pendingPermissions.length > 0 ? { kind: "permission", requestId: pendingPermissions[0]! } : null;
         break;
       }
       case "userMessage":
         assistantIsLatest = false;
         pendingRequest = null;
+        pendingPermissions.length = 0;
         card = null;
         break;
       case "toolCall":
       case "toolResult": {
-        // Work resumed: whatever was asked has been answered.
         assistantIsLatest = false;
-        pendingRequest = null;
+        // A tool call streamed in behind a pending permission is queued work,
+        // not work resuming — the agent is still blocked on the ask. A result
+        // means a tool actually ran, so whatever was asked has been answered.
+        if (event.kind === "toolResult") {
+          pendingPermissions.length = 0;
+          pendingRequest = null;
+        } else if (pendingRequest?.kind !== "permission") {
+          pendingRequest = null;
+        }
         // The question itself arrives as a tool call (AskUserQuestion) right
         // after the card marker — that is the card's own question, not work
         // resuming, so the card must survive it.
@@ -618,6 +631,7 @@ export function interpretSetupRun(
     inFlight:
       !done &&
       !ended &&
+      question === null &&
       events.length > 0 &&
       !["turnDone", "exited", "error", "questionRequest", "permissionRequest"].includes(lastKind),
     summary: done ? SETUP_RUN_DONE.summary : "",

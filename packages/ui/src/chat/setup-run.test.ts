@@ -236,6 +236,26 @@ describe("interpretSetupRun — questions", () => {
     expect(interpretSetupRun(events, "needsYou", ["perm-1"]).question).toBeNull();
   });
 
+  it("a permission ask survives the tool calls that stream in behind it, and the next ask follows once answered", () => {
+    const events: SetupRunEvent[] = [
+      say("Setting up your profile."),
+      { kind: "toolCall", id: "w1", name: "Write" },
+      { kind: "permissionRequest", requestId: "perm-1", toolName: "Write" },
+      { kind: "toolCall", id: "w2", name: "Write" },
+      { kind: "permissionRequest", requestId: "perm-2", toolName: "Write" },
+      { kind: "toolCall", id: "w3", name: "Write" },
+    ];
+    const first = interpretSetupRun(events, "needsYou");
+    expect(first.question?.kind).toBe("permission");
+    expect(first.question && "requestId" in first.question ? first.question.requestId : null).toBe("perm-1");
+    expect(first.inFlight).toBe(false);
+    const second = interpretSetupRun(events, "needsYou", ["perm-1"]);
+    expect(second.question && "requestId" in second.question ? second.question.requestId : null).toBe("perm-2");
+    expect(interpretSetupRun(events, "needsYou", ["perm-1", "perm-2"]).question).toBeNull();
+    // A tool result means the ask was answered elsewhere: nothing left to show.
+    expect(interpretSetupRun([...events, { kind: "toolResult", id: "w1", isError: false }], "working").question).toBeNull();
+  });
+
   it("trailing-question helper strips markdown and ignores non-questions", () => {
     expect(setupRunTrailingQuestion("Hello.\n\n**What do you do?**")).toBe("What do you do?");
     expect(setupRunTrailingQuestion("All done.")).toBeNull();
