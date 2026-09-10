@@ -135,6 +135,11 @@
     mentionCandidates?: MentionTarget[];
     /** Open ReplyPanel for this root eventId. */
     onreply?: (rootEventId: string) => void;
+    onGenerateTask?: (input: {
+      body: string;
+      notes: string;
+      thread: Array<{ author: string; body: string }>;
+    }) => Promise<void>;
     /** Host-owned attachment modal (must render outside this column). */
     onopenattachment?: (
       item: FileAttachmentModel,
@@ -260,7 +265,39 @@
     draftStorage = null,
     composerLocked = false,
     restoreScroll = null,
+    onGenerateTask,
   }: Props = $props();
+
+  let generateFor = $state<ConversationMessageWire | null>(null);
+  let generateNotes = $state("");
+  let generatePending = $state(false);
+  let generateError = $state("");
+
+  async function submitGenerateTask(): Promise<void> {
+    if (!generateFor || !onGenerateTask || generatePending) return;
+    generatePending = true;
+    generateError = "";
+    try {
+      const thread = messages
+        .filter((row) => (row.body ?? row.prompt ?? "").trim())
+        .slice(-12)
+        .map((row) => ({
+          author: messageAuthor(row),
+          body: (row.body ?? row.prompt ?? "").trim(),
+        }));
+      await onGenerateTask({
+        body: (generateFor.body ?? generateFor.prompt ?? "").trim(),
+        notes: generateNotes,
+        thread,
+      });
+      generateFor = null;
+      generateNotes = "";
+    } catch {
+      generateError = "Could not start task generation. Try again.";
+    } finally {
+      generatePending = false;
+    }
+  }
 
   /** Presence-store online flag for an actor in this conversation's company. */
   function actorOnline(actorUid: string | null | undefined): boolean {
@@ -1411,6 +1448,22 @@
                       />
                     {/if}
                   </span>
+                  {#if onGenerateTask}
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn"
+                      data-testid="message-generate-task"
+                      aria-label="Generate task"
+                      title="Generate task"
+                      onclick={() => {
+                        generateFor = msg;
+                        generateNotes = "";
+                        generateError = "";
+                      }}
+                    >
+                      Task
+                    </button>
+                  {/if}
                   <button
                     type="button"
                     class="dm-quick-react-btn dm-quick-reply"
@@ -1658,6 +1711,15 @@
       {onopenurl}
       onclose={() => (linkMenu = null)}
     />
+  {/if}
+  {#if generateFor}
+    <div class="generate-task-dialog" data-testid="generate-task-notes" role="dialog" aria-modal="true" aria-label="Generate task from message">
+      <p>Generate a Board task from this message. Optional notes go to the session with the channel thread.</p>
+      <textarea bind:value={generateNotes} maxlength="2000" placeholder="Notes for the session (optional)" disabled={generatePending}></textarea>
+      {#if generateError}<p role="alert">{generateError}</p>{/if}
+      <button type="button" disabled={generatePending} onclick={() => void submitGenerateTask()}>{generatePending ? "Starting…" : "Generate task"}</button>
+      <button type="button" disabled={generatePending} onclick={() => (generateFor = null)}>Cancel</button>
+    </div>
   {/if}
 </div>
 
@@ -2563,5 +2625,18 @@
   .btn-send[aria-disabled="true"] {
     opacity: 0.4;
     cursor: default;
+  }
+
+  .generate-task-dialog {
+    flex: none;
+    padding: 12px 16px;
+    border-top: 1px solid var(--line);
+  }
+  .generate-task-dialog textarea {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 72px;
+    margin: 8px 0;
   }
 </style>

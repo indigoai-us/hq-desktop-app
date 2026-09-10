@@ -137,7 +137,7 @@ it("creates in the selected column, blocks duplicate submits, and preserves a fa
   let rejectCreate!: (error: Error) => void;
   const onCreateTask = vi.fn((_task: unknown) => new Promise<void>((_resolve, reject) => { rejectCreate = reject; }));
   component = mount(BoardTab, {target: host, props: {columns, stories, onCreateTask}});
-  host.querySelector<HTMLButtonElement>('[aria-label="Create task in To do"]')!.click();
+  host.querySelector<HTMLButtonElement>('[aria-label="Generate task in To do"]')!.click();
   await tick();
   const input = host.querySelector<HTMLInputElement>('input')!;
   input.value = "New task"; input.dispatchEvent(new Event("input", {bubbles:true}));
@@ -148,8 +148,21 @@ it("creates in the selected column, blocks duplicate submits, and preserves a fa
   await tick();
   expect(onCreateTask).toHaveBeenCalledTimes(1);
   expect(onCreateTask.mock.calls[0]?.[0]).toMatchObject({title:"New task",status:"queued"});
-  expect(host.textContent).toContain("Creating…");
+  expect(host.textContent).toContain("Generating…");
   rejectCreate(new Error("offline"));
   await vi.waitFor(() => expect(host.textContent).toContain("Your draft is saved here"));
   expect(input.value).toBe("New task");
+});
+
+it("confirms before deleting a task", async () => {
+  host = document.createElement("div"); document.body.appendChild(host);
+  const onDeleteTask = vi.fn(() => Promise.resolve());
+  component = mount(BoardTab, {target: host, props: {columns, stories, onDeleteTask}});
+  host.querySelector<HTMLButtonElement>('[data-testid="board-card"]')!.click();
+  await tick();
+  host.querySelector<HTMLButtonElement>('[data-testid="board-delete-task"]')!.click();
+  await tick();
+  expect(host.querySelector('[data-testid="board-delete-confirm"]')?.textContent).toContain("US-001");
+  host.querySelector<HTMLButtonElement>('[data-testid="board-delete-confirm"] button')!.click();
+  await vi.waitFor(() => expect(onDeleteTask).toHaveBeenCalledWith(expect.objectContaining({id: "US-001"})));
 });

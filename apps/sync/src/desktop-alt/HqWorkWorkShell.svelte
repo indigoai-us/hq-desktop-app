@@ -47,10 +47,11 @@
     encodeHistorySessionParam,
     encodeLiveSessionParam,
     parseSessionsParam,
+    sessionDraftStorageKey,
   } from './pages/sessions-route-param';
   import { liveSessionStore } from './lib/live-session-store.svelte';
   import { configureSessionStarterCache } from '../components/sessions/session-starter';
-  import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
+  import { saveSessionComposerDraft, setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
   import { projectLinksStore } from './lib/project-links-store.svelte';
   import {
     newSessionParam,
@@ -871,6 +872,19 @@
     {/if}
     {#key authGeneration}
       <WorkShell
+        onGenerateTask={async (seed) => {
+          const company = (companies ?? []).find((row) => row.cloudUid === seed.companyUid);
+          const slug = company?.slug?.trim();
+          if (!slug) throw new Error('Company unavailable');
+          const param = newSessionParam(slug, seed.projectId, seed.channelId ?? undefined);
+          saveSessionComposerDraft(sessionDraftStorageKey(param), { text: seed.prompt, images: [] });
+          dispatchEmbeddedNavigation({
+            kind: 'extra',
+            page: 'sessions',
+            param,
+            companyUid: seed.companyUid,
+          });
+        }}
         data={{ user: capabilities.hostIdentity }}
         runtimeKind={capabilities.runtimeKind}
         fetch={capabilities.fetch}

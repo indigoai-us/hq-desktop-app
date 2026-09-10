@@ -79,6 +79,10 @@
   import ArtifactPanel from "../chat/messaging/ArtifactPanel.svelte";
   import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
+  import {
+    boardTaskGeneratePrompt,
+    messageTaskGeneratePrompt,
+  } from "../chat/messaging/task-generate.js";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import CompanyTabs from "../chat/CompanyTabs.svelte";
   import TeamTab from "../chat/tabs/TeamTab.svelte";
@@ -520,6 +524,12 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
+    onGenerateTask?: (seed: {
+      companyUid: string;
+      projectId: string;
+      channelId?: string | null;
+      prompt: string;
+    }) => Promise<void>;
   }
 
   let {
@@ -573,6 +583,7 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
+    onGenerateTask,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -1494,26 +1505,90 @@
     const row = selectedRow;
     const companyUid = row?.companyUid?.trim();
     const projectId = row ? projectIdForRow(row) : null;
-    const create = adapter.workMesh.createProjectStory;
-    if (!row || !companyUid || !projectId || !create) throw new Error("Project unavailable");
+    if (!row || !companyUid || !projectId || !onGenerateTask) throw new Error("Project unavailable");
+    const prompt = boardTaskGeneratePrompt({
+      title: task.title,
+      description: task.description,
+      projectId,
+    });
+    await onGenerateTask({
+      companyUid,
+      projectId,
+      channelId: row.channelId,
+      prompt,
+    });
     const key = activityKeyForRow(row);
-    const account = self?.uid;
-    // A retry after a lost response must not append the same task twice.
+    const prior = createdTasks[key];
+    const placeholder = projectViewToBoard({
+      companyUid,
+      projectId,
+      stories: [{
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        status: task.status,
+        acceptanceCriteria: [],
+      }],
+      repos: [],
+    });
+    const generating = {
+      ...placeholder,
+      stories: Object.fromEntries(
+        Object.entries(placeholder.stories).map(([id, story]) => [
+          id,
+          { ...story, statusBadge: "Generating", fields: { ...story.fields, status: "Generating" } },
+        ]),
+      ),
+    };
+    createdTasks = {...createdTasks, [key]: prior ? {
+      ...generating, stories: {...prior.stories, ...generating.stories},
+      columns: generating.columns.map(column => ({...column, cards: [...(prior.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => card.storyId !== task.id), ...column.cards]})),
+    } : generating};
+  }
+
+  async function deleteBoardTask(task: {id: string; title: string; status: string}): Promise<void> {
+    const row = selectedRow;
+    const companyUid = row?.companyUid?.trim();
+    const projectId = row ? projectIdForRow(row) : null;
+    const put = adapter.workMesh.putProjectView;
+    if (!row || !companyUid || !projectId || !put) throw new Error("Project unavailable");
     const before = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
     if (!before || before.companyUid !== companyUid || before.projectId !== projectId) throw new Error("Project unavailable");
-    const existing = before.stories.find(story => story.id === task.id);
-    if (existing && existing.title !== task.title) throw new Error("Task ID already exists");
-    if (!existing) unwrapAdapter(await create(projectId, companyUid, {...task, passes: task.status === "done"}));
-    const saved = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
-    const story = saved?.stories.find(story => story.id === task.id);
-    if (!saved || saved.companyUid !== companyUid || saved.projectId !== projectId || !story) throw new Error("Task not confirmed");
-    if (self?.uid !== account) return;
+    unwrapAdapter(await put(projectId, companyUid, {
+      ...before,
+      stories: before.stories.filter((story) => story.id !== task.id),
+    }));
+    const key = activityKeyForRow(row);
     const prior = createdTasks[key];
-    const added = projectViewToBoard({...saved, stories: [story]});
-    createdTasks = {...createdTasks, [key]: prior ? {
-      ...added, stories: {...prior.stories, ...added.stories},
-      columns: added.columns.map(column => ({...column, cards: [...(prior.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => card.storyId !== story.id), ...column.cards]})),
-    } : added};
+    if (prior) {
+      const remaining = Object.fromEntries(Object.entries(prior.stories).filter(([id]) => id !== task.id));
+      const next = {...createdTasks};
+      if (!Object.keys(remaining).length) delete next[key];
+      else next[key] = {...prior, stories: remaining, columns: prior.columns.map(column => ({...column, cards: column.cards.filter(card => card.storyId !== task.id)}))};
+      createdTasks = next;
+    }
+  }
+
+  async function generateTaskFromMessage(input: {
+    body: string;
+    notes: string;
+    thread: Array<{ author: string; body: string }>;
+  }): Promise<void> {
+    const row = selectedRow;
+    const companyUid = row?.companyUid?.trim();
+    const projectId = row ? projectIdForRow(row) : null;
+    if (!row || !companyUid || !projectId || !onGenerateTask) throw new Error("Project unavailable");
+    await onGenerateTask({
+      companyUid,
+      projectId,
+      channelId: row.channelId,
+      prompt: messageTaskGeneratePrompt({
+        projectId,
+        messageBody: input.body,
+        notes: input.notes,
+        thread: input.thread,
+      }),
+    });
   }
   const files = $derived<ChannelFileItemModel[]>(
     overlayFiles.length > 0 ? overlayFiles : (liveTabs?.files ?? []),
@@ -5357,6 +5432,7 @@
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
+                  onGenerateTask={onGenerateTask && selectedRow?.companyUid ? generateTaskFromMessage : undefined}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
                   onopenartifact={openArtifact}
@@ -5483,7 +5559,8 @@
             </div>
           {:else if activeTab === "board"}
             <BoardTab
-              onCreateTask={adapter.workMesh?.createProjectStory && selectedRow?.companyUid ? createBoardTask : undefined}
+              onCreateTask={onGenerateTask && selectedRow?.companyUid ? createBoardTask : undefined}
+              onDeleteTask={adapter.workMesh?.putProjectView && selectedRow?.companyUid ? deleteBoardTask : undefined}
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
               onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}
