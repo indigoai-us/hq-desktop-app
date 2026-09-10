@@ -908,12 +908,34 @@ async function startBackground(spec: SessionSpec, text: string): Promise<string>
   if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
   const entry = entries[sessionId]!;
   entry.loading = false;
-  await invoke('agent_session_send', { sessionId, text, images: [], overrides: null });
+  try {
+    await invoke('agent_session_send', { sessionId, text, images: [], overrides: null });
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : `Could not start the background session: ${String(err)}`,
+    );
+  }
   return sessionId;
 }
 
 function eventsFor(sessionId: string): SessionEvent[] {
   return entries[sessionId]?.events ?? [];
+}
+
+/** Replay a hidden job and treat a vanished registry entry as failure. */
+async function backgroundStatus(sessionId: string): Promise<{ events: SessionEvent[]; gone: boolean }> {
+  try {
+    const replay = await invoke<{ events: Array<{ event: SessionEvent }> }>(
+      'agent_session_replay',
+      { sessionId, sinceSeq: 0 },
+    );
+    const events = replay.events.map((row) => row.event);
+    if (entries[sessionId]) entries[sessionId]!.events = events;
+    return { events, gone: false };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { events: eventsFor(sessionId), gone: /no session/i.test(message) };
+  }
 }
 
 /**
@@ -1599,6 +1621,7 @@ export const liveSessionStore = {
   startAndSend,
   startBackground,
   eventsFor,
+  backgroundStatus,
   resumeAndSend,
   waitForTurnDone,
   send,
