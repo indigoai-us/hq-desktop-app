@@ -18,6 +18,7 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
       'skills',
       'workers',
       'knowledge',
+      'ideas',
       'clients',
       'team',
       'activity',

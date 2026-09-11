@@ -55,6 +55,7 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
       'Skills',
       'Workers',
       'Knowledge',
+      'Ideas',
       'Clients',
       'Team',
       'More',

@@ -123,6 +123,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
       'skills',
       'workers',
       'knowledge',
+      'ideas',
       'clients',
       'team',
       'more',
