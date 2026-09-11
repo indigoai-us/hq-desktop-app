@@ -27,8 +27,25 @@ export {
   type CallSessionOptions,
   type CallSnapshot,
   type CallStateEvent,
+  type ModerationEvent,
   type RemoteTrackEvent,
 } from "./session.js";
+export {
+  MODERATION_ACTIONS,
+  MODERATION_CHANNEL_LABEL,
+  encodeModeration,
+  isRemoteEnableAttempt,
+  parseModeration,
+  type ModerationAction,
+  type ModerationMessage,
+  type ModerationTrack,
+} from "./moderation.js";
+export {
+  SPEAKING_TUNING,
+  createSpeakingTracker,
+  type SpeakingTracker,
+  type SpeakingTuning,
+} from "./speaking.js";
 export {
   createHqSignalingPort,
   decodePayload,

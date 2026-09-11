@@ -81,3 +81,49 @@ budget is 256 (`TRANSPORT_TUNING.candidateBudget`).
   This package receives tracks through `MediaPort`.
 - **Any UI, tile layout or DOM work** - the window (US-016) owns it. There is no
   DOM, `window` or Tauri reference in this package.
+
+## US-020 additions: mute semantics, moderation transport, speaking heuristic
+
+**Mute stops sending.** `CallSession.setLocalTrackEnabled(kind, false)` records
+the kind in a muted set consulted by `PeerTransport.attachLocalTracks()` on
+EVERY attach. A muted kind is filtered out of the tracks that may be attached
+*and* cleared off any sender still carrying it with `replaceTrack(null)`.
+`track.enabled = false` alone was deliberately rejected: it keeps the sender and
+keeps transmitting silence/black frames, and a later republish or a fresh
+`RTCPeerConnection` after a reconnect restores the track with no memory of the
+intent. Because every republish path (device change, `replaceLocalTrack`,
+renegotiation, ICE restart, the post-recreate `connect()`) funnels through
+`attachLocalTracks`, there is no window in which a muted kind is attached and
+then removed. Stopping the track outright is the CONTROLLER's job in the call
+window (US-017 `MediaController.disable*` does stop it, which also drops the
+OS capture indicator); the engine guard is the belt to that braces, and is what
+survives a track the host keeps alive for a local preview.
+
+**Moderation rides a data channel, not signalling.** The hq-pro signal contract
+pins `type` to `z.enum(["offer", "answer", "ice"])`
+(`src/meetings/native/contract.ts` @ `signal`), so a moderation payload cannot
+be delivered over `signaling/send` without mislabelling it as SDP or ICE. There
+is no file channel in this package to reuse (file transfer was deliberately not
+ported, above). Moderation therefore travels on a dedicated `hq-meet-control`
+`RTCDataChannel` opened by `PeerTransport` on the polite side only (same
+symmetric rule negotiation uses, so the two peers never race two channels). It
+inherits the admission gate for free: an unadmitted peer holds no transport and
+therefore no channel, and the channel dies with the peer.
+
+**Host mute is a REQUEST.** The backend has no server-side media authority in
+this contract - `revoke` removes a participant and `end` ends the room, and
+nothing can reach another device's microphone. So `mute-request` is advisory
+and `mute-force` is honoured by the RECIPIENT's client only when its own roster
+view says the sender is a host or cohost, by muting locally (stop sending), with
+a visible notice and a control to unmute itself. There is NO unmute action at
+any authority level: `parseModeration` refuses every message that is not one of
+the two mute actions, so no remote encoding exists that could enable a
+microphone, and `isRemoteEnableAttempt` counts the attempt content-free
+(`moderationUnmuteIgnored`) rather than dropping it silently. The engine never
+mutes on its own either - it emits a `moderation` event and the host decides.
+
+**Speaking is a heuristic, never diarization.** `SpeakingPort` produces
+normalised audio levels per key-free peer label (WebAudio analyser in the call
+window, a fake in tests); `createSpeakingTracker` applies a threshold with
+hysteresis and a release hold. Nothing here proves a person spoke, and every
+label rendered from it says "may be speaking".

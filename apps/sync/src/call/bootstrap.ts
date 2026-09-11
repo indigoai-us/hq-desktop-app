@@ -29,8 +29,12 @@ import {
   type PeerConnectionConfig,
   type PeerConnectionFactory,
   type PeerConnectionLike,
+  type SpeakingPort,
+  type SpeakingTracker,
   type TrackLike,
 } from "@hq/meet-core";
+import { createSpeakingTracker } from "@hq/meet-core";
+import type { CallRole, CallSnapshotView, MediaDevicesPort } from "@hq/ui";
 import {
   CALLS_VERSION,
   createSyncPlatformAdapter,
@@ -54,6 +58,7 @@ import {
   type MediaDeviceKind,
   type MediaPreferences,
   type PreferenceStorage,
+  type DeviceChoice,
 } from "./permissions";
 import {
   BUNDLED_EVIDENCE_MAX_AGE_MS,
@@ -109,6 +114,19 @@ export interface CallViewState {
    * (join, grant, consent ack); established media runs to its grant's expiry.
    */
   authorityPaused: boolean;
+  /** The last authoritative snapshot, for the tile layout. Content-free. */
+  roster: CallSnapshotView | null;
+  /** This device's role, from the backend GRANT. Never self-asserted. */
+  role: CallRole;
+  /** The room owner and cohosts, from the backend room record. */
+  hostPersonUid: string | null;
+  cohosts: string[];
+  /** Key-free peer labels the audio-level heuristic currently flags. */
+  speaking: string[];
+  /** Remembered device choice, for pre-selecting the pickers. Never capture. */
+  devices: DeviceChoice;
+  /** A moderation or capture notice, already phrased for a person. */
+  notice: string | null;
 }
 
 export interface CallWindowDeps {
@@ -127,6 +145,13 @@ export interface CallWindowDeps {
   identity?: Pick<IdentityApi, "whoami">;
   /** Injected in tests; production is `navigator.mediaDevices.getUserMedia`. */
   getUserMedia?: GetUserMediaLike;
+  /**
+   * The audio-level heuristic. Injected (a fake in tests, a WebAudio analyser
+   * in production); omitted entirely means no speaking rings, never a failure.
+   */
+  speaking?: SpeakingPort | null;
+  /** Device enumeration for the pickers. A READ; it never opens a device. */
+  mediaDevices?: MediaDevicesPort | null;
   /**
    * Where remembered join intent lives. Supplied by the entry (`main.ts`) —
    * this module never reaches for web storage itself, because the invariant
@@ -158,6 +183,21 @@ export interface CallWindowHandle {
   retryIdentity(): Promise<void>;
   /** Explicit join controls. The only paths to `getUserMedia`. */
   setDevice(kind: MediaDeviceKind, on: boolean): Promise<void>;
+  /** Pick an input. Re-opens only what is already live; never starts capture. */
+  selectDevice(kind: MediaDeviceKind, deviceId: string): Promise<void>;
+  /** Device enumeration for the pickers, or null on a host without it. */
+  readonly mediaDevices: MediaDevicesPort | null;
+  /** Host/cohost only: end the room for everyone. */
+  endRoom(): Promise<boolean>;
+  /** Host/cohost only: remove a participant (authority enforced server-side). */
+  removePeer(personUid: string): Promise<boolean>;
+  /**
+   * Host/cohost only: ASK a peer to mute, or tell their client to mute now.
+   * Neither can enable anybody's microphone; see meet-core/moderation.ts.
+   */
+  moderateMute(peerId: string, force: boolean): boolean;
+  /** Clear the current notice. */
+  dismissNotice(): void;
   /** The explicit "Allow transcription" control. Off by default. */
   setTranscription(on: boolean): Promise<void>;
   /** Leave the call and release the registry entry. Idempotent. */
@@ -210,6 +250,13 @@ export function initialCallViewState(): CallViewState {
     consentUnavailable: false,
     identityResolved: false,
     authorityPaused: false,
+    roster: null,
+    role: "participant",
+    hostPersonUid: null,
+    cohosts: [],
+    speaking: [],
+    devices: { microphoneId: null, cameraId: null },
+    notice: null,
   };
 }
 
@@ -555,6 +602,16 @@ export async function startCallWindow(
   let lastAck: string | null = null;
   /** Last `selfNotAdmitted` count seen, so a new one is an edge not a level. */
   let selfNotAdmittedSeen = 0;
+  /** This device's role, from the backend grant. Never self-asserted. */
+  let selfRole: CallRole = "participant";
+  /** Room authority, read once from the backend room record after admit. */
+  let hostPersonUid: string | null = null;
+  let cohosts: string[] = [];
+  /** The audio-level heuristic, and its hysteresis. Both optional. */
+  const speakingPort = deps.speaking ?? null;
+  const speakingTracker: SpeakingTracker = createSpeakingTracker();
+  /** Unobserve callbacks, by key-free peer label (or "self"). */
+  const speakingOff = new Map<string, () => void>();
 
   // Arm the account listener BEFORE the first identity request so a switch
   // during that request is already known when the answer lands.
@@ -579,6 +636,7 @@ export async function startCallWindow(
   async function invalidate(): Promise<void> {
     if (finished) return;
     finished = true;
+    stopSpeaking();
     mediaController.stopAll("account-changed");
     consent.setEnabled(false);
     content.closeAll("account-changed");
@@ -618,6 +676,7 @@ export async function startCallWindow(
     if (finished) return;
     finished = true;
     await persistPending();
+    stopSpeaking();
     mediaController.stopAll(reason);
     content.closeAll("left");
     try {
@@ -640,6 +699,7 @@ export async function startCallWindow(
       finished = true;
       await persistPending();
     }
+    stopSpeaking();
     mediaController.stopAll("dispose");
     content.closeAll("left");
     try {
@@ -729,6 +789,8 @@ export async function startCallWindow(
         return;
       }
       currentGrantId = admission.grant.grantId;
+      selfRole = admission.grant.role;
+      publish({ role: selfRole });
       const timers = {
         setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
         clearTimeout: (handle: unknown) => clearTimeout(handle as never),
@@ -767,7 +829,20 @@ export async function startCallWindow(
         live.on("error", ({ code }: { code: string }) => {
           publish({ status: "error", code, recoverable: false });
         }),
+        live.on("moderation", ({ from, message }) => {
+          onModeration(from, message.action);
+        }),
       );
+      if (speakingPort) {
+        listeners.push(
+          speakingPort.onLevel(({ peerId, level }) => {
+            if (finished) return;
+            if (speakingTracker.observe(peerId, level, Date.now())) {
+              publish({ speaking: speakingTracker.speaking() });
+            }
+          }),
+        );
+      }
       if (deps.onTrack) {
         listeners.push(
           live.on("track", ({ peer, track }) => {
@@ -775,6 +850,7 @@ export async function startCallWindow(
             // Content from a peer whose delivery already closed is dropped
             // here rather than rendered and torn down a frame later.
             if (!content.allows(peerId)) return;
+            observeSpeaking(peerId, track);
             deps.onTrack?.(track, peerId);
           }),
         );
@@ -790,7 +866,12 @@ export async function startCallWindow(
       // is worthless: discard it rather than letting the old session capture.
       if (!account.isCurrent(generation)) {
         await invalidate();
+        return;
       }
+      // Who moderates is a room fact, read AFTER the join so it never sits in
+      // front of the control plane. Until it answers, nobody is a host here,
+      // which is the safe default: no moderation is honoured.
+      void readRoomAuthority();
     } finally {
       joining = false;
     }
@@ -856,7 +937,9 @@ export async function startCallWindow(
     const present = new Set(peerIds);
     // Peer removal is authoritative: close the departed peer's delivery now.
     for (const peerId of currentPeers) {
-      if (!present.has(peerId)) content.closePeer(peerId, "peer-removed");
+      if (present.has(peerId)) continue;
+      content.closePeer(peerId, "peer-removed");
+      forgetSpeaking(peerId);
     }
     currentPeers = peerIds;
     content.admit(peerIds);
@@ -894,6 +977,25 @@ export async function startCallWindow(
     });
 
     publish({
+      roster: {
+        self: {
+          personUid: snapshot.self.personUid,
+          deviceId: snapshot.self.deviceId,
+        },
+        admitted: snapshot.admitted.map((entry) => ({ ...entry })),
+        peers: snapshot.peers.map((peer) => ({
+          peerId: peer.peerId,
+          personUid: peer.personUid,
+          deviceId: peer.deviceId,
+          status: peer.status,
+          connectionState: peer.connectionState,
+          restartAttempts: peer.restartAttempts,
+          remoteTrackKinds: [...peer.remoteTrackKinds],
+          localTrackKinds: [...peer.localTrackKinds],
+        })),
+        rosterRevision: snapshot.rosterRevision,
+        trafficStopped: snapshot.trafficStopped,
+      },
       status:
         snapshot.phase === "joined"
           ? "joined"
@@ -1065,6 +1167,99 @@ export async function startCallWindow(
     return false;
   }
 
+  // ------------------------------------------------------------------
+  // Speaking heuristic (US-020)
+  // ------------------------------------------------------------------
+
+  /**
+   * Observe one audio track's LEVEL. Not diarization: nothing here proves a
+   * person spoke, and every label derived from it says "may be speaking".
+   */
+  function observeSpeaking(peerId: string, track: TrackLike): void {
+    if (!speakingPort || track.kind !== "audio") return;
+    speakingOff.get(peerId)?.();
+    speakingOff.set(peerId, speakingPort.observe(peerId, track));
+  }
+
+  function forgetSpeaking(peerId: string): void {
+    speakingOff.get(peerId)?.();
+    speakingOff.delete(peerId);
+    speakingTracker.forget(peerId);
+    publish({ speaking: speakingTracker.speaking() });
+  }
+
+  function stopSpeaking(): void {
+    for (const off of speakingOff.values()) off();
+    speakingOff.clear();
+    speakingPort?.stop();
+    publish({ speaking: [] });
+  }
+
+  // ------------------------------------------------------------------
+  // Moderation (US-020)
+  // ------------------------------------------------------------------
+
+  /** Role by person uid, from the backend room record. Never self-asserted. */
+  function roleOfPerson(personUid: string): CallRole {
+    if (hostPersonUid && personUid === hostPersonUid) return "host";
+    return cohosts.includes(personUid) ? "cohost" : "participant";
+  }
+
+  /**
+   * Mute the microphone locally and make the engine enforce it.
+   *
+   * Both halves matter: the controller STOPS the track (which also drops the
+   * OS capture indicator), and `setLocalTrackEnabled` records the intent the
+   * transport re-applies on every attach, so a renegotiation or reconnect
+   * cannot resurrect the track.
+   */
+  function muteSelf(reason: string): void {
+    mediaController.disableMicrophone();
+    session?.setLocalTrackEnabled("audio", false);
+    forgetSpeaking("self");
+    session?.refreshLocalTracks();
+    publish({
+      media: mediaController.state(),
+      preferences: mediaController.preferences(),
+      notice: reason,
+    });
+  }
+
+  /**
+   * An inbound moderation message. `mute-force` is honoured ONLY from a host
+   * or cohost per OUR OWN roster view, and only ever mutes. There is no
+   * encoding of "unmute" that reaches here — meet-core refuses it upstream and
+   * counts the attempt — so no remote peer can enable this microphone.
+   */
+  function onModeration(from: { personUid: string }, action: string): void {
+    if (finished) return;
+    const outcome = moderationOutcome(roleOfPerson(from.personUid), action);
+    if (outcome === "mute") {
+      muteSelf(
+        "A host muted your microphone. You can unmute yourself when you want to speak.",
+      );
+      return;
+    }
+    if (outcome === "notice") {
+      publish({ notice: "A host asked you to mute your microphone." });
+    }
+  }
+
+  /** Read the room's host and cohosts. Best effort: roles default to none. */
+  async function readRoomAuthority(): Promise<void> {
+    const result = await adapter.calls
+      .getRoom(target!.roomId, target!.companyUid)
+      .catch(() => null);
+    if (!result?.ok) return;
+    const room = record((result.value as Record<string, unknown>)?.room);
+    if (!room) return;
+    hostPersonUid = typeof room.host === "string" ? room.host : null;
+    cohosts = Array.isArray(room.cohosts)
+      ? room.cohosts.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    publish({ hostPersonUid, cohosts: [...cohosts] });
+  }
+
   const handle: CallWindowHandle = {
     target,
     get session(): CallSession | null {
@@ -1088,17 +1283,134 @@ export async function startCallWindow(
 
     async setDevice(kind: MediaDeviceKind, on: boolean): Promise<void> {
       if (finished) return;
+      const trackKind = kind === "microphone" ? "audio" : "video";
       if (!on) {
+        // Order matters: tell the ENGINE first, so no attach between the stop
+        // and the intent can republish the track.
+        session?.setLocalTrackEnabled(trackKind, false);
         if (kind === "microphone") mediaController.disableMicrophone();
         else mediaController.disableCamera();
+        if (kind === "microphone") forgetSpeaking("self");
       } else {
-        await (kind === "microphone"
+        const state = await (kind === "microphone"
           ? mediaController.enableMicrophone()
           : mediaController.enableCamera());
+        // Unmuting is only ever the LOCAL user's act, and only when the
+        // capture actually succeeded.
+        if (state.active) {
+          session?.setLocalTrackEnabled(trackKind, true);
+          if (kind === "microphone") {
+            const [track] = mediaController.tracksFor("microphone");
+            if (track) observeSpeaking("self", track);
+          }
+        }
       }
-      publish({ preferences: mediaController.preferences() });
+      publish({
+        preferences: mediaController.preferences(),
+        devices: mediaController.devices(),
+      });
       // Republish without a rejoin: the port reads the controller's tracks.
       session?.refreshLocalTracks();
+    },
+
+    async selectDevice(kind: MediaDeviceKind, deviceId: string): Promise<void> {
+      if (finished) return;
+      const before = mediaController.state()[kind].active;
+      const state = await mediaController.selectDevice(kind, deviceId);
+      publish({ devices: mediaController.devices() });
+      if (!before || !state.active) {
+        // The choice is remembered; nothing was opened, and nothing is sent.
+        return;
+      }
+      const trackKind = kind === "microphone" ? "audio" : "video";
+      const [track] = mediaController.tracksFor(kind);
+      // `replaceLocalTrack` preserves the mute intent by construction: a muted
+      // kind is still withheld from every sender after the swap.
+      session?.replaceLocalTrack(trackKind, track ?? null);
+      if (kind === "microphone" && track) observeSpeaking("self", track);
+      publish({ media: mediaController.state() });
+    },
+
+    mediaDevices: deps.mediaDevices ?? null,
+
+    async endRoom(): Promise<boolean> {
+      // Host authority is enforced SERVER-SIDE; hiding the control is a
+      // courtesy, not the check.
+      if (finished || !canModerateRole(selfRole)) return false;
+      const result = await adapter.calls
+        .roomLifecycle(target!.roomId, "end", {
+          companyUid: target!.companyUid,
+          roomId: target!.roomId,
+          callId: target!.callId,
+          epoch: target!.epoch,
+        } as never)
+        .catch(() => null);
+      if (!result?.ok) {
+        publish({ notice: "The room could not be ended. Try again." });
+        return false;
+      }
+      // Ending the room is not leaving it: our own lease still has to go.
+      await leave("host-ended");
+      return true;
+    },
+
+    async removePeer(personUid: string): Promise<boolean> {
+      if (finished || !canModerateRole(selfRole)) return false;
+      const signer = deviceSigner;
+      if (!signer) return false;
+      controlRequests += 1;
+      const envelope: Record<string, unknown> = {
+        version: CALLS_VERSION,
+        kind: "control",
+        companyUid: target!.companyUid,
+        roomId: target!.roomId,
+        callId: target!.callId,
+        epoch: target!.epoch,
+        operation: "revoke",
+        personUid: target!.self.personUid,
+        deviceId: target!.self.deviceId,
+        peerKey: signer.peerKey,
+        grantId: currentGrantId,
+        targetPersonUid: personUid,
+        requestId: `revoke-${Date.now().toString(36)}-${controlRequests}`,
+        sentAt: Date.now(),
+      };
+      let signature: string;
+      try {
+        signature = await signer.sign(envelope);
+      } catch {
+        publish({ notice: "That request could not be signed. Try again." });
+        return false;
+      }
+      const result = await adapter.calls
+        .signalingControl("revoke", { ...envelope, signature } as never)
+        .catch(() => null);
+      if (!result?.ok) {
+        publish({ notice: "That participant could not be removed." });
+        return false;
+      }
+      return true;
+    },
+
+    moderateMute(peerId: string, force: boolean): boolean {
+      if (finished || !canModerateRole(selfRole)) return false;
+      const sent = session?.sendModeration(
+        peerId,
+        force ? "mute-force" : "mute-request",
+        "audio",
+      );
+      publish({
+        notice: sent
+          ? force
+            ? "Asked their app to mute. They can unmute themselves again."
+            : "Mute request sent."
+          : "That request could not be delivered right now.",
+      });
+      return sent === true;
+    },
+
+    dismissNotice(): void {
+      publish({ notice: null });
     },
 
     async setTranscription(on: boolean): Promise<void> {
@@ -1120,6 +1432,32 @@ export async function startCallWindow(
 
   if (await gateIdentity()) await join();
   return handle;
+}
+
+/** Host and cohost may moderate. Server-side authority is still the real gate. */
+export function canModerateRole(role: CallRole): boolean {
+  return role === "host" || role === "cohost";
+}
+
+/** What an inbound moderation message is allowed to do to THIS device. */
+export type ModerationOutcome = "mute" | "notice" | "ignore";
+
+/**
+ * The moderation policy, as a pure function so it is testable on its own.
+ *
+ * Only a host or cohost is honoured, `mute-force` can only ever MUTE, and
+ * anything else — including any action that would enable a microphone — is
+ * ignored. There is deliberately no branch that returns "unmute": the
+ * vocabulary has no such outcome, so no message can produce one.
+ */
+export function moderationOutcome(
+  senderRole: CallRole,
+  action: string,
+): ModerationOutcome {
+  if (!canModerateRole(senderRole)) return "ignore";
+  if (action === "mute-force") return "mute";
+  if (action === "mute-request") return "notice";
+  return "ignore";
 }
 
 /** How long a close waits for an in-flight bootstrap to hand back a handle. */
@@ -1237,6 +1575,12 @@ function inertHandle(
     state,
     retryIdentity: async () => {},
     setDevice: async () => {},
+    selectDevice: async () => {},
+    mediaDevices: null,
+    endRoom: async () => false,
+    removePeer: async () => false,
+    moderateMute: () => false,
+    dismissNotice: () => {},
     setTranscription: async () => {},
     leave: async () => {},
     dispose: async () => {},

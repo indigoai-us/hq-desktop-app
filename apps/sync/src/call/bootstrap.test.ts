@@ -231,6 +231,12 @@ describe("handleCloseRequested", () => {
       }),
       retryIdentity: async () => {},
       setDevice: async () => {},
+      selectDevice: async () => {},
+      mediaDevices: null,
+      endRoom: async () => false,
+      removePeer: async () => false,
+      moderateMute: () => false,
+      dismissNotice: () => {},
       setTranscription: async () => {},
       leave: async (reason?: string) => {
         order.push(`leave:${reason}`);

@@ -17,6 +17,7 @@ import CallShell from './CallShell.svelte';
 import { safeUnlisten } from '../lib/listener-registry';
 import { handleCloseRequested, startCallWindow, type CallWindowHandle } from './bootstrap';
 import { windowPreferenceStorage } from './permissions';
+import { browserMediaDevices, createAnalyserSpeakingPort } from './speaking';
 import { callView } from './view.svelte';
 import type { TrackLike } from '@hq/meet-core';
 
@@ -43,6 +44,10 @@ const started = startCallWindow({
   // Remembered join *intent* only (muted / camera off). The call target never
   // comes from web storage — see `bootstrap.ts`.
   storage: windowPreferenceStorage(),
+  // The audio-level heuristic and the device pickers. Both are reads: neither
+  // opens a device, so neither can light the capture indicator (US-017).
+  speaking: createAnalyserSpeakingPort(),
+  mediaDevices: browserMediaDevices(),
   onState: (state) => {
     callView.state = state;
   },

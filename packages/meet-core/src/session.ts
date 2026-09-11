@@ -20,6 +20,7 @@
 
 import {
   peerIdOf,
+  peerLabelOf,
   sameBinding,
   type CallBinding,
   type CallGrant,
@@ -34,6 +35,12 @@ import {
   type TrackLike,
 } from "./ports.js";
 import { PeerTransport, type PeerSnapshot } from "./transport.js";
+import {
+  isRemoteEnableAttempt,
+  parseModeration,
+  type ModerationAction,
+  type ModerationMessage,
+} from "./moderation.js";
 
 export type CallPhase =
   | "idle"
@@ -74,6 +81,12 @@ export interface CallSnapshot {
    */
   admitted: Array<{ personUid: string; deviceId: string }>;
   peers: PeerSnapshot[];
+  /**
+   * Track kinds this device has muted. A muted kind is never attached to any
+   * sender — the guard lives in `PeerTransport.attachLocalTracks`, so it holds
+   * across device changes, `replaceTrack`, renegotiation and reconnect.
+   */
+  mutedKinds: string[];
   errors: CallError[];
   diagnostics: CallDiagnostics;
 }
@@ -90,6 +103,20 @@ export interface CallErrorEvent extends CallError {
   generation: number;
 }
 
+/**
+ * An inbound moderation message from an ADMITTED peer. The engine has already
+ * refused everything that is not one of the two mute actions — there is no
+ * encoding of "unmute" that reaches a host. Role authority (is this sender a
+ * host or cohost?) is the host's own roster question, so the host decides
+ * whether to honour `mute-force`; the engine never mutes on its own.
+ */
+export interface ModerationEvent {
+  sessionId: string;
+  generation: number;
+  from: PeerIdentity;
+  message: ModerationMessage;
+}
+
 export interface CallStateEvent {
   sessionId: string;
   generation: number;
@@ -100,6 +127,7 @@ export interface CallSessionEvents {
   state: CallStateEvent;
   track: RemoteTrackEvent;
   error: CallErrorEvent;
+  moderation: ModerationEvent;
 }
 
 export type CallSessionEvent = keyof CallSessionEvents;
@@ -124,6 +152,25 @@ export interface CallSession {
   snapshot(): CallSnapshot;
   /** Re-read `MediaPort.localTracks()` and push them onto every transport. */
   refreshLocalTracks(): void;
+  /**
+   * The mute intent for one track kind. `enabled: false` STOPS SENDING: the
+   * transport clears every sender of that kind with `replaceTrack(null)` and
+   * refuses to attach a new one, so a later device change, renegotiation or
+   * reconnect cannot resurrect it. Nothing else in the engine ever sets this
+   * to true — a remote peer has no path to enable a local track.
+   */
+  setLocalTrackEnabled(kind: string, enabled: boolean): void;
+  /** Kinds currently muted. */
+  mutedKinds(): string[];
+  /** Swap the local track for one kind (device change). Preserves mute. */
+  replaceLocalTrack(kind: string, track: TrackLike | null): void;
+  /**
+   * Send a moderation REQUEST to one admitted peer over `hq-meet-control`.
+   * `peerId` is the key-free `personUid deviceId` label. Returns false when no
+   * control channel is open, so the caller can say the request did not land.
+   * There is no action that enables remote media.
+   */
+  sendModeration(peerId: string, action: ModerationAction, track?: "audio" | "video"): boolean;
   on<E extends CallSessionEvent>(
     event: E,
     listener: (payload: CallSessionEvents[E]) => void,
@@ -157,6 +204,10 @@ class Session implements CallSession {
   private admitted = new Map<string, PeerIdentity>();
   private transports = new Map<string, PeerTransport>();
   private ownedTracks = new Set<TrackLike>();
+  /** Kinds the user muted. Consulted by every transport on every attach. */
+  private muted = new Set<string>();
+  /** Explicit per-kind track overrides from `replaceLocalTrack`. */
+  private overrides = new Map<string, TrackLike | null>();
   /** Highest inbound `sequence` already applied, per sending peer. */
   private lastSequence = new Map<string, number>();
   private errors: CallError[] = [];
@@ -264,6 +315,9 @@ class Session implements CallSession {
 
   private resetCallState(): void {
     this.dropAllTransports();
+    // Device overrides belong to the previous call's devices. The MUTE intent
+    // deliberately survives: rejoining must not unmute anybody.
+    this.overrides.clear();
     this.admitted.clear();
     this.lastSequence.clear();
     this.errors = [];
@@ -295,11 +349,110 @@ class Session implements CallSession {
     this.emitState();
   }
 
+  setLocalTrackEnabled(kind: string, enabled: boolean): void {
+    if (enabled) this.muted.delete(kind);
+    else this.muted.add(kind);
+    this.reattach();
+  }
+
+  mutedKinds(): string[] {
+    return [...this.mutedSet()].sort();
+  }
+
+  replaceLocalTrack(kind: string, track: TrackLike | null): void {
+    if (track && track.kind !== kind) {
+      this.count("trackKindMismatch");
+      return;
+    }
+    if (track === null) this.overrides.delete(kind);
+    else this.overrides.set(kind, track);
+    // The mute intent is NOT cleared by a device change: swapping microphones
+    // while muted must not start sending audio.
+    this.reattach();
+  }
+
+  private reattach(): void {
+    if (this.phase === "joined" || this.phase === "joining") {
+      for (const transport of this.transports.values()) {
+        transport.attachLocalTracks();
+      }
+    }
+    this.emitState();
+  }
+
+  /** The union of the port's muted kinds and this session's own intent. */
+  private mutedSet(): Set<string> {
+    const kinds = new Set(this.muted);
+    for (const kind of this.ports.media.mutedKinds?.() ?? []) kinds.add(kind);
+    return kinds;
+  }
+
   private localTracks(): TrackLike[] {
     if (this.trafficStopped) return [];
-    const tracks = this.ports.media.localTracks();
+    const overridden = new Set(this.overrides.keys());
+    const tracks = this.ports.media
+      .localTracks()
+      .filter((track) => !overridden.has(track.kind));
+    for (const [, track] of this.overrides) {
+      if (track) tracks.push(track);
+    }
     for (const track of tracks) this.ownedTracks.add(track);
     return tracks;
+  }
+
+  // ---- moderation ----
+
+  sendModeration(
+    peerId: string,
+    action: ModerationAction,
+    track: "audio" | "video" = "audio",
+  ): boolean {
+    if (this.phase !== "joined") return false;
+    for (const transport of this.transports.values()) {
+      if (peerLabelOf(transport.remote) !== peerId) continue;
+      if (!this.isAdmitted(transport.remote)) {
+        this.count("unadmittedPeer");
+        return false;
+      }
+      const sent = transport.sendControl({ kind: "moderation", action, track });
+      if (!sent) this.count("moderationUndeliverable");
+      return sent;
+    }
+    this.count("moderationPeerUnknown");
+    return false;
+  }
+
+  /**
+   * An inbound control-channel message. The engine refuses everything that is
+   * not a mute action and COUNTS every attempt to enable remote media, so an
+   * "unmute" can never reach a host that might act on it.
+   */
+  private onControl(generation: number, from: PeerIdentity, data: unknown): void {
+    if (!this.current(generation)) {
+      this.count("staleControlCallback");
+      return;
+    }
+    if (this.phase !== "joined" && this.phase !== "joining") {
+      this.count("controlOutsideCall");
+      return;
+    }
+    if (!this.isAdmitted(from)) {
+      this.count("unadmittedPeer");
+      return;
+    }
+    const message = parseModeration(data);
+    if (!message) {
+      if (isRemoteEnableAttempt(data)) this.count("moderationUnmuteIgnored");
+      else this.count("moderationRejected");
+      this.emitState();
+      return;
+    }
+    this.emit("moderation", {
+      sessionId: this.sessionId,
+      generation,
+      from,
+      message,
+    });
   }
 
   // ---- admission ----
@@ -449,6 +602,8 @@ class Session implements CallSession {
         ? () => this.ports.media.iceServers?.() ?? []
         : undefined,
       localTracks: () => (this.current(generation) ? this.localTracks() : []),
+      mutedKinds: () => [...this.mutedSet()],
+      onControl: (from, data) => this.onControl(generation, from, data),
       send: (outbound) => this.send(generation, outbound),
       onChange: () => {
         if (this.current(generation)) this.emitState();
@@ -563,6 +718,7 @@ class Session implements CallSession {
               ? -1
               : 1,
         ),
+      mutedKinds: this.mutedKinds(),
       peers: [...this.transports.values()]
         .map((transport) => transport.snapshot())
         .sort((a, b) => (a.peerId < b.peerId ? -1 : a.peerId > b.peerId ? 1 : 0)),

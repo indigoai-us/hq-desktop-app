@@ -1,15 +1,18 @@
 <script lang="ts">
   /**
-   * Minimal call shell (US-016), bound to the active account (US-017): a
-   * drag-region titlebar, a content-free status line, the remote/local video
-   * slots, and the explicit join controls.
+   * The call window's shell (US-016/017/020).
    *
-   * The microphone and camera buttons are the ONLY path to `getUserMedia` in
-   * this window — receiving a knock, mounting, or restoring a remembered
-   * preference never reaches them. A denial renders its OS recovery path next
-   * to a Retry rather than silently staying off. Full in-call controls are
-   * US-020; office and knocks are US-018/019.
+   * It owns the window chrome, the identity/permission notices and the media
+   * elements; the gallery and the control bar are the SHARED design-system
+   * components (`meet.CallView` / `meet.MediaControls`), so the call looks and
+   * behaves like the rest of HQ and stays testable without a webview.
+   *
+   * The microphone and camera buttons are still the ONLY path to
+   * `getUserMedia`: mounting, receiving a knock, restoring a remembered
+   * preference or picking a device in a picker never reaches capture.
    */
+  import { CallView, type CallTile } from '@hq/ui';
+
   import { callView } from './view.svelte';
 
   let leaving = $state(false);
@@ -45,7 +48,7 @@
       ? 'Transcription on'
       : view.transcription === 'paused'
         ? view.consentUnavailable
-          ? 'Transcription paused \u00b7 waiting for consent'
+          ? 'Transcription paused · waiting for consent'
           : 'Transcription paused'
         : 'Transcription off',
   );
@@ -64,6 +67,32 @@
               : `Call error${view.code ? ` · ${view.code}` : ''}`,
   );
 
+  /**
+   * The gallery needs SOME snapshot before the first roster lands, or the
+   * window renders nothing while connecting. This one has exactly one member —
+   * us — and no peers, which is the truth at that moment.
+   */
+  const roster = $derived(
+    view.roster ?? {
+      self: { personUid: 'self', deviceId: 'self' },
+      admitted: [],
+      peers: [],
+      rosterRevision: 0,
+      trafficStopped: false,
+    },
+  );
+  const selfMedia = $derived({
+    micMuted: !mic.active,
+    cameraOff: !cam.active,
+    speaking: view.speaking.includes('self'),
+    connection:
+      view.status === 'joined'
+        ? ('connected' as const)
+        : view.status === 'left' || view.status === 'error'
+          ? ('disconnected' as const)
+          : ('connecting' as const),
+  });
+
   async function leave() {
     if (leaving) return;
     leaving = true;
@@ -71,12 +100,11 @@
   }
 
   /** The explicit join control. Nothing else in this window may capture. */
-  async function toggleDevice(kind: 'microphone' | 'camera') {
+  async function toggleDevice(kind: 'microphone' | 'camera', on: boolean) {
     if (busy) return;
     busy = kind;
     try {
-      const on = kind === 'microphone' ? mic.active : cam.active;
-      await callView.handle?.setDevice(kind, !on);
+      await callView.handle?.setDevice(kind, on);
     } finally {
       busy = null;
     }
@@ -105,6 +133,19 @@
   async function retryIdentity() {
     await callView.handle?.retryIdentity();
   }
+
+  /**
+   * Render a tile's media. The shell keeps the two legacy elements (`.remote`,
+   * `audio`) that `main.ts` attaches streams to, so this hook only has to name
+   * the element for the self tile's local preview.
+   */
+  function attach(element: HTMLVideoElement, tile: CallTile): () => void {
+    element.dataset.tileId = tile.id;
+    if (tile.self) element.classList.add('local-preview');
+    return () => {
+      delete element.dataset.tileId;
+    };
+  }
 </script>
 
 <div class="call">
@@ -112,13 +153,13 @@
     <span class="title" data-tauri-drag-region>HQ Call</span>
   </header>
 
-  <main class="stage">
+  <div class="hidden-media">
     <!-- svelte-ignore a11y_media_has_caption -->
     <video class="remote" data-testid="remote-video" autoplay playsinline></video>
     <!-- svelte-ignore a11y_media_has_caption -->
     <video class="local" data-testid="local-video" autoplay playsinline muted></video>
     <audio data-testid="remote-audio" autoplay></audio>
-  </main>
+  </div>
 
   {#if view.status === 'identity' && view.recoverable}
     <div class="notice" data-testid="call-identity-error" role="alert">
@@ -129,9 +170,7 @@
 
   {#if view.authorityPaused}
     <div class="notice" data-testid="call-authority-paused" role="status">
-      <span
-        >Reconnecting to your account. The call continues; new actions are paused.</span
-      >
+      <span>Reconnecting to your account. The call continues; new actions are paused.</span>
     </div>
   {/if}
 
@@ -147,6 +186,43 @@
     </div>
   {/if}
 
+  <main class="stage">
+    <CallView
+      snapshot={roster}
+      self={selfMedia}
+      role={view.role}
+      hostPersonUid={view.hostPersonUid}
+      cohosts={view.cohosts}
+      speaking={view.speaking}
+      devices={callView.handle?.mediaDevices ?? null}
+      selectedMicrophoneId={view.devices.microphoneId}
+      selectedCameraId={view.devices.cameraId}
+      busy={busy !== null || leaving}
+      controlsDisabled={!controlsEnabled}
+      notice={view.notice}
+      {attach}
+      ontogglemicrophone={(next: boolean) => toggleDevice('microphone', next)}
+      ontogglecamera={(next: boolean) => toggleDevice('camera', next)}
+      onselectdevice={(kind: 'microphone' | 'camera', deviceId: string) => {
+        void callView.handle?.selectDevice(kind, deviceId);
+      }}
+      onleave={leave}
+      onendroom={() => {
+        void callView.handle?.endRoom();
+      }}
+      onremovepeer={(tile: CallTile) => {
+        void callView.handle?.removePeer(tile.personUid);
+      }}
+      onmuterequest={(tile: CallTile) => {
+        callView.handle?.moderateMute(tile.id, false);
+      }}
+      onmuteforce={(tile: CallTile) => {
+        callView.handle?.moderateMute(tile.id, true);
+      }}
+      ondismissnotice={() => callView.handle?.dismissNotice()}
+    />
+  </main>
+
   <footer class="bar">
     <button
       type="button"
@@ -154,7 +230,8 @@
       data-testid="toggle-microphone"
       aria-pressed={mic.active}
       disabled={!controlsEnabled || busy !== null}
-      onclick={() => toggleDevice('microphone')}>{mic.active ? 'Mute' : 'Unmute'}</button
+      onclick={() => toggleDevice('microphone', !mic.active)}
+      >{mic.active ? 'Mute' : 'Unmute'}</button
     >
     <button
       type="button"
@@ -162,7 +239,8 @@
       data-testid="toggle-camera"
       aria-pressed={cam.active}
       disabled={!controlsEnabled || busy !== null}
-      onclick={() => toggleDevice('camera')}>{cam.active ? 'Stop video' : 'Start video'}</button
+      onclick={() => toggleDevice('camera', !cam.active)}
+      >{cam.active ? 'Stop video' : 'Start video'}</button
     >
     <button
       type="button"
@@ -207,26 +285,27 @@
     letter-spacing: 0.06em;
     opacity: 0.7;
   }
-  .stage {
-    position: relative;
-    flex: 1 1 auto;
-    display: grid;
-    place-items: center;
-    overflow: hidden;
-  }
-  .remote {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    background: #000;
-  }
-  .local {
+  /*
+    The stream sinks `main.ts` attaches to. They stay in the document (the
+    attach path addresses them by selector) but out of the layout: the gallery
+    is what the user sees.
+  */
+  .hidden-media {
     position: absolute;
-    right: 16px;
-    bottom: 16px;
-    width: 180px;
-    border-radius: 8px;
-    background: #222;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+  }
+  .stage :global(.call) {
+    flex: 1 1 auto;
+    min-width: 0;
   }
   .bar {
     display: flex;

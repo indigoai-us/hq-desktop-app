@@ -117,6 +117,24 @@ export interface SenderLike {
   replaceTrack(track: TrackLike | null): Promise<void>;
 }
 
+/**
+ * A control data channel. The HQ Meet signal contract pins `type` to
+ * `offer|answer|ice` (hq-pro `contract.ts` @ `signal`), so a moderation
+ * message cannot ride the signalling plane without lying about its type.
+ * Moderation therefore travels peer-to-peer on a dedicated
+ * `hq-meet-control` channel — see `moderation.ts`.
+ */
+export interface DataChannelLike {
+  readonly label: string;
+  /** "connecting" | "open" | "closing" | "closed". */
+  readonly readyState: string;
+  onopen: (() => void) | null;
+  onclose: (() => void) | null;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  send(data: string): void;
+  close(): void;
+}
+
 /** The subset of `RTCPeerConnection` the transport actually uses. */
 export interface PeerConnectionLike {
   onnegotiationneeded: (() => void) | null;
@@ -126,6 +144,15 @@ export interface PeerConnectionLike {
   ontrack: ((event: { track: TrackLike }) => void) | null;
   onconnectionstatechange: (() => void) | null;
   oniceconnectionstatechange: (() => void) | null;
+  /**
+   * Optional: hosts without data channels simply never carry moderation, and
+   * the transport degrades to "no control channel" rather than throwing.
+   */
+  ondatachannel?: ((event: { channel: DataChannelLike }) => void) | null;
+  createDataChannel?(
+    label: string,
+    options?: { ordered?: boolean },
+  ): DataChannelLike;
   readonly connectionState: PeerConnectionState;
   readonly iceConnectionState: IceConnectionState;
   readonly signalingState: PeerSignalingState;
@@ -167,8 +194,41 @@ export interface MediaPort {
    * preview running across calls leave this false and stop them themselves.
    */
   readonly ownsTracks?: boolean;
+  /**
+   * Track kinds the local user has muted. A muted kind is NEVER sent: the
+   * transport clears any sender carrying it (`replaceTrack(null)`) and refuses
+   * to attach a new one, so the privacy choice survives `replaceTrack`,
+   * renegotiation and reconnect rather than being re-applied afterwards.
+   */
+  mutedKinds?(): readonly string[];
   /** Optional ICE configuration, refreshed per connection. */
   iceServers?(): IceServerLike[];
+}
+
+// ---------------------------------------------------------------------------
+// Speaking (heuristic)
+// ---------------------------------------------------------------------------
+
+/**
+ * A local audio-level heuristic. NOT diarization: it says "this track carried
+ * energy above a threshold", never "this person spoke". The production
+ * implementation is a WebAudio analyser in the call window; tests inject a
+ * fake. Everything derived from it must be labelled as a guess.
+ */
+export interface SpeakingLevelEvent {
+  /** Key-free `personUid deviceId` label, or "self". */
+  peerId: string;
+  /** Normalised 0..1 audio level. */
+  level: number;
+}
+
+export interface SpeakingPort {
+  /** Begin sampling a track. Returns an unobserve function. */
+  observe(peerId: string, track: TrackLike): () => void;
+  /** Level events. Returns an unsubscribe function. */
+  onLevel(listener: (event: SpeakingLevelEvent) => void): () => void;
+  /** Release every analyser and listener. Idempotent. */
+  stop(): void;
 }
 
 // ---------------------------------------------------------------------------

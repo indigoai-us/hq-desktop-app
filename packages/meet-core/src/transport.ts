@@ -28,8 +28,14 @@ import type {
   TimerHandle,
   Timers,
   TrackLike,
+  DataChannelLike,
 } from "./ports.js";
 import { peerIdOf, peerLabelOf } from "./ports.js";
+import {
+  MODERATION_CHANNEL_LABEL,
+  encodeModeration,
+  type ModerationMessage,
+} from "./moderation.js";
 
 /** App-level status the UI renders, derived from RTC state plus restarts. */
 export type PeerStatus = "connecting" | "connected" | "reconnecting" | "failed";
@@ -66,6 +72,8 @@ export interface PeerSnapshot {
   remoteTrackKinds: string[];
   /** Kinds of local tracks attached to this connection. */
   localTrackKinds: string[];
+  /** True when the dedicated `hq-meet-control` channel is open. */
+  controlChannelOpen: boolean;
 }
 
 export interface PeerTransportDeps {
@@ -77,7 +85,11 @@ export interface PeerTransportDeps {
   random?: RandomSource;
   iceServers?: () => IceServerLike[];
   localTracks: () => TrackLike[];
+  /** Kinds that must never be sent. Re-read on every attach. */
+  mutedKinds?: () => readonly string[];
   send: (signal: OutboundSignal) => void;
+  /** A raw `hq-meet-control` message from this peer. Parsed by the session. */
+  onControl?: (peer: PeerIdentity, data: unknown) => void;
   onChange: () => void;
   onRemoteTrack: (peer: PeerIdentity, track: TrackLike) => void;
   count: (counter: string) => void;
@@ -114,6 +126,8 @@ export class PeerTransport {
   private status: PeerStatus = "connecting";
   private closed = false;
   private candidatesSent = 0;
+  /** The dedicated moderation channel. Null on hosts without data channels. */
+  private control: DataChannelLike | null = null;
 
   constructor(deps: PeerTransportDeps) {
     this.deps = deps;
@@ -136,6 +150,7 @@ export class PeerTransport {
         .map((sender) => sender.track?.kind)
         .filter((kind): kind is string => typeof kind === "string")
         .sort(),
+      controlChannelOpen: this.control?.readyState === "open",
     };
   }
 
@@ -166,15 +181,40 @@ export class PeerTransport {
     const pc = this.pc;
     if (!pc || this.closed) return;
     const senders = pc.getSenders();
-    for (const track of this.deps.localTracks()) {
-      const existing = senders.find((sender) => sender.track?.kind === track.kind);
+    // The mute guard, applied at the ENGINE seam rather than by the caller:
+    // a muted kind is filtered out of the tracks we may attach AND cleared off
+    // any sender still carrying it. Because every path that republishes media
+    // (device change, `replaceTrack`, renegotiation, ICE restart, reconnect and
+    // the post-recreate `connect()`) funnels through here, the privacy choice
+    // cannot be lost by a later republish: there is no window in which a muted
+    // kind is attached and then removed.
+    const muted = new Set(this.deps.mutedKinds?.() ?? []);
+    const tracks = this.deps
+      .localTracks()
+      .filter((track) => !muted.has(track.kind));
+    const wanted = new Set(tracks.map((track) => track.kind));
+    const clearing = new Set<SenderLike>();
+    for (const sender of senders) {
+      const kind = sender.track?.kind;
+      if (typeof kind === "string" && !wanted.has(kind)) {
+        clearing.add(sender);
+        void this.swap(sender, null);
+      }
+    }
+    for (const track of tracks) {
+      const existing = senders.find(
+        (sender) => !clearing.has(sender) && sender.track?.kind === track.kind,
+      );
       if (existing) {
         if (existing.track === track) continue;
         void this.swap(existing, track);
         continue;
       }
-      const empty = senders.find((sender) => sender.track === null);
+      const empty = senders.find(
+        (sender) => !clearing.has(sender) && sender.track === null,
+      );
       if (empty) {
+        clearing.add(empty);
         void this.swap(empty, track);
         continue;
       }
@@ -183,7 +223,43 @@ export class PeerTransport {
     this.deps.onChange();
   }
 
-  private async swap(sender: SenderLike, track: TrackLike): Promise<void> {
+  /**
+   * Send one moderation message to this peer over `hq-meet-control`.
+   * Returns false when there is no open channel — the caller surfaces that
+   * rather than pretending the request landed.
+   */
+  sendControl(message: ModerationMessage): boolean {
+    if (this.closed || this.control?.readyState !== "open") return false;
+    try {
+      this.control.send(encodeModeration(message));
+      return true;
+    } catch {
+      this.deps.count("controlSendFailed");
+      return false;
+    }
+  }
+
+  /** Open (or adopt) the dedicated control channel. Never carries media. */
+  private bindControl(channel: DataChannelLike): void {
+    if (channel.label !== MODERATION_CHANNEL_LABEL) {
+      // Nothing else is allowed to ride this seam.
+      channel.close();
+      return;
+    }
+    this.control?.close();
+    this.control = channel;
+    channel.onopen = () => this.deps.onChange();
+    channel.onclose = () => {
+      if (this.control === channel) this.control = null;
+      this.deps.onChange();
+    };
+    channel.onmessage = (event) => {
+      if (this.closed) return;
+      this.deps.onControl?.(this.remote, event.data);
+    };
+  }
+
+  private async swap(sender: SenderLike, track: TrackLike | null): Promise<void> {
     try {
       await sender.replaceTrack(track);
     } catch {
@@ -287,6 +363,8 @@ export class PeerTransport {
     this.pc = null;
     this.pendingCandidates = [];
     this.remoteTrackKinds.clear();
+    this.control?.close();
+    this.control = null;
     this.status = "failed";
   }
 
@@ -302,6 +380,8 @@ export class PeerTransport {
     this.makingOffer = false;
     this.ignoreOffer = false;
     this.remoteTrackKinds.clear();
+    this.control?.close();
+    this.control = null;
 
     const iceServers = this.deps.iceServers?.() ?? [];
     const pc = this.deps.connections.create({ iceServers });
@@ -311,6 +391,25 @@ export class PeerTransport {
     pc.onnegotiationneeded = () => {
       void this.negotiate(pc);
     };
+
+    // Exactly ONE side opens `hq-meet-control`, chosen by the same symmetric
+    // polite/impolite rule negotiation uses, so the two peers never race two
+    // channels with the same label. The other side adopts it.
+    pc.ondatachannel = (event) => {
+      if (this.closed || this.pc !== pc) return;
+      this.bindControl(event.channel);
+    };
+    if (this.polite && typeof pc.createDataChannel === "function") {
+      try {
+        this.bindControl(
+          pc.createDataChannel(MODERATION_CHANNEL_LABEL, { ordered: true }),
+        );
+      } catch {
+        // A host without data channels simply carries no moderation. The UI
+        // says the request could not be delivered rather than pretending.
+        this.deps.count("controlChannelUnavailable");
+      }
+    }
 
     pc.ontrack = (event) => {
       if (this.closed || this.pc !== pc) return;
@@ -473,6 +572,7 @@ export class PeerTransport {
     pc.ontrack = null;
     pc.onconnectionstatechange = null;
     pc.oniceconnectionstatechange = null;
+    if (pc.ondatachannel !== undefined) pc.ondatachannel = null;
   }
 }
 

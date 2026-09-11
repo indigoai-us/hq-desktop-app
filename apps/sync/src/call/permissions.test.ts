@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MEDIA_PREFS_KEY,
   createMediaController,
+  type MediaConstraintsLike,
   type GetUserMediaLike,
   type MediaStreamLike,
   type PreferenceStorage,
@@ -89,7 +90,7 @@ describe("media controller", () => {
   });
 
   it("asks for audio and video separately, never together", async () => {
-    const getUserMedia = vi.fn(async (constraints: { video?: boolean }) =>
+    const getUserMedia = vi.fn(async (constraints: MediaConstraintsLike) =>
       constraints.video ? stream("video") : stream("audio"),
     );
     const { media } = controller(getUserMedia);

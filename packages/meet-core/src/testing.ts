@@ -9,6 +9,7 @@
 
 import type {
   CallBinding,
+  DataChannelLike,
   CallGrant,
   Clock,
   IceCandidateLike,
@@ -112,6 +113,9 @@ export class FakeTrack implements TrackLike {
 }
 
 export class FakeMediaPort implements MediaPort {
+  /** Kinds the host has muted. Never sent, on any connection. */
+  muted: string[] = [];
+
   constructor(
     public tracks: TrackLike[] = [],
     readonly ownsTracks = true,
@@ -119,6 +123,43 @@ export class FakeMediaPort implements MediaPort {
 
   localTracks(): TrackLike[] {
     return this.tracks;
+  }
+
+  mutedKinds(): readonly string[] {
+    return this.muted;
+  }
+}
+
+/** A scriptable `hq-meet-control` data channel. */
+export class FakeDataChannel implements DataChannelLike {
+  onopen: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  readyState = "connecting";
+  readonly sent: string[] = [];
+
+  constructor(readonly label: string) {}
+
+  /** Test driver: the channel comes up. */
+  open(): void {
+    this.readyState = "open";
+    this.onopen?.();
+  }
+
+  /** Test driver: a message arrives from the peer. */
+  deliver(data: unknown): void {
+    this.onmessage?.({ data });
+  }
+
+  send(data: string): void {
+    if (this.readyState !== "open") throw new Error("channel not open");
+    this.sent.push(data);
+  }
+
+  close(): void {
+    if (this.readyState === "closed") return;
+    this.readyState = "closed";
+    this.onclose?.();
   }
 }
 
@@ -154,20 +195,53 @@ export class FakePeerConnection implements PeerConnectionLike {
   localDescription: SessionDescriptionLike | null = null;
   remoteDescription: SessionDescriptionLike | null = null;
 
+  ondatachannel: ((event: { channel: DataChannelLike }) => void) | null = null;
+
   closed = false;
   restarts = 0;
+  /** Channels this connection opened locally, newest last. */
+  readonly channels: FakeDataChannel[] = [];
   readonly addedCandidates: IceCandidateLike[] = [];
   private senders: FakeSender[] = [];
   private counter = 0;
+  /** Mirrors the spec's negotiation-needed flag: at most one per microtask. */
+  private negotiationQueued = false;
 
   constructor(readonly config: PeerConnectionConfig) {}
+
+  createDataChannel(label: string): DataChannelLike {
+    const channel = new FakeDataChannel(label);
+    this.channels.push(channel);
+    this.queueNegotiation();
+    return channel;
+  }
+
+  /** Test driver: the remote peer opened a channel toward us. */
+  emitDataChannel(label: string): FakeDataChannel {
+    const channel = new FakeDataChannel(label);
+    this.ondatachannel?.({ channel });
+    return channel;
+  }
 
   addTrack(track: TrackLike): SenderLike {
     const sender = new FakeSender(track);
     this.senders.push(sender);
     // Adding a track drives (re)negotiation, as in the real API.
-    queueMicrotask(() => this.onnegotiationneeded?.());
+    this.queueNegotiation();
     return sender;
+  }
+
+  /**
+   * The spec queues ONE negotiationneeded per turn however many tracks and
+   * channels were added, and the transport relies on that coalescing.
+   */
+  private queueNegotiation(): void {
+    if (this.negotiationQueued) return;
+    this.negotiationQueued = true;
+    queueMicrotask(() => {
+      this.negotiationQueued = false;
+      this.onnegotiationneeded?.();
+    });
   }
 
   getSenders(): SenderLike[] {
@@ -209,6 +283,7 @@ export class FakePeerConnection implements PeerConnectionLike {
   close(): void {
     this.closed = true;
     this.connectionState = "closed";
+    for (const channel of this.channels) channel.close();
   }
 
   // ---- test drivers ----

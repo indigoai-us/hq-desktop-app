@@ -189,6 +189,25 @@ export {
 // US-018: the native seams a host must supply for the Office surface. Exported
 // flat so hosts can type their capability object without a deep import.
 export type { OfficeCallsHost, OfficeCallTarget } from "./meet/office-host.js";
+// The in-call surface (US-020). Re-exported at the root because the call
+// window mounts it directly and consumes its model types.
+export { default as CallView } from "./meet/CallView.svelte";
+export { default as MediaControls } from "./meet/MediaControls.svelte";
+export {
+  CALL_TILE_LIMIT,
+  canModerate,
+  deriveCallView,
+  tileColumns,
+  type CallPeerView,
+  type CallRole,
+  type CallSnapshotView,
+  type CallTile,
+  type CallViewLayout,
+  type MediaDeviceOption,
+  type MediaDevicesPort,
+  type SelfMediaView,
+  type TileConnection,
+} from "./meet/call-view-model.js";
 export * as company from "./company/index.js";
 
 // Atlas v0 (work-mesh-live US-016) — company roster × live projects.

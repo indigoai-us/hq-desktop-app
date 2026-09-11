@@ -58,10 +58,30 @@ export interface MediaStreamLike {
   getTracks(): TrackLike[];
 }
 
-export type GetUserMediaLike = (constraints: {
-  audio?: boolean;
-  video?: boolean;
-}) => Promise<MediaStreamLike>;
+/** A device pin. `exact` so a missing device fails loudly, not silently. */
+export interface DeviceConstraint {
+  deviceId: { exact: string };
+}
+
+export type MediaConstraintsLike = {
+  audio?: boolean | DeviceConstraint;
+  video?: boolean | DeviceConstraint;
+};
+
+export type GetUserMediaLike = (
+  constraints: MediaConstraintsLike,
+) => Promise<MediaStreamLike>;
+
+/**
+ * Remembered device CHOICE (US-020). Like the mute intent this is intent only:
+ * restoring it pre-selects a picker, it never opens a device.
+ */
+export interface DeviceChoice {
+  microphoneId: string | null;
+  cameraId: string | null;
+}
+
+export const MEDIA_DEVICE_KEY = "meet.media.devices";
 
 /** The structural subset of `Storage`. Injected so tests touch no globals. */
 export interface PreferenceStorage {
@@ -82,10 +102,24 @@ export interface MediaController {
   tracks(): TrackLike[];
   /** Remembered intent, for pre-setting the join controls. Never capture. */
   preferences(): MediaPreferences;
+  /** Remembered device choice, for pre-selecting the pickers. Never capture. */
+  devices(): DeviceChoice;
   /** Explicit join control. The ONLY path to `getUserMedia` for audio. */
-  enableMicrophone(): Promise<MediaDeviceState>;
+  enableMicrophone(deviceId?: string): Promise<MediaDeviceState>;
   /** Explicit join control. The ONLY path to `getUserMedia` for video. */
-  enableCamera(): Promise<MediaDeviceState>;
+  enableCamera(deviceId?: string): Promise<MediaDeviceState>;
+  /**
+   * Choose an input. The choice is REMEMBERED unconditionally; the device is
+   * re-opened only when this kind is already live. Picking a microphone while
+   * muted must never start capture — that would be the "receiving a knock
+   * lights the camera" failure wearing a different hat.
+   */
+  selectDevice(
+    kind: MediaDeviceKind,
+    deviceId: string,
+  ): Promise<MediaDeviceState>;
+  /** The live tracks for one kind, for a mute-preserving `replaceLocalTrack`. */
+  tracksFor(kind: MediaDeviceKind): TrackLike[];
   disableMicrophone(): void;
   disableCamera(): void;
   /** Retry after a denial, from the same explicit control. */
@@ -130,6 +164,26 @@ function codeOf(error: unknown): string {
   return name === "NotFoundError" ? "MEDIA_DEVICE_MISSING" : name;
 }
 
+function readDevices(storage: PreferenceStorage | null): DeviceChoice {
+  if (!storage) return { microphoneId: null, cameraId: null };
+  try {
+    const raw = storage.getItem(MEDIA_DEVICE_KEY);
+    if (!raw) return { microphoneId: null, cameraId: null };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return { microphoneId: null, cameraId: null };
+    }
+    const record = parsed as Record<string, unknown>;
+    return {
+      microphoneId:
+        typeof record.microphoneId === "string" ? record.microphoneId : null,
+      cameraId: typeof record.cameraId === "string" ? record.cameraId : null,
+    };
+  } catch {
+    return { microphoneId: null, cameraId: null };
+  }
+}
+
 function readPreferences(storage: PreferenceStorage | null): MediaPreferences {
   if (!storage) return { microphone: false, camera: false };
   try {
@@ -157,6 +211,7 @@ export function createMediaController(
   const state: MediaControllerState = { microphone: idle(), camera: idle() };
   const live = new Map<MediaDeviceKind, TrackLike[]>();
   let preferences = readPreferences(storage);
+  let devices = readDevices(storage);
 
   function publish(): void {
     options.onChange?.({
@@ -176,6 +231,25 @@ export function createMediaController(
     }
   }
 
+  function rememberDevice(kind: MediaDeviceKind, deviceId: string): void {
+    devices =
+      kind === "microphone"
+        ? { ...devices, microphoneId: deviceId }
+        : { ...devices, cameraId: deviceId };
+    if (!storage) return;
+    try {
+      // A device id, and nothing else. Never a label: labels name hardware,
+      // and through it people.
+      storage.setItem(MEDIA_DEVICE_KEY, JSON.stringify(devices));
+    } catch {
+      // A full or blocked store must never break a call control.
+    }
+  }
+
+  function chosen(kind: MediaDeviceKind): string | null {
+    return kind === "microphone" ? devices.microphoneId : devices.cameraId;
+  }
+
   function stop(kind: MediaDeviceKind): void {
     for (const track of live.get(kind) ?? []) {
       try {
@@ -187,16 +261,24 @@ export function createMediaController(
     live.delete(kind);
   }
 
-  async function enable(kind: MediaDeviceKind): Promise<MediaDeviceState> {
+  async function enable(
+    kind: MediaDeviceKind,
+    deviceId?: string,
+    force = false,
+  ): Promise<MediaDeviceState> {
     if (state[kind].status === "requesting") return { ...state[kind] };
-    if (state[kind].active) return { ...state[kind] };
+    if (state[kind].active && !force) return { ...state[kind] };
 
+    const pinned = deviceId ?? chosen(kind);
     state[kind] = { status: "requesting", active: false, code: null, recovery: null };
     publish();
 
     try {
+      const pin: DeviceConstraint | boolean = pinned
+        ? { deviceId: { exact: pinned } }
+        : true;
       const stream = await options.getUserMedia(
-        kind === "microphone" ? { audio: true } : { video: true },
+        kind === "microphone" ? { audio: pin } : { video: pin },
       );
       const tracks = stream
         .getTracks()
@@ -217,6 +299,7 @@ export function createMediaController(
       live.set(kind, tracks);
       state[kind] = { status: "granted", active: true, code: null, recovery: null };
       remember(kind, true);
+      if (pinned) rememberDevice(kind, pinned);
       publish();
       return { ...state[kind] };
     } catch (error) {
@@ -246,8 +329,20 @@ export function createMediaController(
     }),
     tracks: () => [...live.values()].flat(),
     preferences: () => ({ ...preferences }),
-    enableMicrophone: () => enable("microphone"),
-    enableCamera: () => enable("camera"),
+    devices: () => ({ ...devices }),
+    tracksFor: (kind) => [...(live.get(kind) ?? [])],
+    enableMicrophone: (deviceId) => enable("microphone", deviceId),
+    enableCamera: (deviceId) => enable("camera", deviceId),
+
+    async selectDevice(kind, deviceId) {
+      rememberDevice(kind, deviceId);
+      // Not live: the choice is remembered and the device stays closed.
+      if (!state[kind].active) {
+        publish();
+        return { ...state[kind] };
+      }
+      return enable(kind, deviceId, true);
+    },
     disableMicrophone: () => disable("microphone"),
     disableCamera: () => disable("camera"),
     retry: (kind) => enable(kind),
