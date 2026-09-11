@@ -6,6 +6,9 @@ pub mod auth;
 pub mod autostart;
 pub mod banner;
 pub mod calls;
+/// US-016 story acceptance tests (test builds only).
+#[cfg(test)]
+mod calls_story_tests;
 pub mod checksums;
 pub mod client_diagnostics;
 pub mod client_health;
