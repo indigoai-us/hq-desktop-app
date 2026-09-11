@@ -300,6 +300,12 @@ struct ManualRunnerExitContext {
     /// requested. Set by the exit caller from the SAME shared reader the watcher
     /// route uses. Fixed vocabulary; diagnostic-only.
     runner_report_read: String,
+    /// Where this run's report directory was delivered to the child (HQ-DESKTOP-5W).
+    /// The manual route is always the npx path, so this is `env_escaped` when a report
+    /// was requested, else `disabled_by_user_options` / `not_requested`. Set by the
+    /// caller from the same shared resolver the watcher route uses. Fixed vocabulary;
+    /// diagnostic-only.
+    runner_report_dir_delivery: String,
     /// The parsed report itself when one was read this run, so the exit builder can
     /// adopt its named cause when the runner's own stderr named none (the exact
     /// Windows-fault case). `None` when no report was read; a report that named no
@@ -321,6 +327,7 @@ impl Default for ManualRunnerExitContext {
             windows_terminator: None,
             session_end_latch: SessionEndLatchReading::Unavailable,
             runner_report_read: "report_not_requested".to_string(),
+            runner_report_dir_delivery: "not_requested".to_string(),
             runner_report: None,
         }
     }
@@ -367,6 +374,7 @@ fn manual_runner_exit_context(
         // shared reader; `report_not_requested`/`None` here so a context that read
         // none renders the honest seed (HQ-DESKTOP-5W).
         runner_report_read: "report_not_requested".to_string(),
+        runner_report_dir_delivery: "not_requested".to_string(),
         runner_report: None,
     }
 }
@@ -420,6 +428,13 @@ fn runner_exit_telemetry_context(
         // watcher route emits, so the routes cannot drift.
         ("runner_fatal_source", fatal_source.to_string()),
         ("runner_report_read", context.runner_report_read.clone()),
+        // Report-directory delivery provenance (HQ-DESKTOP-5W), the SAME axis the
+        // watcher route emits so the routes cannot drift. Fixed vocabulary,
+        // re-validated at the telemetry egress; diagnostic-only.
+        (
+            "runner_report_dir_delivery",
+            context.runner_report_dir_delivery.clone(),
+        ),
     ];
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this run retained one. A fixed
     // constant; absent otherwise so absence never renders as evidence. Read from
@@ -2996,6 +3011,16 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                                 std::env::var("NODE_OPTIONS").ok().as_deref(),
                                 manual_report_dir.as_deref(),
                             );
+                        // Delivery provenance (HQ-DESKTOP-5W): the manual route is
+                        // always the npx path, so it never mirrors the flags into argv
+                        // (delivers_argv = false) — `env_escaped` when requested.
+                        exit_context.runner_report_dir_delivery =
+                            hq_desktop_core::daemon::resolve_runner_report_dir_delivery(
+                                manual_report_request,
+                                false,
+                            )
+                            .as_str()
+                            .to_string();
                         if let (
                             hq_desktop_core::daemon::RunnerReportRequest::Requested,
                             Some(dir),

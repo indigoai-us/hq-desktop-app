@@ -30,6 +30,8 @@
  * integers, and a digest — never argv, stderr, symbols, paths, or company slugs.
  */
 
+import { execFileSync } from 'node:child_process';
+
 import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
@@ -137,6 +139,37 @@ describe('windows fatal-reason attribution — source contracts', () => {
       'report_not_requested',
       'report_disabled_by_user_options',
     ]) {
+      expect(telemetrySource).toContain(token);
+    }
+  });
+
+  it('escapes the report directory so a Windows path survives Node’s NODE_OPTIONS parser', () => {
+    // The HQ-DESKTOP-5W recurrence defect: the report directory was double-quoted but
+    // UNESCAPED, so Node's NODE_OPTIONS parser ate every Windows separator and the exit
+    // reader found nothing (`report_absent`). The fix renders it through a pure encoder
+    // that escapes backslash and quote; the argv mirror stays a single unquoted OS
+    // argument.
+    expect(coreDaemonSource).toContain('fn node_options_quoted_value(');
+    expect(coreDaemonSource).toContain(
+      'node_options_quoted_value(&report_dir.display().to_string())',
+    );
+    // A faithful port of Node's own tokenizer is the in-crate round-trip oracle the
+    // prior suite lacked (every prior fixture path was POSIX).
+    expect(coreDaemonSource).toContain('fn node_options_tokenize(');
+    expect(coreDaemonSource).toContain(
+      'fn node_options_report_directory_round_trips_through_the_node_tokenizer(',
+    );
+  });
+
+  it('records report-directory delivery provenance at both routes and gates it at egress', () => {
+    expect(coreDaemonSource).toContain('pub enum RunnerReportDirDelivery');
+    expect(coreDaemonSource).toContain('pub fn resolve_runner_report_dir_delivery(');
+    // Both exit seams emit the axis (watcher + manual), from the one shared resolver.
+    expect(daemonSource).toContain('"runner_report_dir_delivery"');
+    expect(syncSource).toContain('"runner_report_dir_delivery"');
+    // The egress allow-list validates the exact fixed vocabulary and fails closed.
+    expect(telemetrySource).toContain('"runner_report_dir_delivery" => Some(matches!(');
+    for (const token of ['env_escaped', 'env_and_argv', 'disabled_by_user_options', 'not_requested']) {
       expect(telemetrySource).toContain(token);
     }
   });
@@ -297,7 +330,11 @@ function applyPolicy(policy: Policy, report: NodeReport | null): SentryEnvelope 
     return env;
   }
 
-  // post-fix: seed the read provenance, then read the report.
+  // post-fix: the production watcher is the npx/cmd_shim path, so the report
+  // directory is delivered through the escaped NODE_OPTIONS value only — recorded as
+  // env_escaped regardless of whether a report was ultimately written.
+  env.tags.runner_report_dir_delivery = 'env_escaped';
+  // seed the read provenance, then read the report.
   if (report === null) {
     env.tags.runner_report_read = 'report_absent';
     env.tags.runner_fatal_source = 'none';
@@ -344,6 +381,7 @@ describe('windows fatal-reason attribution — envelope model (both directions)'
     // The reason axes do not exist on base.
     expect(env.tags.runner_fatal_source).toBeUndefined();
     expect(env.tags.runner_report_read).toBeUndefined();
+    expect(env.tags.runner_report_dir_delivery).toBeUndefined();
     // The culprit names the shape + candidate, but NOT a reason.
     expect(env.culprit).toBe('sync/watcher: node_exe (windows fault 0xC0000409)');
     expect(env.culprit).not.toContain('heap oom');
@@ -369,6 +407,17 @@ describe('windows fatal-reason attribution — envelope model (both directions)'
     expect(env.culprit).toBe('sync/watcher: node_exe (windows fault 0xC0000409)');
   });
 
+  it('post-fix attributes an empty channel: env_escaped delivery alongside report_absent', () => {
+    // The exact recurrence shape after this lane: a 0xC0000409 exit whose report channel
+    // was armed and delivered correctly but wrote nothing. `report_absent` is now
+    // decisive, not ambiguous — the delivery axis proves Node WAS asked correctly, which
+    // is the positive evidence a further lane would need.
+    const env = applyPolicy('post-fix', null);
+    expect(env.tags.runner_report_read).toBe('report_absent');
+    expect(env.tags.runner_report_dir_delivery).toBe('env_escaped');
+    expect(env.tags.runner_fatal_source).toBe('none');
+  });
+
   it('grouping continuity: message + fingerprint are identical across policies', () => {
     const pre = applyPolicy('pre-fix', HEAP_OOM_REPORT);
     const post = applyPolicy('post-fix', HEAP_OOM_REPORT);
@@ -388,5 +437,77 @@ describe('windows fatal-reason attribution — envelope model (both directions)'
         expect(value, `${key}=${value}`).toMatch(CONTENT_SAFE);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Artifact-level round-trip against the REAL Node NODE_OPTIONS parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirror of `daemon.rs::node_options_quoted_value`: wrap the value in double quotes
+ * and escape every backslash and double quote, so Node's `ParseNodeOptionsEnvVar`
+ * decodes it back byte-for-byte. The in-crate Rust oracle proves the encoder against
+ * a faithful port of the tokenizer; this proves the SAME rule against the ACTUAL
+ * parser in the repo's own Node — platform-independent, so it runs on Linux/macOS CI
+ * without a Windows host.
+ */
+function nodeOptionsQuotedValue(value: string): string {
+  let out = '"';
+  for (const ch of value) {
+    if (ch === '\\' || ch === '"') out += '\\';
+    out += ch;
+  }
+  return `${out}"`;
+}
+
+/**
+ * Compose the NODE_OPTIONS the app emits for a report directory, run the repo's own
+ * Node with it, and return what Node actually parsed as `process.report.directory`.
+ * `node -p` never writes a report, so a Windows-shaped directory is never touched on
+ * disk — only parsed.
+ */
+function reportDirectoryThroughRealNode(directoryToken: string): string {
+  const nodeOptions = [
+    '--report-on-fatalerror',
+    '--report-uncaught-exception',
+    '--report-compact',
+    `--report-directory=${directoryToken}`,
+    '--report-filename=runner-fatal.json',
+  ].join(' ');
+  const out = execFileSync(process.execPath, ['-p', 'process.report.directory'], {
+    env: { ...process.env, NODE_OPTIONS: nodeOptions },
+    encoding: 'utf8',
+  });
+  return out.replace(/\r?\n$/, '');
+}
+
+describe('windows fatal-reason attribution — artifact round-trip (real Node parser)', () => {
+  // NOTE: written with normal escaped strings (not String.raw) because a template
+  // literal ending in a backslash escapes its own closing backtick — the exact
+  // trailing-separator case below. Each `\\` is a single backslash at runtime.
+  const MATRIX = [
+    'C:\\Users\\donal\\.hq\\runner-reports\\watcher\\12',
+    'C:\\Users\\Ada Lovelace\\.hq\\rr\\7',
+    'C:\\Users\\donal\\.hq\\rr\\7\\',
+    '/home/ada/.hq/runner-reports/7',
+    '/home/ada/Ada Lovelace/.hq/rr/7',
+    'C:\\weird"name\\rr',
+  ];
+
+  it('the escaped encoder round-trips every directory through the real Node parser', () => {
+    for (const dir of MATRIX) {
+      expect(reportDirectoryThroughRealNode(nodeOptionsQuotedValue(dir)), dir).toBe(dir);
+    }
+  });
+
+  it('the prior double-quoted-but-unescaped rendering is proven to LOSE Windows separators', () => {
+    // Non-vacuity / base-red: the naive rendering the prior fix shipped mangles a
+    // Windows path against the same real parser, so the round-trip above is a genuine
+    // base-red / candidate-green pair rather than a tautology.
+    const dir = 'C:\\Users\\donal\\.hq\\rr\\12';
+    const mangled = reportDirectoryThroughRealNode(`"${dir}"`);
+    expect(mangled).not.toBe(dir);
+    expect(mangled).toBe('C:Usersdonal.hqrr12');
   });
 });
