@@ -1409,13 +1409,50 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
         )
     };
 
-    if let Some((error_class, fatal_class)) = class.split_once(';') {
-        is_error_class(error_class) && is_fatal_class(fatal_class) && !fatal_class.contains(';')
-    } else {
-        // Keep the previously shipped exact grammar sendable while clients
-        // update. New producers always include the second fatal-class token.
-        is_error_class(class)
+    // One-, two-, and three-token grammars are all sendable. Older in-flight
+    // clients still emit the one-token `(class)` and two-token `(class;fatal)`
+    // forms; current producers append the structural shape as a third token
+    // (`(class;fatal;shape)`, HQ-DESKTOP-67) so the retained breadcrumb window is
+    // self-describing. A fourth token, or any unknown token in any position, fails
+    // closed to [Filtered].
+    let mut parts = class.split(';');
+    let Some(error_class) = parts.next() else {
+        return false;
+    };
+    if !is_error_class(error_class) {
+        return false;
     }
+    let Some(fatal_class) = parts.next() else {
+        return true;
+    };
+    if !is_fatal_class(fatal_class) {
+        return false;
+    }
+    let Some(shape) = parts.next() else {
+        return true;
+    };
+    is_unmatched_stderr_shape_token(shape) && parts.next().is_none()
+}
+
+/// The closed unmatched-stderr shape vocabulary, mirrored from
+/// `hq_desktop_core::watcher_fault::UnmatchedStderrShape::as_str`. Kept local so
+/// the egress guard stays independent of the producer crate, exactly as the other
+/// mirrors here; the `#[cfg(test)]` parity check below drives every
+/// `UnmatchedStderrShape::ALL` token through this set, so a producer that adds a
+/// shape variant without extending the mirror fails CI rather than silently
+/// blanking the new breadcrumb to [Filtered].
+fn is_unmatched_stderr_shape_token(value: &str) -> bool {
+    matches!(
+        value,
+        "ndjson_record"
+            | "stack_frame"
+            | "hash_frame"
+            | "key_colon"
+            | "path_like"
+            | "blank"
+            | "word"
+            | "other"
+    )
 }
 
 fn scrub_sensitive_in_value(v: &mut Value) {
@@ -2306,8 +2343,80 @@ mod tests {
     }
 
     #[test]
+    fn every_unmatched_stderr_shape_token_round_trips_through_the_content_safe_allowlist() {
+        use hq_desktop_core::sync_outcome::{RunnerErrorClass, RunnerFatalClass};
+        use hq_desktop_core::watcher_fault::UnmatchedStderrShape;
+
+        // The three-token breadcrumb grammar (HQ-DESKTOP-67): every shape the
+        // producer can emit, crossed with every error/fatal class, must survive
+        // egress. Enumerate the emitter's OWN shape set — never a hand-copied list —
+        // so a future UnmatchedStderrShape variant the local mirror forgets fails
+        // THIS parity test instead of silently blanking the new breadcrumb.
+        for shape in UnmatchedStderrShape::ALL {
+            assert!(
+                is_unmatched_stderr_shape_token(shape.as_str()),
+                "shape token {:?} missing from the egress mirror",
+                shape.as_str()
+            );
+            for error_class in RunnerErrorClass::ALL {
+                for fatal_class in RunnerFatalClass::ALL {
+                    let message = format!(
+                        "runner stderr #42 ({};{};{})",
+                        error_class.breadcrumb_token(),
+                        fatal_class.as_str(),
+                        shape.as_str()
+                    );
+                    assert!(
+                        is_content_safe_runner_stderr_message(
+                            Some("runner.stderr"),
+                            Some(&message)
+                        ),
+                        "three-token breadcrumb rejected by allowlist: {message}"
+                    );
+                }
+            }
+        }
+
+        // The exact corrected HQ-DESKTOP-67 breadcrumb: a path-led line now reads
+        // `other` (not `identity`) and carries its structural shape, and it survives
+        // before_send verbatim rather than being blanked to [Filtered].
+        let mut event = Event::default();
+        event.breadcrumbs.values.push(Breadcrumb {
+            category: Some("runner.stderr".into()),
+            message: Some("runner stderr #161 (other;none;path_like)".into()),
+            ..Default::default()
+        });
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("runner stderr #161 (other;none;path_like)")
+        );
+
+        // The legacy one- and two-token grammars stay accepted for in-flight clients.
+        assert!(is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #7 (other)")
+        ));
+        assert!(is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #8 (eperm;none)")
+        ));
+
+        // Fails closed: an unknown shape token, and a fourth token, are rejected.
+        assert!(!is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #1 (other;none;bogus_shape)")
+        ));
+        assert!(!is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #1 (other;none;path_like;extra)")
+        ));
+    }
+
+    #[test]
     fn no_emitter_breadcrumb_token_contains_a_sentry_denylist_substring() {
         use hq_desktop_core::sync_outcome::{RunnerErrorClass, RunnerFatalClass};
+        use hq_desktop_core::watcher_fault::UnmatchedStderrShape;
 
         // The guard that would have caught the destroyed HQ-DESKTOP-4T breadcrumb
         // at authoring time: no token the breadcrumb renderer can emit may contain
@@ -2333,6 +2442,14 @@ mod tests {
                 RunnerFatalClass::ALL
                     .into_iter()
                     .map(|fatal| fatal.as_str()),
+            )
+            // The breadcrumb now carries a third structural-shape token
+            // (HQ-DESKTOP-67); every shape the renderer can emit is held to the
+            // same denylist-safety bar as the class and fatal tokens.
+            .chain(
+                UnmatchedStderrShape::ALL
+                    .into_iter()
+                    .map(|shape| shape.as_str()),
             );
         for token in tokens {
             for denied in DENYLIST {

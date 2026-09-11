@@ -54,7 +54,7 @@ use hq_desktop_core::sync_outcome::{
     RUNNER_PHASE_PRE_PROTOCOL,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
-use hq_desktop_core::watcher_fault::UnmatchedStderrShapeRollup;
+use hq_desktop_core::watcher_fault::{classify_unmatched_stderr_shape, UnmatchedStderrShapeRollup};
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
@@ -1555,11 +1555,22 @@ fn runner_stderr_breadcrumb(sequence: u32, line: &str) -> sentry::Breadcrumb {
     // the single-source vocabulary is machine-checked in hq-telemetry.
     let error_class = classify_runner_error_class(line).breadcrumb_token();
     let fatal_class = classify_runner_fatal_class(line).as_str();
+    // Carry the structural SHAPE as a third token (HQ-DESKTOP-67). The per-line
+    // breadcrumb is the only temporal record that leaves the machine, and the error
+    // class alone cannot discriminate a genuine auth flood from a path-led line that
+    // merely spells a marker in-word; the shape — the SAME closed-vocabulary token
+    // the aggregate `runner_unmatched_stderr_shapes` census already uses — makes the
+    // retained window self-describing. It is SELECTED from a fixed vocabulary, never
+    // copied from the line, so no runner byte leaves the process. Wired here at the
+    // single builder so none of the nine call sites can drift; hq-telemetry's egress
+    // validator accepts this third token in lockstep (without it the breadcrumb fails
+    // closed to [Filtered]).
+    let shape = classify_unmatched_stderr_shape(line).as_str();
     sentry::Breadcrumb {
         category: Some("runner.stderr".into()),
         level: sentry::Level::Warning,
         message: Some(format!(
-            "runner stderr #{sequence} ({error_class};{fatal_class})"
+            "runner stderr #{sequence} ({error_class};{fatal_class};{shape})"
         )),
         ..Default::default()
     }
@@ -4513,11 +4524,14 @@ mod tests {
             sentry::protocol::Value::Bool(true)
         );
 
-        // Every retained breadcrumb is the fixed content-safe grammar.
+        // Every retained breadcrumb is the fixed content-safe grammar — now the
+        // three-token form carrying the structural shape. Every flood line is an
+        // ndjson error record, so each breadcrumb's shape token is `ndjson_record`.
         for breadcrumb in &event.breadcrumbs.values {
             let message = breadcrumb.message.as_deref().unwrap_or_default();
             assert!(
-                message.starts_with("runner stderr #") && message.ends_with("(other;none)"),
+                message.starts_with("runner stderr #")
+                    && message.ends_with("(other;none;ndjson_record)"),
                 "unexpected breadcrumb shape: {message:?}"
             );
         }
@@ -4838,7 +4852,8 @@ mod tests {
         );
 
         // The retained breadcrumb is the fixed content-safe grammar and exactly
-        // reproduces the observed `runner stderr #1 (other;none)`.
+        // reproduces the observed breadcrumb — now three-token, carrying the `other`
+        // structural shape of the single unrecognised plain-stderr line.
         let breadcrumbs: Vec<&str> = event
             .breadcrumbs
             .values
@@ -4846,12 +4861,12 @@ mod tests {
             .filter_map(|breadcrumb| breadcrumb.message.as_deref())
             .collect();
         assert!(
-            breadcrumbs.contains(&"runner stderr #1 (other;none)"),
+            breadcrumbs.contains(&"runner stderr #1 (other;none;other)"),
             "expected the observed breadcrumb, got: {breadcrumbs:?}"
         );
         for message in &breadcrumbs {
             assert!(
-                message.starts_with("runner stderr #") && message.ends_with("(other;none)"),
+                message.starts_with("runner stderr #") && message.ends_with("(other;none;other)"),
                 "unexpected breadcrumb shape: {message:?}"
             );
         }
@@ -4859,6 +4874,224 @@ mod tests {
         // (3) No stderr or stdout byte leaks: the rollup emits `other:1`, never the
         // stderr line, and the stdout progress records' paths never reach Sentry.
         for forbidden in ["runner stopped unexpectedly", "knowledge/file-"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "final event leaked runner content: {forbidden}"
+            );
+        }
+    }
+
+    /// Artifact/E2E proof for HQ-DESKTOP-67: a genuine child writes 9 stdout protocol
+    /// lines and a 260-line stderr stream — 256 path-led lines that each spell an auth
+    /// marker IN-WORD (an `authors/` path segment), 2 ndjson records (one company-scope
+    /// error, one benign progress record), and 2 unstructured lines — then exits 2. This
+    /// is the exact census of the reported event. Driving it through the production
+    /// manual capture path and `hq_telemetry::before_send` must yield a scrubbed event
+    /// whose retained breadcrumbs read `runner stderr #N (other;none;path_like)` — the
+    /// CORRECTED `other` class (never the misleading `identity` the unbounded matcher
+    /// produced) AND the new structural-shape token — while the aggregate
+    /// `runner_unmatched_stderr_shapes` still reads `path_like:256,ndjson_record:2,other:2`,
+    /// the cause rollup still reads `unknown_unnamed:1`, and not one stderr or stdout byte
+    /// leaks. On the base revision this fails on BOTH the class (`identity`) and the
+    /// grammar (two-token).
+    #[test]
+    fn real_child_in_word_auth_flood_exit_2_corrects_class_and_carries_shape() {
+        // 9 genuine protocol lines on stdout (valid progress ndjson), counted only when
+        // the parser accepts them — exactly as the runner did before it died.
+        let stdout_lines: Vec<String> = (0..9)
+            .map(|i| {
+                serde_json::json!({
+                    "type": "progress",
+                    "company": "acme",
+                    "path": format!("knowledge/file-{i}.md"),
+                    "bytes": 1,
+                    "direction": "up",
+                })
+                .to_string()
+            })
+            .collect();
+
+        // 260 stderr lines reproducing the reported census.
+        let mut stderr_lines: Vec<String> = Vec::with_capacity(260);
+        // 256 path-led lines, each spelling `auth` IN-WORD inside `authors`. The
+        // unbounded matcher classed all 256 AUTH (breadcrumb `identity`); the bounded
+        // matcher classes them OTHER. Each has 2+ slashes, so its shape is path_like.
+        for i in 0..256 {
+            stderr_lines.push(format!(
+                "/Users/dev/hq/personal/library/authors/chapter-{i}/index.md"
+            ));
+        }
+        // 1 company-scope ndjson error record, unnamed message → unknown_unnamed:1.
+        stderr_lines.push(
+            serde_json::json!({
+                "type": "error",
+                "company": "acme",
+                "path": "(company)",
+                "message": "the runner stopped while working",
+            })
+            .to_string(),
+        );
+        // 1 benign ndjson record (progress on stderr): ndjson_record shape, not an
+        // error, so it does not feed the cause rollup — the second `ndjson_record`.
+        stderr_lines.push(
+            serde_json::json!({
+                "type": "progress",
+                "company": "acme",
+                "path": "knowledge/late.md",
+                "bytes": 1,
+                "direction": "up",
+            })
+            .to_string(),
+        );
+        // 2 unstructured lines → the coarse `other` shape.
+        stderr_lines.push("runner stopped unexpectedly".to_string());
+        stderr_lines.push("process terminated without a message".to_string());
+        assert_eq!(stderr_lines.len(), 260);
+
+        let spawn = stdout_then_stderr_spawn_args(&stdout_lines, &stderr_lines, 2);
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().expect("temporary HQ folder");
+        let hq_folder_path = hq_folder.path().to_str().expect("UTF-8 temporary path");
+        let payload = SyncErrorEvent {
+            company: None,
+            path: "(runner)".to_string(),
+            message: "hq-sync-runner exited with code 2".to_string(),
+        };
+        let totals = Mutex::new(RunTotals::default());
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(RUNNER_STDERR_TAIL_CAP));
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let mut stderr_sequence = 0_u32;
+        let mut stdout_sequence = 0_u32;
+        let mut unmatched = UnmatchedStderrShapeRollup::default();
+        let mut terminal = None;
+
+        let captures = sentry::test::with_captured_events(|| {
+            run_process_impl(
+                "manual-runner-in-word-auth-flood",
+                &spawn,
+                |event| match event {
+                    ProcessEvent::Stdout(line) => {
+                        if handle_sync_line(
+                            &handle,
+                            hq_folder_path,
+                            &totals,
+                            &phase,
+                            "test-jwt",
+                            &line,
+                        ) {
+                            stdout_sequence = stdout_sequence.saturating_add(1);
+                        }
+                    }
+                    ProcessEvent::Stderr(line) => {
+                        // Exactly the production stderr arm: sequence, breadcrumb, tail,
+                        // RunTotals re-ingest, and the unmatched-stderr rollup.
+                        stderr_sequence = stderr_sequence.saturating_add(1);
+                        sentry::add_breadcrumb(runner_stderr_breadcrumb(stderr_sequence, &line));
+                        let _ = update_runner_stderr_totals(&totals, &line);
+                        push_runner_stderr_tail(
+                            &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                            line.clone(),
+                        );
+                        unmatched.record_if_unmatched(&line);
+                    }
+                    ProcessEvent::Exit {
+                        code,
+                        signal,
+                        success,
+                    } => terminal = Some((code, signal, success)),
+                },
+            )
+            .expect("real fake runner should run");
+
+            let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let mut context = manual_runner_exit_context(
+                &SyncRunScope::All,
+                &phase,
+                &stderr_tail,
+                stderr_sequence,
+                stdout_sequence,
+                None,
+            );
+            context.runner_unmatched_stderr_shapes = unmatched.tag_value();
+            capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
+        });
+
+        assert_eq!(terminal, Some((Some(2), None, false)));
+        assert_eq!(stdout_sequence, 9);
+        assert_eq!(stderr_sequence, 260);
+
+        let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
+            .expect("in-word-auth flood event remains sendable");
+        let serialized = serde_json::to_string(&event).expect("serialize final event");
+
+        // (1) The census is reproduced exactly — proving the fixture matches the
+        // reported event rather than a strawman. The aggregate spans all 260 lines,
+        // independent of Sentry's breadcrumb ring.
+        assert_eq!(
+            event.tags["runner_unmatched_stderr_shapes"],
+            "path_like:256,ndjson_record:2,other:2"
+        );
+        assert_eq!(event.tags["runner_error_causes"], "unknown_unnamed:1");
+        assert_eq!(
+            event.extra["runner_stderr_line_count"],
+            sentry::protocol::Value::Number(260.into())
+        );
+        assert_eq!(
+            event.extra["runner_stdout_line_count"],
+            sentry::protocol::Value::Number(9.into())
+        );
+
+        // (2) THE FIX. Every retained breadcrumb carries the three-token grammar with
+        // the CORRECTED class: a path-led in-word-auth line reads `other` (never the
+        // misleading `identity` the unbounded matcher produced) and its `path_like`
+        // shape. On base these read `(identity;none)` — wrong on both class and grammar.
+        let breadcrumbs: Vec<&str> = event
+            .breadcrumbs
+            .values
+            .iter()
+            .filter_map(|breadcrumb| breadcrumb.message.as_deref())
+            .collect();
+        assert!(!breadcrumbs.is_empty(), "expected retained breadcrumbs");
+        let mut path_like = 0_usize;
+        for message in &breadcrumbs {
+            assert!(
+                message.starts_with("runner stderr #"),
+                "unexpected breadcrumb: {message:?}"
+            );
+            // The core correction: an in-word auth line must never render `identity`.
+            assert!(
+                !message.contains("identity"),
+                "an in-word auth line must NOT render `identity`: {message:?}"
+            );
+            // Every retained breadcrumb is one of the three expected three-token forms.
+            let grammar_ok = message.ends_with("(other;none;path_like)")
+                || message.ends_with("(other;none;ndjson_record)")
+                || message.ends_with("(other;none;other)");
+            assert!(grammar_ok, "unexpected breadcrumb grammar/class: {message:?}");
+            if message.ends_with("(other;none;path_like)") {
+                path_like += 1;
+            }
+        }
+        assert!(
+            path_like > 0,
+            "expected at least one corrected path_like breadcrumb, got: {breadcrumbs:?}"
+        );
+
+        // (3) No stderr or stdout byte leaks — only fixed-vocabulary shape/class
+        // tokens and bounded counts reach Sentry.
+        for forbidden in [
+            "authors",
+            "personal/library",
+            "chapter-",
+            "knowledge/file-",
+            "knowledge/late",
+            "the runner stopped while working",
+            "runner stopped unexpectedly",
+            "process terminated without a message",
+            "acme",
+        ] {
             assert!(
                 !serialized.contains(forbidden),
                 "final event leaked runner content: {forbidden}"
@@ -5549,8 +5782,8 @@ mod tests {
                 .filter_map(|breadcrumb| breadcrumb.message.as_deref())
                 .collect::<Vec<_>>(),
             vec![
-                "runner stderr #1 (eperm;none)",
-                "runner stderr #2 (eperm;none)"
+                "runner stderr #1 (eperm;none;ndjson_record)",
+                "runner stderr #2 (eperm;none;ndjson_record)"
             ]
         );
         let captured_serialized =
@@ -5574,8 +5807,8 @@ mod tests {
                 .filter_map(|breadcrumb| breadcrumb.message.as_deref())
                 .collect::<Vec<_>>(),
             vec![
-                "runner stderr #1 (eperm;none)",
-                "runner stderr #2 (eperm;none)"
+                "runner stderr #1 (eperm;none;ndjson_record)",
+                "runner stderr #2 (eperm;none;ndjson_record)"
             ]
         );
         assert_eq!(scrubbed.tags["runner_error_rollup"], "EPERM:2");
@@ -5791,9 +6024,12 @@ mod tests {
         let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
             .expect("manual runner event remains sendable");
         let serialized = serde_json::to_string(&event).expect("serialize event");
+        // Three-token grammar: the structural shape rides alongside the fatal class.
+        // The assert line carries a Windows drive path, so the shape is `path_like`;
+        // the shape is a fixed token, never the path bytes (asserted content-safe below).
         assert_eq!(
             event.breadcrumbs.values[0].message.as_deref(),
-            Some("runner stderr #1 (other;libuv_assert)")
+            Some("runner stderr #1 (other;libuv_assert;path_like)")
         );
         assert_eq!(event.tags["runner_fatal_class"], "libuv_assert");
         assert_eq!(

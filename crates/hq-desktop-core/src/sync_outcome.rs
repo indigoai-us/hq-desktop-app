@@ -1158,6 +1158,32 @@ impl RunnerErrorClass {
     }
 }
 
+/// True when `haystack_lower` (already lowercased) contains `needle` as a bounded
+/// token — bordered on each side by the start/end of the string or by a byte that
+/// `is_word_byte` rejects. The shared boundary scanner behind both the errno and
+/// the auth-marker matchers, so their "is this a standalone token or a fragment
+/// inside a longer word?" decision can never drift apart. The caller chooses what
+/// counts as "inside a token" via `is_word_byte`.
+fn message_contains_bounded_token(
+    haystack_lower: &str,
+    needle: &str,
+    is_word_byte: impl Fn(u8) -> bool,
+) -> bool {
+    let bytes = haystack_lower.as_bytes();
+    let mut search_from = 0;
+    while let Some(offset) = haystack_lower[search_from..].find(needle) {
+        let index = search_from + offset;
+        let before_ok = index == 0 || !is_word_byte(bytes[index - 1]);
+        let after = index + needle.len();
+        let after_ok = after >= bytes.len() || !is_word_byte(bytes[after]);
+        if before_ok && after_ok {
+            return true;
+        }
+        search_from = index + 1;
+    }
+    false
+}
+
 /// True when `haystack` (already lowercased) contains `errno` as a bounded token
 /// — bordered by the start/end of the string or a non-alphanumeric byte on each
 /// side. `describeError` renders a Node errno as its own token (`EEXIST:`,
@@ -1165,19 +1191,56 @@ impl RunnerErrorClass {
 /// rendering while refusing an errno spelled INSIDE an ordinary word — e.g.
 /// `eexist` inside `preexisting`, which a bare `contains` would misclassify.
 fn message_contains_errno_token(haystack_lower: &str, errno: &str) -> bool {
-    let bytes = haystack_lower.as_bytes();
-    let mut search_from = 0;
-    while let Some(offset) = haystack_lower[search_from..].find(errno) {
-        let index = search_from + offset;
-        let before_ok = index == 0 || !bytes[index - 1].is_ascii_alphanumeric();
-        let after = index + errno.len();
-        let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
-        if before_ok && after_ok {
-            return true;
-        }
-        search_from = index + 1;
+    message_contains_bounded_token(haystack_lower, errno, |byte| byte.is_ascii_alphanumeric())
+}
+
+/// Auth/identity vocabulary matched as a plain substring. Each token is specific
+/// enough that it never occurs incidentally inside an unrelated path segment or
+/// identifier: `authentic`/`authoriz`/`authoris` are absent from `authors`, and
+/// `oauth`/`cognito`/`forbidden`/`auth-error` carry no path-segment collision. A
+/// substring match therefore keeps genuine `authentication`/`authorization` prose
+/// AND the runner's `auth-error` protocol discriminator
+/// (`{"type":"auth-error",…}`, the record `runner_stderr_needs_reauth` acts on)
+/// classified as identity failures — the full-word forms bounded matching would
+/// otherwise drop.
+const AUTH_MARKER_SUBSTRINGS: [&str; 7] = [
+    "oauth",
+    "cognito",
+    "forbidden",
+    "authentic",
+    "authoriz",
+    "authoris",
+    "auth-error",
+];
+
+/// The short auth markers that DO occur incidentally inside ordinary path segments
+/// and identifiers (`auth` in `authors/`, `token` in `token-providers` or
+/// `tokenCount`). These match only as bounded tokens: alphanumerics AND the
+/// connectors that join path segments and package / identifier names
+/// (`- _ . / \ @`) all count as "inside a token", so a marker buried in a path
+/// segment, a package name, or a camelCase key is refused, while a marker that
+/// stands as its own word (delimited by whitespace, prose punctuation, or the
+/// string edge) still classifies `Auth`. An unbounded `contains` over these two
+/// was the HQ-DESKTOP-67 miscue: 96 path-led stderr lines rendered the breadcrumb
+/// `identity` on an in-word match. This mirrors [`message_contains_errno_token`]'s
+/// fix for `eexist` inside `preexisting`.
+const AUTH_MARKER_BOUNDED: [&str; 2] = ["auth", "token"];
+
+/// True when `haystack_lower` carries a genuine identity/authorization signal: an
+/// unambiguous [`AUTH_MARKER_SUBSTRINGS`] token anywhere, or a short
+/// [`AUTH_MARKER_BOUNDED`] marker standing as its own token.
+fn message_contains_auth_marker(haystack_lower: &str) -> bool {
+    if AUTH_MARKER_SUBSTRINGS
+        .iter()
+        .any(|marker| haystack_lower.contains(marker))
+    {
+        return true;
     }
-    false
+    AUTH_MARKER_BOUNDED.iter().any(|marker| {
+        message_contains_bounded_token(haystack_lower, marker, |byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b'\\' | b'@')
+        })
+    })
 }
 
 /// Bridge the CAUSE axis to the CLASS axis: when the closed cause vocabulary has
@@ -1365,10 +1428,7 @@ pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
         RunnerErrorClass::Exdev
     } else if is_transient_network_error(&msg) {
         RunnerErrorClass::Network
-    } else if ["auth", "unauthorized", "forbidden", "cognito", "token"]
-        .iter()
-        .any(|marker| msg.contains(marker))
-    {
+    } else if message_contains_auth_marker(&msg) {
         RunnerErrorClass::Auth
     } else {
         RunnerErrorClass::Other
@@ -4276,6 +4336,95 @@ mod tests {
         assert_eq!(
             classify_runner_error_class("Unauthorized: cognito rejected the request"),
             RunnerErrorClass::Auth
+        );
+    }
+
+    #[test]
+    fn auth_markers_match_as_bounded_tokens_not_in_word_substrings() {
+        // HQ-DESKTOP-67: a manual-route exit-2 reached Sentry with 96 path-led
+        // stderr breadcrumbs reading `identity` because the keyword matcher scanned
+        // for `auth`/`token` with an unbounded `contains`. A path segment, a package
+        // name, or a JSON key that merely SPELLS a marker in-word must now classify
+        // OTHER (breadcrumb `other`), while a marker standing as its own word still
+        // classifies AUTH (breadcrumb `identity`).
+
+        // In-word occurrences → OTHER. None of these carries a standalone marker.
+        for line in [
+            // `auth` inside `authors` (path segment).
+            "/Users/dev/hq/personal/library/authors/index.md",
+            // `token` inside the `token-providers` package name (hyphen connector).
+            "/Users/dev/.npm/_cacache/@aws-sdk/token-providers/dist/index.js",
+            // `token` inside the `tokenCount` JSON key (camelCase).
+            "tokenCount mismatch in manifest",
+            // `auth` as a whole path segment is still bounded by `/` connectors, so a
+            // bare path never reads as an identity failure.
+            "/var/run/auth/worker.sock is unavailable",
+        ] {
+            assert_eq!(
+                classify_runner_error_class(line),
+                RunnerErrorClass::Other,
+                "in-word marker must classify OTHER, not AUTH: {line:?}"
+            );
+        }
+        // The class the breadcrumb renders for the dominant path-led line is the
+        // denylist-safe `other`, NOT `identity` — the exact byte the event got wrong.
+        assert_eq!(
+            classify_runner_error_class("/Users/dev/hq/personal/library/authors/index.md")
+                .breadcrumb_token(),
+            "other"
+        );
+
+        // Standalone markers → AUTH, including `oauth` (which bounded matching would
+        // otherwise miss because `auth` inside `oauth` is itself in-word).
+        for line in [
+            "auth request failed",
+            "oauth handshake aborted",
+            "the request was unauthorized",
+            "forbidden",
+            "cognito refused the refresh",
+            "the token was rejected",
+        ] {
+            assert_eq!(
+                classify_runner_error_class(line),
+                RunnerErrorClass::Auth,
+                "standalone marker must still classify AUTH: {line:?}"
+            );
+        }
+        // A genuine identity failure keeps the denylist-safe `identity` spelling.
+        assert_eq!(
+            classify_runner_error_class("Unauthorized: cognito rejected the request")
+                .breadcrumb_token(),
+            "identity"
+        );
+
+        // Full-word and protocol auth forms that a bounded `auth`/`token` match alone
+        // would drop still classify AUTH: the `auth-error` protocol discriminator that
+        // runner_stderr_needs_reauth acts on, and `authentication`/`authorization`
+        // prose, are recognized by the unambiguous auth vocabulary — while
+        // `authors`/`token-providers`/`tokenCount` (checked above) stay OTHER.
+        for line in [
+            r#"{"type":"auth-error","message":"Sign in again"}"#,
+            "authentication failed",
+            "authorization denied for the company prefix",
+            "reauthentication required",
+        ] {
+            assert_eq!(
+                classify_runner_error_class(line),
+                RunnerErrorClass::Auth,
+                "genuine auth form must classify AUTH: {line:?}"
+            );
+        }
+
+        // The shared bounded-token refactor preserves the errno boundary exactly:
+        // a real errno rendering still classifies, `eexist` inside `preexisting` does
+        // not (the regression message_contains_errno_token was introduced to stop).
+        assert_eq!(
+            classify_runner_error_class("EEXIST: file already exists, mkdir 'x'"),
+            RunnerErrorClass::Eexist
+        );
+        assert_eq!(
+            classify_runner_error_class("failed to load cmp_preexisting entity"),
+            RunnerErrorClass::Other
         );
     }
 
