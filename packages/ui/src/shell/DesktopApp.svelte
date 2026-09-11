@@ -234,6 +234,7 @@
   import {
     clearFromMessages,
     isAgentUid,
+    newestMessageAtFrom,
     startThinking,
     tick,
     type ThinkingEntry,
@@ -4274,6 +4275,9 @@
         // before the catch-up below so a page that already carries the reply
         // clears it immediately.
         if (isAgentUid(row.personUid)) {
+          // Pin the row to "newer than the agent's last message" — a local
+          // bot's previous reply is usually < 2 min old and would otherwise
+          // clear the fresh row on the next catch-up (skew fallback).
           agentThinking = startThinking(
             agentThinking,
             {
@@ -4281,6 +4285,7 @@
               agentName: row.title?.trim() || "Agent",
             },
             Date.now(),
+            { afterMs: newestMessageAtFrom(liveTimeline, row.personUid) },
           );
         }
         if (!wire) {

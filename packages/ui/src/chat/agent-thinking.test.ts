@@ -8,6 +8,7 @@ import {
   tick,
   clearForAgents,
   clearFromMessages,
+  newestMessageAtFrom,
   labelFor,
 } from './agent-thinking.js';
 
@@ -228,5 +229,37 @@ describe('clearFromMessages', () => {
     ]);
     expect(out).toHaveLength(1);
     expect(out).not.toBe(rows);
+  });
+});
+
+describe('fast responders (local bots): afterMs replaces the skew fallback', () => {
+  const BOT = 'agt_bot';
+  it('a reply from 30 s ago does not clear a fresh row, but a newer one does', () => {
+    const prevReply = '2026-09-11T15:05:53.000Z';
+    const sentAt = Date.parse('2026-09-11T15:06:06.000Z');
+    const timeline = [
+      { fromPersonUid: 'prs_me', createdAt: '2026-09-11T15:05:50.000Z' },
+      { fromPersonUid: BOT, createdAt: prevReply },
+    ];
+    const rows = startThinking([], { agentUid: BOT, agentName: 'claude-bot' }, sentAt, {
+      afterMs: newestMessageAtFrom(timeline, BOT),
+    });
+    expect(rows[0]?.afterMs).toBe(Date.parse(prevReply));
+    // Catch-up page that still only carries the OLD reply (inside the 120 s skew window).
+    expect(clearFromMessages(rows, timeline)).toHaveLength(1);
+    // The actual answer arrives (server clock even slightly behind the client).
+    expect(
+      clearFromMessages(rows, [{ fromPersonUid: BOT, createdAt: '2026-09-11T15:06:05.000Z' }]),
+    ).toHaveLength(0);
+  });
+  it('falls back to the skew rule when the agent has no prior message', () => {
+    const now = 1_000_000_000_000;
+    const rows = startThinking([], { agentUid: BOT, agentName: 'b' }, now, {
+      afterMs: newestMessageAtFrom([{ fromPersonUid: 'prs_me', createdAt: new Date(now).toISOString() }], BOT),
+    });
+    expect(rows[0]?.afterMs).toBeUndefined();
+    expect(
+      clearFromMessages(rows, [{ fromPersonUid: BOT, createdAt: new Date(now - 60_000).toISOString() }]),
+    ).toHaveLength(0);
   });
 });

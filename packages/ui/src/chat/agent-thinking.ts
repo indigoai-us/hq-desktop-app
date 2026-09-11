@@ -96,6 +96,13 @@ export interface ThinkingEntry {
   agentName: string;
   startedAt: number;
   phase: ThinkingPhase;
+  /** Server timestamp (ms) of the newest message from this agent that was
+   * already in the timeline when the row started. When set, only a message
+   * NEWER than this clears the row — the clock-skew fallback in
+   * `clearFromMessages` is not used. Needed for fast responders (local bots
+   * answer in ~15–30 s): their previous reply falls inside the skew window
+   * and would otherwise clear a fresh row on the very next catch-up. */
+  afterMs?: number;
 }
 
 const DEFAULT_SLOW_AFTER_MS = 150_000;
@@ -110,12 +117,16 @@ export function startThinking(
   entries: ThinkingEntry[],
   agent: { agentUid: string; agentName: string },
   now: number,
+  opts?: { afterMs?: number },
 ): ThinkingEntry[] {
   const next: ThinkingEntry = {
     agentUid: agent.agentUid,
     agentName: agent.agentName,
     startedAt: now,
     phase: 'thinking',
+    ...(opts?.afterMs !== undefined && Number.isFinite(opts.afterMs)
+      ? { afterMs: opts.afterMs }
+      : {}),
   };
   const idx = entries.findIndex((e) => e.agentUid === agent.agentUid);
   if (idx < 0) return [...entries, next];
@@ -206,8 +217,30 @@ export function clearFromMessages(
     const newest = newestByUid.get(entry.agentUid);
     if (newest === undefined) return true;
     if (Number.isNaN(newest)) return false;
+    if (entry.afterMs !== undefined) return newest <= entry.afterMs;
     return newest < entry.startedAt - CLEAR_SKEW_MS;
   });
+}
+
+/** Newest parseable `createdAt` (ms) among `messages` sent by `agentUid`, for
+ * `startThinking`'s `afterMs`. Undefined when the agent has no timestamped
+ * message yet (callers then fall back to the skew rule). */
+export function newestMessageAtFrom(
+  messages: ReadonlyArray<{
+    fromPersonUid?: string | null;
+    createdAt?: string | null;
+  }>,
+  agentUid: string,
+): number | undefined {
+  const uid = agentUid.trim();
+  let newest: number | undefined;
+  for (const msg of messages) {
+    if ((msg.fromPersonUid ?? '').trim() !== uid) continue;
+    const ts = msg.createdAt ? Date.parse(msg.createdAt) : Number.NaN;
+    if (Number.isNaN(ts)) continue;
+    if (newest === undefined || ts > newest) newest = ts;
+  }
+  return newest;
 }
 
 /** Status copy for a row. Unicode ellipsis (U+2026) matches the rest of

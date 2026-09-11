@@ -33,6 +33,7 @@ export * from "./chat/setup-agent.svelte.js";
 // path directly if the wider `agent_` prefix matters.
 export {
   detectAgentMentions,
+  newestMessageAtFrom,
   startThinking,
   tick,
   clearForAgents,

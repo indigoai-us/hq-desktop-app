@@ -24,6 +24,7 @@
   import {
     clearFromMessages,
     isAgentUid,
+    newestMessageAtFrom,
     startThinking,
     tick,
     type ThinkingEntry,
@@ -306,13 +307,17 @@
     if (mentions.some((m) => m.participantType === "agent")) return;
     // A 1:1 agent DM thread: the counterpart uid is the agent.
     if (scope === "dm" && withPersonUid && isAgentUid(withPersonUid.trim())) {
+      const uid = withPersonUid.trim();
       agentThinking = startThinking(
         agentThinking,
         {
-          agentUid: withPersonUid.trim(),
+          agentUid: uid,
           agentName: root ? messageAuthor(root) : "Agent",
         },
         Date.now(),
+        // Fast responders (local bots): only a reply newer than their last
+        // one may clear the row; see agent-thinking.ts `afterMs`.
+        { afterMs: newestMessageAtFrom([...(root ? [root] : []), ...replies], uid) },
       );
       return;
     }
