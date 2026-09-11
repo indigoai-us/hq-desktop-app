@@ -191,7 +191,8 @@
     min-height: 0;
     overflow: hidden;
     background: transparent;
-    color: var(--t1, #e8e8e8);
+    /* Fixed ink: the scrim is dark in both themes (see AttachmentPreview). */
+    color: #fff;
   }
 
   .att-tray-stage {
@@ -256,7 +257,7 @@
   .att-tray-file-meta,
   .att-tray-empty {
     margin: 0;
-    color: var(--t3, var(--t2));
+    color: rgba(255, 255, 255, 0.55);
     font: 400 12px/1.3 var(--font-ui);
   }
 
@@ -320,7 +321,7 @@
 
   .att-tray-item-name {
     overflow: hidden;
-    color: var(--t3, var(--t2));
+    color: rgba(255, 255, 255, 0.55);
     font: 400 10px/1.2 var(--font-ui);
     text-overflow: ellipsis;
     white-space: nowrap;

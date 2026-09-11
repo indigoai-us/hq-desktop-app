@@ -169,3 +169,59 @@ describe("cached inline image rendering", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("MessageAttachments document cards", () => {
+  // Documents used to open the full-window tray, which for a PDF showed an
+  // embedded browser viewer nobody wanted. One click, straight to Downloads.
+  it("downloads on click instead of opening the tray", async () => {
+    const onopen = vi.fn();
+    const resolveUrl = vi.fn(async () => "https://signed.example/spec.pdf");
+    mountStrip({
+      attachments: [
+        item({
+          id: "att-pdf",
+          name: "titlebar-spec.pdf",
+          contentType: "application/pdf",
+          kind: "file",
+          vaultPath: "chat/attachments/chan/ch-1/att-pdf-spec.pdf",
+        }),
+      ],
+      onopen,
+      resolveUrl,
+    });
+
+    const card = host.querySelector<HTMLButtonElement>(
+      "[data-testid=attachment-card]",
+    );
+    expect(card?.getAttribute("aria-label")).toBe("Download titlebar-spec.pdf");
+    card!.click();
+    await settle();
+
+    expect(resolveUrl).toHaveBeenCalledOnce();
+    expect(onopen).not.toHaveBeenCalled();
+  });
+
+  it("says so on the card when the file cannot be fetched", async () => {
+    mountStrip({
+      attachments: [
+        item({
+          id: "att-pdf",
+          name: "titlebar-spec.pdf",
+          contentType: "application/pdf",
+          kind: "file",
+        }),
+      ],
+      resolveUrl: async () => null,
+    });
+
+    host
+      .querySelector<HTMLButtonElement>("[data-testid=attachment-card]")!
+      .click();
+
+    await vi.waitFor(() => {
+      expect(host.querySelector(".att-meta.is-error")?.textContent).toContain(
+        "Couldn’t download",
+      );
+    });
+  });
+});

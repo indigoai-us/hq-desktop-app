@@ -451,7 +451,10 @@
     width: 100%;
     margin-top: 12px;
     padding-top: 12px;
-    padding-bottom: 12px;
+    /* Deeper than the top inset on purpose: the last thing in the card is a
+       button, and a button needs room under it before the rule or the rule
+       reads as its underline. */
+    padding-bottom: 18px;
     border-top: 1px solid var(--line, var(--pop-border));
     border-bottom: 1px solid var(--line, var(--pop-border));
     background: transparent;
@@ -541,6 +544,13 @@
     to {
       transform: rotate(360deg);
     }
+  }
+
+  /* Title and its one-line explanation are a pair; the card's 12px rhythm
+     is for separating groups, not for splitting a heading from its own
+     subtitle. */
+  .lc-hd + .lc-summary-copy {
+    margin-top: -5px;
   }
 
   .lc-summary-copy,

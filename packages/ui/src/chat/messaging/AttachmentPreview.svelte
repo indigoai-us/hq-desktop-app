@@ -90,11 +90,9 @@
     } else if (previewUrl && !src && !previewDead) {
       src = previewUrl;
     }
-    if (
-      !previewDead &&
-      (preview === "image" || preview === "pdf") &&
-      (src || previewUrl)
-    ) {
+    // Images can stop at a borrowed raster. Every other kind needs the real
+    // file, because the only thing offered for it is Download.
+    if (!previewDead && preview === "image" && (src || previewUrl)) {
       if (previewUrl) src = previewUrl;
       loading = false;
       if (src || previewUrl) return;
@@ -220,13 +218,6 @@
           }
         }}
       />
-    {:else if kind === "pdf" && src}
-      <iframe
-        class="att-preview-pdf"
-        title={item.name}
-        {src}
-        data-testid="attachment-pdf"
-      ></iframe>
     {:else if kind === "markdown" && text}
       <div class="att-preview-md selectable-text">
         {@html renderMessageBodyMarkdown(text)}
@@ -252,15 +243,29 @@
         </table>
       </div>
     {:else}
+      <!-- Anything we do not render inline — a PDF included — states what it
+           is and offers the one thing that is actually useful for it. An
+           embedded PDF viewer was a browser chrome-in-chrome that scrolled
+           against the page and could not be searched or printed properly. -->
       <div class="att-preview-file">
         <span class="att-preview-icon"
           >{fileTypeLabel(item.name, item.contentType)}</span
         >
-        <p>{item.name}</p>
+        <p class="att-preview-file-name">{item.name}</p>
         {#if loading}
           <p class="att-preview-status">Loading…</p>
         {:else if error}
           <p class="att-preview-status error">{error}</p>
+        {:else}
+          <button
+            type="button"
+            class="att-preview-open"
+            data-testid="attachment-file-download"
+            disabled={!src || downloading}
+            onclick={() => void download()}
+          >
+            {downloading ? "Saving…" : "Download"}
+          </button>
         {/if}
       </div>
     {/if}
@@ -268,7 +273,18 @@
 </div>
 
 <style>
+  /* This preview always sits on a dark scrim, so its ink is FIXED rather
+     than themed. `--t1` is near-black in light mode, which left the
+     filename, the size and both toolbar icons invisible against the
+     scrim — the surface is dark in both themes, so the text must be light
+     in both themes. */
   .att-preview {
+    --lb-ink: #fff;
+    --lb-ink-mid: rgba(255, 255, 255, 0.72);
+    --lb-ink-dim: rgba(255, 255, 255, 0.55);
+    --lb-hover: rgba(255, 255, 255, 0.14);
+    --lb-line: rgba(255, 255, 255, 0.12);
+    --lb-surface: rgba(255, 255, 255, 0.06);
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -303,7 +319,7 @@
   .att-preview-name {
     min-width: 0;
     overflow: hidden;
-    color: var(--t1);
+    color: var(--lb-ink);
     font: 500 12px/1.3 var(--font-ui);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -311,7 +327,7 @@
 
   .att-preview-meta {
     flex-shrink: 0;
-    color: var(--t3, var(--t2));
+    color: var(--lb-ink-dim);
     font: 400 10px/1.2 var(--font-mono, ui-monospace, Menlo, monospace);
   }
 
@@ -332,7 +348,7 @@
     border: 0;
     border-radius: 7px;
     background: transparent;
-    color: var(--t2);
+    color: var(--lb-ink-mid);
     cursor: pointer;
     transition:
       background 0.12s,
@@ -345,13 +361,13 @@
   }
 
   .att-preview-toolbar :global(.att-preview-ic:hover:not(:disabled)) {
-    background: var(--hover, rgba(255, 255, 255, 0.14));
-    color: var(--t1);
+    background: var(--lb-hover);
+    color: var(--lb-ink);
   }
 
   .att-preview-status {
     margin: 0;
-    color: var(--t2);
+    color: var(--lb-ink-dim);
     font: 400 12px/1.4 var(--font-ui);
   }
 
@@ -368,19 +384,6 @@
     object-fit: contain;
   }
 
-  .att-preview-pdf {
-    width: 100%;
-    min-height: 280px;
-    height: 52vh;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.1));
-    border-radius: 8px;
-    background: #fff;
-  }
-
-  .compact .att-preview-pdf {
-    height: 220px;
-    min-height: 180px;
-  }
 
   .att-preview-text,
   .att-preview-md {
@@ -388,10 +391,10 @@
     max-height: 360px;
     overflow: auto;
     padding: 10px 12px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.1));
+    border: 1px solid var(--lb-line);
     border-radius: 8px;
-    background: var(--sel, rgba(255, 255, 255, 0.03));
-    color: var(--t1);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--lb-ink);
     font: 400 12px/1.45 var(--font-mono, ui-monospace, Menlo, monospace);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -405,8 +408,9 @@
   .att-preview-sheet-wrap {
     max-height: 360px;
     overflow: auto;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.1));
+    border: 1px solid var(--lb-line);
     border-radius: 8px;
+    color: var(--lb-ink);
   }
 
   .att-preview-sheet {
@@ -418,16 +422,18 @@
   .att-preview-sheet th,
   .att-preview-sheet td {
     padding: 5px 8px;
-    border-bottom: 1px solid var(--line2, rgba(255, 255, 255, 0.08));
-    border-right: 1px solid var(--line2, rgba(255, 255, 255, 0.06));
+    border-bottom: 1px solid var(--lb-line);
+    border-right: 1px solid var(--lb-line);
     text-align: left;
     white-space: nowrap;
   }
 
+  /* A literal colour, not `var(--bg)` — that token does not exist, so the
+     fallback was the only thing ever applied. */
   .att-preview-sheet th {
     position: sticky;
     top: 0;
-    background: var(--bg, #121418);
+    background: #17171a;
     font-weight: 600;
   }
 
@@ -436,7 +442,37 @@
     flex-direction: column;
     align-items: center;
     gap: 8px;
-    color: var(--t2);
+    color: var(--lb-ink-dim);
+  }
+
+  .att-preview-file-name {
+    margin: 0;
+    color: var(--lb-ink);
+    font: 500 13px/1.3 var(--font-ui);
+    overflow-wrap: anywhere;
+  }
+
+  .att-preview-open {
+    appearance: none;
+    height: 28px;
+    margin-top: 2px;
+    padding: 0 12px;
+    border: 1px solid var(--lb-line);
+    border-radius: 8px;
+    background: var(--lb-surface);
+    color: var(--lb-ink);
+    font: 500 12px/1 var(--font-ui);
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+
+  .att-preview-open:hover:not(:disabled) {
+    background: var(--lb-hover);
+  }
+
+  .att-preview-open:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
 
   .att-preview-icon {
@@ -445,7 +481,8 @@
     width: 48px;
     height: 48px;
     border-radius: 10px;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--lb-surface);
+    color: var(--lb-ink-mid);
     font: 700 11px/1 var(--font-mono, ui-monospace, Menlo, monospace);
   }
 </style>

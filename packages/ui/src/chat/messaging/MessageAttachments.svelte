@@ -6,7 +6,7 @@
   import { onDestroy } from "svelte";
   import type { ImagePreviewCache } from "./image-preview-cache";
   import type { FileAttachmentModel } from "./channelMessageModels";
-  import { attachmentPreviewKind } from "./attachment-preview";
+  import { attachmentPreviewKind, downloadAttachment } from "./attachment-preview";
   import { fileTypeLabel } from "./chat-attachments";
 
   interface Props {
@@ -23,6 +23,8 @@
   let urls = $state<Record<string, string>>({});
   let broken = $state<Record<string, boolean>>({});
   let retryVersion = $state(0);
+  let saving = $state<Record<string, boolean>>({});
+  let saveError = $state<Record<string, string>>({});
   const requests = new Map<string, { cancel: () => void }>();
   function scopeFor(item: FileAttachmentModel): string { return item.companyUid || vaultCompanyUid || ""; }
   function keyFor(item: FileAttachmentModel): string { return JSON.stringify([previewCache?.instanceId, scopeFor(item), item.vaultPath, item.id]); }
@@ -89,6 +91,31 @@
       console.warn("[image-preview] Could not discard broken preview", error);
     });
   }
+  /**
+   * A document opens by landing in the user's Downloads folder, not by
+   * filling the window with a viewer. There is nothing to look at in a tray
+   * for a PDF or a spreadsheet that the person's own reader does not do
+   * better, and the tray put two clicks between them and the file.
+   */
+  async function saveFile(item: FileAttachmentModel): Promise<void> {
+    const key = keyFor(item);
+    if (saving[key]) return;
+    saving = { ...saving, [key]: true };
+    saveError = { ...saveError, [key]: "" };
+    let url: string | null = null;
+    try {
+      // Never `previewUrl` here — that is a raster stand-in, not the file.
+      url = resolveUrl ? await resolveUrl(item) : null;
+      if (!url) throw new Error("no url");
+      await downloadAttachment(url, item.name);
+    } catch {
+      saveError = { ...saveError, [key]: "Couldn’t download" };
+    } finally {
+      if (url) onreleaseurl?.(url);
+      saving = { ...saving, [key]: false };
+    }
+  }
+
   function activate(item: FileAttachmentModel): void {
     const key = keyFor(item);
     if (!broken[key]) { onopen?.(item); return; }
@@ -126,19 +153,26 @@
           <span class="att-thumb-meta">{item.name}</span>
         </button>
       {:else}
+        {@const key = keyFor(item)}
         <button
           type="button"
           class="att-card"
           data-testid="attachment-card"
-          aria-label={`Open ${item.name}`}
-          onclick={() => onopen?.(item)}
+          aria-label={`Download ${item.name}`}
+          aria-busy={saving[key] ? "true" : undefined}
+          disabled={saving[key]}
+          onclick={() => void saveFile(item)}
         >
           <span class="att-icon" aria-hidden="true"
             >{fileTypeLabel(item.name, item.contentType)}</span
           >
           <span class="att-copy">
             <span class="att-name">{item.name}</span>
-            {#if item.sizeLabel}
+            {#if saveError[key]}
+              <span class="att-meta is-error">{saveError[key]}</span>
+            {:else if saving[key]}
+              <span class="att-meta">Saving…</span>
+            {:else if item.sizeLabel}
               <span class="att-meta">{item.sizeLabel}</span>
             {/if}
           </span>
@@ -306,5 +340,9 @@
   .att-meta {
     color: var(--t3, var(--t2));
     font: 400 11px/1.2 var(--font-ui);
+  }
+
+  .att-meta.is-error {
+    color: var(--red, #f0616d);
   }
 </style>

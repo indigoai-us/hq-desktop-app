@@ -144,3 +144,24 @@ it("shows the cached thumbnail immediately but downloads only the full original"
   expect(host.querySelector("img")?.getAttribute("src")).toBe("blob:original");
   expect(host.querySelector<HTMLButtonElement>("[data-testid=attachment-download]")?.disabled).toBe(false);
 });
+
+// An embedded PDF viewer is chrome inside chrome: it scrolls against the page
+// and cannot be searched or printed the way the OS reader can.
+it("offers a PDF for download rather than embedding a viewer", async () => {
+  mountPreview({
+    item: item({
+      name: "titlebar-spec.pdf",
+      contentType: "application/pdf",
+      kind: "file",
+    }),
+    resolveUrl: async () => "https://signed.example/spec.pdf",
+  });
+
+  await vi.waitFor(() => {
+    expect(
+      host.querySelector("[data-testid=attachment-file-download]"),
+    ).toBeTruthy();
+  });
+  expect(host.querySelector("[data-testid=attachment-pdf]")).toBeNull();
+  expect(host.querySelector("iframe")).toBeNull();
+});
