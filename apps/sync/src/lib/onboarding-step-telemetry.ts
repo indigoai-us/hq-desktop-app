@@ -2,7 +2,24 @@ import {
   emitDesktopOperationalTelemetryStrict,
   type DesktopTelemetryProperties,
 } from './desktop-telemetry';
-import type { StageId } from './onboarding-setup';
+import {
+  installerStepsForOnboarding,
+  isInstallerPersonUid,
+  pingInstallerStep,
+} from './installer-step-telemetry';
+import {
+  normalizeConnectorImportOutcome,
+  normalizeConnectorImportSourceSet,
+  normalizeErrorCategory,
+  normalizeFailedDependency,
+  normalizeFailedStageIds,
+  CONNECTOR_IMPORT_OUTCOMES,
+  CONNECTOR_IMPORT_SOURCE_SETS,
+  type ConnectorImportSourceSet,
+  type ErrorCategory,
+  type FailedDependency,
+  type StageId,
+} from './onboarding-setup';
 import type { WizardStepId } from './onboarding-wizard';
 
 const SCHEMA_VERSION = 3;
@@ -33,7 +50,13 @@ export interface OnboardingStepProperties {
   durationMs?: number;
   attemptCount?: number;
   detectedToolCount?: number;
+  /** Source scope of a connector-import probe, never a file path. */
+  detectedSourceSet?: ConnectorImportSourceSet;
   failedStageCount?: number;
+  failedStages?: StageId[];
+  failedDependency?: FailedDependency;
+  errorCategory?: ErrorCategory;
+  setupRunId?: string;
 }
 
 export interface OnboardingStepEvent {
@@ -55,19 +78,36 @@ interface PersistedTelemetryState {
   pending: OnboardingStepEvent[];
 }
 
+export interface InstallerStepPingPayload {
+  installSessionId: string;
+  step: string;
+  personUid?: string;
+}
+
 export interface OnboardingStepTelemetryOptions {
   storage?: Storage | null;
   now?: () => Date;
   newSessionId?: () => string;
   emit?: (event: OnboardingStepEvent) => Promise<void>;
+  /**
+   * Anonymous pre-auth funnel ping. Defaults to POST /v1/installer/step.
+   * Injected in tests. Must never throw into the wizard.
+   */
+  pingInstallerStep?: (payload: InstallerStepPingPayload) => void;
 }
 
 export interface OnboardingStepTelemetry {
   readonly sessionId: string;
   record(event: RecordOnboardingStep): void;
-  recordFirstLaunch(): void;
+  /** Returns whether this call recorded the installation's first launch. */
+  recordFirstLaunch(): boolean;
   /** Retry records that could not be delivered before authentication existed. */
   flush(): Promise<void>;
+  /**
+   * Attach the signed-in vault person so later anonymous pings stitch onto
+   * `install-person-index` / `installer_<step>` journey milestones.
+   */
+  setPersonUid(personUid: string): void;
 }
 
 /**
@@ -82,8 +122,14 @@ export function createOnboardingStepTelemetry(
   const storage = options.storage === undefined ? safeStorage() : options.storage;
   const now = options.now ?? (() => new Date());
   const emit = options.emit ?? emitOnboardingStep;
+  const ping =
+    options.pingInstallerStep ??
+    ((payload: InstallerStepPingPayload) => {
+      void pingInstallerStep(payload).catch(() => {});
+    });
   let state = loadState(storage, options.newSessionId ?? createUuid);
   let flushPromise: Promise<void> | null = null;
+  let personUid: string | undefined;
 
   function persist(): void {
     if (!storage) return;
@@ -106,7 +152,27 @@ export function createOnboardingStepTelemetry(
     };
     state = { ...state, pending: [...state.pending, event] };
     persist();
+    fireInstallerPings(event);
     void flush().catch(() => {});
+  }
+
+  function fireInstallerPings(event: OnboardingStepEvent): void {
+    try {
+      const steps = installerStepsForOnboarding({
+        step: event.properties.step,
+        action: event.properties.action,
+        flow: event.properties.flow,
+      });
+      for (const step of steps) {
+        ping({
+          installSessionId: event.sessionId,
+          step,
+          personUid,
+        });
+      }
+    } catch {
+      // Anonymous pings must never affect the wizard or the authenticated queue.
+    }
   }
 
   async function flush(): Promise<void> {
@@ -133,8 +199,13 @@ export function createOnboardingStepTelemetry(
     },
     record,
     flush,
+    setPersonUid(nextPersonUid: string) {
+      const trimmed = nextPersonUid.trim();
+      if (!isInstallerPersonUid(trimmed)) return;
+      personUid = trimmed;
+    },
     recordFirstLaunch() {
-      if (state.firstLaunchRecorded) return;
+      if (state.firstLaunchRecorded) return false;
       state.firstLaunchRecorded = true;
       record({
         properties: {
@@ -144,11 +215,14 @@ export function createOnboardingStepTelemetry(
         },
       });
       persist();
+      return true;
     },
   };
 }
 
-async function emitOnboardingStep(event: OnboardingStepEvent): Promise<void> {
+export function desktopPropertiesForOnboardingStep(
+  event: OnboardingStepEvent,
+): DesktopTelemetryProperties {
   const properties: DesktopTelemetryProperties = {
     step: event.properties.step,
     action: event.properties.action,
@@ -168,6 +242,33 @@ async function emitOnboardingStep(event: OnboardingStepEvent): Promise<void> {
     const value = event.properties[key];
     if (value !== undefined) properties[key] = value;
   }
+  if (event.properties.setupRunId !== undefined) {
+    properties.setupRunId = event.properties.setupRunId;
+  }
+  if (event.properties.step === 'connector-import') {
+    if (event.properties.outcome !== undefined) {
+      properties.outcome = normalizeConnectorImportOutcome(event.properties.outcome);
+    }
+    if (event.properties.detectedSourceSet !== undefined) {
+      properties.detectedSourceSet = normalizeConnectorImportSourceSet(
+        event.properties.detectedSourceSet,
+      );
+    }
+  }
+  if (event.properties.action === 'failed') {
+    properties.errorCategory = normalizeErrorCategory(event.properties.errorCategory);
+    if (event.properties.component === 'deps') {
+      properties.failedDependency = normalizeFailedDependency(event.properties.failedDependency);
+    }
+  }
+  if (event.properties.outcome === 'completed_with_failures') {
+    properties.failedStages = normalizeFailedStageIds(event.properties.failedStages ?? []);
+  }
+  return properties;
+}
+
+async function emitOnboardingStep(event: OnboardingStepEvent): Promise<void> {
+  const properties = desktopPropertiesForOnboardingStep(event);
   await emitDesktopOperationalTelemetryStrict({
     eventName: 'desktop_onboarding_step',
     properties,
@@ -260,5 +361,10 @@ function createUuid(): string {
     return (token === 'x' ? value : (value & 0x3) | 0x8).toString(16);
   });
 }
+
+export {
+  CONNECTOR_IMPORT_OUTCOMES,
+  CONNECTOR_IMPORT_SOURCE_SETS,
+};
 
 export const __INTERNALS__ = { STORAGE_KEY, LEGACY_STORAGE_KEY, SCHEMA_VERSION };

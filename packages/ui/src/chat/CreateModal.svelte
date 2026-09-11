@@ -15,6 +15,7 @@
    * is hidden entirely when the host cannot send one.
    */
   import type { Channel } from "./channels.js";
+  import type { EntryPointResult } from "./lifecycle-entry-points.js";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type { SelfIdentity } from "../identity/self.js";
   import {
@@ -92,6 +93,22 @@
     ) => void;
     onpick: (row: ConversationRow) => void;
     oncreated: (channel: Channel) => void | Promise<void>;
+    /**
+     * Lifecycle entry points (optional — hosts without the card seams omit
+     * them and the rows are hidden). The host runs the server action and
+     * navigates; the modal only closes on success or shows the reason inline.
+     */
+    oncreatecompany?: (() => Promise<EntryPointResult>) | null;
+    oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
+    /** Companies an agent can be added to (cloud companies the user is in). */
+    agentCompanies?: ScopeCompany[] | null;
+    /**
+     * What to create inside a company: a company channel (default) or a
+     * project channel — an invite-only channel that is the home of one
+     * project (its files, work, and people). #welcome's "Start a project
+     * channel" opens the modal in project mode.
+     */
+    initialKind?: "channel" | "project";
   }
 
   let {
@@ -105,9 +122,88 @@
     onclose,
     onpick,
     oncreated,
+    oncreatecompany = null,
+    oncreateagent = null,
+    agentCompanies = null,
+    initialKind = "channel",
   }: Props = $props();
 
-  type Step = "find" | "create" | "summary";
+  /** Company channel vs project channel; only meaningful inside a company. */
+  let channelKind = $state<"channel" | "project">(initialKind);
+
+  // ── lifecycle entry points (New company / New agent) ─────────────────────
+  const agentTargets = $derived<ScopeCompany[]>(
+    (agentCompanies ?? scopeCompanies).filter((c) => c.companyUid.trim()),
+  );
+  const showEntryPoints = $derived(
+    !!oncreatecompany || (!!oncreateagent && agentTargets.length > 0),
+  );
+  let entryBusy = $state<"company" | "agent" | null>(null);
+  let entryError = $state<string | null>(null);
+  let agentPickerOpen = $state(false);
+
+  async function runEntry(
+    kind: "company" | "agent",
+    run: () => Promise<EntryPointResult>,
+  ): Promise<void> {
+    if (entryBusy) return;
+    entryBusy = kind;
+    entryError = null;
+    try {
+      const result = await run();
+      if (result.ok) {
+        agentPickerOpen = false;
+        onclose();
+        return;
+      }
+      entryError = result.reason;
+    } catch (err) {
+      entryError = err instanceof Error ? err.message : String(err);
+    } finally {
+      entryBusy = null;
+    }
+  }
+
+  function newCompany(): void {
+    if (!oncreatecompany) return;
+    void runEntry("company", oncreatecompany);
+  }
+
+  /** One company: go straight to it. Several: open the inline picker. */
+  function newAgent(): void {
+    if (!oncreateagent) return;
+    if (agentTargets.length === 1) {
+      void runEntry("agent", () => oncreateagent!(agentTargets[0]!.companyUid));
+      return;
+    }
+    entryError = null;
+    agentPickerOpen = !agentPickerOpen;
+  }
+
+  function newAgentFor(companyUid: string): void {
+    if (!oncreateagent) return;
+    void runEntry("agent", () => oncreateagent!(companyUid));
+  }
+
+  function onEntryPickerKey(event: KeyboardEvent): void {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const buttons = Array.from(
+      (event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>(
+        "button:not([disabled])",
+      ),
+    );
+    if (buttons.length === 0) return;
+    const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next =
+      event.key === "ArrowDown"
+        ? buttons[(at + 1) % buttons.length]
+        : buttons[(at - 1 + buttons.length) % buttons.length];
+    event.preventDefault();
+    next?.focus();
+  }
+
+  /** `email` — compose a first message to an address the picker cannot match. */
+  type Step = "find" | "create" | "summary" | "email";
 
   interface MemberChip {
     key: string;
@@ -192,6 +288,18 @@
   let createdName = $state("");
   let issues = $state<Issue[]>([]);
 
+  // ── Message-by-email (find step → compose) ────────────────────────────────
+  /** The address being messaged; set when the "Message <email>" row is taken. */
+  let emailTarget = $state("");
+  let emailBody = $state("");
+  let emailSending = $state(false);
+  /** Why the LAST send failed — shown inline with a retry, never swallowed. */
+  let emailError = $state<string | null>(null);
+  let emailOutcome = $state<{
+    state: "delivered" | "connectionRequested";
+    personUid: string | null;
+  } | null>(null);
+
   let dialogEl = $state<HTMLDivElement | null>(null);
   let listEl = $state<HTMLDivElement | null>(null);
   let suggestionsEl = $state<HTMLDivElement | null>(null);
@@ -205,6 +313,9 @@
     typeof api.sendChannelMessage === "function",
   );
   const canInviteByEmail = $derived(typeof api.sendDmToEmail === "function");
+  const emailSubmitDisabled = $derived(
+    emailSending || emailOutcome !== null || emailBody.trim().length === 0,
+  );
   const selfUid = $derived(self?.uid?.trim() || null);
 
   // 110 ms — the sidebar's convention, and the `setTimeout(150)` test wait
@@ -280,8 +391,19 @@
     }),
   );
   const findKind = $derived(classifyFindQuery(queryDebounced).kind);
+  /**
+   * The address a "Message <email>" row is offered for. Only when the host can
+   * actually send by email — otherwise the honest "no match" note stays.
+   */
+  const emailOffer = $derived(
+    findKind === "email" && canInviteByEmail
+      ? classifyFindQuery(queryDebounced).email
+      : null,
+  );
   const flatCount = $derived(
-    findResults.rows.length + (findResults.createSlug ? 1 : 0),
+    findResults.rows.length +
+      (findResults.createSlug ? 1 : 0) +
+      (emailOffer ? 1 : 0),
   );
 
   type RenderItem =
@@ -589,6 +711,10 @@
     // Only the trailing create row may fall through here — a stale index into
     // the row range must never be reinterpreted as "create a channel".
     if (index < findResults.rows.length) return;
+    if (emailOffer) {
+      enterEmailCompose(emailOffer);
+      return;
+    }
     if (findResults.createSlug) enterCreate(query);
   }
 
@@ -612,7 +738,12 @@
         return;
       }
       // The debounced list is stale (fast type-then-Enter) — recompute from the
-      // RAW value so the create offer is never lost.
+      // RAW value so the create/message offer is never lost.
+      const rawKind = classifyFindQuery(query);
+      if (rawKind.kind === "email") {
+        if (canInviteByEmail && rawKind.email) enterEmailCompose(rawKind.email);
+        return;
+      }
       const raw = buildFindResults({
         rows,
         query,
@@ -639,6 +770,93 @@
     step = "create";
   }
 
+  function enterEmailCompose(email: string): void {
+    emailTarget = email.trim();
+    emailBody = "";
+    emailError = null;
+    emailOutcome = null;
+    step = "email";
+  }
+
+  /** Back from compose keeps the address in the search box. */
+  function backFromEmail(): void {
+    query = emailTarget;
+    queryDebounced = emailTarget;
+    emailError = null;
+    activeIndex = 0;
+    step = "find";
+  }
+
+  /** A person uid already known for this address (rows first, then roster). */
+  function knownPersonUid(email: string): string | null {
+    const needle = email.trim().toLowerCase();
+    if (!needle) return null;
+    const row = rows.find(
+      (r) => r.kind === "dm" && r.email?.trim().toLowerCase() === needle,
+    );
+    if (row?.personUid) return row.personUid;
+    const contact = contacts.find(
+      (c) => c.email?.trim().toLowerCase() === needle,
+    );
+    return contact?.personUid?.trim() || null;
+  }
+
+  function dmRowFor(uid: string): ConversationRow {
+    const existing = rows.find((r) => r.kind === "dm" && r.personUid === uid);
+    if (existing) return existing;
+    const contact = contacts.find((c) => c.personUid === uid);
+    return {
+      id: `dm:${uid}`,
+      kind: "dm",
+      title: contact?.displayName?.trim() || emailTarget,
+      companyUid: contact?.companyUid ?? null,
+      unreadDot: false,
+      lastActivityAt: 0,
+      pinned: false,
+      personUid: uid,
+      email: emailTarget,
+    };
+  }
+
+  async function sendEmailMessage(): Promise<void> {
+    const send = api.sendDmToEmail;
+    const body = emailBody.trim();
+    if (!send || !body || emailSending || emailOutcome) return;
+    emailSending = true;
+    emailError = null;
+    try {
+      const outcome = await send({ toEmail: emailTarget, body });
+      emailOutcome = {
+        state:
+          outcome?.state === "delivered" ? "delivered" : "connectionRequested",
+        personUid: outcome?.personUid?.trim() || null,
+      };
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err ?? "");
+      // Bridges prefix the machine code (`[http-429] …`); the person reading
+      // this wants the sentence, not the code.
+      const cleaned = stripRawUids(raw.replace(/^\[[^\]]+\]\s*/, "")).trim();
+      emailError = cleaned
+        ? `Couldn't send: ${cleaned}`
+        : "Couldn't send. Check your connection and try again.";
+    } finally {
+      emailSending = false;
+    }
+  }
+
+  /**
+   * Leave after a send. If we know who the address belongs to, land in that
+   * DM (the host closes the modal on pick); otherwise just close.
+   */
+  function finishEmail(): void {
+    const uid = emailOutcome?.personUid ?? knownPersonUid(emailTarget);
+    if (uid) {
+      onpick(dmRowFor(uid));
+      return;
+    }
+    onclose();
+  }
+
   /** Back preserves the NAME (the thing that round-trips) and nothing else. */
   function backToFind(): void {
     query = channelName;
@@ -657,7 +875,11 @@
    * the backdrop must refuse too.
    */
   function closeAll(): void {
-    if (creating) return;
+    if (creating || emailSending) return;
+    if (step === "email" && emailOutcome) {
+      finishEmail();
+      return;
+    }
     if (step === "summary") {
       onclose(createdChannelId ?? undefined, createdHint());
       return;
@@ -705,9 +927,13 @@
         cancelConfirm();
         return;
       }
-      if (creating) return;
+      if (creating || emailSending) return;
       if (step === "create") {
         backToFind();
+        return;
+      }
+      if (step === "email" && !emailOutcome) {
+        backFromEmail();
         return;
       }
       closeAll();
@@ -733,6 +959,9 @@
       if (step === "create" && !submitDisabled) {
         event.preventDefault();
         void submitCreate();
+      } else if (step === "email" && !emailSubmitDisabled) {
+        event.preventDefault();
+        void sendEmailMessage();
       }
       return;
     }
@@ -1047,7 +1276,12 @@
 
     const name = slugOverride ? channelSlug(slugOverride) : channelName.trim();
     const slug = slugCanonical;
-    const scope: "personal" | "company" = companyUid ? "company" : "personal";
+    const asProject = Boolean(companyUid) && channelKind === "project";
+    const scope: "personal" | "company" | "project" = asProject
+      ? "project"
+      : companyUid
+        ? "company"
+        : "personal";
 
     let channelId = "";
     try {
@@ -1055,6 +1289,9 @@
         name,
         scope,
         ...(companyUid ? { companyUid } : {}),
+        // A project channel is invite-only and keyed by its project id — the
+        // channel's slug is the project's handle until a PRD claims it.
+        ...(asProject ? { projectId: slug, visibility: "invite" as const } : {}),
       });
       channelId = created?.channelId ?? "";
     } catch (err) {
@@ -1369,20 +1606,28 @@
           onkeydown={onFindKey}
         />
       {:else}
-        {#if step === "create"}
+        {#if step === "create" || (step === "email" && !emailOutcome)}
           <button
             type="button"
             class="create-back"
             data-testid="chat-create-back"
             aria-label="Back to search"
-            disabled={creating}
-            onclick={backToFind}
+            disabled={creating || emailSending}
+            onclick={step === "email" ? backFromEmail : backToFind}
           >
             <span aria-hidden="true">‹</span>
           </button>
         {/if}
         <h2 id="create-modal-title" class="create-title">
-          {step === "create" ? "New channel" : "Channel created"}
+          {step === "create"
+            ? "New channel"
+            : step === "email"
+              ? emailOutcome
+                ? emailOutcome.state === "delivered"
+                  ? "Message sent"
+                  : "Request sent"
+                : `Message ${emailTarget}`
+              : "Channel created"}
         </h2>
         <span class="create-spacer"></span>
       {/if}
@@ -1390,7 +1635,7 @@
         type="button"
         class="create-close"
         aria-label="Close"
-        disabled={creating}
+        disabled={creating || emailSending}
         onclick={closeAll}
       >
         <span aria-hidden="true">×</span>
@@ -1459,9 +1704,28 @@
               </button>
             {/if}
           {/each}
+        {:else if emailOffer}
+          <!-- Nobody on HQ matches the address, but the host can message it:
+               the server delivers to a connection, or holds the message behind
+               a connection request (and emails an invite to a stranger). -->
+          <button
+            type="button"
+            class="create-row create-row-action"
+            id="create-opt-0"
+            role="option"
+            tabindex="-1"
+            data-testid="chat-create-email-row"
+            aria-selected={highlightIndex === 0}
+            onmouseenter={() => (activeIndex = 0)}
+            onclick={() => enterEmailCompose(emailOffer)}
+          >
+            <span class="create-glyph" aria-hidden="true">@</span>
+            <span class="create-row-name">Message {emailOffer}</span>
+            <span class="create-row-meta">Not on HQ yet, or not connected</span>
+          </button>
         {/if}
       </div>
-      {#if findKind === "email"}
+      {#if findKind === "email" && !canInviteByEmail}
         <div class="create-group" role="presentation">No match</div>
         <p
           class="create-note"
@@ -1475,6 +1739,187 @@
         <p class="create-note" data-testid="chat-create-empty">
           {queryDebounced.trim() ? "No matches" : "No conversations"}
         </p>
+      {/if}
+      {#if showEntryPoints}
+        <!-- Lifecycle entry points sit under the results, outside the listbox:
+             plain rows, one control scale, no nested card. -->
+        <div
+          class="create-entry"
+          role="group"
+          aria-label="Create"
+          data-testid="chat-create-entry-points"
+          inert={confirmSubject !== null}
+        >
+          <div class="create-group" role="presentation">Create</div>
+          {#if oncreatecompany}
+            <button
+              type="button"
+              class="create-row create-entry-row"
+              data-testid="chat-create-new-company"
+              aria-busy={entryBusy === "company" ? "true" : undefined}
+              disabled={entryBusy !== null}
+              onclick={newCompany}
+            >
+              <span class="create-entry-ic" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none">
+                  <path
+                    d="M3 13.5V4.5l5-2 5 2v9M6 7h1M9 7h1M6 9.5h1M9 9.5h1M6.5 13.5v-2h3v2"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </span>
+              <span class="create-entry-label">New company</span>
+              <span class="create-entry-hint">Opens the setup step in #setup</span>
+            </button>
+          {/if}
+          {#if oncreateagent && agentTargets.length > 0}
+            <button
+              type="button"
+              class="create-row create-entry-row"
+              data-testid="chat-create-new-agent"
+              aria-busy={entryBusy === "agent" ? "true" : undefined}
+              aria-haspopup={agentTargets.length > 1 ? "listbox" : undefined}
+              aria-expanded={agentTargets.length > 1 ? agentPickerOpen : undefined}
+              aria-controls={agentTargets.length > 1
+                ? "create-agent-company-picker"
+                : undefined}
+              disabled={entryBusy !== null}
+              onclick={newAgent}
+            >
+              <span class="create-entry-ic" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none">
+                  <rect
+                    x="3"
+                    y="5"
+                    width="10"
+                    height="8"
+                    rx="1.5"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                  />
+                  <path
+                    d="M8 2.5V5M6 8.5h.5M9.5 8.5h.5M6 11h4"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </span>
+              <span class="create-entry-label">New agent</span>
+              <span class="create-entry-hint">
+                {agentTargets.length === 1
+                  ? `In ${agentTargets[0]?.label}`
+                  : "Pick a company"}
+              </span>
+            </button>
+            {#if agentPickerOpen && agentTargets.length > 1}
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+              <div
+                id="create-agent-company-picker"
+                class="create-entry-picker"
+                role="listbox"
+                aria-label="Add an agent to which company?"
+                data-testid="chat-create-agent-picker"
+                onkeydown={onEntryPickerKey}
+              >
+                {#each agentTargets as company (company.companyUid)}
+                  <button
+                    type="button"
+                    class="create-row create-entry-sub"
+                    role="option"
+                    aria-selected="false"
+                    data-testid="chat-create-agent-company"
+                    data-company={company.companyUid}
+                    disabled={entryBusy !== null}
+                    onclick={() => newAgentFor(company.companyUid)}
+                  >
+                    <span class="create-entry-tile" aria-hidden="true">
+                      {company.label.trim().slice(0, 1).toUpperCase()}
+                    </span>
+                    <span class="create-entry-label">{company.label}</span>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          {/if}
+          {#if entryError}
+            <p
+              class="create-note create-entry-error"
+              role="alert"
+              data-testid="chat-create-entry-error"
+            >
+              {entryError}
+            </p>
+          {/if}
+        </div>
+      {/if}
+    {:else if step === "email"}
+      {#if emailOutcome}
+        <div
+          class="create-body"
+          role="status"
+          aria-live="polite"
+          data-testid="chat-create-email-result"
+          data-state={emailOutcome.state}
+        >
+          <p class="create-summary-lead">
+            {emailOutcome.state === "delivered"
+              ? `Delivered to ${emailTarget}.`
+              : `Request sent to ${emailTarget} — your message is held until they accept.`}
+          </p>
+          {#if emailOutcome.state !== "delivered"}
+            <p class="create-summary-draft">
+              If they're not on HQ yet, they'll get an email invite.
+            </p>
+          {/if}
+        </div>
+        <div class="create-footer">
+          <span class="create-hint" aria-hidden="true"></span>
+          <button
+            type="button"
+            class="create-submit"
+            data-testid="chat-create-email-done"
+            use:focusOnMount
+            onclick={finishEmail}>Done</button
+          >
+        </div>
+      {:else}
+        <div class="create-body">
+          <p class="create-note create-email-note" data-testid="chat-create-email-note">
+            Sent as a direct message. If you're not connected yet, it's held
+            until they accept — and an email invite goes out if they aren't on
+            HQ.
+          </p>
+          <textarea
+            class="create-textarea"
+            data-testid="chat-create-email-body"
+            placeholder="Write your first message"
+            aria-label="First message to {emailTarget}"
+            disabled={emailSending}
+            use:focusOnMount
+            bind:value={emailBody}
+          ></textarea>
+        </div>
+        {#if emailError}
+          <p class="create-error" role="alert" data-testid="chat-create-email-error">
+            {emailError}
+          </p>
+        {/if}
+        <div class="create-footer">
+          <span class="create-hint" aria-hidden="true">⌘↵ TO SEND</span>
+          <button
+            type="button"
+            class="create-submit"
+            data-testid="chat-create-email-send"
+            disabled={emailSubmitDisabled}
+            aria-busy={emailSending}
+            onclick={() => void sendEmailMessage()}
+          >
+            {emailSending ? "Sending…" : emailError ? "Try again" : "Send"}
+          </button>
+        </div>
       {/if}
     {:else if step === "create"}
       <div class="create-body" inert={confirmSubject !== null}>
@@ -1593,6 +2038,43 @@
         {#if scopeUnavailable.length > 0}
           <p class="create-help" data-testid="chat-channel-scope-unavailable">
             {scopeUnavailable[0].reason}
+          </p>
+        {/if}
+
+        {#if companyUid}
+          <div class="create-field">
+            <span class="create-label" id="create-kind-label">Type</span>
+            <div class="create-kind" role="radiogroup" aria-labelledby="create-kind-label">
+              <button
+                type="button"
+                role="radio"
+                class="create-kind-option"
+                class:selected={channelKind === "channel"}
+                aria-checked={channelKind === "channel"}
+                data-testid="chat-channel-kind-channel"
+                disabled={creating}
+                onclick={() => (channelKind = "channel")}
+              >
+                Channel
+              </button>
+              <button
+                type="button"
+                role="radio"
+                class="create-kind-option"
+                class:selected={channelKind === "project"}
+                aria-checked={channelKind === "project"}
+                data-testid="chat-channel-kind-project"
+                disabled={creating}
+                onclick={() => (channelKind = "project")}
+              >
+                Project channel
+              </button>
+            </div>
+          </div>
+          <p class="create-help" data-testid="chat-channel-kind-help">
+            {channelKind === "project"
+              ? "One home for a project: its work, files, and people. Invite-only."
+              : "A shared channel everyone in the company can find."}
           </p>
         {/if}
 
@@ -1975,6 +2457,32 @@
   .create-submit:focus-visible,
   .create-inline-btn:focus-visible,
   .create-chip-x:focus-visible,
+  .create-kind {
+    display: inline-flex;
+    gap: 4px;
+    padding: 3px;
+    border: 1px solid var(--v4-control-border, var(--border));
+    border-radius: 8px;
+  }
+  .create-kind-option {
+    font: inherit;
+    font-size: 13px;
+    padding: 4px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-2, inherit);
+    cursor: pointer;
+  }
+  .create-kind-option.selected {
+    background: var(--v4-active-row, rgba(127, 127, 127, 0.18));
+    color: var(--text-1, inherit);
+  }
+  .create-kind-option:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: 1px;
+  }
+
   .create-select:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: var(--v4-focus-offset, 2px);
@@ -2081,6 +2589,95 @@
     padding: 14px 12px;
     color: var(--t2);
     font-size: 13px;
+  }
+
+  .create-email-note {
+    padding: 14px 16px 0;
+    font-size: 12px;
+  }
+
+  /* Lifecycle entry points: a hairline, a mono label, ghost rows. */
+  .create-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 4px 6px 6px;
+    border-top: 1px solid var(--line, var(--panel-border));
+  }
+
+  .create-entry-row {
+    min-height: 32px;
+  }
+
+  .create-entry-row:disabled,
+  .create-entry-sub:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .create-entry-row:focus-visible,
+  .create-entry-sub:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: -2px;
+  }
+
+  .create-entry-ic {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    color: var(--t2);
+    flex: 0 0 auto;
+  }
+
+  .create-entry-ic svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .create-entry-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .create-entry-hint {
+    flex: 0 0 auto;
+    color: var(--t3);
+    font-size: 11px;
+  }
+
+  .create-entry-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding-left: 24px;
+  }
+
+  .create-entry-sub {
+    min-height: 28px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+
+  .create-entry-tile {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    background: var(--raised);
+    color: var(--t2);
+    font: 600 10px/1 var(--font-ui);
+    flex: 0 0 auto;
+  }
+
+  .create-entry-error {
+    padding: 6px 10px 2px;
+    color: var(--danger, #e5484d);
+    font-size: 12px;
   }
 
   .create-field {

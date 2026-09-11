@@ -47,9 +47,13 @@
     refreshHost?: LibraryRefreshHost | null;
     /** Routed library tab — mapped onto overlay Skills/Workers/Marketplace. */
     tab?: LibraryTab;
+    /** Restored library detail identity (skill/worker path). */
+    itemId?: string | null;
     onback?: () => void;
     /** Parent navigation when left-nav tab changes. */
     onnavigatetab?: (tab: LibraryTab) => void;
+    /** Parent navigation when a skill/worker detail opens or closes. */
+    onnavigateitem?: (itemId: string | null) => void;
     /** Optional desktop package-operation stream for the Installed panel. */
     packagesEvents?: PackagesEvents | null;
   }
@@ -58,8 +62,10 @@
     adapter,
     refreshHost = null,
     tab = "skills",
+    itemId = null,
     onback,
     onnavigatetab,
+    onnavigateitem,
     packagesEvents = null,
   }: Props = $props();
 
@@ -109,18 +115,46 @@
   }
 
   function selectSkill(path: string): void {
+    if (onnavigateitem) {
+      onnavigateitem(path);
+      return;
+    }
     const skill = items.skills.find((row) => row.path === path);
     selected = skill ? { kind: "skill", skill } : null;
   }
 
   function selectWorker(path: string): void {
+    if (onnavigateitem) {
+      onnavigateitem(path);
+      return;
+    }
     const worker = items.workers.find((row) => row.path === path);
     selected = worker ? { kind: "worker", worker } : null;
   }
 
   function closeDetail(): void {
+    if (onnavigateitem) {
+      onnavigateitem(null);
+      return;
+    }
     selected = null;
   }
+
+  $effect(() => {
+    if (onnavigateitem == null) return;
+    const id = itemId?.trim() || null;
+    if (!id) {
+      selected = null;
+      return;
+    }
+    const skill = items.skills.find((row) => row.path === id);
+    if (skill) {
+      selected = { kind: "skill", skill };
+      return;
+    }
+    const worker = items.workers.find((row) => row.path === id);
+    selected = worker ? { kind: "worker", worker } : null;
+  });
 
   async function loadLibrary(): Promise<void> {
     libraryLoading = true;

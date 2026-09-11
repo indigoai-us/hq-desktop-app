@@ -48,6 +48,79 @@ use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, R
 #[cfg(windows)]
 use winreg::{RegKey, RegValue};
 
+use crate::commands::install_stages::{
+    clear_onboarding_failure_detail, record_onboarding_failure_detail, OnboardingErrorCategory,
+    OnboardingFailureScope,
+};
+
+tokio::task_local! {
+    static ACTIVE_ONBOARDING_FAILURE_SCOPE: OnboardingFailureScope;
+}
+
+tokio::task_local! {
+    static ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR: SetupDiagnosticCollector;
+}
+
+/// Retains the terminal process failure for one dependency. An installer can
+/// retry internally; only a dependency that ultimately fails emits it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SetupCommandDiagnostic {
+    command: String,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    error: String,
+}
+
+#[derive(Clone)]
+struct SetupDiagnosticCollector {
+    command_failure: Arc<Mutex<Option<SetupCommandDiagnostic>>>,
+}
+
+impl SetupDiagnosticCollector {
+    fn new() -> Self {
+        Self { command_failure: Arc::new(Mutex::new(None)) }
+    }
+
+    fn record(&self, diagnostic: SetupCommandDiagnostic) {
+        *self.command_failure.lock().unwrap() = Some(diagnostic);
+    }
+
+    fn take(&self) -> Option<SetupCommandDiagnostic> {
+        self.command_failure.lock().unwrap().take()
+    }
+
+    fn clear(&self) {
+        let _ = self.command_failure.lock().unwrap().take();
+    }
+}
+
+fn record_setup_command_failure(program: &str, args: &[&str], exit_code: Option<i32>, stdout: String, stderr: String, error: String) {
+    let command = std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
+    let diagnostic = SetupCommandDiagnostic {
+        command,
+        exit_code,
+        stdout: hq_telemetry::setup_diagnostic_tail(&stdout),
+        stderr: hq_telemetry::setup_diagnostic_tail(&stderr),
+        error,
+    };
+    let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(|collector| collector.record(diagnostic));
+}
+
+/// The next installer path is a recovery attempt. Its terminal error, not the
+/// command failure it recovered from, must describe any eventual Sentry event.
+fn clear_recovered_setup_command_failure() {
+    let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(SetupDiagnosticCollector::clear);
+}
+
+fn append_setup_diagnostic_tail(stream: &mut String, line: &str) {
+    if !stream.is_empty() {
+        stream.push('\n');
+    }
+    stream.push_str(line);
+    *stream = hq_telemetry::setup_diagnostic_tail(stream);
+}
+
 mod which {
     use std::env;
     use std::ffi::{OsStr, OsString};
@@ -495,7 +568,7 @@ static SHELL_LOGIN_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new(
 /// the OnceLock cache. Format is treated as a semi-public contract so
 /// support paste-backs stay greppable.
 #[cfg(not(windows))]
-fn shell_login_path() -> &'static str {
+pub(crate) fn shell_login_path() -> &'static str {
     SHELL_LOGIN_PATH.get_or_init(|| {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let spawn_result = Command::new(&shell)
@@ -1689,39 +1762,80 @@ pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Resul
     Ok(rendered)
 }
 
-/// Write the composed toolchain PATH into `<hq>/.claude/settings.json` and
-/// re-ensure the shell-profile PATH block.
-///
-/// Invoked by the setup orchestrator after the deps stage on every installer
-/// pass, including reinstalls where all deps are already present. A missing
-/// settings.json is a skip rather than an error.
+/// The result of writing the composed managed-toolchain PATH into the winning
+/// `.claude` settings file.
 #[cfg(not(windows))]
-#[tauri::command]
-pub async fn configure_claude_settings_path(
-    app: AppHandle,
-    hq_path: String,
-) -> Result<String, String> {
-    let home = home_dir_or_err(&app, "path")?;
-    ensure_shell_path_configured(&home, &app);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SettingsPathWriteOutcome {
+    /// Wrote the composed PATH into this settings file.
+    Wrote(PathBuf),
+    /// No settings file to write into (the target file is absent). A skip, not an
+    /// error, so an already-installed machine without a base settings.json is not
+    /// treated as a failure.
+    Skipped(String),
+}
 
-    let settings_path = Path::new(&hq_path).join(".claude").join("settings.json");
+/// Compose the managed-toolchain-first PATH and write it into the `.claude`
+/// settings file the resolver actually READS for `hq_root` — settings.local.json
+/// when it defines a non-empty `env.PATH`, else settings.json — resolved through
+/// the single source of truth [`hq_desktop_core::paths::winning_settings_path_file`].
+///
+/// This is the heart of the HQ-DESKTOP-46 fix: [`composed_settings_env_path`]
+/// already produces the correct managed-first ordering; only the DESTINATION file
+/// was wrong (it was hard-coded to settings.json, which the resolver ignores
+/// whenever settings.local.json defines a non-empty PATH, so the managed-first
+/// value never reached the file the app resolves `hq` through and a stale foreign
+/// copy kept shadowing the managed CLI).
+///
+/// Reuses the existing staged-sibling + [`atomic_replace_file`] so a partial
+/// write is impossible, and canonicalizes the resolved file to require it stay
+/// inside the resolved HQ folder — a symlinked settings file cannot redirect the
+/// write outside the HQ tree. Pure enough to unit-test with a tempdir HQ root and
+/// home (no `AppHandle`).
+#[cfg(not(windows))]
+pub(crate) fn write_managed_toolchain_settings_path(
+    hq_root: &Path,
+    home: &Path,
+    login_path: &str,
+) -> Result<SettingsPathWriteOutcome, String> {
+    let file = match hq_desktop_core::paths::winning_settings_path_file(hq_root) {
+        hq_desktop_core::paths::SettingsPathFile::Local => "settings.local.json",
+        // Base or None both write the generated base file, exactly as before the
+        // fix: the reader consults settings.json in both cases.
+        hq_desktop_core::paths::SettingsPathFile::Base
+        | hq_desktop_core::paths::SettingsPathFile::None => "settings.json",
+    };
+    let settings_path = hq_root.join(".claude").join(file);
     let contents = match std::fs::read_to_string(&settings_path) {
         Ok(c) => c,
         Err(e) => {
-            let msg = format!(
-                "[path] no settings.json at {} - skipped ({e})",
+            return Ok(SettingsPathWriteOutcome::Skipped(format!(
+                "no {file} at {} - skipped ({e})",
                 settings_path.display()
-            );
-            emit_preflight_line(&app, &msg);
-            return Ok(msg);
+            )));
         }
     };
+
+    // Canonicalization guard: the file exists (we just read it), so canonicalize
+    // it — a symlink resolves to its true location — and require it to stay inside
+    // the resolved HQ folder. A settings file symlinked out of the HQ tree is
+    // refused rather than followed, so the write cannot clobber an unrelated file.
+    let canonical_root = std::fs::canonicalize(hq_root)
+        .map_err(|e| format!("cannot canonicalize HQ folder {}: {e}", hq_root.display()))?;
+    let canonical_file = std::fs::canonicalize(&settings_path)
+        .map_err(|e| format!("cannot canonicalize {}: {e}", settings_path.display()))?;
+    if !canonical_file.starts_with(&canonical_root) {
+        return Err(format!(
+            "refusing to write settings PATH outside the HQ folder: {} is not within {}",
+            canonical_file.display(),
+            canonical_root.display()
+        ));
+    }
 
     let existing_env_path = serde_json::from_str::<serde_json::Value>(&contents)
         .ok()
         .and_then(|v| v.get("env")?.get("PATH")?.as_str().map(|s| s.to_string()));
-    let composed =
-        composed_settings_env_path(&home, shell_login_path(), existing_env_path.as_deref());
+    let composed = composed_settings_env_path(home, login_path, existing_env_path.as_deref());
     let updated = settings_json_with_env_path(&contents, &composed)?;
 
     let staged = unique_sibling_path(&settings_path, "pathfix")?;
@@ -1731,13 +1845,38 @@ pub async fn configure_claude_settings_path(
         let _ = std::fs::remove_file(&staged);
         return Err(e);
     }
+    Ok(SettingsPathWriteOutcome::Wrote(settings_path))
+}
 
-    let msg = format!(
-        "[path] wrote managed toolchain PATH into {}",
-        settings_path.display()
-    );
-    emit_preflight_line(&app, &msg);
-    Ok(msg)
+/// Write the composed toolchain PATH into the winning `.claude` settings file
+/// (settings.local.json when it defines env.PATH, else settings.json) and
+/// re-ensure the shell-profile PATH block.
+///
+/// Invoked by the setup orchestrator after the deps stage on every installer
+/// pass, including reinstalls where all deps are already present. A missing
+/// target settings file is a skip rather than an error.
+#[cfg(not(windows))]
+#[tauri::command]
+pub async fn configure_claude_settings_path(
+    app: AppHandle,
+    hq_path: String,
+) -> Result<String, String> {
+    let home = home_dir_or_err(&app, "path")?;
+    ensure_shell_path_configured(&home, &app);
+
+    match write_managed_toolchain_settings_path(Path::new(&hq_path), &home, shell_login_path()) {
+        Ok(SettingsPathWriteOutcome::Wrote(path)) => {
+            let msg = format!("[path] wrote managed toolchain PATH into {}", path.display());
+            emit_preflight_line(&app, &msg);
+            Ok(msg)
+        }
+        Ok(SettingsPathWriteOutcome::Skipped(reason)) => {
+            let msg = format!("[path] {reason}");
+            emit_preflight_line(&app, &msg);
+            Ok(msg)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Windows no-op. The managed toolchain dirs land on the user PATH via the
@@ -1937,7 +2076,9 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(child) => child,
         Err(e) => {
             deregister_handle(&handle_id);
-            return Err(format!("Failed to spawn '{}': {}", program, e));
+            let error = format!("Failed to spawn '{}': {}", program, e);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
     register_process_group(&handle_id, child.id() as i32);
@@ -1947,14 +2088,18 @@ async fn run_streaming<R: tauri::Runtime>(
         Some(stdout) => stdout,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stdout".to_string());
+            let error = "no stdout".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stderr".to_string());
+            let error = "no stderr".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
@@ -1968,15 +2113,19 @@ async fn run_streaming<R: tauri::Runtime>(
     }
 
     // Drain stderr in a background thread — see the function doc above for why.
+    let stdout_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let (tx, rx) = mpsc::channel::<ReaderMsg>();
     let stdout_thread = {
         let tx = tx.clone();
+        let stdout_tail = Arc::clone(&stdout_tail);
         std::thread::spawn(move || {
             let mut err = None;
             for line_result in BufReader::new(stdout).lines() {
                 match line_result {
                     Ok(line) => {
+                        append_setup_diagnostic_tail(&mut stdout_tail.lock().unwrap(), &line);
                         if tx.send(ReaderMsg::Stdout(line)).is_err() {
                             return;
                         }
@@ -1997,6 +2146,7 @@ async fn run_streaming<R: tauri::Runtime>(
         let app = app.clone();
         let handle_id = handle_id.clone();
         let stderr_lines = Arc::clone(&stderr_lines);
+        let stderr_tail = Arc::clone(&stderr_tail);
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut err = None;
@@ -2004,6 +2154,7 @@ async fn run_streaming<R: tauri::Runtime>(
                 match line_result {
                     Ok(line) => {
                         stderr_lines.lock().unwrap().push(line.clone());
+                        append_setup_diagnostic_tail(&mut stderr_tail.lock().unwrap(), &line);
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
@@ -2165,8 +2316,11 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
+        let stdout = stdout_tail.lock().unwrap().clone();
         let captured = stderr_lines.lock().unwrap().clone();
+        let stderr = stderr_tail.lock().unwrap().clone();
         let msg = format_install_error(code, &captured);
+        record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -2631,6 +2785,7 @@ async fn install_yq_macos(app: AppHandle) -> Result<String, String> {
                         "[yq] brew install failed ({first_line}); falling back to direct binary download"
                     ),
                 );
+                clear_recovered_setup_command_failure();
             }
         }
     } else {
@@ -2943,6 +3098,7 @@ async fn npm_install_global_managed(
                 app,
                 &format!("[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"),
             );
+            clear_recovered_setup_command_failure();
             run_streaming(
                 app,
                 npm,
@@ -2955,6 +3111,8 @@ async fn npm_install_global_managed(
                     "--@indigoai-us:registry=https://registry.npmjs.org/",
                     "--@tobilu:registry=https://registry.npmjs.org/",
                     "--@anthropic-ai:registry=https://registry.npmjs.org/",
+                    "--@openai:registry=https://registry.npmjs.org/",
+                    "--@xai-official:registry=https://registry.npmjs.org/",
                     spec,
                 ],
             )
@@ -3109,6 +3267,140 @@ pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
     #[cfg(windows)]
     {
         install_claude_code_windows(app).await
+    }
+}
+
+/// npm spec + bin name for a sessions provider. Unknown tools fail closed.
+pub fn session_provider_npm_spec(tool: &str) -> Result<(&'static str, &'static str), String> {
+    match tool {
+        "claude" => Ok(("@anthropic-ai/claude-code", "claude")),
+        "codex" => Ok(("@openai/codex", "codex")),
+        "grok" => Ok(("@xai-official/grok", "grok")),
+        _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
+    }
+}
+
+fn emit_session_install_line(app: &AppHandle, msg: &str) {
+    #[cfg(not(windows))]
+    emit_preflight_line(app, msg);
+    #[cfg(windows)]
+    emit_progress(app, msg);
+}
+
+async fn npm_bin_or_install_node(app: &AppHandle, tag: &str) -> Result<std::path::PathBuf, String> {
+    let lookup = || {
+        which::which_in(
+            "npm",
+            Some(extended_search_path()),
+            std::env::current_dir().unwrap_or_default(),
+        )
+    };
+    if let Ok(path) = lookup() {
+        return Ok(path);
+    }
+    emit_session_install_line(
+        app,
+        &format!("[{tag}] npm is not installed. Installing Node.js first so the agent CLI can be set up in-app."),
+    );
+    install_node(app.clone()).await?;
+    lookup().map_err(|_| {
+        format!("[{tag}] npm was not found after installing Node.js. Open Settings → Agents and try again.")
+    })
+}
+
+#[cfg(not(windows))]
+async fn install_npm_cli_macos(
+    app: AppHandle,
+    spec: &str,
+    bin: &str,
+    tag: &str,
+) -> Result<String, String> {
+    let prefix = npm_global_prefix_arg(&app, tag)?;
+    if clear_unusable_npm_bin(std::path::Path::new(&prefix), bin) {
+        emit_preflight_line(
+            &app,
+            &format!("[{tag}] removed an unusable leftover bin entry before reinstalling"),
+        );
+    }
+    let npm = npm_bin_or_install_node(&app, tag).await?;
+    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, spec, tag).await
+}
+
+#[cfg(windows)]
+async fn install_npm_cli_windows(
+    app: AppHandle,
+    spec: &str,
+    bin: &str,
+    tag: &str,
+) -> Result<String, String> {
+    emit_progress(&app, &format!("Installing {tag} via npm..."));
+    let _ = npm_bin_or_install_node(&app, tag).await?;
+    let result = run_streaming(
+        &app,
+        "npm",
+        &[
+            "install",
+            "-g",
+            "--prefix",
+            &managed_npm_prefix().to_string_lossy(),
+            spec,
+        ],
+    )
+    .await?;
+    append_user_path(&managed_npm_bin())?;
+    let _ = bin;
+    Ok(result)
+}
+
+/// Install the Codex CLI via `npm install -g @openai/codex`.
+#[tauri::command]
+pub async fn install_codex(app: AppHandle) -> Result<String, String> {
+    let (spec, bin) = session_provider_npm_spec("codex")?;
+    #[cfg(not(windows))]
+    {
+        install_npm_cli_macos(app, spec, bin, "codex").await
+    }
+    #[cfg(windows)]
+    {
+        install_npm_cli_windows(app, spec, bin, "codex").await
+    }
+}
+
+/// Install the Grok CLI via `npm install -g @xai-official/grok`.
+#[tauri::command]
+pub async fn install_grok(app: AppHandle) -> Result<String, String> {
+    let (spec, bin) = session_provider_npm_spec("grok")?;
+    #[cfg(not(windows))]
+    {
+        install_npm_cli_macos(app, spec, bin, "grok").await
+    }
+    #[cfg(windows)]
+    {
+        install_npm_cli_windows(app, spec, bin, "grok").await
+    }
+}
+
+/// In-app sessions setup: install the selected provider CLI without the user
+/// hunting binaries. Ensures npm/Node first, then the provider package.
+#[tauri::command]
+pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<String, String> {
+    match tool.as_str() {
+        "claude" => {
+            let _ = npm_bin_or_install_node(&app, "claude").await?;
+            install_claude_code(app).await
+        }
+        "codex" | "grok" => {
+            let (spec, bin) = session_provider_npm_spec(&tool)?;
+            #[cfg(not(windows))]
+            {
+                install_npm_cli_macos(app, spec, bin, &tool).await
+            }
+            #[cfg(windows)]
+            {
+                install_npm_cli_windows(app, spec, bin, &tool).await
+            }
+        }
+        _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
     }
 }
 
@@ -3648,42 +3940,57 @@ fn write_user_path_value(env: &RegKey, value: &UserPathValue) -> Result<(), Stri
 
 #[cfg(windows)]
 pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
-    let dir_str = new_dir.to_string_lossy().to_string();
+    let result = (|| {
+        let dir_str = new_dir.to_string_lossy().to_string();
 
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let env = hkcu
-        .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
-        .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let env = hkcu
+            .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
+            .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
 
-    let mut current_value = read_user_path_value(&env)?;
-    let current = current_value.value.clone();
+        let mut current_value = read_user_path_value(&env)?;
+        let current = current_value.value.clone();
 
-    let already_present = current
-        .split(';')
-        .any(|entry| entry.eq_ignore_ascii_case(&dir_str));
-    if already_present {
+        let already_present = current
+            .split(';')
+            .any(|entry| entry.eq_ignore_ascii_case(&dir_str));
+        if already_present {
+            debug_log(&format!(
+                "append_user_path: '{dir_str}' already on PATH, skipping"
+            ));
+            return Ok(());
+        }
+
+        let updated = if current.is_empty() {
+            dir_str.clone()
+        } else if current.ends_with(';') {
+            format!("{current}{dir_str}")
+        } else {
+            format!("{current};{dir_str}")
+        };
+
+        current_value.value = updated;
+        write_user_path_value(&env, &current_value)?;
+
+        broadcast_environment_change();
         debug_log(&format!(
-            "append_user_path: '{dir_str}' already on PATH, skipping"
+            "append_user_path: added '{dir_str}', broadcast sent"
         ));
-        return Ok(());
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let failure_scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
+            .try_with(|scope| scope.clone())
+            .ok();
+        record_onboarding_failure_detail(
+            "deps",
+            failure_scope.as_ref(),
+            Some("path-write"),
+            OnboardingErrorCategory::Unknown,
+        );
     }
-
-    let updated = if current.is_empty() {
-        dir_str.clone()
-    } else if current.ends_with(';') {
-        format!("{current}{dir_str}")
-    } else {
-        format!("{current};{dir_str}")
-    };
-
-    current_value.value = updated;
-    write_user_path_value(&env, &current_value)?;
-
-    broadcast_environment_change();
-    debug_log(&format!(
-        "append_user_path: added '{dir_str}', broadcast sent"
-    ));
-    Ok(())
+    result
 }
 
 /// Remove `dir` from the user's persistent PATH. Idempotent.
@@ -3839,7 +4146,9 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(path) => path,
         Err(_) => {
             deregister_handle(&handle_id);
-            return Err(format!("'{}' not found on PATH", program));
+            let error = format!("'{}' not found on PATH", program);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
@@ -3847,6 +4156,7 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(job) => Arc::new(job),
         Err(e) => {
             deregister_handle(&handle_id);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), e.clone());
             return Err(e);
         }
     };
@@ -3863,11 +4173,14 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(child) => child,
         Err(e) => {
             deregister_handle(&handle_id);
-            return Err(format!("Failed to spawn '{}': {}", program, e));
+            let error = format!("Failed to spawn '{}': {}", program, e);
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
     if let Err(e) = assign_process_to_job(job.0, child.as_raw_handle() as HANDLE) {
+        record_setup_command_failure(program, args, None, String::new(), String::new(), e.clone());
         let kill_result = child.kill().map_err(|kill_err| {
             format!("failed to kill untracked child after job assignment failure: {kill_err}")
         });
@@ -3895,14 +4208,18 @@ async fn run_streaming<R: tauri::Runtime>(
         Some(stdout) => stdout,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stdout".to_string());
+            let error = "no stdout".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
             deregister_handle(&handle_id);
-            return Err("no stderr".to_string());
+            let error = "no stderr".to_string();
+            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            return Err(error);
         }
     };
 
@@ -3915,15 +4232,19 @@ async fn run_streaming<R: tauri::Runtime>(
         },
     }
 
+    let stdout_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let (tx, rx) = mpsc::channel::<ReaderMsg>();
     let stdout_thread = {
         let tx = tx.clone();
+        let stdout_tail = Arc::clone(&stdout_tail);
         std::thread::spawn(move || {
             let mut err = None;
             for line_result in BufReader::new(stdout).lines() {
                 match line_result {
                     Ok(line) => {
+                        append_setup_diagnostic_tail(&mut stdout_tail.lock().unwrap(), &line);
                         if tx.send(ReaderMsg::Stdout(line)).is_err() {
                             return;
                         }
@@ -3944,6 +4265,7 @@ async fn run_streaming<R: tauri::Runtime>(
         let app = app.clone();
         let handle_id = handle_id.clone();
         let stderr_lines = Arc::clone(&stderr_lines);
+        let stderr_tail = Arc::clone(&stderr_tail);
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut err = None;
@@ -3951,6 +4273,7 @@ async fn run_streaming<R: tauri::Runtime>(
                 match line_result {
                     Ok(line) => {
                         stderr_lines.lock().unwrap().push(line.clone());
+                        append_setup_diagnostic_tail(&mut stderr_tail.lock().unwrap(), &line);
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
@@ -4100,8 +4423,11 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
+        let stdout = stdout_tail.lock().unwrap().clone();
         let captured = stderr_lines.lock().unwrap().clone();
+        let stderr = stderr_tail.lock().unwrap().clone();
         let msg = format_install_error(code, &captured);
+        record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -5316,6 +5642,119 @@ fn result_from_install(dep: &DepDef, install_result: Result<(), String>) -> DepI
     }
 }
 
+fn is_blocked_dependency_result(result: &DepInstallResult) -> bool {
+    result.error.as_deref().is_some_and(|error| error.starts_with("Prerequisite not installed:"))
+}
+
+fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupCommandDiagnostic>) -> OnboardingErrorCategory {
+    if diagnostic.and_then(|diagnostic| diagnostic.exit_code).is_some() {
+        return OnboardingErrorCategory::ExitNonzero;
+    }
+    let error = result.error.as_deref().unwrap_or_default().to_ascii_lowercase();
+    if error.contains("checksum") { OnboardingErrorCategory::Checksum }
+    else if error.contains("timed out") || error.contains("timeout") { OnboardingErrorCategory::Timeout }
+    else if error.contains("permission") || error.contains("eacces") { OnboardingErrorCategory::Permission }
+    else if error.contains("not found") || error.contains("enoent") { OnboardingErrorCategory::NotFound }
+    else if error.contains("failed to spawn") { OnboardingErrorCategory::SpawnFailed }
+    else if error.contains("network") || error.contains("connection") { OnboardingErrorCategory::Network }
+    else { OnboardingErrorCategory::Unknown }
+}
+
+fn setup_flow_token(flow: &str) -> &'static str {
+    match flow {
+        "first_install" => "first_install",
+        "first_launch" => "first_launch",
+        "resume" => "resume",
+        _ => "unknown",
+    }
+}
+
+fn setup_correlation_id(value: &str) -> String {
+    Uuid::parse_str(value).map(|uuid| uuid.to_string()).unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn fallback_setup_command_diagnostic(result: &DepInstallResult) -> SetupCommandDiagnostic {
+    SetupCommandDiagnostic {
+        command: "installer internal operation".to_string(),
+        exit_code: None,
+        stdout: String::new(),
+        stderr: String::new(),
+        error: result.error.clone().unwrap_or_else(|| "installation failed".to_string()),
+    }
+}
+
+fn blocked_dependents_for(deps: &[DepDef], results: &HashMap<&'static str, DepInstallResult>, prerequisite: &'static str) -> Vec<&'static str> {
+    deps.iter()
+        .filter(|dep| dep.depends_on.contains(&prerequisite))
+        .filter_map(|dep| results.get(dep.id).filter(|result| is_blocked_dependency_result(result)).map(|_| dep.id))
+        .collect()
+}
+
+fn reportable_setup_failure_ids(deps: &[DepDef], results: &HashMap<&'static str, DepInstallResult>) -> Vec<&'static str> {
+    deps.iter()
+        .filter(|dep| !dep.optional)
+        .filter_map(|dep| results.get(dep.id)
+            .filter(|result| result.status == DepInstallStatus::Failed && !is_blocked_dependency_result(result))
+            .map(|_| dep.id))
+        .collect()
+}
+
+/// Emit the diagnostic envelope on the current Sentry hub. Callers that are on
+/// the setup path must use `queue_setup_dependency_failure` instead.
+fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'static str, category: OnboardingErrorCategory, diagnostic: SetupCommandDiagnostic, blocked_dependents: &[String]) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let os = os_info::get();
+        let search_path = {
+            #[cfg(windows)] { Some(extended_search_path()) }
+            #[cfg(not(windows))] { None::<String> }
+        };
+        sentry::with_scope(|sentry_scope| {
+            // Only this pair groups events. Correlation and retry data remain context.
+            let fingerprint = hq_telemetry::setup_failure_fingerprint(dependency, category.as_str());
+            sentry_scope.set_fingerprint(Some(&fingerprint));
+            sentry_scope.set_tag("setup_stage", "deps");
+            sentry_scope.set_tag("setup_dependency", dependency);
+            sentry_scope.set_tag("setup_error_category", category.as_str());
+            sentry_scope.set_tag("setup_execution", "attempted");
+            sentry_scope.set_tag("setup_flow", setup_flow_token(&scope.flow));
+            sentry_scope.set_tag("setup_attempt", scope.attempt_count.to_string());
+            sentry_scope.set_tag("setup_os", os.os_type().to_string());
+            sentry_scope.set_tag("setup_architecture", std::env::consts::ARCH);
+            sentry_scope.set_extra("setup_run_id", sentry::protocol::Value::String(setup_correlation_id(&scope.setup_run_id)));
+            sentry_scope.set_extra("setup_frontend_session_id", sentry::protocol::Value::String(setup_correlation_id(&scope.frontend_session_id)));
+            sentry_scope.set_extra("setup_app_version", sentry::protocol::Value::String(env!("APP_VERSION").to_string()));
+            sentry_scope.set_extra("setup_os_version", sentry::protocol::Value::String(os.version().to_string()));
+            sentry_scope.set_extra("setup_command", sentry::protocol::Value::String(diagnostic.command));
+            sentry_scope.set_extra("setup_exit_code", diagnostic.exit_code.map(|code| sentry::protocol::Value::Number(code.into())).unwrap_or(sentry::protocol::Value::Null));
+            sentry_scope.set_extra("setup_stdout_tail", sentry::protocol::Value::String(diagnostic.stdout));
+            sentry_scope.set_extra("setup_stderr_tail", sentry::protocol::Value::String(diagnostic.stderr));
+            sentry_scope.set_extra("setup_error", sentry::protocol::Value::String(diagnostic.error));
+            sentry_scope.set_extra("setup_blocked_dependents", sentry::protocol::Value::Array(blocked_dependents.iter().cloned().map(sentry::protocol::Value::String).collect()));
+            sentry_scope.set_extra("setup_blocked_dependents_status", sentry::protocol::Value::String(if blocked_dependents.is_empty() { "none" } else { "blocked_by_failed_prerequisite" }.to_string()));
+            if let Some(search_path) = search_path {
+                sentry_scope.set_extra("setup_resolved_search_path", sentry::protocol::Value::String(search_path));
+            }
+        }, || sentry::capture_message("Desktop setup dependency installation failed", sentry::Level::Error));
+    }));
+}
+
+/// Queue a terminal setup failure without waiting for the Sentry transport.
+///
+/// Setup completion is more important than a diagnostic envelope: a disabled
+/// client is a no-op, and a slow or panicking transport is isolated in this
+/// detached reporter thread rather than delaying the setup command.
+fn queue_setup_dependency_failure(scope: OnboardingFailureScope, dependency: &'static str, category: OnboardingErrorCategory, diagnostic: SetupCommandDiagnostic, blocked_dependents: Vec<String>) {
+    let hub = sentry::Hub::current().clone();
+    if hub.client().is_none() {
+        return;
+    }
+    hq_telemetry::dispatch_sentry_report(move || {
+        sentry::Hub::run(hub, || {
+            send_setup_dependency_failure(&scope, dependency, category, diagnostic, &blocked_dependents);
+        });
+    });
+}
+
 fn emit_install_line<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
     let _ = app.emit(
         "install:progress",
@@ -5412,6 +5851,21 @@ fn dep_is_satisfied(dep: &DepDef) -> bool {
     dep_status_satisfies(dep, &check_dep_impl(dep.binary, None))
 }
 
+fn finish_orchestrated_dep_install(
+    label: &str,
+    install_result: Result<String, String>,
+    found_after_install: bool,
+) -> Result<(), String> {
+    match install_result {
+        Ok(_) if found_after_install => Ok(()),
+        Ok(_) => Err(format!("{label} was not found after install")),
+        // An installer can leave a managed binary on the current process PATH
+        // while failing to persist it for future shells. Do not turn that
+        // failure into success through the post-install probe.
+        Err(err) => Err(err),
+    }
+}
+
 async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
     if dep_is_satisfied(dep) {
         return Ok(());
@@ -5431,20 +5885,18 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
 
-    if dep_is_satisfied(dep) {
-        return Ok(());
-    }
-
-    match install_result {
-        Ok(_) => Err(format!("{} was not found after install", dep.label)),
-        Err(err) => Err(err),
-    }
+    finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(dep))
 }
 
 #[tauri::command]
-pub async fn install_deps(app: AppHandle) -> Result<(), String> {
+pub async fn install_deps(
+    app: AppHandle,
+    failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
+) -> Result<(), String> {
+    clear_onboarding_failure_detail("deps", failure_scope.as_ref());
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);
+    let mut diagnostic_by_id: HashMap<&'static str, SetupCommandDiagnostic> = HashMap::new();
     let mut ok_set: HashSet<&'static str> = HashSet::new();
 
     for dep in deps.iter().filter(|dep| dep.optional) {
@@ -5462,16 +5914,28 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
 
         let settled = join_all(ready.into_iter().map(|dep| {
             let app = app.clone();
+            let failure_scope = failure_scope.clone();
             async move {
-                let install_result = install_orchestrated_dep(&app, dep).await;
-                result_from_install(dep, install_result)
+                let collector = SetupDiagnosticCollector::new();
+                let install_result = match failure_scope {
+                    Some(scope) => {
+                        ACTIVE_ONBOARDING_FAILURE_SCOPE
+                            .scope(scope, ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector.clone(), install_orchestrated_dep(&app, dep)))
+                            .await
+                    }
+                    None => ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector.clone(), install_orchestrated_dep(&app, dep)).await,
+                };
+                (result_from_install(dep, install_result), collector.take())
             }
         }))
         .await;
 
-        for result in settled {
+        for (result, diagnostic) in settled {
             if result.status == DepInstallStatus::Ok {
                 ok_set.insert(result.id);
+            }
+            if let Some(diagnostic) = diagnostic {
+                diagnostic_by_id.insert(result.id, diagnostic);
             }
             result_by_id.insert(result.id, result);
         }
@@ -5514,6 +5978,33 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
     if failures.is_empty() {
         Ok(())
     } else {
+        if let Some(scope) = failure_scope.as_ref() {
+            for dependency in reportable_setup_failure_ids(deps, &result_by_id) {
+                let dep = deps.iter().find(|dep| dep.id == dependency).expect("reportable dependency is registered");
+                let result = result_by_id.get(dep.id).expect("reportable dependency has an install result");
+                let diagnostic = diagnostic_by_id.remove(dep.id).unwrap_or_else(|| fallback_setup_command_diagnostic(result));
+                let category = setup_error_category(result, Some(&diagnostic));
+                let blocked_dependents = blocked_dependents_for(deps, &result_by_id, dep.id)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
+                queue_setup_dependency_failure(scope.clone(), dep.id, category, diagnostic, blocked_dependents);
+            }
+        }
+        if let Some(failed_dependency) = deps.iter().find_map(|dep| {
+            let result = result_by_id.get(dep.id)?;
+            (!dep.optional && result.status == DepInstallStatus::Failed).then_some(dep.id)
+        }) {
+            // Individual installers currently return their rendered errors, so
+            // no typed source remains at this aggregation point. Preserve the
+            // exact dependency but record the category as the closed fallback.
+            record_onboarding_failure_detail(
+                "deps",
+                failure_scope.as_ref(),
+                Some(failed_dependency),
+                OnboardingErrorCategory::Unknown,
+            );
+        }
         Err(format!(
             "Dependency install failed: {}",
             failures.join("; ")
@@ -5524,6 +6015,34 @@ pub async fn install_deps(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod install_deps_planner_tests {
     use super::*;
+
+    #[test]
+    fn path_persistence_failure_remains_fatal_after_the_managed_binary_is_visible() {
+        let result = finish_orchestrated_dep_install(
+            "Node.js",
+            Err("PATH persistence failed".to_string()),
+            true,
+        );
+
+        assert_eq!(result, Err("PATH persistence failed".to_string()));
+    }
+
+    #[test]
+    fn session_provider_npm_spec_covers_the_three_session_clis() {
+        assert_eq!(
+            session_provider_npm_spec("claude").unwrap(),
+            ("@anthropic-ai/claude-code", "claude")
+        );
+        assert_eq!(
+            session_provider_npm_spec("codex").unwrap(),
+            ("@openai/codex", "codex")
+        );
+        assert_eq!(
+            session_provider_npm_spec("grok").unwrap(),
+            ("@xai-official/grok", "grok")
+        );
+        assert!(session_provider_npm_spec("cursor").is_err());
+    }
 
     #[test]
     fn managed_node_abi_matches_pinned_versions() {
@@ -5754,6 +6273,209 @@ mod install_deps_planner_tests {
             waves,
             vec![wave1_required(), vec!["qmd", "hq-cli"]]
         );
+    }
+
+    fn failure_scope(run: &str, attempt: u32, session: &str) -> OnboardingFailureScope {
+        OnboardingFailureScope {
+            setup_run_id: run.to_string(),
+            attempt_count: attempt,
+            flow: "first_install".to_string(),
+            frontend_session_id: session.to_string(),
+        }
+    }
+
+    fn setup_diagnostic() -> SetupCommandDiagnostic {
+        SetupCommandDiagnostic {
+            command: "npm install -g @tobilu/qmd".to_string(),
+            exit_code: Some(17),
+            stdout: "downloading package\ninstall complete? no".to_string(),
+            stderr: "npm ERR! EACCES: permission denied".to_string(),
+            error: "Process exited with code 17: npm ERR! EACCES".to_string(),
+        }
+    }
+
+    /// A recovered brew/npm command must not be reported if a later fallback
+    /// path is the terminal failure for that dependency.
+    #[test]
+    fn recovered_command_failure_is_discarded_before_terminal_fallback() {
+        let collector = SetupDiagnosticCollector::new();
+        collector.record(setup_diagnostic());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(
+            ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector.clone(), async {
+                clear_recovered_setup_command_failure();
+            }),
+        );
+        assert!(collector.take().is_none());
+    }
+
+    fn string_extra<'a>(event: &'a sentry::protocol::Event<'static>, key: &str) -> &'a str {
+        let Some(sentry::protocol::Value::String(value)) = event.extra.get(key) else {
+            panic!("{key} must be a string extra");
+        };
+        value
+    }
+
+    /// The Sentry-only envelope holds the command result and all correlation
+    /// fields needed to line it up with the bounded product telemetry row.
+    #[test]
+    fn setup_failure_event_carries_command_output_correlation_and_system_context() {
+        let scope = failure_scope("11111111-1111-4111-8111-111111111111", 2, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let events = sentry::test::with_captured_events_options(
+            || {
+                send_setup_dependency_failure(&scope, "qmd", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), &["hq-cli".to_string()]);
+            },
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.fingerprint, vec!["qmd", "exit-nonzero"]);
+        assert_eq!(event.tags["setup_stage"], "deps");
+        assert_eq!(event.tags["setup_dependency"], "qmd");
+        assert_eq!(event.tags["setup_error_category"], "exit-nonzero");
+        assert_eq!(event.tags["setup_execution"], "attempted");
+        assert_eq!(event.tags["setup_attempt"], "2");
+        assert_eq!(event.tags["setup_flow"], "first_install");
+        assert_eq!(string_extra(event, "setup_run_id"), "11111111-1111-4111-8111-111111111111");
+        assert_eq!(string_extra(event, "setup_frontend_session_id"), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        assert_eq!(string_extra(event, "setup_command"), "npm install -g @tobilu/qmd");
+        assert_eq!(event.extra["setup_exit_code"], sentry::protocol::Value::Number(17.into()));
+        assert!(string_extra(event, "setup_stdout_tail").contains("downloading package"));
+        assert!(string_extra(event, "setup_stderr_tail").contains("EACCES"));
+        assert!(event.tags.contains_key("setup_os"));
+        assert!(event.tags.contains_key("setup_architecture"));
+        assert!(!string_extra(event, "setup_app_version").is_empty());
+        assert!(!string_extra(event, "setup_os_version").is_empty());
+        assert_eq!(event.extra["setup_blocked_dependents"], sentry::protocol::Value::Array(vec![sentry::protocol::Value::String("hq-cli".into())]));
+        assert_eq!(string_extra(event, "setup_blocked_dependents_status"), "blocked_by_failed_prerequisite");
+    }
+
+    /// A failed node prerequisite blocks qmd and hq-cli, but only node is a
+    /// root cause and only its event carries those dependent effects.
+    #[test]
+    fn setup_failure_roots_exclude_two_dependents_blocked_by_one_prerequisite() {
+        let deps = dependency_defs();
+        let node = deps.iter().find(|dep| dep.id == "node").unwrap();
+        let qmd = deps.iter().find(|dep| dep.id == "qmd").unwrap();
+        let hq_cli = deps.iter().find(|dep| dep.id == "hq-cli").unwrap();
+        let mut results = premark_optional_results(deps);
+        results.insert(node.id, failed_result(node));
+        for dependent in [qmd, hq_cli] {
+            results.insert(dependent.id, DepInstallResult {
+                id: dependent.id,
+                label: dependent.label,
+                optional: dependent.optional,
+                status: DepInstallStatus::Failed,
+                error: Some("Prerequisite not installed: node".to_string()),
+            });
+        }
+        assert_eq!(reportable_setup_failure_ids(deps, &results), vec!["node"]);
+        assert_eq!(blocked_dependents_for(deps, &results, "node"), vec!["qmd", "hq-cli"]);
+    }
+
+    /// Retried failures stay grouped but run/session context distinguishes a
+    /// retry by one person from a second affected person.
+    #[test]
+    fn repeated_setup_failures_share_one_issue_but_retain_person_and_retry_context() {
+        let first = failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let retry = failure_scope("11111111-1111-4111-8111-111111111111", 2, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let other = failure_scope("22222222-2222-4222-8222-222222222222", 1, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        let events = sentry::test::with_captured_events(|| {
+            for scope in [&first, &retry, &other] {
+                send_setup_dependency_failure(scope, "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), &[]);
+            }
+        });
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|event| event.fingerprint == vec!["node", "exit-nonzero"]));
+        assert_eq!(events[0].tags["setup_attempt"], "1");
+        assert_eq!(events[1].tags["setup_attempt"], "2");
+        assert_eq!(string_extra(&events[0], "setup_frontend_session_id"), string_extra(&events[1], "setup_frontend_session_id"));
+        assert_ne!(string_extra(&events[0], "setup_frontend_session_id"), string_extra(&events[2], "setup_frontend_session_id"));
+    }
+
+    /// Empty DSNs in development and PR CI must leave setup able to complete.
+    #[test]
+    fn setup_failure_capture_is_a_noop_without_a_sentry_client() {
+        let hub = std::sync::Arc::new(sentry::Hub::new(None, std::sync::Arc::new(Default::default())));
+        sentry::Hub::run(hub.clone(), || {
+            queue_setup_dependency_failure(failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), vec![]);
+        });
+        assert!(hub.last_event_id().is_none());
+    }
+
+    struct BlockingSetupTransport {
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl sentry::Transport for BlockingSetupTransport {
+        fn send_envelope(&self, _envelope: sentry::Envelope) {
+            let _ = self.started.send(());
+            let (released, wake) = &*self.release;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = wake.wait(released).unwrap();
+            }
+        }
+    }
+
+    struct PanickingSetupTransport {
+        started: std::sync::mpsc::Sender<()>,
+    }
+
+    impl sentry::Transport for PanickingSetupTransport {
+        fn send_envelope(&self, _envelope: sentry::Envelope) {
+            let _ = self.started.send(());
+            panic!("simulated Sentry transport failure");
+        }
+    }
+
+    fn setup_hub<T: sentry::Transport>(transport: std::sync::Arc<T>) -> std::sync::Arc<sentry::Hub> {
+        let options = sentry::ClientOptions {
+            dsn: Some("https://public@sentry.invalid/1".parse().unwrap()),
+            transport: Some(std::sync::Arc::new(transport)),
+            before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+            ..Default::default()
+        };
+        std::sync::Arc::new(sentry::Hub::new(
+            Some(std::sync::Arc::new(sentry::Client::from(options))),
+            std::sync::Arc::new(Default::default()),
+        ))
+    }
+
+    /// A slow transport and a transport failure run only on the reporter
+    /// thread, so the setup command returns immediately in either case.
+    #[test]
+    fn setup_failure_reporter_never_blocks_on_slow_or_failing_sentry_transport() {
+        let (slow_started, slow_started_rx) = std::sync::mpsc::channel();
+        let release = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let slow_transport = std::sync::Arc::new(BlockingSetupTransport {
+            started: slow_started,
+            release: release.clone(),
+        });
+        let slow_hub = setup_hub(slow_transport);
+        let start = std::time::Instant::now();
+        sentry::Hub::run(slow_hub, || {
+            queue_setup_dependency_failure(failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), vec![]);
+        });
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        slow_started_rx.recv_timeout(std::time::Duration::from_secs(1)).expect("reporter should reach the slow transport");
+        let (released, wake) = &*release;
+        *released.lock().unwrap() = true;
+        wake.notify_all();
+
+        let (panic_started, panic_started_rx) = std::sync::mpsc::channel();
+        let failing_hub = setup_hub(std::sync::Arc::new(PanickingSetupTransport { started: panic_started }));
+        sentry::Hub::run(failing_hub, || {
+            queue_setup_dependency_failure(failure_scope("11111111-1111-4111-8111-111111111111", 1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "node", OnboardingErrorCategory::ExitNonzero, setup_diagnostic(), vec![]);
+        });
+        panic_started_rx.recv_timeout(std::time::Duration::from_secs(1)).expect("reporter should isolate a failed transport");
     }
 }
 
@@ -6014,6 +6736,142 @@ mod install_deps_tests {
 
         let err = settings_json_with_env_path(r#"{"env": "bad"}"#, "/managed/bin").unwrap_err();
         assert_eq!(err, "settings.json 'env' is not an object");
+    }
+
+    /// HQ-DESKTOP-46: the composed managed-first PATH must be WRITTEN into the
+    /// file the resolver READS. settings.local.json defines env.PATH, so it wins,
+    /// and settings.json (which the resolver ignores) must be left untouched.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_targets_settings_local_when_it_has_a_path() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("settings.json"),
+            "{\"other\":1,\"env\":{\"PATH\":\"/base\"}}",
+        )
+        .unwrap();
+        std::fs::write(
+            claude.join("settings.local.json"),
+            "{\"keep\":true,\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}",
+        )
+        .unwrap();
+
+        let outcome =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            outcome,
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.local.json"))
+        );
+
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(claude.join("settings.local.json")).unwrap())
+                .unwrap();
+        let path = doc["env"]["PATH"].as_str().unwrap();
+        // The managed node bin is hoisted to the FRONT.
+        let managed = managed_tool_paths_in(home.path());
+        assert!(
+            path.starts_with(&managed[0]),
+            "managed node bin must be first: {path}"
+        );
+        // The pre-existing foreign dir survives, just behind the managed dirs.
+        assert!(path.split(':').any(|seg| seg == "/opt/homebrew/bin"));
+        // Every other key in the winning document is preserved.
+        assert_eq!(doc["keep"].as_bool(), Some(true));
+        // The base file the resolver ignores is untouched.
+        assert_eq!(
+            std::fs::read_to_string(claude.join("settings.json")).unwrap(),
+            "{\"other\":1,\"env\":{\"PATH\":\"/base\"}}"
+        );
+    }
+
+    /// When only the base settings.json defines env.PATH the writer targets it,
+    /// exactly as before the fix — and the rewrite is idempotent.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_falls_back_to_base_and_is_idempotent() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("settings.json"),
+            "{\"model\":\"x\",\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}",
+        )
+        .unwrap();
+
+        let first =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            first,
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.json"))
+        );
+        let after_first = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+
+        let second =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            second,
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.json"))
+        );
+        let after_second = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+        assert_eq!(after_first, after_second, "the rewrite must be idempotent");
+        let doc: serde_json::Value = serde_json::from_str(&after_second).unwrap();
+        assert_eq!(doc["model"].as_str(), Some("x"));
+    }
+
+    /// A missing target settings file is a skip, not an error.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_skips_when_no_settings_file() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(hq.path().join(".claude")).unwrap();
+        let outcome =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap();
+        assert!(matches!(outcome, SettingsPathWriteOutcome::Skipped(_)));
+    }
+
+    /// A settings file symlinked OUT of the HQ folder is refused, so the write
+    /// cannot be redirected to clobber an unrelated file.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_refuses_a_symlink_escaping_the_hq_folder() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let target = outside.path().join("evil-settings.json");
+        std::fs::write(&target, "{\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}").unwrap();
+        std::os::unix::fs::symlink(&target, claude.join("settings.local.json")).unwrap();
+
+        let err =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap_err();
+        assert!(err.contains("outside the HQ folder"), "unexpected error: {err}");
+        // The escaping target was NOT rewritten.
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "{\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}"
+        );
+    }
+
+    /// A non-object settings document is refused rather than clobbered.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_refuses_a_non_object_document() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        // No file defines env.PATH -> target is settings.json; it exists but is a
+        // JSON array, so the composer refuses it as a non-object.
+        std::fs::write(claude.join("settings.json"), "[]").unwrap();
+        let err =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap_err();
+        assert!(err.contains("not an object"), "unexpected error: {err}");
     }
 
     #[test]

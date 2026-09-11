@@ -5,6 +5,7 @@
 //! Svelte UI does NOT expose these V1 — invocable only via Tauri devtools.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -27,7 +28,9 @@ use crate::commands::session_end_attribution::{
 };
 use crate::commands::status::{journal_for_daemon_sync_complete, write_journal};
 use crate::commands::sync::{PreflightFailure, ProvisionAttempt, RunTotals};
-use hq_desktop_core::sync_outcome::{runner_assertion_for_class, RUNNER_PHASE_PRE_PROTOCOL};
+use crate::commands::windows_teardown_probe::{
+    sample_shuttingdown, spawn_teardown_log_sweep, TeardownSweepHandle,
+};
 use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -39,35 +42,62 @@ use hq_desktop_core::runner_error_shape::{
     classify_runner_stack_input, RunnerErrorCause, RunnerErrorSite,
 };
 use hq_desktop_core::runner_target::RunnerTargetState;
+use hq_desktop_core::sync_outcome::{
+    DeferredSessionEndOutcome,
+    MemoryExhaustionEvidence,
+    RUNNER_PHASE_PRE_PROTOCOL,
+    RunnerErrorClass,
+    RunnerFatalClass,
+    SESSION_END_GRACE_MS,
+    SessionEndLatchReading,
+    SpawnFailureCapturePolicy,
+    SyncCancelCause,
+    TeardownLogReading,
+    TeardownShuttingDown,
+    TerminationHost,
+    WINDOWS_SESSION_TERMINATE_EXIT,
+    WatcherExitCapturePolicy,
+    WindowsTeardownProbeReading,
+    WindowsTeardownVerdict,
+    WindowsTermination,
+    WindowsTerminatorAttribution,
+    classify_runner_fatal_signature,
+    classify_windows_exit_status,
+    current_termination_host,
+    deferred_session_end_confirmed,
+    deferred_session_end_outcome,
+    describe_exit,
+    is_crash_signal,
+    is_windows_console_control_exit,
+    is_windows_fault_exit,
+    normalized_abort_description,
+    resolved_session_end_attribution,
+    runner_assertion_for_class,
+    runner_fault_is_disk_exhaustion_content,
+    runner_fault_is_file_lock_content,
+    runner_phase_elapsed_bucket,
+    runner_phase_from_event,
+    runner_stack_shape,
+    runner_stack_shape_for_exit,
+    session_end_grace_waited_bucket,
+    should_capture_watcher_exit,
+    spawn_failure_capture_policy,
+    spawn_failure_fingerprint_token,
+    termination_fingerprint_token,
+    termination_fingerprint_token_for_host,
+    watcher_exit_attributed_to_app_teardown,
+    watcher_exit_capture_policy,
+    watcher_exit_capture_policy_with_attribution,
+    watcher_exit_signal_class,
+    watcher_termination_fingerprint_token,
+    windows_exit_status_hex,
+    windows_fault_symbol,
+    windows_teardown_verdict,
+};
 use hq_desktop_core::watcher_fault::{
     UnmatchedStderrShapeRollup, WatcherFaultProvenance, WatcherFaultReadCounters,
     WATCHER_FAULT_UNAVAILABLE,
 };
-use hq_desktop_core::sync_outcome::{
-    classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
-    MemoryExhaustionEvidence, RunnerErrorClass, RunnerFatalClass,
-    deferred_session_end_outcome, describe_exit, is_crash_signal, is_windows_console_control_exit,
-    is_windows_fault_exit,
-    normalized_abort_description, resolved_session_end_attribution, runner_phase_elapsed_bucket,
-    runner_fault_is_disk_exhaustion_content, runner_fault_is_file_lock_content,
-    runner_phase_from_event, runner_stack_shape,
-    runner_stack_shape_for_exit, session_end_grace_waited_bucket, should_capture_watcher_exit,
-    spawn_failure_capture_policy,
-    spawn_failure_fingerprint_token, termination_fingerprint_token,
-    termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
-    watcher_termination_fingerprint_token,
-    watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
-    watcher_exit_signal_class,
-    windows_exit_status_hex, windows_fault_symbol, windows_teardown_verdict,
-    DeferredSessionEndOutcome, SessionEndLatchReading, SpawnFailureCapturePolicy, SyncCancelCause,
-    TeardownLogReading, TeardownShuttingDown, TerminationHost, WatcherExitCapturePolicy,
-    WindowsTeardownProbeReading, WindowsTeardownVerdict, WindowsTermination,
-    WindowsTerminatorAttribution, SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
-};
-use crate::commands::windows_teardown_probe::{
-    sample_shuttingdown, spawn_teardown_log_sweep, TeardownSweepHandle,
-};
-
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::CloseHandle;
 #[cfg(target_os = "windows")]
@@ -79,7 +109,7 @@ use windows::Win32::System::Threading::{
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::daemon::{
-    build_watch_runner_args, event_push_eligible, is_autostart_enabled, is_instant_sync_enabled,
+    build_watch_runner_args, is_autostart_enabled, is_instant_sync_enabled,
     is_pid_alive, is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
     resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push,
     should_force_clear_stalled_start, should_respawn_daemon, should_respawn_daemon_gated,
@@ -294,13 +324,11 @@ fn handle_watch_stdout_line<R: tauri::Runtime>(
     phase_context: &Mutex<WatcherPhaseContext>,
     line: &str,
 ) -> bool {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
+    // Shared tolerant parse seam — blank, malformed, and unknown-type lines
+    // (e.g. the runner's additive `manifest-upload` event) are skipped rather
+    // than killing the watcher. See `events::parse_sync_line`.
+    let Some(event) = crate::events::parse_sync_line(line) else {
         return false;
-    }
-    let event: SyncEvent = match serde_json::from_str(trimmed) {
-        Ok(e) => e,
-        Err(_) => return false,
     };
     observe_watcher_phase_from_event(phase_context, &event);
     {
@@ -853,12 +881,15 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     app: AppHandle<R>,
     launch_origin: WatcherLaunchOrigin,
 ) -> Result<String, String> {
-    // V2 Cloud Off (US-001 / US-016): while the user has Cloud paused, NO watch
-    // daemon may start — renderer request, app-launch autostart, or supervisor
-    // respawn. Instant/event push is an argument of this watcher, so gating
+    // Spawn preflight for all three watch-daemon origins (renderer request,
+    // app-launch autostart, supervisor respawn), which all funnel through this
+    // function. Refuses when the dev kill switch `HQ_DEV_NO_SYNC` is set (a dev
+    // build must never run a second sync runner over the same HQ folder as the
+    // installed app), and when V2 Cloud Off (US-001 / US-016) has the user's
+    // sync paused. Instant/event push is an argument of this watcher, so gating
     // here pauses it too. Checked before taking the singleton guard so a
-    // paused refusal never wedges a later, unpaused start.
-    hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;
+    // refusal never wedges a later, allowed start.
+    hq_desktop_core::daemon::ensure_sync_spawn_allowed()?;
     // Generation-scoped registration: every later release/terminate/cancel this
     // start performs is bound to the generation it acquired here, so a stale
     // actor can never operate on a replacement watcher (HQ-DESKTOP-3J).
@@ -1004,12 +1035,27 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         ));
     }
 
+    // Create this generation's app-owned diagnostic-report directory so the runner
+    // child can write a crash-surviving Node fatal report into it (HQ-DESKTOP-5W).
+    // Best-effort: if it cannot be created, the spawn requests no report and the
+    // exit records `report_not_requested`. The exit reader recomputes the SAME path
+    // from `daemon_generation`.
+    let report_dir = ensure_runner_report_dir("watcher", daemon_generation);
     let spawn_args = hq_desktop_core::daemon::build_watch_runner_args_for_target(
         &hq_folder_path,
         &runner_spawn_target,
+        report_dir.as_deref(),
     );
     let runner_hq_cloud_version =
         hq_desktop_core::runner_target::runner_hq_cloud_version(&runner_spawn_target);
+    // Whether this spawn ALSO mirrors the report flags into argv — true only on the
+    // bare-`node` local-runner path. Both production routes (npx/cmd_shim) deliver
+    // through NODE_OPTIONS only, so this is the one bit distinguishing `env_escaped`
+    // from `env_and_argv` for the delivery provenance at exit (HQ-DESKTOP-5W).
+    let report_delivers_argv = matches!(
+        &runner_spawn_target,
+        hq_desktop_core::runner_target::RunnerSpawnTarget::Local { .. }
+    );
 
     log("daemon", "spawn: hq-sync-runner --watch");
     // Stamp the spawn so the Exit handler can tell a fast crash-loop failure
@@ -1081,8 +1127,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             // Count only parsed protocol lines (mirrors the
                             // manual route): a blank or unparseable teardown line
                             // is not protocol output, so it must not read as work.
-                            watcher_stdout_line_count =
-                                watcher_stdout_line_count.saturating_add(1);
+                            watcher_stdout_line_count = watcher_stdout_line_count.saturating_add(1);
                             *process_heartbeat
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner()) =
@@ -1246,13 +1291,51 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         let job_sample =
                             crate::commands::process::take_watcher_job_sample(daemon_generation);
                         if job_sample.images.images_tag().is_some() {
-                            exit_context.watcher_fault_job_images =
-                                job_sample.images.images_tag();
+                            exit_context.watcher_fault_job_images = job_sample.images.images_tag();
                             exit_context.watcher_fault_job_culprit_candidate =
                                 Some(job_sample.images.culprit_candidate_token().to_string());
                             exit_context.watcher_fault_job_image_provenance =
                                 Some(job_sample.images.provenance_token().to_string());
                         }
+                        // Windows fatal-reason attribution (this reopen, HQ-DESKTOP-5W):
+                        // recompute this generation's report directory and seed the
+                        // read provenance. The runner child may have written a
+                        // crash-surviving Node fatal report; `deferred_report_dir` is
+                        // Some only when a report was actually requested (the directory
+                        // exists AND the user set no `--report-*` of their own), and it
+                        // is handed to the deferred fault worker below to read OFF the
+                        // exit path. Otherwise the seed records why none will be read.
+                        let generation_report_dir =
+                            hq_desktop_core::daemon::runner_report_dir(
+                                "watcher",
+                                daemon_generation,
+                            )
+                            .filter(|dir| dir.exists());
+                        let report_request =
+                            hq_desktop_core::daemon::resolve_runner_report_request(
+                                std::env::var("NODE_OPTIONS").ok().as_deref(),
+                                generation_report_dir.as_deref(),
+                            );
+                        exit_context.runner_report_read =
+                            report_request.seed_read_token().to_string();
+                        // Delivery provenance (HQ-DESKTOP-5W): the SAME request, crossed
+                        // with whether this spawn route also mirrored the flags into
+                        // argv, resolves how the report directory was delivered to the
+                        // child — so a future `report_absent` is attributable to a
+                        // correctly-armed channel rather than a broken one.
+                        exit_context.runner_report_dir_delivery =
+                            hq_desktop_core::daemon::resolve_runner_report_dir_delivery(
+                                report_request,
+                                report_delivers_argv,
+                            )
+                            .as_str()
+                            .to_string();
+                        let deferred_report_dir = matches!(
+                            report_request,
+                            hq_desktop_core::daemon::RunnerReportRequest::Requested
+                        )
+                        .then(|| generation_report_dir.clone())
+                        .flatten();
                         // Only a genuine Windows fault exit warrants reading the OS
                         // fault record; every other exit and platform is not
                         // applicable and keeps the honest sentinels.
@@ -1274,8 +1357,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                 // Seed the honest "not read yet" provenance; the
                                 // deferred worker upgrades it, or a teardown flush
                                 // emits it as-is.
-                                let fault_window_end = now_unix_ms()
-                                    .saturating_add(WATCHER_FAULT_WINDOW_SLACK_MS);
+                                let fault_window_end =
+                                    now_unix_ms().saturating_add(WATCHER_FAULT_WINDOW_SLACK_MS);
                                 let fault_window_start = generation_started_ms.max(
                                     fault_window_end
                                         .saturating_sub(WATCHER_FAULT_TERMINAL_LOOKBACK_MS),
@@ -1294,15 +1377,25 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                         exception_code,
                                         gen_start_ms: fault_window_start,
                                         gen_end_ms: fault_window_end,
+                                        report_dir: deferred_report_dir.clone(),
                                     });
                             }
                             None => {
                                 exit_context.watcher_fault_provenance =
                                     WatcherFaultProvenance::NotApplicable.as_str().to_string();
+                                // NON-fault exit (HQ-DESKTOP-66): the fault worker never
+                                // runs, so carry any requested report directory into the
+                                // context. The capture seam defers the read to a bounded
+                                // worker OFF this callback — turning the seeded
+                                // runner_report_read into a measured verdict — and owns the
+                                // directory cleanup for it. `None` when no report was
+                                // requested (nothing to read or clean here).
+                                exit_context.runner_report_deferred_dir =
+                                    deferred_report_dir.clone();
                             }
                         }
                         let last_stderr = stderr_tail.last().map(String::as_str);
-                        handle_watcher_exit(
+                        let report_dir_disposition = handle_watcher_exit(
                             code,
                             signal,
                             success,
@@ -1311,6 +1404,18 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             last_stderr,
                             &exit_context,
                         );
+                        // Clean up this generation's report directory unless a deferred
+                        // worker (the Windows-fault worker OR the non-fault report worker)
+                        // owns it and deletes it after reading. Covers the clean-exit,
+                        // user-disabled, not-requested, and suppressed-capture cases, so no
+                        // run accumulates disk under `~/.hq/runner-reports` (HQ-DESKTOP-66
+                        // Leg A2 — the requested-but-not-deferred generation is no longer
+                        // left for prune_stale_runner_report_siblings to delete unread).
+                        if report_dir_disposition == RunnerReportDirDisposition::DeleteOnExitPath {
+                            if let Some(dir) = &generation_report_dir {
+                                remove_runner_report_dir(dir);
+                            }
+                        }
                     }
                 }
             },
@@ -1427,6 +1532,12 @@ struct WatcherFaultDeferredRead {
     exception_code: u32,
     gen_start_ms: i64,
     gen_end_ms: i64,
+    /// This generation's app-owned diagnostic-report directory (this reopen,
+    /// HQ-DESKTOP-5W), when a report was actually requested. The deferred worker
+    /// reads a crash-surviving Node fatal report from it OFF the exit path, patches
+    /// the fatal-reason tags, and deletes it. `None` when no report was requested
+    /// (no directory, or the user set their own `--report-*`).
+    report_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -1483,6 +1594,12 @@ struct WatcherExitCaptureContext {
     runner_error_http: Option<String>,
     runner_error_causes: Option<String>,
     runner_error_cause_signature: Option<String>,
+    /// Rendered `runner_error_unknown_profiles` / `runner_error_residual_signature`
+    /// tags (HQ-DESKTOP-61/62), from the SAME shared rollups the manual seam reads, so
+    /// the two seams cannot drift. `None` when no unknown_unnamed residual was
+    /// recorded, so absence never renders as evidence.
+    runner_error_unknown_profiles: Option<String>,
+    runner_error_residual_signature: Option<String>,
     /// Rendered `runner_error_sites` tag (`site:count,...`, top-3), from the SAME
     /// shared rollup the manual seam reads (HQ-DESKTOP-5M). `None` when no runner
     /// error was recorded, so absence never renders as evidence.
@@ -1492,6 +1609,21 @@ struct WatcherExitCaptureContext {
     runner_phase: String,
     runner_phase_elapsed_bucket: String,
     watcher_launch_origin: String,
+    /// The `runner_report_read` provenance SEED for this exit (this reopen,
+    /// HQ-DESKTOP-5W): whether a crash-surviving Node diagnostic report was
+    /// requested for this generation, withheld by a user `--report-*`, or not
+    /// requested. Fixed vocabulary. For a Windows fault exit the deferred worker
+    /// upgrades this in-place to `report_read`/`report_absent`/`report_unreadable`
+    /// after it reads the report; other exits keep the seed. Diagnostic-only.
+    runner_report_read: String,
+    /// Where this generation's report directory was delivered to the child
+    /// (HQ-DESKTOP-5W): `env_escaped` on the production npx/cmd_shim path,
+    /// `env_and_argv` on the bare-`node` local path, `disabled_by_user_options`, or
+    /// `not_requested`. Seeded `not_requested`; the exit callback overwrites it from
+    /// the resolved request + spawn route. Additive to `runner_report_read`, it lets
+    /// the next occurrence tell "Node was asked correctly and still wrote nothing"
+    /// from "Node was never asked correctly". Fixed vocabulary; diagnostic-only.
+    runner_report_dir_delivery: String,
     runner_stack_shape: String,
     runner_stack_signature: String,
     runner_stack_depth: u8,
@@ -1587,6 +1719,23 @@ struct WatcherExitCaptureContext {
     /// generation started. Carried independently of the exit-time probe so a
     /// divergent pair is itself diagnostic rather than misleading (TOCTOU-safe).
     runner_target_repair_attempted: bool,
+    /// Shim-vs-runner discriminator (HQ-DESKTOP-66): the closed-vocabulary token for
+    /// the images of the watcher Job Object's processes STILL LIVE at the exit
+    /// boundary, and their bare count. `"unavailable"` / `None` by default
+    /// (non-Windows, or a failed live-PID query); strictly diagnostic — never gates
+    /// capture, the fingerprint, or lifecycle. A surviving `node_exe` means the
+    /// cmd.exe shim died while the runner kept running; `none` means the tree died
+    /// together.
+    watcher_job_survivors: String,
+    watcher_job_survivor_count: Option<u32>,
+    /// This generation's app-owned diagnostic-report directory when a report WAS
+    /// requested but the exit is NOT a Windows fault (HQ-DESKTOP-66), so no
+    /// `WatcherFaultDeferredRead` owns it. Its presence is what tells the capture
+    /// seam to DEFER the send to a bounded worker that reads + applies the report
+    /// OFF the terminal exit callback — turning the seeded `runner_report_read` into
+    /// a measured verdict. `None` for a Windows fault exit (the fault worker owns the
+    /// read) and when no report was requested.
+    runner_report_deferred_dir: Option<PathBuf>,
 }
 
 impl WatcherExitCaptureContext {
@@ -1664,12 +1813,16 @@ impl Default for WatcherExitCaptureContext {
             runner_error_http: None,
             runner_error_causes: None,
             runner_error_cause_signature: None,
+            runner_error_unknown_profiles: None,
+            runner_error_residual_signature: None,
             runner_error_sites: None,
             runner_error_scope: None,
             runner_error_companies: 0,
             runner_phase: RUNNER_PHASE_PRE_PROTOCOL.to_string(),
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             watcher_launch_origin: "renderer".to_string(),
+            runner_report_read: "report_not_requested".to_string(),
+            runner_report_dir_delivery: "not_requested".to_string(),
             runner_stack_shape: "all_redacted".to_string(),
             runner_stack_signature: "unknown".to_string(),
             runner_stack_depth: 0,
@@ -1705,6 +1858,14 @@ impl Default for WatcherExitCaptureContext {
             watcher_fault_deferred_read: None,
             runner_exec_target: None,
             runner_target_repair_attempted: false,
+            // No live-PID query has run by default (non-Windows, or a clean exit):
+            // survivors are unknown, so the honest token is `unavailable` and the
+            // count is withheld — never `none`, which would assert an empty tree.
+            watcher_job_survivors: hq_desktop_core::watcher_fault::WatcherJobSurvivors::unavailable()
+                .token()
+                .to_string(),
+            watcher_job_survivor_count: None,
+            runner_report_deferred_dir: None,
         }
     }
 }
@@ -1784,6 +1945,15 @@ fn watcher_exit_capture_context(
         DAEMON_HANDLE,
         process_generation,
     );
+    // Shim-vs-runner discriminator (HQ-DESKTOP-66): one read-only live-PID query on
+    // the SAME retained Job Object handle, resolved by the same generation, so the
+    // images of the processes STILL LIVE at the exit boundary are captured before
+    // `run_process_impl` deregisters (and closes) the handle. Strictly diagnostic and
+    // read-only — the same single non-blocking query the accounting read makes.
+    let job_survivors = crate::commands::process::watcher_job_survivors_for_generation(
+        DAEMON_HANDLE,
+        process_generation,
+    );
     finish_watcher_generation(generation);
     WatcherExitCaptureContext {
         lifecycle_state: current_lifecycle_state().as_str().to_string(),
@@ -1826,6 +1996,8 @@ fn watcher_exit_capture_context(
         runner_error_http: totals.runner_error_http.tag_value(),
         runner_error_causes: totals.runner_error_causes.tag_value(),
         runner_error_cause_signature: totals.runner_error_cause_signature.tag_value(),
+        runner_error_unknown_profiles: totals.runner_error_unknown_profiles.tag_value(),
+        runner_error_residual_signature: totals.runner_error_residual_signature.tag_value(),
         runner_error_sites: totals.runner_error_sites.tag_value(),
         runner_error_scope: totals.runner_error_scope(),
         runner_error_companies: totals.runner_error_company_count(),
@@ -1835,6 +2007,12 @@ fn watcher_exit_capture_context(
         )
         .to_string(),
         watcher_launch_origin: generation.launch_origin.as_str().to_string(),
+        // Seeded `report_not_requested`; the exit callback (which knows this
+        // generation's report directory) overwrites it with the resolved request,
+        // and the deferred worker upgrades it after the report read.
+        runner_report_read: "report_not_requested".to_string(),
+        // Same seeding discipline (HQ-DESKTOP-5W delivery provenance).
+        runner_report_dir_delivery: "not_requested".to_string(),
         runner_stack_shape: stack.shape,
         runner_stack_signature: stack.signature,
         runner_stack_depth: stack.depth,
@@ -1892,6 +2070,16 @@ fn watcher_exit_capture_context(
         watcher_fault_deferred_read: None,
         runner_exec_target,
         runner_target_repair_attempted: runner_target_repair_attempted(),
+        // Shim-vs-runner discriminator (HQ-DESKTOP-66): the closed-vocabulary token
+        // and bare count for the job's live processes at the exit boundary. The count
+        // is withheld (`None`) unless the query ran, so `unavailable` never renders a
+        // misleading `0`.
+        watcher_job_survivors: job_survivors.token().to_string(),
+        watcher_job_survivor_count: job_survivors.count(),
+        // Set by the exit callback for a requested-report NON-fault exit; `None` here
+        // (unit-only callers request no report, and the fault path routes the read
+        // through the fault deferred worker instead).
+        runner_report_deferred_dir: None,
     }
 }
 
@@ -2121,13 +2309,24 @@ fn resolve_deferred_decision(
     reading: Option<SessionEndReading>,
     teardown: WindowsTeardownProbeReading,
     latch: SessionEndLatchReading,
+    unconfirmed_run_count: u32,
 ) -> DeferredResolution {
     let verdict = windows_teardown_verdict(teardown);
     let outcome = reading
-        .map(|reading| deferred_session_end_outcome(reading.attribution, verdict, latch))
+        .map(|reading| {
+            deferred_session_end_outcome(
+                reading.attribution,
+                verdict,
+                latch,
+                unconfirmed_run_count,
+            )
+        })
         // Fail closed: an observer that cannot be consulted never suppresses on
         // its own. A contemporaneous latch is still positive evidence even when
-        // the observer is gone, so honour it here too.
+        // the observer is gone, so honour it here too. This lane is NOT the
+        // reported cluster — a real sign-out destroys the observer's window and
+        // reports `ObserverFailed`, a `Some` reading — so a genuinely absent
+        // observer keeps its original fail-closed send.
         .unwrap_or_else(|| {
             if latch.suppresses() {
                 DeferredSessionEndOutcome::Drop
@@ -2189,36 +2388,89 @@ fn resolve_deferred_session_end_capture(id: u64) {
     // RunEvent::Exit branch (or a committed WM_ENDSESSION) sets it, so a capture
     // that raced the one-shot drop sweep still sees positive evidence.
     let latch = current_session_end_latch_reading_at_resolution();
-    let resolution = resolve_deferred_decision(reading, teardown, latch);
+    let verdict = windows_teardown_verdict(teardown);
+
+    // Now that the grace has settled whether this exit carried positive
+    // session-end evidence, advance the per-app-run unconfirmed session-terminate
+    // counter: a confirmed session end resets the run, an unconfirmed exit
+    // advances it. The fail-closed no-observer lane keeps its original disposition
+    // and never touches the counter.
+    let confirmed = match reading {
+        Some(reading) => deferred_session_end_confirmed(reading.attribution, verdict, latch),
+        None => latch.suppresses(),
+    };
+    let unconfirmed_run_count = match reading {
+        Some(_) if confirmed => {
+            reset_session_terminate_unconfirmed_run();
+            0
+        }
+        Some(_) => bump_session_terminate_unconfirmed_run(),
+        None => 0,
+    };
+    let resolution = resolve_deferred_decision(reading, teardown, latch, unconfirmed_run_count);
 
     match resolution.outcome {
         DeferredSessionEndOutcome::Drop => {
             let waited = session_end_grace_waited_bucket(waited_ms);
-            // Name whichever positive source suppressed the alert: an observed
-            // message (session_end_observed) or the probe (session_end_probed).
+            // Name whichever source resolved the alert: a positive suppressor
+            // (session_end_observed / session_end_latched / session_end_probed) or,
+            // for a benign first unconfirmed exit, its honest raw/no-teardown tag.
             let terminator = resolution
                 .final_attribution
                 .map(|attribution| attribution.class_name())
                 .unwrap_or("session_end_observed");
-            log(
-                "daemon",
-                &format!(
-                    "session-end watcher exit — capture skipped after the grace \
-                     (windows_terminator={terminator} observer_readiness={readiness} \
-                     grace_waited={waited})"
-                ),
-            );
-            sentry::add_breadcrumb(sentry::Breadcrumb {
-                category: Some("daemon.exit".into()),
-                level: sentry::Level::Info,
-                message: Some(format!(
-                    "session-end auto-sync watcher exit: \
-                     windows_terminator={terminator} grace_waited={waited}"
-                )),
-                ..Default::default()
-            });
+            if confirmed {
+                log(
+                    "daemon",
+                    &format!(
+                        "session-end watcher exit — capture skipped after the grace \
+                         (windows_terminator={terminator} observer_readiness={readiness} \
+                         grace_waited={waited})"
+                    ),
+                );
+                sentry::add_breadcrumb(sentry::Breadcrumb {
+                    category: Some("daemon.exit".into()),
+                    level: sentry::Level::Info,
+                    message: Some(format!(
+                        "session-end auto-sync watcher exit: \
+                         windows_terminator={terminator} grace_waited={waited}"
+                    )),
+                    ..Default::default()
+                });
+            } else {
+                // The first unconfirmed session-terminate this app run: an
+                // externally-supplied 0x40010004 with no session-end evidence is
+                // the ordinary Windows sign-out shape, so the error-level alert is
+                // withheld. The full attribution stays on the local log and
+                // breadcrumb so a support trace can still see it on the machine.
+                log(
+                    "daemon",
+                    &format!(
+                        "session-terminate watcher exit — first unconfirmed this app run, \
+                         treated as a Windows sign-out; capture skipped \
+                         (windows_terminator={terminator} observer_readiness={readiness} \
+                         grace_waited={waited})"
+                    ),
+                );
+                sentry::add_breadcrumb(sentry::Breadcrumb {
+                    category: Some("daemon.exit".into()),
+                    level: sentry::Level::Info,
+                    message: Some(format!(
+                        "unconfirmed session-terminate auto-sync watcher exit \
+                         (first this run — capture skipped): \
+                         windows_terminator={terminator} grace_waited={waited}"
+                    )),
+                    ..Default::default()
+                });
+            }
         }
         DeferredSessionEndOutcome::Capture => {
+            // Escalation: a second-or-later unconfirmed session-terminate exit
+            // within one app run. The app is demonstrably alive to observe it, so
+            // it cannot be a session end. Re-fingerprint and re-title so it never
+            // merges with the benign sign-out issue, then send with the full
+            // teardown diagnostics attached by the finalizer.
+            let payload = escalated_session_terminate_payload(payload, unconfirmed_run_count);
             send_deferred_session_end_capture(
                 payload,
                 resolution.final_attribution,
@@ -2231,6 +2483,31 @@ fn resolve_deferred_session_end_capture(id: u64) {
             );
         }
     }
+}
+
+/// A distinct fingerprint shape token for the escalation event, so a repeated
+/// external killer never groups with the benign `windows:session-terminate`
+/// sign-out issue (whose fingerprint is unchanged and which now drops on its
+/// first per-run occurrence). Content-safe fixed vocabulary.
+const SESSION_TERMINATE_ESCALATION_FINGERPRINT: &str = "windows:session-terminate-external-killer";
+
+/// Re-shape a held session-terminate payload into the escalation event: a NEW
+/// fingerprint (never a reuse of the benign one) and a re-titled message naming
+/// the anomaly. Every tag/extra — including the teardown diagnostics the
+/// finalizer adds — is preserved, so the escalation carries the full context.
+fn escalated_session_terminate_payload(
+    mut payload: DeferredSessionEndCapture,
+    run_count: u32,
+) -> DeferredSessionEndCapture {
+    if payload.fingerprint.len() > 2 {
+        payload.fingerprint[2] = SESSION_TERMINATE_ESCALATION_FINGERPRINT.to_string();
+    }
+    payload.message = format!(
+        "auto-sync watcher externally terminated (Windows status 0x40010004 \
+         (session terminate)) {run_count} times in one app run with no confirmed \
+         Windows session end — not a sign-out"
+    );
+    payload
 }
 
 /// Read the durable session-end latch when resolving a deferral. Every deferral
@@ -2547,6 +2824,152 @@ where
 /// normal slow return (≤ budget + one sweep) from a genuine wedge.
 const WATCHER_FAULT_READ_SUPERVISOR_GRACE: Duration = Duration::from_secs(5);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Runner diagnostic report — the crash-surviving third cause channel (HQ-DESKTOP-5W)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Hard cap on the runner diagnostic report bytes read at exit. Mirrors the core
+/// parser's cap; a `--report-compact` report is a few KB, so a larger file is
+/// treated as hostile/oversized and degrades to `report_unreadable`.
+const RUNNER_REPORT_READ_MAX_BYTES: u64 =
+    hq_desktop_core::runner_diagnostic_report::RUNNER_REPORT_MAX_BYTES as u64;
+
+/// Create a run's app-owned diagnostic-report directory, keyed by spawn `route`
+/// and `generation`. Best-effort: returns `None` (and logs) if it cannot be
+/// resolved or created, so the spawn simply requests no report and the exit
+/// records `report_not_requested`. Shared by BOTH spawn routes.
+pub(crate) fn ensure_runner_report_dir(route: &str, generation: u64) -> Option<PathBuf> {
+    let dir = hq_desktop_core::daemon::runner_report_dir(route, generation)?;
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => {
+            // Bound disk: remove leaked sibling directories (from a teardown/kill
+            // race that skipped the per-read deletion, or a prior session) so a
+            // machine that faults repeatedly cannot accumulate reports.
+            prune_stale_runner_report_siblings(&dir);
+            Some(dir)
+        }
+        Err(error) => {
+            log(
+                "daemon",
+                &format!("could not create runner report dir: {error}"),
+            );
+            None
+        }
+    }
+}
+
+/// Bound disk under `~/.hq/runner-reports/<route>` by removing every sibling report
+/// directory EXCEPT the single newest one. Race-free by construction: only ONE
+/// generation runs at a time per route, so the only directory that can still have a
+/// deferred read pending is the most recently created prior generation — which is
+/// always the newest sibling and is therefore never pruned. Every other sibling is
+/// an already-read (deleted-then-recreated is impossible) or leaked directory.
+/// Best-effort and bounded: it lists one small directory and removes stale entries.
+fn prune_stale_runner_report_siblings(current: &Path) {
+    let Some(parent) = current.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let mut siblings: Vec<(PathBuf, SystemTime)> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path != current && path.is_dir())
+        .map(|path| {
+            let mtime = std::fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .unwrap_or(UNIX_EPOCH);
+            (path, mtime)
+        })
+        .collect();
+    // Protect the newest sibling — the only possible in-flight prior generation.
+    if let Some(newest) = siblings
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, (_, mtime))| *mtime)
+        .map(|(index, _)| index)
+    {
+        siblings.remove(newest);
+    }
+    for (path, _) in siblings {
+        let _ = std::fs::remove_dir_all(&path);
+    }
+}
+
+/// Remove a run's report directory and any file in it, best-effort. This is what
+/// bounds disk under `~/.hq/runner-reports`: every run's directory is removed after
+/// its exit — by the deferred worker once it has read, or by the exit callback
+/// otherwise — so a crash-looping machine cannot accumulate reports.
+pub(crate) fn remove_runner_report_dir(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Read and parse a run's crash-surviving Node fatal report, OFF the exit path.
+/// Bounded: a single read of one fixed-name file under a hard size cap, with NO
+/// directory listing. Removes the report directory after the read (so it never
+/// accumulates) and degrades to a fixed honesty token on any failure. Only fixed
+/// vocabulary, a bounded stack shape, and a digest leave — never a raw byte.
+/// Shared by BOTH exit seams (the watcher deferred worker and the manual exit).
+pub(crate) fn read_runner_diagnostic_report(
+    report_dir: &Path,
+) -> hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport {
+    use hq_desktop_core::runner_diagnostic_report::{
+        parse_runner_diagnostic_report, RunnerDiagnosticReport,
+    };
+    let path = report_dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME);
+    let outcome = match std::fs::metadata(&path) {
+        Err(_) => RunnerDiagnosticReport::absent(),
+        Ok(meta) if meta.len() > RUNNER_REPORT_READ_MAX_BYTES => {
+            RunnerDiagnosticReport::unreadable()
+        }
+        Ok(_) => match std::fs::read(&path) {
+            Ok(bytes) => parse_runner_diagnostic_report(&bytes),
+            Err(_) => RunnerDiagnosticReport::unreadable(),
+        },
+    };
+    // The read (success, absent, or unreadable) is terminal for this generation.
+    remove_runner_report_dir(report_dir);
+    outcome
+}
+
+/// Patch a deferred fault capture's tags with a runner diagnostic report's
+/// attribution, OFF the exit path. A report-derived class NEVER overrides a
+/// stderr-derived class that already named the cause: it is adopted ONLY when the
+/// current `runner_fatal_class` is `none` (the exact Windows-fault case the stderr
+/// channel loses). Always records `runner_report_read`; when a class IS adopted,
+/// flips `runner_fatal_source` to `node_report` and adopts the report's
+/// content-safe stack shape/signature. Pure — a test proves the patch with no I/O.
+fn apply_report_to_fault_tags(
+    tags: &mut Vec<(String, String)>,
+    report: &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport,
+) {
+    set_payload_tag(tags, "runner_report_read", report.read.as_str().to_string());
+    let current_class = tags
+        .iter()
+        .find(|(key, _)| key == "runner_fatal_class")
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("none");
+    if report.named_cause() && current_class == "none" {
+        set_payload_tag(
+            tags,
+            "runner_fatal_class",
+            report.fatal_class.as_str().to_string(),
+        );
+        set_payload_tag(tags, "runner_stack_shape", report.stack.shape.clone());
+        set_payload_tag(
+            tags,
+            "runner_stack_signature",
+            report.stack.signature.clone(),
+        );
+        set_payload_tag(
+            tags,
+            "runner_fatal_source",
+            report.fatal_source().to_string(),
+        );
+    }
+}
+
 /// Hand a fault capture to a bounded worker that performs the deferred OS fault
 /// read OFF the exit path, then resolves and sends it. Two guards make it robust:
 ///
@@ -2596,7 +3019,15 @@ fn spawn_deferred_watcher_fault_capture(payload: DeferredWatcherFaultCapture) {
         let outcome = rx.recv_timeout(bound).ok();
         // Claim send-rights EXACTLY once. If a teardown flush already claimed it,
         // this is a no-op — the event has already shipped with honest provenance.
-        if let Some(payload) = take_pending_watcher_fault_capture(id) {
+        if let Some(mut payload) = take_pending_watcher_fault_capture(id) {
+            // Read the crash-surviving Node fatal report OFF the exit path (this
+            // supervisor thread) and patch the fatal-reason tags, when a report was
+            // requested for this generation. A single bounded read; a report-derived
+            // class never overrides a stderr-derived one (see apply_report_to_fault_tags).
+            if let Some(report_dir) = payload.read.report_dir.clone() {
+                let report = read_runner_diagnostic_report(&report_dir);
+                apply_report_to_fault_tags(&mut payload.tags, &report);
+            }
             let resolution = if outcome.is_some() {
                 "read_resolved"
             } else {
@@ -2635,7 +3066,11 @@ fn finalize_watcher_fault_payload(
             "watcher_fault_faulting_module",
             outcome.module_token().to_string(),
         );
-        set_payload_tag(&mut payload.tags, "watcher_fault_read", outcome.counters_tag());
+        set_payload_tag(
+            &mut payload.tags,
+            "watcher_fault_read",
+            outcome.counters_tag(),
+        );
         set_payload_string_extra(
             &mut payload.extras,
             "watcher_fault_exception_code",
@@ -2684,6 +3119,229 @@ fn send_deferred_watcher_fault_capture(
     effects.capture(&payload.message, &fingerprint, &tags, &extras);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Deferred runner-report capture — the non-fault measurement path (HQ-DESKTOP-66)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A watcher exit that is NOT a Windows fault (the 0xFFFFFFFF indeterminate status)
+// builds no `WatcherFaultDeferredRead`, so the fault worker — the ONLY watcher-route
+// reader of the crash-surviving Node diagnostic report — never runs, and
+// `runner_report_read` keeps its pre-read SEED. That made "requested, never read"
+// indistinguishable on the wire from "read, file missing".
+//
+// This path decouples the report READ from the Windows-fault deferral: when a report
+// was requested but the exit is non-fault, the capture's SEND is deferred to a
+// bounded worker that reads the report OFF the terminal exit callback, applies its
+// verdict through the SAME read_runner_diagnostic_report + apply_report_to_fault_tags
+// the fault worker and the manual route use (so the three seams can never drift), and
+// sends. A teardown flush drains any in-flight capture — reading each report inline
+// (a fast local-file read, unlike the fault path's Event Log wait) — so the measured
+// event is never lost to the deferral horizon. Nothing else about the exit — capture
+// policy, fingerprint, message, every other tag — is deferred; all of that already
+// ran, unchanged, before this is reached.
+
+/// Whether a deferred capture worker took ownership of this generation's runner
+/// report directory (and will read + delete it), or the terminal exit callback must
+/// delete it now. Returned by the watcher exit handler so the callback deletes
+/// exactly the directories no deferred reader will (HQ-DESKTOP-66 Leg A2), closing
+/// the unread-directory leak the report gate created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerReportDirDisposition {
+    /// A deferred worker (the Windows-fault worker, or the non-fault report worker)
+    /// owns the directory and removes it after its read.
+    OwnedByDeferredReader,
+    /// No deferred reader owns it; the terminal exit callback must remove it.
+    DeleteOnExitPath,
+}
+
+/// A non-fault watcher capture held back while its deferred report read runs. It
+/// carries the payload exactly as the exit path built it (with the seeded
+/// `report_absent` provenance) plus the report directory the worker reads.
+#[derive(Debug, Clone)]
+struct DeferredRunnerReportCapture {
+    message: String,
+    fingerprint: Vec<String>,
+    tags: Vec<(String, String)>,
+    extras: Vec<(String, sentry::protocol::Value)>,
+    report_dir: PathBuf,
+}
+
+impl DeferredRunnerReportCapture {
+    fn new(
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+        report_dir: PathBuf,
+    ) -> Self {
+        Self {
+            message: message.to_string(),
+            fingerprint: fingerprint.iter().map(|part| (*part).to_string()).collect(),
+            tags: tags
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+            extras: extras
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+            report_dir,
+        }
+    }
+}
+
+/// The deferred runner-report registry plus a one-way shutdown latch, mirroring the
+/// fault registry: a registration that arrives AFTER a teardown flush is handed back
+/// to its caller to read + send immediately rather than deferred into a vector
+/// nothing will drain again. The flag and the vector live under ONE mutex so
+/// arming-and-draining is atomic against a concurrent registration.
+#[derive(Default)]
+struct PendingRunnerReportRegistry {
+    shutting_down: bool,
+    items: Vec<(u64, DeferredRunnerReportCapture)>,
+}
+
+static PENDING_RUNNER_REPORT_CAPTURES: OnceLock<Mutex<PendingRunnerReportRegistry>> =
+    OnceLock::new();
+static RUNNER_REPORT_DEFERRAL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn pending_runner_report_captures() -> &'static Mutex<PendingRunnerReportRegistry> {
+    PENDING_RUNNER_REPORT_CAPTURES
+        .get_or_init(|| Mutex::new(PendingRunnerReportRegistry::default()))
+}
+
+/// Register a capture for deferred reading, or — when a teardown flush has already
+/// armed the shutdown latch — hand the payload BACK so the caller reads + sends it
+/// immediately. `Ok(id)` means a worker owns it; `Err(payload)` means shutdown is
+/// under way and it must be read + sent now, never deferred.
+fn register_pending_runner_report_capture(
+    payload: DeferredRunnerReportCapture,
+) -> Result<u64, DeferredRunnerReportCapture> {
+    let mut registry = pending_runner_report_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if registry.shutting_down {
+        return Err(payload);
+    }
+    let id = RUNNER_REPORT_DEFERRAL_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+    registry.items.push((id, payload));
+    Ok(id)
+}
+
+/// Claim one pending capture. Returns `None` when a teardown flush already took it,
+/// which is what makes a deferral resolve EXACTLY once.
+fn take_pending_runner_report_capture(id: u64) -> Option<DeferredRunnerReportCapture> {
+    let mut registry = pending_runner_report_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let index = registry
+        .items
+        .iter()
+        .position(|(pending_id, _)| *pending_id == id)?;
+    Some(registry.items.remove(index).1)
+}
+
+/// Arm the shutdown latch AND drain every in-flight capture in one locked step, so
+/// no registration can slip in between the arm and the drain.
+fn arm_shutdown_and_drain_pending_runner_report_captures() -> Vec<DeferredRunnerReportCapture> {
+    let mut registry = pending_runner_report_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry.shutting_down = true;
+    registry
+        .items
+        .drain(..)
+        .map(|(_, payload)| payload)
+        .collect()
+}
+
+/// Test-only: clear the registry and disarm the shutdown latch so each test that
+/// exercises the shared static starts from a known state.
+#[cfg(test)]
+fn reset_pending_runner_report_registry_for_test() {
+    let mut registry = pending_runner_report_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry.shutting_down = false;
+    registry.items.clear();
+}
+
+/// Read this generation's crash-surviving Node report from `report_dir` (which the
+/// read REMOVES, bounding disk) and apply its verdict to the held-back payload's
+/// tags — the SAME read_runner_diagnostic_report + apply_report_to_fault_tags the
+/// fault worker and the manual route use, so a report-derived class still never
+/// overrides a stderr-derived one and the three seams can never drift. Shared by the
+/// deferred worker and the recording test double so both observe the same result.
+fn apply_deferred_runner_report(report_dir: &Path, tags: &mut Vec<(String, String)>) {
+    let report = read_runner_diagnostic_report(report_dir);
+    apply_report_to_fault_tags(tags, &report);
+}
+
+/// Read a held-back non-fault capture's report, apply its verdict, and send it.
+fn send_deferred_runner_report_capture(mut payload: DeferredRunnerReportCapture) {
+    apply_deferred_runner_report(&payload.report_dir, &mut payload.tags);
+    let fingerprint: Vec<&str> = payload.fingerprint.iter().map(String::as_str).collect();
+    let tags: Vec<(&str, String)> = payload
+        .tags
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let extras: Vec<(&str, sentry::protocol::Value)> = payload
+        .extras
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let mut effects = ProductionWatcherProcessEffects;
+    effects.capture(&payload.message, &fingerprint, &tags, &extras);
+}
+
+/// Hand a non-fault capture to a bounded worker that reads its report OFF the exit
+/// path and sends it. If a teardown flush already armed the latch, read + send now
+/// instead of deferring into an abandoned registry. A teardown flush that arrives
+/// before the worker claims the payload sends it (with the same read) exactly once —
+/// `take` is exactly-once, so the report is never read or the directory removed
+/// twice. std thread (not a tokio task): nothing awaits it and the exit callback has
+/// already returned.
+fn spawn_deferred_runner_report_capture(payload: DeferredRunnerReportCapture) {
+    let id = match register_pending_runner_report_capture(payload) {
+        Ok(id) => id,
+        Err(payload) => {
+            send_deferred_runner_report_capture(payload);
+            return;
+        }
+    };
+    let _worker = std::thread::spawn(move || {
+        // Claim send-rights EXACTLY once. If a teardown flush already claimed it, this
+        // is a no-op — the flush read + sent it and removed the directory.
+        if let Some(payload) = take_pending_runner_report_capture(id) {
+            send_deferred_runner_report_capture(payload);
+        }
+    });
+}
+
+/// Emit every deferred runner-report capture still in flight, IMMEDIATELY, reading
+/// each report first (a bounded local-file read — fast even at teardown, unlike the
+/// fault path's Event Log read, so the measured verdict still reaches the wire). Both
+/// exit teardowns (app-initiated quit and Windows session end) call this so a
+/// measured non-fault crash is never lost to the deferral horizon. Bounded and
+/// panic-free — it drains a vector and reads one small file per entry, doing no
+/// Event Log work, so it adds no uncapped work to a teardown that may run inside a
+/// Windows window procedure.
+pub fn flush_pending_runner_report_captures(reason: &str) -> usize {
+    let pending = arm_shutdown_and_drain_pending_runner_report_captures();
+    let flushed = pending.len();
+    for payload in pending {
+        send_deferred_runner_report_capture(payload);
+    }
+    if flushed > 0 {
+        log(
+            "daemon",
+            &format!("flushed {flushed} deferred runner-report capture(s) at {reason}"),
+        );
+    }
+    flushed
+}
+
 /// Overwrite (or insert) one tag in a held-back payload's tag list.
 fn set_payload_tag(tags: &mut Vec<(String, String)>, key: &str, value: String) {
     match tags.iter().position(|(existing, _)| existing == key) {
@@ -2722,7 +3380,12 @@ trait WatcherProcessEffects {
     fn set_lifecycle_state(&mut self, next: WatchDaemonState, category: DaemonFailureCategory);
     fn watcher_exit_diagnostics(
         &self,
-    ) -> (Option<Duration>, Option<u64>, Option<Duration>, Option<RssSampleKind>);
+    ) -> (
+        Option<Duration>,
+        Option<u64>,
+        Option<Duration>,
+        Option<RssSampleKind>,
+    );
     fn log(&mut self, target: &str, message: &str);
     fn add_breadcrumb(&mut self, category: &str, level: sentry::Level, message: String);
     fn capture(
@@ -2755,6 +3418,18 @@ trait WatcherProcessEffects {
         extras: &[(&str, sentry::protocol::Value)],
         read: WatcherFaultDeferredRead,
     );
+    /// Hold this NON-fault capture back while a bounded worker reads the requested
+    /// crash-surviving Node report OFF the terminal callback (HQ-DESKTOP-66), applies
+    /// its measured verdict to the tags, and sends. A teardown flush may preempt it
+    /// and read + send inline. Never cancels a capture on its own.
+    fn defer_runner_report_capture(
+        &mut self,
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+        report_dir: PathBuf,
+    );
 }
 
 struct ProductionWatcherProcessEffects;
@@ -2786,7 +3461,12 @@ impl WatcherProcessEffects for ProductionWatcherProcessEffects {
 
     fn watcher_exit_diagnostics(
         &self,
-    ) -> (Option<Duration>, Option<u64>, Option<Duration>, Option<RssSampleKind>) {
+    ) -> (
+        Option<Duration>,
+        Option<u64>,
+        Option<Duration>,
+        Option<RssSampleKind>,
+    ) {
         watcher_exit_diagnostics()
     }
 
@@ -2861,6 +3541,23 @@ impl WatcherProcessEffects for ProductionWatcherProcessEffects {
             tags,
             extras,
             read,
+        ));
+    }
+
+    fn defer_runner_report_capture(
+        &mut self,
+        message: &str,
+        fingerprint: &[&str],
+        tags: &[(&str, String)],
+        extras: &[(&str, sentry::protocol::Value)],
+        report_dir: PathBuf,
+    ) {
+        spawn_deferred_runner_report_capture(DeferredRunnerReportCapture::new(
+            message,
+            fingerprint,
+            tags,
+            extras,
+            report_dir,
         ));
     }
 }
@@ -2942,7 +3639,7 @@ fn handle_watcher_exit(
     watcher_command: &str,
     last_stderr: Option<&str>,
     context: &WatcherExitCaptureContext,
-) {
+) -> RunnerReportDirDisposition {
     let mut effects = ProductionWatcherProcessEffects;
     handle_watcher_exit_with_effects(
         &mut effects,
@@ -2954,7 +3651,7 @@ fn handle_watcher_exit(
         last_stderr,
         current_termination_host(),
         context,
-    );
+    )
 }
 
 fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
@@ -2967,11 +3664,11 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
     last_stderr: Option<&str>,
     host: TerminationHost,
     context: &WatcherExitCaptureContext,
-) {
+) -> RunnerReportDirDisposition {
     if cancelled {
         // Deliberate stop path already recorded lifecycle.
         effects.reset_exec_not_runnable_failure_streak();
-        return;
+        return RunnerReportDirDisposition::DeleteOnExitPath;
     }
 
     if context.attributed_to_app_teardown(code, signal) {
@@ -2982,16 +3679,19 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         // recorded the lifecycle transition, so this is not a new event, not a
         // lifecycle change, and never references the stall in-flight flag.
         effects.reset_exec_not_runnable_failure_streak();
-        return;
+        return RunnerReportDirDisposition::DeleteOnExitPath;
     }
 
     if !is_unexpected_watcher_exit(success, signal, cancelled) {
         effects.reset_exec_not_runnable_failure_streak();
         effects.set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
-        return;
+        return RunnerReportDirDisposition::DeleteOnExitPath;
     }
 
-    let consecutive = effects.note_watcher_crashed();
+    // The capture policy is a pure function of the exit shape and the exit-time
+    // session-end evidence, so it is decided BEFORE the crash streak is touched.
+    // That ordering is what lets a deferred session-terminate skip the streak
+    // entirely in the branch below.
     let capture_policy = if is_benign_watcher_exit(code, signal)
         || context.attributed_to_disk_exhaustion(code, signal)
         || context.attributed_to_file_lock(code, signal)
@@ -3000,7 +3700,7 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         // condition the user fixes, never an actionable watcher crash. Route it to
         // LocalLogOnly — the same non-capturing outcome the manual route's
         // `DiskFull` / `FileLocked` dispositions produce — so the two boundaries
-        // stay in lockstep. Still counted toward the crash streak above so the
+        // stay in lockstep. Still counted toward the crash streak below so the
         // respawn stays paced while the condition persists.
         WatcherExitCapturePolicy::LocalLogOnly
     } else {
@@ -3011,6 +3711,45 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
             context.session_end_latch,
         )
     };
+
+    // Step 4a. A `DBG_TERMINATE_PROCESS` (0x40010004) watcher exit the observer
+    // could not yet attribute is presumptively a Windows session end — an
+    // externally-supplied termination the child cannot produce itself, not a
+    // watcher failure. It must NOT advance the consecutive-failure streak (which
+    // produces the "consecutive failure #N" text and drives respawn backoff) nor
+    // the slow-death episode streak. Its escalation is governed instead by the
+    // per-run unconfirmed counter, advanced at deferral resolution once the grace
+    // has proven no session end occurred. The held payload is still built
+    // byte-for-byte as an immediate capture would have sent it, so the escalation
+    // path loses nothing.
+    if capture_policy == WatcherExitCapturePolicy::DeferSessionEndDecision {
+        effects.reset_exec_not_runnable_failure_streak();
+        // Presumptively benign: no crash category, and no backoff is armed, so the
+        // daemon reports a clean stop rather than a crash the user never had.
+        effects.set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+        // The counts passed here are cosmetic for a deferral: the held message is
+        // either dropped or re-titled at resolution. `#1` keeps the held payload
+        // identical to an immediate capture's (the escalation path reuses it), and
+        // `1` is a capture milestone so the deferral is always registered —
+        // resolution, never a pre-send rate limiter, makes the drop/escalate call.
+        return record_unexpected_watcher_exit(
+            effects,
+            code,
+            signal,
+            1,
+            1,
+            capture_policy,
+            watcher_command,
+            last_stderr,
+            host,
+            context,
+        );
+    }
+
+    // Every other unexpected exit is a genuine watcher failure (or an
+    // environmental LocalLogOnly). Count it — which also breaks any run of
+    // unconfirmed session-terminate exits — and record it exactly as before.
+    let consecutive = effects.note_watcher_crashed();
     let policy_consecutive =
         effects.note_watcher_capture_policy_streak(capture_policy, consecutive);
     // Evidence-gated memory attribution also drives the user-facing failure
@@ -3045,7 +3784,7 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         last_stderr,
         host,
         context,
-    );
+    )
 }
 
 /// Compute evidence-gated memory-exhaustion attribution for a watcher exit. Any
@@ -3074,9 +3813,9 @@ fn watcher_memory_exhaustion_evidence<E: WatcherProcessEffects>(
     // declared default this is exactly WATCHER_FOOTPRINT_CEILING_MB, so the 5.9GB
     // OS-kill case is unchanged).
     let heap_ceiling_mb = hq_desktop_core::daemon::effective_runner_heap_ceiling().mb;
-    let footprint_ceiling_kb = u64::from(
-        hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb),
-    ) * 1024;
+    let footprint_ceiling_kb =
+        u64::from(hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb))
+            * 1024;
     MemoryExhaustionEvidence {
         heap_oom_class,
         // Only a COMPARABLE whole-tree sample counts — a shim/withheld footprint is
@@ -3101,7 +3840,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     last_stderr: Option<&str>,
     host: TerminationHost,
     context: &WatcherExitCaptureContext,
-) {
+) -> RunnerReportDirDisposition {
     if capture_policy == WatcherExitCapturePolicy::LocalLogOnly {
         if code == Some(WINDOWS_SESSION_TERMINATE_EXIT)
             && signal.is_none()
@@ -3197,7 +3936,9 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 ),
             );
         }
-        return;
+        // A LocalLogOnly exit sends no capture, so no deferred reader owns a report
+        // directory; the exit callback removes any that was requested.
+        return RunnerReportDirDisposition::DeleteOnExitPath;
     }
 
     if !should_capture_watcher_exit(capture_policy, policy_consecutive) {
@@ -3218,7 +3959,9 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 ),
             );
         }
-        return;
+        // A rate-limited capture is not sent, so no deferred reader owns a report
+        // directory; the exit callback removes any that was requested.
+        return RunnerReportDirDisposition::DeleteOnExitPath;
     }
 
     let (uptime, rss_kb, rss_age, rss_kind) = effects.watcher_exit_diagnostics();
@@ -3311,19 +4054,19 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let last_stderr_signature = last_stderr
         .map(classify_runner_fatal_signature)
         .filter(|signature| signature.class.seen());
-    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) =
-        match last_stderr_signature {
-            Some(signature) => (
-                signature.class.as_str().to_string(),
-                signature.syscall.map(|syscall| syscall.to_string()),
-                signature.errno,
-            ),
-            None => (
-                context.runner_fatal_class.clone(),
-                context.runner_fatal_syscall.clone(),
-                context.runner_fatal_errno,
-            ),
-        };
+    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) = match last_stderr_signature
+    {
+        Some(signature) => (
+            signature.class.as_str().to_string(),
+            signature.syscall.map(|syscall| syscall.to_string()),
+            signature.errno,
+        ),
+        None => (
+            context.runner_fatal_class.clone(),
+            context.runner_fatal_syscall.clone(),
+            context.runner_fatal_errno,
+        ),
+    };
     let runner_fatal_class_seen = runner_fatal_class != "none";
 
     // Assertion identity (HQ-DESKTOP-50), derived from the SAME source as the
@@ -3358,6 +4101,27 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             context.runner_stack_signature.clone(),
         ),
     ];
+    // Windows fatal-reason attribution (this reopen, HQ-DESKTOP-5W). `runner_fatal_source`
+    // names WHERE the fatal class came from — the runner's own stderr when it already
+    // named the class, else `none`; the deferred fault worker upgrades it to `node_report`
+    // when a crash-surviving Node diagnostic report names a cause the stderr channel lost
+    // (the exact 0xC0000409 case). `runner_report_read` is that report's read provenance,
+    // seeded from the request and upgraded by the deferred worker. Both diagnostic-only.
+    tags.push((
+        "runner_fatal_source",
+        if runner_fatal_class_seen { "stderr" } else { "none" }.to_string(),
+    ));
+    tags.push(("runner_report_read", context.runner_report_read.clone()));
+    // Report-directory delivery provenance (HQ-DESKTOP-5W): how the per-generation
+    // report directory was delivered to the child (env_escaped on the production npx
+    // path, env_and_argv on the bare-`node` path, disabled_by_user_options, or
+    // not_requested). Makes a `report_absent` recurrence decisive — a correctly-armed
+    // channel that still wrote nothing vs. a channel that never reached Node. Fixed
+    // vocabulary, re-validated at the telemetry egress; diagnostic-only.
+    tags.push((
+        "runner_report_dir_delivery",
+        context.runner_report_dir_delivery.clone(),
+    ));
     // Name the terminating signal's disposition as a fixed, closed-vocabulary
     // token so a signal-only watcher exit — e.g. a macOS SIGHUP — is filterable in
     // Sentry without parsing the message text. Always present (`none` for a
@@ -3396,6 +4160,16 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     tags.push((
         "watcher_job_process_count",
         context.watcher_job_process_count.clone(),
+    ));
+    // Shim-vs-runner discriminator (HQ-DESKTOP-66): the images of the watcher Job
+    // Object's processes STILL LIVE at the exit boundary. Always present — a closed
+    // vocabulary whose `unavailable` (no query) and `none` (query ran, zero live)
+    // stay distinct — so a 0xFFFFFFFF exit says whether the Node runner outlived the
+    // cmd.exe shim (an orphaned-runner bug) or the tree died together. The bare
+    // survivor count rides an extra below. Diagnostic-only; never gates capture.
+    tags.push((
+        "watcher_job_survivors",
+        context.watcher_job_survivors.clone(),
     ));
     tags.push((
         "watcher_child_kind",
@@ -3507,6 +4281,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     if let Some(signature) = &context.runner_error_cause_signature {
         tags.push(("runner_error_cause_signature", signature.clone()));
     }
+    // Route parity: the unknown_unnamed residual axes (HQ-DESKTOP-61/62) ride the same
+    // capture from the same shared RunTotals source as the manual seam, pushed only
+    // when present, so a seam can never silently skip them.
+    if let Some(profiles) = &context.runner_error_unknown_profiles {
+        tags.push(("runner_error_unknown_profiles", profiles.clone()));
+    }
+    if let Some(signature) = &context.runner_error_residual_signature {
+        tags.push(("runner_error_residual_signature", signature.clone()));
+    }
     // Route parity: the runner error SITE axis (HQ-DESKTOP-5M) from the same shared
     // rollup as the manual seam, pushed only when a runner error was recorded.
     if let Some(sites) = &context.runner_error_sites {
@@ -3543,6 +4326,15 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         "runner_heap_ceiling_mb",
         sentry::protocol::Value::Number(heap_ceiling.mb.into()),
     ));
+    // The bare live-process count for the survivor discriminator (HQ-DESKTOP-66),
+    // present only when the live-PID query ran; absent for a withheld/failed query so
+    // it never renders a misleading 0 against the `unavailable` token.
+    if let Some(count) = context.watcher_job_survivor_count {
+        extras.push((
+            "watcher_job_survivor_count",
+            sentry::protocol::Value::Number(count.into()),
+        ));
+    }
     // Preserve the RAW host token whenever it is overridden — by the abort
     // normalization OR by memory-exhaustion convergence — so the original
     // signal:9 / abort:sigabrt / windows:fault:… is never lost.
@@ -3585,7 +4377,9 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             ),
         );
         effects.defer_session_end_capture(&message, &fingerprint, &tags, &extras);
-        return;
+        // A session-end deferral does not read the report; the exit callback cleans
+        // this generation's report directory.
+        return RunnerReportDirDisposition::DeleteOnExitPath;
     }
     // A Windows fault exit whose OS fault read was deferred off the terminal
     // callback (HQ-DESKTOP-4X): hand the fully-built payload to the deferred
@@ -3596,10 +4390,38 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // and unchanged — only WHEN this event is sent and WHAT provenance it carries
     // differ from an immediate send.
     if let Some(read) = &context.watcher_fault_deferred_read {
+        // The fault worker reads the diagnostic report (and removes its directory)
+        // only when one was requested for this generation; otherwise the exit
+        // callback must clean the directory.
+        let owns_report_dir = read.report_dir.is_some();
         effects.defer_watcher_fault_capture(&message, &fingerprint, &tags, &extras, read.clone());
-        return;
+        return if owns_report_dir {
+            RunnerReportDirDisposition::OwnedByDeferredReader
+        } else {
+            RunnerReportDirDisposition::DeleteOnExitPath
+        };
+    }
+    // A NON-fault watcher exit that requested a report (the 0xFFFFFFFF indeterminate
+    // status, HQ-DESKTOP-66): the fault worker never runs for it, so DEFER the send to
+    // a bounded worker that reads the report OFF the exit path, applies its measured
+    // verdict, removes the directory, and sends. The read makes runner_report_read a
+    // MEASUREMENT (report_read / report_absent / report_unreadable) instead of the
+    // pre-read seed, and — when a report names a cause the stderr channel lost — adopts
+    // runner_fatal_class / runner_stack_signature with runner_fatal_source=node_report.
+    if let Some(report_dir) = &context.runner_report_deferred_dir {
+        effects.defer_runner_report_capture(
+            &message,
+            &fingerprint,
+            &tags,
+            &extras,
+            report_dir.clone(),
+        );
+        return RunnerReportDirDisposition::OwnedByDeferredReader;
     }
     effects.capture(&message, &fingerprint, &tags, &extras);
+    // No report was requested for this exit, so no deferred reader owns a directory;
+    // the exit callback removes any (user-disabled) directory it finds.
+    RunnerReportDirDisposition::DeleteOnExitPath
 }
 
 /// Context is constructed from the core's closed-vocabulary rollup. Keep this
@@ -4170,6 +4992,27 @@ enum RssSampleKind {
     Single,
 }
 
+/// A scoped RSS sample plus, for a comparable whole-tree (`Tree`) sample, the
+/// bounded decomposition a supervisor pre-empt attributes with: how many
+/// processes summed into the total and the largest single member. Both are `None`
+/// for a `Single`-PID fallback (and on the Windows job path, which cannot cheaply
+/// decompose its working-set sum) so a withheld number is never dressed up as a
+/// decomposed tree. The tree RSS sum is an upper bound (shared pages counted per
+/// PID), so the largest-member and PID-count fields are what let a single large
+/// runner be told apart from many processes summing to the same total.
+#[derive(Debug, Clone, Copy)]
+struct ScopedRssSample {
+    kb: u64,
+    kind: RssSampleKind,
+    tree_pid_count: Option<u32>,
+    tree_largest_member_kb: Option<u64>,
+    /// The PID of the largest single tree member, for a comparable `Tree` sample on
+    /// a platform with a live-signal report path (POSIX). The supervisor signals
+    /// this PID for a memory-class decomposition just before a footprint pre-empt
+    /// (HQ-DESKTOP-60). `None` for a `Single` fallback and on the Windows job path.
+    tree_largest_member_pid: Option<u32>,
+}
+
 /// Shared crash-loop state across the spawn (`start_daemon`), the watcher Exit
 /// handler, and the supervisor.
 #[derive(Default)]
@@ -4216,6 +5059,16 @@ struct WatcherCrashState {
     /// decision so a single spike never pre-empts a healthy pull. Reset on a fresh
     /// spawn and once a generation is confirmed recovered.
     footprint_over_ceiling_streak: u32,
+    /// Count of UNCONFIRMED `DBG_TERMINATE_PROCESS` (0x40010004) watcher exits that
+    /// have resolved in a row within this app run — i.e. session-terminate exits
+    /// the grace could not attribute to a real session end. The first per run is
+    /// the benign Windows sign-out signature and stays silent; a second escalates
+    /// (see [`unconfirmed_session_terminate_escalates`]). Advanced only at deferral
+    /// resolution (where "unconfirmed" is known), and reset to 0 on app/process
+    /// start, on a confirmed session end, and on any other unexpected watcher exit
+    /// — so it measures a true uninterrupted run of externally-supplied
+    /// terminations, never spanning an ordinary crash.
+    session_terminate_unconfirmed_run: u32,
 }
 
 static CRASH_STATE: OnceLock<Mutex<WatcherCrashState>> = OnceLock::new();
@@ -4252,6 +5105,14 @@ fn note_runner_preflight_failure() -> u32 {
 /// consecutive-failure count so the caller can decide whether to capture.
 fn note_watcher_crashed() -> u32 {
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    // Any ordinary unexpected exit breaks a run of unconfirmed session-terminate
+    // exits (an OS-supplied termination is only benign as a lone per-run event;
+    // a real crash in between means the next session-terminate starts a fresh
+    // run). Session-terminate deferrals never reach this function — they take the
+    // no-streak-advance branch in `handle_watcher_exit_with_effects` — so this
+    // reset only ever fires on a genuinely different exit or a confirmed session
+    // end (the observed/LocalLogOnly arm).
+    st.session_terminate_unconfirmed_run = 0;
     let ran = st.spawn_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
     // Exit-path episode recovery, mirroring the supervisor's live reset: if THIS
     // generation itself survived `HEALTHY_RUN_WINDOW` before dying, the episode has
@@ -4325,6 +5186,27 @@ fn reset_exec_not_runnable_failure_streak() {
         .exec_not_runnable_consecutive = 0;
 }
 
+/// Advance and return the per-app-run count of UNCONFIRMED session-terminate
+/// watcher exits, INCLUDING this one (1-based). Called at deferral resolution
+/// once the grace has proven the exit carried no positive session-end evidence,
+/// so the pure [`unconfirmed_session_terminate_escalates`] predicate can decide
+/// whether this repeat escalates.
+fn bump_session_terminate_unconfirmed_run() -> u32 {
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    st.session_terminate_unconfirmed_run = st.session_terminate_unconfirmed_run.saturating_add(1);
+    st.session_terminate_unconfirmed_run
+}
+
+/// Reset the per-app-run unconfirmed session-terminate run counter. Called at
+/// deferral resolution when the grace confirmed a real session end, so a
+/// confirmed sign-out/shutdown starts the next run's count fresh at zero.
+fn reset_session_terminate_unconfirmed_run() {
+    crash_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .session_terminate_unconfirmed_run = 0;
+}
+
 /// Apply the same exponential retry dampening when a preflight positively
 /// identifies a local npm/cache setup failure. No watcher was spawned, so it
 /// must not create a Sentry event; the backoff merely prevents the supervisor
@@ -4353,10 +5235,24 @@ fn note_watcher_rss(kb: u64, kind: RssSampleKind) {
 /// sample resets the streak so a single spike never pre-empts (HQ-DESKTOP
 /// watcher-memory cluster). Best-effort: never changes whether a crash is
 /// captured.
-fn note_watcher_footprint_and_decide(
-    kb: u64,
-    kind: RssSampleKind,
-) -> hq_desktop_core::daemon::FootprintCeilingDecision {
+/// The outcome of feeding a supervisor footprint sample into the pure decision:
+/// whether to pre-empt, plus the PRIOR comparable sample (KB) and its age (secs)
+/// so a pre-empt capture can attribute the measured growth that drove it.
+struct FootprintDecisionOutcome {
+    decision: hq_desktop_core::daemon::FootprintCeilingDecision,
+    prev_comparable_sample_kb: Option<u64>,
+    sample_gap_secs: Option<u64>,
+    /// Seconds to wait before the NEXT footprint sample this tick, from the adaptive
+    /// cadence (HQ-DESKTOP-60). Base 30s when growth is absent or slow; shortens
+    /// toward the floor as the measured runaway rate rises, so a fast runaway is
+    /// caught mid-tick instead of racing the OS across a fixed 30s gap.
+    next_sample_delay_secs: u64,
+    /// Why the rate-aware projection did or did not arm on this sample, so a pre-empt
+    /// capture can attribute the decision on the wire (HQ-DESKTOP-60).
+    arm_reason: hq_desktop_core::daemon::WatcherProjectionArmReason,
+}
+
+fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisionOutcome {
     // The footprint backstop must sit above the runner's declared heap ceiling, so
     // a raised heap override (HQ_SYNC_RUNNER_MAX_OLD_SPACE_MB or a user
     // --max-old-space-size above the default) is never throttled below the heap it
@@ -4365,17 +5261,221 @@ fn note_watcher_footprint_and_decide(
     let ceiling_kb = u64::from(
         hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb),
     ) * 1024;
-    let comparable = kind == RssSampleKind::Tree;
+    // The declared V8 old-space ceiling gates the rate-aware projection: it may only
+    // fire once the footprint exceeds this, so a cold heap-bounded ramp is never
+    // projected away (the 2,776 MB-against-3,584 MB false kill, HQ-DESKTOP-60).
+    let heap_ceiling_kb = u64::from(heap_ceiling_mb) * 1024;
+    let comparable = sample.kind == RssSampleKind::Tree;
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    // Read the PRIOR sample BEFORE note_watcher_rss overwrites last_rss_* for this
+    // tick, so the projection measures the growth from the previous comparable
+    // sample to this one. Only a prior COMPARABLE (Tree) sample can seed the rate;
+    // a prior Single/withheld sample is not comparable, so it seeds no projection.
+    let prev_comparable_sample_kb = match st.last_rss_kind {
+        Some(RssSampleKind::Tree) => st.last_rss_kb,
+        _ => None,
+    };
+    let sample_gap_secs = st.last_rss_at.map(|t| t.elapsed().as_secs());
+    // Build the projection AND the next-sample delay together: the projection's
+    // look-ahead horizon is set to that same delay, so it extrapolates exactly the
+    // gap it is covering rather than a fixed 30s (matched horizon, HQ-DESKTOP-60).
+    let (projection, next_sample_delay_secs) =
+        hq_desktop_core::daemon::footprint_projection_and_next_delay(
+            sample.kb,
+            comparable,
+            prev_comparable_sample_kb,
+            sample_gap_secs,
+            heap_ceiling_kb,
+            // The largest single tree member gates the re-scoped projection arm: the
+            // whole-tree sum is never compared against a single-process cap
+            // (HQ-DESKTOP-60). `None` on a Single/withheld sample keeps the arm inert.
+            sample.tree_largest_member_kb,
+            SUPERVISOR_INTERVAL.as_secs(),
+            hq_desktop_core::daemon::WATCHER_FOOTPRINT_MIN_WATCH_SECS,
+        );
     let (streak, decision) = hq_desktop_core::daemon::footprint_ceiling_step(
-        Some(kb),
+        Some(sample.kb),
         comparable,
         ceiling_kb,
         st.footprint_over_ceiling_streak,
         hq_desktop_core::daemon::WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+        projection,
     );
+    // Classify WHY the projection did or did not arm, from the same inputs the
+    // decision used, so a pre-empt capture ships the re-scoped gate's verdict.
+    let arm_reason =
+        hq_desktop_core::daemon::projection_arm_reason(Some(sample.kb), comparable, projection);
     st.footprint_over_ceiling_streak = streak;
-    decision
+    FootprintDecisionOutcome {
+        decision,
+        prev_comparable_sample_kb,
+        // Report a gap only when there was a usable prior comparable sample.
+        sample_gap_secs: prev_comparable_sample_kb.and(sample_gap_secs),
+        next_sample_delay_secs,
+        arm_reason,
+    }
+}
+
+/// Bounded evidence a supervisor pre-empt attributes with: the current whole-tree
+/// footprint, its decomposition (PID count + largest member, when the sample was a
+/// comparable tree), and the prior comparable sample + its age so the growth rate
+/// that drove the pre-empt can be reconstructed. Every field is a bounded integer;
+/// `None` degrades to a content-safe `unknown`/empty sentinel, never a guess.
+struct SupervisorPreemptEvidence {
+    footprint_kb: u64,
+    tree_pid_count: Option<u32>,
+    tree_largest_member_kb: Option<u64>,
+    prev_sample_kb: Option<u64>,
+    gap_secs: Option<u64>,
+    /// Live memory-class decomposition read from a signal-triggered Node diagnostic
+    /// report just before this pre-empt (HQ-DESKTOP-60), naming the memory class the
+    /// tree total alone could not. Empty (all `None`) when no report was readable.
+    memory_class: hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    /// Why the memory-class decomposition is or is not present — a fixed-vocabulary
+    /// token so an absent report degrades honestly instead of guessing.
+    memory_class_source: hq_desktop_core::daemon::WatcherMemoryClassSource,
+    /// Why the rate-aware projection did or did not arm on the pre-empt sample — the
+    /// re-scoped gate's verdict, so a pre-empt is self-describing on the wire
+    /// (HQ-DESKTOP-60).
+    projection_arm_reason: hq_desktop_core::daemon::WatcherProjectionArmReason,
+}
+
+/// Hard ceiling on how long a supervisor pre-empt waits for a signal-triggered Node
+/// diagnostic report before giving up and terminating anyway (HQ-DESKTOP-60). The
+/// report is strictly best-effort: it never delays the terminate beyond this window.
+/// Unix-only — Windows has no live-signal report path.
+#[cfg(unix)]
+const SUPERVISOR_MEMORY_REPORT_WAIT: Duration = Duration::from_secs(2);
+
+/// Poll interval while waiting for the signal-triggered report to appear. Unix-only.
+#[cfg(unix)]
+const SUPERVISOR_MEMORY_REPORT_POLL: Duration = Duration::from_millis(50);
+
+/// Poll a report path to a hard `deadline` for a FRESH, readable memory-class
+/// decomposition, factored out of [`resolve_watcher_memory_class`] so the bounded
+/// read discipline is unit-testable without signalling a live PID (HQ-DESKTOP-60).
+/// A fresh-but-INCOMPLETE (mid-write) report is retried to the deadline rather than
+/// recorded as terminally unreadable — r1's bug, which lost the decomposition on
+/// 100% of post-fix occurrences. It ends early ONLY on a present class
+/// (`report_read`) or a COMPLETE document with no class (`report_unreadable`); a
+/// report that appeared but never completed within the window degrades to
+/// `report_never_completed`, distinct from one that never appeared (`report_absent`).
+/// Never blocks past `deadline`.
+#[cfg(unix)]
+fn read_fresh_memory_class_within(
+    report_path: &Path,
+    before: Option<SystemTime>,
+    deadline: Instant,
+) -> (
+    hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClassSource,
+) {
+    use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
+    use hq_desktop_core::runner_diagnostic_report::{
+        parse_runner_report_memory_class, runner_report_is_complete, RunnerReportMemoryClass,
+    };
+    let mut saw_fresh = false;
+    while Instant::now() < deadline {
+        if let Ok(meta) = std::fs::metadata(report_path) {
+            let modified = meta.modified().ok();
+            let is_fresh = match (before, modified) {
+                (Some(b), Some(m)) => m > b,
+                (None, Some(_)) => true,
+                _ => false,
+            };
+            if is_fresh {
+                saw_fresh = true;
+                if let Ok(bytes) = std::fs::read(report_path) {
+                    let mc = parse_runner_report_memory_class(&bytes);
+                    if mc.is_present() {
+                        // The report carried a memory class: done.
+                        return (mc, Src::ReportRead);
+                    }
+                    if runner_report_is_complete(&bytes) {
+                        // A COMPLETE document with no memory class: honestly empty, and
+                        // retrying will not help.
+                        return (RunnerReportMemoryClass::default(), Src::ReportUnreadable);
+                    }
+                    // Fresh but still mid-write: re-poll to the deadline.
+                }
+                // A transient read error is treated the same as still-being-written.
+            }
+        }
+        thread::sleep(SUPERVISOR_MEMORY_REPORT_POLL);
+    }
+    // The window closed. A fresh report that appeared but never completed is distinct
+    // from one that never appeared at all.
+    if saw_fresh {
+        (RunnerReportMemoryClass::default(), Src::ReportNeverCompleted)
+    } else {
+        (RunnerReportMemoryClass::default(), Src::ReportAbsent)
+    }
+}
+
+/// Best-effort: signal the largest tree member for a LIVE Node diagnostic report and
+/// read the memory-class decomposition it writes, so a footprint pre-empt can NAME
+/// the memory class the tree total alone could not (HQ-DESKTOP-60). Strictly bounded
+/// by [`SUPERVISOR_MEMORY_REPORT_WAIT`] and best-effort: it never blocks the
+/// terminate beyond that window and degrades to a fixed-vocabulary source token when
+/// no report is readable. The report shares the fixed fatal filename, so a
+/// Signal-triggered report is refused as a fatal cause by the exit reader
+/// (`classify_report_fatal`), protecting HQ-DESKTOP-5W.
+#[cfg(unix)]
+fn resolve_watcher_memory_class(
+    sample: &ScopedRssSample,
+    generation: u64,
+) -> (
+    hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClassSource,
+) {
+    use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
+    use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass;
+    // Only a comparable tree sample yields a member PID to signal.
+    let Some(pid) = sample.tree_largest_member_pid.filter(|p| *p != 0) else {
+        return (RunnerReportMemoryClass::default(), Src::ReportAbsent);
+    };
+    let Some(report_dir) = hq_desktop_core::daemon::runner_report_dir("watcher", generation) else {
+        return (RunnerReportMemoryClass::default(), Src::ReportNotRequested);
+    };
+    let report_path =
+        report_dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME);
+    // The report's modification time BEFORE signalling, so a fresh signal report is
+    // told apart from any stale file at the shared filename.
+    let before = std::fs::metadata(&report_path)
+        .and_then(|m| m.modified())
+        .ok();
+    // Send Node's report signal (default SIGUSR2) to the largest member. Best-effort:
+    // an ESRCH (already exited) or EPERM just degrades to ReportAbsent.
+    let signalled = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGUSR2,
+    )
+    .is_ok();
+    if !signalled {
+        return (RunnerReportMemoryClass::default(), Src::ReportAbsent);
+    }
+    // Poll for a FRESH report to the hard-bounded deadline; never block beyond it.
+    // The bounded read discipline (retry a mid-write report, name a never-completed
+    // one honestly) lives in the unit-testable helper.
+    let deadline = Instant::now() + SUPERVISOR_MEMORY_REPORT_WAIT;
+    read_fresh_memory_class_within(&report_path, before, deadline)
+}
+
+/// Windows (and any non-signal platform) has no live-signal report path, so the
+/// memory-class decomposition is withheld with the unsupported-platform sentinel,
+/// mirroring how the Windows job path already withholds the tree decomposition.
+#[cfg(not(unix))]
+fn resolve_watcher_memory_class(
+    _sample: &ScopedRssSample,
+    _generation: u64,
+) -> (
+    hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClassSource,
+) {
+    (
+        hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass::default(),
+        hq_desktop_core::daemon::WatcherMemoryClassSource::ReportUnsupportedPlatform,
+    )
 }
 
 /// Record a supervisor footprint pre-empt as an attributed memory-exhaustion
@@ -4389,7 +5489,7 @@ fn note_watcher_footprint_and_decide(
 /// OS-kill. Content-safe: message is static, the fingerprint is the converged
 /// token, and every tag/extra is a bounded value the reactive emit path already
 /// sends (no command bytes, paths, or stderr).
-fn record_supervisor_memory_preempt(footprint_kb: u64) {
+fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
     let mut effects = ProductionWatcherProcessEffects;
     // Count the crash episode and set the respawn backoff exactly as an ordinary
     // crash exit would — the suppressed pre-empt exit never will.
@@ -4400,8 +5500,12 @@ fn record_supervisor_memory_preempt(footprint_kb: u64) {
         footprint_at_or_above_ceiling: true,
         supervisor_preempt: true,
     };
-    let fingerprint_token =
-        watcher_termination_fingerprint_token(None, None, current_termination_host(), memory_evidence);
+    let fingerprint_token = watcher_termination_fingerprint_token(
+        None,
+        None,
+        current_termination_host(),
+        memory_evidence,
+    );
     let fingerprint = [
         "sync",
         "auto-sync-watcher-termination",
@@ -4413,8 +5517,53 @@ fn record_supervisor_memory_preempt(footprint_kb: u64) {
         "auto-sync watcher pre-empted at declared footprint ceiling \
          (runner memory exhausted), consecutive failure #{consecutive} \
          [footprint {}MB]",
-        footprint_kb / 1024
+        evidence.footprint_kb / 1024
     );
+    // Bounded decomposition (auto-sync watcher footprint growth-rate cluster): the
+    // tree total is an upper bound, so ship the largest single member and the PID
+    // count beside it; the non-heap delta is the tree total minus the declared heap
+    // cap (saturating at 0), which is the ~2.9 GB `--max-old-space-size` cannot
+    // bound; the prior sample, its age, and the growth bucket reconstruct the rate
+    // the pre-empt fired on. Every field is a bounded integer or a fixed token.
+    let footprint_mb = evidence.footprint_kb / 1024;
+    let non_heap_mb = footprint_mb.saturating_sub(u64::from(heap_ceiling.mb));
+    let growth_bucket = match (evidence.prev_sample_kb, evidence.gap_secs) {
+        (Some(prev), Some(gap)) if gap > 0 && evidence.footprint_kb > prev => {
+            let rate_mb_per_sec = ((evidence.footprint_kb - prev) / 1024) / gap;
+            hq_desktop_core::daemon::footprint_growth_bucket_mb_per_sec(rate_mb_per_sec).to_string()
+        }
+        _ => "unknown".to_string(),
+    };
+    let process_count = evidence
+        .tree_pid_count
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let num = |v: u64| sentry::protocol::Value::Number(v.into());
+    // A bounded MB extra from an optional KB sample: an unmeasured value ships as
+    // an empty string (the closed telemetry allow-list accepts `""`), never a guess.
+    let opt_mb = |kb: Option<u64>| match kb {
+        Some(kb) => sentry::protocol::Value::Number((kb / 1024).into()),
+        None => sentry::protocol::Value::String(String::new()),
+    };
+    let opt_secs = |v: Option<u64>| match v {
+        Some(v) => sentry::protocol::Value::Number(v.into()),
+        None => sentry::protocol::Value::String(String::new()),
+    };
+    // A bounded integer extra (already in MB or a plain count) from an optional
+    // measurement: an unmeasured value ships as `""`, never a guess.
+    let opt_int = |v: Option<u64>| match v {
+        Some(v) => sentry::protocol::Value::Number(v.into()),
+        None => sentry::protocol::Value::String(String::new()),
+    };
+    // Named memory-class decomposition (HQ-DESKTOP-60): the JS old-space total/used,
+    // the inferred non-heap excess measured as tree RSS minus the reported JS heap
+    // total (a real measurement, unlike the rss-minus-declared-cap proxy above), and
+    // the active libuv handle count. Absent fields ship as `""`; the source token
+    // records exactly why an empty decomposition is empty.
+    let mc = evidence.memory_class;
+    let inferred_non_heap_mb = mc
+        .js_heap_total_mb
+        .map(|total| footprint_mb.saturating_sub(total));
     let tags = [
         ("sync_route", "watcher".to_string()),
         ("rss_scope", "tree".to_string()),
@@ -4422,15 +5571,134 @@ fn record_supervisor_memory_preempt(footprint_kb: u64) {
             "runner_heap_ceiling_source",
             heap_ceiling.source.as_str().to_string(),
         ),
+        ("watcher_tree_process_count", process_count),
+        ("watcher_footprint_growth_bucket", growth_bucket),
+        (
+            "watcher_memory_class_source",
+            evidence.memory_class_source.as_str().to_string(),
+        ),
+        (
+            "watcher_projection_arm_reason",
+            evidence.projection_arm_reason.as_str().to_string(),
+        ),
     ];
-    let extras = [(
-        "runner_heap_ceiling_mb",
-        sentry::protocol::Value::Number(heap_ceiling.mb.into()),
-    )];
+    let extras = [
+        ("runner_heap_ceiling_mb", num(u64::from(heap_ceiling.mb))),
+        ("watcher_tree_rss_mb", num(footprint_mb)),
+        (
+            "watcher_tree_largest_member_mb",
+            opt_mb(evidence.tree_largest_member_kb),
+        ),
+        ("watcher_tree_non_heap_mb", num(non_heap_mb)),
+        (
+            "watcher_footprint_prev_sample_mb",
+            opt_mb(evidence.prev_sample_kb),
+        ),
+        (
+            "watcher_footprint_sample_gap_secs",
+            opt_secs(evidence.gap_secs),
+        ),
+        ("watcher_js_heap_total_mb", opt_int(mc.js_heap_total_mb)),
+        ("watcher_js_heap_used_mb", opt_int(mc.js_heap_used_mb)),
+        ("watcher_inferred_non_heap_mb", opt_int(inferred_non_heap_mb)),
+        (
+            "watcher_libuv_active_handles",
+            opt_int(mc.libuv_active_handles),
+        ),
+    ];
     // The RunnerMemory lifecycle transition (which retains the category so the app
     // can state background sync stopped and why) is owned by the terminate call
     // that immediately follows this — set here it would only double the breadcrumb.
     effects.capture(&message, &fingerprint, &tags, &extras);
+}
+
+/// Cap on footprint watch slices per supervisor tick, so the in-tick loop is bounded
+/// even if the clock does not advance and the adaptive cadence sits at its floor
+/// (HQ-DESKTOP-60). 30s budget / 2s floor is ~15 slices; 32 leaves headroom.
+const MAX_FOOTPRINT_SLICES_PER_TICK: u32 = 32;
+
+/// One footprint watch SLICE: sample the live runner, feed the pure supervisor
+/// decision, and on a pre-empt record the attributed memory outcome (with a
+/// best-effort live memory-class decomposition) and terminate. Returns whether it
+/// pre-empted (so the tick loop stops) and the adaptive delay until the next slice.
+/// Best-effort throughout — a missing PID, a failed sample, or a withheld/shim
+/// reading simply keeps the runner running on the base cadence.
+fn watch_watcher_footprint_slice(sample_pid: Option<u32>) -> (bool, u64) {
+    let base = SUPERVISOR_INTERVAL.as_secs();
+    let Some(pid) = sample_pid else {
+        return (false, base);
+    };
+    let Some(sample) = sample_watcher_rss_scoped(pid) else {
+        return (false, base);
+    };
+    // Decide BEFORE recording this sample, so the pure projection measures growth
+    // from the PRIOR comparable sample (value + age) to this one, not from this
+    // sample to itself.
+    let footprint = note_watcher_footprint_and_decide(sample);
+    note_watcher_rss(sample.kb, sample.kind);
+    if footprint.decision != hq_desktop_core::daemon::FootprintCeilingDecision::Preempt {
+        return (false, footprint.next_sample_delay_secs);
+    }
+    // Supervisor footprint ceiling breach: the runner is in genuine runaway (well
+    // above any healthy set) and heading for a macOS jetsam SIGKILL or a Windows
+    // commit failure that would destroy the memory evidence. Pre-empt HERE so the
+    // app — not the host — decides the outcome; the existing crash-loop backoff
+    // bounds the respawn cadence.
+    let Some(generation) = generation_for_handle(DAEMON_HANDLE) else {
+        return (false, footprint.next_sample_delay_secs);
+    };
+    log(
+        "daemon.supervisor",
+        "watcher footprint over declared ceiling — pre-empting (runner_memory)",
+    );
+    // Best-effort, hard-bounded live memory-class decomposition BEFORE terminate, so
+    // the pre-empt names the memory class the tree total alone could not.
+    let (memory_class, memory_class_source) = resolve_watcher_memory_class(&sample, generation);
+    // Record the attributed memory outcome and set the respawn backoff BEFORE the
+    // deliberate terminate: its exit is suppressed as an app teardown, so it would
+    // otherwise emit no event and leave the runaway to be hot-respawned every ~60s.
+    record_supervisor_memory_preempt(SupervisorPreemptEvidence {
+        footprint_kb: sample.kb,
+        tree_pid_count: sample.tree_pid_count,
+        tree_largest_member_kb: sample.tree_largest_member_kb,
+        prev_sample_kb: footprint.prev_comparable_sample_kb,
+        gap_secs: footprint.sample_gap_secs,
+        memory_class,
+        memory_class_source,
+        projection_arm_reason: footprint.arm_reason,
+    });
+    terminate_daemon_generation_once(generation, DaemonFailureCategory::RunnerMemory);
+    (true, footprint.next_sample_delay_secs)
+}
+
+/// Spend one supervisor tick (`SUPERVISOR_INTERVAL`) watching the live runner's
+/// footprint at an ADAPTIVE cadence (HQ-DESKTOP-60): sample -> decide -> maybe
+/// pre-empt on each slice, re-sampling every `next_sample_delay_secs` rather than
+/// once per tick, so a fast runaway is caught mid-tick instead of racing the OS
+/// across a fixed 30s gap. Every OTHER supervisor responsibility (liveness, respawn,
+/// crash-loop backoff, settle, generation handling) stays on the outer 30s boundary;
+/// this loop re-enters ONLY sample -> decide -> pre-empt. Bounded: the per-slice
+/// delay is clamped to a floor by the pure cadence helper AND the slice count is
+/// capped, and it always consumes ~one tick of wall clock so the outer supervisor
+/// period is unchanged whether or not a pre-empt happened.
+fn supervise_watcher_footprint_for_tick(sample_pid: Option<u32>) {
+    let deadline = Instant::now() + SUPERVISOR_INTERVAL;
+    let mut slices = 0u32;
+    loop {
+        let (preempted, next_delay_secs) = watch_watcher_footprint_slice(sample_pid);
+        slices += 1;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if preempted || remaining.is_zero() || slices >= MAX_FOOTPRINT_SLICES_PER_TICK {
+            // Spend the rest of the tick budget so the outer supervisor period stays
+            // exactly one interval regardless of the in-tick cadence or a pre-empt.
+            if !remaining.is_zero() {
+                thread::sleep(remaining);
+            }
+            return;
+        }
+        let delay = Duration::from_secs(next_delay_secs.max(1)).min(remaining);
+        thread::sleep(delay);
+    }
 }
 
 /// Snapshot for enriching a crash capture: watcher uptime (since spawn), the
@@ -4508,15 +5776,27 @@ fn reset_crash_state_if_recovered() {
 /// job query plus the job's live-PID count of working-set reads per supervisor
 /// tick.
 #[cfg(not(target_os = "windows"))]
-fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
+fn sample_watcher_rss_scoped(pid: u32) -> Option<ScopedRssSample> {
     match sample_pid_tree_rss_kb(pid) {
-        Some(sum) => Some((sum, RssSampleKind::Tree)),
-        None => sample_pid_rss_kb(pid).map(|kb| (kb, RssSampleKind::Single)),
+        Some(tree) => Some(ScopedRssSample {
+            kb: tree.total_kb,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: Some(tree.pid_count),
+            tree_largest_member_kb: Some(tree.largest_member_kb),
+            tree_largest_member_pid: Some(tree.largest_member_pid),
+        }),
+        None => sample_pid_rss_kb(pid).map(|kb| ScopedRssSample {
+            kb,
+            kind: RssSampleKind::Single,
+            tree_pid_count: None,
+            tree_largest_member_kb: None,
+            tree_largest_member_pid: None,
+        }),
     }
 }
 
 #[cfg(target_os = "windows")]
-fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
+fn sample_watcher_rss_scoped(pid: u32) -> Option<ScopedRssSample> {
     // Prefer the runner-inclusive job-object working-set sum for the CURRENT
     // generation. `sum_job_working_set_kb` requires the observed `pid` to be
     // present in the job's live-PID list, so a racing generation handoff can never
@@ -4528,14 +5808,34 @@ fn sample_watcher_rss_scoped(pid: u32) -> Option<(u64, RssSampleKind)> {
         })
         .and_then(|samples| sum_job_working_set_kb(&samples, pid))
     {
-        return Some((sum, RssSampleKind::Tree));
+        // The Windows job working-set sum double-counts pages shared across the
+        // shim/node/worker processes more heavily than the Unix `ps` RSS sum, so
+        // the tree decomposition is WITHHELD (`None`) rather than estimated — a
+        // supervisor pre-empt on Windows carries `unknown` for the per-member
+        // breakdown instead of a misleading number.
+        return Some(ScopedRssSample {
+            kb: sum,
+            kind: RssSampleKind::Tree,
+            tree_pid_count: None,
+            tree_largest_member_kb: None,
+            // Windows withholds the per-member decomposition, so there is no largest
+            // member PID to signal; the memory-class source degrades to the
+            // unsupported-platform sentinel.
+            tree_largest_member_pid: None,
+        });
     }
     // ANY failure — no generation, no job handle, query failure, the observed root
     // PID absent from the live list, an empty sample, or ONLY the shim readable
     // (every descendant raced out of its per-PID read) — falls back to today's
     // exact single-PID sample so a shim footprint stays WITHHELD as
     // `unattributed:shim`, never reported as the runner's.
-    sample_pid_rss_kb(pid).map(|kb| (kb, RssSampleKind::Single))
+    sample_pid_rss_kb(pid).map(|kb| ScopedRssSample {
+        kb,
+        kind: RssSampleKind::Single,
+        tree_pid_count: None,
+        tree_largest_member_kb: None,
+        tree_largest_member_pid: None,
+    })
 }
 
 /// Sum working-set (KB) over the sampled live PIDs of the watcher's Job Object,
@@ -4586,21 +5886,39 @@ fn sum_job_working_set_kb(samples: &[(u32, Option<u64>)], root: u32) -> Option<u
     }
 }
 
+/// A whole-tree RSS sample decomposed into the total, the number of processes
+/// summed, and the largest single member — so a supervisor pre-empt can attribute
+/// "one Node process at 6.5 GB" apart from "twelve processes summing to 6.5 GB".
+/// The total is an upper bound (the RSS sum double-counts pages shared across the
+/// tree), which is exactly why the PID count and largest member ride alongside it.
+#[cfg(not(target_os = "windows"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TreeRssSample {
+    total_kb: u64,
+    pid_count: u32,
+    largest_member_kb: u64,
+    /// PID of the largest single member, so a pre-empt can signal it for a
+    /// memory-class decomposition (HQ-DESKTOP-60). `0` only when no member had a
+    /// positive RSS.
+    largest_member_pid: u32,
+}
+
 /// Sum RSS (KB) over `root` and its transitive descendants in a captured
-/// `ps -eo pid=,ppid=,rss=` table. Cycle-safe via a visited set. Returns `None`
-/// only when `root` is absent from the table, so the caller falls back to a
-/// single-PID sample rather than reporting a wrong sum. Pure so it can be
-/// unit-tested against captured macOS and Linux `ps` output, including
+/// `ps -eo pid=,ppid=,rss=` table, and decompose it into the PID count and the
+/// largest single member. Cycle-safe via a visited set. Returns `None` only when
+/// `root` is absent from the table, so the caller falls back to a single-PID
+/// sample rather than reporting a wrong sum. The `None`-on-missing-root contract
+/// is byte-identical to before, keeping the `Single` fallback unchanged. Pure so
+/// it can be unit-tested against captured macOS and Linux `ps` output, including
 /// reparented (ppid 1) descendants.
 #[cfg(not(target_os = "windows"))]
-fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<u64> {
+fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
     use std::collections::{HashMap, HashSet, VecDeque};
     let mut rss_by_pid: HashMap<u32, u64> = HashMap::new();
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     for line in ps_table.lines() {
         let mut columns = line.split_whitespace();
-        let (Some(pid), Some(ppid), Some(kb)) =
-            (columns.next(), columns.next(), columns.next())
+        let (Some(pid), Some(ppid), Some(kb)) = (columns.next(), columns.next(), columns.next())
         else {
             continue;
         };
@@ -4616,26 +5934,43 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<u64> {
         return None;
     }
     let mut total = 0_u64;
+    let mut pid_count = 0_u32;
+    let mut largest_member_kb = 0_u64;
+    let mut largest_member_pid = 0_u32;
     let mut visited: HashSet<u32> = HashSet::new();
     let mut queue: VecDeque<u32> = VecDeque::from([root]);
     while let Some(pid) = queue.pop_front() {
         if !visited.insert(pid) {
             continue;
         }
-        total = total.saturating_add(rss_by_pid.get(&pid).copied().unwrap_or(0));
+        let member_kb = rss_by_pid.get(&pid).copied().unwrap_or(0);
+        total = total.saturating_add(member_kb);
+        pid_count = pid_count.saturating_add(1);
+        // Track the largest member AND its PID so a pre-empt can signal it. Strict
+        // `>` keeps the first PID seen on a tie, which is deterministic for a given
+        // `ps` ordering.
+        if member_kb > largest_member_kb {
+            largest_member_kb = member_kb;
+            largest_member_pid = pid;
+        }
         if let Some(kids) = children.get(&pid) {
             queue.extend(kids.iter().copied());
         }
     }
-    Some(total)
+    Some(TreeRssSample {
+        total_kb: total,
+        pid_count,
+        largest_member_kb,
+        largest_member_pid,
+    })
 }
 
-/// Best-effort whole-tree RSS (KB) for the registered watcher PID: one bounded
-/// `ps -eo pid=,ppid=,rss=` invocation summed by [`sum_pid_tree_rss_kb`]. `None`
-/// on spawn/exit/parse failure or a missing root, so the caller falls back to the
-/// single-PID sample.
+/// Best-effort whole-tree RSS decomposition for the registered watcher PID: one
+/// bounded `ps -eo pid=,ppid=,rss=` invocation summed by [`sum_pid_tree_rss_kb`].
+/// `None` on spawn/exit/parse failure or a missing root, so the caller falls back
+/// to the single-PID sample.
 #[cfg(not(target_os = "windows"))]
-fn sample_pid_tree_rss_kb(root: u32) -> Option<u64> {
+fn sample_pid_tree_rss_kb(root: u32) -> Option<TreeRssSample> {
     let mut cmd = std::process::Command::new("ps");
     paths::no_window(&mut cmd);
     let out = cmd.args(["-eo", "pid=,ppid=,rss="]).output().ok()?;
@@ -4756,7 +6091,12 @@ fn exit_diagnostic_suffix(
 /// clause; every other (non-runner single-PID) scope withholds the number as
 /// `unattributed:<scope>`. `age` present means "(sampled … before exit)".
 fn render_last_rss(kb: u64, age: Option<Duration>, rss_scope: &str) -> String {
-    let sampled = age.map(|age| format!(" (sampled {} before exit)", format_duration_secs(age.as_secs())));
+    let sampled = age.map(|age| {
+        format!(
+            " (sampled {} before exit)",
+            format_duration_secs(age.as_secs())
+        )
+    });
     match rss_scope {
         "runner" => match &sampled {
             Some(clause) => format!("last_rss={}{clause}", format_rss_kb(kb)),
@@ -4829,47 +6169,17 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 // single transient liveness misread on a later tick would
                 // force-clear (SIGKILL) a healthy watcher.
                 note_daemon_guard_alive();
-                // Sample the live watcher's RSS so if it is later killed by
-                // signal=9, the crash capture can report the footprint it had
-                // shortly before death (jetsam/OOM vs kill -9). Scoped to the
-                // whole descendant tree so the runner's real footprint is seen
-                // through the npx launcher, with an honest single-PID fallback.
-                // Best-effort.
-                if let Some(pid) = sample_pid {
-                    if let Some((kb, kind)) = sample_watcher_rss_scoped(pid) {
-                        note_watcher_rss(kb, kind);
-                        // Supervisor footprint ceiling: when a COMPARABLE whole-tree
-                        // footprint stays at or above the declared ceiling across
-                        // consecutive samples, the runner is in genuine runaway (well
-                        // above any healthy set) and heading for a macOS jetsam
-                        // SIGKILL or a Windows commit failure that would destroy the
-                        // memory evidence. Pre-empt HERE so the app — not the host —
-                        // decides the outcome, recording an attributed memory-ceiling
-                        // lifecycle transition; the existing crash-loop backoff bounds
-                        // the respawn cadence. Best-effort — a withheld/shim sample or
-                        // a single spike never pre-empts.
-                        if note_watcher_footprint_and_decide(kb, kind)
-                            == hq_desktop_core::daemon::FootprintCeilingDecision::Preempt
-                        {
-                            if let Some(generation) = generation_for_handle(DAEMON_HANDLE) {
-                                log(
-                                    "daemon.supervisor",
-                                    "watcher footprint over declared ceiling on consecutive samples — pre-empting (runner_memory)",
-                                );
-                                // Record the attributed memory outcome and set the
-                                // respawn backoff BEFORE the deliberate terminate:
-                                // its exit is suppressed as an app teardown, so it
-                                // would otherwise emit no event and leave the
-                                // runaway to be hot-respawned every ~60s.
-                                record_supervisor_memory_preempt(kb);
-                                terminate_daemon_generation_once(
-                                    generation,
-                                    DaemonFailureCategory::RunnerMemory,
-                                );
-                            }
-                        }
-                    }
-                }
+                // Spend the rest of this tick watching the runner's footprint at an
+                // ADAPTIVE cadence (HQ-DESKTOP-60): re-sample every
+                // `next_sample_delay_secs` rather than once per 30s tick, so a fast
+                // runaway is caught mid-tick instead of racing the OS across a fixed
+                // gap; a cold heap-bounded ramp is never projected away. This spends
+                // the SAME 30s budget as the terminal sleep and re-enters ONLY
+                // sample -> decide -> pre-empt — every other supervisor responsibility
+                // above stays on the outer 30s boundary — so `continue` past the
+                // terminal sleep rather than sleeping the interval twice.
+                supervise_watcher_footprint_for_tick(sample_pid);
+                continue;
             } else if should_respawn_daemon_gated(
                 is_realtime_sync_enabled(),
                 is_autostart_enabled(),
@@ -5068,11 +6378,13 @@ mod tests {
             effective_watcher_footprint_ceiling_mb, OBSERVED_OS_KILL_FLOOR_MB,
             RUNNER_HEAP_CEILING_DEFAULT_MB, WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
             WATCHER_FOOTPRINT_CEILING_MB, WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC,
-            WATCHER_FOOTPRINT_HARD_CEILING_MB,
+            WATCHER_FOOTPRINT_HARD_CEILING_MB, WATCHER_FOOTPRINT_MIN_WATCH_SECS,
+            WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB, WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC,
         };
 
         // Pin the deliberate split: the ordinary backstop remains anti-spike,
-        // while the hard ceiling is the single-sample OS-kill safety guard.
+        // while the hard ceiling is the single-sample OS-kill safety guard. None of
+        // the safety thresholds move in this reopen.
         assert_eq!(WATCHER_FOOTPRINT_CEILING_CONSECUTIVE, 2);
         assert_eq!(WATCHER_FOOTPRINT_CEILING_MB, 4608);
         assert_eq!(
@@ -5080,16 +6392,50 @@ mod tests {
             5632
         );
         assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_MB, 5120);
-        assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC, 20);
 
-        // A 20 MB/s runaway may go unobserved for one full supervisor interval.
-        // Its next sample remains below the approximately observed OS-kill floor.
+        // Re-derived margin (HQ-DESKTOP-60). The prior pin sized the hard ceiling
+        // against an ASSUMED 20 MB/s runaway over a full 30s gap (5,120 + 20*30 =
+        // 5,720 < 5,900). Production measured 82.9 MB/s and 250 MB/s — 4x-12x faster —
+        // so a real runaway crossed the ceiling mid-gap and was pre-empted only at
+        // 7,949 MB, 2,049 MB ABOVE the OS-kill floor. The guard is now paired with an
+        // adaptive sampling cadence: once growth is measured the gap shortens so no
+        // more than one overshoot budget is added before the next sample. Pin the new
+        // constants and re-derive the inequality against the WORST OBSERVED rate and
+        // the armed sampling gap.
+        assert_eq!(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB, 500);
+        assert_eq!(WATCHER_FOOTPRINT_MIN_WATCH_SECS, 2);
+        assert_eq!(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC, 250);
+
+        // The armed sampling gap (the floor) times the worst observed rate is exactly
+        // the overshoot budget, by construction.
+        assert_eq!(
+            WATCHER_FOOTPRINT_MIN_WATCH_SECS
+                * u64::from(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC),
+            u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB)
+        );
+        // The worst observed runaway, tracked at the armed sampling floor, is
+        // pre-empted below the OS-kill floor: hard ceiling + worst_rate * armed_gap
+        // (= hard ceiling + overshoot budget) < OS-kill floor.
+        assert!(
+            u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
+                + u64::from(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC)
+                    * WATCHER_FOOTPRINT_MIN_WATCH_SECS
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB),
+            "the worst observed runaway, tracked at the armed sampling floor, must pre-empt below the OS-kill floor"
+        );
+        assert!(
+            u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
+                + u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB)
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB)
+        );
+        // The prior 20 MB/s assumption still holds as a lower bound and is retained
+        // for context; the guard no longer relies on a fixed full-tick gap for it.
+        assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC, 20);
         assert!(
             u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
                 + u64::from(WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC)
                     * SUPERVISOR_INTERVAL.as_secs()
-                < u64::from(OBSERVED_OS_KILL_FLOOR_MB),
-            "the single-sample hard threshold must leave one full sampling interval of runaway growth below the OS-kill floor"
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB)
         );
     }
 
@@ -5735,6 +7081,11 @@ mod tests {
         /// sent now, with their seeded `deferred` provenance. Separate so a test
         /// can prove the fault read is off the exit path.
         deferred_watcher_fault: Vec<RecordedCapture>,
+        /// Captures handed to the deferred NON-fault runner-report read
+        /// (HQ-DESKTOP-66). The double performs the SAME read + apply the worker does
+        /// (synchronously, so a test can observe the MEASURED verdict), keeping them
+        /// separate from `captures` so a test can prove the read is off the exit path.
+        deferred_runner_report: Vec<RecordedCapture>,
         lifecycle: Vec<(WatchDaemonState, DaemonFailureCategory)>,
     }
 
@@ -5783,7 +7134,12 @@ mod tests {
 
         fn watcher_exit_diagnostics(
             &self,
-        ) -> (Option<Duration>, Option<u64>, Option<Duration>, Option<RssSampleKind>) {
+        ) -> (
+            Option<Duration>,
+            Option<u64>,
+            Option<Duration>,
+            Option<RssSampleKind>,
+        ) {
             (Some(Duration::from_secs(1)), None, None, None)
         }
 
@@ -5828,6 +7184,31 @@ mod tests {
         ) {
             self.deferred_watcher_fault
                 .push(recorded_capture(message, fingerprint, tags, extras));
+        }
+
+        fn defer_runner_report_capture(
+            &mut self,
+            message: &str,
+            fingerprint: &[&str],
+            tags: &[(&str, String)],
+            extras: &[(&str, sentry::protocol::Value)],
+            report_dir: PathBuf,
+        ) {
+            // Mirror the production worker SYNCHRONOUSLY so a seam test observes the
+            // MEASURED verdict: read + apply the report to a copy of the tags, then
+            // record it in its own bucket — never `captures`, so the read is provably
+            // off the immediate-send path.
+            let mut applied: Vec<(String, String)> = tags
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect();
+            apply_deferred_runner_report(&report_dir, &mut applied);
+            let applied_refs: Vec<(&str, String)> = applied
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone()))
+                .collect();
+            self.deferred_runner_report
+                .push(recorded_capture(message, fingerprint, &applied_refs, extras));
         }
     }
 
@@ -6436,7 +7817,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "abort:sigabrt",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert!(windows_capture.message.starts_with(
@@ -6547,7 +7929,14 @@ mod tests {
         let unknown_capture = posix_unknown.captures.first().expect("exit 221 captures");
         assert_eq!(
             unknown_capture.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:221", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:221",
+                "none",
+                "none",
+                "none"
+            ]
         );
         // Post-fix: the plain exit code is named by describe_exit rather than
         // dumped as a raw Debug tuple. Grouping is unchanged (fingerprint above).
@@ -6581,7 +7970,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert!(windows_capture.message.contains("0xC0000409 (fault)"));
@@ -6609,7 +7999,14 @@ mod tests {
         let posix_134_capture = posix_134.captures.first().expect("POSIX 134 captures");
         assert_eq!(
             posix_134_capture.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:134", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:134",
+                "none",
+                "none",
+                "none"
+            ]
         );
         // Post-fix: named by describe_exit (a bare exit 134 is only a Node abort
         // on Windows; on POSIX it stays a plain exit code). Grouping unchanged.
@@ -6659,7 +8056,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert_eq!(
@@ -6705,12 +8103,18 @@ mod tests {
             recorded_tag(capture, "watcher_job_peak_commit_bucket"),
             "unknown"
         );
-        assert_eq!(recorded_tag(capture, "watcher_job_process_count"), "unknown");
+        assert_eq!(
+            recorded_tag(capture, "watcher_job_process_count"),
+            "unknown"
+        );
         // `npx` is a direct launcher, not the runner, so its RSS is scoped away.
         assert_eq!(recorded_tag(capture, "watcher_child_kind"), "launcher");
         assert_eq!(recorded_tag(capture, "rss_scope"), "launcher");
         assert!(
-            capture.tags.iter().all(|(k, _)| k != "runner_fatal_syscall"),
+            capture
+                .tags
+                .iter()
+                .all(|(k, _)| k != "runner_fatal_syscall"),
             "no libuv line -> no syscall tag"
         );
         assert!(capture.tags.iter().all(|(k, _)| k != "runner_fatal_errno"));
@@ -6760,7 +8164,10 @@ mod tests {
             recorded_tag(capture, "runner_unmatched_stderr_shapes"),
             "ndjson_record:6,stack_frame:2"
         );
-        assert_eq!(recorded_number_extra(capture, "runner_stderr_line_count"), 8);
+        assert_eq!(
+            recorded_number_extra(capture, "runner_stderr_line_count"),
+            8
+        );
         assert_eq!(
             recorded_string_extra(capture, "watcher_fault_exception_code"),
             "3221226505"
@@ -6777,7 +8184,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
     }
@@ -6794,6 +8202,8 @@ mod tests {
             runner_error_http: Some("http_500:40,http_403:8".to_string()),
             runner_error_causes: Some("vault_not_found:120,unknown_named:8".to_string()),
             runner_error_cause_signature: Some("1a2b3c4d5e6f:8".to_string()),
+            runner_error_unknown_profiles: Some("key_value_led:160,lower_prose:8".to_string()),
+            runner_error_residual_signature: Some("ea4e65576be5:8".to_string()),
             ..Default::default()
         };
         let mut effects = RecordingWatcherEffects::default();
@@ -6825,6 +8235,16 @@ mod tests {
         assert_eq!(
             recorded_tag(capture, "runner_error_cause_signature"),
             "1a2b3c4d5e6f:8"
+        );
+        // The unknown_unnamed residual axes (HQ-DESKTOP-61/62) ride the SAME capture
+        // from the same shared source, pinning both-seams parity for them too.
+        assert_eq!(
+            recorded_tag(capture, "runner_error_unknown_profiles"),
+            "key_value_led:160,lower_prose:8"
+        );
+        assert_eq!(
+            recorded_tag(capture, "runner_error_residual_signature"),
+            "ea4e65576be5:8"
         );
         // The pre-existing axes still ride the same capture unchanged.
         assert_eq!(
@@ -6885,6 +8305,407 @@ mod tests {
             .all(|(k, _)| k != "watcher_fault_offset"));
     }
 
+    // ── Runner diagnostic report — the crash-surviving third channel (HQ-DESKTOP-5W) ──
+
+    fn heap_oom_report_json() -> String {
+        serde_json::json!({
+            "header": {
+                "trigger": "FatalError",
+                "event": "Allocation failed - JavaScript heap out of memory"
+            },
+            "nativeStack": [
+                { "pc": "0x1", "symbol": "node::OOMErrorHandler(char const*)" },
+                { "pc": "0x2", "symbol": "v8::internal::V8::FatalProcessOutOfMemory(char const*)" }
+            ]
+        })
+        .to_string()
+    }
+
+    fn report_tags_with_class(class: &str) -> Vec<(String, String)> {
+        vec![
+            ("runner_fatal_class".to_string(), class.to_string()),
+            ("sync_route".to_string(), "watcher".to_string()),
+            ("runner_stack_shape".to_string(), "all_redacted".to_string()),
+            ("runner_stack_signature".to_string(), "unknown".to_string()),
+            ("runner_fatal_source".to_string(), "none".to_string()),
+            ("runner_report_read".to_string(), "report_absent".to_string()),
+        ]
+    }
+
+    fn report_tag_of<'a>(tags: &'a [(String, String)], key: &str) -> &'a str {
+        tags.iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("")
+    }
+
+    fn unique_report_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("hq-report-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn apply_report_adopts_a_named_cause_only_when_stderr_named_none() {
+        // The Windows-fault case: stderr named nothing, so the report's heap_oom is
+        // adopted and runner_fatal_source flips to node_report.
+        let report = hq_desktop_core::runner_diagnostic_report::parse_runner_diagnostic_report(
+            heap_oom_report_json().as_bytes(),
+        );
+        assert!(report.named_cause());
+        let mut tags = report_tags_with_class("none");
+        apply_report_to_fault_tags(&mut tags, &report);
+        assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "heap_oom");
+        assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "node_report");
+        assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
+        assert_ne!(report_tag_of(&tags, "runner_stack_shape"), "all_redacted");
+        assert_eq!(report_tag_of(&tags, "runner_stack_signature").len(), 16);
+    }
+
+    #[test]
+    fn apply_report_never_overrides_a_stderr_named_class() {
+        // A stderr-derived class already named the cause: the report records its read
+        // provenance but NEVER overrides the class, source, or shape (macOS heap_oom
+        // and every stderr attribution keeps priority).
+        let report = hq_desktop_core::runner_diagnostic_report::parse_runner_diagnostic_report(
+            heap_oom_report_json().as_bytes(),
+        );
+        let mut tags = report_tags_with_class("libuv_assert");
+        set_payload_tag(&mut tags, "runner_fatal_source", "stderr".to_string());
+        set_payload_tag(
+            &mut tags,
+            "runner_stack_shape",
+            "node_check_abort>v8_abort".to_string(),
+        );
+        apply_report_to_fault_tags(&mut tags, &report);
+        assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "libuv_assert");
+        assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "stderr");
+        assert_eq!(report_tag_of(&tags, "runner_stack_shape"), "node_check_abort>v8_abort");
+        // Only the read provenance is recorded.
+        assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
+    }
+
+    #[test]
+    fn apply_report_records_absence_without_naming_a_cause() {
+        let mut tags = report_tags_with_class("none");
+        apply_report_to_fault_tags(
+            &mut tags,
+            &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport::absent(),
+        );
+        assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "none");
+        assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "none");
+        assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_absent");
+    }
+
+    #[test]
+    fn read_runner_diagnostic_report_reads_then_deletes_the_directory() {
+        let dir = unique_report_dir("read");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME),
+            heap_oom_report_json(),
+        )
+        .unwrap();
+        let report = read_runner_diagnostic_report(&dir);
+        assert_eq!(
+            report.read,
+            hq_desktop_core::runner_diagnostic_report::RunnerReportRead::Read
+        );
+        assert_eq!(report.fatal_class.as_str(), "heap_oom");
+        // The reader removed the directory after reading, bounding disk.
+        assert!(!dir.exists(), "report directory must be removed after the read");
+    }
+
+    #[test]
+    fn read_runner_diagnostic_report_reports_absent_for_an_empty_dir() {
+        let dir = unique_report_dir("empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let report = read_runner_diagnostic_report(&dir);
+        assert_eq!(
+            report.read,
+            hq_desktop_core::runner_diagnostic_report::RunnerReportRead::Absent
+        );
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn prune_stale_runner_report_siblings_keeps_current_and_one_prior() {
+        // A route directory with three prior-generation siblings plus the current
+        // one: the current dir is never pruned, and exactly ONE prior sibling (the
+        // newest — the only one that could still have a deferred read pending)
+        // survives, so leaks cannot accumulate.
+        let base = unique_report_dir("prune");
+        let current = base.join("current");
+        let priors = [base.join("g1"), base.join("g2"), base.join("g3")];
+        std::fs::create_dir_all(&current).unwrap();
+        for prior in &priors {
+            std::fs::create_dir_all(prior).unwrap();
+        }
+        prune_stale_runner_report_siblings(&current);
+        assert!(current.exists(), "the current directory is never pruned");
+        let survivors = priors.iter().filter(|prior| prior.exists()).count();
+        assert_eq!(
+            survivors, 1,
+            "exactly the newest prior sibling survives; the rest are pruned"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ── Deferred runner-report capture wiring (HQ-DESKTOP-66) ──
+
+    #[test]
+    fn non_fault_watcher_exit_reads_and_applies_the_report_off_the_exit_path() {
+        // The 0xFFFFFFFF indeterminate-status case: a report WAS requested but the exit
+        // is non-fault, so the Windows-fault worker never runs. The capture's SEND is
+        // deferred to a bounded worker that READS the report OFF the exit callback and
+        // applies its measured verdict — runner_report_read becomes report_read, and the
+        // report's class is adopted with runner_fatal_source=node_report because the
+        // stderr channel named nothing. The capture is NOT sent immediately.
+        reset_pending_runner_report_registry_for_test();
+        let dir = unique_report_dir("nonfault-read");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME),
+            heap_oom_report_json(),
+        )
+        .unwrap();
+        let context = WatcherExitCaptureContext {
+            runner_report_read: "report_absent".to_string(),
+            runner_report_deferred_dir: Some(dir.clone()),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        let disposition = handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        assert!(
+            effects.captures.is_empty(),
+            "a non-fault requested-report exit must NOT send on the exit path"
+        );
+        let held = effects
+            .deferred_runner_report
+            .first()
+            .expect("non-fault capture deferred for its report read");
+        assert_eq!(recorded_tag(held, "runner_report_read"), "report_read");
+        assert_eq!(recorded_tag(held, "runner_fatal_class"), "heap_oom");
+        assert_eq!(recorded_tag(held, "runner_fatal_source"), "node_report");
+        assert_eq!(recorded_tag(held, "runner_stack_signature").len(), 16);
+        // Grouping continuity: the deferred event keeps the indeterminate-status
+        // fingerprint element and message text an immediate capture would have used.
+        assert!(held
+            .fingerprint
+            .iter()
+            .any(|part| part == "windows:status-ffffffff"));
+        assert!(held.message.contains("0xFFFFFFFF (origin unknown)"));
+        // The deferred reader OWNS the directory and removed it after reading.
+        assert_eq!(
+            disposition,
+            RunnerReportDirDisposition::OwnedByDeferredReader
+        );
+        assert!(!dir.exists(), "the report directory is removed after the read");
+    }
+
+    #[test]
+    fn non_fault_watcher_exit_records_a_measured_absence_when_no_report_exists() {
+        // Requested-and-absent: the token now provably comes from a PERFORMED read (the
+        // directory is removed) rather than the pre-read seed — the exact ambiguity this
+        // lane closed, since "requested, never read" and "read, missing" both emitted
+        // report_absent on the base.
+        reset_pending_runner_report_registry_for_test();
+        let dir = unique_report_dir("nonfault-absent");
+        std::fs::create_dir_all(&dir).unwrap();
+        let context = WatcherExitCaptureContext {
+            runner_report_read: "report_absent".to_string(),
+            runner_report_deferred_dir: Some(dir.clone()),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        let disposition = handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        let held = effects
+            .deferred_runner_report
+            .first()
+            .expect("non-fault capture deferred for its report read");
+        assert_eq!(recorded_tag(held, "runner_report_read"), "report_absent");
+        assert_eq!(recorded_tag(held, "runner_fatal_class"), "none");
+        assert!(
+            !dir.exists(),
+            "a performed read removes the directory even when the report is absent"
+        );
+        assert_eq!(
+            disposition,
+            RunnerReportDirDisposition::OwnedByDeferredReader
+        );
+    }
+
+    #[test]
+    fn a_report_never_overrides_a_stderr_named_class_on_the_non_fault_path() {
+        // A stderr-derived class already named the cause: the report records its read
+        // provenance but NEVER overrides the class or source, exactly as on the fault
+        // path and the manual route.
+        reset_pending_runner_report_registry_for_test();
+        let dir = unique_report_dir("nonfault-precedence");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(hq_desktop_core::daemon::RUNNER_DIAGNOSTIC_REPORT_FILENAME),
+            heap_oom_report_json(),
+        )
+        .unwrap();
+        let context = WatcherExitCaptureContext {
+            runner_fatal_class: "libuv_assert".to_string(),
+            runner_report_deferred_dir: Some(dir.clone()),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        let held = effects
+            .deferred_runner_report
+            .first()
+            .expect("non-fault capture deferred for its report read");
+        assert_eq!(recorded_tag(held, "runner_report_read"), "report_read");
+        assert_eq!(recorded_tag(held, "runner_fatal_class"), "libuv_assert");
+        assert_eq!(recorded_tag(held, "runner_fatal_source"), "stderr");
+    }
+
+    #[test]
+    fn a_not_requested_non_fault_exit_sends_immediately_and_cleans_on_the_exit_path() {
+        // No report requested: the capture is sent immediately (no read to await) and
+        // the exit callback owns any directory cleanup.
+        let context = WatcherExitCaptureContext::default();
+        let mut effects = RecordingWatcherEffects::default();
+        let disposition = handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        assert_eq!(effects.captures.len(), 1);
+        assert!(effects.deferred_runner_report.is_empty());
+        assert_eq!(disposition, RunnerReportDirDisposition::DeleteOnExitPath);
+    }
+
+    #[test]
+    fn watcher_exit_emits_the_job_survivor_discriminator() {
+        // Always present on a captured watcher exit: `unavailable` (no count) when no
+        // live-PID query ran, and a named token + bare count when it did — the
+        // shim-vs-runner discriminator for the 0xFFFFFFFF exit shape.
+        let context = WatcherExitCaptureContext::default();
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        let event = effects.captures.first().expect("immediate capture");
+        assert_eq!(recorded_tag(event, "watcher_job_survivors"), "unavailable");
+        assert!(
+            event
+                .extras
+                .iter()
+                .all(|(key, _)| key != "watcher_job_survivor_count"),
+            "no count extra is emitted when the live-PID query did not run"
+        );
+
+        let context = WatcherExitCaptureContext {
+            watcher_job_survivors: "node_exe".to_string(),
+            watcher_job_survivor_count: Some(2),
+            ..Default::default()
+        };
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(-1),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &context,
+        );
+        let event = effects.captures.first().expect("immediate capture");
+        assert_eq!(recorded_tag(event, "watcher_job_survivors"), "node_exe");
+        assert_eq!(recorded_number_extra(event, "watcher_job_survivor_count"), 2);
+    }
+
+    #[test]
+    fn deferred_runner_report_registry_resolves_each_capture_exactly_once() {
+        // The registry mirrors the fault registry: a teardown flush drains an in-flight
+        // capture, the worker's later claim is then a no-op, and a registration that
+        // arrives AFTER the latch is handed back to send immediately.
+        reset_pending_runner_report_registry_for_test();
+        let payload = DeferredRunnerReportCapture::new(
+            "auto-sync watcher exited unexpectedly",
+            &["sync"],
+            &[("runner_report_read", "report_absent".to_string())],
+            &[],
+            unique_report_dir("registry"),
+        );
+        let id = register_pending_runner_report_capture(payload).expect("queued");
+        let drained = arm_shutdown_and_drain_pending_runner_report_captures();
+        assert_eq!(drained.len(), 1, "the flush drained the in-flight capture");
+        assert!(
+            take_pending_runner_report_capture(id).is_none(),
+            "the worker's later claim is a no-op once the flush drained it"
+        );
+
+        reset_pending_runner_report_registry_for_test();
+        // Arm the shutdown latch, then prove a later registration is handed back.
+        let _ = arm_shutdown_and_drain_pending_runner_report_captures();
+        let payload = DeferredRunnerReportCapture::new(
+            "auto-sync watcher exited unexpectedly",
+            &["sync"],
+            &[],
+            &[],
+            unique_report_dir("registry2"),
+        );
+        assert!(
+            register_pending_runner_report_capture(payload).is_err(),
+            "a registration after the shutdown latch is handed back for immediate send"
+        );
+        reset_pending_runner_report_registry_for_test();
+    }
+
     // ── Deferred watcher-fault capture wiring (HQ-DESKTOP-4X) ──
 
     #[test]
@@ -6905,6 +8726,7 @@ mod tests {
                 exception_code: 0xC000_0409,
                 gen_start_ms: 1_000_000,
                 gen_end_ms: 1_001_000,
+                report_dir: None,
             }),
             ..Default::default()
         };
@@ -6929,12 +8751,18 @@ mod tests {
             .first()
             .expect("fault capture deferred off the exit path");
         assert_eq!(recorded_tag(held, "watcher_fault_provenance"), "deferred");
-        assert_eq!(recorded_tag(held, "watcher_fault_faulting_image"), "unavailable");
+        assert_eq!(
+            recorded_tag(held, "watcher_fault_faulting_image"),
+            "unavailable"
+        );
         assert_eq!(
             recorded_tag(held, "watcher_fault_read"),
             "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0"
         );
-        assert_eq!(recorded_tag(held, "watcher_fault_job_images"), "node_exe,cmd_exe");
+        assert_eq!(
+            recorded_tag(held, "watcher_fault_job_images"),
+            "node_exe,cmd_exe"
+        );
         assert_eq!(
             recorded_tag(held, "watcher_fault_job_culprit_candidate"),
             "node_exe"
@@ -6952,14 +8780,15 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         // Lifecycle recovery ran synchronously and is unaffected by the deferral.
-        assert!(effects
-            .lifecycle
-            .iter()
-            .any(|(state, _)| matches!(state, WatchDaemonState::Stopped | WatchDaemonState::Backoff)));
+        assert!(effects.lifecycle.iter().any(|(state, _)| matches!(
+            state,
+            WatchDaemonState::Stopped | WatchDaemonState::Backoff
+        )));
     }
 
     #[test]
@@ -6972,7 +8801,12 @@ mod tests {
         let make = || {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
-                &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+                &[
+                    "sync",
+                    "auto-sync-watcher-termination",
+                    "windows:fault:0xC0000409",
+                    "none",
+                ],
                 &[("watcher_fault_provenance", "deferred".to_string())],
                 &[],
                 WatcherFaultDeferredRead {
@@ -6980,12 +8814,16 @@ mod tests {
                     exception_code: 0xC000_0409,
                     gen_start_ms: 0,
                     gen_end_ms: 1,
+                    report_dir: None,
                 },
             )
         };
         let first = register_pending_watcher_fault_capture(make());
         let second = register_pending_watcher_fault_capture(make());
-        assert!(first.is_ok() && second.is_ok(), "registrations queue before shutdown");
+        assert!(
+            first.is_ok() && second.is_ok(),
+            "registrations queue before shutdown"
+        );
         let mut sent: Vec<DeferredWatcherFaultCapture> = Vec::new();
         assert_eq!(
             flush_pending_watcher_fault_captures_with(|payload| sent.push(payload)),
@@ -7012,7 +8850,12 @@ mod tests {
         let make = || {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
-                &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+                &[
+                    "sync",
+                    "auto-sync-watcher-termination",
+                    "windows:fault:0xC0000409",
+                    "none",
+                ],
                 &[("watcher_fault_provenance", "deferred".to_string())],
                 &[],
                 WatcherFaultDeferredRead {
@@ -7020,6 +8863,7 @@ mod tests {
                     exception_code: 0xC000_0409,
                     gen_start_ms: 0,
                     gen_end_ms: 1,
+                    report_dir: None,
                 },
             )
         };
@@ -7052,7 +8896,12 @@ mod tests {
         };
         let base = DeferredWatcherFaultCapture::new(
             "auto-sync watcher exited unexpectedly",
-            &["sync", "auto-sync-watcher-termination", "windows:fault:0xC0000409", "none"],
+            &[
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:fault:0xC0000409",
+                "none",
+            ],
             &[
                 ("watcher_fault_provenance", "deferred".to_string()),
                 ("watcher_fault_faulting_image", "unavailable".to_string()),
@@ -7064,6 +8913,7 @@ mod tests {
                 exception_code: 0xC000_0409,
                 gen_start_ms: 1_000_000,
                 gen_end_ms: 1_001_000,
+                report_dir: None,
             },
         );
         let tag = |payload: &DeferredWatcherFaultCapture, key: &str| {
@@ -7088,7 +8938,8 @@ mod tests {
             faulting_pid: Some(6700),
             event_time_unix_ms: Some(1_000_500),
         };
-        let resolved = attribute_watcher_fault(&[record], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
+        let resolved =
+            attribute_watcher_fault(&[record], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
         let out = finalize_watcher_fault_payload(base.clone(), Some(resolved), "read_resolved");
         assert_eq!(tag(&out, "watcher_fault_provenance"), "pid_matched");
         assert_eq!(tag(&out, "watcher_fault_faulting_image"), "node_exe");
@@ -7193,12 +9044,18 @@ mod tests {
         let capture = effects.captures.first().expect("captures");
         assert_eq!(recorded_tag(capture, "sync_route"), "watcher");
         assert_eq!(recorded_tag(capture, "runner_fatal_class"), "libuv_assert");
-        assert_eq!(recorded_tag(capture, "runner_assert_source"), "libuv_win_async");
+        assert_eq!(
+            recorded_tag(capture, "runner_assert_source"),
+            "libuv_win_async"
+        );
         let signature = recorded_tag(capture, "runner_assert_signature");
         assert_eq!(signature.len(), 16);
         assert!(signature.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(recorded_number_extra(capture, "runner_assert_line"), 76);
-        assert_eq!(recorded_number_extra(capture, "runner_stdout_line_count"), 5);
+        assert_eq!(
+            recorded_number_extra(capture, "runner_stdout_line_count"),
+            5
+        );
         assert_eq!(recorded_string_extra(capture, "runner_node_major"), "20");
 
         // The private tail never reaches the wire through any new field.
@@ -7705,7 +9562,14 @@ mod tests {
             .expect("external SIGKILL event remains sendable");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "signal:9",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert_eq!(event.tags["runner_fatal_class"], "none");
         assert_eq!(
@@ -7955,7 +9819,14 @@ mod tests {
             .expect("external SIGKILL event remains sendable");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "signal:9",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert_eq!(
             event.extra["cancellation_record_present"],
@@ -7975,6 +9846,58 @@ mod tests {
         );
         assert!(!is_registered(DAEMON_HANDLE));
         set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn posix_watcher_code_one_after_effective_app_cancellation_is_attributed_to_app_teardown() {
+        // HQ-DESKTOP-5Z blast radius. The watcher boundary projects the SAME
+        // classifier as the manual route, so a watcher torn down by the app whose
+        // child collapsed our SIGTERM into exit 1 is now attributed to the app
+        // (the silent teardown path at `handle_watcher_exit_with_effects`), exactly
+        // when the manual route suppresses it — an app-owned cause, an observed
+        // effective termination, and no alertable runner error. This is the same
+        // correct intent, kept from drifting from the manual boundary.
+        let effective = WatcherExitCaptureContext {
+            cancellation_record_present: true,
+            cancellation_record_cause: Some(SyncCancelCause::HeartbeatStall),
+            cancellation_termination_effected: true,
+            saw_alertable_error: false,
+            ..Default::default()
+        };
+        assert!(
+            effective.attributed_to_app_teardown(Some(1), None),
+            "an effective app cancellation whose child exited code 1 is a silent teardown"
+        );
+
+        // Strip the effectiveness gate: an external kill / lost publication of the
+        // identical code-1 shape must stay alertable — the invariant that keeps
+        // external kills loud, unchanged by this fix.
+        let ineffective = WatcherExitCaptureContext {
+            cancellation_record_present: true,
+            cancellation_record_cause: Some(SyncCancelCause::HeartbeatStall),
+            cancellation_termination_effected: false,
+            saw_alertable_error: false,
+            ..Default::default()
+        };
+        assert!(
+            !ineffective.attributed_to_app_teardown(Some(1), None),
+            "termination_effected=false keeps a code-1 watcher exit alertable"
+        );
+
+        // A concurrent alertable runner fault also wins over attribution (gate 4),
+        // preserving the cancelled-with-alertable-error class.
+        let with_alertable = WatcherExitCaptureContext {
+            cancellation_record_present: true,
+            cancellation_record_cause: Some(SyncCancelCause::HeartbeatStall),
+            cancellation_termination_effected: true,
+            saw_alertable_error: true,
+            ..Default::default()
+        };
+        assert!(
+            !with_alertable.attributed_to_app_teardown(Some(1), None),
+            "a concurrent alertable runner fault keeps a code-1 watcher exit alertable"
+        );
     }
 
     #[cfg(unix)]
@@ -8027,7 +9950,14 @@ mod tests {
             .contains("auto-sync watcher exited unexpectedly"));
         assert_eq!(
             external_kill.captures[0].fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "signal:9",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert!(external_kill.captures[0]
             .tags
@@ -8213,7 +10143,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
                 "eperm",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert!(event.message.contains("0xFFFFFFFF (origin unknown)"));
@@ -8270,7 +10201,11 @@ mod tests {
             "http_403",
         ] {
             assert_eq!(safe_runner_error_fingerprint_token(bad), "none", "{bad:?}");
-            assert_eq!(safe_runner_error_cause_fingerprint_token(bad), "none", "{bad:?}");
+            assert_eq!(
+                safe_runner_error_cause_fingerprint_token(bad),
+                "none",
+                "{bad:?}"
+            );
         }
     }
 
@@ -8309,7 +10244,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
                 "auth",
-                "vault_permission_denied", "none"
+                "vault_permission_denied",
+                "none"
             ]
         );
     }
@@ -8403,7 +10339,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
                 "enoent",
-                "enoent", "none"
+                "enoent",
+                "none"
             ]
         );
     }
@@ -8455,7 +10392,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
                 "eperm",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert_eq!(
@@ -8465,7 +10403,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:status-ffffffff",
                 "auth",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert_eq!(
@@ -8556,7 +10495,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:session-terminate",
                 "eperm",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert!(event.message.contains("0x40010004 (session terminate)"));
@@ -8629,11 +10569,15 @@ mod tests {
         );
     }
 
-    /// HQ-DESKTOP-4N. The regression: a `DBG_TERMINATE_PROCESS` exit the
-    /// observer could not attribute used to be captured on the spot, so an
-    /// affirmation arriving even one millisecond later could not suppress it.
-    /// It must now hold the SEND back — and the held-back payload must be
-    /// byte-identical to what an immediate capture would have sent.
+    /// HQ-DESKTOP-4N / HQ-DESKTOP-5J. The deferral still happens for all three
+    /// unattributed readings and the held-back payload is byte-identical to what
+    /// an immediate capture would have sent — that half is unchanged. What the
+    /// HQ-DESKTOP-5J fix adds: because a `DBG_TERMINATE_PROCESS` exit is an
+    /// externally-supplied termination, not a watcher fault, the deferral no
+    /// longer advances the consecutive-failure streak or arms respawn backoff, and
+    /// reports a clean Stopped/None lifecycle. The drop-first / escalate-second
+    /// disposition itself is proven at the resolver (see the resolve tests) and
+    /// end-to-end below.
     #[test]
     fn watcher_session_terminate_unattributed_defers_the_send_it_used_to_make() {
         const OBSERVED_SESSION_TERMINATE_EXIT: i32 = 1_073_807_364;
@@ -8702,14 +10646,24 @@ mod tests {
                 ))
             );
 
-            // Lifecycle, failure category and crash counting are untouched —
-            // only the send moved. Respawn and backoff timing must not shift.
+            // Step 4a (restated contract): an OS-supplied session-terminate is not
+            // a watcher failure. The held payload is still byte-identical to an
+            // immediate capture (asserted above), but the deferral now reports a
+            // clean Stopped/None lifecycle and does NOT advance the
+            // consecutive-failure streak or arm respawn backoff.
             assert_eq!(
                 effects.lifecycle,
-                vec![(WatchDaemonState::Backoff, DaemonFailureCategory::Crash)],
+                vec![(WatchDaemonState::Stopped, DaemonFailureCategory::None)],
                 "{attribution:?} changed the lifecycle transition"
             );
-            assert_eq!(effects.consecutive, 1, "{attribution:?}");
+            assert_eq!(
+                effects.consecutive, 0,
+                "{attribution:?} must not advance the consecutive-failure streak"
+            );
+            assert!(
+                !effects.in_backoff,
+                "{attribution:?} must not arm respawn backoff"
+            );
             assert!(
                 effects.logs.iter().any(|(_, message)| message
                     .starts_with("session-terminate watcher exit #1 — capture deferred")),
@@ -8718,10 +10672,12 @@ mod tests {
         }
     }
 
-    /// The fail-closed half of the same decision: a grace that elapses without a
-    /// message AND without a probe confirmation sends the event it was holding.
+    /// The fail-closed half of the same decision, updated for HQ-DESKTOP-5J: a
+    /// grace that elapses without a message AND without a probe confirmation
+    /// DROPS the first such exit per app run (the benign sign-out shape) and only
+    /// sends a repeat. Positive evidence still drops regardless.
     #[test]
-    fn a_deferral_that_is_never_affirmed_sends_the_event_it_held() {
+    fn a_deferral_that_is_never_affirmed_drops_the_first_and_sends_a_repeat() {
         let payload = || {
             DeferredSessionEndCapture::new(
                 "auto-sync watcher exited unexpectedly",
@@ -8736,8 +10692,9 @@ mod tests {
             )
         };
 
-        // With no probe confirmation (Unknown) every non-observed attribution
-        // still reaches Sentry after the grace.
+        // With no probe confirmation (Unknown) the FIRST unconfirmed exit per app
+        // run stays silent; a REPEAT (count >= 2) still reaches Sentry after the
+        // grace, so a genuinely repeating external killer is never lost.
         for attribution in [
             WindowsTerminatorAttribution::UnattributedNoSignal,
             WindowsTerminatorAttribution::UnattributedQueryOnly,
@@ -8749,19 +10706,33 @@ mod tests {
                 deferred_session_end_outcome(
                     attribution,
                     WindowsTeardownVerdict::Unknown,
-                    SessionEndLatchReading::Absent
+                    SessionEndLatchReading::Absent,
+                    1
+                ),
+                DeferredSessionEndOutcome::Drop,
+                "{attribution:?}: the first unconfirmed per run stays silent"
+            );
+            assert_eq!(
+                deferred_session_end_outcome(
+                    attribution,
+                    WindowsTeardownVerdict::Unknown,
+                    SessionEndLatchReading::Absent,
+                    2
                 ),
                 DeferredSessionEndOutcome::Capture,
-                "{attribution:?} must still reach Sentry after the grace"
+                "{attribution:?}: a repeat must still reach Sentry after the grace"
             );
         }
-        // Only positive evidence drops it: an observed message, a probe that
-        // confirmed the teardown, or a contemporaneous latch.
+        // Positive evidence drops regardless of the run count: an observed
+        // message, a probe that confirmed the teardown, or a contemporaneous
+        // latch. (`2` here proves it drops even where a repeat would otherwise
+        // escalate.)
         assert_eq!(
             deferred_session_end_outcome(
                 WindowsTerminatorAttribution::SessionEndObserved,
                 WindowsTeardownVerdict::Unknown,
-                SessionEndLatchReading::Absent
+                SessionEndLatchReading::Absent,
+                2
             ),
             DeferredSessionEndOutcome::Drop
         );
@@ -8769,7 +10740,8 @@ mod tests {
             deferred_session_end_outcome(
                 WindowsTerminatorAttribution::UnattributedNoSignal,
                 WindowsTeardownVerdict::Confirmed,
-                SessionEndLatchReading::Absent
+                SessionEndLatchReading::Absent,
+                2
             ),
             DeferredSessionEndOutcome::Drop
         );
@@ -8779,7 +10751,8 @@ mod tests {
             deferred_session_end_outcome(
                 WindowsTerminatorAttribution::ObserverFailed,
                 WindowsTeardownVerdict::Unknown,
-                SessionEndLatchReading::Latched
+                SessionEndLatchReading::Latched,
+                2
             ),
             DeferredSessionEndOutcome::Drop
         );
@@ -8864,6 +10837,9 @@ mod tests {
             }),
             absent_teardown,
             SessionEndLatchReading::Absent,
+            // A repeat unconfirmed exit escalates (Capture); the first-per-run drop
+            // is proved by the pure outcome matrix and the resolver test below.
+            2,
         );
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Capture);
         assert_eq!(resolution.verdict, WindowsTeardownVerdict::Absent);
@@ -8881,7 +10857,10 @@ mod tests {
             recorded_string_tag(&sent, "windows_terminator"),
             "unattributed_no_teardown"
         );
-        assert_eq!(recorded_deferred_extra(&sent, "session_end_latch"), "absent");
+        assert_eq!(
+            recorded_deferred_extra(&sent, "session_end_latch"),
+            "absent"
+        );
         assert_eq!(
             recorded_deferred_extra(&sent, "windows_teardown_probe_verdict"),
             "teardown_absent"
@@ -8913,7 +10892,7 @@ mod tests {
             log: TeardownLogReading::None,
         };
         let resolution =
-            resolve_deferred_decision(Some(reading), confirmed, SessionEndLatchReading::Absent);
+            resolve_deferred_decision(Some(reading), confirmed, SessionEndLatchReading::Absent, 2);
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Drop);
         assert_eq!(resolution.verdict, WindowsTeardownVerdict::Confirmed);
         assert_eq!(
@@ -8935,6 +10914,7 @@ mod tests {
             Some(reading),
             confirmed_by_log,
             SessionEndLatchReading::Absent,
+            2,
         );
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Drop);
         assert_eq!(
@@ -8955,6 +10935,9 @@ mod tests {
             Some(reading),
             initiation_only,
             SessionEndLatchReading::Absent,
+            // A repeat unconfirmed exit escalates; the first-per-run drop is proved
+            // by the pure outcome matrix and the end-to-end resolver test.
+            2,
         );
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Capture);
         assert_eq!(resolution.verdict, WindowsTeardownVerdict::Unknown);
@@ -8963,7 +10946,7 @@ mod tests {
         // with a confirmed teardown when there is no latch: nothing to rename, so
         // it sends.
         let resolution =
-            resolve_deferred_decision(None, confirmed, SessionEndLatchReading::Absent);
+            resolve_deferred_decision(None, confirmed, SessionEndLatchReading::Absent, 2);
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Capture);
         assert_eq!(resolution.final_attribution, None);
 
@@ -8971,7 +10954,7 @@ mod tests {
         // at all, and names itself so the suppressed alert carries a suppressing
         // tag — the durable evidence survives the observer's death.
         let resolution =
-            resolve_deferred_decision(None, initiation_only, SessionEndLatchReading::Latched);
+            resolve_deferred_decision(None, initiation_only, SessionEndLatchReading::Latched, 2);
         assert_eq!(resolution.outcome, DeferredSessionEndOutcome::Drop);
         assert_eq!(
             resolution.final_attribution,
@@ -9004,7 +10987,7 @@ mod tests {
 
         // (1) latch set -> suppressed and named session_end_latched.
         let latched =
-            resolve_deferred_decision(Some(reading), absent, SessionEndLatchReading::Latched);
+            resolve_deferred_decision(Some(reading), absent, SessionEndLatchReading::Latched, 2);
         assert_eq!(latched.outcome, DeferredSessionEndOutcome::Drop);
         assert_eq!(
             latched.final_attribution,
@@ -9013,16 +10996,17 @@ mod tests {
 
         // (2) no latch, probe Confirmed -> suppressed and named session_end_probed.
         let probed =
-            resolve_deferred_decision(Some(reading), confirmed, SessionEndLatchReading::Absent);
+            resolve_deferred_decision(Some(reading), confirmed, SessionEndLatchReading::Absent, 2);
         assert_eq!(probed.outcome, DeferredSessionEndOutcome::Drop);
         assert_eq!(
             probed.final_attribution,
             Some(WindowsTerminatorAttribution::SessionEndProbed)
         );
 
-        // (3) no latch, probe Absent -> SENT, tag stays the honest observer_failed.
+        // (3) no latch, probe Absent -> a REPEAT SENDS, tag stays the honest
+        // observer_failed. (The first per run drops; proved by the outcome matrix.)
         let sent =
-            resolve_deferred_decision(Some(reading), absent, SessionEndLatchReading::Absent);
+            resolve_deferred_decision(Some(reading), absent, SessionEndLatchReading::Absent, 2);
         assert_eq!(sent.outcome, DeferredSessionEndOutcome::Capture);
         assert_eq!(
             sent.final_attribution,
@@ -9053,6 +11037,168 @@ mod tests {
             recorded_deferred_extra(&finalized, "session_end_latch"),
             "absent"
         );
+    }
+
+    /// HQ-DESKTOP-5J core contract at the resolver: the reported envelope
+    /// (DBG_TERMINATE_PROCESS, observer alive but saw nothing, probe verifiably
+    /// absent, no latch) DROPS on its first per-run occurrence — the ordinary
+    /// Windows sign-out — and ESCALATES only on a repeat within the same app run,
+    /// onto a NEW fingerprint with a re-titled message.
+    #[test]
+    fn an_unconfirmed_session_terminate_drops_first_then_escalates_within_a_run() {
+        let reading = SessionEndReading {
+            attribution: WindowsTerminatorAttribution::UnattributedNoSignal,
+            readiness: "registered",
+        };
+        let absent = WindowsTeardownProbeReading {
+            shuttingdown_at_exit: TeardownShuttingDown::No,
+            shuttingdown_at_resolve: TeardownShuttingDown::No,
+            log: TeardownLogReading::None,
+        };
+
+        // First unconfirmed exit this run: DROP, but the honest tag is still named.
+        let first =
+            resolve_deferred_decision(Some(reading), absent, SessionEndLatchReading::Absent, 1);
+        assert_eq!(first.outcome, DeferredSessionEndOutcome::Drop);
+        assert_eq!(first.verdict, WindowsTeardownVerdict::Absent);
+        assert_eq!(
+            first.final_attribution,
+            Some(WindowsTerminatorAttribution::UnattributedNoTeardown)
+        );
+
+        // Second unconfirmed exit this run: ESCALATE.
+        let second =
+            resolve_deferred_decision(Some(reading), absent, SessionEndLatchReading::Absent, 2);
+        assert_eq!(second.outcome, DeferredSessionEndOutcome::Capture);
+
+        // The escalation re-shapes the held payload onto a NEW fingerprint (never
+        // the benign windows:session-terminate one) and a re-titled message, while
+        // preserving every other fingerprint element.
+        let held = DeferredSessionEndCapture::new(
+            "auto-sync watcher exited unexpectedly (0x40010004 (session terminate)), \
+             consecutive failure #1",
+            &[
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:session-terminate",
+                "none",
+                "none",
+                "none",
+            ],
+            &[("windows_terminator", "unattributed_no_signal".to_string())],
+            &[],
+        );
+        let escalated = escalated_session_terminate_payload(held, 2);
+        assert_eq!(
+            escalated.fingerprint,
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "windows:session-terminate-external-killer",
+                "none",
+                "none",
+                "none",
+            ],
+            "the escalation must not reuse the benign session-terminate fingerprint"
+        );
+        assert_ne!(escalated.fingerprint[2], "windows:session-terminate");
+        assert!(escalated.message.contains("2 times in one app run"));
+        assert!(escalated.message.contains("not a sign-out"));
+        assert!(!escalated.message.contains("consecutive failure"));
+    }
+
+    /// The per-app-run unconfirmed counter: it starts at zero (app/process start),
+    /// advances only on an unconfirmed session-terminate resolution, resets on a
+    /// confirmed session end, and resets on any ordinary watcher crash — and its
+    /// escalation predicate stays bounded to milestones so a repeating killer
+    /// alerts on 2, 4, 8 … rather than on every repeat.
+    #[test]
+    fn the_session_terminate_run_counter_advances_resets_and_bounds_escalation() {
+        use hq_desktop_core::sync_outcome::unconfirmed_session_terminate_escalates;
+        let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        {
+            let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+            *st = WatcherCrashState::default();
+        }
+        // App start: the first unconfirmed exit is silent, a second escalates.
+        assert_eq!(bump_session_terminate_unconfirmed_run(), 1);
+        assert!(!unconfirmed_session_terminate_escalates(1));
+        assert_eq!(bump_session_terminate_unconfirmed_run(), 2);
+        assert!(unconfirmed_session_terminate_escalates(2));
+        // A confirmed session end resets the run.
+        reset_session_terminate_unconfirmed_run();
+        assert_eq!(bump_session_terminate_unconfirmed_run(), 1);
+        assert!(!unconfirmed_session_terminate_escalates(1));
+        // An ordinary watcher crash also breaks the run.
+        note_watcher_crashed();
+        {
+            let st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(
+                st.session_terminate_unconfirmed_run, 0,
+                "an ordinary crash breaks the unconfirmed session-terminate run"
+            );
+        }
+        // Past the second, escalation tracks the milestone limiter (never a loop).
+        assert!(!unconfirmed_session_terminate_escalates(3));
+        assert!(unconfirmed_session_terminate_escalates(4));
+        {
+            let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+            *st = WatcherCrashState::default();
+        }
+    }
+
+    /// Step 4a end-to-end: a deferred session-terminate exit does NOT advance the
+    /// consecutive-failure streak or arm respawn backoff, while a genuine fault
+    /// exit still does.
+    #[test]
+    fn a_session_terminate_defer_does_not_advance_the_streak_but_a_fault_does() {
+        const SESSION_TERMINATE: i32 = 1_073_807_364;
+        let mut deferred = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut deferred,
+            Some(SESSION_TERMINATE),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext {
+                windows_terminator: Some(WindowsTerminatorAttribution::UnattributedNoSignal),
+                ..Default::default()
+            },
+        );
+        assert_eq!(deferred.deferred.len(), 1, "the session-terminate still defers");
+        assert_eq!(
+            deferred.consecutive, 0,
+            "an OS-supplied termination must not advance the consecutive-failure streak"
+        );
+        assert!(
+            !deferred.in_backoff,
+            "an OS-supplied termination must not arm respawn backoff"
+        );
+        assert_eq!(
+            deferred.lifecycle,
+            vec![(WatchDaemonState::Stopped, DaemonFailureCategory::None)]
+        );
+
+        // A genuine fault exit (0xC0000409, STATUS_STACK_BUFFER_OVERRUN) still
+        // advances the streak and arms backoff, so the guard does not go blind.
+        let mut fault = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut fault,
+            Some(0xC000_0409u32 as i32),
+            None,
+            false,
+            false,
+            "npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(fault.captures.len(), 1, "a real fault still alerts");
+        assert_eq!(fault.consecutive, 1, "a real fault advances the streak");
+        assert!(fault.in_backoff, "a real fault arms respawn backoff");
     }
 
     /// A deferral is resolved by exactly one claimant. The registry is what
@@ -9388,8 +11534,10 @@ mod tests {
                 "{attribution:?} with a latch must suppress with no capture and no deferral"
             );
             assert!(
-                latched_effects.logs.iter().any(|(_, message)| message
-                    .starts_with("session-end-latched watcher exit")),
+                latched_effects
+                    .logs
+                    .iter()
+                    .any(|(_, message)| message.starts_with("session-end-latched watcher exit")),
                 "{attribution:?} with a latch must self-diagnose as session_end_latched"
             );
         }
@@ -9419,7 +11567,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:session-terminate",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
         assert!(effects.captures[0]
@@ -9551,7 +11700,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:session-terminate",
                 "eperm",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
     }
@@ -9601,7 +11751,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none"
+                "none",
+                "none"
             ]
         );
     }
@@ -9650,7 +11801,14 @@ mod tests {
         assert!(!serialized.contains(private_path));
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:126", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:126",
+                "none",
+                "none",
+                "none"
+            ]
         );
     }
 
@@ -9817,10 +11975,23 @@ mod tests {
         );
         assert_eq!(
             first.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:190",
+                "none",
+                "none",
+                "none"
+            ]
         );
-        assert_eq!(recorded_string_extra(first, "runner_exec_resolution"), "npx_cache");
-        assert_eq!(recorded_string_extra(first, "runner_exec_target_exists"), "false");
+        assert_eq!(
+            recorded_string_extra(first, "runner_exec_resolution"),
+            "npx_cache"
+        );
+        assert_eq!(
+            recorded_string_extra(first, "runner_exec_target_exists"),
+            "false"
+        );
         assert!(
             !first
                 .extras
@@ -9837,10 +12008,20 @@ mod tests {
         );
         assert_eq!(
             fifth.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:127",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert_eq!(recorded_number_extra(fifth, "exec_not_runnable_streak"), 4);
-        assert_eq!(recorded_string_extra(fifth, "runner_exec_target_exists"), "false");
+        assert_eq!(
+            recorded_string_extra(fifth, "runner_exec_target_exists"),
+            "false"
+        );
 
         // #9 — a 127 leg at exec streak 8.
         assert!(
@@ -9850,7 +12031,14 @@ mod tests {
         );
         assert_eq!(
             ninth.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:127",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert_eq!(recorded_number_extra(ninth, "exec_not_runnable_streak"), 8);
     }
@@ -9920,7 +12108,14 @@ mod tests {
         for capture in &effects.captures {
             assert_eq!(
                 capture.fingerprint,
-                vec!["sync", "auto-sync-watcher-termination", "signal:9", "none", "none", "none"]
+                vec![
+                    "sync",
+                    "auto-sync-watcher-termination",
+                    "signal:9",
+                    "none",
+                    "none",
+                    "none"
+                ]
             );
         }
     }
@@ -10045,7 +12240,9 @@ mod tests {
             "the LocalLogOnly burst must not capture and must not mute the SIGKILL"
         );
         assert_eq!(effects.captures[0].fingerprint[2], "signal:9");
-        assert!(effects.captures[0].message.contains("consecutive failure #1"));
+        assert!(effects.captures[0]
+            .message
+            .contains("consecutive failure #1"));
         assert!(!effects.captures[0].message.contains("episode failure"));
     }
 
@@ -10089,7 +12286,9 @@ mod tests {
             "the 126/127 exits must not capture (streak < 4) nor mute the SIGKILL"
         );
         assert_eq!(effects.captures[0].fingerprint[2], "signal:9");
-        assert!(effects.captures[0].message.contains("consecutive failure #1"));
+        assert!(effects.captures[0]
+            .message
+            .contains("consecutive failure #1"));
     }
 
     /// A cancelled exit stays silent AND never touches the episode streak (it
@@ -10155,18 +12354,33 @@ mod tests {
             .expect("a 190 launcher fast-fail captures at #1");
         assert_eq!(
             event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:190",
+                "none",
+                "none",
+                "none"
+            ]
         );
-        assert_eq!(recorded_string_extra(event, "runner_exec_resolution"), "npx_cache");
-        assert_eq!(recorded_string_extra(event, "runner_exec_target_exists"), "false");
+        assert_eq!(
+            recorded_string_extra(event, "runner_exec_resolution"),
+            "npx_cache"
+        );
+        assert_eq!(
+            recorded_string_extra(event, "runner_exec_target_exists"),
+            "false"
+        );
         assert_eq!(
             recorded_string_extra(event, "runner_exec_target_executable"),
             "false"
         );
         assert!(
-            event.extras.iter().any(|(key, value)| key
-                == "runner_target_repair_attempted"
-                && *value == sentry::protocol::Value::Bool(true)),
+            event
+                .extras
+                .iter()
+                .any(|(key, value)| key == "runner_target_repair_attempted"
+                    && *value == sentry::protocol::Value::Bool(true)),
             "the spawn-time repair outcome rides alongside the exit-time probe"
         );
 
@@ -10188,7 +12402,14 @@ mod tests {
         let direct_event = direct.captures.first().expect("still captured at #1");
         assert_eq!(
             direct_event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:190", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:190",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert!(
             !direct_event
@@ -10245,13 +12466,23 @@ mod tests {
         let exec_event = exec.captures.first().expect("127 captures at streak 4");
         assert_eq!(
             exec_event.fingerprint,
-            vec!["sync", "auto-sync-watcher-termination", "exit:127", "none", "none", "none"]
+            vec![
+                "sync",
+                "auto-sync-watcher-termination",
+                "exit:127",
+                "none",
+                "none",
+                "none"
+            ]
         );
         assert_eq!(
             recorded_string_extra(exec_event, "runner_exec_target_exists"),
             "false"
         );
-        assert_eq!(recorded_number_extra(exec_event, "exec_not_runnable_streak"), 4);
+        assert_eq!(
+            recorded_number_extra(exec_event, "exec_not_runnable_streak"),
+            4
+        );
     }
 
     #[test]
@@ -10549,7 +12780,12 @@ mod tests {
             " [uptime=2m0s; last_rss=48MB (tree, sampled 8s before exit)]"
         );
         assert_eq!(
-            exit_diagnostic_suffix(Some(Duration::from_secs(120)), Some(48 * 1024), None, "tree"),
+            exit_diagnostic_suffix(
+                Some(Duration::from_secs(120)),
+                Some(48 * 1024),
+                None,
+                "tree"
+            ),
             " [uptime=2m0s; last_rss=48MB (tree)]"
         );
         // A launcher/shim single-PID sample WITHHOLDS the number — neither the
@@ -10586,7 +12822,10 @@ mod tests {
         );
         assert_eq!(resolve_rss_scope(None, "/opt/homebrew/bin/npx"), "launcher");
         // Only a command whose registered child IS the runner keeps `runner`.
-        assert_eq!(resolve_rss_scope(Some(RssSampleKind::Single), "node"), "runner");
+        assert_eq!(
+            resolve_rss_scope(Some(RssSampleKind::Single), "node"),
+            "runner"
+        );
     }
 
     #[test]
@@ -10618,7 +12857,10 @@ mod tests {
         // Only the root (shim) was readable — the runner/descendants all raced out
         // of their per-PID reads — so the "tree" would be just the ~6MB shim.
         // Withhold (None) instead of mislabeling the shim as the complete tree.
-        assert_eq!(sum_job_working_set_kb(&[(100, Some(6144)), (200, None)], 100), None);
+        assert_eq!(
+            sum_job_working_set_kb(&[(100, Some(6144)), (200, None)], 100),
+            None
+        );
         assert_eq!(sum_job_working_set_kb(&[(100, Some(6144))], 100), None);
         // A single readable descendant is enough to trust the tree even when other
         // members raced out — no over-withholding on worker churn.
@@ -10669,15 +12911,41 @@ mod tests {
     fn sum_pid_tree_rss_kb_sums_descendants_and_handles_edges() {
         // pid ppid rss — root=100 with children 200/300 and grandchild 400.
         let table = "100 1 10\n200 100 20\n300 100 30\n400 200 40\n999 1 99\n";
-        // root + 200 + 300 + 400 = 100; the unrelated 999 is excluded.
-        assert_eq!(sum_pid_tree_rss_kb(table, 100), Some(100));
+        // root + 200 + 300 + 400 = 100 KB over 4 PIDs; the unrelated 999 is excluded,
+        // and the largest single member is 400's 40 KB (so its PID is what a pre-empt
+        // would signal for a memory-class report).
+        assert_eq!(
+            sum_pid_tree_rss_kb(table, 100),
+            Some(TreeRssSample {
+                total_kb: 100,
+                pid_count: 4,
+                largest_member_kb: 40,
+                largest_member_pid: 400
+            })
+        );
         // A leaf sums only itself.
-        assert_eq!(sum_pid_tree_rss_kb(table, 400), Some(40));
-        // A missing root -> None, which drives the single-PID fallback.
+        assert_eq!(
+            sum_pid_tree_rss_kb(table, 400),
+            Some(TreeRssSample {
+                total_kb: 40,
+                pid_count: 1,
+                largest_member_kb: 40,
+                largest_member_pid: 400
+            })
+        );
+        // A missing root -> None, which drives the single-PID fallback unchanged.
         assert_eq!(sum_pid_tree_rss_kb(table, 12345), None);
         // Malformed rows are skipped, never fatal; a reparented (ppid 1) row is
         // just another descendant when reachable, or excluded when not.
-        assert_eq!(sum_pid_tree_rss_kb("garbage\n100 1 10\n", 100), Some(10));
+        assert_eq!(
+            sum_pid_tree_rss_kb("garbage\n100 1 10\n", 100),
+            Some(TreeRssSample {
+                total_kb: 10,
+                pid_count: 1,
+                largest_member_kb: 10,
+                largest_member_pid: 100
+            })
+        );
     }
 
     #[cfg(unix)]
@@ -10685,18 +12953,100 @@ mod tests {
     fn sum_pid_tree_rss_kb_is_cycle_safe() {
         // A pathological ppid cycle must terminate and count each PID once.
         let table = "100 200 10\n200 100 20\n";
-        assert_eq!(sum_pid_tree_rss_kb(table, 100), Some(30));
+        assert_eq!(
+            sum_pid_tree_rss_kb(table, 100),
+            Some(TreeRssSample {
+                total_kb: 30,
+                pid_count: 2,
+                largest_member_kb: 20,
+                largest_member_pid: 200
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_fresh_memory_class_retries_a_mid_write_report_then_reads_it() {
+        // The bounded read discipline behind resolve_watcher_memory_class (HQ-DESKTOP-60):
+        // a mid-write report is RETRIED to the deadline and read once complete, rather
+        // than mis-recorded as terminally unreadable the way r1 did on 100% of post-fix
+        // events; a report that never completes is named honestly; and the wait never
+        // blocks past its deadline.
+        use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("report.json");
+        let complete = serde_json::json!({
+            "header": { "trigger": "Signal" },
+            "javascriptHeap": { "totalMemory": 3_758_096_384u64, "usedMemory": 3_221_225_472u64 }
+        })
+        .to_string();
+
+        // 1) A complete report already carrying a class -> report_read immediately.
+        std::fs::write(&path, &complete).unwrap();
+        let (mc, src) =
+            read_fresh_memory_class_within(&path, None, Instant::now() + Duration::from_secs(2));
+        assert_eq!(src, Src::ReportRead);
+        assert_eq!(mc.js_heap_total_mb, Some(3584));
+
+        // 2) A complete document with no memory class -> report_unreadable (honestly empty).
+        std::fs::write(&path, br#"{"header":{"trigger":"Signal"}}"#).unwrap();
+        let (_, src) =
+            read_fresh_memory_class_within(&path, None, Instant::now() + Duration::from_secs(2));
+        assert_eq!(src, Src::ReportUnreadable);
+
+        // 3) A report that stays truncated until the deadline -> report_never_completed,
+        //    NOT report_unreadable (r1's bug), and it never blocks past the deadline.
+        std::fs::write(&path, &complete.as_bytes()[..complete.len() / 2]).unwrap();
+        let start = Instant::now();
+        let (_, src) =
+            read_fresh_memory_class_within(&path, None, start + Duration::from_millis(300));
+        assert_eq!(src, Src::ReportNeverCompleted);
+        assert!(start.elapsed() < Duration::from_secs(2), "must not block past the deadline");
+
+        // 4) Mid-write on first observation, complete before the deadline -> report_read.
+        std::fs::write(&path, &complete.as_bytes()[..complete.len() / 2]).unwrap();
+        let path_writer = path.clone();
+        let complete_writer = complete.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(120));
+            let mut f = std::fs::File::create(&path_writer).unwrap();
+            f.write_all(complete_writer.as_bytes()).unwrap();
+            f.flush().unwrap();
+        });
+        let (mc, src) =
+            read_fresh_memory_class_within(&path, None, Instant::now() + Duration::from_secs(2));
+        writer.join().unwrap();
+        assert_eq!(src, Src::ReportRead, "a mid-write report that completes must resolve to report_read");
+        assert_eq!(mc.js_heap_total_mb, Some(3584));
+
+        // 5) No fresh report ever appears -> report_absent (distinct from never-completed).
+        let empty_dir = TempDir::new().unwrap();
+        let missing = empty_dir.path().join("nope.json");
+        let (_, src) =
+            read_fresh_memory_class_within(&missing, None, Instant::now() + Duration::from_millis(150));
+        assert_eq!(src, Src::ReportAbsent);
     }
 
     #[cfg(unix)]
     #[test]
     fn sample_watcher_rss_scoped_reports_tree_for_the_live_process() {
         // The live test process is always in the `ps` table, so the scoped sampler
-        // succeeds and reports the honest whole-tree scope.
-        let (kb, kind) = sample_watcher_rss_scoped(std::process::id())
+        // succeeds and reports the honest whole-tree scope with its decomposition.
+        let sample = sample_watcher_rss_scoped(std::process::id())
             .expect("the live test process must be sampleable");
-        assert!(kb > 0, "a live process has a nonzero footprint");
-        assert_eq!(kind, RssSampleKind::Tree);
+        assert!(sample.kb > 0, "a live process has a nonzero footprint");
+        assert_eq!(sample.kind, RssSampleKind::Tree);
+        assert!(
+            sample.tree_pid_count.unwrap_or(0) >= 1,
+            "a comparable tree sample carries a PID count"
+        );
+        assert!(
+            sample.tree_largest_member_kb.unwrap_or(0) > 0,
+            "a comparable tree sample carries a largest-member RSS"
+        );
     }
 
     /// The minimal heap-OOM stderr both wiring tests feed through the shared
@@ -10821,13 +13171,25 @@ mod tests {
             recorded_tag(heap_capture, "runner_heap_peak_used_bucket"),
             "2_5gb_to_3gb"
         );
-        assert_eq!(recorded_number_extra(heap_capture, "runner_heap_used_mb"), 48);
-        assert_eq!(recorded_number_extra(heap_capture, "runner_heap_total_mb"), 81);
-        assert_eq!(recorded_number_extra(heap_capture, "runner_oom_frame_count"), 3);
+        assert_eq!(
+            recorded_number_extra(heap_capture, "runner_heap_used_mb"),
+            48
+        );
+        assert_eq!(
+            recorded_number_extra(heap_capture, "runner_heap_total_mb"),
+            81
+        );
+        assert_eq!(
+            recorded_number_extra(heap_capture, "runner_oom_frame_count"),
+            3
+        );
 
         // The baseline (no heap evidence) carries none of them — absence never
         // renders as evidence.
-        assert!(base_capture.tags.iter().all(|(k, _)| k != "runner_oom_banner"));
+        assert!(base_capture
+            .tags
+            .iter()
+            .all(|(k, _)| k != "runner_oom_banner"));
         assert!(base_capture
             .tags
             .iter()
@@ -10842,10 +13204,7 @@ mod tests {
         assert_eq!(heap_capture.fingerprint, base_capture.fingerprint);
         assert_eq!(heap_capture.fingerprint.len(), 6);
         assert_eq!(heap_capture.fingerprint[0], "sync");
-        assert_eq!(
-            heap_capture.fingerprint[1],
-            "auto-sync-watcher-termination"
-        );
+        assert_eq!(heap_capture.fingerprint[1], "auto-sync-watcher-termination");
     }
 
     fn assert_signed_out_entry_point_records_origin(
@@ -10929,7 +13288,7 @@ mod tests {
             &Mutex::new(WatcherPhaseContext::default()),
             &generation,
             0,
-&[],
+            &[],
             None,
             SessionEndLatchReading::Unavailable,
             None,
@@ -10970,7 +13329,7 @@ mod tests {
             &Mutex::new(WatcherPhaseContext::default()),
             &generation,
             0,
-&tail,
+            &tail,
             None,
             SessionEndLatchReading::Unavailable,
             None,
@@ -11073,7 +13432,7 @@ mod tests {
             &phase_context,
             &generation,
             0,
-&tail,
+            &tail,
             None,
             SessionEndLatchReading::Unavailable,
             None,
@@ -11141,7 +13500,8 @@ mod tests {
                 "auto-sync-watcher-termination",
                 "windows:fault:0xC0000409",
                 "none",
-                "none", "none",
+                "none",
+                "none",
             ],
             "grouping continuity: neither cluster issue may regroup"
         );
@@ -11188,7 +13548,7 @@ mod tests {
             }),
             &generation,
             0,
-&[],
+            &[],
             None,
             SessionEndLatchReading::Unavailable,
             None,

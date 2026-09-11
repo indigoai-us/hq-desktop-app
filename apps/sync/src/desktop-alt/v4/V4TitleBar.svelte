@@ -50,6 +50,13 @@
     oncommand?: () => void;
     onaccount?: () => void;
     onOpenSettings?: (tab?: SettingsTab) => void;
+    /** Optional in-app history. Omitted on unsupported hosts so chrome stays unchanged. */
+    canGoBack?: boolean;
+    canGoForward?: boolean;
+    backLabel?: string;
+    forwardLabel?: string;
+    onback?: () => void;
+    onforward?: () => void;
   }
 
   let {
@@ -79,7 +86,21 @@
     oncommand,
     onaccount,
     onOpenSettings,
+    canGoBack = false,
+    canGoForward = false,
+    backLabel = '',
+    forwardLabel = '',
+    onback,
+    onforward,
   }: Props = $props();
+
+  const showHistoryControls = $derived(Boolean(onback || onforward));
+  const backHoverLabel = $derived(
+    canGoBack && backLabel.trim() ? backLabel : 'Back',
+  );
+  const forwardHoverLabel = $derived(
+    canGoForward && forwardLabel.trim() ? forwardLabel : 'Forward',
+  );
 
   const model = $derived(
     getV4TitleBarModel({
@@ -221,6 +242,53 @@
         <path d="M5.25 2.5v11" stroke="currentColor" stroke-width="1.2" />
       </svg>
     </button>
+    {#if showHistoryControls}
+      <div
+        class="v4-history"
+        data-testid="titlebar-history"
+        data-no-drag
+        data-tauri-drag-region="false"
+      >
+        <button
+          type="button"
+          class="v4-icon-btn"
+          data-testid="titlebar-back"
+          aria-label="Back"
+          title={backHoverLabel}
+          disabled={!canGoBack}
+          onclick={() => onback?.()}
+        >
+          <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M10 3.5 5.5 8 10 12.5"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="v4-icon-btn"
+          data-testid="titlebar-forward"
+          aria-label="Forward"
+          title={forwardHoverLabel}
+          disabled={!canGoForward}
+          onclick={() => onforward?.()}
+        >
+          <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M6 3.5 10.5 8 6 12.5"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
+    {/if}
   </div>
 
   <div class="v4-status" aria-live="polite">
@@ -396,9 +464,19 @@
     display: flex;
     align-items: center;
     flex: 0 0 auto;
+    flex-wrap: nowrap;
     gap: 4px;
     /* 78px left inset clears the overlay traffic lights (macOS). */
     padding-left: 78px;
+  }
+
+  .v4-history {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    flex-shrink: 0;
+    gap: 2px;
+    white-space: nowrap;
   }
 
   /* Windows uses the native decorated title bar (system controls + Snap
@@ -607,6 +685,18 @@
     background: color-mix(in srgb, var(--v4-text-1) 8%, transparent);
     box-shadow: inset 0 0 0 1px var(--v4-hairline);
     color: var(--v4-text-1);
+  }
+
+  .v4-icon-btn:disabled {
+    color: var(--v4-text-3);
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  .v4-icon-btn:disabled:hover {
+    border-color: transparent;
+    background: transparent;
+    color: var(--v4-text-3);
   }
 
   .v4-icon-btn:focus-visible {

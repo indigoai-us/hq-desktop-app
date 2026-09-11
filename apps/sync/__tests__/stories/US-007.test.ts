@@ -103,6 +103,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
       'activity',
       'deployments',
       'secrets',
+      'integrations',
       'settings',
     ]);
     expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'acme' }, companies)).toBeNull();

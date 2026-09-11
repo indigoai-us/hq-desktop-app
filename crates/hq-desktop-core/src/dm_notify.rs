@@ -652,6 +652,10 @@ pub struct ThreadReply {
     pub root_event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_count: Option<u32>,
+    /// Keep attachment references intact across the native bridge. The UI owns
+    /// attachment validation and loads bytes through the authorized vault API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<serde_json::Value>,
 }
 
 /// The full thread view returned by `GET /v1/notify/threads`: the pinned root
@@ -674,9 +678,7 @@ pub struct ThreadView {
 /// The DM-scope GET omits `replyCount`, so a missing/zero count with replies
 /// present must still report the loaded length.
 pub fn effective_reply_count(view: &ThreadView) -> u32 {
-    view.reply_count
-        .unwrap_or(0)
-        .max(view.replies.len() as u32)
+    view.reply_count.unwrap_or(0).max(view.replies.len() as u32)
 }
 
 /// One renderer's active reply thread. Several desktop windows can have a
@@ -1547,6 +1549,24 @@ mod tests {
         assert_eq!(view.reply_count, Some(2));
         assert_eq!(view.replies[0].direction, "out");
         assert_eq!(effective_reply_count(&view), 2);
+    }
+
+    #[test]
+    fn thread_view_preserves_root_and_reply_attachment_references() {
+        let message = serde_json::json!({
+            "eventId": "evt_image", "fromPersonUid": "prs_a",
+            "body": "image", "createdAt": "2026-09-05T22:23:00Z",
+            "attachments": [{"vaultPath": "chat/image.png", "name": "image.png",
+                "kind": "image", "sizeBytes": 2200000}]
+        });
+        let input = serde_json::json!({"root": message, "replies": [message]});
+        let view: ThreadView = serde_json::from_value(input.clone()).unwrap();
+        let output = serde_json::to_value(view).unwrap();
+        assert_eq!(output["root"]["attachments"], input["root"]["attachments"]);
+        assert_eq!(
+            output["replies"][0]["attachments"],
+            input["replies"][0]["attachments"]
+        );
     }
 
     #[test]

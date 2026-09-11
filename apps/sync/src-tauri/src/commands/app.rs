@@ -22,6 +22,23 @@ pub fn bring_main_window_to_front(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Hide the menubar popover from the renderer — Esc and the header close
+/// button.
+///
+/// The popover window is `decorations: false`, so it has no traffic-light close
+/// control, and `CloseRequested` only reaches it via Cmd-W. This is the
+/// explicit "make it go away" path. Besides hiding, it records the dismissal
+/// with `tray::note_popover_dismissed` so the launch-time onboarding pin stops
+/// suppressing click-away for the rest of the process.
+#[tauri::command]
+pub fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is not available.".to_string())?;
+    crate::tray::note_popover_dismissed();
+    window.hide().map_err(|e| e.to_string())
+}
+
 /// Ask the main menubar window to show its existing Settings surface.
 ///
 /// Desktop-alt is a separate webview, but Settings still lives in the main
@@ -144,4 +161,14 @@ mod tests {
         assert!(!shell_execute_succeeded(32));
         assert!(shell_execute_succeeded(33));
     }
+}
+
+
+/// Append one renderer-supplied line to the support log. Diagnostic only: the
+/// renderer decides what to say, the tag is prefixed so lines are greppable.
+#[tauri::command]
+pub fn frontend_log(tag: String, message: String) {
+    let tag: String = tag.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(40).collect();
+    let message: String = message.chars().take(2000).collect();
+    crate::util::logfile::log(&format!("ui:{tag}"), &message);
 }

@@ -1,29 +1,39 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
+  import type {
+    ConnectorImportOutcome,
+    ConnectorImportSourceSet,
+    ErrorCategory,
+  } from '../../lib/onboarding-setup';
 
   interface Props {
     oncomplete: () => void;
     onTelemetry?: (event: {
       action: 'entered' | 'started' | 'completed' | 'skipped' | 'failed';
       detectedToolCount?: number;
-      outcome?: string;
+      detectedSourceSet?: ConnectorImportSourceSet;
+      outcome?: ConnectorImportOutcome;
+      errorCategory?: ErrorCategory;
     }) => void;
   }
 
   interface ClaudeDesktopConnectors {
     present: boolean;
     count: number;
-    path: string;
+    outcome: ConnectorImportOutcome;
+    inspectedSources: ConnectorImportSourceSet;
   }
 
   interface ImportResult {
     ok: boolean;
     message: string;
+    errorCategory: ErrorCategory;
   }
 
   let { oncomplete, onTelemetry }: Props = $props();
   let connectorCount = $state(0);
+  let detectedSourceSet = $state<ConnectorImportSourceSet>('unknown');
   let status = $state<'detecting' | 'offer' | 'importing' | 'success' | 'failure'>(
     'detecting',
   );
@@ -43,11 +53,13 @@
           'detect_claude_desktop_connectors',
         );
         connectorCount = result.count;
+        detectedSourceSet = result.inspectedSources;
         if (result.count === 0) {
           onTelemetry?.({
             action: 'skipped',
             detectedToolCount: 0,
-            outcome: 'none_detected',
+            detectedSourceSet,
+            outcome: result.outcome,
           });
           complete();
           return;
@@ -58,7 +70,8 @@
         onTelemetry?.({
           action: 'skipped',
           detectedToolCount: 0,
-          outcome: 'detection_unavailable',
+          detectedSourceSet: 'unknown',
+          outcome: 'command_failed',
         });
         complete();
       }
@@ -68,21 +81,29 @@
   async function importConnectors(): Promise<void> {
     if (status === 'importing') return;
     status = 'importing';
-    onTelemetry?.({ action: 'started', detectedToolCount: connectorCount });
+    onTelemetry?.({
+      action: 'started',
+      detectedToolCount: connectorCount,
+      detectedSourceSet,
+    });
     try {
       const result = await invoke<ImportResult>('import_claude_desktop_connectors');
       status = result.ok ? 'success' : 'failure';
       onTelemetry?.({
         action: result.ok ? 'completed' : 'failed',
         detectedToolCount: connectorCount,
+        detectedSourceSet,
         outcome: result.ok ? 'imported' : 'import_failed',
+        ...(result.ok ? {} : { errorCategory: result.errorCategory }),
       });
     } catch {
       status = 'failure';
       onTelemetry?.({
         action: 'failed',
         detectedToolCount: connectorCount,
+        detectedSourceSet,
         outcome: 'command_failed',
+        errorCategory: 'unknown',
       });
     }
   }
@@ -112,6 +133,7 @@
         onTelemetry?.({
           action: 'skipped',
           detectedToolCount: connectorCount,
+          detectedSourceSet,
           outcome: 'user_skipped',
         });
         complete();

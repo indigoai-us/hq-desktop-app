@@ -307,7 +307,10 @@ pub fn is_user_owned_prefix(prefix: &Path, managed_roots: &[PathBuf], home: Opti
     // fixtures) canonicalizes to itself, so the lexical semantics are unchanged.
     let prefix = canonicalize_or_self(prefix);
     let home = home.map(canonicalize_or_self);
-    let managed_roots: Vec<PathBuf> = managed_roots.iter().map(|r| canonicalize_or_self(r)).collect();
+    let managed_roots: Vec<PathBuf> = managed_roots
+        .iter()
+        .map(|r| canonicalize_or_self(r))
+        .collect();
 
     // HQ's own managed roots are driven by the managed path, never this one.
     if managed_roots
@@ -421,47 +424,105 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// the session finds `hq` via this PATH, so the version check / auto-update /
 /// install must consult it too, or it wrongly concludes the CLI is missing or
 /// stale when it merely lives on a prefix only the settings PATH knows about.
-pub(crate) fn settings_path_dirs_in(hq_root: &Path) -> Vec<PathBuf> {
-    let claude = hq_root.join(".claude");
+pub fn settings_path_dirs_in(hq_root: &Path) -> Vec<PathBuf> {
     // Claude Code merges settings PER KEY, and `env.PATH` is a scalar: a value in
     // settings.local.json OVERRIDES the one in settings.json rather than
     // concatenating. So the FIRST file that defines a non-empty `env.PATH` wins
     // outright — settings.json is consulted only when the local file has none.
     // Concatenating would let a stale base PATH resolve an `hq` the session
-    // (which uses only the local PATH) would never run.
-    for file in ["settings.local.json", "settings.json"] {
-        let raw = match std::fs::read_to_string(claude.join(file)) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let value: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let path_val = value
-            .get("env")
-            .and_then(|env| env.get("PATH"))
-            .and_then(|p| p.as_str())
-            .unwrap_or("");
-        if path_val.is_empty() {
+    // (which uses only the local PATH) would never run. That precedence lives in
+    // ONE place — `winning_settings_path_file` — so the resolver here and the
+    // installer's writer can never disagree about which file supplies env.PATH
+    // (the reader/writer split that let a stale Homebrew `hq` shadow the managed
+    // CLI in HQ-DESKTOP-46).
+    let claude = hq_root.join(".claude");
+    let Some(file) = winning_settings_path_file(hq_root).filename() else {
+        return Vec::new();
+    };
+    let path_val = settings_env_path_value(&claude.join(file)).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for seg in path_val.split(PATH_SEP) {
+        if seg.is_empty() {
             continue;
         }
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-        for seg in path_val.split(PATH_SEP) {
-            if seg.is_empty() {
-                continue;
-            }
-            let dir = PathBuf::from(seg);
-            // Absolute + real directory only: a relative or missing entry from a
-            // hand-edited settings file must not shadow the real search order.
-            if dir.is_absolute() && dir.is_dir() && seen.insert(dir.clone()) {
-                dirs.push(dir);
-            }
+        let dir = PathBuf::from(seg);
+        // Absolute + real directory only: a relative or missing entry from a
+        // hand-edited settings file must not shadow the real search order.
+        if dir.is_absolute() && dir.is_dir() && seen.insert(dir.clone()) {
+            dirs.push(dir);
         }
-        return dirs;
     }
-    Vec::new()
+    dirs
+}
+
+/// Which `.claude` settings file supplies the winning `env.PATH` for an HQ root,
+/// under the precedence Claude Code applies (see [`settings_path_dirs_in`]):
+/// `settings.local.json` wins whenever it defines a non-empty `env.PATH`, else
+/// `settings.json`, else neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsPathFile {
+    /// `.claude/settings.local.json` defines a non-empty `env.PATH`.
+    Local,
+    /// `.claude/settings.local.json` does not, but `.claude/settings.json` does.
+    Base,
+    /// Neither file defines a non-empty `env.PATH`.
+    #[default]
+    None,
+}
+
+impl SettingsPathFile {
+    /// The `.claude` filename this variant names, or `None` when neither file
+    /// supplies a PATH.
+    pub fn filename(self) -> Option<&'static str> {
+        match self {
+            Self::Local => Some("settings.local.json"),
+            Self::Base => Some("settings.json"),
+            Self::None => Option::None,
+        }
+    }
+
+    /// Closed, path-free token for the `settings_path_file` telemetry tag.
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Base => "base",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Read a `.claude` settings file's `env.PATH` string, if the file exists, parses
+/// as JSON, and defines a non-empty `env.PATH`. `None` for a missing, malformed,
+/// or PATH-less file — the same three skips the resolver has always applied,
+/// now shared between the reader and [`winning_settings_path_file`].
+fn settings_env_path_value(path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let path_val = value
+        .get("env")
+        .and_then(|env| env.get("PATH"))
+        .and_then(|p| p.as_str())?;
+    (!path_val.is_empty()).then(|| path_val.to_string())
+}
+
+/// The [`SettingsPathFile`] whose `env.PATH` the app resolves `hq` through for
+/// `hq_root`. Single source of truth shared by the resolver
+/// ([`settings_path_dirs_in`]) and the installer's writer
+/// (`configure_claude_settings_path`): the composed managed-first PATH must be
+/// WRITTEN into whichever file the resolver READS, or it lands in a file the
+/// resolver ignores and a stale foreign `hq` keeps shadowing the managed CLI
+/// (HQ-DESKTOP-46). Pure over the filesystem (only reads the two settings
+/// files) so the precedence is unit-testable with a tempdir.
+pub fn winning_settings_path_file(hq_root: &Path) -> SettingsPathFile {
+    let claude = hq_root.join(".claude");
+    if settings_env_path_value(&claude.join("settings.local.json")).is_some() {
+        SettingsPathFile::Local
+    } else if settings_env_path_value(&claude.join("settings.json")).is_some() {
+        SettingsPathFile::Base
+    } else {
+        SettingsPathFile::None
+    }
 }
 
 /// True iff `path` is a regular file with an executable bit set. Merely existing
@@ -498,6 +559,15 @@ fn resolved_hq_folder_for_path() -> PathBuf {
 /// no HQ folder or settings file, so callers degrade to their existing search.
 pub(crate) fn settings_path_dirs() -> Vec<PathBuf> {
     settings_path_dirs_in(&resolved_hq_folder_for_path())
+}
+
+/// The HQ folder the PATH resolver reads its `.claude` settings from — the same
+/// four-tier resolution [`settings_path_dirs`] uses (menubar.json `hqPath`, then
+/// config.json `hqFolderPath`, then core.yaml discovery, then `~/HQ`). Public so
+/// the in-run settings-PATH repair writes into the SAME root the resolver reads,
+/// keeping reader and writer on one folder.
+pub fn resolved_hq_folder() -> PathBuf {
+    resolved_hq_folder_for_path()
 }
 
 /// Whether `path` lives inside npm's `npx` cache (`…/_npx/…`).
@@ -540,12 +610,36 @@ pub fn is_npx_cache_path(path: &Path) -> bool {
 }
 
 /// Whether the resolver must reject `candidate` for this `name`. Scoped to `hq`:
-/// only the CLI the updater converges may never be an npx-cache copy. Every
-/// other program — `npm`, `node`, `npx`, `git`, `hq-sync-runner` — and every
-/// non-npx `hq` copy resolves exactly as before, so the runner's deliberate
-/// npx-cache execution path is untouched.
+/// only the CLI the updater converges may never be an npx-cache copy OR HQ's own
+/// orphaned managed-toolchain shim. Every other program — `npm`, `node`, `npx`,
+/// `git`, `hq-sync-runner` — and every backed or foreign `hq` copy resolves
+/// exactly as before, so the runner's deliberate npx-cache execution path and
+/// every third-party install are untouched.
 fn hq_lookup_rejects_candidate(name: &str, candidate: &Path) -> bool {
-    name == "hq" && is_npx_cache_path(candidate)
+    name == "hq" && (is_npx_cache_path(candidate) || is_orphaned_managed_shim(candidate))
+}
+
+/// Whether an `hq` candidate is HQ's OWN orphaned managed-toolchain shim: it sits
+/// inside a managed-toolchain root HQ itself created AND its `@indigoai-us/hq-cli`
+/// package is DEFINITIVELY gone. Such a shim can never be spawned to a version and
+/// can never be updated in place, so adopting it pins the machine on a permanent
+/// unreadable-version report; skipping it lets the resolver find a real install
+/// elsewhere, or (with none) fall through to the not-resolved marker so the
+/// existing installer can put a real CLI on the machine.
+///
+/// The provenance gate is checked FIRST and is pure path math, so the common case
+/// — an `hq` anywhere outside a managed root — costs nothing and a foreign program
+/// named `hq` is never rejected here. Only a candidate already proven to live in a
+/// managed root pays for the bounded backing read, and only a DEFINITIVE absence
+/// rejects: an unreadable or indeterminate manifest (a permission/AV hold) keeps
+/// the candidate, so a transient blip can never turn a working machine into a
+/// reinstall.
+fn is_orphaned_managed_shim(candidate: &Path) -> bool {
+    hq_bin_in_managed_root(candidate)
+        && matches!(
+            crate::hq_cli_update::hq_cli_backing(candidate),
+            CandidateBacking::AbsentDefinitive
+        )
 }
 
 pub fn resolve_bin(name: &str) -> String {
@@ -563,22 +657,28 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
     #[cfg(target_os = "windows")]
     {
         let candidates = candidate_filenames(name);
-        // For `hq`, skip an npx-cache copy at every candidate source; for every
-        // other program this is a no-op, so their resolution is unchanged.
+        // For `hq`, skip an npx-cache copy and HQ's own orphaned managed shim at
+        // every candidate source; for every other program this is a no-op, so
+        // their resolution is unchanged.
         let reject = |path: &Path| hq_lookup_rejects_candidate(name, path);
 
-        // Strict session parity for `hq`: prefer the exact binary a Claude Code
-        // session would resolve via `env.PATH` in .claude/settings.local.json,
-        // ahead of the app's managed toolchain and every other search dir.
         if name == "hq" {
-            if let Some(found) =
-                select_program_on_disk_rejecting(&settings_path_dirs(), &candidates, &reject)
-            {
+            // ONE cross-lane sweep. The settings-PATH dirs come FIRST (strict
+            // session parity: prefer the exact binary a Claude Code session would
+            // resolve via `env.PATH` in .claude/settings.local.json), then the
+            // extended search dirs. Because both lanes are swept together, a
+            // spawnable + backed match in ANY lane outranks a non-spawnable or
+            // unbacked match in an earlier lane — restoring the cross-directory
+            // spawnable preference that a separate settings call defeated, and
+            // adding the backed-candidate preference. The backing oracle lives in
+            // `hq_cli_update`, which owns the package-layout knowledge.
+            let mut dirs = settings_path_dirs();
+            dirs.extend(extended_search_dirs());
+            let backing = |path: &Path| crate::hq_cli_update::hq_cli_backing(path);
+            if let Some(found) = select_hq_program_on_disk(&dirs, &candidates, &reject, &backing) {
                 return found;
             }
-        }
-
-        if let Some(found) =
+        } else if let Some(found) =
             select_program_on_disk_rejecting(&extended_search_dirs(), &candidates, &reject)
         {
             return found;
@@ -608,31 +708,42 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
 
     #[cfg(not(target_os = "windows"))]
     {
-        // Strict session parity for `hq`: prefer the exact binary a Claude Code
-        // session would resolve via `env.PATH` in .claude/settings.local.json,
-        // ahead of the app's managed toolchain and every other search dir.
+        // For `hq`, ONE cross-lane sweep with the tiered backed-candidate
+        // preference — the same cfg-independent selector the Windows arm uses.
+        // Directory precedence is unchanged (the Claude Code settings PATH first
+        // for strict session parity, then the managed toolchain, user prefixes,
+        // ~/.local/bin and the system prefixes), but within that order a real
+        // @indigoai-us/hq-cli install now outranks an UNBACKED settings-PATH hit:
+        // an unrelated program named `hq` (HQ-DESKTOP-3P) or an orphaned managed
+        // shim can no longer pre-empt the real CLI. A BACKED settings hit still
+        // wins outright, so parity is preserved for every machine whose
+        // settings-PATH `hq` is the real install; only an unbacked settings hit
+        // can be outranked, and only by a backed candidate. The backing oracle
+        // lives in `hq_cli_update`, which owns the package-layout knowledge.
         if name == "hq" {
-            for dir in settings_path_dirs() {
-                let candidate = dir.join(name);
-                // Require an executable regular file: a shell skips a
-                // non-executable or a directory named `hq` and keeps searching,
-                // so we must too or we'd hand back an unspawnable path. Also skip
-                // an npx-cache copy: it can never be updated, so adopting it as
-                // the resolved CLI would pin the machine — keep searching for a
-                // real install instead.
-                if is_executable_file(&candidate) && !hq_lookup_rejects_candidate(name, &candidate) {
-                    return ResolvedProgram {
-                        path: candidate.to_string_lossy().to_string(),
-                        kind: ResolvedProgramKind::Exe,
-                    };
-                }
+            let reject = |path: &Path| hq_lookup_rejects_candidate(name, path);
+            let backing = |path: &Path| crate::hq_cli_update::hq_cli_backing(path);
+            if let Some(found) = select_hq_program_in_dirs(
+                &unix_hq_search_dirs(home_dir().as_deref()),
+                &[name.to_string()],
+                &is_executable_file,
+                &reject,
+                &backing,
+            ) {
+                // Unix has no extension-based spawnability contract: normalise the
+                // selector's extensionless classification to `Exe` so the closed
+                // diagnostics keep the Unix arm's documented
+                // `resolved_program_kind: exe` vocabulary.
+                return ResolvedProgram {
+                    path: found.path,
+                    kind: ResolvedProgramKind::Exe,
+                };
             }
-        }
-
-        // Unix has no extension-based spawnability contract: a file the
-        // resolver found is a program the loader will attempt. Report it as
-        // `Exe` so the closed diagnostics stay meaningful cross-platform.
-        if let Some(path) = resolve_bin_in_dirs(home_dir().as_deref(), name) {
+        } else if let Some(path) = resolve_bin_in_dirs(home_dir().as_deref(), name) {
+            // Every non-`hq` name keeps the untouched search. Unix has no
+            // extension-based spawnability contract: a file the resolver found is
+            // a program the loader will attempt, reported as `Exe` so the closed
+            // diagnostics stay meaningful cross-platform.
             return ResolvedProgram {
                 path,
                 kind: ResolvedProgramKind::Exe,
@@ -658,6 +769,15 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
         if let Ok(output) = Command::new("zsh").args(["-lc", &shell_query]).output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
+                // For `hq`, carry the same backed-candidate preference the
+                // directory sweep uses: a login-shell PATH (nvm/volta/asdf + any
+                // custom prefix) can list an unrelated or orphaned `hq` ahead of
+                // the real install, so prefer the first existing, non-rejected,
+                // BACKED match and fall back to the first existing, non-rejected
+                // match otherwise — a machine whose only `hq` is unbacked still
+                // resolves and is never reported absent by this lane. Every other
+                // name keeps `command -v`'s single first match.
+                let mut first_found: Option<String> = None;
                 for line in stdout.lines() {
                     let path = line.trim();
                     if path.is_empty()
@@ -666,8 +786,22 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
                     {
                         continue;
                     }
+                    if name != "hq"
+                        || crate::hq_cli_update::hq_cli_backing(Path::new(path))
+                            == CandidateBacking::Backed
+                    {
+                        return ResolvedProgram {
+                            path: path.to_string(),
+                            kind: ResolvedProgramKind::Exe,
+                        };
+                    }
+                    if first_found.is_none() {
+                        first_found = Some(path.to_string());
+                    }
+                }
+                if let Some(path) = first_found {
                     return ResolvedProgram {
-                        path: path.to_string(),
+                        path,
                         kind: ResolvedProgramKind::Exe,
                     };
                 }
@@ -843,6 +977,44 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
     }
 
     None
+}
+
+/// The `hq` cross-lane search directories on Unix, in EXACTLY today's
+/// precedence: the Claude Code settings PATH first (strict session parity),
+/// then the managed-toolchain bin subdirs, the user npm/pnpm/bun prefixes,
+/// `~/.local/bin`, and finally the system prefixes. This is the union
+/// [`resolve_bin_with_kind`]'s `hq` arm feeds to [`select_hq_program_in_dirs`]
+/// so the WHOLE sweep — not just the settings lane — carries the tiered
+/// backed-candidate preference. Split from [`resolve_bin_in_dirs`] (rather than
+/// reusing it) because the tiered selector needs every candidate directory in a
+/// single ordered list.
+#[cfg(not(target_os = "windows"))]
+fn unix_hq_search_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    unix_hq_search_dirs_in(settings_path_dirs(), home)
+}
+
+/// Pure form of [`unix_hq_search_dirs`] with the settings-PATH dirs injected, so
+/// the precedence is unit-testable against a fixture home without reading the
+/// real HQ settings file. The managed/user/system order after the settings dirs
+/// is identical to [`resolve_bin_in_dirs`], so a non-`hq` lookup and the `hq`
+/// sweep search the same directories in the same order.
+#[cfg(not(target_os = "windows"))]
+fn unix_hq_search_dirs_in(settings: Vec<PathBuf>, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = settings;
+    if let Some(home) = home {
+        // Managed HQ toolchain (installed by hq-installer), then user-level
+        // npm/pnpm/bun prefixes, then ~/.local/bin — matching resolve_bin_in_dirs.
+        let toolchain = managed_toolchain_dir(home);
+        for subdir in MANAGED_TOOLCHAIN_BIN_SUBDIRS {
+            dirs.push(toolchain.join(subdir));
+        }
+        dirs.extend(user_cli_dirs(home));
+        dirs.push(home.join(".local").join("bin"));
+    }
+    // Standard install locations, always searched (matches resolve_bin_in_dirs).
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs
 }
 
 #[cfg(target_os = "windows")]
@@ -1057,6 +1229,25 @@ fn managed_resolution_dirs() -> Vec<PathBuf> {
     }
 }
 
+/// Whether `path` lies inside any of `roots` (a root counts when it is an
+/// ancestor of `path`). Pure so the managed-provenance gate is unit-testable
+/// against fixture roots without touching the environment.
+fn path_in_any_root(path: &Path, roots: &[PathBuf]) -> bool {
+    roots
+        .iter()
+        .any(|root| !root.as_os_str().is_empty() && path.starts_with(root))
+}
+
+/// Whether a resolved `hq` binary sits inside one of HQ's OWN managed-toolchain
+/// roots. Combined with a definitive absent-package answer this is what marks a
+/// candidate as HQ's orphaned shim (safe to reject) rather than an unrelated
+/// program named `hq` (never rejected); it also splits the `unbacked_managed`
+/// from the `unbacked_foreign` telemetry sub-case. Path math only — no
+/// filesystem I/O, so it is cheap enough to gate the backing read behind.
+pub(crate) fn hq_bin_in_managed_root(hq_bin: &Path) -> bool {
+    path_in_any_root(hq_bin, &managed_toolchain_roots())
+}
+
 /// Best-effort resolution-lane attribution for the binary `resolve_bin_with_kind`
 /// returned. Only meaningful for a resolved path; callers pass
 /// [`ResolutionSource::NotResolved`] themselves when nothing resolved.
@@ -1214,6 +1405,128 @@ pub fn select_program_on_disk_rejecting(
     select_program_in_dirs_rejecting(dirs, candidates, &|path: &Path| path.exists(), reject)
 }
 
+/// Whether a resolved `hq` candidate is backed by a reachable
+/// `@indigoai-us/hq-cli` package manifest. The resolver uses this to prefer a
+/// real install over a foreign or orphaned program named `hq`.
+///
+/// [`CandidateBacking::Indeterminate`] — a manifest that could not be read, as
+/// opposed to one that is definitively absent — must never drive a rejection or a
+/// demotion, so a permission blip cannot turn a working machine into a reinstall.
+/// The oracle itself lives in `hq_cli_update` ([`crate::hq_cli_update::hq_cli_backing`]),
+/// which owns the package-layout knowledge; the resolver takes it injected so this
+/// selection stays pure and unit-testable with fixture oracles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateBacking {
+    Backed,
+    AbsentDefinitive,
+    Indeterminate,
+}
+
+impl CandidateBacking {
+    fn is_backed(self) -> bool {
+        matches!(self, Self::Backed)
+    }
+}
+
+/// The `hq` cross-lane selection: [`select_program_in_dirs_rejecting`]'s
+/// spawnable-first sweep, then a bounded backed-candidate preference layered on
+/// top. Preference order is backed+spawnable, then spawnable, then backed, then
+/// first-found — a real install always beats a foreign or orphaned program named
+/// `hq`, but an unbacked candidate is still returned (marked) when it is all that
+/// exists, so an installed-but-broken third-party CLI keeps reporting honestly.
+///
+/// This is the single sweep that replaces the previous per-lane calls: feed it
+/// the settings-PATH dirs FIRST, then the extended search dirs, and the
+/// spawnable pass covers every lane before ANY lane's non-spawnable fallback — so
+/// a spawnable `hq.cmd` in a later lane can no longer be pre-empted by a
+/// non-spawnable extensionless `hq` in an earlier one. Directory precedence
+/// within each pass is unchanged, so settings-PATH keeps first position among
+/// equally-ranked hits.
+///
+/// Cost is bounded and short-circuited on the winner: the base sweep runs once,
+/// and the backing oracle is consulted first on the single candidate the sweep
+/// already picked. Only when THAT winner is unbacked does the selection widen to
+/// look for a backed candidate that outranks it — so the healthy hot path (a
+/// backed first hit) performs exactly one backing check and no widening. The
+/// oracle does bounded filesystem reads only: no spawn, no network, no loop.
+pub fn select_hq_program_in_dirs(
+    dirs: &[PathBuf],
+    candidates: &[String],
+    exists: &dyn Fn(&Path) -> bool,
+    reject: &dyn Fn(&Path) -> bool,
+    backing: &dyn Fn(&Path) -> CandidateBacking,
+) -> Option<ResolvedProgram> {
+    let base = select_program_in_dirs_rejecting(dirs, candidates, exists, reject)?;
+    // The base winner is already the best of its spawnability class (first
+    // spawnable, else first found). If it is also backed it cannot be outranked —
+    // return it without probing any other candidate's backing.
+    if backing(Path::new(&base.path)).is_backed() {
+        return Some(base);
+    }
+    // The base winner is unbacked. Widen for a backed candidate that outranks it:
+    //   - a spawnable base (tier 2) is only beaten by a backed+spawnable (tier 1);
+    //   - a non-spawnable base (tier 4 — no spawnable exists anywhere) is beaten by
+    //     the first backed candidate (tier 3).
+    let spawnable_only = base.is_spawnable();
+    first_backed_candidate(dirs, candidates, exists, reject, backing, spawnable_only).or(Some(base))
+}
+
+/// First existing, non-rejected, BACKED candidate in resolver order (directory
+/// precedence, spawnable candidates first). When `spawnable_only`, non-spawnable
+/// candidates are skipped so a backed non-spawnable can never outrank an unbacked
+/// spawnable. Used only on the widen path, so its extra backing probes never
+/// touch the healthy hot path.
+fn first_backed_candidate(
+    dirs: &[PathBuf],
+    candidates: &[String],
+    exists: &dyn Fn(&Path) -> bool,
+    reject: &dyn Fn(&Path) -> bool,
+    backing: &dyn Fn(&Path) -> CandidateBacking,
+    spawnable_only: bool,
+) -> Option<ResolvedProgram> {
+    let passes: &[bool] = if spawnable_only {
+        &[true]
+    } else {
+        &[true, false]
+    };
+    for spawnable_pass in passes {
+        for dir in dirs {
+            for candidate in candidates {
+                if is_spawnable_program(candidate) != *spawnable_pass {
+                    continue;
+                }
+                let full = dir.join(candidate);
+                if exists(&full) && !reject(&full) && backing(&full).is_backed() {
+                    return Some(ResolvedProgram {
+                        path: full.to_string_lossy().to_string(),
+                        kind: program_kind(candidate),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// [`select_hq_program_in_dirs`] against the real filesystem, with the real
+/// backing oracle. This is the exact call the Windows `hq` arm of
+/// [`resolve_bin_with_kind`] makes, so the pure selection is compiled and
+/// exercised on every CI leg, not only on windows-latest.
+pub fn select_hq_program_on_disk(
+    dirs: &[PathBuf],
+    candidates: &[String],
+    reject: &dyn Fn(&Path) -> bool,
+    backing: &dyn Fn(&Path) -> CandidateBacking,
+) -> Option<ResolvedProgram> {
+    select_hq_program_in_dirs(
+        dirs,
+        candidates,
+        &|path: &Path| path.exists(),
+        reject,
+        backing,
+    )
+}
+
 /// Pick the best program out of an ordered `where.exe` match list.
 ///
 /// Keeps the long-standing preference (first `.exe`/`.cmd`/`.bat`, else the
@@ -1335,11 +1648,7 @@ fn node_version_manager_dirs(home: &Path) -> Vec<PathBuf> {
     push_versioned_node_bins(&mut dirs, &mise.join("installs").join("node"), &["bin"]);
     dirs.push(mise.join("shims"));
     // nodenv — each version plus its shim dir.
-    push_versioned_node_bins(
-        &mut dirs,
-        &home.join(".nodenv").join("versions"),
-        &["bin"],
-    );
+    push_versioned_node_bins(&mut dirs, &home.join(".nodenv").join("versions"), &["bin"]);
     dirs.push(home.join(".nodenv").join("shims"));
     // Nix profiles.
     dirs.push(home.join(".nix-profile").join("bin"));
@@ -1734,6 +2043,41 @@ mod tests {
             &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", base.display()),
         );
         assert_eq!(settings_path_dirs_in(root), vec![base]);
+    }
+
+    #[test]
+    fn winning_settings_path_file_names_local_base_or_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        // Nothing at all -> None.
+        assert_eq!(winning_settings_path_file(root), SettingsPathFile::None);
+        // Only base defines env.PATH -> Base.
+        write_settings(root, "settings.json", "{\"env\":{\"PATH\":\"/x\"}}");
+        assert_eq!(winning_settings_path_file(root), SettingsPathFile::Base);
+        // Local exists but with an empty/absent env.PATH -> still Base.
+        write_settings(root, "settings.local.json", "{\"env\":{}}");
+        assert_eq!(winning_settings_path_file(root), SettingsPathFile::Base);
+        // Local defines a non-empty env.PATH -> Local wins outright.
+        write_settings(root, "settings.local.json", "{\"env\":{\"PATH\":\"/y\"}}");
+        assert_eq!(winning_settings_path_file(root), SettingsPathFile::Local);
+        // A malformed local file is skipped, not fatal, and falls through to base.
+        write_settings(root, "settings.local.json", "{not json");
+        assert_eq!(winning_settings_path_file(root), SettingsPathFile::Base);
+    }
+
+    #[test]
+    fn settings_path_file_filename_and_tokens_are_closed() {
+        assert_eq!(
+            SettingsPathFile::Local.filename(),
+            Some("settings.local.json")
+        );
+        assert_eq!(SettingsPathFile::Base.filename(), Some("settings.json"));
+        assert_eq!(SettingsPathFile::None.filename(), None);
+        assert_eq!(SettingsPathFile::Local.telemetry_value(), "local");
+        assert_eq!(SettingsPathFile::Base.telemetry_value(), "base");
+        assert_eq!(SettingsPathFile::None.telemetry_value(), "none");
+        // The default file is the safe "nothing supplies a PATH" state.
+        assert_eq!(SettingsPathFile::default(), SettingsPathFile::None);
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -2146,6 +2490,301 @@ mod tests {
         );
     }
 
+    // ---- HQ-DESKTOP-3P: cross-lane spawnable preference, backed-candidate
+    // preference, and orphaned-managed-shim rejection for the `hq` lookup. ----
+
+    /// A pure backing oracle: the listed paths are backed, everything else is a
+    /// DEFINITIVE absence. Lets the selection tiers be proven without package.json
+    /// fixtures on disk.
+    fn backing_over<'a>(backed: &'a [PathBuf]) -> impl Fn(&Path) -> CandidateBacking + 'a {
+        move |path: &Path| {
+            if backed.iter().any(|candidate| candidate == path) {
+                CandidateBacking::Backed
+            } else {
+                CandidateBacking::AbsentDefinitive
+            }
+        }
+    }
+
+    fn never_reject(_: &Path) -> bool {
+        false
+    }
+
+    #[test]
+    fn test_windows_hq_cross_lane_spawnable_beats_earlier_extensionless_settings_hit() {
+        // Lane (a), field event 1bbf51ea (settings_path / extensionless /
+        // spawn_not_executable): a settings-PATH dir holds an extensionless `hq`
+        // (non-spawnable) and a LATER extended-search dir holds `hq.cmd`.
+        let settings = PathBuf::from("C:").join("settings-path");
+        let (_, _, _, appdata_npm) = windows_dirs();
+
+        // The base lane sequence pre-empted: a settings-ONLY sweep returns the
+        // extensionless file, whose spawn dies with os error 193. This is exactly
+        // the separate settings call the fix collapses away.
+        let settings_only = select_program_in_dirs(
+            &[settings.clone()],
+            &windows_candidates("hq"),
+            &present(&[(&settings, "hq")]),
+        )
+        .expect("the settings lane finds the extensionless hq");
+        assert_eq!(settings_only.kind, ResolvedProgramKind::Extensionless);
+
+        // The fix: ONE cross-lane sweep over settings THEN extended selects the
+        // later spawnable `hq.cmd`.
+        let dirs = vec![settings.clone(), appdata_npm.clone()];
+        let selected = select_hq_program_in_dirs(
+            &dirs,
+            &windows_candidates("hq"),
+            &present(&[(&settings, "hq"), (&appdata_npm, "hq.cmd")]),
+            &never_reject,
+            &backing_over(&[]),
+        )
+        .expect("a spawnable candidate exists across lanes");
+        assert_eq!(
+            selected.path,
+            appdata_npm.join("hq.cmd").to_string_lossy(),
+            "a spawnable hq.cmd in a later lane must beat a non-spawnable settings hit"
+        );
+        assert_eq!(selected.kind, ResolvedProgramKind::CmdOrBat);
+    }
+
+    #[test]
+    fn test_windows_hq_prefers_a_backed_install_over_an_earlier_unbacked_foreign_hq() {
+        // A foreign spawnable `hq.cmd` sits EARLIER than the real backed install.
+        // Cross-lane spawnable preference alone would keep the foreign one (both
+        // spawnable); the backed-candidate preference promotes the real install so
+        // the version probe reads it instead of failing on the foreign.
+        let foreign = PathBuf::from("C:").join("foreign");
+        let (_, _, _, appdata_npm) = windows_dirs();
+        let dirs = vec![foreign.clone(), appdata_npm.clone()];
+        let backed = vec![appdata_npm.join("hq.cmd")];
+        let selected = select_hq_program_in_dirs(
+            &dirs,
+            &windows_candidates("hq"),
+            &present(&[(&foreign, "hq.cmd"), (&appdata_npm, "hq.cmd")]),
+            &never_reject,
+            &backing_over(&backed),
+        )
+        .unwrap();
+        assert_eq!(
+            selected.path,
+            appdata_npm.join("hq.cmd").to_string_lossy(),
+            "a backed install must outrank an unbacked foreign hq even in a later dir"
+        );
+    }
+
+    #[test]
+    fn test_windows_hq_returns_an_unbacked_foreign_hq_when_it_is_all_that_exists() {
+        // A foreign, unbacked `hq.cmd` and nothing else: STILL returned and marked,
+        // never dropped — an installed-but-broken third-party CLI keeps reporting
+        // honestly and `hq_installed` stays true.
+        let foreign = PathBuf::from("C:").join("foreign");
+        let dirs = vec![foreign.clone()];
+        let selected = select_hq_program_in_dirs(
+            &dirs,
+            &windows_candidates("hq"),
+            &present(&[(&foreign, "hq.cmd")]),
+            &never_reject,
+            &backing_over(&[]),
+        )
+        .expect("an unbacked foreign hq is still resolved");
+        assert_eq!(selected.path, foreign.join("hq.cmd").to_string_lossy());
+        assert!(selected.is_spawnable());
+    }
+
+    #[test]
+    fn test_windows_hq_backed_non_spawnable_beats_unbacked_non_spawnable() {
+        // No spawnable candidate anywhere. The BACKED extensionless hit (tier 3)
+        // must beat the unbacked extensionless first-found (tier 4), so the probe
+        // anchors to the real package.
+        let early = PathBuf::from("C:").join("early");
+        let later = PathBuf::from("C:").join("later");
+        let dirs = vec![early.clone(), later.clone()];
+        let backed = vec![later.join("hq")];
+        let selected = select_hq_program_in_dirs(
+            &dirs,
+            &windows_candidates("hq"),
+            &present(&[(&early, "hq"), (&later, "hq")]),
+            &never_reject,
+            &backing_over(&backed),
+        )
+        .unwrap();
+        assert_eq!(selected.path, later.join("hq").to_string_lossy());
+        assert_eq!(selected.kind, ResolvedProgramKind::Extensionless);
+    }
+
+    #[test]
+    fn test_windows_hq_backed_first_hit_short_circuits_probing_backing_once() {
+        // A backed spawnable first hit is returned after exactly ONE backing probe:
+        // the oracle is consulted on the winner and on nothing else, keeping the
+        // healthy hot path cheap.
+        let (npm_prefix, _, _, appdata_npm) = windows_dirs();
+        let dirs = vec![npm_prefix.clone(), appdata_npm.clone()];
+        let probes = std::cell::Cell::new(0usize);
+        let backing = |path: &Path| {
+            probes.set(probes.get() + 1);
+            if path == npm_prefix.join("hq.cmd") {
+                CandidateBacking::Backed
+            } else {
+                CandidateBacking::AbsentDefinitive
+            }
+        };
+        let selected = select_hq_program_in_dirs(
+            &dirs,
+            &windows_candidates("hq"),
+            &present(&[(&npm_prefix, "hq.cmd"), (&appdata_npm, "hq.cmd")]),
+            &never_reject,
+            &backing,
+        )
+        .unwrap();
+        assert_eq!(selected.path, npm_prefix.join("hq.cmd").to_string_lossy());
+        assert_eq!(
+            probes.get(),
+            1,
+            "a backed first hit must consult backing exactly once"
+        );
+    }
+
+    #[test]
+    fn test_windows_hq_on_disk_rejects_orphaned_managed_shim_and_selects_backed_install() {
+        // Lane (b), field event 7a553866 (managed_toolchain / cmd_or_bat /
+        // nonzero_exit, npm_root package_not_found): a managed-toolchain shim whose
+        // @indigoai-us/hq-cli package is GONE outranks a real user-prefix install.
+        // Uses the REAL backing oracle over real fixtures.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let managed = tmp.path().join("toolchain").join("npm-prefix");
+        let user = tmp.path().join("appdata").join("npm");
+        std::fs::create_dir_all(&managed).unwrap();
+        std::fs::create_dir_all(user.join("node_modules/@indigoai-us/hq-cli")).unwrap();
+        // Orphaned managed shim: hq.cmd with NO package beside it.
+        std::fs::write(managed.join("hq.cmd"), "@echo off\n").unwrap();
+        // Backed user install: hq.cmd + its manifest.
+        std::fs::write(user.join("hq.cmd"), "@echo off\n").unwrap();
+        std::fs::write(
+            user.join("node_modules/@indigoai-us/hq-cli/package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.103.30"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            crate::hq_cli_update::hq_cli_backing(&managed.join("hq.cmd")),
+            CandidateBacking::AbsentDefinitive,
+            "the managed shim's package is definitively gone"
+        );
+        assert_eq!(
+            crate::hq_cli_update::hq_cli_backing(&user.join("hq.cmd")),
+            CandidateBacking::Backed,
+            "the user install is backed by a reachable manifest"
+        );
+
+        let managed_roots = [tmp.path().join("toolchain")];
+        let reject = |path: &Path| {
+            is_npx_cache_path(path)
+                || (path_in_any_root(path, &managed_roots)
+                    && matches!(
+                        crate::hq_cli_update::hq_cli_backing(path),
+                        CandidateBacking::AbsentDefinitive
+                    ))
+        };
+        let backing = |path: &Path| crate::hq_cli_update::hq_cli_backing(path);
+        let cands = windows_candidates("hq");
+
+        // The base sweep (no reject) picks the orphan first — the defect.
+        let base = select_program_on_disk(&[managed.clone(), user.clone()], &cands).unwrap();
+        assert_eq!(
+            base.path,
+            managed.join("hq.cmd").to_string_lossy(),
+            "the base sweep selects the orphaned managed shim — the reported defect"
+        );
+
+        // The fix: reject the orphan, select the backed user install.
+        let dirs = vec![managed.clone(), user.clone()];
+        let selected = select_hq_program_on_disk(&dirs, &cands, &reject, &backing).unwrap();
+        assert_eq!(
+            selected.path,
+            user.join("hq.cmd").to_string_lossy(),
+            "the backed user install must win over the orphaned managed shim"
+        );
+
+        // Orphan-only: nothing resolves (rejected), so hq_installed flips false and
+        // the existing installer can put a real CLI on the machine.
+        assert_eq!(
+            select_hq_program_on_disk(&[managed.clone()], &cands, &reject, &backing),
+            None,
+            "an orphan-only machine resolves to the not-resolved marker"
+        );
+    }
+
+    #[test]
+    fn test_windows_hq_indeterminate_backing_never_rejects_the_managed_shim() {
+        // A managed shim whose hq-cli manifest cannot be READ (here the manifest
+        // path is a directory, standing in for a permission/AV lock) is
+        // INDETERMINATE, not a definitive absence — so it must NOT be rejected. A
+        // transient read failure must never turn a working machine into a reinstall.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let managed = tmp.path().join("toolchain").join("npm-prefix");
+        std::fs::create_dir_all(managed.join("node_modules/@indigoai-us/hq-cli/package.json"))
+            .unwrap();
+        std::fs::write(managed.join("hq.cmd"), "@echo off\n").unwrap();
+
+        assert_eq!(
+            crate::hq_cli_update::hq_cli_backing(&managed.join("hq.cmd")),
+            CandidateBacking::Indeterminate,
+            "an unreadable manifest is indeterminate, not a definitive absence"
+        );
+
+        let managed_roots = [tmp.path().join("toolchain")];
+        let reject = |path: &Path| {
+            path_in_any_root(path, &managed_roots)
+                && matches!(
+                    crate::hq_cli_update::hq_cli_backing(path),
+                    CandidateBacking::AbsentDefinitive
+                )
+        };
+        let backing = |path: &Path| crate::hq_cli_update::hq_cli_backing(path);
+        let cands = windows_candidates("hq");
+        let selected = select_hq_program_on_disk(&[managed.clone()], &cands, &reject, &backing)
+            .expect("an indeterminate managed shim is NOT rejected");
+        assert_eq!(selected.path, managed.join("hq.cmd").to_string_lossy());
+    }
+
+    #[test]
+    fn test_path_in_any_root_and_managed_root_membership() {
+        let root_a = PathBuf::from("C:").join("toolchain");
+        let root_b = PathBuf::from("D:").join("legacy");
+        let roots = [root_a.clone(), root_b.clone(), PathBuf::new()];
+        assert!(path_in_any_root(
+            &root_a.join("npm-prefix").join("hq.cmd"),
+            &roots
+        ));
+        assert!(path_in_any_root(&root_b.join("bin").join("hq"), &roots));
+        assert!(!path_in_any_root(
+            &PathBuf::from("C:").join("Users").join("dev").join("hq.cmd"),
+            &roots
+        ));
+        // An empty root never matches — an unresolved base must not swallow the world.
+        assert!(!path_in_any_root(
+            &PathBuf::from("hq.cmd"),
+            &[PathBuf::new()]
+        ));
+    }
+
+    #[test]
+    fn test_windows_hq_other_names_are_unaffected_by_the_backed_preference() {
+        // The tiered `hq` selection is never used for other names — those keep the
+        // plain first-spawnable sweep. Prove the primitive the resolver still calls
+        // for `node`/`npm` is byte-identical here.
+        let (npm_prefix, _, _, appdata_npm) = windows_dirs();
+        let dirs = vec![npm_prefix.clone(), appdata_npm.clone()];
+        let selected = select_program_in_dirs(
+            &dirs,
+            &windows_candidates("node"),
+            &present(&[(&appdata_npm, "node.exe"), (&npm_prefix, "node.exe")]),
+        )
+        .unwrap();
+        assert_eq!(selected.path, npm_prefix.join("node.exe").to_string_lossy());
+    }
+
     #[test]
     fn test_create_no_window_constant_matches_windows_api() {
         assert_eq!(CREATE_NO_WINDOW, 0x0800_0000);
@@ -2327,7 +2966,9 @@ mod tests {
         )));
         // An `_npx` dir WITHOUT the cache's node_modules tree is an ordinary
         // directory (e.g. a home/prefix merely named `_npx`) and must resolve.
-        assert!(!is_npx_cache_path(Path::new("/Users/_npx/toolchain/bin/hq")));
+        assert!(!is_npx_cache_path(Path::new(
+            "/Users/_npx/toolchain/bin/hq"
+        )));
         assert!(!is_npx_cache_path(Path::new("/tmp/x/_npx/abc/hq")));
         // Substring matches must NOT trip it.
         assert!(!is_npx_cache_path(Path::new(
@@ -2381,7 +3022,9 @@ mod tests {
     #[test]
     fn the_hq_lookup_skips_an_npx_cache_candidate_and_falls_through_to_the_managed_install() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let npx_bin = tmp.path().join(".npm/_npx/91dc460cc0784cc8/node_modules/.bin");
+        let npx_bin = tmp
+            .path()
+            .join(".npm/_npx/91dc460cc0784cc8/node_modules/.bin");
         let managed_bin = tmp.path().join("toolchain/npm-global/bin");
         std::fs::create_dir_all(&npx_bin).unwrap();
         std::fs::create_dir_all(&managed_bin).unwrap();
@@ -2426,6 +3069,325 @@ mod tests {
         assert!(
             select_program_in_dirs_rejecting(&dirs, &candidates, &exists, &reject).is_none(),
             "an npx-only machine must resolve nothing so a real install arms"
+        );
+    }
+
+    // ---- HQ-DESKTOP-3P: the Unix `hq` cross-lane sweep with a backed preference.
+    //
+    // These exercise the EXACT composition the Unix arm of resolve_bin_with_kind
+    // now uses — `select_hq_program_in_dirs` over `unix_hq_search_dirs_in`, with
+    // the REAL backing oracle over real fixtures — so the behavioural proof runs
+    // on the Linux and macOS CI legs, not only where the resolver spawns.
+
+    #[cfg(not(target_os = "windows"))]
+    fn write_unix_exec(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"#!/bin/sh\n").unwrap();
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
+    /// Write an `@indigoai-us/hq-cli` manifest so the real backing oracle
+    /// (`hq_cli_backing`) reports `Backed` for an `hq` in the enclosing prefix's
+    /// `bin`. Mirrors the npm global layout: `<prefix>/bin/hq` +
+    /// `<prefix>/lib/node_modules/@indigoai-us/hq-cli/package.json`.
+    #[cfg(not(target_os = "windows"))]
+    fn write_hq_cli_manifest(pkg_dir: &Path, version: &str) {
+        std::fs::create_dir_all(pkg_dir).unwrap();
+        std::fs::write(
+            pkg_dir.join("package.json"),
+            format!(r#"{{"name":"@indigoai-us/hq-cli","version":"{version}"}}"#),
+        )
+        .unwrap();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_hq_prefers_a_backed_user_prefix_over_an_unbacked_foreign_settings_hit() {
+        // HQ-DESKTOP-3P recurrence (event 386756bd, settings_path / exe /
+        // unbacked_foreign): a foreign, definitively-unbacked `hq` sits FIRST on
+        // the Claude-settings PATH while the real backed install lives in a user
+        // npm prefix. At the base commit the Unix arm returned on the first
+        // settings hit and handed back the foreign program; the tiered sweep now
+        // promotes the backed install so the version probe reads it.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let settings = tmp.path().join("settings-path");
+
+        // Foreign hq on the settings PATH: executable, no hq-cli manifest anywhere.
+        let foreign = settings.join("hq");
+        write_unix_exec(&foreign);
+
+        // Backed hq in the user npm prefix (~/.npm-global/bin/hq) + its manifest.
+        let user_prefix = home.join(".npm-global");
+        let backed = user_prefix.join("bin").join("hq");
+        write_unix_exec(&backed);
+        write_hq_cli_manifest(
+            &user_prefix.join("lib/node_modules/@indigoai-us/hq-cli"),
+            "5.103.30",
+        );
+
+        assert_eq!(
+            crate::hq_cli_update::hq_cli_backing(&foreign),
+            CandidateBacking::AbsentDefinitive,
+            "the settings-PATH hq has no hq-cli package"
+        );
+        assert_eq!(
+            crate::hq_cli_update::hq_cli_backing(&backed),
+            CandidateBacking::Backed,
+            "the user-prefix hq is backed by a reachable manifest"
+        );
+
+        let dirs = unix_hq_search_dirs_in(vec![settings.clone()], Some(&home));
+        let candidates = ["hq".to_string()];
+        let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
+        let backing = |p: &Path| crate::hq_cli_update::hq_cli_backing(p);
+
+        // Base defect: the plain spawnable-first sweep (no backing preference)
+        // returns the FIRST executable hq — the foreign settings hit.
+        assert_eq!(
+            select_program_in_dirs_rejecting(&dirs, &candidates, &is_executable_file, &reject)
+                .unwrap()
+                .path,
+            foreign.to_string_lossy(),
+            "the base sweep selects the foreign settings hq — the reported defect"
+        );
+
+        // Fix: the tiered sweep promotes the backed user-prefix install.
+        let selected =
+            select_hq_program_in_dirs(&dirs, &candidates, &is_executable_file, &reject, &backing)
+                .expect("a backed hq exists");
+        assert_eq!(
+            selected.path,
+            backed.to_string_lossy(),
+            "a backed install must outrank an unbacked foreign settings-PATH hq"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_hq_backed_settings_hit_still_wins_over_a_backed_user_prefix() {
+        // Parity guard (PR #481): when the settings-PATH hq IS a real install it
+        // still wins outright — only an UNBACKED settings hit can be outranked,
+        // and directory precedence within a backing tier is unchanged.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+
+        // Backed hq on the settings PATH: <sp>/bin/hq + <sp>/lib/node_modules/...
+        let settings_prefix = tmp.path().join("settings-prefix");
+        let settings_hq = settings_prefix.join("bin").join("hq");
+        write_unix_exec(&settings_hq);
+        write_hq_cli_manifest(
+            &settings_prefix.join("lib/node_modules/@indigoai-us/hq-cli"),
+            "5.103.30",
+        );
+
+        // A second, equally-backed hq in a user prefix.
+        let user_prefix = home.join(".npm-global");
+        write_unix_exec(&user_prefix.join("bin").join("hq"));
+        write_hq_cli_manifest(
+            &user_prefix.join("lib/node_modules/@indigoai-us/hq-cli"),
+            "5.103.30",
+        );
+
+        let dirs = unix_hq_search_dirs_in(vec![settings_prefix.join("bin")], Some(&home));
+        let candidates = ["hq".to_string()];
+        let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
+        let backing = |p: &Path| crate::hq_cli_update::hq_cli_backing(p);
+        let selected =
+            select_hq_program_in_dirs(&dirs, &candidates, &is_executable_file, &reject, &backing)
+                .unwrap();
+        assert_eq!(
+            selected.path,
+            settings_hq.to_string_lossy(),
+            "a backed settings-PATH hq keeps first position — session parity preserved"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_hq_only_unbacked_foreign_is_still_resolved_never_dropped() {
+        // When the only `hq` is unbacked and foreign it is STILL returned (never
+        // dropped to the bare name): the resolver keeps its non-absence contract
+        // and the reporting/convergence decision is made downstream in
+        // hq_cli_update.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let settings = tmp.path().join("settings-path");
+        let foreign = settings.join("hq");
+        write_unix_exec(&foreign);
+
+        let dirs = unix_hq_search_dirs_in(vec![settings.clone()], None);
+        let candidates = ["hq".to_string()];
+        let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
+        let backing = |p: &Path| crate::hq_cli_update::hq_cli_backing(p);
+        let selected =
+            select_hq_program_in_dirs(&dirs, &candidates, &is_executable_file, &reject, &backing)
+                .expect("an unbacked foreign hq is still resolved, never dropped");
+        assert_eq!(selected.path, foreign.to_string_lossy());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_hq_indeterminate_backing_is_still_resolved_never_dropped() {
+        // A permission/AV hold makes the manifest unreadable: the backing is
+        // INDETERMINATE, never a definitive absence, so the candidate is neither
+        // rejected nor dropped. A transient blip can never turn a working machine
+        // into a reinstall.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prefix = tmp.path().join("prefix");
+        let hq = prefix.join("bin").join("hq");
+        write_unix_exec(&hq);
+        // A package.json that cannot be READ (a directory here, standing in for a
+        // permission/AV lock) → Indeterminate.
+        std::fs::create_dir_all(prefix.join("lib/node_modules/@indigoai-us/hq-cli/package.json"))
+            .unwrap();
+        assert_eq!(
+            crate::hq_cli_update::hq_cli_backing(&hq),
+            CandidateBacking::Indeterminate
+        );
+
+        let dirs = unix_hq_search_dirs_in(vec![prefix.join("bin")], None);
+        let candidates = ["hq".to_string()];
+        let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
+        let backing = |p: &Path| crate::hq_cli_update::hq_cli_backing(p);
+        let selected =
+            select_hq_program_in_dirs(&dirs, &candidates, &is_executable_file, &reject, &backing)
+                .expect("an indeterminate-backing hq is never dropped");
+        assert_eq!(selected.path, hq.to_string_lossy());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_hq_backed_first_hit_consults_the_oracle_once() {
+        // The healthy hot path: a backed first hit is returned after exactly ONE
+        // backing probe, with no widening scan.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        write_unix_exec(&first.join("hq"));
+        write_unix_exec(&second.join("hq"));
+        let dirs = vec![first.clone(), second.clone()];
+        let candidates = ["hq".to_string()];
+        let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
+        let probes = std::cell::Cell::new(0usize);
+        let backing = |path: &Path| {
+            probes.set(probes.get() + 1);
+            if path == first.join("hq") {
+                CandidateBacking::Backed
+            } else {
+                CandidateBacking::AbsentDefinitive
+            }
+        };
+        let selected =
+            select_hq_program_in_dirs(&dirs, &candidates, &is_executable_file, &reject, &backing)
+                .unwrap();
+        assert_eq!(selected.path, first.join("hq").to_string_lossy());
+        assert_eq!(
+            probes.get(),
+            1,
+            "a backed first hit must consult backing exactly once"
+        );
+        // The selector classifies a bare `hq` as Extensionless; the Unix arm of
+        // resolve_bin_with_kind normalises that to Exe for the closed diagnostics.
+        assert_eq!(selected.kind, ResolvedProgramKind::Extensionless);
+        assert_eq!(program_kind("hq"), ResolvedProgramKind::Extensionless);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_hq_search_dirs_preserve_todays_precedence() {
+        let home = PathBuf::from("/home/dev");
+        let settings = vec![PathBuf::from("/settings/a"), PathBuf::from("/settings/b")];
+        let dirs = unix_hq_search_dirs_in(settings.clone(), Some(&home));
+
+        // Settings PATH first, in file order, then the managed toolchain subdirs
+        // in installer order.
+        let toolchain = managed_toolchain_dir(&home);
+        assert_eq!(
+            dirs[0..5],
+            [
+                PathBuf::from("/settings/a"),
+                PathBuf::from("/settings/b"),
+                toolchain.join("npm-global/bin"),
+                toolchain.join("node/bin"),
+                toolchain.join("git-shim"),
+            ]
+        );
+        // User prefixes sit after the managed toolchain and before ~/.local/bin,
+        // in user_cli_dirs order.
+        let local_idx = dirs
+            .iter()
+            .position(|d| d == &home.join(".local").join("bin"))
+            .unwrap();
+        for user_dir in user_cli_dirs(&home) {
+            let idx = dirs.iter().position(|d| d == &user_dir).unwrap();
+            assert!(
+                idx > 4 && idx < local_idx,
+                "user prefix {user_dir:?} must sit after the managed toolchain and before ~/.local/bin"
+            );
+        }
+        // ~/.local/bin precedes the system prefixes, which are last, in order.
+        assert_eq!(
+            dirs[local_idx..],
+            [
+                home.join(".local").join("bin"),
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/usr/local/bin"),
+            ]
+        );
+
+        // With no home, only the settings dirs and the system prefixes remain.
+        assert_eq!(
+            unix_hq_search_dirs_in(settings, None),
+            vec![
+                PathBuf::from("/settings/a"),
+                PathBuf::from("/settings/b"),
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/usr/local/bin"),
+            ]
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_hq_sweep_skips_a_non_executable_hq() {
+        // The hq sweep uses is_executable_file, matching what a shell does. A
+        // non-executable `hq` is skipped so the machine converges via the
+        // installer rather than reporting a broken path forever.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let settings = tmp.path().join("settings");
+        std::fs::create_dir_all(&settings).unwrap();
+        std::fs::write(settings.join("hq"), b"not executable\n").unwrap(); // no exec bit
+        // Keep the executable-filter fixture isolated from real CLI installs.
+        // Search-directory construction (including system prefixes) is tested above.
+        let dirs = vec![settings.clone()];
+        let candidates = ["hq".to_string()];
+        let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
+        let backing = |p: &Path| crate::hq_cli_update::hq_cli_backing(p);
+        assert!(
+            select_hq_program_in_dirs(&dirs, &candidates, &is_executable_file, &reject, &backing)
+                .is_none(),
+            "a non-executable hq must not resolve"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn non_hq_names_keep_the_exists_only_resolution() {
+        // The tightened is_executable_file predicate is scoped to the `hq` sweep.
+        // A non-`hq` name still resolves any existing file through
+        // resolve_bin_in_dirs, exec bit or not, exactly as before.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = managed_toolchain_dir(tmp.path()).join("node/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // A NON-executable file (no exec bit).
+        std::fs::write(bin.join("node"), b"#!/bin/sh\n").unwrap();
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), "node"),
+            Some(bin.join("node").to_string_lossy().to_string()),
+            "a non-hq name still resolves via .exists(), exec bit or not"
         );
     }
 
@@ -2775,12 +3737,21 @@ mod tests {
         let f = tmp.path().join("hq");
         std::fs::write(&f, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(!is_runnable_shim(&f), "a non-executable file is not runnable");
+        assert!(
+            !is_runnable_shim(&f),
+            "a non-executable file is not runnable"
+        );
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(is_runnable_shim(&f), "an executable regular file is runnable");
+        assert!(
+            is_runnable_shim(&f),
+            "an executable regular file is runnable"
+        );
         let d = tmp.path().join("dir");
         std::fs::create_dir(&d).unwrap();
-        assert!(!is_runnable_shim(&d), "a directory is never a runnable shim");
+        assert!(
+            !is_runnable_shim(&d),
+            "a directory is never a runnable shim"
+        );
         assert!(!is_runnable_shim(&tmp.path().join("missing")));
     }
 
@@ -2882,9 +3853,18 @@ mod tests {
         };
 
         assert_eq!(classify("/s/bin/hq"), ResolutionSource::SettingsPath);
-        assert_eq!(classify("/m/node/bin/hq"), ResolutionSource::ManagedToolchain);
-        assert_eq!(classify("/u/.npm-global/bin/hq"), ResolutionSource::UserPrefix);
-        assert_eq!(classify("/usr/local/bin/hq"), ResolutionSource::SystemPrefix);
+        assert_eq!(
+            classify("/m/node/bin/hq"),
+            ResolutionSource::ManagedToolchain
+        );
+        assert_eq!(
+            classify("/u/.npm-global/bin/hq"),
+            ResolutionSource::UserPrefix
+        );
+        assert_eq!(
+            classify("/usr/local/bin/hq"),
+            ResolutionSource::SystemPrefix
+        );
         // A deterministic resolver dir (pnpm/Scoop) is a user-level install, not
         // the login-shell residual — this is the Windows misclassification fix.
         assert_eq!(classify("/pnpm/shims/hq"), ResolutionSource::UserPrefix);

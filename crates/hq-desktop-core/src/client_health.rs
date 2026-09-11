@@ -230,6 +230,12 @@ closed_wire_enum!(
         PermissionDenied => "PERMISSION_DENIED",
         DiskFull => "DISK_FULL",
         HeartbeatStale => "HEARTBEAT_STALE",
+        // client-sync-health-control-plane US-009/US-010 (decision ledger #7):
+        // the closed outcome of an APPLY_DESKTOP_UPDATE the platform updater
+        // will not attest safe (e.g. an unsupported Windows build). Distinct
+        // from UPDATE_FAILED — the update did not fail, it was never attempted
+        // and a human must act. Mirrors hq-pro's `MANUAL_ACTION_REQUIRED`.
+        ManualActionRequired => "MANUAL_ACTION_REQUIRED",
     }
 );
 
@@ -251,6 +257,15 @@ closed_wire_enum!(
 closed_wire_enum!(
     /// Command/receipt lifecycle states (queued → acknowledged → running →
     /// terminal).
+    ///
+    /// `Canceled` (client-sync-health-control-plane US-009) is a TERMINAL,
+    /// server-only state reached from `queued` via the admin cancel path —
+    /// never a receipt target and never reachable once a client has
+    /// acknowledged the command. Being terminal, it is structurally invisible
+    /// to the client-facing desired-state read, so this client never has to
+    /// act on it; it is carried here only so an INCOMING receipt/command
+    /// projection that mentions it parses tolerantly rather than failing
+    /// closed on an otherwise-legal state.
     ClientHealthCommandState {
         Queued => "queued",
         Acknowledged => "acknowledged",
@@ -258,6 +273,20 @@ closed_wire_enum!(
         Succeeded => "succeeded",
         Failed => "failed",
         Expired => "expired",
+        Canceled => "canceled",
+    }
+);
+
+closed_wire_enum!(
+    /// Confirmation a repair intent requires before a client acts on it
+    /// (client-sync-health-control-plane US-009). SERVER-DERIVED from the kind,
+    /// never caller-selected: `consequence` for the customer-visible/disruptive
+    /// kinds (RESUME_SYNC overrides an intentional local pause; RESTART_APP
+    /// interrupts the running app), `none` otherwise. Mirrors hq-pro's
+    /// `CLIENT_HEALTH_CONFIRMATION_LEVELS`.
+    ClientHealthConfirmationLevel {
+        None => "none",
+        Consequence => "consequence",
     }
 );
 
@@ -322,9 +351,20 @@ pub struct ClientHealthHeartbeat {
     /// Last time a sync RUN started — distinct from success.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_sync_attempt_at: Option<String>,
-    /// Advances only on genuine success (including no-change runs).
+    /// Advances only on a genuine COMPLETED run (including no-change runs).
+    /// Never the engine watermark.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_sync_success_at: Option<String>,
+    /// Sync-engine per-file journal high-water mark (hq-cloud `journal.lastSync`).
+    /// Advances whenever ANY file moves — including on a run that later FAILS —
+    /// so it is NOT proof a run completed and must never be read as a completed
+    /// success. Distinct from `last_sync_success_at`, and never folded into it.
+    /// The desktop client has no local sync engine of its own and does not emit
+    /// this field; it is carried so the shared contract stays in agreement and
+    /// round-trips CLI-sourced snapshots. Absence means "unknown", not "no
+    /// activity" (US-019).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_engine_watermark_at: Option<String>,
     pub consecutive_failures: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict_count: Option<u64>,
@@ -347,6 +387,40 @@ pub struct ClientHealthCheckResult {
     pub reason: Option<ClientHealthFailureReason>,
 }
 
+/// Closed per-kind repair arguments (client-sync-health-control-plane US-009).
+/// A DESIRED-STATE argument object, never a command line: the only key the
+/// schema reserves is a SemVer `targetVersion` for the three version-moving
+/// kinds (REPAIR_CLI / UPDATE_CORE / APPLY_DESKTOP_UPDATE). Per decision
+/// ledger #5 that key is RESERVED but not yet honoured — repairs run
+/// "latest-in-channel". Every other kind permits no args at all. Unknown keys
+/// are rejected ([`parse_client_health_repair_args`]) so a conflict-resolution
+/// choice, a shell fragment, or any other free-form steering value
+/// structurally cannot ride in on `args`. Mirrors hq-pro's
+/// `ClientHealthRepairArgs`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientHealthRepairArgs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_version: Option<String>,
+}
+
+/// Verified postcondition a client attaches to a terminal repair receipt
+/// (client-sync-health-control-plane US-009/US-010): the closed, bounded proof
+/// the repair actually took effect (e.g. the version read back after a
+/// CLI/Core repair, or the observed sync state after RESUME_SYNC). `verified`
+/// is the client's own attestation; GTM still only calls an installation
+/// "recovered" once a later proving heartbeat confirms it. Mirrors hq-pro's
+/// `ClientHealthCommandPostcondition`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientHealthCommandPostcondition {
+    pub verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub versions: Option<ClientHealthVersions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_state: Option<ClientHealthSyncState>,
+}
+
 /// Receipt for a diagnostic or repair command (US-006+ store these). `checks`
 /// is only meaningful for `CHECK_NOW`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -365,6 +439,14 @@ pub struct ClientHealthCommandReceipt {
     pub checks: Option<Vec<ClientHealthCheckResult>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<ClientHealthFailureReason>,
+    /// US-009/US-010: verified proof a repair took effect (closed, bounded).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub postcondition: Option<ClientHealthCommandPostcondition>,
+    /// US-009/US-010: closed "the platform will not attest this safe, a human
+    /// must act" outcome (e.g. an unsupported Windows updater state). Paired
+    /// with the [`ClientHealthFailureReason::ManualActionRequired`] reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manual_action_required: Option<bool>,
 }
 
 // ─── Value validators (fail closed) ──────────────────────────────────────────
@@ -557,6 +639,94 @@ fn assert_bounded_int(
     ))
 }
 
+/// A strict JSON boolean. Anything else (including `null`, `0`/`1`, `"true"`)
+/// fails closed, matching the reference's `assertBoolean`.
+fn assert_boolean(field: &str, value: Option<&Value>) -> Result<bool, ClientHealthContractError> {
+    match value {
+        None | Some(Value::Null) => Err(ClientHealthContractError::new(
+            ClientHealthContractErrorCode::MissingField,
+            field,
+        )),
+        Some(Value::Bool(flag)) => Ok(*flag),
+        Some(_) => Err(ClientHealthContractError::new(
+            ClientHealthContractErrorCode::InvalidType,
+            field,
+        )),
+    }
+}
+
+/// Parse + validate the four optional SemVer client versions (fail closed).
+/// Shared by the heartbeat parser and the postcondition parser.
+fn parse_versions(
+    field: &str,
+    value: &Value,
+) -> Result<ClientHealthVersions, ClientHealthContractError> {
+    let raw = as_object(field, Some(value))?;
+    let mut versions = ClientHealthVersions::default();
+    for (key, slot) in [
+        ("desktop", &mut versions.desktop),
+        ("cli", &mut versions.cli),
+        ("core", &mut versions.core),
+        ("syncRunner", &mut versions.sync_runner),
+    ] {
+        if let Some(entry) = raw.get(key) {
+            *slot = Some(assert_version(&format!("{field}.{key}"), Some(entry))?);
+        }
+    }
+    Ok(versions)
+}
+
+/// Parse + validate a [`ClientHealthRepairArgs`] object (US-009). The ONLY key
+/// the wire schema knows is a SemVer `targetVersion`; any other key is a
+/// fail-closed rejection so a conflict-resolution choice, a shell fragment, or
+/// any other free-form steering value structurally cannot ride in on `args`.
+/// Mirrors hq-pro's `parseClientHealthRepairArgs`.
+pub fn parse_client_health_repair_args(
+    field: &str,
+    value: &Value,
+) -> Result<ClientHealthRepairArgs, ClientHealthContractError> {
+    let raw = as_object(field, Some(value))?;
+    let mut args = ClientHealthRepairArgs::default();
+    for key in raw.keys() {
+        if key != "targetVersion" {
+            return Err(ClientHealthContractError::new(
+                ClientHealthContractErrorCode::UnknownEnumValue,
+                format!("{field}.{key}"),
+            ));
+        }
+    }
+    if let Some(entry) = raw.get("targetVersion") {
+        args.target_version = Some(assert_version(&format!("{field}.targetVersion"), Some(entry))?);
+    }
+    Ok(args)
+}
+
+/// Parse + validate a [`ClientHealthCommandPostcondition`] (US-009). Closed and
+/// bounded: a boolean, optional SemVer versions, and an optional closed sync
+/// state — no free-form field can appear. Mirrors hq-pro's
+/// `parseClientHealthPostcondition`.
+fn parse_postcondition(
+    field: &str,
+    value: &Value,
+) -> Result<ClientHealthCommandPostcondition, ClientHealthContractError> {
+    let raw = as_object(field, Some(value))?;
+    let mut postcondition = ClientHealthCommandPostcondition {
+        verified: assert_boolean(&format!("{field}.verified"), raw.get("verified"))?,
+        versions: None,
+        sync_state: None,
+    };
+    if let Some(entry) = raw.get("versions") {
+        postcondition.versions = Some(parse_versions(&format!("{field}.versions"), entry)?);
+    }
+    if let Some(entry) = raw.get("syncState") {
+        postcondition.sync_state = Some(ClientHealthSyncState::parse_field(
+            &format!("{field}.syncState"),
+            Some(entry),
+        )?);
+    }
+    Ok(postcondition)
+}
+
 fn as_object<'a>(
     field: &str,
     value: Option<&'a Value>,
@@ -634,6 +804,7 @@ pub fn parse_client_health_heartbeat(
         sync_state: ClientHealthSyncState::parse_field("syncState", raw.get("syncState"))?,
         last_sync_attempt_at: None,
         last_sync_success_at: None,
+        sync_engine_watermark_at: None,
         consecutive_failures: assert_bounded_int(
             "consecutiveFailures",
             raw.get("consecutiveFailures"),
@@ -648,6 +819,10 @@ pub fn parse_client_health_heartbeat(
     }
     if let Some(entry) = raw.get("lastSyncSuccessAt") {
         heartbeat.last_sync_success_at = Some(assert_iso_utc("lastSyncSuccessAt", Some(entry))?);
+    }
+    if let Some(entry) = raw.get("syncEngineWatermarkAt") {
+        heartbeat.sync_engine_watermark_at =
+            Some(assert_iso_utc("syncEngineWatermarkAt", Some(entry))?);
     }
     if let Some(entry) = raw.get("conflictCount") {
         heartbeat.conflict_count = Some(assert_bounded_int(
@@ -688,12 +863,21 @@ pub fn parse_client_health_command_receipt(
         occurred_at: assert_iso_utc("occurredAt", raw.get("occurredAt"))?,
         checks: None,
         failure_reason: None,
+        postcondition: None,
+        manual_action_required: None,
     };
     if let Some(entry) = raw.get("failureReason") {
         receipt.failure_reason = Some(ClientHealthFailureReason::parse_field(
             "failureReason",
             Some(entry),
         )?);
+    }
+    if let Some(entry) = raw.get("postcondition") {
+        receipt.postcondition = Some(parse_postcondition("postcondition", entry)?);
+    }
+    if let Some(entry) = raw.get("manualActionRequired") {
+        receipt.manual_action_required =
+            Some(assert_boolean("manualActionRequired", Some(entry))?);
     }
     if let Some(entry) = raw.get("checks") {
         let Value::Array(entries) = entry else {
@@ -903,6 +1087,25 @@ mod tests {
         "failureReason": "HEARTBEAT_STALE"
     }"#;
 
+    /// US-019: a CLI install whose sync engine advanced its per-file journal
+    /// watermark (a file moved) but which never completed a run. The watermark
+    /// rides its own field; there is no `lastSyncSuccessAt`.
+    const HEARTBEAT_CLI_WATERMARK_NO_COMPLETED_RUN: &str = r#"{
+        "contractVersion": 1,
+        "installationId": "inst-a2c7f0e91d4b",
+        "source": "cli",
+        "platform": "linux",
+        "arch": "x64",
+        "sentAt": "2026-09-03T17:05:00.000Z",
+        "sequence": 806,
+        "versions": { "cli": "5.108.4", "core": "3.18.0" },
+        "syncState": "error",
+        "lastSyncAttemptAt": "2026-09-03T16:40:00.000Z",
+        "syncEngineWatermarkAt": "2026-09-03T16:41:00.000Z",
+        "consecutiveFailures": 6,
+        "failureReason": "RUNNER_FAILED"
+    }"#;
+
     const RECEIPT_REPAIR_SUCCEEDED: &str = r#"{
         "contractVersion": 1,
         "commandId": "cmd-8c2f51ab90aa",
@@ -1109,10 +1312,31 @@ mod tests {
             ("updateFailed", HEARTBEAT_UPDATE_FAILED),
             ("runnerFailed", HEARTBEAT_RUNNER_FAILED),
             ("heartbeatStale", HEARTBEAT_STALE),
+            ("cliWatermarkNoCompletedRun", HEARTBEAT_CLI_WATERMARK_NO_COMPLETED_RUN),
         ] {
             let parsed = parse_client_health_heartbeat(&value(raw));
             assert!(parsed.is_ok(), "canonical heartbeat {name} must parse: {parsed:?}");
         }
+    }
+
+    #[test]
+    fn sync_engine_watermark_rides_its_own_field_never_success() {
+        // US-019: the engine journal watermark parses onto its own field and
+        // survives the wire byte-for-byte, and is NEVER read as a completed
+        // success (there is no lastSyncSuccessAt on this snapshot).
+        let input = value(HEARTBEAT_CLI_WATERMARK_NO_COMPLETED_RUN);
+        let parsed = parse_client_health_heartbeat(&input).expect("watermark heartbeat parses");
+        assert_eq!(
+            parsed.sync_engine_watermark_at.as_deref(),
+            Some("2026-09-03T16:41:00.000Z")
+        );
+        assert_eq!(parsed.last_sync_success_at, None);
+        let wire = serde_json::to_value(&parsed).expect("serializes");
+        assert_eq!(wire, input, "wire field names/values must survive round-trip");
+        assert!(
+            wire.get("lastSyncSuccessAt").is_none(),
+            "the watermark must never masquerade as a completed success"
+        );
     }
 
     #[test]
@@ -1279,5 +1503,133 @@ mod tests {
         assert!(!should_apply_heartbeat(Some(newer.sequence), older.sequence));
         // Equal sequence is a replay: dropped.
         assert!(!should_apply_heartbeat(Some(newer.sequence), newer.sequence));
+    }
+
+    // ── US-009/US-010 repair-intent contract additions ──────────────────────
+
+    /// RESUME_SYNC receipt carrying a verified postcondition (versions +
+    /// observed sync state) — the proving-outcome object US-010 attaches.
+    const RECEIPT_RESUME_SYNC_POSTCONDITION: &str = r#"{
+        "contractVersion": 1,
+        "commandId": "cmd-7d3e91af22bc",
+        "installationId": "inst-9a11c0de2f34",
+        "kind": "RESUME_SYNC",
+        "state": "succeeded",
+        "revision": 3,
+        "occurredAt": "2026-09-05T12:00:00.000Z",
+        "postcondition": {
+            "verified": true,
+            "versions": { "cli": "5.106.2", "core": "3.18.0" },
+            "syncState": "idle"
+        }
+    }"#;
+
+    /// APPLY_DESKTOP_UPDATE on an unsupported Windows build: nothing installed,
+    /// closed manual-action-required outcome paired with the new failure reason.
+    const RECEIPT_MANUAL_ACTION_REQUIRED: &str = r#"{
+        "contractVersion": 1,
+        "commandId": "cmd-aa02bd7714ef",
+        "installationId": "inst-77e3b19d5c02",
+        "kind": "APPLY_DESKTOP_UPDATE",
+        "state": "failed",
+        "revision": 2,
+        "occurredAt": "2026-09-05T12:01:00.000Z",
+        "failureReason": "MANUAL_ACTION_REQUIRED",
+        "manualActionRequired": true
+    }"#;
+
+    #[test]
+    fn canceled_is_a_recognized_terminal_state() {
+        // A server-only terminal state (US-009). It must parse rather than
+        // fail closed if it ever appears in an incoming projection.
+        let mut receipt = value(RECEIPT_REPAIR_SUCCEEDED);
+        receipt["state"] = json!("canceled");
+        let parsed = parse_client_health_command_receipt(&receipt).expect("canceled parses");
+        assert_eq!(parsed.state, ClientHealthCommandState::Canceled);
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap()["state"],
+            json!("canceled")
+        );
+    }
+
+    #[test]
+    fn confirmation_levels_round_trip() {
+        assert_eq!(ClientHealthConfirmationLevel::None.wire_value(), "none");
+        assert_eq!(
+            ClientHealthConfirmationLevel::Consequence.wire_value(),
+            "consequence"
+        );
+        assert_eq!(
+            serde_json::to_value(ClientHealthConfirmationLevel::Consequence).unwrap(),
+            json!("consequence")
+        );
+    }
+
+    #[test]
+    fn repair_args_parse_and_fail_closed() {
+        // Empty object → no targetVersion.
+        let empty = parse_client_health_repair_args("args", &json!({})).expect("empty args parse");
+        assert_eq!(empty.target_version, None);
+
+        // A valid SemVer targetVersion is accepted (reserved-but-parsed).
+        let ok = parse_client_health_repair_args("args", &json!({ "targetVersion": "5.106.2" }))
+            .expect("valid targetVersion parses");
+        assert_eq!(ok.target_version.as_deref(), Some("5.106.2"));
+
+        // An unknown key (e.g. a conflict-resolution choice) fails closed.
+        let unknown = parse_client_health_repair_args("args", &json!({ "resolve": "local" }))
+            .expect_err("unknown arg must be rejected");
+        assert_eq!(unknown.code, ClientHealthContractErrorCode::UnknownEnumValue);
+
+        // A shell fragment smuggled as a version fails the SemVer gate.
+        let poisoned =
+            parse_client_health_repair_args("args", &json!({ "targetVersion": "5; rm -rf ~" }))
+                .expect_err("non-semver targetVersion must be rejected");
+        assert_eq!(poisoned.code, ClientHealthContractErrorCode::UnsafeValue);
+    }
+
+    #[test]
+    fn receipt_postcondition_round_trips_and_scrubs() {
+        let input = value(RECEIPT_RESUME_SYNC_POSTCONDITION);
+        let parsed = parse_client_health_command_receipt(&input).expect("postcondition parses");
+        let post = parsed.postcondition.as_ref().expect("has postcondition");
+        assert!(post.verified);
+        assert_eq!(post.sync_state, Some(ClientHealthSyncState::Idle));
+        assert_eq!(post.versions.as_ref().and_then(|v| v.core.as_deref()), Some("3.18.0"));
+        // Byte-for-byte survival of the closed proof object.
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), input);
+
+        // A customer path smuggled into a postcondition version fails closed —
+        // no path/log can ride into a receipt's proof object.
+        let mut poisoned = input.clone();
+        poisoned["postcondition"]["versions"]["core"] = json!("/Users/jane/Library/HQ");
+        let err = parse_client_health_command_receipt(&poisoned)
+            .expect_err("path-shaped version must be rejected");
+        assert_eq!(err.code, ClientHealthContractErrorCode::UnsafeValue);
+        assert!(!err.to_string().contains("/Users/jane"));
+    }
+
+    #[test]
+    fn manual_action_required_receipt_parses_with_closed_reason() {
+        let parsed = parse_client_health_command_receipt(&value(RECEIPT_MANUAL_ACTION_REQUIRED))
+            .expect("manual-action receipt parses");
+        assert_eq!(parsed.manual_action_required, Some(true));
+        assert_eq!(
+            parsed.failure_reason,
+            Some(ClientHealthFailureReason::ManualActionRequired)
+        );
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap(),
+            value(RECEIPT_MANUAL_ACTION_REQUIRED)
+        );
+    }
+
+    #[test]
+    fn non_boolean_manual_action_required_fails_closed() {
+        let mut receipt = value(RECEIPT_MANUAL_ACTION_REQUIRED);
+        receipt["manualActionRequired"] = json!("yes");
+        let err = parse_client_health_command_receipt(&receipt)
+            .expect_err("string manualActionRequired must be rejected");
+        assert_eq!(err.code, ClientHealthContractErrorCode::InvalidType);
     }
 }

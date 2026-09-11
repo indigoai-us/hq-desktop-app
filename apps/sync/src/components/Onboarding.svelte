@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { currentMonitor, getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { onDestroy, onMount } from 'svelte';
-  import { initialStepForLifecycle, CONSENT_STEP_INDEX } from '../lib/onboarding-wizard';
+  import { initialStepForLifecycle, CONSENT_STEP_INDEX, type WizardMode } from '../lib/onboarding-wizard';
   import type { OnboardingFlow } from '../lib/onboarding-step-telemetry';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
 
@@ -10,12 +10,14 @@
     state: string;
     onfinish?: () => void | Promise<void>;
     /**
-     * `'onboarding'` (default) runs the full first-run wizard. `'reprompt'`
-     * (US-005) shows ONLY the consent step to re-ask a person whose recorded
-     * answer is stale — same floating-card chrome, but it must NOT mark first
-     * run complete on finish (that already happened long ago).
+     * `'onboarding'` (default) runs the full first-run wizard. `'consent'`
+     * shows ONLY the consent step for a machine that is installed and signed
+     * in but has no consent answer on record, then marks first run complete.
+     * `'reprompt'` (US-005) shows ONLY the consent step to re-ask a person
+     * whose recorded answer is stale — same floating-card chrome, but it must
+     * NOT mark first run complete on finish (that already happened long ago).
      */
-    mode?: 'onboarding' | 'reprompt';
+    mode?: WizardMode;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
   }
@@ -99,12 +101,10 @@
   $effect(() => {
     if (activeLifecycleState === lifecycleStateProp) return;
     activeLifecycleState = lifecycleStateProp;
-    // The re-prompt opens straight on the consent step — there is no sign-in,
-    // directory or setup to run.
+    // Consent-only runs open straight on the consent step — there is no
+    // sign-in, directory or setup to run.
     initialStep =
-      mode === 'reprompt'
-        ? CONSENT_STEP_INDEX
-        : initialStepForLifecycle(lifecycleStateProp);
+      mode === 'onboarding' ? initialStepForLifecycle(lifecycleStateProp) : CONSENT_STEP_INDEX;
     onboardingFlow =
       lifecycleStateProp === 'InstallResume' || lifecycleStateProp === 'NeedsAuthForInstall'
         ? 'resume'
@@ -115,7 +115,7 @@
     // The re-prompt is NOT first-run: the person has been running HQ for a while.
     // Marking first run complete again would be a lie, and its side effects
     // (writing realtimeSync/personalSyncEnabled defaults) are not wanted here.
-    if (mode === 'onboarding' && typeof invoke === 'function') {
+    if (mode !== 'reprompt' && typeof invoke === 'function') {
       await invoke('mark_first_run_complete');
     }
     // Hand off from the centered installer card to the desktop workspace.

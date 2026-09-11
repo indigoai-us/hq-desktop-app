@@ -2,6 +2,7 @@
 //! reporting helpers plus its async single-flight boundary.
 
 use std::future::Future;
+#[cfg(not(unix))]
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -24,7 +25,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32, TH32CS_SNAPTHREAD,
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::JobObjects::{
@@ -38,6 +39,7 @@ use windows::Win32::System::Threading::{
 };
 
 use crate::paths;
+use crate::watcher_fault::{UnmatchedStderrShape, UnmatchedStderrShapeRollup};
 
 /// Re-exported so probe diagnostics and their telemetry tests have a single
 /// import path for the resolver's program classification and resolution lane.
@@ -119,6 +121,26 @@ const VERSION_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 const VERSION_OUTPUT_LIMIT: u64 = 64 * 1024;
 
+#[cfg(unix)]
+fn read_probe_output(file: std::fs::File) -> std::io::Result<Vec<u8>> {
+    use std::os::unix::fs::FileExt;
+    // The child inherits the same open file description. Seeking here would
+    // also rewind a descendant that is still writing during group shutdown.
+    let mut bytes = vec![0; VERSION_OUTPUT_LIMIT as usize];
+    let mut length = 0;
+    while length < bytes.len() {
+        match file.read_at(&mut bytes[length..], length as u64) {
+            Ok(0) => break,
+            Ok(count) => length += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    bytes.truncate(length);
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
 fn read_probe_output(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
     file.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
@@ -285,6 +307,69 @@ fn retry_transient_io<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io:
     }
 }
 
+/// Marks an `io::Error` as having come from the probe HARNESS -- our own
+/// tempfile, `dup`, `wait` or output-read plumbing -- rather than from the
+/// child's `exec`.
+///
+/// Without this tag every failure inside [`output_with_timeout`] reached
+/// [`classify_spawn_error`], which reads the errno as a statement ABOUT THE
+/// CHILD. A `dup` that failed with `EMFILE` was therefore reported as
+/// `ProcessSpawnFailed` even though no spawn verdict existed, and -- worse -- a
+/// plumbing errno that happens to collide with `ENOEXEC`/`ERROR_BAD_EXE_FORMAT`
+/// would have been reported as "the program is not an executable image", a
+/// claim the probe never established.
+#[derive(Debug)]
+struct ProbeHarnessIoError(std::io::Error);
+
+impl std::fmt::Display for ProbeHarnessIoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "version probe harness I/O failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for ProbeHarnessIoError {}
+
+/// Tag a harness-stage failure so it can never be read as the child's spawn
+/// errno. The `kind` is preserved so the transient-retry predicate still works.
+fn harness_io(error: std::io::Error) -> std::io::Error {
+    let kind = error.kind();
+    std::io::Error::new(kind, ProbeHarnessIoError(error))
+}
+
+fn is_probe_harness_io_error(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<ProbeHarnessIoError>())
+}
+
+/// Classify an [`output_with_timeout`] failure. Only a genuine spawn failure is
+/// allowed to reach [`classify_spawn_error`]; a harness failure keeps the
+/// undifferentiated residual bucket, because the child never got a verdict.
+pub fn classify_probe_error(error: &std::io::Error) -> VersionProbeOutcome {
+    if is_probe_harness_io_error(error) {
+        return VersionProbeOutcome::ProcessSpawnFailed;
+    }
+    classify_spawn_error(error)
+}
+
+/// Poll a `try_wait`-shaped operation, absorbing `EINTR` in place.
+///
+/// `EINTR` here means "a signal arrived while we asked about an ALREADY RUNNING
+/// child", which says nothing about the child. Retrying the whole probe would
+/// leak that child's process group, so the interrupt is absorbed at the poll
+/// itself and the surrounding deadline loop keeps its own bound.
+fn poll_child_status<F>(mut op: F) -> std::io::Result<Option<std::process::ExitStatus>>
+where
+    F: FnMut() -> std::io::Result<Option<std::process::ExitStatus>>,
+{
+    loop {
+        match op() {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            other => return other,
+        }
+    }
+}
+
 /// Run a tiny version command with a hard process boundary. `Command::output`
 /// has no timeout and can strand both the process and its blocking worker; this
 /// helper kills and reaps the child before returning `None` on timeout.
@@ -296,10 +381,22 @@ pub(crate) fn output_with_timeout(
     // lifetime. A background process may inherit the handles, but unlike a
     // pipe an open regular file still returns EOF at its current length. The
     // byte cap also bounds a descendant that continuously writes.
-    let stdout = retry_transient_io(tempfile::tempfile)?;
-    let stderr = retry_transient_io(tempfile::tempfile)?;
-    cmd.stdout(Stdio::from(stdout.try_clone()?))
-        .stderr(Stdio::from(stderr.try_clone()?));
+    let stdout = retry_transient_io(tempfile::tempfile).map_err(harness_io)?;
+    let stderr = retry_transient_io(tempfile::tempfile).map_err(harness_io)?;
+    // `dup` is as fd-pressure-sensitive as the tempfile creation above it, so it
+    // gets the same transient retry. Unretried, an `EMFILE` here surfaced as a
+    // spawn verdict for a child that was never spawned.
+    let child_stdout = retry_transient_io(|| stdout.try_clone()).map_err(harness_io)?;
+    let child_stderr = retry_transient_io(|| stderr.try_clone()).map_err(harness_io)?;
+    cmd.stdout(Stdio::from(child_stdout))
+        .stderr(Stdio::from(child_stderr))
+        // Give the child a null stdin. A version probe never feeds input, and an
+        // inherited stdin lets a name-collision `hq` that reads stdin (the common
+        // shape for a foreign jq-like `hq`) block for the full deadline and report
+        // the opaque `timed_out` (HQ-DESKTOP-3P) instead of a classifiable
+        // outcome. The real CLI and `npm root -g` never read stdin, so their
+        // behaviour is unchanged.
+        .stdin(Stdio::null());
     VersionProbeContainment::prepare(cmd);
     let mut child = retry_transient_io(|| cmd.spawn())?;
     let mut containment = match VersionProbeContainment::establish(&child) {
@@ -307,12 +404,21 @@ pub(crate) fn output_with_timeout(
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(error);
+            return Err(harness_io(error));
         }
     };
     let started = Instant::now();
     let status = loop {
-        if let Some(status) = child.try_wait()? {
+        let polled = match poll_child_status(|| child.try_wait()) {
+            Ok(polled) => polled,
+            Err(error) => {
+                containment.terminate();
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(harness_io(error));
+            }
+        };
+        if let Some(status) = polled {
             containment.terminate();
             break Some(status);
         }
@@ -325,8 +431,11 @@ pub(crate) fn output_with_timeout(
         std::thread::sleep(VERSION_PROCESS_POLL_INTERVAL);
     };
 
-    let stdout = read_probe_output(stdout)?;
-    let stderr = read_probe_output(stderr)?;
+    // Re-reads from offset 0 on every attempt, so the retry is idempotent.
+    let stdout =
+        retry_transient_io(|| read_probe_output(stdout.try_clone()?)).map_err(harness_io)?;
+    let stderr =
+        retry_transient_io(|| read_probe_output(stderr.try_clone()?)).map_err(harness_io)?;
 
     Ok(status.map(|status| Output {
         status,
@@ -436,6 +545,29 @@ pub enum InterpreterRecovery {
     StillUnreadable,
 }
 
+/// Whether the resolved `hq` is backed by a reachable `@indigoai-us/hq-cli`
+/// package manifest — the sub-case that distinguishes the populations of an
+/// unreadable-version occurrence. Closed and path-free for telemetry, and
+/// ADDITIVE beside the existing probe fields: the event's message and grouping
+/// are unchanged, so this cluster's regression watermark stays comparable.
+///
+/// `NotProbed` is the default the paths that never classify keep — no `hq`
+/// resolved, or a manifest read that was INDETERMINATE (a permission/AV hold)
+/// rather than a definitive absence. `Backed` means an hq-cli manifest was
+/// reachable. `UnbackedManaged`/`UnbackedForeign` mean the manifest was
+/// DEFINITIVELY absent, split by whether the shim sits inside one of HQ's own
+/// managed-toolchain roots (HQ's orphaned shim, the largest reported population)
+/// or outside them (an unrelated program named `hq`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HqBacking {
+    #[default]
+    NotProbed,
+    Backed,
+    UnbackedManaged,
+    UnbackedForeign,
+}
+
 /// The three ordered probes used to discover an installed hq CLI version.
 /// The shape remains fixed even when a successful earlier probe means a later
 /// one must not execute.
@@ -458,6 +590,11 @@ pub struct LocalVersionProbeDiagnostics {
     /// Which resolution lane produced the `hq` binary (settings PATH, managed
     /// toolchain, a user/system prefix, or the login-shell fallback).
     pub resolution_source: ResolutionSource,
+    /// Whether the resolved `hq` is backed by a reachable `@indigoai-us/hq-cli`
+    /// manifest, and if not, whether it is HQ's own managed-toolchain orphan or
+    /// an unrelated foreign program. Additive: names the sub-case of a recurrence
+    /// without changing any existing field's name, position, or value.
+    pub hq_backing: HqBacking,
 }
 
 impl LocalVersionProbeDiagnostics {
@@ -471,6 +608,7 @@ impl LocalVersionProbeDiagnostics {
             managed_runtime: ManagedRuntimeState::NotProbed,
             interpreter_recovery: InterpreterRecovery::NotNeeded,
             resolution_source: ResolutionSource::NotResolved,
+            hq_backing: HqBacking::NotProbed,
         }
     }
 }
@@ -646,6 +784,53 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
     (None, outcome)
 }
 
+/// Whether an `@indigoai-us/hq-cli` package manifest is reachable from a resolved
+/// `hq` binary — the resolver's "is this a real hq-cli install, not a foreign or
+/// orphaned program named `hq`" question. It reuses the EXACT layout walk the
+/// version probe uses ([`version_from_hq_binary_probe`]), so a candidate
+/// classified [`CandidateBacking::Backed`] here is precisely one the version
+/// probe can read a version from — backing and version-reading can never
+/// disagree. Bounded filesystem reads only: no child process, no network.
+///
+/// [`CandidateBacking::AbsentDefinitive`] requires a definitive "package is not
+/// here" answer from every reachable location. A manifest that could not be READ
+/// or parsed (a permission lock, an antivirus hold) or a binary that could not be
+/// canonicalized is [`CandidateBacking::Indeterminate`] — the resolver must never
+/// reject or demote on that, or a transient blip turns a working machine into a
+/// reinstall. This is the same `Ok(None)`-vs-`Err(())` distinction
+/// [`read_hq_cli_package_version`] already draws.
+pub fn hq_cli_backing(hq_bin: &Path) -> paths::CandidateBacking {
+    match version_from_hq_binary_probe(hq_bin).1 {
+        VersionProbeOutcome::Succeeded => paths::CandidateBacking::Backed,
+        VersionProbeOutcome::PackageNotFound => paths::CandidateBacking::AbsentDefinitive,
+        _ => paths::CandidateBacking::Indeterminate,
+    }
+}
+
+/// Map an already-computed binary-anchor outcome for a resolved `hq` into the
+/// closed telemetry backing token — with NO second filesystem walk, since the
+/// anchor probe already answered the reachability question. `Backed` on a
+/// manifest read, `Unbacked{Managed,Foreign}` on a DEFINITIVE absence (split by
+/// managed-toolchain provenance), `NotProbed` for no `hq` or an indeterminate
+/// read. Mirrors [`hq_cli_backing`]'s mapping so the resolver's decision and the
+/// reported sub-case can never disagree.
+fn classify_hq_backing(hq: Option<&Path>, binary_anchor: VersionProbeOutcome) -> HqBacking {
+    let Some(hq) = hq else {
+        return HqBacking::NotProbed;
+    };
+    match binary_anchor {
+        VersionProbeOutcome::Succeeded => HqBacking::Backed,
+        VersionProbeOutcome::PackageNotFound => {
+            if paths::hq_bin_in_managed_root(hq) {
+                HqBacking::UnbackedManaged
+            } else {
+                HqBacking::UnbackedForeign
+            }
+        }
+        _ => HqBacking::NotProbed,
+    }
+}
+
 /// Parse `hq --version` output into a bare version string. Last-resort only:
 /// the CLI's `index.ts` carries a hardcoded `.version("…")` string that can
 /// lag the published npm version (same gotcha documented in
@@ -664,7 +849,7 @@ fn hq_version_string_probe(bin: &Path, path: &str) -> (Option<String>, VersionPr
     ) {
         Ok(Some(output)) => output,
         Ok(None) => return (None, VersionProbeOutcome::TimedOut),
-        Err(error) => return (None, classify_spawn_error(&error)),
+        Err(error) => return (None, classify_probe_error(&error)),
     };
     if !out.status.success() {
         return (
@@ -787,7 +972,7 @@ fn hq_version_via_node(
     let out = match output_with_timeout(cmd.env("PATH", path), VERSION_PROCESS_TIMEOUT) {
         Ok(Some(output)) => output,
         Ok(None) => return (None, VersionProbeOutcome::TimedOut),
-        Err(error) => return (None, classify_spawn_error(&error)),
+        Err(error) => return (None, classify_probe_error(&error)),
     };
     if !out.status.success() {
         return (
@@ -947,6 +1132,7 @@ pub fn get_local_version_diagnostics() -> LocalVersionProbeResult {
                     binary_anchor,
                     binary_anchor_shape,
                     resolved_program_kind: hq.kind,
+                    hq_backing: classify_hq_backing(Some(hq_path), binary_anchor),
                     ..LocalVersionProbeDiagnostics::not_attempted()
                 },
             }
@@ -1042,6 +1228,7 @@ fn probe_local_version_with_managed(
                 binary_anchor,
                 binary_anchor_shape,
                 resolved_program_kind,
+                hq_backing: classify_hq_backing(hq, binary_anchor),
                 ..LocalVersionProbeDiagnostics::not_attempted()
             },
         };
@@ -1067,6 +1254,9 @@ fn probe_local_version_after_binary(
     path: &str,
 ) -> LocalVersionProbeResult {
     let hq_installed = hq.is_some();
+    // The backing sub-case is derived from the binary-anchor outcome already in
+    // hand (no extra filesystem walk); it names why a resolved `hq` is unreadable.
+    let hq_backing = classify_hq_backing(hq, binary_anchor);
     let (npm_local, npm_root) = match npm {
         Some(npm) => read_installed_version_probe(npm, path),
         None => (None, VersionProbeOutcome::NotAttempted),
@@ -1081,6 +1271,7 @@ fn probe_local_version_after_binary(
                 hq_version: VersionProbeOutcome::NotAttempted,
                 binary_anchor_shape,
                 resolved_program_kind,
+                hq_backing,
                 ..LocalVersionProbeDiagnostics::not_attempted()
             },
         };
@@ -1088,6 +1279,23 @@ fn probe_local_version_after_binary(
 
     let (local, hq_version, managed_runtime, interpreter_recovery) =
         hq_version_with_recovery(hq, path, managed);
+    // Make `hq_installed` truthful for the definitively-foreign case. A resolved
+    // `hq` we could read NO version from (npm-root and `hq --version` both failed)
+    // AND whose backing is a DEFINITIVE package-absent OUTSIDE every managed root
+    // is not an hq-cli install — it is an unrelated program named `hq`
+    // (HQ-DESKTOP-3P). Reporting it as installed both fires the false
+    // unreadable-version warning on every launch and BLOCKS the installer
+    // (`cli_install_needed(None, latest, true)` is false), so the machine can
+    // never converge. Flipping it to false silences the false alarm and lets the
+    // already-shipped installer put the real CLI on the machine, after which the
+    // resolver's backed preference selects HQ's own copy. Every OTHER case keeps
+    // reporting: an INDETERMINATE read (`HqBacking::NotProbed` — an unreadable or
+    // unparseable manifest, a canonicalize failure, an AV/permission hold) and an
+    // `UnbackedManaged` orphan both stay `hq_installed = true`, and a version read
+    // via the npm-root fallback (which returned above) keeps it true too — the
+    // flip is gated on `local.is_none()`.
+    let hq_installed =
+        hq_installed && !(local.is_none() && hq_backing == HqBacking::UnbackedForeign);
     LocalVersionProbeResult {
         local,
         hq_installed,
@@ -1100,6 +1308,7 @@ fn probe_local_version_after_binary(
             managed_runtime,
             interpreter_recovery,
             resolution_source: ResolutionSource::NotResolved,
+            hq_backing,
         },
     }
 }
@@ -1129,6 +1338,75 @@ pub fn cli_install_needed(local: Option<&str>, latest: &str, hq_installed: bool)
         Some(installed) => cmp_semver(installed, latest) == std::cmp::Ordering::Less,
         None => !hq_installed,
     }
+}
+
+/// Minimum `@indigoai-us/hq-cli` version the desktop app accepts as current
+/// enough to leave alone until the next *scheduled* check.
+///
+/// Mirrors the `MIN_VERSION` floor in hq-core's
+/// `core/hooks/UserPromptSubmit/30-ensure-hq-cli.sh`, which treats an installed
+/// CLI below this version as missing and reinstalls it on the next prompt. Keep
+/// the two in sync: a CLI hq-core refuses to run with is one the desktop app
+/// should not sit on for the updater's launch stagger or its 6h interval either.
+pub const HQ_CLI_MIN_VERSION: &str = "5.103.26";
+
+/// Is a *readable* installed version below [`HQ_CLI_MIN_VERSION`]?
+///
+/// `None` — no CLI, or a present-but-unreadable binary — is NOT below the
+/// floor. Those arms keep their existing handling (`cli_install_needed`,
+/// `should_report_unreadable_version`) and the scheduled cadence; the floor
+/// only accelerates the case where the app can *see* an old version.
+pub fn cli_below_floor(local: Option<&str>) -> bool {
+    cli_below_floor_of(local, HQ_CLI_MIN_VERSION)
+}
+
+/// [`cli_below_floor`] against an explicit floor, so the comparison is testable
+/// independently of the shipped constant.
+pub fn cli_below_floor_of(local: Option<&str>, floor: &str) -> bool {
+    local.is_some_and(|installed| cmp_semver(installed, floor) == std::cmp::Ordering::Less)
+}
+
+/// What the background CLI checker does at launch, before its scheduled
+/// stagger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchCliCheck {
+    /// The installed CLI reads below [`HQ_CLI_MIN_VERSION`]: run the check and
+    /// the install immediately instead of waiting out the launch stagger.
+    RepairNow {
+        /// The below-floor version that was read, for the log line.
+        local: String,
+    },
+    /// Current, missing, or unreadable: nothing to accelerate — wait for the
+    /// scheduled cadence exactly as before.
+    Scheduled,
+}
+
+/// Decide the launch behaviour from the network-free local version probe.
+pub fn launch_cli_check(local: Option<&str>) -> LaunchCliCheck {
+    launch_cli_check_with_floor(local, HQ_CLI_MIN_VERSION)
+}
+
+/// [`launch_cli_check`] against an explicit floor.
+pub fn launch_cli_check_with_floor(local: Option<&str>, floor: &str) -> LaunchCliCheck {
+    match local {
+        Some(installed) if cli_below_floor_of(Some(installed), floor) => {
+            LaunchCliCheck::RepairNow {
+                local: installed.to_string(),
+            }
+        }
+        _ => LaunchCliCheck::Scheduled,
+    }
+}
+
+/// May the background loop install right now?
+///
+/// The user's `autoUpdate` opt-out is honoured for an ordinary "a newer version
+/// exists" upgrade. A floor repair is not an upgrade in that sense: below
+/// [`HQ_CLI_MIN_VERSION`] the CLI cannot serve the hq-core contract, so — like
+/// the hq-core hook, which has no opt-out — the repair runs regardless of the
+/// toggle. The non-convergent marker is still consulted by the caller.
+pub fn auto_install_allowed(auto_update_enabled: bool, floor_repair: bool) -> bool {
+    auto_update_enabled || floor_repair
 }
 
 /// An unreadable version is actionable only when the hq resolver found a
@@ -1569,6 +1847,166 @@ impl DeliveredPrefixShim {
             Self::Present => "present",
             Self::Absent => "absent",
         }
+    }
+}
+
+/// What HQ's in-run repair of a settings-PATH foreign shadow achieved, as a
+/// CLOSED telemetry token (never a path). It is the input that makes the
+/// ForeignManaged blocking decision conditional for the settings-PATH shape: a
+/// run whose repair rewrote the winning `.claude` settings file's `env.PATH`
+/// (hoisting HQ's managed toolchain ahead of the stale foreign copy) writes NO
+/// durable marker, so the next resolution lands HQ's own current copy and
+/// converges; every refusal or write-failure keeps today's blocking behaviour
+/// byte-for-byte. Mirrors [`ManagedShadowRepairOutcome`]; default
+/// [`Self::NotAttempted`] so every existing caller is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsPathRepair {
+    /// No settings-PATH repair was attempted for this decision — the value every
+    /// non-settings-PATH run carries, and the pre-repair classification.
+    #[default]
+    NotAttempted,
+    /// The winning settings file's `env.PATH` was rewritten managed-first. HQ
+    /// owns the fix, so this run must not wedge auto-update for this version.
+    Rewritten,
+    /// The executed copy did not come from the settings-PATH lane, so rewriting
+    /// the settings PATH could not change what resolves. Nothing was written.
+    RefusedNotSettingsLane,
+    /// HQ's managed prefix exposes no runnable `hq` to hoist ahead of the foreign
+    /// copy. Nothing was written.
+    RefusedNoManagedCopy,
+    /// The executed copy is not strictly older than HQ's managed copy, so a hoist
+    /// would not change the resolved version — a deliberate same-or-newer foreign
+    /// copy is left where the user put it. Nothing was written.
+    RefusedNotStale,
+    /// The rewrite was attempted but the settings file could not be written (an
+    /// I/O error, a symlink escaping the HQ folder, or a non-object document).
+    WriteFailed,
+}
+
+impl SettingsPathRepair {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::NotAttempted => "not-attempted",
+            Self::Rewritten => "rewritten",
+            Self::RefusedNotSettingsLane => "refused-not-settings-lane",
+            Self::RefusedNoManagedCopy => "refused-no-managed-copy",
+            Self::RefusedNotStale => "refused-not-stale",
+            Self::WriteFailed => "write-failed",
+        }
+    }
+}
+
+/// Whether the winning `.claude` settings file's `env.PATH` lists HQ's managed
+/// npm-global bin dir at all — the `managed_bin_in_settings_path` telemetry
+/// token, so a residual settings-PATH event names whether the file the resolver
+/// reads even mentioned the managed CLI's directory. Closed and path-free;
+/// default [`Self::Unknown`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ManagedBinInSettingsPath {
+    Present,
+    Absent,
+    #[default]
+    Unknown,
+}
+
+impl ManagedBinInSettingsPath {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Absent => "absent",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Classify whether the winning settings PATH lists HQ's managed npm-global bin
+/// dir. `Unknown` when no settings file supplies a PATH; otherwise `Present`
+/// exactly when `managed_bin` is among the resolved settings dirs. Pure so the
+/// tag is unit-testable with fixture dirs.
+pub fn managed_bin_in_settings_path(
+    file: paths::SettingsPathFile,
+    settings_dirs: &[PathBuf],
+    managed_bin: &Path,
+) -> ManagedBinInSettingsPath {
+    if file == paths::SettingsPathFile::None {
+        return ManagedBinInSettingsPath::Unknown;
+    }
+    if settings_dirs.iter().any(|dir| dir == managed_bin) {
+        ManagedBinInSettingsPath::Present
+    } else {
+        ManagedBinInSettingsPath::Absent
+    }
+}
+
+/// The closed settings-PATH telemetry triple a non-convergent event carries:
+/// which file won ([`paths::SettingsPathFile`]), whether it listed the managed
+/// bin dir, and what the in-run repair achieved. Report-only except `repair`,
+/// which also gates the durable ForeignManaged block. `Copy` + `Default`
+/// (`NotAttempted` / `None` / `Unknown`) so every existing `PostInstallContext`
+/// keeps today's behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SettingsPathTelemetry {
+    pub repair: SettingsPathRepair,
+    pub file: paths::SettingsPathFile,
+    pub managed_bin: ManagedBinInSettingsPath,
+}
+
+/// Whether HQ should attempt the settings-PATH repair, or the closed reason it
+/// must not. Pure over the facts the caller gathered — the executed copy's
+/// resolution lane, HQ's runnable managed copy version, and the executed version
+/// — so the gate is unit-testable without touching the filesystem. Only
+/// [`Self::Attempt`] proceeds to rewrite the winning settings file; every refusal
+/// maps to the matching [`SettingsPathRepair`] value and leaves today's blocking
+/// behaviour unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsPathRepairGate {
+    Attempt,
+    RefusedNotSettingsLane,
+    RefusedNoManagedCopy,
+    RefusedNotStale,
+}
+
+pub fn settings_path_repair_gate(
+    hq_bin_lane: paths::ResolutionSource,
+    managed_copy_version: Option<&str>,
+    executed_version: Option<&str>,
+) -> SettingsPathRepairGate {
+    // Only the settings-PATH lane is repairable by rewriting the settings PATH: a
+    // login-shell or managed-toolchain copy would resolve the same whatever the
+    // settings file lists.
+    if hq_bin_lane != paths::ResolutionSource::SettingsPath {
+        return SettingsPathRepairGate::RefusedNotSettingsLane;
+    }
+    let Some(managed) = managed_copy_version else {
+        return SettingsPathRepairGate::RefusedNoManagedCopy;
+    };
+    // The managed copy must be STRICTLY newer than the executed (shadowing) copy,
+    // else hoisting HQ's toolchain ahead of the foreign dir would not change the
+    // resolved version. An unreadable executed version cannot be proven stale, so
+    // it refuses too.
+    match executed_version {
+        Some(executed) if cmp_semver(managed, executed) == std::cmp::Ordering::Greater => {
+            SettingsPathRepairGate::Attempt
+        }
+        _ => SettingsPathRepairGate::RefusedNotStale,
+    }
+}
+
+/// Map a [`SettingsPathRepairGate`] plus whether the rewrite actually wrote into
+/// the [`SettingsPathRepair`] telemetry outcome. Pure so the non-fatal mapping is
+/// unit-testable. Mirrors `managed_shadow_repair_outcome`.
+pub fn settings_path_repair_outcome(
+    gate: SettingsPathRepairGate,
+    wrote: bool,
+) -> SettingsPathRepair {
+    match gate {
+        SettingsPathRepairGate::Attempt if wrote => SettingsPathRepair::Rewritten,
+        SettingsPathRepairGate::Attempt => SettingsPathRepair::WriteFailed,
+        SettingsPathRepairGate::RefusedNotSettingsLane => {
+            SettingsPathRepair::RefusedNotSettingsLane
+        }
+        SettingsPathRepairGate::RefusedNoManagedCopy => SettingsPathRepair::RefusedNoManagedCopy,
+        SettingsPathRepairGate::RefusedNotStale => SettingsPathRepair::RefusedNotStale,
     }
 }
 
@@ -2069,6 +2507,13 @@ pub struct NonConvergentReport {
     /// emitted as the closed `delivered_prefix_shim` tag. Distinguishes a
     /// foreign layout HQ cannot drive from HQ's own incomplete install.
     pub delivered_prefix_shim: DeliveredPrefixShim,
+    /// The closed settings-PATH telemetry triple — which `.claude` file supplied
+    /// the winning `env.PATH`, whether it listed HQ's managed bin dir, and what
+    /// the in-run repair achieved — emitted as `settings_path_file`,
+    /// `managed_bin_in_settings_path`, and `settings_path_repair`. Names a
+    /// settings-PATH foreign shadow's own mechanism without another planning
+    /// round (HQ-DESKTOP-46).
+    pub settings_path: SettingsPathTelemetry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2286,6 +2731,13 @@ pub struct PostInstallContext<'a> {
     /// absent stays non-blocking) AND rides the `delivered_prefix_shim` tag. The
     /// `npm()` constructor defaults it to [`DeliveredPrefixShim::Unknown`].
     pub delivered_prefix_shim: DeliveredPrefixShim,
+    /// The settings-PATH telemetry triple. Its `repair` field gates the durable
+    /// ForeignManaged block (a `Rewritten` repair stays non-blocking so the next
+    /// resolution converges); all three ride the non-convergent event. The
+    /// `npm()` constructor defaults it to [`SettingsPathTelemetry::default`]
+    /// (`NotAttempted` / `None` / `Unknown`), so every existing caller is
+    /// unchanged.
+    pub settings_path: SettingsPathTelemetry,
 }
 
 impl<'a> PostInstallContext<'a> {
@@ -2335,6 +2787,10 @@ impl<'a> PostInstallContext<'a> {
             executed_copy_aim: ExecutedCopyAim::Undrivable,
             hq_bin_lane: paths::ResolutionSource::NotResolved,
             delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+            // No settings-PATH repair attempted and no settings telemetry known:
+            // preserves today's block-on-foreign behaviour and emits the
+            // not-attempted / none / unknown tokens.
+            settings_path: SettingsPathTelemetry::default(),
         }
     }
 
@@ -2342,6 +2798,15 @@ impl<'a> PostInstallContext<'a> {
     /// HQ-owned same-root shadow from a genuinely foreign layout.
     pub fn with_managed_roots(mut self, managed_roots: &'a [PathBuf]) -> Self {
         self.managed_roots = managed_roots;
+        self
+    }
+
+    /// Attach the settings-PATH telemetry triple (repair outcome, winning file,
+    /// managed-bin presence) for a re-decide after the in-run settings-PATH
+    /// repair. `repair == Rewritten` relaxes the durable ForeignManaged block;
+    /// the other two are report-only tags.
+    pub fn with_settings_path(mut self, settings_path: SettingsPathTelemetry) -> Self {
+        self.settings_path = settings_path;
         self
     }
 
@@ -2394,9 +2859,18 @@ fn foreign_verdict_may_block(
     kind: NonConvergenceKind,
     aim: ExecutedCopyAim,
     shim: DeliveredPrefixShim,
+    settings_path_repair: SettingsPathRepair,
 ) -> bool {
     if kind != NonConvergenceKind::ForeignManaged {
         return true;
+    }
+    // A run whose settings-PATH shadow HQ just rewrote stays non-blocking and
+    // episode-bounded: the next resolution reads the rewritten managed-first PATH
+    // and converges on HQ's own current copy, so a durable marker would wedge the
+    // very machine HQ just fixed. Every other settings-PATH outcome (not
+    // attempted, or a refusal / write-failure) keeps today's behaviour.
+    if settings_path_repair == SettingsPathRepair::Rewritten {
+        return false;
     }
     aim.foreign_verdict_may_block() && shim != DeliveredPrefixShim::Absent
 }
@@ -2425,12 +2899,14 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         executed_copy_aim,
         hq_bin_lane,
         delivered_prefix_shim,
+        settings_path,
     } = ctx;
     let managed_roots = *managed_roots;
     let managed_shadow_repair = *managed_shadow_repair;
     let executed_copy_aim = *executed_copy_aim;
     let hq_bin_lane = *hq_bin_lane;
     let delivered_prefix_shim = *delivered_prefix_shim;
+    let settings_path = *settings_path;
     let (executor, before_bin, after_bin, latest, installer_bin, already_blocked) = (
         *executor,
         *before_bin,
@@ -2481,8 +2957,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         // caller derives BUN_INSTALL from that same path before spawning.
         InstallExecutor::Bun => true,
         _ => pnpm.as_ref().is_some_and(|diagnostics| {
-            diagnostics.home_source != PnpmHomeSource::Undetermined
-                && diagnostics.path_has_shim_dir
+            diagnostics.home_source != PnpmHomeSource::Undetermined && diagnostics.path_has_shim_dir
         }),
     };
     // Delivery evidence: did the installer write the target version INTO the
@@ -2551,7 +3026,12 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
                     non_convergent_episode_key(latest, executor, kind, pnpm_home_source);
                 let first_episode =
                     !non_convergent_episode_reported(nonblocking_episode_keys, &episode_key);
-                (None, first_episode, false, first_episode.then_some(episode_key))
+                (
+                    None,
+                    first_episode,
+                    false,
+                    first_episode.then_some(episode_key),
+                )
             }
             // A removal ran and the machine is still shadowed (or a gate refused
             // it): fall back to the foreign-managed policy — one durable-record-
@@ -2577,22 +3057,39 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         let episode_key = non_convergent_episode_key(latest, executor, kind, pnpm_home_source);
         let first_episode =
             !non_convergent_episode_reported(nonblocking_episode_keys, &episode_key);
-        (None, first_episode, false, first_episode.then_some(episode_key))
+        (
+            None,
+            first_episode,
+            false,
+            first_episode.then_some(episode_key),
+        )
     } else if kind.is_installer_targeted() {
         (Some(latest.to_string()), true, false, None)
-    } else if !foreign_verdict_may_block(kind, executed_copy_aim, delivered_prefix_shim) {
+    } else if !foreign_verdict_may_block(
+        kind,
+        executed_copy_aim,
+        delivered_prefix_shim,
+        settings_path.repair,
+    ) {
         // ForeignManaged, but HQ did not yet aim at the drivable copy the app
-        // executes (the pre-install resolution did not identify it), or it
-        // delivered into a prefix that is missing its shim — HQ's OWN incomplete
-        // install, not a foreign layout HQ cannot drive. Stay observable and
-        // episode-bounded, write NO durable marker, so the corrected aim
-        // converges on the next cycle instead of wedging auto-update for this
-        // version. Uses the same non-blocking episode bound as a resolution
-        // shortfall so a persistent environment does not re-page every 6h.
+        // executes (the pre-install resolution did not identify it), it delivered
+        // into a prefix that is missing its shim (HQ's OWN incomplete install),
+        // or HQ just rewrote the winning settings PATH managed-first so the next
+        // resolution converges. None is a foreign layout HQ cannot drive. Stay
+        // observable and episode-bounded, write NO durable marker, so the
+        // corrected aim / rewritten PATH converges on the next cycle instead of
+        // wedging auto-update for this version. Uses the same non-blocking
+        // episode bound as a resolution shortfall so a persistent environment
+        // does not re-page every 6h.
         let episode_key = non_convergent_episode_key(latest, executor, kind, pnpm_home_source);
         let first_episode =
             !non_convergent_episode_reported(nonblocking_episode_keys, &episode_key);
-        (None, first_episode, false, first_episode.then_some(episode_key))
+        (
+            None,
+            first_episode,
+            false,
+            first_episode.then_some(episode_key),
+        )
     } else {
         // ForeignManaged, aimed-or-undrivable: a layout HQ provably aimed at and
         // could not move, or one it genuinely cannot drive in place — block
@@ -2621,6 +3118,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         managed_shadow_repair,
         hq_bin_lane,
         delivered_prefix_shim,
+        settings_path,
     });
 
     PostInstallOutcome {
@@ -2918,6 +3416,24 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
                 "delivered_prefix_shim",
                 report.delivered_prefix_shim.telemetry_value(),
             );
+            // Settings-PATH triple: which `.claude` file supplied the winning
+            // env.PATH, whether it listed HQ's managed bin dir, and what the
+            // in-run settings-PATH repair achieved. All three are closed,
+            // path-free tokens, so a residual settings-PATH shadow names its own
+            // mechanism — a stale file HQ could not repair vs one it did — without
+            // another planning round (HQ-DESKTOP-46).
+            scope.set_tag(
+                "settings_path_file",
+                report.settings_path.file.telemetry_value(),
+            );
+            scope.set_tag(
+                "managed_bin_in_settings_path",
+                report.settings_path.managed_bin.telemetry_value(),
+            );
+            scope.set_tag(
+                "settings_path_repair",
+                report.settings_path.repair.telemetry_value(),
+            );
             scope.set_fingerprint(Some(&["hq-cli-update", "install-non-convergent"]));
             // Home-redacted: the install LAYOUT is the diagnostic
             // (`~/Library/pnpm/hq` says everything); the account name in front
@@ -3141,6 +3657,7 @@ pub fn report_unreadable_version(latest: &str, probes: &LocalVersionProbeDiagnos
                     "managed_runtime": probes.managed_runtime,
                     "interpreter_recovery": probes.interpreter_recovery,
                     "resolution_source": probes.resolution_source,
+                    "hq_backing": probes.hq_backing,
                 })
                 .into(),
             );
@@ -3575,8 +4092,7 @@ fn npm_404_get_url(detail: &str) -> Option<&str> {
         let idx = lower.find(" - get ")?;
         let token = line[idx + " - get ".len()..].split_whitespace().next()?;
         let lower_token = token.to_ascii_lowercase();
-        (lower_token.starts_with("https://") || lower_token.starts_with("http://"))
-            .then_some(token)
+        (lower_token.starts_with("https://") || lower_token.starts_with("http://")).then_some(token)
     })
 }
 
@@ -4257,7 +4773,9 @@ pub fn is_disk_exhaustion_failure(detail: &str) -> bool {
     if npm_error_code(detail) == "ENOSPC" {
         return true;
     }
-    detail.to_ascii_lowercase().contains("no space left on device")
+    detail
+        .to_ascii_lowercase()
+        .contains("no space left on device")
         && !has_npm_lifecycle_failure_marker(detail)
         && !npm_lifecycle_failure(detail).failed
 }
@@ -4476,8 +4994,12 @@ pub fn classify_install_failure_with_environment(
     final_attempt_forced: bool,
     env: &InstallEnvironment,
 ) -> InstallFailureKind {
-    let base =
-        classify_install_failure_with_final_attempt(exit_code, detail, prefix, final_attempt_forced);
+    let base = classify_install_failure_with_final_attempt(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+    );
     if base == InstallFailureKind::Unexpected
         && probed_node_major(env).is_some_and(|major| major < MIN_NODE_MAJOR)
     {
@@ -4521,6 +5043,153 @@ fn symbolic_npm_error_code(detail: &str) -> String {
         return "none".to_string();
     }
     code
+}
+
+/// The env-blind signature every fully markerless install failure collapses to:
+/// npm structured no error code, no syscall, and no path. It is simultaneously the
+/// Sentry title and the 4th fingerprint component, so historically two unrelated
+/// markerless causes shared one permanently-Error issue (HQ-DESKTOP-56). The new
+/// attributed-signature arm and the episode-key arm both key off this exact string,
+/// so they can never disagree about which failures are "shapeless".
+const SHAPELESS_INSTALL_SIGNATURE: &str = "none:unknown:none";
+
+/// The closed origin vocabulary for a markerless install stderr — WHERE the bytes
+/// came from, decided purely by whether npm's own logger emitted any line. `empty`
+/// is folded out of the attributed subclass (an empty stderr stays the
+/// genuinely-shapeless `none:unknown:none`), leaving `npm-logger` and `non-npm` as
+/// the two attributed origins.
+pub const STDERR_ORIGIN_EMPTY: &str = "empty";
+pub const STDERR_ORIGIN_NPM_LOGGER: &str = "npm-logger";
+pub const STDERR_ORIGIN_NON_NPM: &str = "non-npm";
+
+/// Whether one stderr line is an npm-logger line (`npm error …` / `npm ERR! …`,
+/// case-insensitively). These are the lines npm's own error reporter writes; their
+/// presence proves npm ran and reported, even when it never emitted the structured
+/// `code`/`syscall`/`path` trio the signature keys on.
+fn is_npm_marker_line(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    lower.starts_with("npm error ") || lower.starts_with("npm err! ")
+}
+
+/// True when ANY line of the stderr is an npm-logger line. Tells an `npm-logger`
+/// origin (npm printed something) from a `non-npm` one (npm's logger produced
+/// nothing at all — the user's npm/shim never really ran).
+fn has_any_npm_marker_line(detail: &str) -> bool {
+    detail.lines().any(is_npm_marker_line)
+}
+
+/// The origin of a markerless install stderr, as the closed
+/// `empty | npm-logger | non-npm` enumeration. A pure function of `detail`, so it
+/// crosses no app/core boundary and needs no new [`InstallEnvironment`] field.
+fn stderr_origin(detail: &str) -> &'static str {
+    if detail.trim().is_empty() {
+        STDERR_ORIGIN_EMPTY
+    } else if has_any_npm_marker_line(detail) {
+        STDERR_ORIGIN_NPM_LOGGER
+    } else {
+        STDERR_ORIGIN_NON_NPM
+    }
+}
+
+/// A bounded, content-safe structural profile of a NON-EMPTY markerless install
+/// stderr: its origin, the dominant unmatched-shape token, and a bounded top-N
+/// `shape:count` render. Built by reusing the reviewed, content-free
+/// [`UnmatchedStderrShapeRollup`] vocabulary (HQ-DESKTOP-5H) rather than inventing a
+/// second telemetry primitive. Only structure is inspected; not one stderr byte is
+/// retained.
+struct UnattributedStderrProfile {
+    origin: &'static str,
+    dominant_shape: &'static str,
+    /// The bounded `shape:count` tag render. Always non-empty here because a profile
+    /// is only ever built for a non-empty stderr.
+    shapes_tag: String,
+}
+
+/// Build the structural profile for a non-empty stderr. Splits on newlines
+/// (trimming a trailing carriage return so Windows CRLF output does not scatter the
+/// shapes — [`str::lines`] does exactly this), skips npm-logger lines so the profile
+/// describes what npm did NOT characterise, and classifies each remaining line
+/// through the closed shape vocabulary. If every line was an npm-logger line (a pure
+/// `npm-logger` origin), it falls back to classifying the marker lines themselves,
+/// so the dominant shape is always a real bounded token and the group cardinality
+/// stays exactly origins × shapes.
+fn unattributed_stderr_profile(detail: &str) -> UnattributedStderrProfile {
+    let origin = stderr_origin(detail);
+    let mut rollup = UnmatchedStderrShapeRollup::default();
+    let mut recorded_non_marker = false;
+    for line in detail.lines() {
+        if is_npm_marker_line(line) {
+            continue;
+        }
+        rollup.record(line);
+        recorded_non_marker = true;
+    }
+    if !recorded_non_marker {
+        // Every line was an npm-logger line; classify them so a pure npm-logger
+        // stderr still yields a bounded dominant shape instead of an empty rollup.
+        for line in detail.lines() {
+            rollup.record(line);
+        }
+    }
+    let dominant_shape = rollup
+        .dominant()
+        .unwrap_or(UnmatchedStderrShape::Other)
+        .as_str();
+    let shapes_tag = rollup.tag_value().unwrap_or_else(|| "none".to_string());
+    UnattributedStderrProfile {
+        origin,
+        dominant_shape,
+        shapes_tag,
+    }
+}
+
+/// The structural profile IFF this failure is the newly attributed subclass: an
+/// `Unexpected` failure whose env-blind signature is the shapeless
+/// `none:unknown:none`, whose stderr is non-empty, AND for which npm reported NO
+/// lifecycle failure. `None` for every other failure:
+///   * an EMPTY stderr stays genuinely shapeless (keeps today's `none:unknown:none`
+///     envelope and unbounded paging);
+///   * any shape npm actually characterised keeps its existing discriminating
+///     signature;
+///   * a lifecycle failure whose numeric build-script status collapsed to
+///     `none:unknown:none` is a DIFFERENT mechanism (npm DID recognise a lifecycle
+///     failure and the event already carries `npm_lifecycle_cause`), so it keeps its
+///     existing envelope — the reopen population this fix targets is precisely the
+///     one where npm reported nothing at all (`npm_lifecycle_failed=false`).
+fn install_failure_unattributed_profile(
+    kind: InstallFailureKind,
+    detail: &str,
+    prefix: Option<&str>,
+) -> Option<UnattributedStderrProfile> {
+    let attributed = kind == InstallFailureKind::Unexpected
+        && install_failure_signature(kind, detail, prefix) == SHAPELESS_INSTALL_SIGNATURE
+        && !detail.trim().is_empty()
+        && !npm_lifecycle_failure(detail).failed;
+    attributed.then(|| unattributed_stderr_profile(detail))
+}
+
+/// The stderr origin of an attributed markerless install failure, for the
+/// managed-toolchain retry decision. `Some(origin)` ONLY when this is the newly
+/// attributed subclass (see [`install_failure_unattributed_profile`]); `None`
+/// otherwise, so the retry gate can never arm on a shape npm characterised or on a
+/// genuinely empty stderr. The returned origin is `npm-logger` or `non-npm` — the
+/// `empty` case is folded into `None`. Pure so the app-side gate stays unit-testable
+/// from a value instead of re-deriving the classification at the call site.
+pub fn unattributed_install_stderr_origin(
+    exit_code: Option<i32>,
+    detail: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+) -> Option<&'static str> {
+    let kind = classify_install_failure_with_environment(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
+    );
+    install_failure_unattributed_profile(kind, detail, prefix).map(|profile| profile.origin)
 }
 
 /// The grouping discriminator for a reportable install failure.
@@ -4609,6 +5278,20 @@ fn install_failure_signature_with_environment(
             .map(|major| major.to_string())
             .unwrap_or_else(|| "unknown".to_string());
         return format!("unsupported-node:{major}");
+    }
+    // A NON-EMPTY markerless `Unexpected` failure (HQ-DESKTOP-56 reopen): npm
+    // structured nothing, so the env-blind signature would collapse to the empty
+    // `none:unknown:none` bucket where unrelated causes merged into one permanently
+    // Error issue. Give it a bounded structural signature — `unattributed:<origin>:
+    // <dominant shape>`, at most 2 origins × 8 shapes = 16 groups — so distinct
+    // causes stop colliding and the next occurrence is self-diagnosing. An EMPTY
+    // stderr is deliberately excluded (returns `None` from the profile), so it keeps
+    // the byte-identical `none:unknown:none` envelope and its pinned test.
+    if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
+        return format!(
+            "unattributed:{}:{}",
+            profile.origin, profile.dominant_shape
+        );
     }
     install_failure_signature(kind, detail, prefix)
 }
@@ -5280,8 +5963,21 @@ pub fn report_install_failure_with_environment(
     } else {
         None
     };
+    // Structural attribution for a NON-EMPTY markerless failure (HQ-DESKTOP-56):
+    // `Some` only for the attributed subclass, so every other event's tags and the
+    // diagnostics extra stay byte-identical to today.
+    let unattributed_profile = install_failure_unattributed_profile(kind, detail, prefix);
+    // Append the origin + shape render to the diagnostics extra ONLY for the
+    // attributed subclass, so the extra stays a fixed-shape string within each class
+    // (the six-key provenance suffix is unchanged for every other event).
+    let unattributed_diag_suffix = match &unattributed_profile {
+        Some(profile) => {
+            format!(" stderr_origin={} stderr_shapes={}", profile.origin, profile.shapes_tag)
+        }
+        None => String::new(),
+    };
     let mut npm_diagnostics = format!(
-        "{} {}",
+        "{} {}{}",
         npm_diagnostics_summary(
             exit_str.as_str(),
             npm_errno,
@@ -5298,6 +5994,7 @@ pub fn report_install_failure_with_environment(
             toolchain_source,
             env.managed_retry_outcome.tag_value(),
         ),
+        unattributed_diag_suffix,
     );
     // Append the missing-target diagnostic ONLY when the mkdir remedy actually ran
     // (state != Unknown). The default keeps every existing event's `npm_diagnostics`
@@ -5414,6 +6111,16 @@ pub fn report_install_failure_with_environment(
             );
             scope.set_tag("npm_stderr_len", npm_stderr_len.as_str());
             scope.set_tag("npm_errno", npm_errno);
+            // Structural attribution for a NON-EMPTY markerless failure
+            // (HQ-DESKTOP-56): the stderr origin (closed 3-value enum) and a bounded
+            // `shape:count` render of its unmatched-shape mix. Present ONLY for the
+            // attributed subclass; both are tags/diagnostics ONLY and must never enter
+            // the fingerprint — the shape counts vary run to run, so grouping keys only
+            // on `unattributed:<origin>:<dominant shape>` in the signature above.
+            if let Some(profile) = &unattributed_profile {
+                scope.set_tag("npm_stderr_origin", profile.origin);
+                scope.set_tag("npm_stderr_shapes", profile.shapes_tag.as_str());
+            }
             // Group on the failure's bounded signature, never on npm's exit
             // status — see `install_failure_signature`.
             let fingerprint = [
@@ -5560,16 +6267,34 @@ pub fn install_failure_episode_key_with_environment(
                 key
             });
         }
+        // A NON-EMPTY markerless failure (HQ-DESKTOP-56) now carries a bounded
+        // structural signature, so it CAN be episode-bounded: page once per published
+        // CLI version per distinct `(origin, dominant shape)` instead of on every
+        // ~6-hourly check. The key mirrors the attributed SIGNATURE (same profile
+        // helper) so the key and the group can never disagree, and `|managed` matches
+        // the other shapes so a managed-retry event never collides with its user-path
+        // predecessor.
+        if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
+            let key = format!(
+                "{latest}|unattributed|{}|{}",
+                profile.origin, profile.dominant_shape
+            );
+            return Some(if env.managed_toolchain_retry {
+                format!("{key}|managed")
+            } else {
+                key
+            });
+        }
         let code = symbolic_npm_error_code(detail);
         let syscall = npm_syscall(detail);
         let path_shape = npm_path_shape(detail, prefix).tag_value();
-        // A fully SHAPELESS failure (`none:unknown:none` — npm structured nothing)
-        // must NOT be repeat-suppressed: two entirely different root causes collapse
-        // into that single empty signature, so bounding it would hide a newly
-        // introduced updater failure behind an unrelated earlier one until the next
-        // CLI version publishes. Such failures keep paging every time, exactly as
-        // today; only a shape npm actually characterised earns the bound.
         if code == "none" && syscall == "unknown" && path_shape == "none" {
+            // A GENUINELY shapeless failure the profile did NOT attribute — an empty
+            // stderr, or a lifecycle failure whose numeric build-script status
+            // collapsed to the empty signature — must NOT be repeat-suppressed (commit
+            // e24e7a45): its signature carries no discriminator, so bounding it would
+            // hide a newly introduced failure behind an unrelated earlier one until the
+            // next CLI publish. It keeps paging every check, exactly as today.
             return None;
         }
         let key = format!("{latest}|unexpected|{code}|{syscall}|{path_shape}");
@@ -5853,11 +6578,15 @@ pub fn is_bun_global_shim(hq_bin: &str) -> bool {
 
 /// Derive `BUN_INSTALL` from a resolved Bun global shim.
 pub fn bun_home_from_hq_bin(hq_bin: &Path) -> Option<std::path::PathBuf> {
-    let parent = hq_bin.parent().filter(|path| !path.as_os_str().is_empty())?;
+    let parent = hq_bin
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())?;
     if parent.file_name().and_then(|name| name.to_str()) != Some("bin") {
         return None;
     }
-    let home = parent.parent().filter(|path| !path.as_os_str().is_empty())?;
+    let home = parent
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())?;
     let is_default = home.file_name().and_then(|name| name.to_str()) == Some(".bun");
     let has_global_store = home.join("install").join("global").is_dir();
     (is_default || has_global_store).then(|| home.to_path_buf())
@@ -5926,7 +6655,10 @@ fn pnpm_home_from_hq_bin(hq_bin: &Path) -> Option<std::path::PathBuf> {
 /// numeric store on a migrated machine, which entrenched a stale reading. Both
 /// forms parse here; anything else scores 0 and sorts last.
 fn pnpm_store_generation(name: &str) -> u64 {
-    name.strip_prefix('v').unwrap_or(name).parse::<u64>().unwrap_or(0)
+    name.strip_prefix('v')
+        .unwrap_or(name)
+        .parse::<u64>()
+        .unwrap_or(0)
 }
 
 /// Closed telemetry token for the pnpm global-store layout family observed while
@@ -6033,7 +6765,9 @@ fn pnpm_store_package_json_candidates(pnpm_home: &Path) -> Vec<std::path::PathBu
 /// joins cover the others. Returns `None` when no manifest is readable — absence
 /// of evidence fails safe toward retrying, never toward a durable block.
 pub fn hq_cli_version_under_pnpm_root(root: &Path) -> Option<String> {
-    let pkg = Path::new("@indigoai-us").join("hq-cli").join("package.json");
+    let pkg = Path::new("@indigoai-us")
+        .join("hq-cli")
+        .join("package.json");
     let nm_pkg = Path::new("node_modules").join(&pkg);
     let mut candidates: Vec<std::path::PathBuf> = vec![root.join(&pkg), root.join(&nm_pkg)];
     if let Ok(entries) = std::fs::read_dir(root) {
@@ -6326,7 +7060,8 @@ pub fn repair_managed_shadow(
                 // Could not even stat it: fail safe.
                 Err(_) => shims_ok = false,
                 Ok(_) => {
-                    if shim_belongs_to_hq_cli(&path, shadow_prefix) && !remove_file_if_present(&path)
+                    if shim_belongs_to_hq_cli(&path, shadow_prefix)
+                        && !remove_file_if_present(&path)
                     {
                         shims_ok = false;
                     }
@@ -6490,7 +7225,7 @@ fn read_installed_version_probe(
     ) {
         Ok(Some(output)) => output,
         Ok(None) => return (None, VersionProbeOutcome::TimedOut),
-        Err(error) => return (None, classify_spawn_error(&error)),
+        Err(error) => return (None, classify_probe_error(&error)),
     };
     if !out.status.success() {
         return (
@@ -6587,6 +7322,21 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "the descendant's inherited handle must not hold the caller open"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reading_probe_output_preserves_the_inherited_writer_position() {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut writer = tempfile::tempfile().unwrap();
+        writer.write_all(b"5.103.34\n").unwrap();
+        writer.set_len(VERSION_OUTPUT_LIMIT + 10).unwrap();
+        writer.seek(SeekFrom::End(0)).unwrap();
+        let position = writer.stream_position().unwrap();
+        let bytes = read_probe_output(writer.try_clone().unwrap()).unwrap();
+        assert!(bytes.starts_with(b"5.103.34\n"));
+        assert_eq!(bytes.len(), VERSION_OUTPUT_LIMIT as usize);
+        assert_eq!(writer.stream_position().unwrap(), position);
     }
 
     #[cfg(unix)]
@@ -6980,6 +7730,7 @@ mod tests {
             executed_copy_aim: ExecutedCopyAim::Undrivable,
             hq_bin_lane: paths::ResolutionSource::NotResolved,
             delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+            settings_path: SettingsPathTelemetry::default(),
             pnpm: Some(pnpm.clone()),
         });
         assert_eq!(
@@ -7026,6 +7777,7 @@ mod tests {
                 executed_copy_aim: ExecutedCopyAim::Undrivable,
                 hq_bin_lane: paths::ResolutionSource::NotResolved,
                 delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+                settings_path: SettingsPathTelemetry::default(),
                 pnpm: Some(PnpmRunDiagnostics {
                     home_source,
                     home_env_present: false,
@@ -7098,7 +7850,10 @@ mod tests {
             outcome.non_convergence_kind,
             Some(NonConvergenceKind::InstallerUnaimed)
         );
-        assert_eq!(outcome.record_non_convergent, None, "npx copy must not block");
+        assert_eq!(
+            outcome.record_non_convergent, None,
+            "npx copy must not block"
+        );
         assert!(!outcome.capture_requires_durable_record);
         let key = non_convergent_episode_key(
             "5.103.18",
@@ -7125,22 +7880,28 @@ mod tests {
             None,
         );
         let seen = [key];
-        let outcome = decide_post_install(&PostInstallContext::npm(
-            npx_hq,
-            npx_hq,
-            Some("5.103.1"),
-            Some("5.103.1"),
-            "5.103.18",
-            Some("/managed/npm-global"),
-            "/opt/homebrew/bin/npm",
-            false,
-            Some("5.103.18"),
-        ).with_nonblocking_episode_keys(&seen));
+        let outcome = decide_post_install(
+            &PostInstallContext::npm(
+                npx_hq,
+                npx_hq,
+                Some("5.103.1"),
+                Some("5.103.1"),
+                "5.103.18",
+                Some("/managed/npm-global"),
+                "/opt/homebrew/bin/npm",
+                false,
+                Some("5.103.18"),
+            )
+            .with_nonblocking_episode_keys(&seen),
+        );
         assert_eq!(
             outcome.non_convergence_kind,
             Some(NonConvergenceKind::InstallerUnaimed)
         );
-        assert!(outcome.capture.is_none(), "a repeat episode captures nothing");
+        assert!(
+            outcome.capture.is_none(),
+            "a repeat episode captures nothing"
+        );
         assert_eq!(outcome.record_nonblocking_episode, None);
     }
 
@@ -7233,12 +7994,12 @@ mod tests {
         for hq_bin in [
             "hq",
             "",
-            "/Users/t/Library/pnpm/hq",      // flat
-            "/home/t/.local/share/pnpm/hq",  // flat linux
-            "/Users/t/Library/pnpm/bin/hq",  // pnpm >=11 nested
-            "/opt/homebrew/bin/hq",          // npm/homebrew
-            "/Users/t/.npm-global/bin/hq",   // npm global
-            "/Users/t/.asdf/shims/hq",       // asdf
+            "/Users/t/Library/pnpm/hq",     // flat
+            "/home/t/.local/share/pnpm/hq", // flat linux
+            "/Users/t/Library/pnpm/bin/hq", // pnpm >=11 nested
+            "/opt/homebrew/bin/hq",         // npm/homebrew
+            "/Users/t/.npm-global/bin/hq",  // npm global
+            "/Users/t/.asdf/shims/hq",      // asdf
         ] {
             assert_eq!(
                 is_pnpm_global_shim(hq_bin),
@@ -7506,6 +8267,7 @@ mod tests {
                 executed_copy_aim: ExecutedCopyAim::NotYetAimed,
                 hq_bin_lane: paths::ResolutionSource::UserPrefix,
                 delivered_prefix_shim: DeliveredPrefixShim::Absent,
+                settings_path: SettingsPathTelemetry::default(),
                 pnpm: Some(PnpmRunDiagnostics {
                     home_source: PnpmHomeSource::FlatPnpmDir,
                     home_env_present: true,
@@ -7542,7 +8304,10 @@ mod tests {
             })
         );
         // Not user-owned (a system/Homebrew or managed prefix) -> no user aim.
-        assert_eq!(user_prefix_aim_decision(Some("/opt/homebrew"), false, Some(npm)), None);
+        assert_eq!(
+            user_prefix_aim_decision(Some("/opt/homebrew"), false, Some(npm)),
+            None
+        );
         // User-owned but no co-located npm -> no user aim (ABI safety stays).
         assert_eq!(user_prefix_aim_decision(Some(prefix), true, None), None);
         // No derivable hq prefix -> no user aim.
@@ -7568,7 +8333,13 @@ mod tests {
 
         // Aimed at the executed copy's own prefix, running its own npm.
         assert_eq!(
-            executed_copy_aim_for(&hq_str, Some(&prefix_str), &npm_str, &managed_roots, Some(home)),
+            executed_copy_aim_for(
+                &hq_str,
+                Some(&prefix_str),
+                &npm_str,
+                &managed_roots,
+                Some(home)
+            ),
             ExecutedCopyAim::Aimed
         );
         // Drivable, but this run aimed at the managed prefix instead -> deferred.
@@ -7585,7 +8356,13 @@ mod tests {
         // A user prefix with no co-located npm -> undrivable.
         std::fs::remove_file(&npm).unwrap();
         assert_eq!(
-            executed_copy_aim_for(&hq_str, Some(&prefix_str), &npm_str, &managed_roots, Some(home)),
+            executed_copy_aim_for(
+                &hq_str,
+                Some(&prefix_str),
+                &npm_str,
+                &managed_roots,
+                Some(home)
+            ),
             ExecutedCopyAim::Undrivable
         );
         // A system prefix (outside home) -> undrivable.
@@ -7665,36 +8442,288 @@ mod tests {
     #[test]
     fn foreign_verdict_may_block_only_relaxes_the_foreign_kind() {
         use NonConvergenceKind::*;
-        // Non-foreign kinds always "may block" — they never route through this.
+        // Non-foreign kinds always "may block" — they never route through this,
+        // and no settings-PATH repair value changes that.
         for kind in [NpmTargeted, ResolutionShortfall, InstallerUnaimed, ManagedShadowed] {
-            assert!(foreign_verdict_may_block(
-                kind,
-                ExecutedCopyAim::NotYetAimed,
-                DeliveredPrefixShim::Absent
-            ));
+            for repair in [SettingsPathRepair::NotAttempted, SettingsPathRepair::Rewritten] {
+                assert!(foreign_verdict_may_block(
+                    kind,
+                    ExecutedCopyAim::NotYetAimed,
+                    DeliveredPrefixShim::Absent,
+                    repair,
+                ));
+            }
         }
         // Foreign + not-yet-aimed OR shim-absent -> must NOT block.
         assert!(!foreign_verdict_may_block(
             ForeignManaged,
             ExecutedCopyAim::NotYetAimed,
-            DeliveredPrefixShim::Unknown
+            DeliveredPrefixShim::Unknown,
+            SettingsPathRepair::NotAttempted,
         ));
         assert!(!foreign_verdict_may_block(
             ForeignManaged,
             ExecutedCopyAim::Undrivable,
-            DeliveredPrefixShim::Absent
+            DeliveredPrefixShim::Absent,
+            SettingsPathRepair::NotAttempted,
         ));
-        // Foreign + aimed/undrivable + shim present/unknown -> blocks as before.
+        // Foreign + aimed/undrivable + shim present/unknown -> blocks as before,
+        // UNLESS HQ just rewrote the settings PATH.
         assert!(foreign_verdict_may_block(
             ForeignManaged,
             ExecutedCopyAim::Aimed,
-            DeliveredPrefixShim::Present
+            DeliveredPrefixShim::Present,
+            SettingsPathRepair::NotAttempted,
         ));
         assert!(foreign_verdict_may_block(
             ForeignManaged,
             ExecutedCopyAim::Undrivable,
-            DeliveredPrefixShim::Unknown
+            DeliveredPrefixShim::Unknown,
+            SettingsPathRepair::NotAttempted,
         ));
+        // A `Rewritten` settings-PATH repair relaxes the block even for the
+        // otherwise-blocking Undrivable + present-shim foreign shape — the next
+        // resolution reads the rewritten PATH and converges.
+        assert!(!foreign_verdict_may_block(
+            ForeignManaged,
+            ExecutedCopyAim::Undrivable,
+            DeliveredPrefixShim::Present,
+            SettingsPathRepair::Rewritten,
+        ));
+        // Every NON-`Rewritten` settings-PATH outcome keeps the block byte-for-byte.
+        for repair in [
+            SettingsPathRepair::NotAttempted,
+            SettingsPathRepair::RefusedNotSettingsLane,
+            SettingsPathRepair::RefusedNoManagedCopy,
+            SettingsPathRepair::RefusedNotStale,
+            SettingsPathRepair::WriteFailed,
+        ] {
+            assert!(foreign_verdict_may_block(
+                ForeignManaged,
+                ExecutedCopyAim::Undrivable,
+                DeliveredPrefixShim::Present,
+                repair,
+            ));
+        }
+    }
+
+    // ---- settings-PATH foreign shadow (HQ-DESKTOP-46) --------------------
+
+    /// A foreign-managed npm context matching the live HQ-DESKTOP-46 shape: the
+    /// app executes a stale Homebrew `hq` resolved via the settings PATH, while
+    /// HQ delivered `latest` into its managed npm-global prefix (present shim).
+    /// `repair` is the settings-PATH repair outcome under test.
+    fn settings_path_foreign_ctx<'a>(
+        repair: SettingsPathRepair,
+        managed_roots: &'a [PathBuf],
+    ) -> PostInstallContext<'a> {
+        PostInstallContext::npm(
+            "/opt/homebrew/bin/hq",
+            "/opt/homebrew/bin/hq",
+            Some("5.103.30"),
+            Some("5.103.30"),
+            "5.103.34",
+            Some("/Users/x/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+            "/Users/x/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+            false,
+            // Delivered `latest` INTO the managed prefix — delivery is proven.
+            Some("5.103.34"),
+        )
+        .with_managed_roots(managed_roots)
+        .with_executed_copy_aim(ExecutedCopyAim::Undrivable)
+        .with_resolution_telemetry(
+            paths::ResolutionSource::SettingsPath,
+            DeliveredPrefixShim::Present,
+        )
+        .with_settings_path(SettingsPathTelemetry {
+            repair,
+            file: paths::SettingsPathFile::Local,
+            managed_bin: ManagedBinInSettingsPath::Absent,
+        })
+    }
+
+    #[test]
+    fn settings_path_repair_gate_only_fires_for_the_settings_lane() {
+        use paths::ResolutionSource;
+        // The executed copy came from anything but the settings-PATH lane -> a
+        // settings-PATH rewrite could not change what resolves, so refuse.
+        for lane in [
+            ResolutionSource::LoginShell,
+            ResolutionSource::ManagedToolchain,
+            ResolutionSource::UserPrefix,
+            ResolutionSource::SystemPrefix,
+            ResolutionSource::NotResolved,
+        ] {
+            assert_eq!(
+                settings_path_repair_gate(lane, Some("5.103.34"), Some("5.103.30")),
+                SettingsPathRepairGate::RefusedNotSettingsLane
+            );
+        }
+    }
+
+    #[test]
+    fn settings_path_repair_gate_requires_a_runnable_newer_managed_copy() {
+        use paths::ResolutionSource::SettingsPath;
+        // No runnable managed copy -> refused.
+        assert_eq!(
+            settings_path_repair_gate(SettingsPath, None, Some("5.103.30")),
+            SettingsPathRepairGate::RefusedNoManagedCopy
+        );
+        // A managed copy STRICTLY newer than the executed copy -> attempt.
+        assert_eq!(
+            settings_path_repair_gate(SettingsPath, Some("5.103.34"), Some("5.103.30")),
+            SettingsPathRepairGate::Attempt
+        );
+        // Equal or older, or an unreadable executed version, can't be proven
+        // stale -> refused (a deliberate same-or-newer foreign copy is left alone).
+        for (managed, executed) in [
+            (Some("5.103.34"), Some("5.103.34")),
+            (Some("5.103.30"), Some("5.103.34")),
+            (Some("5.103.34"), None),
+        ] {
+            assert_eq!(
+                settings_path_repair_gate(SettingsPath, managed, executed),
+                SettingsPathRepairGate::RefusedNotStale
+            );
+        }
+    }
+
+    #[test]
+    fn settings_path_repair_outcome_maps_gate_and_write() {
+        use SettingsPathRepairGate as G;
+        assert_eq!(
+            settings_path_repair_outcome(G::Attempt, true),
+            SettingsPathRepair::Rewritten
+        );
+        assert_eq!(
+            settings_path_repair_outcome(G::Attempt, false),
+            SettingsPathRepair::WriteFailed
+        );
+        assert_eq!(
+            settings_path_repair_outcome(G::RefusedNotSettingsLane, true),
+            SettingsPathRepair::RefusedNotSettingsLane
+        );
+        assert_eq!(
+            settings_path_repair_outcome(G::RefusedNoManagedCopy, true),
+            SettingsPathRepair::RefusedNoManagedCopy
+        );
+        assert_eq!(
+            settings_path_repair_outcome(G::RefusedNotStale, true),
+            SettingsPathRepair::RefusedNotStale
+        );
+    }
+
+    #[test]
+    fn managed_bin_in_settings_path_classifies_present_absent_unknown() {
+        use paths::SettingsPathFile;
+        let managed = PathBuf::from("/x/toolchain/npm-global/bin");
+        let with = [PathBuf::from("/opt/homebrew/bin"), managed.clone()];
+        let without = [PathBuf::from("/opt/homebrew/bin")];
+        assert_eq!(
+            managed_bin_in_settings_path(SettingsPathFile::Local, &with, &managed),
+            ManagedBinInSettingsPath::Present
+        );
+        assert_eq!(
+            managed_bin_in_settings_path(SettingsPathFile::Base, &without, &managed),
+            ManagedBinInSettingsPath::Absent
+        );
+        // No winning file -> Unknown regardless of the dirs.
+        assert_eq!(
+            managed_bin_in_settings_path(SettingsPathFile::None, &with, &managed),
+            ManagedBinInSettingsPath::Unknown
+        );
+    }
+
+    #[test]
+    fn only_a_rewritten_settings_path_repair_relaxes_the_foreign_marker() {
+        let roots = [PathBuf::from(
+            "/Users/x/Library/Application Support/Indigo HQ/toolchain",
+        )];
+        // A rewritten repair: still classified ForeignManaged, but NO durable
+        // marker (the next resolution reads the rewritten PATH and converges).
+        // It stays observable once per episode, not silent.
+        let rewritten =
+            decide_post_install(&settings_path_foreign_ctx(SettingsPathRepair::Rewritten, &roots));
+        assert_eq!(
+            rewritten.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
+        assert_eq!(
+            rewritten.record_non_convergent, None,
+            "a rewritten settings-PATH repair must not wedge auto-update"
+        );
+        assert!(rewritten.capture.is_some(), "it stays observable once");
+        assert!(!rewritten.capture_requires_durable_record);
+        // Every OTHER outcome still writes the durable marker exactly as before,
+        // so an Aimed-but-still-foreign run and a genuinely undrivable run block.
+        for repair in [
+            SettingsPathRepair::NotAttempted,
+            SettingsPathRepair::RefusedNotSettingsLane,
+            SettingsPathRepair::RefusedNoManagedCopy,
+            SettingsPathRepair::RefusedNotStale,
+            SettingsPathRepair::WriteFailed,
+        ] {
+            let outcome = decide_post_install(&settings_path_foreign_ctx(repair, &roots));
+            assert_eq!(
+                outcome.non_convergence_kind,
+                Some(NonConvergenceKind::ForeignManaged)
+            );
+            assert_eq!(
+                outcome.record_non_convergent.as_deref(),
+                Some("5.103.34"),
+                "settings_path_repair={repair:?} must still block"
+            );
+            assert!(outcome.capture_requires_durable_record);
+        }
+    }
+
+    /// The live HQ-DESKTOP-46 event: on the base decision a settings-PATH Homebrew
+    /// shadow (Undrivable, delivered + present managed shim, SettingsPath lane)
+    /// writes the durable marker that wedges auto-update. Once HQ rewrites the
+    /// winning settings file's PATH and the re-resolution lands the managed
+    /// current copy, the run converges — no marker, no capture.
+    #[test]
+    fn the_live_settings_path_shadow_blocks_on_base_and_converges_once_rewritten() {
+        let roots = [PathBuf::from(
+            "/Users/x/Library/Application Support/Indigo HQ/toolchain",
+        )];
+        // Pre-repair (NotAttempted): the exact durable marker that wedges the
+        // machine forever, one per hq-cli publish.
+        let base =
+            decide_post_install(&settings_path_foreign_ctx(SettingsPathRepair::NotAttempted, &roots));
+        assert_eq!(base.record_non_convergent.as_deref(), Some("5.103.34"));
+        assert_eq!(
+            base.non_convergence_kind,
+            Some(NonConvergenceKind::ForeignManaged)
+        );
+
+        // Post-repair: the rewritten PATH now resolves `hq` onto the managed
+        // current copy, so the after-version is `latest` — a converged run.
+        let converged = PostInstallContext::npm(
+            "/opt/homebrew/bin/hq",
+            "/Users/x/Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq",
+            Some("5.103.30"),
+            Some("5.103.34"),
+            "5.103.34",
+            Some("/Users/x/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+            "/Users/x/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+            false,
+            Some("5.103.34"),
+        )
+        .with_managed_roots(&roots)
+        .with_settings_path(SettingsPathTelemetry {
+            repair: SettingsPathRepair::Rewritten,
+            file: paths::SettingsPathFile::Local,
+            managed_bin: ManagedBinInSettingsPath::Present,
+        });
+        let outcome = decide_post_install(&converged);
+        assert!(matches!(
+            outcome.verdict,
+            ConvergenceVerdict::Converged | ConvergenceVerdict::RelocatedAndConverged
+        ));
+        assert_eq!(outcome.record_non_convergent, None);
+        assert!(outcome.clear_non_convergent);
+        assert!(outcome.capture.is_none(), "a converged run captures nothing");
     }
 
     /// Regression (PR #512 review): a real hq-cli whose pnpm store sits beside a
@@ -7856,7 +8885,10 @@ mod tests {
         let detail = outcome.result.clone().unwrap_err();
         assert!(!detail.contains("managed outside npm's global prefix"));
         assert!(!detail.contains("Update it with the tool that installed it"));
-        assert!(outcome.capture.is_some(), "the shadow stays observable once");
+        assert!(
+            outcome.capture.is_some(),
+            "the shadow stays observable once"
+        );
         assert_eq!(
             outcome.capture.as_ref().unwrap().managed_shadow_repair,
             ManagedShadowRepairOutcome::NotAttempted
@@ -7944,10 +8976,7 @@ mod tests {
     }
 
     fn write_hq_cli_pkg(dir: &Path, version: &str) {
-        let pkg_dir = dir
-            .join("node_modules")
-            .join("@indigoai-us")
-            .join("hq-cli");
+        let pkg_dir = dir.join("node_modules").join("@indigoai-us").join("hq-cli");
         std::fs::create_dir_all(&pkg_dir).unwrap();
         std::fs::write(
             pkg_dir.join("package.json"),
@@ -8050,13 +9079,23 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            shadow_pkg.join("dist").join("bin").join("hq-auth-refresh.js"),
+            shadow_pkg
+                .join("dist")
+                .join("bin")
+                .join("hq-auth-refresh.js"),
             "#!/usr/bin/env node\nrequire('../auth.js');\n",
         )
         .unwrap();
-        symlink(shadow_pkg.join("dist").join("index.js"), node_bin.join("hq")).unwrap();
         symlink(
-            shadow_pkg.join("dist").join("bin").join("hq-auth-refresh.js"),
+            shadow_pkg.join("dist").join("index.js"),
+            node_bin.join("hq"),
+        )
+        .unwrap();
+        symlink(
+            shadow_pkg
+                .join("dist")
+                .join("bin")
+                .join("hq-auth-refresh.js"),
             node_bin.join("hq-auth-refresh"),
         )
         .unwrap();
@@ -8157,7 +9196,8 @@ mod tests {
         std::fs::remove_file(node_bin.join("hq")).unwrap();
         symlink(elsewhere.join("other"), node_bin.join("hq")).unwrap();
 
-        let action = repair_managed_shadow(&node_bin.join("hq"), &root.join("npm-global"), "5.103.20");
+        let action =
+            repair_managed_shadow(&node_bin.join("hq"), &root.join("npm-global"), "5.103.20");
         assert_eq!(action, ManagedShadowRepairAction::ProvenanceRefused);
         assert!(
             std::fs::symlink_metadata(node_bin.join("hq")).is_ok(),
@@ -8200,7 +9240,8 @@ mod tests {
         let root = tmp.path();
         build_unix_managed_shadow(root, "5.98.0", "5.103.19");
         let node_bin = root.join("node").join("bin");
-        let action = repair_managed_shadow(&node_bin.join("hq"), &root.join("npm-global"), "5.103.20");
+        let action =
+            repair_managed_shadow(&node_bin.join("hq"), &root.join("npm-global"), "5.103.20");
         assert_eq!(action, ManagedShadowRepairAction::ProvenanceRefused);
         assert!(
             std::fs::symlink_metadata(node_bin.join("hq")).is_ok(),
@@ -8416,7 +9457,14 @@ mod tests {
             "delivered target in a matching prefix is genuine shadowing"
         );
         assert_eq!(
-            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, false, &[]),
+            non_convergence_kind(
+                InstallExecutor::Npm,
+                Some(prefix),
+                false,
+                hq_bin,
+                false,
+                &[]
+            ),
             NonConvergenceKind::ResolutionShortfall,
             "an undelivered target in a matching prefix is a resolution shortfall"
         );
@@ -8545,8 +9593,7 @@ mod tests {
     fn bun_global_manifest_is_delivery_evidence() {
         let tmp = tempfile::TempDir::new().unwrap();
         let bun_home = tmp.path().join(".bun");
-        let package_dir = bun_home
-            .join("install/global/node_modules/@indigoai-us/hq-cli");
+        let package_dir = bun_home.join("install/global/node_modules/@indigoai-us/hq-cli");
         std::fs::create_dir_all(&package_dir).unwrap();
         std::fs::write(
             package_dir.join("package.json"),
@@ -8568,8 +9615,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let bun_home = tmp.path().join(".bun");
         let bun_bin = bun_home.join("bin");
-        let bun_package = bun_home
-            .join("install/global/node_modules/@indigoai-us/hq-cli");
+        let bun_package = bun_home.join("install/global/node_modules/@indigoai-us/hq-cli");
         std::fs::create_dir_all(&bun_bin).unwrap();
         std::fs::create_dir_all(&bun_package).unwrap();
         std::fs::write(bun_bin.join("hq"), b"#!/bin/sh\n").unwrap();
@@ -8584,8 +9630,7 @@ mod tests {
         );
 
         let brew_npm_prefix = tmp.path().join("homebrew-npm");
-        let brew_npm_package =
-            brew_npm_prefix.join("lib/node_modules/@indigoai-us/hq-cli");
+        let brew_npm_package = brew_npm_prefix.join("lib/node_modules/@indigoai-us/hq-cli");
         let brew_npm_bin = brew_npm_prefix.join("bin");
         std::fs::create_dir_all(&brew_npm_package).unwrap();
         std::fs::create_dir_all(&brew_npm_bin).unwrap();
@@ -8595,11 +9640,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(brew_npm_package.join("index.js"), b"#!/usr/bin/env node\n").unwrap();
-        symlink(
-            brew_npm_package.join("index.js"),
-            brew_npm_bin.join("hq"),
-        )
-        .unwrap();
+        symlink(brew_npm_package.join("index.js"), brew_npm_bin.join("hq")).unwrap();
         assert_eq!(
             install_executor_for_hq_bin(&brew_npm_bin.join("hq")),
             Some(InstallExecutor::Npm)
@@ -8742,6 +9783,7 @@ mod tests {
                 executed_copy_aim: ExecutedCopyAim::Undrivable,
                 hq_bin_lane: paths::ResolutionSource::NotResolved,
                 delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+                settings_path: SettingsPathTelemetry::default(),
                 pnpm: Some(pnpm_field_diagnostics(matches)),
             });
             assert_eq!(
@@ -8789,6 +9831,7 @@ mod tests {
                 executed_copy_aim: ExecutedCopyAim::Undrivable,
                 hq_bin_lane: paths::ResolutionSource::NotResolved,
                 delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+                settings_path: SettingsPathTelemetry::default(),
                 pnpm: Some(pnpm_field_diagnostics(Some(false))),
             }
         }
@@ -8872,6 +9915,7 @@ mod tests {
             executed_copy_aim: ExecutedCopyAim::Undrivable,
             hq_bin_lane: paths::ResolutionSource::NotResolved,
             delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+            settings_path: SettingsPathTelemetry::default(),
             pnpm: Some(pnpm_field_diagnostics(Some(true))),
         });
         assert_eq!(
@@ -9079,14 +10123,26 @@ mod tests {
     #[test]
     fn pnpm_global_ls_parser_reads_both_majors_and_fails_soft() {
         let pnpm11 = r#"[{"name":"global","path":"/h/global/v11","dependencies":{"@indigoai-us/hq-cli":{"from":"@indigoai-us/hq-cli","version":"5.98.0","resolved":"file:","path":"/h/global/v11/abc/node_modules/@indigoai-us/hq-cli"}}}]"#;
-        assert_eq!(pnpm_global_ls_hq_cli_version(pnpm11).as_deref(), Some("5.98.0"));
+        assert_eq!(
+            pnpm_global_ls_hq_cli_version(pnpm11).as_deref(),
+            Some("5.98.0")
+        );
         let pnpm10 = r#"[{"dependencies":{"@indigoai-us/hq-cli":{"version":"5.97.2"}}}]"#;
-        assert_eq!(pnpm_global_ls_hq_cli_version(pnpm10).as_deref(), Some("5.97.2"));
+        assert_eq!(
+            pnpm_global_ls_hq_cli_version(pnpm10).as_deref(),
+            Some("5.97.2")
+        );
         // A bare object rather than a one-element array (seen on some setups).
         let obj = r#"{"dependencies":{"@indigoai-us/hq-cli":{"version":"5.96.0"}}}"#;
-        assert_eq!(pnpm_global_ls_hq_cli_version(obj).as_deref(), Some("5.96.0"));
+        assert_eq!(
+            pnpm_global_ls_hq_cli_version(obj).as_deref(),
+            Some("5.96.0")
+        );
         // No hq-cli present, empty, malformed, and a scalar all fail soft to None.
-        assert_eq!(pnpm_global_ls_hq_cli_version(r#"[{"dependencies":{}}]"#), None);
+        assert_eq!(
+            pnpm_global_ls_hq_cli_version(r#"[{"dependencies":{}}]"#),
+            None
+        );
         assert_eq!(pnpm_global_ls_hq_cli_version(""), None);
         assert_eq!(pnpm_global_ls_hq_cli_version("not json {"), None);
         assert_eq!(pnpm_global_ls_hq_cli_version("42"), None);
@@ -9259,7 +10315,9 @@ mod tests {
     /// version readable AND no binary found means the user simply has no CLI.
     #[test]
     fn install_is_needed_when_no_cli_is_installed_at_all() {
-        assert!(cli_install_needed(None, "5.103.1", /* hq_installed */ false));
+        assert!(cli_install_needed(
+            None, "5.103.1", /* hq_installed */ false
+        ));
     }
 
     /// A binary IS present but its version cannot be read. That is ambiguous —
@@ -9270,7 +10328,9 @@ mod tests {
     /// here would just retry fruitlessly on every check).
     #[test]
     fn an_unreadable_but_present_cli_is_left_alone() {
-        assert!(!cli_install_needed(None, "5.103.1", /* hq_installed */ true));
+        assert!(!cli_install_needed(
+            None, "5.103.1", /* hq_installed */ true
+        ));
     }
 
     #[test]
@@ -9614,7 +10674,8 @@ mod tests {
         // updater defect). The property THIS test guards — the permission arm does
         // not over-widen onto a non-permission failure — is preserved verbatim:
         // ENOSPC classifies as ExpectedDiskFull, explicitly NOT ExpectedPrefixPermission.
-        let enospc = "npm error code ENOSPC\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
+        let enospc =
+            "npm error code ENOSPC\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
         assert_eq!(
             classify_install_failure(Some(1), enospc, None),
             InstallFailureKind::ExpectedDiskFull
@@ -9817,7 +10878,10 @@ mod tests {
             npm error path /usr/local/lib/node_modules/better-sqlite3\n\
             prebuild-install warn install No prebuilt binaries found";
         let lifecycle_kind = classify_install_failure(Some(1), lifecycle_with_eidletimeout, None);
-        assert_ne!(lifecycle_kind, InstallFailureKind::ExpectedTransientRegistry);
+        assert_ne!(
+            lifecycle_kind,
+            InstallFailureKind::ExpectedTransientRegistry
+        );
         assert_eq!(lifecycle_kind, InstallFailureKind::Unexpected);
 
         // The LEGACY `npm ERR!` spelling of a lifecycle failure carrying EIDLETIMEOUT
@@ -9829,11 +10893,14 @@ mod tests {
             npm ERR! command failed\n\
             npm ERR! command sh -c prebuild-install || node-gyp rebuild\n\
             npm ERR! path /usr/local/lib/node_modules/better-sqlite3";
-        let legacy_kind = classify_install_failure(Some(1), legacy_lifecycle_with_eidletimeout, None);
+        let legacy_kind =
+            classify_install_failure(Some(1), legacy_lifecycle_with_eidletimeout, None);
         assert_ne!(legacy_kind, InstallFailureKind::ExpectedTransientRegistry);
         assert_eq!(legacy_kind, InstallFailureKind::Unexpected);
         // And it is still reported (captured at Error), never dropped.
-        assert!(install_failure_report(Some(1), legacy_lifecycle_with_eidletimeout, None).is_some());
+        assert!(
+            install_failure_report(Some(1), legacy_lifecycle_with_eidletimeout, None).is_some()
+        );
     }
 
     #[test]
@@ -9928,7 +10995,8 @@ mod tests {
     }
 
     #[test]
-    fn derived_prefix_disk_full_failure_at_an_unmatched_global_target_is_disk_full_not_permission() {
+    fn derived_prefix_disk_full_failure_at_an_unmatched_global_target_is_disk_full_not_permission()
+    {
         // Formerly asserted ENOSPC -> Unexpected. ENOSPC now routes to the
         // dedicated disk-full arm, but the property this test guards is unchanged:
         // a non-permission failure at a global target that differs from the derived
@@ -10563,7 +11631,11 @@ mod tests {
         // The title carries the bounded grouping signature, not npm's exit
         // status (main's `install_failure_signature`); the point of this test is
         // that a lifecycle failure wearing transient tokens stays Unexpected
-        // and still reports.
+        // and still reports. npm DID report a lifecycle failure here
+        // (`npm_lifecycle_failed=true`, its numeric build-script status collapsed to
+        // the empty code), so this is NOT the reopen's "npm reported nothing" subclass
+        // and keeps its byte-identical `none:unknown:none` envelope (HQ-DESKTOP-56
+        // targets only `npm_lifecycle_failed=false` markerless failures).
         assert_eq!(
             install_failure_report(Some(1), detail, Some("/usr/local")),
             Some("[hq-cli-update] install failed (none:unknown:none)".to_string())
@@ -11268,10 +12340,19 @@ mod tests {
             managed_toolchain_retry: false,
             ..Default::default()
         };
-        let key =
-            install_failure_episode_key_with_environment(Some(190), enotempty, None, false, latest, &env)
-                .expect("an unexpected ENOTEMPTY wedge mints an episode key");
-        assert_eq!(key, "5.103.17|unexpected|ENOTEMPTY|rename|global-lib-node-modules");
+        let key = install_failure_episode_key_with_environment(
+            Some(190),
+            enotempty,
+            None,
+            false,
+            latest,
+            &env,
+        )
+        .expect("an unexpected ENOTEMPTY wedge mints an episode key");
+        assert_eq!(
+            key,
+            "5.103.17|unexpected|ENOTEMPTY|rename|global-lib-node-modules"
+        );
 
         // A second identical report under the same target version is suppressed —
         // the noise bound the fix exists to add.
@@ -11291,7 +12372,10 @@ mod tests {
             bumped.as_deref(),
             Some("5.103.18|unexpected|ENOTEMPTY|rename|global-lib-node-modules")
         );
-        assert!(!install_failure_episode_blocked(&[key.clone()], bumped.as_deref().unwrap()));
+        assert!(!install_failure_episode_blocked(
+            &[key.clone()],
+            bumped.as_deref().unwrap()
+        ));
 
         // A different signature (here the syscall) is a different key.
         let different_syscall = "npm error code ENOTEMPTY\n\
@@ -11309,7 +12393,10 @@ mod tests {
             other.as_deref(),
             Some("5.103.17|unexpected|ENOTEMPTY|mkdir|global-lib-node-modules")
         );
-        assert!(!install_failure_episode_blocked(&[key.clone()], other.as_deref().unwrap()));
+        assert!(!install_failure_episode_blocked(
+            &[key.clone()],
+            other.as_deref().unwrap()
+        ));
 
         // Managed provenance mints a distinct key, so a managed-retry event never
         // collides with its user-path predecessor.
@@ -11359,10 +12446,26 @@ mod tests {
             None
         );
 
-        // A fully SHAPELESS unexpected failure (no npm code / syscall / path — the
-        // `none:unknown:none` signature) is deliberately NOT bounded: it mints no
-        // key and keeps paging every check, so a different newly introduced failure
-        // sharing that empty signature is never hidden behind an earlier one.
+        // A GENUINELY shapeless failure — empty stderr, npm structured nothing — is
+        // still deliberately NOT bounded: it mints no key and keeps paging every
+        // check, so a different newly introduced failure sharing that empty signature
+        // is never hidden behind an earlier one (commit e24e7a45).
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                "",
+                None,
+                false,
+                latest,
+                &InstallEnvironment::default(),
+            ),
+            None
+        );
+        // A NON-EMPTY markerless failure (HQ-DESKTOP-56) now DOES earn a bounded key
+        // from its structural attribution, so it pages once per published CLI version
+        // instead of on every ~6-hourly check. `SyntaxError: …` is one bare
+        // `identifier:` line, so the dominant shape is `key_colon` and the origin is
+        // `non-npm` (npm's logger emitted nothing).
         assert_eq!(
             install_failure_episode_key_with_environment(
                 Some(1),
@@ -11371,8 +12474,9 @@ mod tests {
                 false,
                 latest,
                 &InstallEnvironment::default(),
-            ),
-            None
+            )
+            .as_deref(),
+            Some("5.103.17|unattributed|non-npm|key_colon")
         );
     }
 
@@ -11567,10 +12671,13 @@ mod tests {
     #[test]
     fn install_failure_report_captures_genuine_failures() {
         // A real, unexpected failure stays loud — `Some(message)` drives the
-        // Error-level capture.
+        // Error-level capture. npm printed a marker line but structured no
+        // code/syscall/path, so this NON-EMPTY markerless failure now groups under the
+        // attributed `unattributed:npm-logger:<dominant shape>` signature
+        // (HQ-DESKTOP-56); the single marker line classifies as `other`.
         assert_eq!(
             install_failure_report(Some(1), "npm error network ETIMEDOUT", None),
-            Some("[hq-cli-update] install failed (none:unknown:none)".to_string()),
+            Some("[hq-cli-update] install failed (unattributed:npm-logger:other)".to_string()),
         );
         // Killed by signal (no exit code) still reports — and now lands in the
         // same group as the exit-1 run, because the cause is the same.
@@ -11693,7 +12800,12 @@ mod tests {
         let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
 
         assert_eq!(result.local, None);
-        assert!(result.hq_installed);
+        // HQ-DESKTOP-3P: a definitively-unbacked FOREIGN hq (PackageNotFound,
+        // outside every managed root) whose version cannot be read is not an
+        // install — it is silent-and-installable, not a forever-report. The three
+        // probe outcomes still stay distinct.
+        assert_eq!(result.probes.hq_backing, HqBacking::UnbackedForeign);
+        assert!(!result.hq_installed);
         assert_eq!(
             result.probes.binary_anchor,
             VersionProbeOutcome::PackageNotFound
@@ -11704,7 +12816,8 @@ mod tests {
             result.probes.binary_anchor_shape,
             BinaryAnchorShape::NpmPrefix,
         );
-        assert!(should_report_unreadable_version(&result));
+        assert!(!should_report_unreadable_version(&result));
+        assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
     }
 
     #[test]
@@ -11844,20 +12957,27 @@ mod tests {
             result.probes.hq_version,
             VersionProbeOutcome::InterpreterNotFound
         );
-        assert!(should_report_unreadable_version(&result));
+        // HQ-DESKTOP-3P: this pnpm shim is definitively unbacked and foreign, so it
+        // is silent-and-installable — the still-reporting interpreter-gap case is
+        // unprovisioned_managed_node_keeps_reporting_and_names_the_gap.
+        assert_eq!(result.probes.hq_backing, HqBacking::UnbackedForeign);
+        assert!(!should_report_unreadable_version(&result));
+        assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
     }
 
     // ---- HQ-DESKTOP-3P: managed-Node interpreter recovery ------------------
 
     /// HQ-DESKTOP-3P reproduction: a resolved `hq` shim in an npm-prefix `bin`
-    /// dir whose `env node` interpreter is not on the child PATH, with no npm
-    /// and no managed Node, produces the EXACT production quadruple and reports.
-    /// Injecting `managed = None` keeps this identical to the base commit's
-    /// behaviour, so it anchors the byte-identical field set the recovery test
-    /// then flips.
+    /// dir whose `env node` interpreter is not on the child PATH, with no npm and
+    /// no managed Node, produces the EXACT production quadruple — and, because the
+    /// shim is definitively unbacked and FOREIGN (PackageNotFound outside every
+    /// managed root), the machine now CONVERGES VIA INSTALL rather than reporting
+    /// the same unreadable-version warning forever. The four probe fields are the
+    /// byte-identical production set (`managed = None` matches the base commit);
+    /// only the reporting / `hq_installed` decision is the corrected one.
     #[test]
     #[cfg(unix)]
-    fn unreadable_version_reproduces_the_production_quadruple_and_reports() {
+    fn unreadable_version_reproduces_the_production_quadruple_and_converges_via_install() {
         let tmp = tempfile::TempDir::new().unwrap();
         let bin = tmp.path().join("bin");
         let hq = bin.join("hq");
@@ -11868,7 +12988,8 @@ mod tests {
             probe_local_version_with_managed(Some(&hq), ResolvedProgramKind::Exe, None, None, "");
 
         assert_eq!(result.local, None);
-        assert!(result.hq_installed);
+        assert_eq!(result.probes.hq_backing, HqBacking::UnbackedForeign);
+        assert!(!result.hq_installed);
         assert_eq!(
             result.probes.binary_anchor,
             VersionProbeOutcome::PackageNotFound
@@ -11883,7 +13004,8 @@ mod tests {
             BinaryAnchorShape::NpmPrefix
         );
         assert_eq!(result.probes.resolved_program_kind, ResolvedProgramKind::Exe);
-        assert!(should_report_unreadable_version(&result));
+        assert!(!should_report_unreadable_version(&result));
+        assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
     }
 
     /// HQ-DESKTOP-3P fix: with HQ's managed Node present, the same otherwise
@@ -11933,7 +13055,10 @@ mod tests {
             result.probes.binary_anchor_shape,
             BinaryAnchorShape::NpmPrefix
         );
-        assert_eq!(result.probes.resolved_program_kind, ResolvedProgramKind::Exe);
+        assert_eq!(
+            result.probes.resolved_program_kind,
+            ResolvedProgramKind::Exe
+        );
     }
 
     /// The direct `<node> <program>` retry recovers when the shim names node but
@@ -11982,6 +13107,11 @@ mod tests {
         let hq = bin.join("hq");
         std::fs::create_dir_all(&bin).unwrap();
         write_executable(&hq, "#!/usr/bin/env node\n");
+        // HQ-DESKTOP-3P: a manifest PRESENT beside the shim but unparseable keeps
+        // the backing INDETERMINATE (NotProbed) — a real install we cannot prove
+        // absent still reports; only a definitively-foreign shim is silent-and-
+        // installable (see definitively_unbacked_foreign_hq_is_not_installed_and_converges).
+        std::fs::write(bin.join("package.json"), b"{ not valid json\n").unwrap();
 
         let managed = crate::toolchain::ManagedRuntime::NotProvisioned;
         let result = probe_local_version_with_managed(
@@ -12043,7 +13173,12 @@ mod tests {
             result.probes.interpreter_recovery,
             InterpreterRecovery::StillUnreadable
         );
-        assert!(should_report_unreadable_version(&result));
+        // HQ-DESKTOP-3P: this shim is definitively unbacked and foreign, so once
+        // recovery cannot read a version the machine converges via install rather
+        // than reporting forever.
+        assert_eq!(result.probes.hq_backing, HqBacking::UnbackedForeign);
+        assert!(!should_report_unreadable_version(&result));
+        assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
     }
 
     /// A resolved-but-absent program (`SpawnProgramMissing`) routes through the
@@ -12099,7 +13234,10 @@ mod tests {
             result.probes.interpreter_recovery,
             InterpreterRecovery::NotNeeded
         );
-        assert_eq!(result.probes.managed_runtime, ManagedRuntimeState::NotProbed);
+        assert_eq!(
+            result.probes.managed_runtime,
+            ManagedRuntimeState::NotProbed
+        );
     }
 
     /// The direct-node gate recognizes node entrypoints only — the exact set of
@@ -12110,8 +13248,16 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let cases = [
             ("env-node", "#!/usr/bin/env node\n", true),
-            ("abs-node", "#!/usr/local/bin/node --enable-source-maps\n", true),
-            ("env-dash-s", "#!/usr/bin/env -S node --experimental\n", true),
+            (
+                "abs-node",
+                "#!/usr/local/bin/node --enable-source-maps\n",
+                true,
+            ),
+            (
+                "env-dash-s",
+                "#!/usr/bin/env -S node --experimental\n",
+                true,
+            ),
             ("env-nodejs", "#!/usr/bin/env nodejs\n", true),
             ("env-other", "#!/usr/bin/env hq-fixture-node\n", false),
             ("sh", "#!/bin/sh\n", false),
@@ -12139,6 +13285,10 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         // Exits nonzero for a real reason — not a missing interpreter.
         write_executable(&hq, "#!/bin/sh\nexit 3\n");
+        // HQ-DESKTOP-3P: an unparseable manifest beside the shim keeps the backing
+        // INDETERMINATE (NotProbed) — a broken install we cannot prove absent still
+        // reports; only a definitively-foreign shim is silent-and-installable.
+        std::fs::write(bin.join("package.json"), b"{ not valid json\n").unwrap();
 
         let managed_bin = tmp.path().join("managed/node/bin");
         std::fs::create_dir_all(&managed_bin).unwrap();
@@ -12217,7 +13367,19 @@ mod tests {
             without_child_path.probes.hq_version,
             VersionProbeOutcome::InterpreterNotFound
         );
-        assert!(should_report_unreadable_version(&without_child_path));
+        // HQ-DESKTOP-3P: with no child PATH the foreign shim's interpreter is
+        // unreachable AND the shim is definitively unbacked, so the machine is
+        // silent-and-installable; the child-PATH half below recovers a real version.
+        assert_eq!(
+            without_child_path.probes.hq_backing,
+            HqBacking::UnbackedForeign
+        );
+        assert!(!should_report_unreadable_version(&without_child_path));
+        assert!(cli_install_needed(
+            None,
+            "5.103.30",
+            without_child_path.hq_installed
+        ));
 
         let with_child_path = probe_local_version(
             Some(&hq),
@@ -12290,8 +13452,10 @@ mod tests {
         let not_executable = tmp.path().join("not-executable-hq");
         write_executable(&not_executable, "\u{0}\u{1}not-an-executable-image\n");
         assert_eq!(
-            hq_version_string_probe(&not_executable, "").1,
-            enoexec_fixture_outcome()
+            settled_probe_outcome(|| hq_version_string_probe(&not_executable, "").1),
+            enoexec_fixture_outcome(),
+            "{}",
+            direct_spawn_errno(&not_executable.to_string_lossy())
         );
 
         // Present, but this process may not execute it.
@@ -12659,9 +13823,12 @@ mod tests {
 
         let not_executable = tmp.path().join("not-executable-npm");
         write_executable(&not_executable, "\u{0}\u{1}not-an-executable-image\n");
+        let not_executable = not_executable.to_str().unwrap();
         assert_eq!(
-            read_installed_version_probe(not_executable.to_str().unwrap(), "").1,
-            enoexec_fixture_outcome()
+            settled_probe_outcome(|| read_installed_version_probe(not_executable, "").1),
+            enoexec_fixture_outcome(),
+            "{}",
+            direct_spawn_errno(not_executable)
         );
 
         let nonzero = tmp.path().join("nonzero-npm");
@@ -12817,6 +13984,84 @@ mod tests {
         );
     }
 
+    // ---- HQ-DESKTOP-3P: hq-cli backing oracle + telemetry sub-case. ----
+
+    #[test]
+    fn hq_cli_backing_classifies_backed_absent_and_indeterminate() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Backed: a shim whose @indigoai-us/hq-cli manifest is reachable from the
+        // derived prefix.
+        let prefix = tmp.path().join("npm");
+        std::fs::create_dir_all(prefix.join("node_modules/@indigoai-us/hq-cli")).unwrap();
+        std::fs::write(prefix.join("hq.cmd"), "@echo off\n").unwrap();
+        std::fs::write(
+            prefix.join("node_modules/@indigoai-us/hq-cli/package.json"),
+            br#"{"name":"@indigoai-us/hq-cli","version":"5.103.30"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            hq_cli_backing(&prefix.join("hq.cmd")),
+            paths::CandidateBacking::Backed
+        );
+
+        // Definitively absent: the same shim shape with the package gone.
+        let orphan = tmp.path().join("toolchain");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("hq.cmd"), "@echo off\n").unwrap();
+        assert_eq!(
+            hq_cli_backing(&orphan.join("hq.cmd")),
+            paths::CandidateBacking::AbsentDefinitive
+        );
+
+        // Indeterminate: the manifest path exists but cannot be READ (a directory
+        // here, standing in for a permission/AV lock).
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir_all(locked.join("node_modules/@indigoai-us/hq-cli/package.json"))
+            .unwrap();
+        std::fs::write(locked.join("hq.cmd"), "@echo off\n").unwrap();
+        assert_eq!(
+            hq_cli_backing(&locked.join("hq.cmd")),
+            paths::CandidateBacking::Indeterminate
+        );
+    }
+
+    #[test]
+    fn classify_hq_backing_names_the_unreadable_subcase_from_the_anchor_outcome() {
+        let foreign = std::path::Path::new("/tmp/hq-fixture-foreign/hq.cmd");
+        // No hq resolved → not probed.
+        assert_eq!(
+            classify_hq_backing(None, VersionProbeOutcome::PackageNotFound),
+            HqBacking::NotProbed
+        );
+        // A version read (fast path) → backed.
+        assert_eq!(
+            classify_hq_backing(Some(foreign), VersionProbeOutcome::Succeeded),
+            HqBacking::Backed
+        );
+        // Definitive absence OUTSIDE a managed root → foreign.
+        assert_eq!(
+            classify_hq_backing(Some(foreign), VersionProbeOutcome::PackageNotFound),
+            HqBacking::UnbackedForeign
+        );
+        // Definitive absence INSIDE a managed root → managed (HQ's own orphan).
+        if let Some(root) = paths::managed_toolchain_roots().first() {
+            let managed = root.join("npm-prefix").join("hq.cmd");
+            assert_eq!(
+                classify_hq_backing(Some(&managed), VersionProbeOutcome::PackageNotFound),
+                HqBacking::UnbackedManaged
+            );
+        }
+        // An indeterminate read is never a false "unbacked".
+        assert_eq!(
+            classify_hq_backing(
+                Some(foreign),
+                VersionProbeOutcome::ManifestReadOrParseFailed
+            ),
+            HqBacking::NotProbed
+        );
+    }
+
     #[cfg(unix)]
     fn legacy_local_version(hq: Option<&Path>, npm: Option<&str>, path: &str) -> Option<String> {
         if let Some(hq) = hq {
@@ -12852,6 +14097,55 @@ mod tests {
     /// nonzero instead. The fixture is therefore platform-dependent; the
     /// 193/`ENOEXEC` mapping itself is pinned platform-independently by
     /// `classify_spawn_error_splits_the_process_spawn_failed_bucket`.
+    /// Re-run a version probe until it stops reporting the undifferentiated
+    /// `ProcessSpawnFailed` residual, then hand back what it settled on.
+    ///
+    /// `ProcessSpawnFailed` is the bucket the probe uses for "something in the
+    /// harness broke and the child never got a verdict" -- an `EMFILE` on the
+    /// stdio `dup`, an interrupted status poll, a short output read. Those are
+    /// resource transients produced by whatever else is running on the host, not
+    /// statements about the fixture, and on a loaded CI runner they turned these
+    /// classification tests red. Retrying past the residual keeps the assertion
+    /// exactly as strict -- the expected outcome must still be OBSERVED -- while
+    /// refusing to let unrelated host pressure speak for the fixture.
+    ///
+    /// A genuine regression that pins the outcome to `ProcessSpawnFailed` still
+    /// fails: the retries are bounded and the residual is then asserted against.
+    #[cfg(unix)]
+    fn settled_probe_outcome(
+        mut probe: impl FnMut() -> VersionProbeOutcome,
+    ) -> VersionProbeOutcome {
+        let mut outcome = probe();
+        for attempt in 1..8 {
+            if outcome != VersionProbeOutcome::ProcessSpawnFailed {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20 * attempt));
+            outcome = probe();
+        }
+        outcome
+    }
+
+    /// The raw errno a direct spawn of `program` reports right now, for failure
+    /// messages: when one of these classification assertions does trip, the log
+    /// should name the errno instead of leaving the next reader to guess.
+    #[cfg(unix)]
+    fn direct_spawn_errno(program: &str) -> String {
+        let mut cmd = paths::spawn_command(program, &[]);
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let status = child.wait();
+                format!("direct spawn succeeded, status={status:?}")
+            }
+            Err(error) => format!(
+                "direct spawn failed, raw_os_error={:?} kind={:?} ({error})",
+                error.raw_os_error(),
+                error.kind()
+            ),
+        }
+    }
+
     #[cfg(unix)]
     fn enoexec_fixture_outcome() -> VersionProbeOutcome {
         if cfg!(target_os = "linux") {
@@ -12859,6 +14153,99 @@ mod tests {
         } else {
             VersionProbeOutcome::NonzeroExit
         }
+    }
+
+    /// The probe harness's OWN I/O failure is not evidence about the child.
+    ///
+    /// Every fallible stage of `output_with_timeout` -- tempfile creation, the
+    /// `dup` for the child's stdio, the status poll, the output read -- used to
+    /// return a bare `io::Error` that the callers handed to
+    /// `classify_spawn_error`, a function whose whole contract is to read an
+    /// errno as a statement about the child's `exec`. So a plumbing failure was
+    /// reported as a spawn verdict, and a plumbing errno that collided with
+    /// `ENOEXEC` (8) or `ERROR_BAD_EXE_FORMAT` (193) would have been reported as
+    /// "the program is present but is not an executable image" -- a claim the
+    /// probe never established. That conflation is also how a loaded CI runner
+    /// turned this module's probe tests red: a transient harness errno arrived
+    /// where only a spawn errno was expected.
+    #[test]
+    fn a_harness_io_failure_is_never_read_as_the_childs_spawn_errno() {
+        use std::io::{Error, ErrorKind};
+
+        // The two errnos that DO mean "not an executable image" -- when they come
+        // from the spawn. From the harness they must stay in the residual bucket.
+        for raw in [193, 8] {
+            let harness = harness_io(Error::from_raw_os_error(raw));
+            assert_eq!(
+                classify_probe_error(&harness),
+                VersionProbeOutcome::ProcessSpawnFailed,
+                "harness errno {raw} must not be reported as a spawn verdict"
+            );
+        }
+
+        // Absent/denied are equally claims about the child, so a harness
+        // ENOENT/EACCES must not be reported as either.
+        for kind in [ErrorKind::NotFound, ErrorKind::PermissionDenied] {
+            assert_eq!(
+                classify_probe_error(&harness_io(Error::from(kind))),
+                VersionProbeOutcome::ProcessSpawnFailed,
+                "harness {kind:?} must not be reported as a spawn verdict"
+            );
+        }
+
+        // An untagged error is a genuine spawn failure and still classifies in
+        // full -- the split must not blunt the real diagnostics.
+        assert_eq!(
+            classify_probe_error(&Error::from_raw_os_error(193)),
+            VersionProbeOutcome::SpawnNotExecutable
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            classify_probe_error(&Error::from_raw_os_error(8)),
+            VersionProbeOutcome::SpawnNotExecutable
+        );
+        assert_eq!(
+            classify_probe_error(&Error::from(ErrorKind::NotFound)),
+            VersionProbeOutcome::SpawnProgramMissing
+        );
+        assert_eq!(
+            classify_probe_error(&Error::from(ErrorKind::PermissionDenied)),
+            VersionProbeOutcome::SpawnAccessDenied
+        );
+    }
+
+    /// `EINTR` from the status poll means a signal arrived while we asked about
+    /// an ALREADY RUNNING child, so it says nothing about the child. It used to
+    /// propagate out of the probe and land in the residual spawn bucket, because
+    /// the whole-probe retry deliberately excludes `Interrupted` (retrying the
+    /// probe would leak the running child's process group). Absorbing it at the
+    /// poll keeps that leak impossible AND stops the bogus verdict.
+    #[test]
+    fn an_interrupted_status_poll_is_absorbed_rather_than_becoming_a_spawn_verdict() {
+        use std::io::{Error, ErrorKind};
+
+        let mut polls = 0;
+        let status = poll_child_status(|| {
+            polls += 1;
+            if polls < 4 {
+                Err(Error::from(ErrorKind::Interrupted))
+            } else {
+                Ok(None)
+            }
+        })
+        .expect("an interrupted poll must not fail the probe");
+        assert_eq!(status, None, "the child is still running");
+        assert_eq!(polls, 4, "every interrupt is retried in place");
+
+        // A non-EINTR error is still surfaced -- the absorption is narrow.
+        let mut polls = 0;
+        let error = poll_child_status(|| {
+            polls += 1;
+            Err::<Option<std::process::ExitStatus>, _>(Error::from(ErrorKind::OutOfMemory))
+        })
+        .expect_err("a real poll failure must still surface");
+        assert_eq!(error.kind(), ErrorKind::OutOfMemory);
+        assert_eq!(polls, 1, "a non-interrupt is not retried in place");
     }
 
     // ── HQ-DESKTOP-3P: a Windows resolution that exists but cannot be spawned ──
@@ -12933,28 +14320,46 @@ mod tests {
         }
     }
 
-    /// **The anti-silencing pin.** A resolved-but-non-spawnable `hq` is a
-    /// broken CLI, not an absent one. Dropping such a resolution back to the
-    /// bare name would flip `hq_installed` to false and silence the event, the
-    /// banner, and the regression watermark while the user's CLI stays broken.
+    /// **The anti-silencing pin, re-anchored (HQ-DESKTOP-3P).** A resolved `hq`
+    /// whose backing is INDETERMINATE — a manifest that is PRESENT but could not be
+    /// read or parsed (a permission/AV hold), NOT a definitive absence — is a CLI
+    /// we cannot prove is absent. It stays `hq_installed` and keeps reporting: a
+    /// transient blip must never silence the event, the banner, and the regression
+    /// watermark while the user's CLI may be fine. The definitively-unbacked
+    /// foreign case is the sharper, OPPOSITE contract, pinned by
+    /// `definitively_unbacked_foreign_hq_is_not_installed_and_converges` below.
     #[test]
-    fn marked_non_spawnable_resolution_still_reports_and_carries_its_kind() {
+    fn indeterminate_backing_resolution_still_reports_and_carries_its_kind() {
         let tmp = tempfile::TempDir::new().unwrap();
         let bin = tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        // A real file the loader cannot execute — the cross-platform stand-in
-        // for the extensionless POSIX shim resolved on the field host.
+        // A real file the loader cannot execute — the cross-platform stand-in for
+        // the extensionless POSIX shim resolved on the field host.
         let hq = bin.join("hq");
         std::fs::write(&hq, "#!/usr/bin/env sh\n").unwrap();
+        // A package.json PRESENT beside it but unparseable: the binary anchor is
+        // INDETERMINATE, never a definitive absence, so the resolution keeps
+        // reporting instead of being treated as a foreign program.
+        std::fs::write(bin.join("package.json"), b"{ not valid json\n").unwrap();
 
         let result =
             probe_local_version_with_kind(Some(&hq), ResolvedProgramKind::Extensionless, None, "");
 
         assert_eq!(result.local, None);
-        assert!(result.hq_installed, "a broken CLI is still installed");
+        assert_eq!(
+            result.probes.binary_anchor,
+            VersionProbeOutcome::ManifestReadOrParseFailed,
+            "an unparseable manifest is indeterminate, not a definitive absence"
+        );
+        assert_eq!(
+            result.probes.hq_backing,
+            HqBacking::NotProbed,
+            "an indeterminate read never names an unbacked sub-case"
+        );
+        assert!(result.hq_installed, "a CLI we cannot prove absent is installed");
         assert!(
             should_report_unreadable_version(&result),
-            "silencing an installed-but-unusable CLI is prohibited"
+            "silencing a CLI we cannot prove is absent is prohibited"
         );
         assert_eq!(
             result.probes.resolved_program_kind,
@@ -12964,6 +14369,53 @@ mod tests {
         assert_eq!(
             result.probes.binary_anchor_shape,
             BinaryAnchorShape::NpmPrefix
+        );
+    }
+
+    /// The sharper contract (HQ-DESKTOP-3P): a resolved `hq` that is DEFINITIVELY
+    /// unbacked and foreign — a definitive `package_not_found` from a path OUTSIDE
+    /// every managed-toolchain root — whose version also cannot be read is not an
+    /// hq-cli install at all; it is an unrelated program named `hq`. Reporting it
+    /// as installed would fire the false unreadable-version warning forever AND
+    /// block the installer. Instead `hq_installed` is false, the report is silent,
+    /// and `cli_install_needed` becomes true so the machine converges. All three
+    /// assertions are RED on the base commit, where `hq_installed = hq.is_some()`.
+    #[test]
+    fn definitively_unbacked_foreign_hq_is_not_installed_and_converges() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // An `hq` with NO hq-cli manifest anywhere, at a path outside every
+        // managed-toolchain root → binary anchor PackageNotFound, backing
+        // UnbackedForeign.
+        let hq = bin.join("hq");
+        std::fs::write(&hq, "#!/bin/sh\nexit 0\n").unwrap();
+
+        let result = probe_local_version_with_kind(Some(&hq), ResolvedProgramKind::Exe, None, "");
+
+        assert_eq!(result.local, None);
+        assert_eq!(
+            result.probes.binary_anchor,
+            VersionProbeOutcome::PackageNotFound,
+            "the foreign hq has no hq-cli package"
+        );
+        assert_eq!(
+            result.probes.hq_backing,
+            HqBacking::UnbackedForeign,
+            "a definitive absence outside every managed root is foreign"
+        );
+        // The three field assertions that run RED on the base commit:
+        assert!(
+            !result.hq_installed,
+            "a definitively-unbacked foreign hq is not an install"
+        );
+        assert!(
+            !should_report_unreadable_version(&result),
+            "the foreign unbacked case converges via install, not a forever-report"
+        );
+        assert!(
+            cli_install_needed(None, "5.103.30", result.hq_installed),
+            "with hq_installed false the installer runs and the machine converges"
         );
     }
 
@@ -13016,8 +14468,15 @@ mod tests {
         let result = probe_local_version(Some(&hq), Some(npm.to_str().unwrap()), "");
 
         assert_eq!(result.local, None);
-        assert!(result.hq_installed);
-        assert!(should_report_unreadable_version(&result));
+        // HQ-DESKTOP-3P: this field fixture is a definitively-unbacked FOREIGN `hq`
+        // (PackageNotFound from a path outside every managed root) whose version
+        // cannot be read. Under the truthful-`hq_installed` contract it is NOT an
+        // install — the machine converges via the installer instead of reporting
+        // the same unreadable-version warning forever.
+        assert_eq!(result.probes.hq_backing, HqBacking::UnbackedForeign);
+        assert!(!result.hq_installed);
+        assert!(!should_report_unreadable_version(&result));
+        assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
         // The three field-matching outcomes are unchanged…
         assert_eq!(
             result.probes.binary_anchor,
@@ -13254,7 +14713,10 @@ mod tests {
         }
         // The default reproduces "no retry considered", so every pre-existing caller
         // that never sets the field tags itself not-armed and keeps today's shape.
-        assert_eq!(ManagedRetryOutcome::default(), ManagedRetryOutcome::NotArmed);
+        assert_eq!(
+            ManagedRetryOutcome::default(),
+            ManagedRetryOutcome::NotArmed
+        );
     }
 
     #[test]
@@ -13406,7 +14868,9 @@ mod tests {
         ];
         for (exit, detail, prefix, forced, expected) in cases {
             assert_eq!(
-                classify_install_failure_with_environment(*exit, detail, *prefix, *forced, &old_node),
+                classify_install_failure_with_environment(
+                    *exit, detail, *prefix, *forced, &old_node
+                ),
                 *expected,
                 "detail {detail:?} must keep its kind on a Node-6 machine"
             );
@@ -13416,9 +14880,9 @@ mod tests {
     #[test]
     fn env_blind_wrappers_are_behaviour_preserving_for_a_node_6_stderr() {
         let stderr = node_six_stderr();
-        // Every env-blind entrypoint returns TODAY's values for the Node-6 stderr —
-        // the reported `Unexpected` / `none:unknown:none` / raw-passthrough shape —
-        // proving default-env delegation changed nothing for existing callers.
+        // Env-blind delegation is unchanged where it must be: the Node-6 stderr still
+        // classifies `Unexpected` and the detail still passes the raw stderr through,
+        // proving default-env delegation changed neither the kind nor the copy.
         assert_eq!(
             classify_install_failure(Some(1), stderr, Some("/usr/local")),
             InstallFailureKind::Unexpected
@@ -13427,9 +14891,16 @@ mod tests {
             classify_install_failure_with_final_attempt(Some(1), stderr, Some("/usr/local"), false),
             InstallFailureKind::Unexpected
         );
+        // The reported grouping intentionally moves off the empty `none:unknown:none`
+        // bucket: this NON-EMPTY markerless stderr is attributed (HQ-DESKTOP-56) as
+        // `unattributed:non-npm:stack_frame` — a pure function of `detail`, so the
+        // env-blind and default-env-aware paths agree by construction. A Node-6
+        // MACHINE reports differently again (`unsupported-node:6`) because the app
+        // passes the probed environment; only these legacy env-blind callers see the
+        // attributed shape.
         assert_eq!(
             install_failure_report_with_final_attempt(Some(1), stderr, Some("/usr/local"), false),
-            Some("[hq-cli-update] install failed (none:unknown:none)".to_string())
+            Some("[hq-cli-update] install failed (unattributed:non-npm:stack_frame)".to_string())
         );
         // The env-blind detail still shows the raw stderr passthrough...
         assert_eq!(
@@ -13528,11 +14999,12 @@ mod tests {
             &managed_env,
         );
         assert_eq!(managed.as_deref(), Some("5.101.7|unsupported-node|6|managed"));
-        // The env-blind shape (no probed Node) is a plain `Unexpected` failure whose
-        // signature is fully shapeless (`none:unknown:none`) — npm structured
-        // nothing — so it is deliberately NOT repeat-suppressed and mints no key: it
-        // keeps paging every check, exactly as before this change, so an unrelated
-        // new failure sharing the empty signature is never hidden behind it.
+        // The env-blind shape (no probed Node) is a plain `Unexpected` failure. Before
+        // HQ-DESKTOP-56 its empty `none:unknown:none` signature minted no key; now this
+        // NON-EMPTY markerless stderr is attributed, so it earns a bounded key
+        // (`unattributed|non-npm|stack_frame`) and pages once per published version. A
+        // genuinely EMPTY stderr still mints no key — pinned in
+        // `unexpected_install_failure_episode_key_pages_once_per_version_and_signature`.
         assert_eq!(
             install_failure_episode_key_with_environment(
                 Some(1),
@@ -13541,7 +15013,110 @@ mod tests {
                 false,
                 latest,
                 &InstallEnvironment::default(),
-            ),
+            )
+            .as_deref(),
+            Some("5.101.7|unattributed|non-npm|stack_frame")
+        );
+    }
+
+    // ── HQ-DESKTOP-56 reopen: attribution for a NON-EMPTY markerless failure ──
+
+    /// The reopen environment: a Windows machine on a SUPPORTED Node 26 whose npm
+    /// exited 1 with a short stderr carrying none of npm's structured markers.
+    fn reopen_env() -> InstallEnvironment {
+        InstallEnvironment {
+            node_version: Some("26.3.0".to_string()),
+            node_abi: Some("147".to_string()),
+            npm_version: Some("11.16.0".to_string()),
+            toolchain_source: NpmToolchainSource::UserPath,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn nonempty_markerless_failure_leaves_the_empty_bucket_for_a_bounded_group() {
+        let env = reopen_env();
+        // A markerless shim/OS error carrying Windows drive paths — no `npm error`
+        // line at all, so npm's logger produced nothing (non-npm origin), and the
+        // dominant structural shape is path_like. CRLF-delimited, as Windows emits.
+        let stderr = "Access to 'C:\\Users\\me\\AppData\\Roaming\\npm\\hq' is denied.\r\n\
+                      Could not write to C:\\ProgramData\\hq; the update stopped.";
+        // Supported Node 26 -> not UnsupportedNode; stays Unexpected.
+        assert_eq!(
+            classify_install_failure_with_environment(Some(1), stderr, None, false, &env),
+            InstallFailureKind::Unexpected
+        );
+        let signature = install_failure_signature_with_environment(
+            InstallFailureKind::Unexpected,
+            stderr,
+            None,
+            &env,
+        );
+        assert_eq!(signature, "unattributed:non-npm:path_like");
+        // The signature carries only closed tokens: no count, no length, and no raw
+        // path byte can enter the group.
+        for token in ["C:\\", "Users", "ProgramData"] {
+            assert!(!signature.contains(token), "signature leaked {token}: {signature}");
+        }
+        assert!(
+            signature.bytes().all(|b| !b.is_ascii_digit()),
+            "the attributed signature must not embed any count or length: {signature}"
+        );
+        // It pages once per published CLI version on that discriminating signature.
+        let key = install_failure_episode_key_with_environment(
+            Some(1), stderr, None, false, "5.103.23", &env,
+        )
+        .expect("a non-empty markerless failure now mints a bounded episode key");
+        assert_eq!(key, "5.103.23|unattributed|non-npm|path_like");
+        assert!(install_failure_episode_blocked(&[key.clone()], &key));
+        // A newly published CLI version pages a first occurrence again.
+        let bumped = install_failure_episode_key_with_environment(
+            Some(1), stderr, None, false, "5.103.24", &env,
+        )
+        .expect("bumped version mints a distinct key");
+        assert!(!install_failure_episode_blocked(&[key], &bumped));
+    }
+
+    #[test]
+    fn stderr_origin_splits_non_npm_from_npm_logger_and_folds_empty_to_none() {
+        let env = reopen_env();
+        let drive_path = "cannot write C:\\Users\\me\\npm\\hq: access denied.";
+        // non-npm: npm's own logger emitted nothing.
+        assert_eq!(
+            unattributed_install_stderr_origin(Some(1), drive_path, None, false, &env),
+            Some("non-npm")
+        );
+        // npm-logger: npm printed marker lines but structured no code/syscall/path.
+        let npm_logger = "npm error Unexpected end of JSON input while parsing\n\
+                          npm error A complete log of this run can be found above.";
+        assert_eq!(
+            unattributed_install_stderr_origin(Some(1), npm_logger, None, false, &env),
+            Some("npm-logger")
+        );
+        // Empty stderr is genuinely shapeless: no attributed origin, no retry-arming.
+        assert_eq!(
+            unattributed_install_stderr_origin(Some(1), "", None, false, &env),
+            None
+        );
+        // A shape npm actually characterised keeps its discriminating signature, so it
+        // is never the unattributed subclass.
+        let enotempty = "npm error code ENOTEMPTY\n\
+                         npm error syscall rename\n\
+                         npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        assert_eq!(
+            unattributed_install_stderr_origin(Some(190), enotempty, None, false, &env),
+            None
+        );
+        // A below-floor Node reclassifies to UnsupportedNode, so the same markerless
+        // stderr is owned by the unsupported-node path, not the unattributed subclass.
+        let node6 = InstallEnvironment {
+            node_version: Some("6.17.1".to_string()),
+            node_abi: Some("48".to_string()),
+            toolchain_source: NpmToolchainSource::UserPath,
+            ..Default::default()
+        };
+        assert_eq!(
+            unattributed_install_stderr_origin(Some(1), drive_path, None, false, &node6),
             None
         );
     }
@@ -13566,7 +15141,10 @@ mod tests {
         // key `<latest>|unexpected|ENOENT|mkdir|global-lib-node-modules` (the planner's
         // executed byte-identical reproduction). On the candidate it earns its own
         // kind, fingerprint, and bounded signature and leaves the `unexpected` group.
-        assert!(is_missing_global_install_target(MISSING_TARGET_STDERR, None));
+        assert!(is_missing_global_install_target(
+            MISSING_TARGET_STDERR,
+            None
+        ));
         assert_eq!(
             classify_install_failure(Some(-4058), MISSING_TARGET_STDERR, None),
             InstallFailureKind::MissingGlobalInstallTarget,
@@ -13597,7 +15175,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_global_install_target_repeat_guard_pages_once_per_version_with_managed_discriminator() {
+    fn missing_global_install_target_repeat_guard_pages_once_per_version_with_managed_discriminator(
+    ) {
         let latest = "0.10.157";
         let key = install_failure_episode_key_with_environment(
             Some(-4058),
@@ -13671,7 +15250,10 @@ mod tests {
         //    AND carries a lifecycle marker, so BOTH guards exclude it.
         let enoent_command_failed = "npm error code ENOENT\nnpm error command failed\nnpm error path /tmp/lib/node_modules/better-sqlite3";
         assert!(!npm_lifecycle_failure(enoent_command_failed).failed);
-        assert!(!is_missing_global_install_target(enoent_command_failed, None));
+        assert!(!is_missing_global_install_target(
+            enoent_command_failed,
+            None
+        ));
         assert_eq!(
             classify_install_failure(Some(1), enoent_command_failed, None),
             InstallFailureKind::Unexpected
@@ -13770,11 +15352,16 @@ mod tests {
             ),
             "ENOTDIR:mkdir:global-lib-node-modules"
         );
-        // A fully shapeless failure still mints NO repeat-guard key.
+        // A GENUINELY shapeless failure — an EMPTY stderr, npm structured nothing —
+        // still mints NO repeat-guard key. (HQ-DESKTOP-56 now attributes a NON-EMPTY
+        // markerless stderr as `unattributed:<origin>:<shape>` and bounds its paging;
+        // only the empty case stays genuinely shapeless and unbounded, per commit
+        // e24e7a45. The attribution of non-empty markerless failures is covered by the
+        // dedicated HQ-DESKTOP-56 tests.)
         assert_eq!(
             install_failure_episode_key_with_environment(
                 Some(1),
-                "some unstructured failure with no npm markers",
+                "",
                 None,
                 false,
                 "0.10.157",
@@ -14089,20 +15676,10 @@ mod tests {
             ..Default::default()
         };
         let pinned = base.clone().with_pinned_target_version("5.103.27");
-        let kind_base = classify_install_failure_with_environment(
-            Some(1),
-            &e404,
-            None,
-            false,
-            &base,
-        );
-        let kind_pinned = classify_install_failure_with_environment(
-            Some(1),
-            &e404,
-            None,
-            false,
-            &pinned,
-        );
+        let kind_base =
+            classify_install_failure_with_environment(Some(1), &e404, None, false, &base);
+        let kind_pinned =
+            classify_install_failure_with_environment(Some(1), &e404, None, false, &pinned);
         assert_eq!(kind_base, kind_pinned);
         assert_eq!(
             install_failure_signature_with_environment(kind_base, &e404, None, &base),
@@ -14174,5 +15751,212 @@ mod tests {
         let env = InstallEnvironment::default().with_pinned_target_version("5.103.27");
         assert_eq!(env.target_version.as_deref(), Some("5.103.27"));
         assert_eq!(env.requested_spec_kind, RequestedSpecKind::PinnedVersion);
+    }
+
+    /// The floor accelerates only a version the app can actually read. A
+    /// missing CLI and an unreadable binary keep their existing arms and the
+    /// scheduled cadence — the floor must never turn them into a launch-time
+    /// install storm.
+    #[test]
+    fn floor_only_applies_to_a_readable_version() {
+        assert!(cli_below_floor_of(Some("5.103.25"), "5.103.26"));
+        assert!(!cli_below_floor_of(Some("5.103.26"), "5.103.26"));
+        assert!(!cli_below_floor_of(Some("5.108.2"), "5.103.26"));
+        assert!(!cli_below_floor_of(None, "5.103.26"));
+    }
+
+    #[test]
+    fn floor_compares_numerically_not_lexically() {
+        // "5.9.0" > "5.10.0" as strings; the floor must not be fooled either.
+        assert!(cli_below_floor_of(Some("5.9.0"), "5.10.0"));
+        assert!(!cli_below_floor_of(Some("5.10.0"), "5.9.0"));
+        // A pre-release of the floor version compares as its core triple.
+        assert!(!cli_below_floor_of(Some("5.103.26-beta.1"), "5.103.26"));
+    }
+
+    #[test]
+    fn launch_check_repairs_now_only_below_the_floor() {
+        assert_eq!(
+            launch_cli_check_with_floor(Some("5.100.0"), "5.103.26"),
+            LaunchCliCheck::RepairNow {
+                local: "5.100.0".to_string()
+            }
+        );
+        assert_eq!(
+            launch_cli_check_with_floor(Some("5.103.26"), "5.103.26"),
+            LaunchCliCheck::Scheduled
+        );
+        assert_eq!(
+            launch_cli_check_with_floor(Some("5.110.0"), "5.103.26"),
+            LaunchCliCheck::Scheduled
+        );
+        assert_eq!(
+            launch_cli_check_with_floor(None, "5.103.26"),
+            LaunchCliCheck::Scheduled
+        );
+    }
+
+    #[test]
+    fn launch_check_uses_the_shipped_floor() {
+        assert_eq!(
+            launch_cli_check(Some("0.0.1")),
+            LaunchCliCheck::RepairNow {
+                local: "0.0.1".to_string()
+            }
+        );
+        assert_eq!(
+            launch_cli_check(Some(HQ_CLI_MIN_VERSION)),
+            LaunchCliCheck::Scheduled
+        );
+        assert!(cli_below_floor(Some("0.0.1")));
+        assert!(!cli_below_floor(Some(HQ_CLI_MIN_VERSION)));
+    }
+
+    /// An ordinary upgrade honours the opt-out; a floor repair does not.
+    #[test]
+    fn floor_repair_bypasses_the_auto_update_opt_out() {
+        assert!(auto_install_allowed(true, false));
+        assert!(!auto_install_allowed(false, false));
+        assert!(auto_install_allowed(false, true));
+        assert!(auto_install_allowed(true, true));
+    }
+
+    /// The shipped floor must be a plain `MAJOR.MINOR.PATCH` (the hq-core hook
+    /// parses it the same way) and must not sit below the npx self-heal range
+    /// the resolver pins — otherwise a CLI the resolver already accepts could
+    /// be flagged for repair, or vice versa.
+    #[test]
+    fn shipped_floor_is_a_plain_triple_at_or_above_the_resolver_range() {
+        let parts: Vec<&str> = HQ_CLI_MIN_VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3, "floor must be MAJOR.MINOR.PATCH");
+        assert!(parts.iter().all(|p| p.parse::<u64>().is_ok()));
+        let resolver_floor = crate::hq_resolver::HQ_CLI_NPM_RANGE
+            .trim_start_matches('^')
+            .trim_start_matches('~');
+        assert_ne!(
+            cmp_semver(HQ_CLI_MIN_VERSION, resolver_floor),
+            std::cmp::Ordering::Less,
+            "HQ_CLI_MIN_VERSION ({HQ_CLI_MIN_VERSION}) is below the resolver's npx range floor ({resolver_floor})"
+        );
+    }
+
+    #[test]
+    fn unattributed_profile_ignores_npm_markers_stays_closed_and_path_free() {
+        // CRLF classifies identically to LF (the trailing carriage return is
+        // trimmed), so a Windows machine's shape is stable across occurrences.
+        assert_eq!(
+            unattributed_stderr_profile("SyntaxError: boom\r\nat run (x)").dominant_shape,
+            unattributed_stderr_profile("SyntaxError: boom\nat run (x)").dominant_shape
+        );
+        // npm-marker lines are skipped when a non-marker line remains, so the profile
+        // describes what npm did NOT characterise.
+        let mixed = "npm error code\nActually failed writing C:\\Users\\me\\hq at C:\\hq";
+        let profile = unattributed_stderr_profile(mixed);
+        assert_eq!(profile.origin, "npm-logger");
+        assert_eq!(profile.dominant_shape, "path_like");
+        // A stderr full of user paths yields path_like, and NO path substring reaches
+        // the dominant shape or the bounded shapes render.
+        let paths_only =
+            "C:\\Users\\alice\\secret\\a\r\n/home/alice/secret/b\r\nC:\\Users\\alice\\secret\\c";
+        let profile = unattributed_stderr_profile(paths_only);
+        assert_eq!(profile.dominant_shape, "path_like");
+        assert_eq!(profile.shapes_tag, "path_like:3");
+        for token in ["alice", "secret", "C:\\", "/home/"] {
+            assert!(!profile.dominant_shape.contains(token));
+            assert!(
+                !profile.shapes_tag.contains(token),
+                "shapes tag leaked {token}: {}",
+                profile.shapes_tag
+            );
+        }
+        // Lossily-decoded UTF-16 (replacement chars) must not panic and must still
+        // classify to a closed vocabulary token.
+        let lossy = unattributed_stderr_profile("\u{FFFD}\u{FFFD} npm\u{FFFD} died");
+        assert!(UnmatchedStderrShape::ALL
+            .iter()
+            .any(|shape| shape.as_str() == lossy.dominant_shape));
+    }
+
+    #[test]
+    fn empty_and_discriminating_failures_keep_their_pre_fix_envelope() {
+        let env = reopen_env();
+        // Empty stderr stays the byte-identical shapeless envelope and mints no key.
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::Unexpected,
+                "",
+                None,
+                &env
+            ),
+            "none:unknown:none"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1), "", None, false, "5.103.23", &env
+            ),
+            None
+        );
+        // A discriminating Unexpected keeps its existing signature untouched.
+        let enotempty = "npm error code ENOTEMPTY\n\
+                         npm error syscall rename\n\
+                         npm error path /usr/local/lib/node_modules/@indigoai-us/hq-cli";
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::Unexpected,
+                enotempty,
+                None,
+                &env
+            ),
+            "ENOTEMPTY:rename:global-lib-node-modules"
+        );
+        // A lifecycle failure whose numeric build-script status collapsed to the empty
+        // signature is NOT the reopen's "npm reported nothing" subclass — npm DID
+        // report a lifecycle failure — so it keeps its byte-identical `none:unknown:none`
+        // envelope and mints no bounded key.
+        let lifecycle_numeric = "npm error code 1\n\
+                                 npm error command failed\n\
+                                 npm error command sh -c node postinstall.js";
+        assert!(
+            install_failure_unattributed_profile(
+                InstallFailureKind::Unexpected,
+                lifecycle_numeric,
+                None
+            )
+            .is_none(),
+            "a lifecycle-failed numeric-code failure must not be the unattributed subclass"
+        );
+        assert_eq!(
+            install_failure_signature_with_environment(
+                InstallFailureKind::Unexpected,
+                lifecycle_numeric,
+                None,
+                &env
+            ),
+            "none:unknown:none"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(1),
+                lifecycle_numeric,
+                None,
+                false,
+                "5.103.23",
+                &env
+            ),
+            None
+        );
+        // No non-Unexpected kind is ever the unattributed subclass, so every
+        // expected/lifecycle/unsupported signature and key is unchanged.
+        for kind in [
+            InstallFailureKind::ExpectedPrefixPermission,
+            InstallFailureKind::ExpectedDiskFull,
+            InstallFailureKind::UnexpectedLifecycle,
+            InstallFailureKind::UnsupportedNode,
+        ] {
+            assert!(
+                install_failure_unattributed_profile(kind, "boom without markers", None).is_none(),
+                "kind {kind:?} must never be the unattributed subclass"
+            );
+        }
     }
 }

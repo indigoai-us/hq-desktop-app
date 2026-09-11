@@ -19,7 +19,6 @@ import {
   getCreatorProfile,
   highlightInstruction,
   INIT_PROMPT_DOC_PATH,
-  isAdminGate,
   isInitPromptDoc,
   isClaimError,
   isPublishError,
@@ -435,24 +434,6 @@ describe("companyInstallTargets — scope picker (tenant-isolation, default-deny
 // ===========================================================================
 // US-012 — moderation queue + approve/reject (admin reviewer surface)
 // ===========================================================================
-
-describe("isAdminGate — UI admin gate (UX only, default-deny)", () => {
-  it("admits @getindigo.ai emails (case-insensitive)", () => {
-    expect(isAdminGate("stefan@getindigo.ai")).toBe(true);
-    expect(isAdminGate("ADMIN@GETINDIGO.AI")).toBe(true);
-    expect(isAdminGate("  corey@getindigo.ai  ")).toBe(true);
-  });
-
-  it("default-denies unknown/absent/look-alike emails", () => {
-    expect(isAdminGate(null)).toBe(false);
-    expect(isAdminGate(undefined)).toBe(false);
-    expect(isAdminGate("")).toBe(false);
-    expect(isAdminGate("user@gmail.com")).toBe(false);
-    // Look-alike: must require the leading '@'.
-    expect(isAdminGate("user@forgetindigo.ai")).toBe(false);
-    expect(isAdminGate("getindigo.ai")).toBe(false);
-  });
-});
 
 describe("canApprove — AC4: acknowledgement GATES approve", () => {
   it("is DISABLED until the reviewer acknowledges the instruction review", () => {

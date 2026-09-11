@@ -101,6 +101,11 @@ function conversationApi(options: {
       );
     },
     sendReply: async () => {},
+    runCardAction: async () => ({
+      cardId: "",
+      actionId: "",
+      state: "pending",
+    }),
   };
 }
 

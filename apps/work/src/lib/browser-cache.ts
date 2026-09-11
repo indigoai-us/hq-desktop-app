@@ -9,6 +9,7 @@
 import {
   applyDirectoryRows,
   saveConversationCache,
+  takeDirectorySeed,
   type ChannelDirectoryRow,
   type ChatSidebarApi,
   type ConversationMessageWire,
@@ -67,8 +68,27 @@ export function isShallowCacheFresh(
   return atMs - cache.savedAt <= SHALLOW_CACHE_TTL_MS;
 }
 
+/**
+ * Cap the cached directory by ACTIVITY, never by arrival position.
+ *
+ * `GET /v1/notify/channels` returns the caller's channels in arbitrary server
+ * order — it is NOT sorted by `lastActivityAt`. A plain
+ * `rows.slice(0, MAX_DIRECTORY_ROWS)` therefore truncated by whatever order the
+ * server happened to emit, which silently deleted live channels from the
+ * persisted rail: on a 848-channel account the Indigo company channel `#hq-dev`
+ * sat at index 836 and was dropped even though it held the single newest
+ * message of any channel. Because this cache is the ⌘K / search index, the
+ * first-paint `seedDirectory`, and the degraded fallback whenever the live
+ * directory fetch is slow or failing, the channel went missing from the
+ * sidebar, from search, and from the command palette at once.
+ *
+ * `takeDirectorySeed` keeps every unread row and then fills the remaining
+ * budget newest-activity-first, so the rows that get dropped are always the
+ * least recently active ones. It returns the list untouched when it already
+ * fits, so small accounts keep their existing order.
+ */
 function capDirectory(rows: ChannelDirectoryRow[]): ChannelDirectoryRow[] {
-  return rows.slice(0, MAX_DIRECTORY_ROWS);
+  return takeDirectorySeed(rows, MAX_DIRECTORY_ROWS);
 }
 
 function capContacts(rows: DmContactInput[]): DmContactInput[] {

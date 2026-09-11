@@ -119,6 +119,14 @@ function makeAdapter(handler?: SyncInvokeFn) {
         return { ok: true };
       case 'send_channel_message':
         return null;
+      case 'run_card_action':
+        return {
+          cardId: 'card_1',
+          actionId: 'submit',
+          eventId: 'evt_1',
+          state: 'pending',
+          replayed: false,
+        };
       case 'send_dm':
         return null;
       case 'fetch_notifications':
@@ -453,11 +461,19 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(expectOk(await adapter.identity.hasFeature('is_indigo_user'))).toBe(
       false,
     );
+    // Registry is absent here (hq_pro_fetch returns `{}`, not a snapshot), so
+    // meetings must still reach the legacy Rust mapping. is_indigo_user is
+    // unmapped and must not probe /v1/flags/resolve.
     expect(calls.map((c) => c.cmd)).toEqual([
       'desktop_alt_is_admin',
+      'hq_pro_fetch',
       'meetings_feature_enabled',
       'is_indigo_user',
     ]);
+    expect(calls[1]?.args).toMatchObject({
+      method: 'GET',
+      url: '/v1/flags/resolve',
+    });
   });
 
   it('listChannels maps channelId → id and unread → unreadCount', async () => {
@@ -593,6 +609,31 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(calls[0]).toEqual({
       cmd: 'send_channel_message',
       args: { channelId: 'chn_1', body: 'hi' },
+    });
+  });
+
+  it('runCardAction uses run_card_action with a client idempotencyKey', async () => {
+    const { adapter, calls } = makeAdapter();
+    expect(
+      (
+        await adapter.messaging.runCardAction({
+          channelId: 'setup',
+          cardId: 'card_1',
+          actionId: 'submit',
+          values: { name: 'Acme' },
+          idempotencyKey: 'idem-1',
+        })
+      ).ok,
+    ).toBe(true);
+    expect(calls[0]).toEqual({
+      cmd: 'run_card_action',
+      args: {
+        channelId: 'setup',
+        cardId: 'card_1',
+        actionId: 'submit',
+        values: { name: 'Acme' },
+        idempotencyKey: 'idem-1',
+      },
     });
   });
 

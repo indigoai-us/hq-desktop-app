@@ -81,9 +81,3 @@ export const COMPLETE_SETUP: OnboardingEscape = {
   title: 'Complete setup in your AI tool',
   body: 'Open the HQ folder and run /setup.',
 };
-
-export const SETUP_NEEDS_PASS: OnboardingEscape = {
-  kind: 'folder_not_ready',
-  title: 'Finish setup in your AI tool',
-  body: 'One installer step still needs a pass. Open the HQ folder and run /setup — that’s the rest of the work.',
-};

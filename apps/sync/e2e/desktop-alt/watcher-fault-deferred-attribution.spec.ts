@@ -40,6 +40,12 @@ import { readRepoFile } from './harness';
 const processSource = readRepoFile('src-tauri/src/commands/process.rs');
 const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
 const mainSource = readRepoFile('src-tauri/src/main.rs');
+// HQ-DESKTOP-44 (re-entrant path): the Windows session-end teardown moved out of
+// main.rs into the shared fn both RunEvent::Exit and the WH_CALLWNDPROC intercept
+// call, so the session-end flush/drop now live here.
+const sessionEndInterceptSource = readRepoFile(
+  'src-tauri/src/commands/session_end_intercept.rs',
+);
 const coreSource = readRepoFile('../../crates/hq-desktop-core/src/watcher_fault.rs');
 const telemetrySource = readRepoFile('../../crates/hq-telemetry/src/lib.rs');
 
@@ -101,14 +107,23 @@ describe('watcher fault deferred attribution — source contracts', () => {
     // crash, unlike the benign session-end capture the session-end path drops.
     expect(daemonSource).toContain('pub fn flush_pending_watcher_fault_captures(reason: &str)');
     expect(daemonSource).toContain('fn take_pending_watcher_fault_capture(');
-    const flushes = mainSource.split('flush_pending_watcher_fault_captures(').length - 1;
-    expect(flushes).toBeGreaterThanOrEqual(2);
+    // The two seams live in two files after HQ-DESKTOP-44's re-entrant fix: the
+    // app-quit seam in main.rs (ExitRequested arm), and the session-end seam in the
+    // shared teardown both RunEvent::Exit and the WH_CALLWNDPROC intercept call
+    // (commands/session_end_intercept.rs).
+    const appQuitFlushes =
+      mainSource.split('flush_pending_watcher_fault_captures(').length - 1;
+    const sessionEndFlushes =
+      sessionEndInterceptSource.split('flush_pending_watcher_fault_captures(').length - 1;
+    expect(appQuitFlushes + sessionEndFlushes).toBeGreaterThanOrEqual(2);
     // Each seam names its own reason so app-quit and session-end are distinct.
     expect(mainSource).toContain('flush_pending_watcher_fault_captures("app_quit_flush")');
-    expect(mainSource).toContain('flush_pending_watcher_fault_captures("session_end_flush")');
-    // The session-end path still DROPS the benign session-end capture, and the
+    expect(sessionEndInterceptSource).toContain(
+      'flush_pending_watcher_fault_captures("session_end_flush")',
+    );
+    // The session-end teardown still DROPS the benign session-end capture, and the
     // fast-exit gate + discriminator are untouched (HQ-DESKTOP-44 invariants).
-    expect(mainSource).toContain('drop_pending_session_end_captures()');
+    expect(sessionEndInterceptSource).toContain('drop_pending_session_end_captures()');
     expect(mainSource).toContain('commands::process::app_initiated_exit()');
   });
 

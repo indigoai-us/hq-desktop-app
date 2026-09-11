@@ -143,6 +143,7 @@ export function rosterStatusForRow(
   row: ConversationRow,
   members: StatusMemberInput[],
   companyLabel?: string | null,
+  companyIconUrl?: string | null,
 ): ChannelStatusModel {
   return buildChannelStatusModel({
     project: {
@@ -151,6 +152,9 @@ export function rosterStatusForRow(
     },
     members,
     companyLabel,
+    // Prefer the row's server-stamped icon; the caller may pass the roster
+    // lookup as a fallback for rows that only carry a companyUid.
+    companyIconUrl: row.iconUrl ?? companyIconUrl ?? null,
   });
 }
 

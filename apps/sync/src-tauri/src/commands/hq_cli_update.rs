@@ -22,13 +22,21 @@
 //!   3. GET https://registry.npmjs.org/@indigoai-us/hq-cli/latest and
 //!      pull the `version` field.
 //!   4. Compare numerically. If latest > local, emit
-//!      `hq-cli-update:available` with both versions. When `cliAutoUpdate`
+//!      `hq-cli-update:available` with both versions. When `autoUpdate`
 //!      is on (default), the background checker also installs it directly.
 //!
-//! A background task fires the check 15s after launch (offset from the
-//! app updater's 10s so they don't both spike CPU at the same moment),
-//! then every 6h. The result is also exposed as the `check_hq_cli_update`
-//! Tauri command for on-demand polls.
+//! A background task fires the check 4 minutes after launch (staggered
+//! against the other launch-time checkers so they don't spike CPU and network
+//! in lockstep), then every 6h. The result is also exposed as the
+//! `check_hq_cli_update` Tauri command for on-demand polls.
+//!
+//! **Version floor.** Before that stagger the task runs a network-free probe
+//! of the installed CLI's version. If it reads below
+//! `hq_desktop_core::hq_cli_update::HQ_CLI_MIN_VERSION` — the same floor
+//! hq-core's `30-ensure-hq-cli.sh` hook enforces on every prompt — the check
+//! and install run immediately, and (like that hook, which has no opt-out)
+//! the install ignores the `autoUpdate` toggle. Only a *readable* old version
+//! triggers this: a missing or unreadable CLI keeps the scheduled cadence.
 //!
 //! The `install_hq_cli_update` command runs the upgrade directly by
 //! spawning `npm install -g --prefix <resolved-hq-prefix>
@@ -74,45 +82,57 @@ use hq_desktop_core::toolchain::{classify_runtime, ManagedRuntime};
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
-    apply_post_install_effects, auto_update_enabled, classify_install_failure,
+    apply_post_install_effects, auto_install_allowed, auto_update_enabled,
     bun_home_from_hq_bin, bun_install_argv, classify_install_failure_with_environment,
     classify_install_failure_with_final_attempt,
-    cli_auto_update_enabled, cli_install_needed, cmp_semver,
-    decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
+    classify_install_failure, cli_auto_update_enabled, cli_below_floor, cli_below_floor_of,
+    cli_install_needed, cmp_semver, colocated_npm_path, decide_post_install,
+    delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for, get_local_version,
+    get_local_version_diagnostics, launch_cli_check, launch_cli_check_with_floor, LaunchCliCheck,
+    HQ_CLI_MIN_VERSION,
     hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
-    install_failure_detail, install_failure_detail_with_environment,
-    install_failure_detail_with_final_attempt, install_failure_report,
-    install_executor_for_first_install, install_executor_for_hq_bin,
-    installed_hq_cli_version_in_bun_global,
+    install_executor_for_first_install, install_executor_for_hq_bin, install_failure_detail,
+    install_failure_detail_with_environment, install_failure_detail_with_final_attempt,
+    install_failure_report, installed_hq_cli_version_in_bun_global,
     installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
     is_cli_update_dismissed, is_missing_global_install_target, is_npm_bin_collision,
-    is_pnpm_global_shim,
-    is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
-    non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
-    non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
-    managed_retry_start_decision, non_convergent_episode_reported, npm_install_attempt_summary,
-    npm_lifecycle_cause,
-    colocated_npm_path, delivered_prefix_shim_for, executed_copy_aim_for, user_prefix_aim_decision,
-    DeliveredPrefixShim, ExecutedCopyAim, UserPrefixAim,
-    npm_prefix_from_hq_bin, partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path,
-    pnpm_global_env,
-    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
-    read_installed_version, redact_home, redact_home_in, report_install_failure,
+    is_pnpm_global_shim, is_prefix_permission_failure, is_windows_locked_binary_failure,
+    legacy_marker_needs_recovery, managed_retry_start_decision, non_convergent_cli_contract,
+    non_convergent_cli_version, non_convergent_detail, non_convergent_episode_blocked,
+    non_convergent_episode_key, non_convergent_episode_record, non_convergent_episode_reported,
+    npm_install_attempt_summary, npm_lifecycle_cause, npm_prefix_from_hq_bin,
+    partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path, pnpm_global_env,
+    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family, read_installed_version,
+    redact_home, redact_home_in, repair_managed_shadow, report_install_failure,
     report_install_failure_episode, report_install_failure_with_environment,
     report_install_failure_with_final_attempt, report_non_convergent_install,
     report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
-    report_unreadable_version, repair_managed_shadow, resolved_hq_version, should_auto_install,
-    should_report_unreadable_version, suppress_for_dismissal, version_from_hq_binary,
+    report_unreadable_version, resolved_hq_version, should_auto_install,
+    user_prefix_aim_decision, DeliveredPrefixShim, ExecutedCopyAim, UserPrefixAim,
+    should_report_unreadable_version, suppress_for_dismissal, unattributed_install_stderr_origin,
+    version_from_hq_binary,
     version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
     RequestedSpecKind,
     InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LocalVersionProbeDiagnostics,
     LocalVersionProbeResult, ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart,
     ManagedShadowRepairAction, ManagedShadowRepairOutcome, MissingTargetState,
+    SettingsPathTelemetry,
     NonConvergenceKind, NonConvergentReport, NpmLatest,
     NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
     PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, VersionProbeOutcome,
     DISMISSED_VERSION_KEY, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
     NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
+    STDERR_ORIGIN_NON_NPM,
+};
+
+// The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
+// registry-managed, so there is no `.claude` settings file to rewrite. These
+// symbols are used exclusively by `settings_path_repair_and_refinalize`, so they
+// are imported under the same cfg to avoid unused-import warnings on Windows.
+#[cfg(not(windows))]
+use hq_desktop_core::hq_cli_update::{
+    managed_bin_in_settings_path, settings_path_repair_gate, settings_path_repair_outcome,
+    SettingsPathRepairGate,
 };
 
 /// npm registry endpoint that returns the dist-tag `latest` manifest. Cheap,
@@ -1392,6 +1412,9 @@ async fn install_hq_cli_update_via_pnpm(
         executed_copy_aim: ExecutedCopyAim::Undrivable,
         hq_bin_lane: paths::resolution_source_of_bin(&post_install_hq),
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+        // pnpm never reaches the ForeignManaged arm, so no settings-PATH repair
+        // is relevant; the default triple emits not-attempted / none / unknown.
+        settings_path: SettingsPathTelemetry::default(),
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present,
@@ -1535,6 +1558,9 @@ async fn install_hq_cli_update_via_bun(
         executed_copy_aim: ExecutedCopyAim::Undrivable,
         hq_bin_lane: paths::resolution_source_of_bin(&post_install_hq),
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
+        // Bun never reaches the ForeignManaged arm; the default settings-PATH
+        // triple emits not-attempted / none / unknown.
+        settings_path: SettingsPathTelemetry::default(),
         pnpm: None,
     });
     log("hq-cli-update", &outcome.log_line);
@@ -1810,6 +1836,18 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
 
     if !install_run.output.status.success() {
         let raw_detail = npm_output_detail(&install_run.output);
+        // The stderr-origin attribution and self-heal decision (HQ-DESKTOP-56) MUST key
+        // on the ACTUAL stderr, never `npm_output_detail`'s stdout fallback. When stderr
+        // is empty but stdout is not, `raw_detail` holds stdout bytes; classifying those
+        // as a `non-npm` stderr origin would wrongly arm the ~50MB managed-Node download
+        // and give the event an attributed, repeat-suppressed signature, even though the
+        // real stderr is empty and must stay genuinely shapeless (none:unknown:none,
+        // unbounded). So the origin and the repeat-guarded report below key on
+        // `raw_stderr`; `raw_detail` keeps the stdout fallback ONLY for the user-facing
+        // message and the local diagnostic log.
+        let raw_stderr = String::from_utf8_lossy(&install_run.output.stderr)
+            .trim()
+            .to_string();
 
         // Probe the user's failing toolchain ONCE, up front. The Node ABI is
         // retry-gate evidence — a run already on HQ's managed ABI, or a
@@ -1849,24 +1887,41 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             &install_env,
         );
         let lifecycle_cause = npm_lifecycle_cause(&raw_detail);
+        // The markerless-stderr origin (HQ-DESKTOP-56 reopen): `Some("non-npm")` when
+        // npm's own logger emitted nothing at all, so the user's npm/shim never really
+        // ran — the subclass HQ's checksum-verified managed Node 22 + npm bypasses
+        // entirely. `None` for every other failure (a shape npm characterised, an empty
+        // stderr, or a below-floor Node already owned by UnsupportedNode). Computed ONCE
+        // from the already-probed environment and threaded into the gate below, never
+        // re-derived at the call site.
+        let unattributed_origin = unattributed_install_stderr_origin(
+            install_run.output.status.code(),
+            &raw_stderr,
+            prefix.as_deref(),
+            install_run.final_attempt_forced,
+            &install_env,
+        );
 
-        // Self-heal (HQ-DESKTOP-4V / HQ-DESKTOP-4W and HQ-DESKTOP-56). Two shapes
+        // Self-heal (HQ-DESKTOP-4V / HQ-DESKTOP-4W and HQ-DESKTOP-56). Three shapes
         // under the user's OWN Node are ones HQ can repair itself by provisioning
         // its checksum-verified managed Node 22: (1) a third-party native-build
         // lifecycle failure (better-sqlite3 / node-llama-cpp) whose ABI has no
-        // prebuild and no Xcode CLT to build from source, and (2) a Node older than
-        // the CLI's floor, on which no install can ever converge. Only user-path
-        // runs whose failing ABI differs from HQ's managed one arm the bounded,
-        // one-shot managed-toolchain retry (so a run already on the managed
-        // toolchain never retries into itself, and a disk-space/network lifecycle
-        // cause is refused); every other kind/cause keeps today's behaviour. HQ
-        // blames the user's toolchain (the copy below) only AFTER its own repair
-        // was attempted and could not converge.
+        // prebuild and no Xcode CLT to build from source, (2) a Node older than
+        // the CLI's floor, on which no install can ever converge, and (3) the
+        // HQ-DESKTOP-56 reopen — a markerless failure whose stderr carried NO npm
+        // line at all (`non-npm` origin), so the user's npm/shim never really ran and
+        // HQ's managed npm bypasses it. Only user-path runs whose failing ABI differs
+        // from HQ's managed one arm the bounded, one-shot managed-toolchain retry (so
+        // a run already on the managed toolchain never retries into itself, and a
+        // disk-space/network lifecycle cause is refused); every other kind/cause keeps
+        // today's behaviour. HQ blames the user's toolchain (the copy below) only AFTER
+        // its own repair was attempted and could not converge.
         if install_failure_earns_managed_retry(
             failure_kind,
             install_env.toolchain_source,
             lifecycle_cause,
             failing_node_abi,
+            unattributed_origin,
         ) {
             match managed_toolchain_retry(
                 &app,
@@ -1921,9 +1976,14 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             ),
         );
         let reported_episode_keys = install_failure_episode_markers();
+        // The Sentry capture keys on `raw_stderr`, not the stdout fallback: an empty
+        // stderr must group as the genuinely shapeless none:unknown:none (unbounded,
+        // never attributed), while a non-empty stderr keeps the identical envelope
+        // (`raw_stderr == raw_detail` whenever stderr is non-empty). The user-facing
+        // `detail` above still uses the stdout fallback so the UI/log lose nothing.
         persist_reported_episode(report_install_failure_episode(
             install_run.output.status.code(),
-            &raw_detail,
+            &raw_stderr,
             prefix.as_deref(),
             install_run.final_attempt_forced,
             &install_env,
@@ -1961,7 +2021,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
 ///     probe could not read it) is treated as "not the managed ABI", so the
 ///     reported Node-20 (ABI 115) and Node-6 (ABI 48) clusters still arm.
 ///
-/// ...plus ONE of two repairable failure shapes:
+/// ...plus ONE of four repairable failure shapes:
 ///   * Shape 1 (HQ-DESKTOP-4V/4W) — a third-party native-build lifecycle failure
 ///     (`UnexpectedLifecycle`) whose `cause` a new runtime can fix. A full disk
 ///     (`disk-space`) or a dead network (`network`) would only waste a ~50MB Node
@@ -1973,19 +2033,36 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
 ///     Node is below the CLI's floor, so no npm run can converge on it. There is
 ///     no lifecycle cause to consult (npm never ran a build); provisioning HQ's
 ///     managed Node 22 is the exact repair, and a converged retry emits no event.
+///   * Shape 3 (HQ-DESKTOP-5K) — a `MissingGlobalInstallTarget` failure: npm could
+///     not create its OWN global install-target directory (a broken/absent npm
+///     PREFIX chain, not a runtime-version or prebuild fault). The
+///     `failing_node_abi != Some(MANAGED_NODE_ABI)` clause deliberately does NOT
+///     apply — a run on the identical managed ABI still repairs the machine because
+///     `managed_toolchain_retry` rebuilds argv against a prefix HQ itself owns and
+///     creates; its only runtime condition is the user's own toolchain.
+///   * Shape 4 (HQ-DESKTOP-56 reopen) — an `Unexpected` failure whose stderr was
+///     markerless with a `non-npm` origin: npm's own logger emitted NOTHING, so the
+///     user's npm/shim never really ran. HQ's checksum-verified managed Node 22 +
+///     npm bypasses a broken user npm/shim entirely, so it is the exact repair.
+///     `unattributed_origin` carries `Some("non-npm")` for exactly this subclass and
+///     `None` otherwise; an `npm-logger` origin (npm ran and reported) and an empty
+///     stderr both decline — a new runtime is unlikely to help and would spend the
+///     ~50MB download.
 fn install_failure_earns_managed_retry(
     kind: InstallFailureKind,
     source: NpmToolchainSource,
     cause: &str,
     failing_node_abi: Option<u32>,
+    unattributed_origin: Option<&str>,
 ) -> bool {
     // Only the user's OWN toolchain is ever worth replacing with HQ's managed one;
     // a run already under the managed toolchain cannot be improved by installing it
-    // again. Shared by all three repairable shapes.
+    // again. Shared by all four repairable shapes.
     let is_user_path = source == NpmToolchainSource::UserPath;
-    // Shapes 1 & 2 ADDITIONALLY require a runtime whose ABI differs from HQ's
-    // managed one: a lifecycle/prebuild fault or a too-old runtime cannot be fixed
-    // by re-provisioning the same ABI. An UNKNOWN ABI is treated as not-managed.
+    // Shapes 1, 2 & 4 ADDITIONALLY require a runtime whose ABI differs from HQ's
+    // managed one: a lifecycle/prebuild fault, a too-old runtime, or a markerless
+    // non-npm failure cannot be fixed by re-provisioning the same ABI. An UNKNOWN ABI
+    // is treated as not-managed.
     let repairable_runtime = is_user_path && failing_node_abi != Some(MANAGED_NODE_ABI);
     // Shape 1 (HQ-DESKTOP-4V/4W): a third-party native-build lifecycle failure
     // whose diagnosed cause a different runtime can actually fix.
@@ -2004,13 +2081,19 @@ fn install_failure_earns_managed_retry(
     // `paths::managed_npm_prefix_in`, a prefix HQ itself owns and CREATES. Its only
     // runtime condition is that the failing run used the user's own toolchain.
     let missing_global_install_target = kind == InstallFailureKind::MissingGlobalInstallTarget;
+    // Shape 4 (HQ-DESKTOP-56 reopen): a markerless `Unexpected` failure whose stderr
+    // origin is `non-npm` (npm's logger produced nothing at all). Only the non-npm
+    // origin arms — an `npm-logger` origin or an empty stderr is folded into `None`
+    // by the caller, so this can never fire for a failure npm actually reported.
+    let unattributed_non_npm =
+        kind == InstallFailureKind::Unexpected && unattributed_origin == Some(STDERR_ORIGIN_NON_NPM);
     // A `ForeignRegistryPackageMissing` (HQ-DESKTOP-5Q) is a registry
     // misconfiguration, NOT a runtime/prebuild or npm-prefix fault: provisioning a
     // different Node cannot make a registry that lacks the package carry it, and the
     // managed retry reuses the SAME machine npm registry config, so it would only
-    // waste a ~50 MB provision and re-fail identically. It matches none of the three
-    // repairable shapes below, so it correctly earns no retry; a unit test locks it.
-    (repairable_runtime && (repairable_lifecycle || unsupported_node))
+    // waste a ~50 MB provision and re-fail identically. It matches none of the four
+    // repairable shapes, so it correctly earns no retry; a unit test locks it.
+    (repairable_runtime && (repairable_lifecycle || unsupported_node || unattributed_non_npm))
         || (is_user_path && missing_global_install_target)
 }
 
@@ -2232,6 +2315,37 @@ async fn finalize_convergence(
         }
     }
 
+    // Settings-PATH foreign shadow (HQ-DESKTOP-46): the app executes a stale copy
+    // resolved through the winning `.claude` settings file's PATH (undrivable, a
+    // Homebrew/system copy), while HQ delivered `latest` into its own managed
+    // prefix (present shim). Rewrite that settings file's PATH managed-first and
+    // re-resolve, instead of wedging auto-update for a shape HQ can actually
+    // repair — HQ owns the one input it never fixed: the winning file's env.PATH.
+    // Unix-only: Windows PATH is registry-managed, so there is no settings file
+    // to rewrite (configure_claude_settings_path is a no-op there).
+    #[cfg(not(windows))]
+    if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged)
+        && executed_copy_aim == ExecutedCopyAim::Undrivable
+        && delivered_prefix_shim == DeliveredPrefixShim::Present
+        && hq_bin_lane == paths::ResolutionSource::SettingsPath
+    {
+        if let Some(prefix) = prefix {
+            return settings_path_repair_and_refinalize(
+                app,
+                before_bin,
+                installer_npm,
+                before_version,
+                latest,
+                prefix,
+                already_blocked,
+                &managed_roots,
+                delivered_version.as_deref(),
+                resolved.as_deref(),
+            )
+            .await;
+        }
+    }
+
     log("hq-cli-update", &outcome.log_line);
     let result = apply_post_install_with_app(app, &outcome);
     // Persist the non-blocking episode key AFTER the capture (its OWN menubar key,
@@ -2350,6 +2464,175 @@ async fn repair_managed_shadow_and_refinalize(
     );
     log("hq-cli-update", &outcome.log_line);
     apply_post_install_with_app(app, &outcome)
+}
+
+/// Repair a settings-PATH foreign shadow (HQ-DESKTOP-46): rewrite the winning
+/// `.claude` settings file's `env.PATH` managed-first, re-resolve the binary the
+/// app now executes, and route the result back through `decide_post_install` with
+/// the repair outcome attached. A rewritten repair whose re-resolution lands HQ's
+/// managed current copy converges and clears the marker; a refusal or write
+/// failure keeps today's blocking behaviour, tagged with why. Exactly one attempt
+/// per run, mirroring [`repair_managed_shadow_and_refinalize`]. The caller has
+/// already confirmed the settings-PATH lane and a present managed shim; this
+/// function owns the staleness gate, the rewrite, and the re-decide.
+/// Filesystem-only and non-fatal — a write failure never errors the install
+/// command, it just downgrades the outcome.
+#[cfg(not(windows))]
+#[allow(clippy::too_many_arguments)]
+async fn settings_path_repair_and_refinalize(
+    app: &AppHandle,
+    before_bin: &str,
+    installer_npm: &str,
+    before_version: Option<&str>,
+    latest: &str,
+    prefix: &str,
+    already_blocked: bool,
+    managed_roots: &[PathBuf],
+    managed_copy_version: Option<&str>,
+    executed_version: Option<&str>,
+) -> Result<HqCliUpdateInfo, String> {
+    // The caller confirmed lane == SettingsPath and a present managed shim, so the
+    // only gate outcomes reachable are Attempt / RefusedNotStale.
+    let gate = settings_path_repair_gate(
+        paths::ResolutionSource::SettingsPath,
+        managed_copy_version,
+        executed_version,
+    );
+    let hq_root = paths::resolved_hq_folder();
+    let wrote = if gate == SettingsPathRepairGate::Attempt {
+        if let Some(home) = paths::home_dir() {
+            let hq_root = hq_root.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                crate::commands::install_deps::write_managed_toolchain_settings_path(
+                    &hq_root,
+                    &home,
+                    crate::commands::install_deps::shell_login_path(),
+                )
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("settings-path rewrite task failed: {e}")));
+            match result {
+                Ok(crate::commands::install_deps::SettingsPathWriteOutcome::Wrote(path)) => {
+                    log(
+                        "hq-cli-update",
+                        &format!(
+                            "settings-path repair: rewrote {}",
+                            redact_home(&path.to_string_lossy())
+                        ),
+                    );
+                    true
+                }
+                Ok(crate::commands::install_deps::SettingsPathWriteOutcome::Skipped(reason)) => {
+                    log("hq-cli-update", &format!("settings-path repair skipped: {reason}"));
+                    false
+                }
+                Err(error) => {
+                    log("hq-cli-update", &format!("settings-path repair failed: {error}"));
+                    false
+                }
+            }
+        } else {
+            // No resolvable home dir: nothing to rewrite. Falls through to the
+            // blocking re-decide exactly as a refusal would.
+            false
+        }
+    } else {
+        false
+    };
+    let repair = settings_path_repair_outcome(gate, wrote);
+    log(
+        "hq-cli-update",
+        &format!("settings-path repair outcome: {}", repair.telemetry_value()),
+    );
+
+    // Re-resolve what the app now executes. After a rewrite the settings PATH
+    // lists HQ's managed dirs first, so resolution lands the managed current copy
+    // and converges; for a refusal the same stale copy resolves and the re-decide
+    // blocks exactly as today.
+    let post_install_hq = paths::resolve_bin("hq");
+    let resolved = {
+        let hq = post_install_hq.clone();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+    let delivered_version = {
+        let prefix_owned = prefix.to_string();
+        let hq = post_install_hq.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            installed_hq_cli_version_in_prefix(&prefix_owned, &hq)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    let converged = install_converged(resolved.as_deref(), latest);
+    let nonblocking_episode_keys = if converged {
+        Vec::new()
+    } else {
+        non_convergent_episode_markers()
+    };
+    let hq_bin_lane = paths::resolution_source_of_bin(&post_install_hq);
+    let executed_copy_aim = executed_copy_aim_for(
+        &post_install_hq,
+        Some(prefix),
+        installer_npm,
+        managed_roots,
+        paths::home_dir().as_deref(),
+    );
+    let delivered_prefix_shim = delivered_prefix_shim_for(Some(prefix), delivered_version.as_deref());
+    // Closed, path-free settings-PATH telemetry for the residual event: which file
+    // won, whether it now lists HQ's managed bin dir, and what the repair achieved.
+    let winning_file = paths::winning_settings_path_file(&hq_root);
+    let managed_bin_dir = managed_roots
+        .first()
+        .map(|root| paths::managed_npm_bin_in(root))
+        .unwrap_or_default();
+    let settings_path = SettingsPathTelemetry {
+        repair,
+        file: winning_file,
+        managed_bin: managed_bin_in_settings_path(
+            winning_file,
+            &paths::settings_path_dirs_in(&hq_root),
+            &managed_bin_dir,
+        ),
+    };
+
+    let outcome = decide_post_install(
+        &PostInstallContext::npm(
+            before_bin,
+            &post_install_hq,
+            before_version,
+            resolved.as_deref(),
+            latest,
+            Some(prefix),
+            installer_npm,
+            already_blocked,
+            delivered_version.as_deref(),
+        )
+        .with_managed_roots(managed_roots)
+        .with_nonblocking_episode_keys(&nonblocking_episode_keys)
+        .with_executed_copy_aim(executed_copy_aim)
+        .with_resolution_telemetry(hq_bin_lane, delivered_prefix_shim)
+        .with_settings_path(settings_path),
+    );
+    log("hq-cli-update", &outcome.log_line);
+    let result = apply_post_install_with_app(app, &outcome);
+    // Persist the non-blocking episode key after the capture (its OWN menubar key,
+    // never the durable blocking marker), so a rewritten-but-still-foreign shape
+    // reports once per `latest` rather than on every check.
+    if let Some(key) = outcome.record_nonblocking_episode.as_deref() {
+        let existing = non_convergent_episode_markers();
+        let updated = non_convergent_episode_record(&existing, key, latest);
+        if let Err(error) = record_non_convergent_episode_markers(&updated) {
+            log(
+                "hq-cli-update",
+                &format!("could not persist non-convergent episode markers: {error}"),
+            );
+        }
+    }
+    result
 }
 
 /// Apply the caller-side persistence half of a repeat-guarded install-failure
@@ -3014,9 +3297,7 @@ fn managed_prefix_for_shadow(active_prefix: &str, roots: &[PathBuf]) -> Option<P
         // distinct shadow.
         let same_dir =
             paths::path_is_within(active, &prefix) && paths::path_is_within(&prefix, active);
-        (paths::path_is_within(active, root)
-            && paths::path_is_within(&prefix, root)
-            && !same_dir)
+        (paths::path_is_within(active, root) && paths::path_is_within(&prefix, root) && !same_dir)
             .then_some(prefix)
     })
 }
@@ -3074,74 +3355,119 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
             );
             clear_non_convergent_version();
         }
+        // Version floor: a readable installed version below HQ_CLI_MIN_VERSION
+        // is repaired NOW rather than after the launch stagger. The probe is
+        // network-free (anchored package.json / `hq --version`) and runs off
+        // the async runtime.
+        let launch = tauri::async_runtime::spawn_blocking(|| {
+            launch_cli_check(get_local_version().as_deref())
+        })
+        .await
+        .unwrap_or_else(|error| {
+            log(
+                "hq-cli-update",
+                &format!("launch floor probe task failed; keeping the scheduled cadence: {error}"),
+            );
+            LaunchCliCheck::Scheduled
+        });
+        if let LaunchCliCheck::RepairNow { local } = launch {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "installed hq CLI {local} is below the required minimum \
+                     {HQ_CLI_MIN_VERSION}; checking and installing now instead of \
+                     waiting {}s for the launch stagger",
+                    INITIAL_DELAY.as_secs()
+                ),
+            );
+            run_check_cycle(&handle, /* floor_repair */ true).await;
+        }
         tokio::time::sleep(INITIAL_DELAY).await;
         loop {
-            match check_once(&handle).await {
-                Ok(Some(info)) => {
-                    // Gate on the master `autoUpdate` switch (default ON). The
-                    // legacy `cliAutoUpdate` key is superseded — one toggle now
-                    // governs the app, CLI, and core auto-installers.
-                    if auto_update_enabled() {
-                        if should_auto_install(
-                            &info.latest,
-                            non_convergent_cli_version().as_deref(),
-                        ) {
-                            log("hq-cli-update", "auto-update enabled — installing");
-                            match install_hq_cli_update(handle.clone()).await {
-                                Ok(_) => log("hq-cli-update", "auto-update succeeded"),
-                                Err(e) => log(
-                                    "hq-cli-update",
-                                    &format!("auto-update failed, banner remains: {e}"),
-                                ),
-                            }
-                        } else {
-                            // The durable marker blocks the install. A machine
-                            // already wedged by HQ-DESKTOP-46 carries that marker
-                            // from the OLD foreign-managed classification, so the
-                            // install-time repair can never run. Attempt the
-                            // filesystem-only shadow heal directly; on success it
-                            // clears the marker and re-enables auto-update without
-                            // waiting for the next CLI publish. Anything that is
-                            // not a provable same-root shadow is left untouched and
-                            // the banner stays up for the manual fix.
-                            let latest = info.latest.clone();
-                            let healed = tauri::async_runtime::spawn_blocking(move || {
-                                heal_blocked_managed_shadow(&latest)
-                            })
-                            .await
-                            .ok()
-                            .flatten();
-                            if let Some(healed) = healed {
-                                let _ = handle.emit("hq-cli-update:cleared", &healed);
-                                log(
-                                    "hq-cli-update",
-                                    "healed a wedged managed-toolchain CLI shadow; \
-                                     auto-update re-enabled",
-                                );
-                            } else {
-                                // This exact version already installed cleanly
-                                // without moving the detected CLI, so repeating it
-                                // cannot help. Stop here instead of reinstalling on
-                                // every launch and every 6h; the banner stays up
-                                // for the manual fix.
-                                log(
-                                    "hq-cli-update",
-                                    &format!(
-                                        "auto-update skipped for {}: an earlier install completed \
-                                         without changing the detected version",
-                                        info.latest
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => log("hq-cli-update", &format!("background check failed: {e}")),
-            }
+            run_check_cycle(&handle, /* floor_repair */ false).await;
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     });
+}
+
+/// One background check, plus the install it calls for. `floor_repair` marks
+/// the launch-time pass taken because the installed CLI read below
+/// [`HQ_CLI_MIN_VERSION`]; it is the only pass allowed to install past the
+/// user's `autoUpdate` opt-out (see [`auto_install_allowed`]).
+async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
+    match check_once(handle).await {
+        Ok(Some(info)) => {
+            // Gate on the master `autoUpdate` switch (default ON). The
+            // legacy `cliAutoUpdate` key is superseded — one toggle now
+            // governs the app, CLI, and core auto-installers. A floor
+            // repair is exempt: below the floor the CLI cannot serve the
+            // hq-core contract, so it is repaired like a missing one.
+            let auto_update = auto_update_enabled();
+            if auto_install_allowed(auto_update, floor_repair) {
+                if floor_repair && !auto_update {
+                    log(
+                        "hq-cli-update",
+                        &format!(
+                            "autoUpdate is off, but installed hq CLI {} is below the \
+                             required minimum {HQ_CLI_MIN_VERSION}; repairing anyway",
+                            info.local.as_deref().unwrap_or("(unreadable)")
+                        ),
+                    );
+                }
+                if should_auto_install(&info.latest, non_convergent_cli_version().as_deref()) {
+                    log("hq-cli-update", "auto-update enabled — installing");
+                    match install_hq_cli_update(handle.clone()).await {
+                        Ok(_) => log("hq-cli-update", "auto-update succeeded"),
+                        Err(e) => log(
+                            "hq-cli-update",
+                            &format!("auto-update failed, banner remains: {e}"),
+                        ),
+                    }
+                } else {
+                    // The durable marker blocks the install. A machine
+                    // already wedged by HQ-DESKTOP-46 carries that marker
+                    // from the OLD foreign-managed classification, so the
+                    // install-time repair can never run. Attempt the
+                    // filesystem-only shadow heal directly; on success it
+                    // clears the marker and re-enables auto-update without
+                    // waiting for the next CLI publish. Anything that is
+                    // not a provable same-root shadow is left untouched and
+                    // the banner stays up for the manual fix.
+                    let latest = info.latest.clone();
+                    let healed = tauri::async_runtime::spawn_blocking(move || {
+                        heal_blocked_managed_shadow(&latest)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some(healed) = healed {
+                        let _ = handle.emit("hq-cli-update:cleared", &healed);
+                        log(
+                            "hq-cli-update",
+                            "healed a wedged managed-toolchain CLI shadow; \
+                             auto-update re-enabled",
+                        );
+                    } else {
+                        // This exact version already installed cleanly
+                        // without moving the detected CLI, so repeating it
+                        // cannot help. Stop here instead of reinstalling on
+                        // every launch and every 6h; the banner stays up
+                        // for the manual fix.
+                        log(
+                            "hq-cli-update",
+                            &format!(
+                                "auto-update skipped for {}: an earlier install completed \
+                                 without changing the detected version",
+                                info.latest
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(e) => log("hq-cli-update", &format!("background check failed: {e}")),
+    }
 }
 
 #[cfg(test)]
@@ -3191,6 +3517,7 @@ mod tests {
                     NpmToolchainSource::UserPath,
                     cause,
                     Some(115),
+                    None,
                 ),
                 "cause {cause:?} on user-path Node 20 must arm the managed retry"
             );
@@ -3207,6 +3534,7 @@ mod tests {
                 NpmToolchainSource::UserPath,
                 "postinstall-script",
                 Some(137),
+                None,
             ),
             "the reported HQ-DESKTOP-5E tuple (postinstall-script, ABI 137, user-path) must arm the managed retry"
         );
@@ -3220,6 +3548,7 @@ mod tests {
                     NpmToolchainSource::UserPath,
                     cause,
                     Some(115),
+                    None,
                 ),
                 "cause {cause:?} must never arm the managed retry"
             );
@@ -3232,6 +3561,7 @@ mod tests {
             NpmToolchainSource::UserPath,
             "unknown",
             Some(MANAGED_NODE_ABI),
+            None,
         ));
 
         // An UNKNOWN ABI (the probe could not read it) is treated as not-managed,
@@ -3241,6 +3571,7 @@ mod tests {
             InstallFailureKind::UnexpectedLifecycle,
             NpmToolchainSource::UserPath,
             "unknown",
+            None,
             None,
         ));
 
@@ -3252,12 +3583,14 @@ mod tests {
                 source,
                 "unknown",
                 Some(115),
+                None,
             ));
         }
 
         // Every non-lifecycle kind keeps today's behaviour, even under user-path
         // Node with an eligible cause/ABI, so no expected/permission/Windows/
-        // registry failure ever triggers a managed provision.
+        // registry failure ever triggers a managed provision. `Unexpected` here has
+        // no attributed origin (`None`), so it does not arm the reopen shape either.
         for kind in [
             InstallFailureKind::ExpectedPrefixPermission,
             InstallFailureKind::ExpectedWindowsAbort,
@@ -3273,6 +3606,7 @@ mod tests {
                     NpmToolchainSource::UserPath,
                     "unknown",
                     Some(115),
+                    None,
                 ),
                 "kind {kind:?} must not arm the managed-toolchain retry"
             );
@@ -3294,6 +3628,7 @@ mod tests {
                     NpmToolchainSource::UserPath,
                     cause,
                     Some(48), // the reported Node 6.17.1 ABI
+                    None,
                 ),
                 "unsupported node on user-path Node 6 (ABI 48) must arm, cause {cause:?}"
             );
@@ -3305,6 +3640,7 @@ mod tests {
             NpmToolchainSource::UserPath,
             "",
             None,
+            None,
         ));
         // ...but a run already on HQ's managed ABI cannot be improved by
         // provisioning it again.
@@ -3313,6 +3649,7 @@ mod tests {
             NpmToolchainSource::UserPath,
             "",
             Some(MANAGED_NODE_ABI),
+            None,
         ));
         // And a managed/unknown SOURCE never arms — only the user's own toolchain
         // is worth replacing.
@@ -3322,6 +3659,7 @@ mod tests {
                 source,
                 "",
                 Some(48),
+                None,
             ));
         }
     }
@@ -3340,6 +3678,7 @@ mod tests {
                     NpmToolchainSource::UserPath,
                     "unknown",
                     abi,
+                    None,
                 ),
                 "missing-target under user-path must arm the managed retry at ABI {abi:?}"
             );
@@ -3353,6 +3692,7 @@ mod tests {
                 NpmToolchainSource::UserPath,
                 cause,
                 Some(MANAGED_NODE_ABI),
+                None,
             ));
         }
         // A managed or unknown SOURCE never arms — only the user's own toolchain is
@@ -3363,6 +3703,7 @@ mod tests {
                 source,
                 "unknown",
                 Some(115),
+                None,
             ));
         }
         // Arming the new shape must NOT relax the lifecycle shape's ABI gate: a
@@ -3372,6 +3713,72 @@ mod tests {
             NpmToolchainSource::UserPath,
             "unknown",
             Some(MANAGED_NODE_ABI),
+            None,
+        ));
+    }
+
+    #[test]
+    fn unattributed_non_npm_markerless_failure_arms_the_managed_retry() {
+        // HQ-DESKTOP-56 reopen: a markerless `Unexpected` failure whose stderr origin
+        // is `non-npm` (npm's own logger emitted nothing) is a user-path runtime HQ's
+        // managed npm can bypass, so it arms the SAME one-shot retry — under the
+        // UNCHANGED runtime conditions (UserPath + failing ABI != managed ABI).
+        assert!(install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::UserPath,
+            "none",
+            Some(147), // the reported Node 26.3.0 ABI
+            Some("non-npm"),
+        ));
+        // An unknown ABI still arms — never gate the reported cluster out on a
+        // missing probe.
+        assert!(install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::UserPath,
+            "none",
+            None,
+            Some("non-npm"),
+        ));
+        // An `npm-logger` origin (npm ran and reported) does NOT arm — a new runtime
+        // is unlikely to help and would spend a ~50MB download.
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::UserPath,
+            "none",
+            Some(147),
+            Some("npm-logger"),
+        ));
+        // Neither does an empty stderr (the caller folds it to `None`)...
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::UserPath,
+            "none",
+            Some(147),
+            None,
+        ));
+        // ...nor a managed toolchain source, nor a run already on HQ's managed ABI.
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::Managed,
+            "none",
+            Some(147),
+            Some("non-npm"),
+        ));
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::UserPath,
+            "none",
+            Some(MANAGED_NODE_ABI),
+            Some("non-npm"),
+        ));
+        // A non-Unexpected kind never arms via the non-npm origin, even if an origin
+        // were somehow supplied (defense in depth against a caller mistake).
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::ExpectedDiskFull,
+            NpmToolchainSource::UserPath,
+            "none",
+            Some(147),
+            Some("non-npm"),
         ));
     }
 
@@ -3396,6 +3803,7 @@ mod tests {
                             source,
                             cause,
                             abi,
+                            None,
                         ),
                         "foreign-registry-404 must never arm (source={source:?} abi={abi:?} cause={cause})"
                     );
@@ -3516,7 +3924,11 @@ mod tests {
         // And the managed-npm ABI guarantee is unchanged.
         let managed = "/managed/toolchain/npm-global".to_string();
         assert_eq!(
-            prefer_managed_prefix(true, Some(managed.clone()), Some("/opt/homebrew".to_string())),
+            prefer_managed_prefix(
+                true,
+                Some(managed.clone()),
+                Some("/opt/homebrew".to_string())
+            ),
             Some(managed)
         );
     }
@@ -3893,14 +4305,23 @@ exit 0
 
         // The debris is gone; the sibling package, the loose file, and the scope
         // directory itself all survive.
-        assert!(!scope.join("hq-cli").exists(), "partial package dir removed");
+        assert!(
+            !scope.join("hq-cli").exists(),
+            "partial package dir removed"
+        );
         assert!(
             !scope.join(".hq-cli-0DY3ww6z").exists(),
             "temp staging dir removed"
         );
         assert!(scope.join("hq-other").exists(), "sibling package preserved");
-        assert!(scope.join("keep.txt").exists(), "loose scope file preserved");
-        assert!(scope.exists(), "the scope directory itself is never removed");
+        assert!(
+            scope.join("keep.txt").exists(),
+            "loose scope file preserved"
+        );
+        assert!(
+            scope.exists(),
+            "the scope directory itself is never removed"
+        );
     }
 
     #[cfg(unix)]
@@ -4230,6 +4651,7 @@ exit 0
             managed_runtime: hq_desktop_core::hq_cli_update::ManagedRuntimeState::NotProbed,
             interpreter_recovery: hq_desktop_core::hq_cli_update::InterpreterRecovery::NotNeeded,
             resolution_source: hq_desktop_core::hq_cli_update::ResolutionSource::NotResolved,
+            hq_backing: hq_desktop_core::hq_cli_update::HqBacking::UnbackedForeign,
         };
         let events = sentry::test::with_captured_events(|| {
             sentry::configure_scope(|scope| {
@@ -4263,6 +4685,7 @@ exit 0
                 "managed_runtime": "not_probed",
                 "interpreter_recovery": "not_needed",
                 "resolution_source": "not_resolved",
+                "hq_backing": "unbacked_foreign",
             })
         );
         assert_eq!(event.extra["token"], serde_json::json!("[Filtered]"));
@@ -4473,7 +4896,10 @@ exit 0
         assert!(!scope.exists());
         let state = create_missing_install_scope(&scope);
         // Creation only: the scope and every absent ancestor now exist...
-        assert!(scope.exists(), "the scope and its ancestors must be created");
+        assert!(
+            scope.exists(),
+            "the scope and its ancestors must be created"
+        );
         // ...and the reported state names which ancestor was missing.
         assert_eq!(state, MissingTargetState::NodeModulesMissing);
         let _ = fs::remove_dir_all(&base);
@@ -4607,10 +5033,7 @@ exit 0
     }
 
     fn write_hq_cli_manifest(dir: &Path, version: &str) {
-        let pkg = dir
-            .join("node_modules")
-            .join("@indigoai-us")
-            .join("hq-cli");
+        let pkg = dir.join("node_modules").join("@indigoai-us").join("hq-cli");
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(
             pkg.join("package.json"),

@@ -2,35 +2,169 @@ export type StageId =
   | 'content'
   | 'deps'
   | 'initial-sync'
-  | 'packages'
   | 'git-init'
   | 'personalize'
-  | 'import'
-  | 'indexing'
-  | 'menubar';
+  | 'indexing';
+
+export const FAILED_DEPENDENCIES = [
+  'node',
+  'yq',
+  'jq',
+  'git',
+  'qmd',
+  'hq-cli',
+  'path-write',
+  'unknown',
+] as const;
+
+export type FailedDependency = (typeof FAILED_DEPENDENCIES)[number];
+
+export const ERROR_CATEGORIES = [
+  'network',
+  'checksum',
+  'permission',
+  'not-found',
+  'timeout',
+  'spawn-failed',
+  'exit-nonzero',
+  'unsupported-platform',
+  'disk',
+  'unknown',
+] as const;
+
+export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
+
+/**
+ * Claude Desktop connector import observes only its documented local config,
+ * never Codex, browser sessions, or cloud integrations. Keep the emitted
+ * outcomes finite so a malformed native response cannot become telemetry.
+ */
+export const CONNECTOR_IMPORT_OUTCOMES = [
+  'tool_not_installed',
+  'config_path_unavailable',
+  'config_missing',
+  'config_unreadable',
+  'config_invalid',
+  'zero_servers',
+  'imported',
+  'import_failed',
+  'command_failed',
+  'user_skipped',
+  'unknown',
+] as const;
+
+export type ConnectorImportOutcome = (typeof CONNECTOR_IMPORT_OUTCOMES)[number];
+
+/** The complete inspected-source set for the connector-import probe. */
+export const CONNECTOR_IMPORT_SOURCE_SETS = [
+  'claude_desktop_config',
+  'unknown',
+] as const;
+
+export type ConnectorImportSourceSet = (typeof CONNECTOR_IMPORT_SOURCE_SETS)[number];
+
+export function normalizeConnectorImportOutcome(value: unknown): ConnectorImportOutcome {
+  return typeof value === 'string' && CONNECTOR_IMPORT_OUTCOMES.includes(value as ConnectorImportOutcome)
+    ? (value as ConnectorImportOutcome)
+    : 'unknown';
+}
+
+export function normalizeConnectorImportSourceSet(value: unknown): ConnectorImportSourceSet {
+  return typeof value === 'string' && CONNECTOR_IMPORT_SOURCE_SETS.includes(value as ConnectorImportSourceSet)
+    ? (value as ConnectorImportSourceSet)
+    : 'unknown';
+}
 
 export const STAGE_ORDER: StageId[] = [
   'content',
   'deps',
   'initial-sync',
-  'packages',
   'git-init',
   'personalize',
-  'import',
   'indexing',
-  'menubar',
 ];
+
+export function normalizeFailedDependency(value: unknown): FailedDependency {
+  return typeof value === 'string' && FAILED_DEPENDENCIES.includes(value as FailedDependency)
+    ? (value as FailedDependency)
+    : 'unknown';
+}
+
+export function normalizeErrorCategory(value: unknown): ErrorCategory {
+  return typeof value === 'string' && ERROR_CATEGORIES.includes(value as ErrorCategory)
+    ? (value as ErrorCategory)
+    : 'unknown';
+}
+
+export function normalizeFailedStageIds(values: Iterable<unknown>): StageId[] {
+  const normalized: StageId[] = [];
+  for (const value of values) {
+    if (
+      typeof value === 'string' &&
+      (STAGE_ORDER as string[]).includes(value) &&
+      !normalized.includes(value as StageId)
+    ) {
+      normalized.push(value as StageId);
+    }
+    if (normalized.length === STAGE_ORDER.length) break;
+  }
+  return normalized;
+}
+
+export interface SetupFailureTelemetryDetails {
+  errorCategory: ErrorCategory;
+  failedDependency?: FailedDependency;
+}
+
+export function setupFailureTelemetryDetails(input: {
+  stageId: StageId;
+  errorCategory?: unknown;
+  failedDependency?: unknown;
+}): SetupFailureTelemetryDetails {
+  const errorCategory = normalizeErrorCategory(input.errorCategory);
+  return input.stageId === 'deps'
+    ? {
+        errorCategory,
+        failedDependency: normalizeFailedDependency(input.failedDependency),
+      }
+    : { errorCategory };
+}
+
+export function createSetupRunId(randomUuid: () => string = () => crypto.randomUUID()): string {
+  const value = randomUuid();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    return value;
+  }
+  return crypto.randomUUID();
+}
+
+export interface InFlightOperation<T> {
+  operation: Promise<T> | null;
+}
+
+/** Reuse unfinished work so a timed-out retry cannot start it twice. */
+export function reuseInFlightOperation<T>(
+  state: InFlightOperation<T>,
+  start: () => Promise<T>,
+): Promise<T> {
+  if (state.operation) return state.operation;
+
+  const operation = Promise.resolve().then(start);
+  state.operation = operation;
+  const clear = () => {
+    if (state.operation === operation) state.operation = null;
+  };
+  void operation.then(clear, clear);
+  return operation;
+}
 
 export const STAGE_LABELS: Record<StageId, string> = {
   content: 'Downloading HQ template',
   deps: 'Installing dependencies',
-  'initial-sync': 'Starting initial cloud sync',
-  packages: 'Installing packages',
+  'initial-sync': 'Syncing initial cloud data',
   'git-init': 'Initialising workspace',
-  personalize: 'Personalizing',
-  import: 'Importing existing setup',
+  personalize: 'Preparing personal workspace',
   indexing: 'Registering for search',
-  menubar: 'Finishing up',
 };
 
 export type StageStatus = 'pending' | 'running' | 'ok' | 'failed';
@@ -162,7 +296,7 @@ export function setupProgressPercent(input: SetupProgressInput): number {
     : base;
   const creep = Math.min(Math.max(0, input.stageCreep), 0.92);
 
-  return Math.round((base + (next - base) * creep) * 100);
+  return Math.min(99, Math.round((base + (next - base) * creep) * 100));
 }
 
 export type FriendlySetupBandStatus = 'pending' | 'active' | 'done';
@@ -216,12 +350,9 @@ export const STAGE_COMMAND: Partial<Record<StageId, string>> = {
   content: 'fetch_and_extract_template',
   deps: 'install_deps',
   'initial-sync': 'start_initial_cloud_sync',
-  packages: 'install_default_packages',
   'git-init': 'git_init',
   personalize: 'personalize_hq',
-  import: 'import_existing_setup',
   indexing: 'register_search_index',
-  menubar: 'install_menubar_app',
 };
 
 export interface StageCommandContext {
@@ -333,7 +464,6 @@ export const STAGE_AUTO_RETRY_LIMITS: Partial<Record<StageId, number>> = {
   content: 2,
   deps: 1,
   'initial-sync': 1,
-  packages: 1,
   indexing: 1,
 };
 

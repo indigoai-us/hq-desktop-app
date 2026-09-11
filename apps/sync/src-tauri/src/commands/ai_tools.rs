@@ -17,6 +17,7 @@ use crate::util::paths;
 const CLI_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 const RECENCY_MAX_DEPTH: usize = 2;
 const RECENCY_MAX_ENTRIES: usize = 2_000;
+const CLAUDE_DESKTOP_CONNECTOR_SOURCE_SET: &str = "claude_desktop_config";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AiTools {
@@ -39,16 +40,20 @@ pub struct ClaudeReady {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClaudeDesktopConnectors {
     pub present: bool,
     pub count: u32,
-    pub path: String,
+    pub outcome: &'static str,
+    pub inspected_sources: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConnectorImportResult {
     pub ok: bool,
     pub message: String,
+    pub error_category: &'static str,
 }
 
 #[tauri::command]
@@ -65,6 +70,14 @@ pub fn detect_ai_tools() -> AiTools {
     // resolve the bundled binary directly.
     if !tools.codex_cli && crate::commands::launch::bundled_codex_bin().is_some() {
         tools.codex_cli = true;
+        tools.any = true;
+    }
+    // Same for Claude: the desktop app manages a verified Claude Code CLI under
+    // Application Support and never adds it to PATH. Sessions spawn that
+    // binary directly (see agent_session::claude::claude_program), so it is an
+    // installed CLI in every sense that matters to the user.
+    if !tools.claude_cli && crate::commands::launch::bundled_claude_bin().is_some() {
+        tools.claude_cli = true;
         tools.any = true;
     }
     if let Some(home) = dirs::home_dir() {
@@ -98,14 +111,12 @@ pub fn detect_claude_ready() -> ClaudeReady {
 /// missing, unreadable, or malformed file as an onboarding error.
 #[tauri::command]
 pub fn detect_claude_desktop_connectors() -> ClaudeDesktopConnectors {
-    let Some(path) = claude_desktop_config_path() else {
-        return ClaudeDesktopConnectors {
-            present: false,
-            count: 0,
-            path: String::new(),
-        };
-    };
-    detect_claude_desktop_connectors_at_path(&path)
+    let config_path = claude_desktop_config_path();
+    let desktop_installed = claude_desktop_installed();
+    #[cfg(target_os = "linux")]
+    let desktop_installed =
+        linux_connector_config_indicates_desktop(desktop_installed, config_path.as_deref());
+    detect_claude_desktop_connectors_in(desktop_installed, config_path.as_deref())
 }
 
 /// Run the existing CLI importer from the configured HQ root. Its output is
@@ -119,6 +130,7 @@ pub async fn import_claude_desktop_connectors() -> ConnectorImportResult {
             return ConnectorImportResult {
                 ok: false,
                 message: error,
+                error_category: "not-found",
             }
         }
     };
@@ -137,6 +149,7 @@ pub async fn import_claude_desktop_connectors() -> ConnectorImportResult {
         Ok(output) if output.status.success() => ConnectorImportResult {
             ok: true,
             message: hq_command_message(&output.stdout, &output.stderr, "Import completed."),
+            error_category: "unknown",
         },
         Ok(output) => ConnectorImportResult {
             ok: false,
@@ -148,10 +161,12 @@ pub async fn import_claude_desktop_connectors() -> ConnectorImportResult {
                     output.status.code().unwrap_or(-1)
                 ),
             ),
+            error_category: "exit-nonzero",
         },
         Err(error) => ConnectorImportResult {
             ok: false,
             message: format!("Failed to spawn hq integrations import: {error}"),
+            error_category: "spawn-failed",
         },
     }
 }
@@ -167,22 +182,58 @@ fn hq_command_message(stdout: &[u8], stderr: &[u8], fallback: &str) -> String {
     }
 }
 
-fn detect_claude_desktop_connectors_at_path(path: &Path) -> ClaudeDesktopConnectors {
-    let present = path.is_file();
-    let count = fs::read_to_string(path)
-        .ok()
-        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
-        .and_then(|json| {
-            json.get("mcpServers")
-                .and_then(Value::as_object)
-                .map(|servers| servers.len())
-        })
-        .and_then(|count| u32::try_from(count).ok())
-        .unwrap_or(0);
+fn claude_desktop_connector_result(
+    present: bool,
+    count: u32,
+    outcome: &'static str,
+) -> ClaudeDesktopConnectors {
     ClaudeDesktopConnectors {
         present,
         count,
-        path: path.to_string_lossy().to_string(),
+        outcome,
+        inspected_sources: CLAUDE_DESKTOP_CONNECTOR_SOURCE_SET,
+    }
+}
+
+fn detect_claude_desktop_connectors_in(
+    desktop_installed: bool,
+    config_path: Option<&Path>,
+) -> ClaudeDesktopConnectors {
+    if !desktop_installed {
+        return claude_desktop_connector_result(false, 0, "tool_not_installed");
+    }
+    let Some(path) = config_path else {
+        return claude_desktop_connector_result(false, 0, "config_path_unavailable");
+    };
+    detect_claude_desktop_connectors_at_path(path)
+}
+
+fn detect_claude_desktop_connectors_at_path(path: &Path) -> ClaudeDesktopConnectors {
+    let present = match fs::metadata(path) {
+        Ok(metadata) => metadata.is_file(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return claude_desktop_connector_result(false, 0, "config_missing")
+        }
+        Err(_) => return claude_desktop_connector_result(false, 0, "config_unreadable"),
+    };
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(_) => return claude_desktop_connector_result(present, 0, "config_unreadable"),
+    };
+    let json = match serde_json::from_str::<Value>(&contents) {
+        Ok(json) => json,
+        Err(_) => return claude_desktop_connector_result(true, 0, "config_invalid"),
+    };
+    let Some(servers) = json.get("mcpServers").and_then(Value::as_object) else {
+        return claude_desktop_connector_result(true, 0, "zero_servers");
+    };
+    let Ok(count) = u32::try_from(servers.len()) else {
+        return claude_desktop_connector_result(true, 0, "unknown");
+    };
+    if count == 0 {
+        claude_desktop_connector_result(true, 0, "zero_servers")
+    } else {
+        claude_desktop_connector_result(true, count, "servers_detected")
     }
 }
 
@@ -209,6 +260,17 @@ fn linux_claude_desktop_config_path_in(
         .map(PathBuf::from)
         .or_else(|| home.map(|home| home.join(".config")))
         .map(|config_home| config_home.join("Claude/claude_desktop_config.json"))
+}
+
+/// Linux distributions do not install a macOS-style application bundle. A
+/// Claude Desktop config at the documented XDG location is therefore the
+/// supported local signal that its connector probe can run.
+#[cfg(target_os = "linux")]
+fn linux_connector_config_indicates_desktop(
+    desktop_installed: bool,
+    config_path: Option<&Path>,
+) -> bool {
+    desktop_installed || config_path.is_some_and(Path::is_file)
 }
 
 #[cfg(windows)]
@@ -450,15 +512,16 @@ const CODEX_DESKTOP_BUNDLES: [&str; 2] = ["Codex.app", "ChatGPT.app"];
 fn codex_desktop_installed() -> bool {
     codex_desktop_installed_in(
         std::path::Path::new("/Applications"),
-        dirs::home_dir().map(|home| home.join("Applications")).as_deref(),
+        dirs::home_dir()
+            .map(|home| home.join("Applications"))
+            .as_deref(),
     )
 }
 
 #[cfg(not(windows))]
 fn codex_desktop_installed_in(system: &Path, user: Option<&Path>) -> bool {
     CODEX_DESKTOP_BUNDLES.iter().any(|bundle| {
-        system.join(bundle).exists()
-            || user.is_some_and(|user_dir| user_dir.join(bundle).exists())
+        system.join(bundle).exists() || user.is_some_and(|user_dir| user_dir.join(bundle).exists())
     })
 }
 
@@ -566,24 +629,42 @@ mod tests {
     }
 
     #[test]
-    fn counts_claude_desktop_mcp_servers_without_failing_on_missing_or_invalid_files() {
+    fn classifies_each_claude_desktop_connector_config_result_without_exposing_its_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("claude_desktop_config.json");
 
-        let missing = detect_claude_desktop_connectors_at_path(&config);
+        let tool_missing = detect_claude_desktop_connectors_in(false, Some(&config));
+        assert_eq!(tool_missing.outcome, "tool_not_installed");
+        assert_eq!(tool_missing.inspected_sources, "claude_desktop_config");
+
+        let config_path_unavailable = detect_claude_desktop_connectors_in(true, None);
+        assert_eq!(config_path_unavailable.outcome, "config_path_unavailable");
+
+        let missing = detect_claude_desktop_connectors_in(true, Some(&config));
         assert!(!missing.present);
         assert_eq!(missing.count, 0);
-        assert_eq!(missing.path, config.to_string_lossy());
+        assert_eq!(missing.outcome, "config_missing");
 
         fs::write(&config, r#"{"mcpServers":{"linear":{},"notion":{}}}"#).expect("write config");
-        let detected = detect_claude_desktop_connectors_at_path(&config);
+        let detected = detect_claude_desktop_connectors_in(true, Some(&config));
         assert!(detected.present);
         assert_eq!(detected.count, 2);
+        assert_eq!(detected.outcome, "servers_detected");
 
         fs::write(&config, "not json").expect("write invalid config");
-        let invalid = detect_claude_desktop_connectors_at_path(&config);
+        let invalid = detect_claude_desktop_connectors_in(true, Some(&config));
         assert!(invalid.present);
         assert_eq!(invalid.count, 0);
+        assert_eq!(invalid.outcome, "config_invalid");
+
+        fs::write(&config, r#"{"mcpServers":{}}"#).expect("write empty config");
+        let empty = detect_claude_desktop_connectors_in(true, Some(&config));
+        assert_eq!(empty.outcome, "zero_servers");
+
+        fs::remove_file(&config).expect("remove config");
+        fs::create_dir(&config).expect("create unreadable fixture directory");
+        let unreadable = detect_claude_desktop_connectors_in(true, Some(&config));
+        assert_eq!(unreadable.outcome, "config_unreadable");
     }
 
     #[cfg(target_os = "linux")]
@@ -605,6 +686,28 @@ mod tests {
                     .join("Claude/claude_desktop_config.json")
             )
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_connector_probe_uses_supported_config_as_desktop_evidence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("Claude/claude_desktop_config.json");
+
+        assert!(!linux_connector_config_indicates_desktop(
+            false,
+            Some(&config)
+        ));
+        fs::create_dir_all(config.parent().expect("config parent")).expect("create config parent");
+        fs::write(&config, r#"{"mcpServers":{"linear":{}}}"#).expect("write config");
+
+        let detected = detect_claude_desktop_connectors_in(
+            linux_connector_config_indicates_desktop(false, Some(&config)),
+            Some(&config),
+        );
+        assert!(detected.present);
+        assert_eq!(detected.count, 1);
+        assert_eq!(detected.outcome, "servers_detected");
     }
 
     #[test]

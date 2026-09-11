@@ -24,6 +24,7 @@ export type NotificationDisplayKind =
   | "agent_review_request"
   | "file_shared"
   | "dm_received"
+  | "channel_message"
   | "infra_flag"
   | "generic";
 
@@ -200,6 +201,7 @@ export function mapServerType(
 
   if (t === "dm" || t === "dm_received" || t === "message")
     return "dm_received";
+  if (t === "channel_message") return "channel_message";
 
   if (
     t === "security_alert" ||
@@ -229,6 +231,7 @@ export function typeIconForKind(
     case "file_shared":
       return "file";
     case "dm_received":
+    case "channel_message":
       return "dm";
     case "infra_flag":
       return "flag";
@@ -256,6 +259,7 @@ export function verbForKind(
     case "file_shared":
       return "shared a file";
     case "dm_received":
+    case "channel_message":
       return "sent a message";
     case "infra_flag":
       return "flagged infrastructure";
@@ -637,7 +641,17 @@ export function classifyNotificationsError(
  * console router, so we resolve that onto a DM thread or a files hint.
  */
 export type NotificationDestination =
-  | { kind: "dm"; personUid: string; title: string }
+  | {
+      kind: "dm";
+      personUid: string;
+      title: string;
+      replyRootEventId?: string | null;
+    }
+  | {
+      kind: "channel";
+      channelId: string;
+      replyRootEventId?: string | null;
+    }
   | { kind: "files" }
   | { kind: "none" };
 
@@ -645,6 +659,22 @@ export function personUidFromTargetRef(ref: string | null): string | null {
   if (!ref) return null;
   const match = ref.trim().match(/^\/messages\/(prs_[A-Za-z0-9]+)\b/);
   return match?.[1] ?? null;
+}
+
+/** Thread root from `/replies/evt_*` or `reply=` / `rootEventId=` query params. */
+export function replyRootFromTargetRef(ref: string | null): string | null {
+  if (!ref) return null;
+  const trimmed = ref.trim();
+  const path = trimmed.match(/\/replies\/(evt_[A-Za-z0-9_-]+)\b/);
+  if (path?.[1]) return path[1];
+  const query = trimmed.match(/[?&](?:reply|rootEventId|root)=([^&]+)/i);
+  if (!query?.[1]) return null;
+  try {
+    const value = decodeURIComponent(query[1]).trim();
+    return value.startsWith("evt_") ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 export function notificationDestination(
@@ -659,12 +689,15 @@ export function notificationDestination(
     item.displayKind === "file_shared" ||
     target === "/files" ||
     target.startsWith("/files/");
+  const channelMatch = target.match(/^\/channels\/(chn_[A-Za-z0-9_-]+)\b/);
+  const replyRootEventId = replyRootFromTargetRef(target);
 
   if (isDm && uid) {
     return {
       kind: "dm",
       personUid: uid,
       title: item.actorName || "Direct message",
+      ...(replyRootEventId ? { replyRootEventId } : {}),
     };
   }
   if (isShare && uid) {
@@ -675,6 +708,13 @@ export function notificationDestination(
     };
   }
   if (isShare) return { kind: "files" };
+  if (channelMatch) {
+    return {
+      kind: "channel",
+      channelId: channelMatch[1],
+      ...(replyRootEventId ? { replyRootEventId } : {}),
+    };
+  }
   return { kind: "none" };
 }
 

@@ -8,6 +8,29 @@ import {
 } from "./messageMarkdown.js";
 
 describe("heavy message bodies", () => {
+  it("keeps a long, clearly written Markdown reply as Markdown", () => {
+    const body = [
+      "All set — you're done. Here's where you landed.",
+      "",
+      "**Everything's working:**",
+      "- All your tools are installed and healthy.",
+      "- You're signed in to HQ Cloud.",
+      "",
+      "**Run these next:**",
+      "1. `/startwork acme` — pick up work in your company.",
+      "2. `/personal-interview` — fill in your profile.",
+      "",
+      "Some closing prose. ".repeat(80),
+    ].join("\n");
+    expect(body.length).toBeGreaterThan(1_200);
+    expect(isHeavyMessageBody(body)).toBe(false);
+    expect(renderMessageBodyMarkdown(body)).toMatch(/<strong>Everything(?:&#39;|')s working:<\/strong>/);
+    // But not without limit: past the hard cap it renders plain.
+    expect(isHeavyMessageBody(`${body}\n${"More prose. ".repeat(600)}`)).toBe(true);
+    // And a long dump with no Markdown cues still renders plain.
+    expect(isHeavyMessageBody("log line without cues\n".repeat(80))).toBe(true);
+  });
+
   it("treats large JSON dumps as heavy and renders them as a plain pre", () => {
     const body =
       `${JSON.stringify({ outcome: "doc-wrong", commandsRun: ["a"] })}\n`.repeat(
@@ -117,5 +140,23 @@ describe("message body URL autolinking", () => {
       '<a href="https://example.com?a=1&amp;b=2" target="_blank" rel="noopener noreferrer">https://example.com?a=1&amp;b=2</a>',
     );
     expect(html).not.toContain('href="https://example.com?a=1&b=2"');
+  });
+});
+
+describe("chat soft-break handling (one line per idea)", () => {
+  it("renders single newlines as <br /> so a per-line list keeps its breaks", () => {
+    // Regression: the 2026-09-05 DM smoke saw `stat\ntable\n…` collapse to a
+    // single space-joined line. Chat bodies must preserve single newlines.
+    const html = renderMessageBodyMarkdown(
+      "stat\ntable\nchart\nmarkdown\nbadge\nkeyValue\nprogress\ncallout",
+    );
+    expect(html).toContain("stat<br />table<br />chart");
+    expect(html).not.toContain("stat table chart");
+  });
+
+  it("still separates blank-line-delimited paragraphs", () => {
+    const html = renderMessageBodyMarkdown("first line\n\nsecond block");
+    expect(html).toContain("<p>first line</p>");
+    expect(html).toContain("<p>second block</p>");
   });
 });

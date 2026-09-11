@@ -9,14 +9,22 @@ let telemetry = "";
 let main = "";
 let tray = "";
 let windowFocus = "";
+let sessionEndIntercept = "";
 
 beforeAll(async () => {
-  [telemetry, main, tray, windowFocus] = await Promise.all([
+  [telemetry, main, tray, windowFocus, sessionEndIntercept] = await Promise.all([
     readFile(resolve(rootDir, "crates/hq-telemetry/src/lib.rs"), "utf8"),
     readFile(resolve(rootDir, "apps/sync/src-tauri/src/main.rs"), "utf8"),
     readFile(resolve(rootDir, "apps/sync/src-tauri/src/tray.rs"), "utf8"),
     readFile(
       resolve(rootDir, "apps/sync/src-tauri/src/util/window_focus.rs"),
+      "utf8",
+    ),
+    readFile(
+      resolve(
+        rootDir,
+        "apps/sync/src-tauri/src/commands/session_end_intercept.rs",
+      ),
       "utf8",
     ),
   ]);
@@ -54,7 +62,11 @@ function countOccurrences(source: string, needle: string): number {
   return source.split(needle).length - 1;
 }
 
-type ProductionSourceName = "main" | "tray" | "windowFocus";
+type ProductionSourceName =
+  | "main"
+  | "tray"
+  | "windowFocus"
+  | "sessionEndIntercept";
 
 type ProductionSources = Record<ProductionSourceName, string>;
 
@@ -169,20 +181,6 @@ const boundaryContracts: BoundaryContract[] = [
     beforeMarkers: ["commands::process::terminate_all_for_exit("],
   },
   {
-    // The other half of the same asymmetry: reaching the Windows session-end
-    // teardown IS the affirmation the deferral was waiting for, so it drops.
-    // It must run BEFORE the observer is shut down and the children are
-    // terminated — both of which are part of a teardown that has already
-    // decided this is a session end.
-    label: "session-end deferred capture drop",
-    file: "main",
-    hook: "commands::daemon::drop_pending_session_end_captures();",
-    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
-    endMarker: "// Dock-icon click on the already-running app.",
-    afterMarkers: ["NativePanicSeam::AppSessionEndExit"],
-    beforeMarkers: ["commands::process::terminate_all_for_exit("],
-  },
-  {
     // HQ-DESKTOP-4X. A fault-exit capture held back by its deferred OS fault read
     // names a REAL 0xC0000409-class crash. An app-initiated quit must SEND it —
     // deleting this would lose the alert to the ~60s deferral horizon — before the
@@ -192,19 +190,6 @@ const boundaryContracts: BoundaryContract[] = [
     hook: 'commands::daemon::flush_pending_watcher_fault_captures("app_quit_flush");',
     startMarker: "if let tauri::RunEvent::ExitRequested { .. } = event {",
     endMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
-    beforeMarkers: ["commands::process::terminate_all_for_exit("],
-  },
-  {
-    // Unlike the benign session-end capture the previous seam DROPS, the
-    // session-end teardown FLUSHES the fault capture: a crash event must survive
-    // the session end. It runs AFTER the session-end drop and BEFORE the children
-    // are terminated / the capped Sentry flush.
-    label: "session-end deferred fault flush",
-    file: "main",
-    hook: 'commands::daemon::flush_pending_watcher_fault_captures("session_end_flush");',
-    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
-    endMarker: "// Dock-icon click on the already-running app.",
-    afterMarkers: ["commands::daemon::drop_pending_session_end_captures();"],
     beforeMarkers: ["commands::process::terminate_all_for_exit("],
   },
   {
@@ -231,25 +216,39 @@ const boundaryContracts: BoundaryContract[] = [
     startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
     endMarker: "// Dock-icon click on the already-running app.",
   },
-  // ── HQ-DESKTOP-44: Windows session-end exit ──────────────────────────────
-  // `WM_ENDSESSION` leaves tao's runner latched in `Destroyed` with its
-  // message pump still live, so the next dispatched message panics out of an
-  // `extern "system"` window procedure and aborts. `RunEvent::Exit` is the one
-  // app-controlled instant before that dispatch. Each link below is pinned
-  // individually so deleting any one of them — the decision input, the
-  // teardown markers, the bounded flush, or the exit itself — fails loudly
-  // rather than silently restoring the crash.
-  // The decision function's own signature is NOT a hook here: it is this
-  // contract's start marker, and the mutation pass would then delete the very
-  // anchor the next contract resolves against. Its presence and its cfg gate
-  // are pinned by "confines the session-end process exit to the Windows build"
-  // instead, and `sourceBetween` already throws if the marker goes missing.
+  // ── HQ-DESKTOP-44: Windows session-end (two seams, one shared teardown) ────
+  // `WM_ENDSESSION` leaves tao's runner unable to dispatch without panicking out
+  // of an `extern "system"` window procedure. There are TWO app-controlled
+  // instants that beat that panic: (1) the `RunEvent::Exit` arm, when tao's
+  // handler was free (non-re-entrant path), and (2) the `WH_CALLWNDPROC`
+  // intercept in `commands::session_end_intercept`, when the handler was taken
+  // inside wry's `wait_with_pump` (the re-entrant path `RunEvent::Exit` can never
+  // reach). Both route through the SAME `windows_session_end_teardown`. Each link
+  // — the install call, the decision input, the shared-teardown call, the
+  // teardown steps, and each process exit — is pinned individually so deleting or
+  // reordering any one fails loudly rather than silently restoring the crash.
+  // The decision function's own signature is NOT a hook here: it is a start
+  // marker, so pinning it would let the mutation pass delete the very anchor the
+  // next contract resolves against; its presence and cfg gate are pinned by
+  // "confines the session-end process exit to the Windows build" instead.
   {
     label: "session-end exit branch guard",
     file: "main",
     hook: "if app_initiated {",
     startMarker: "fn handle_run_event_exit<S, T>",
     endMarker: "fn main() {",
+  },
+  {
+    // The WH_CALLWNDPROC intercept must be installed in main() BEFORE the tauri
+    // builder, so it is armed for a WM_ENDSESSION landing during the config
+    // windows' WebView2 creation inside the RunEvent::Ready dispatch. Deleting or
+    // relocating the install past `tauri::Builder::default()` leaves the
+    // re-entrant path uncovered.
+    label: "session-end intercept install before builder",
+    file: "main",
+    hook: "commands::session_end_intercept::install_session_end_intercept();",
+    startMarker: "fn main() {",
+    endMarker: "crate::recovery::register_protocol(tauri::Builder::default())",
   },
   {
     label: "session-end exit decision input",
@@ -259,72 +258,117 @@ const boundaryContracts: BoundaryContract[] = [
     endMarker: "// Dock-icon click on the already-running app.",
   },
   {
-    label: "session-end exit seam",
+    // The RunEvent::Exit arm must still call the SHARED teardown — not its own
+    // inline copy — so the fallback path and the intercept path stay identical.
+    label: "session-end exit calls shared teardown",
     file: "main",
-    hook: "NativePanicSeam::AppSessionEndExit",
+    hook: "commands::session_end_intercept::windows_session_end_teardown(",
     startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
     endMarker: "// Dock-icon click on the already-running app.",
+    afterMarkers: ["commands::process::app_initiated_exit(),"],
+    beforeMarkers: ["|| std::process::exit(0),"],
   },
   {
-    // HQ-DESKTOP r3. Setting the durable session-end latch is the FIRST thing the
-    // session-end teardown does, so a watcher capture that races the one-shot
-    // `drop_pending_session_end_captures` sweep — built microseconds later, during
-    // its own grace — still sees positive OS evidence at resolution and
-    // suppresses. It must precede the exit seam, the drop sweep, the child
-    // teardown and the process exit; deletion, same-file relocation and any
-    // reordering that moves it past those all fail here.
-    label: "session-end durable latch set",
-    file: "main",
-    hook: "commands::session_end_latch::note_windows_session_end();",
-    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
-    endMarker: "// Dock-icon click on the already-running app.",
-    beforeMarkers: [
-      "commands::daemon::drop_pending_session_end_captures();",
-      "commands::process::terminate_all_for_exit(",
-      "|| std::process::exit(0),",
-    ],
-  },
-  {
-    label: "session-end observer corroboration seam",
-    file: "main",
-    hook: "NativePanicSeam::AppSessionEndObserved",
-    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
-    endMarker: "// Dock-icon click on the already-running app.",
-    // Read while the observer can still affirm: `shutdown` moves its readiness
-    // to `Stopped`, which `attribution_now` reports as `ObserverFailed`.
-    afterMarkers: ["NativePanicSeam::AppSessionEndExit"],
-  },
-  {
-    // The ownership report is what the live artifact proof asserts against:
-    // the file's existence proves this arm ran, and the pids it names are what
-    // the proof then requires to be dead. It has to be emitted BEFORE the
-    // children are terminated — afterwards the registry has emptied and the
-    // report would truthfully name nothing, turning the proof vacuous while
-    // still reading green.
-    label: "session-end owned-pid report",
-    file: "main",
-    hook: "commands::process::report_session_end_owned_pids();",
-    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
-    endMarker: "// Dock-icon click on the already-running app.",
-    beforeMarkers: ["commands::process::terminate_all_for_exit("],
-  },
-  {
-    label: "session-end bounded sentry flush",
-    file: "main",
-    hook: "hq_telemetry::flush_within(",
-    startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
-    endMarker: "// Dock-icon click on the already-running app.",
-    // Children first: at shutdown the network may already be gone, and an
-    // orphaned sync daemon is worse than a dropped report.
-    afterMarkers: ["commands::process::terminate_all_for_exit("],
-  },
-  {
-    label: "session-end process exit",
+    label: "session-end exit process exit",
     file: "main",
     hook: "|| std::process::exit(0),",
     startMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
     endMarker: "// Dock-icon click on the already-running app.",
-    afterMarkers: ["hq_telemetry::flush_within("],
+    afterMarkers: ["commands::session_end_intercept::windows_session_end_teardown("],
+  },
+  // ── The shared teardown body (moved into commands/session_end_intercept.rs) ─
+  {
+    // HQ-DESKTOP r3. Setting the durable session-end latch is the FIRST thing the
+    // shared teardown does, so a watcher capture racing the one-shot drop sweep
+    // still sees positive OS evidence at resolution and suppresses. It must
+    // precede the drop sweep, the child teardown and the bounded flush.
+    label: "teardown durable latch set",
+    file: "sessionEndIntercept",
+    hook: "crate::commands::session_end_latch::note_windows_session_end();",
+    startMarker: "pub fn windows_session_end_teardown(app: Option<&tauri::AppHandle>) {",
+    endMarker: "fn session_end_intercept() {",
+    beforeMarkers: [
+      "crate::commands::daemon::drop_pending_session_end_captures();",
+      "crate::commands::process::terminate_all_for_exit(",
+      "hq_telemetry::flush_within(",
+    ],
+  },
+  {
+    label: "teardown exit seam",
+    file: "sessionEndIntercept",
+    hook: "NativePanicSeam::AppSessionEndExit",
+    startMarker: "pub fn windows_session_end_teardown(app: Option<&tauri::AppHandle>) {",
+    endMarker: "fn session_end_intercept() {",
+    afterMarkers: ["crate::commands::session_end_latch::note_windows_session_end();"],
+    beforeMarkers: ["crate::commands::process::terminate_all_for_exit("],
+  },
+  {
+    label: "teardown deferred capture drop",
+    file: "sessionEndIntercept",
+    hook: "crate::commands::daemon::drop_pending_session_end_captures();",
+    startMarker: "pub fn windows_session_end_teardown(app: Option<&tauri::AppHandle>) {",
+    endMarker: "fn session_end_intercept() {",
+    beforeMarkers: ["crate::commands::process::terminate_all_for_exit("],
+  },
+  {
+    label: "teardown deferred fault flush",
+    file: "sessionEndIntercept",
+    hook: 'crate::commands::daemon::flush_pending_watcher_fault_captures("session_end_flush");',
+    startMarker: "pub fn windows_session_end_teardown(app: Option<&tauri::AppHandle>) {",
+    endMarker: "fn session_end_intercept() {",
+    afterMarkers: ["crate::commands::daemon::drop_pending_session_end_captures();"],
+    beforeMarkers: ["crate::commands::process::terminate_all_for_exit("],
+  },
+  {
+    // Read while the observer can still affirm: `shutdown` moves its readiness to
+    // `Stopped`, which `attribution_now` reports as `ObserverFailed`.
+    label: "teardown observer corroboration seam",
+    file: "sessionEndIntercept",
+    hook: "NativePanicSeam::AppSessionEndObserved",
+    startMarker: "pub fn windows_session_end_teardown(app: Option<&tauri::AppHandle>) {",
+    endMarker: "fn session_end_intercept() {",
+    afterMarkers: ["NativePanicSeam::AppSessionEndExit"],
+    beforeMarkers: ["crate::commands::process::report_session_end_owned_pids();"],
+  },
+  {
+    // The ownership report is what the live artifact proof asserts against: it
+    // must be emitted BEFORE the children are terminated, or the registry has
+    // already emptied and the proof passes vacuously.
+    label: "teardown owned-pid report",
+    file: "sessionEndIntercept",
+    hook: "crate::commands::process::report_session_end_owned_pids();",
+    startMarker: "pub fn windows_session_end_teardown(app: Option<&tauri::AppHandle>) {",
+    endMarker: "fn session_end_intercept() {",
+    beforeMarkers: ["crate::commands::process::terminate_all_for_exit("],
+  },
+  {
+    // Children first: at shutdown the network may already be gone, and an
+    // orphaned sync daemon is worse than a dropped report.
+    label: "teardown bounded sentry flush",
+    file: "sessionEndIntercept",
+    hook: "hq_telemetry::flush_within(",
+    startMarker: "pub fn windows_session_end_teardown(app: Option<&tauri::AppHandle>) {",
+    endMarker: "fn session_end_intercept() {",
+    afterMarkers: ["crate::commands::process::terminate_all_for_exit("],
+  },
+  // ── The WH_CALLWNDPROC intercept entry (commands/session_end_intercept.rs) ──
+  {
+    label: "intercept seam",
+    file: "sessionEndIntercept",
+    hook: "NativePanicSeam::AppSessionEndIntercepted",
+    startMarker: "fn session_end_intercept() {",
+    endMarker: 'unsafe extern "system" fn call_wnd_proc_hook(',
+    beforeMarkers: ["crate::handle_run_event_exit("],
+  },
+  {
+    // The intercept reuses the SAME app-initiated discriminator + exit path as
+    // the RunEvent::Exit arm, so a coincident app-initiated quit is a no-op.
+    label: "intercept routes through handle_run_event_exit",
+    file: "sessionEndIntercept",
+    hook: "crate::handle_run_event_exit(",
+    startMarker: "fn session_end_intercept() {",
+    endMarker: 'unsafe extern "system" fn call_wnd_proc_hook(',
+    beforeMarkers: ["|| std::process::exit(0),"],
   },
   {
     label: "tray-left-click seam",
@@ -346,7 +390,10 @@ const boundaryContracts: BoundaryContract[] = [
     hook: "handle_tray_blur_hide(should_hide, || {",
     startMarker: "if let WindowEvent::Focused(false) = event {",
     endMarker: "// NOTE: on macOS there is no tao tray",
-    afterMarkers: ["let should_hide = !is_modal_open()"],
+    afterMarkers: [
+      "let should_hide = should_hide_popover_on_blur(BlurHideInputs {",
+      "modal_open: is_modal_open()",
+    ],
   },
   {
     label: "foreground raise call",
@@ -365,7 +412,7 @@ const boundaryContracts: BoundaryContract[] = [
 ];
 
 function currentSources(): ProductionSources {
-  return { main, tray, windowFocus };
+  return { main, tray, windowFocus, sessionEndIntercept };
 }
 
 function boundaryError(contract: BoundaryContract, count: number): string {
@@ -462,9 +509,17 @@ describe("native panic seam wiring", () => {
             "WindowThemeChanged",
             "SingleInstanceSurfaceExisting",
             "AppExitRequested",
-            "AppSessionEndExit",
-            "AppSessionEndObserved",
           ],
+        ],
+      ],
+      // HQ-DESKTOP-44 (re-entrant path): the session-end teardown and the
+      // WH_CALLWNDPROC intercept moved into this module, taking their seam
+      // recorders with them and adding the new intercept seam.
+      [
+        "commands/session_end_intercept.rs",
+        [
+          sessionEndIntercept,
+          ["AppSessionEndExit", "AppSessionEndObserved", "AppSessionEndIntercepted"],
         ],
       ],
       ["tray.rs", [tray, ["TrayLeftClick", "TrayBlurHide"]]],
@@ -529,31 +584,64 @@ describe("native panic seam wiring", () => {
   it("rejects reordering the session-end owned-pid report after the teardown", () => {
     const sources = currentSources();
     const contract = boundaryContracts.find(
-      (candidate) => candidate.label === "session-end owned-pid report",
+      (candidate) => candidate.label === "teardown owned-pid report",
     );
     if (!contract) {
-      throw new Error("the session-end owned-pid report contract is missing");
+      throw new Error("the teardown owned-pid report contract is missing");
     }
 
-    expect(countOccurrences(main, contract.hook)).toBe(1);
-    expect(countOccurrences(main, "hq_telemetry::flush_within(")).toBe(1);
+    expect(countOccurrences(sessionEndIntercept, contract.hook)).toBe(1);
+    expect(countOccurrences(sessionEndIntercept, "hq_telemetry::flush_within(")).toBe(
+      1,
+    );
 
     // Move the report past the teardown, to just before the bounded flush.
-    const reordered = main
+    const reordered = sessionEndIntercept
       .replace(`${contract.hook}\n`, "")
       .replace(
         "hq_telemetry::flush_within(",
-        `${contract.hook}\n                        hq_telemetry::flush_within(`,
+        `${contract.hook}\n            hq_telemetry::flush_within(`,
       );
 
     const errors = productionBoundaryErrors(
-      withSource(sources, "main", reordered),
+      withSource(sources, "sessionEndIntercept", reordered),
     );
 
     // Still present exactly once — so this fails on ORDER, not on absence.
     expect(errors).not.toContain(boundaryError(contract, 0));
     expect(errors).toContain(
-      precedenceError(contract, "commands::process::terminate_all_for_exit("),
+      precedenceError(
+        contract,
+        "crate::commands::process::terminate_all_for_exit(",
+      ),
+    );
+  });
+
+  // The WH_CALLWNDPROC intercept carries the second process exit of the fix. It
+  // must be Windows-gated exactly like the RunEvent::Exit fast path, route
+  // through the same `handle_run_event_exit`, and the deterministic re-entrancy
+  // probe must be double-gated (e2e-automation feature AND the marker env var) so
+  // it can never park the main thread of a shipped build.
+  it("confines the intercept to Windows and double-gates the re-entrancy probe", () => {
+    // The module's whole Win32 surface — including its process exit — is gated.
+    expect(sessionEndIntercept).toContain('#[cfg(target_os = "windows")]\nmod win {');
+    expect(countOccurrences(sessionEndIntercept, "std::process::exit")).toBe(1);
+    expect(sessionEndIntercept).toContain("crate::handle_run_event_exit(");
+
+    // The install call in main() is Windows-gated at its call site.
+    expect(main).toContain(
+      '#[cfg(target_os = "windows")]\n    commands::session_end_intercept::install_session_end_intercept();',
+    );
+
+    // Double gate: compiled only under e2e-automation AND armed only by the env
+    // var. Dropping either would risk shipping a build that can park its main
+    // thread in the probe's nested pump.
+    expect(sessionEndIntercept).toContain(
+      '#[cfg(all(target_os = "windows", feature = "e2e-automation"))]\npub use win::maybe_arm_reentrancy_probe;',
+    );
+    expect(sessionEndIntercept).toContain('#[cfg(feature = "e2e-automation")]');
+    expect(sessionEndIntercept).toContain(
+      'std::env::var_os("HQ_SYNC_SESSION_END_REENTRANCY_PROBE")',
     );
   });
 

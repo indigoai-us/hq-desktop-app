@@ -15,6 +15,11 @@ export interface MeshDiskState {
   hasPack: boolean;
   hasCache: boolean;
   hqRootValid: boolean;
+  /**
+   * When false, the Work Mesh Live daemon unit is not installed. Optional for
+   * backward compatibility: absent means the host did not probe the daemon.
+   */
+  daemonInstalled?: boolean;
 }
 
 export interface MeshSetupEnv {
@@ -41,8 +46,11 @@ export interface MeshSetupDecision {
  * Cache/setup is ready when the upgrade marker and cache dir exist.
  * The pack helper (`~/.hq/work-mesh/bin`) is optional after 0.2.0 — presence
  * is owned by `hq mesh daemon`, which does not require hq-pack-work-mesh.
+ * When the host reports `daemonInstalled: false`, ready is false even if the
+ * old pack cache is present (legacy machines that never got the daemon).
  */
 export function isMeshCacheReady(disk: MeshDiskState): boolean {
+  if (disk.daemonInstalled === false) return false;
   return disk.hasUpgradeMarker && disk.hasCache;
 }
 

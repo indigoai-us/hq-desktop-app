@@ -25,12 +25,13 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | `commands/folder_picker.rs` | Native folder picker for the Settings re-tether flow |
 | `commands/personal.rs` | Auto-provisions the `personal` company row + bucket on first sync if missing |
 | `commands/provision.rs` | Auto-provisions the user's `person` entity in HQ-Cloud on first sync (UJ-006) |
+| `commands/provision_reconcile.rs` | Reconciles server-side cloud activation (0.10.194). Observes `cloudActivatedAt` on owned companies, writes the local cloud marker + `company.yaml`, and POSTs `/v1/companies/{uid}/activate-cloud/ack` **only when `wrote_local` is true**. An unparseable/non-mapping `company.yaml` is skipped byte-identical (never replaced with a bare `{cloud: true}`). Ack transport/5xx failures persist `companies/{slug}/.hq/activate-ack.pending` and retry on a later pass (cleared on success or a terminal 403/404). Single-flighted by a process-wide `AtomicBool` returning `ReconcileOutcome::SkippedInFlight`; triggered by `run_card_action` and `start_sync`. The legacy `cloud: true` provision path is unchanged |
 | `commands/first_push.rs` | First-push protection — companies that have never synced are pre-walked and validated against ignore rules before any upload |
 | `commands/prewarm.rs` | Warms the vault client + manifest cache on app launch so the first popover open is <100ms |
 | `commands/vault_client.rs` | HTTPS client to hq-ops `vault` endpoints (signed S3 URLs, telemetry opt-in, person provisioning) |
 | `commands/telemetry.rs` | Per-sync telemetry collector — scans the HQ tree, diffs against `~/.hq/telemetry-cursor.json`, POSTs to `/v1/usage` (gated on `telemetryEnabled` in menubar.json + server-side opt-in) |
 | `commands/daemon.rs` | Feature-flagged V2 daemon lifecycle (`autostartDaemon` in menubar.json) |
-| `commands/process.rs` | Generic subprocess lifecycle with SIGTERM->SIGKILL |
+| `commands/process.rs` | Generic subprocess lifecycle with SIGTERM->SIGKILL. Children inherit the full parent environment (no `env_clear()`), which is how the hq-cloud runner's `HQ_SYNC_MANIFEST_DISABLED` manifest-upload kill switch reaches it; `child_env_tests` guards that inheritance |
 | `commands/conflicts.rs` | Conflict resolution + open-in-editor |
 | `commands/new_files.rs` | New files detail window — creates/focuses a secondary Tauri window showing file list with attribution. Uses managed `PendingNewFiles` state + ready handshake pattern |
 | `commands/activity.rs` | Session activity log (Recent Changes window) — in-memory append-only `Vec<ActivityEntry>` in managed state, one entry per `progress` event. Each entry carries `direction`, `author`, and `is_new`. `record_new_files()` reconciles the per-company `new-files` event onto the matching download rows (flips `is_new` so the UI renders "added" vs "updated", back-fills `author` from `addedBy` where the progress event had none). Renders as "{author} added/updated", falling back to the company slug when no author |
@@ -39,13 +40,15 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | `commands/dm_mqtt.rs` | **Instant DM delivery** (GA in 0.3.0, all signed-in users). MQTT-over-WSS receiver: fetches scoped STS creds from `POST /v1/realtime/credentials`, SigV4-presigns the AWS IoT Core endpoint (sign WITHOUT the session token, append `X-Amz-Security-Token` after — IoT rejects a token in the signed query with 403), subscribes to its own `hq/{personUid}/dm`, and on any wake (and on connect/reconnect for offline catch-up) calls `dm_notify::poll_dm_once` — the MQTT message is only a wake signal, so dedupe/cursor/notification all reuse the poll path. Spawned from `main.rs` `.setup()`; capped exponential backoff; on any failure falls back silently to the 60s poll (no regression). Log codes `DM_MQTT_*`. |
 | `commands/notifications.rs` | OS notification permission state + request (`notification_permission_state` / `notification_request_permission`) |
 | `commands/desktop_alt.rs` | GA desktop window gate, open/focus command, and read-only company panel commands. Uses `feature_gate::desktop_features_enabled()` for UI eligibility and backend enforcement. Board/Activity call the vault API, Deployments calls hq-deploy with `x-org-slug`, and Secrets returns metadata-only `{key, upd, rot}` rows with no plaintext fields. The window is built `transparent(true)` and gets its native glass backing applied via `glass::apply_liquid_glass_window` right after build (0.8.1-beta.1). `get_company_project_creators` (0.8.2-beta.1) fetches the cloud board for a company and returns only projects that carry a non-empty creator (derived from the prd's S3 `created-by` metadata) for the Projects-list Lead column — projects with no stamped creator stay "Unassigned" (pure parse in `parse_project_creators`, unit-tested) |
+| `commands/messages.rs` | All `/v1/notify/*` channel + DM HTTP from Rust: channels, threads, reactions, members. Lifecycle additions (0.10.194): `run_card_action` (POST `/v1/notify/channels/{id}/cards/{cardId}/actions` with a client `idempotencyKey`; a 409 replay counts as success, a 403 surfaces its reason on the card, and every 2xx runs the activate-cloud reconcile pass), `get_company_tab` (GET `/v1/companies/{uid}/tabs/{tab}`) and `run_company_tab_action` (POST a `tab_row` card action for the Team / Integrations / Settings tabs) |
+| `deep_link.rs` | `hq-desktop://` URL scheme (0.10.194). Only `hq-desktop://setup?checkout=done&company={uid}` is accepted — host *or* path may be `setup`, and `company` must match `^cmp_[A-Za-z0-9_-]+$`; every other URL is parsed and dropped as inert. Focuses Messages on `#setup`; cold-start hits are stashed in `PendingSetupTarget` and drained by the `take_pending_setup_target` command. Registered via `tauri-plugin-deep-link` on the Rust side only (`tauri.conf.json` `plugins.deep-link.desktop.schemes`) — the webview holds no deep-link permission. Log codes `HQ_DESKTOP_SETUP`, `HQ_DESKTOP_REGISTER_FAIL` |
 | `glass.rs` | Native macOS "Liquid Glass" window backing (0.8.1-beta.1, macOS 26 Tahoe). `apply_liquid_glass_window` resolves `NSGlassEffectView` at runtime and inserts it at the very back (`NSWindowBelow`) of the transparent desktop window's content view so the window reads as live glass over the desktop; on pre-Tahoe macOS it falls back to the same `NSVisualEffectView` `UnderWindowBackground` vibrancy the popover uses. Main-thread-only — callers must invoke via `run_on_main_thread`. The native material backs the *window*; in-window panels get matched translucent styling in CSS (it cannot refract the webview's own DOM) |
 | `commands/settings.rs` | Settings persistence |
 | `commands/autostart.rs` | Login-item autostart. `ensure_autostart_on_launch()` (called from `main.rs` `.setup()`, macOS-gated) idempotently reconciles the LaunchAgent plist with the effective `startAtLogin` pref on every launch — **default-on** (a fresh install autostarts without opening Settings), honouring an explicit `"startAtLogin": false` opt-out (stale plist removed). Mirrors the `daemon.rs` `realtime_sync` default-on convention |
 | `commands/dock.rs` | macOS Dock icon presence. `dock_icon_pref()` resolves `dockIcon` from menubar.json **default-on** (explicit `false` is the only opt-out); `set_activation_policy()` maps it to `ActivationPolicy::Regular` (Dock icon + Cmd-Tab + app menu bar) or `Accessory` (classic menubar-only). `apply_at_launch` (`&mut App`) runs from `main.rs` `.setup()` and `apply_at_runtime` (`AppHandle`) backs the `apply_dock_icon` command the Settings toggle calls after `save_settings`. **The two are not interchangeable** — tao re-applies its STORED policy at `applicationDidFinishLaunching`, which is after `.setup()`, so the AppHandle setter at launch is silently clobbered (and tao's stored default is `Regular`, so every user would get an unwanted Dock icon). The bundle keeps `LSUIElement=true` so the process always launches accessory and is promoted from there — an opted-out user never sees a Dock icon flash at login. A Dock click arrives as `RunEvent::Reopen` and routes through the new `ActivationSource::DockIconClick` → `ShowDesktop`, opening the full desktop window via `tray::show_desktop_window` (show-only, never toggles; signed-out users fall back to the popover's SignInPrompt). The Dock icon is an application-window affordance; the menu-bar icon remains the compact popover's. `has_visible_windows` is ignored on purpose — the always-on-top widget would otherwise make the icon inert. **Dock badge:** `set_badge()` mirrors the unread-DM count onto the Dock tile, called from the only two writers of `UnreadDmState` (`dm_notify::bump_unread` / `reset_unread_dms`) so it is an exact function of that state with no poller. `format_badge_label` maps 0 → cleared and caps at `99+`; the module formats its own label because Tauri's `set_badge_count` stringifies 0 into a literal "0" badge on macOS. Not gated on `dockIcon` — no file read on the DM poll path, and the tile keeps its badge across a policy change so opting in mid-session shows the right count immediately |
 | `tray.rs` | System tray with 4 visual states (idle/syncing/error/conflict) |
 | `updater.rs` | Auto-update checker (10s delay, then every 6h). **Channel-aware**: resolves a per-user endpoint via `util/release_channel.rs` from `MenubarPrefs.release_channel` × `util/feature_gate::is_indigo_user`. Non-`@getindigo.ai` users are coerced to Stable regardless of stored preference (defense-in-depth). Exposes `available_channels` command for the Settings picker. |
-| `events.rs` | Typed sync event structs (ndjson discriminated union) |
+| `events.rs` | Typed sync event structs (ndjson discriminated union; defined in `hq-desktop-core`) plus `parse_sync_line`, the single tolerant parser both `commands/sync.rs` and `commands/daemon.rs` use — unknown event types (such as the runner's additive `manifest-upload` outcome) and blank/malformed lines return `None` and are skipped |
 | `sentry_scrub.rs` | Sentry event scrubber — strips Cognito tokens and home-dir paths before send |
 | `util/paths.rs` | HQ folder resolver (4-tier — see below). Also provides `resolve_bin` + `child_path` for finding `hq` and node-shebang interpreters under launchd's minimal PATH |
 | `util/ignore.rs` | Sync ignore rules — excludes `settings/`, `data/`, `workers/`, `.git/`, etc. from cloud sync (privacy class) |
@@ -191,6 +194,8 @@ On `progress`, `direction` (`"up"`/`"down"`, hq-cloud ≥5.29) and `author` (dow
 
 Parsed via `#[serde(tag = "type")]` discriminated union. Unknown types silently skipped.
 
+All ndjson consumers go through `events::parse_sync_line` so that guarantee holds on both the manual-sync and watch-daemon paths. hq-cloud's post-sync manifest-upload hook (sync-reconciliation-audit, US-004) emits an additive `manifest-upload` event per scope after `all-complete` that this app does not model; it is diagnostic-only and must keep being skipped — never routed through `is_alertable_error`, never allowed to change a sync verdict or block the UI. The `HQ_CLOUD_VERSION` pin in `crates/hq-desktop-core/src/hq_cloud.rs` floors at `~6.16.36`: `MANIFEST_UPLOAD_MIN_HQ_CLOUD` (6.16.23) is the first honest manifest runner, `UNROUTED_OVERFLOW_MIN_HQ_CLOUD` (6.16.24) is the first runner that cannot be wedged by an unroutable vault key, `ROOT_BIN_EXCLUSION_MIN_HQ_CLOUD` (6.16.25) is the first runner that excludes the HQ root's own `bin/` from the personal vault on both the push and the pull leg, so the debris that caused the wedge stops travelling and stops coming back after a delete, and `AREA_COLLISION_HEAL_MIN_HQ_CLOUD` (6.16.26) is the first runner that repairs the overflow area 6.16.24 introduced — the same key ending up in the overflow AND a real area made building the aggregate throw from the journal-store open path, wedging the vault on every open with no user-side recovery, and 6.16.26 heals it on read, refuses to create a new one on write, and converges the stale copy away, and 6.16.34 treats a `403` `cross-tenant-push-rejected` response as terminal for that company scope so realtime publishing stops retrying the refused file forever, and 6.16.35 keeps packed columnar journal rows behind `JournalStore` and frozen rows at its public boundary, substantially reducing sync-runner resident memory without changing the desktop-visible event contract, and 6.16.36 streams v3 snapshot-journal decoding and reads HQSNAP4 snapshots before a later release enables the v4 writer. Every pin bump lands in a dedicated commit that raises the matching floor constant and the exact-pin test together (semver admission is not enough — the floor must move to bust the npx cache key).
+
 ## Process Management
 
 - Singleton handle per process type (`hq-sync` for sync, `hq-sync-daemon` for daemon)
@@ -287,6 +292,8 @@ Documented in `tests/PERF.md`:
 
 Classic popover release testing still uses `tests/MANUAL_TESTING.md` plus Loom proof. Rust unit tests cover serialization, config parsing, process management. Frontend and story tests run with `npm test`. Desktop-alt gate/window/page/secrets coverage runs with `npm run test:e2e:desktop-alt`; it uses a scripted source-contract harness by default and can switch to live `tauri-driver` with `HQ_SYNC_DESKTOP_ALT_LIVE=1` plus `HQ_SYNC_DESKTOP_ALT_APP` or `HQ_SYNC_DESKTOP_ALT_APP_PATH`.
 
+Channel-native lifecycle coverage (0.10.194): `e2e/desktop-alt/lifecycle-company-channel.spec.ts`, `__tests__/stories/lifecycle-{cards,browser-scenario}.test.ts`, and under `packages/ui/src/chat` the `US-*.story.test.ts` files plus `messaging/LifecycleCard.test.ts`, `card-action.test.ts`, `agent-channel.test.ts`, `tabs/*.test.ts`. For visual QA run `npm run dev:preview` and open `/dev-harness/index.html?view=lifecycle` (`&role=member` for a viewer who cannot act, `&state=blocked` for the blocked states).
+
 The two harness modes run disjoint spec sets, enforced in `e2e/desktop-alt/vitest.config.ts`:
 
 - **Scripted** (default, `Desktop-alt E2E` in ci.yml) owns everything that assumes a signed-in user — including `smoke-pages.spec.ts` and `window-lifecycle.spec.ts`, which mirror the Rust gate for an authenticated email.
@@ -334,6 +341,34 @@ teardown (session-end observer shutdown, `terminate_all_for_exit`, then a capped
 Sentry flush — children before flush, ~1.75s total against Windows' 5s default
 `WaitToKillAppTimeout`) and then exits, denying the pump another iteration.
 
+### The re-entrant second path (HQ-DESKTOP-44 regression reopen)
+
+`RunEvent::Exit` only fires when tao's handler was **free** at `WM_ENDSESSION`.
+There is a second delivery it can never see: a `WM_ENDSESSION` that arrives while
+the handler is **taken** — the main thread is inside a nested Win32 message pump
+that wry runs during WebView2 environment/controller creation
+(`webview2_com::wait_with_pump` looping on `GetMessageW`), which tauri drives from
+inside the event loop (a webview built off the main thread, and the config
+windows + `.setup()` that run inside the `RunEvent::Ready` dispatch). tao's
+`WM_ENDSESSION` arm then calls `loop_destroyed()` re-entrantly,
+`call_event_handler` does `event_handler.take().expect(...)` on a `None`, and tao
+panics **`either event handler is re-entrant (likely), or no event handler is
+registered (very unlikely)`** out of its window procedure — aborting the process
+before `RunEvent::Exit` is ever reached. That is the regression this issue
+reopened: the prior fix holds for the free-handler path, but this one was
+untouched.
+
+The remedy is a seam **before** tao's arm: a thread-local `WH_CALLWNDPROC` hook
+installed on the event-loop thread in `main()`
+(`commands::session_end_intercept::install_session_end_intercept`). The system
+calls a `WH_CALLWNDPROC` hook for every message *sent* to a window on the thread,
+before the destination window procedure, and `WM_ENDSESSION` is a sent message.
+The hook sees the committed `WM_ENDSESSION(TRUE)`, runs the **same** bounded
+teardown, and exits — whether or not tao's handler is currently taken. The
+`RunEvent::Exit` arm stays as the fallback for the non-re-entrant path; both route
+through the shared, idempotent `windows_session_end_teardown` (a process-wide
+once-latch), so whichever fires first wins and the other is a no-op.
+
 Rules for anyone touching this area:
 
 - **Do not** move the session-end fast exit off its `#[cfg(target_os = "windows")]`
@@ -347,6 +382,23 @@ Rules for anyone touching this area:
 - Everything in the session-end teardown runs inside a Windows window
   procedure. Keep every step individually capped, and keep it panic-free — a
   panic there aborts the process just as the original bug did.
+- **Do not** move `install_session_end_intercept()` after
+  `tauri::Builder::build()`. The `WH_CALLWNDPROC` intercept must be installed on
+  the event-loop thread in `main()` *before* the builder, or a `WM_ENDSESSION`
+  landing during the config-window WebView2 creation inside `RunEvent::Ready`
+  (handler already taken) is missed. Pinned by
+  `scripts/native-seam-wiring.test.ts`.
+- **Do not** let the intercept and the `RunEvent::Exit` arm diverge. Both call
+  the one `windows_session_end_teardown`, guarded by a process-wide once-latch;
+  the intercept records `NativePanicSeam::AppSessionEndIntercepted`, the arm
+  records `AppSessionEndExit`, and the teardown itself records the rest. Keep the
+  teardown panic-free and idempotent.
+- The deterministic re-entrancy proof is **double-gated** — compiled only under
+  the `e2e-automation` feature AND armed only by
+  `HQ_SYNC_SESSION_END_REENTRANCY_PROBE` — so it can never park the main thread of
+  a shipped build. It parks the main thread in a `wait_with_pump`-shaped nested
+  pump so the live `windows-session-end.spec.ts` re-entrant case can drive
+  `WM_ENDSESSION` into it (red on the base, green on the candidate).
 - **Do not** reorder the ownership report after `terminate_all_for_exit`.
   Immediately before terminating, the session-end branch writes
   `registered_pids()` to the path named by `HQ_SYNC_SESSION_END_OWNED_PIDS`
@@ -378,3 +430,4 @@ Rules for anyone touching this area:
 - `on_window_event` in main.rs is scoped to the `main` window label -- the detail window can close independently without quitting the app.
 - New files state (`newFilesList`) in App.svelte accumulates across companies within a single sync run and resets when a new sync starts.
 - The desktop-alt window is not a ready-handshake window. It self-loads from Tauri commands after mount, so failures usually come from missing capability permissions, command registration drift in `main.rs`, or the Indigo gate rejecting the caller.
+- **Deep links arrive two ways.** A cold start reads the URL out of `startup_args`; a warm second launch arrives through the `single-instance` plugin's `argv` (which is why `tauri-plugin-single-instance` carries the `deep-link` feature). Both funnel into `deep_link::spawn_open_hq_desktop_url`. Handling only `on_open_url` silently drops the cold-start case.

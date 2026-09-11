@@ -12,6 +12,52 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 const UI_SEAM_CATEGORY: &str = "ui.seam";
 const NATIVE_PANIC_PHASE_TAG: &str = "native_panic_phase";
 
+/// Maximum bytes retained from either raw process-output stream on a setup
+/// failure. The end of a process stream contains its actionable failure text.
+pub const SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES: usize = 16 * 1024;
+
+/// Return the tail of a diagnostic stream without splitting a UTF-8 codepoint.
+pub fn setup_diagnostic_tail(value: &str) -> String {
+    if value.len() <= SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES {
+        return value.to_string();
+    }
+
+    let mut start = value.len() - SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    value[start..].to_string()
+}
+
+/// The exact Sentry issue grouping for setup dependency failures. Correlation
+/// fields deliberately stay outside this pair so retries and people do not
+/// fragment a single dependency/category root cause into separate issues.
+pub fn setup_failure_fingerprint<'a>(dependency: &'a str, category: &'a str) -> [&'a str; 2] {
+    [dependency, category]
+}
+
+/// Isolate best-effort Sentry reporting from an interactive command. A failed
+/// thread launch, slow transport, or panic is intentionally a silent no-op for
+/// the caller; product work must never wait on diagnostics.
+pub fn dispatch_sentry_report(report: impl FnOnce() + Send + 'static) {
+    let _ = std::thread::Builder::new()
+        .name("sentry-diagnostic-reporter".to_string())
+        .spawn(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(report));
+        });
+}
+
+/// Emit a bounded, best-effort Sentry warning from a static message. Runs
+/// off-thread via [`dispatch_sentry_report`] (never blocks the caller) and is a
+/// no-op when Sentry is disabled (empty DSN on dev/PR CI). Used for
+/// fleet-visibility signals such as a failed native-hook install, where losing
+/// the signal is acceptable but blocking the caller is not.
+pub fn capture_warning(message: &'static str) {
+    dispatch_sentry_report(move || {
+        sentry::capture_message(message, sentry::Level::Warning);
+    });
+}
+
 /// Lifecycle state recorded with native-panic reports. The state is deliberately
 /// small and static because it is updated from the native event-loop thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +103,14 @@ pub enum NativePanicSeam {
     /// `AppSessionEndExit`, so a residual report shows whether the two signals
     /// agreed.
     AppSessionEndObserved = 11,
+    /// The Windows `WH_CALLWNDPROC` session-end intercept fired: a committed
+    /// `WM_ENDSESSION(TRUE)` was seen at the window-procedure boundary *before*
+    /// tao's own handler, so the bounded teardown and the process exit ran from
+    /// the intercept rather than from `RunEvent::Exit` (HQ-DESKTOP-44 re-entrant
+    /// path). This is the primary session-end seam on builds that carry the
+    /// intercept; `AppSessionEndExit` stays the fallback marker for the
+    /// `RunEvent::Exit` arm on the non-re-entrant path.
+    AppSessionEndIntercepted = 12,
 }
 
 impl NativePanicSeam {
@@ -73,6 +127,7 @@ impl NativePanicSeam {
             9 => Some(Self::AppExitRequested),
             10 => Some(Self::AppSessionEndExit),
             11 => Some(Self::AppSessionEndObserved),
+            12 => Some(Self::AppSessionEndIntercepted),
             _ => None,
         }
     }
@@ -90,6 +145,7 @@ impl NativePanicSeam {
             Self::AppExitRequested => "app.exit-requested",
             Self::AppSessionEndExit => "app.session-end-exit",
             Self::AppSessionEndObserved => "app.session-end-observed",
+            Self::AppSessionEndIntercepted => "app.session-end-intercept",
         }
     }
 }
@@ -189,11 +245,18 @@ fn append_native_panic_context(event: &mut Event<'static>, phase: NativePanicPha
 
 const SENSITIVE_FIELD_NAMES: &[&str] = &[
     "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
     "password",
     "secret",
     "apikey",
     "api_key",
+    "x-api-key",
     "token",
+    "access_token",
+    "client_secret",
+    "private_key",
 ];
 
 /// Mirror of `hq_desktop_core::sync_outcome::RUNNER_STACK_TOKENS`. The two must
@@ -233,6 +296,259 @@ fn is_sensitive_key(k: &str) -> bool {
     SENSITIVE_FIELD_NAMES
         .iter()
         .any(|name| k.eq_ignore_ascii_case(name))
+}
+
+const FILTERED: &str = "[Filtered]";
+
+fn has_ascii_case_insensitive_prefix_at(value: &str, start: usize, prefix: &str) -> bool {
+    value.as_bytes().get(start..start.saturating_add(prefix.len()))
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix.as_bytes()))
+}
+
+fn replace_ranges(value: &str, ranges: Vec<(usize, usize)>, replacement: &str) -> String {
+    if ranges.is_empty() {
+        return value.to_string();
+    }
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if start < cursor || end <= start {
+            continue;
+        }
+        output.push_str(&value[cursor..start]);
+        output.push_str(replacement);
+        cursor = end;
+    }
+    output.push_str(&value[cursor..]);
+    output
+}
+
+fn redact_home_path_accounts(value: &str) -> String {
+    let mut ranges = Vec::new();
+    let prefixes = ["C:\\Users\\", "C:/Users/", "/Users/", "/home/"];
+    for index in 0..value.len() {
+        for prefix in prefixes {
+            if !has_ascii_case_insensitive_prefix_at(value, index, prefix) {
+                continue;
+            }
+            let account_start = index + prefix.len();
+            let account_end = value[account_start..]
+                .find(['/', '\\'])
+                .map(|offset| account_start + offset)
+                .unwrap_or(value.len());
+            if account_start < account_end {
+                ranges.push((account_start, account_end));
+            }
+            break;
+        }
+    }
+    replace_ranges(value, ranges, "[user]")
+}
+
+fn redact_url_credentials(value: &str) -> String {
+    let mut ranges = Vec::new();
+    let mut offset = 0;
+    while let Some(scheme_offset) = value[offset..].find("://") {
+        let authority_start = offset + scheme_offset + 3;
+        let authority_end = value[authority_start..]
+            .find(|character: char| character.is_whitespace() || matches!(character, '/' | '?' | '#'))
+            .map(|relative| authority_start + relative)
+            .unwrap_or(value.len());
+        if let Some(at_relative) = value[authority_start..authority_end].rfind('@') {
+            let credential_end = authority_start + at_relative;
+            if !value[authority_start..credential_end].is_empty() {
+                ranges.push((authority_start, credential_end));
+            }
+        }
+        offset = authority_end.max(authority_start);
+        if offset == value.len() {
+            break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_labeled_secret_values(value: &str) -> String {
+    const LABELS: &[&str] = &[
+        "authorization",
+        "proxy-authorization",
+        "api_key",
+        "api-key",
+        "apikey",
+        "x-api-key",
+        "token",
+        "access_token",
+        "client_secret",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "private_key",
+        "private-key",
+        "cookie",
+        "set-cookie",
+    ];
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    for index in 0..bytes.len() {
+        for label in LABELS {
+            if !has_ascii_case_insensitive_prefix_at(value, index, label)
+                || (index > 0 && bytes[index - 1].is_ascii_alphanumeric()) {
+                continue;
+            }
+            let mut value_start = index + label.len();
+            while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                value_start += 1;
+            }
+            // JSON and shell-style quoted keys put a closing quote between the
+            // label and separator: `"password":"value"` / `PASSWORD="value"`.
+            if matches!(bytes.get(value_start), Some(b'\'') | Some(b'"')) {
+                value_start += 1;
+                while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                    value_start += 1;
+                }
+            }
+            if !matches!(bytes.get(value_start), Some(b'=') | Some(b':')) {
+                continue;
+            }
+            value_start += 1;
+            while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                value_start += 1;
+            }
+            let value_end = match bytes.get(value_start) {
+                Some(quote @ (b'\'' | b'"')) => {
+                    let mut cursor = value_start + 1;
+                    let mut escaped = false;
+                    while let Some(byte) = bytes.get(cursor) {
+                        if *byte == *quote && !escaped {
+                            cursor += 1;
+                            break;
+                        }
+                        escaped = *byte == b'\\' && !escaped;
+                        if *byte != b'\\' {
+                            escaped = false;
+                        }
+                        cursor += 1;
+                    }
+                    cursor
+                }
+                _ if (label.eq_ignore_ascii_case("authorization")
+                    || label.eq_ignore_ascii_case("proxy-authorization"))
+                    && has_ascii_case_insensitive_prefix_at(value, value_start, "basic")
+                    && bytes
+                        .get(value_start + "basic".len())
+                        .is_some_and(|byte| byte.is_ascii_whitespace()) => {
+                    let mut token_start = value_start + "basic".len();
+                    while bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                        token_start += 1;
+                    }
+                    value[token_start..]
+                        .find(|character: char| {
+                            character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"')
+                        })
+                        .map(|relative| token_start + relative)
+                        .unwrap_or(value.len())
+                }
+                _ => value[value_start..]
+                    .find(|character: char| {
+                        character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"')
+                    })
+                    .map(|relative| value_start + relative)
+                    .unwrap_or(value.len()),
+            };
+            if value_start < value_end {
+                ranges.push((value_start, value_end));
+            }
+            break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_bearer_tokens(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !has_ascii_case_insensitive_prefix_at(value, index, "bearer") {
+            index += 1;
+            continue;
+        }
+        let mut token_start = index + "bearer".len();
+        if !bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            index += 1;
+            continue;
+        }
+        while bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            token_start += 1;
+        }
+        let token_end = value[token_start..]
+            .find(|character: char| character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"'))
+            .map(|relative| token_start + relative)
+            .unwrap_or(value.len());
+        if token_start < token_end {
+            ranges.push((token_start, token_end));
+            index = token_end;
+        } else {
+            index += 1;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_prefixed_api_keys(value: &str) -> String {
+    const PREFIXES: &[&str] = &["sk-", "sk_", "AKIA", "AIza", "ghp_", "github_pat_", "xoxb-", "xoxp-"];
+    let mut ranges = Vec::new();
+    for index in 0..value.len() {
+        for prefix in PREFIXES {
+            if !has_ascii_case_insensitive_prefix_at(value, index, prefix) {
+                continue;
+            }
+            let end = value[index..]
+                .find(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-')))
+                .map(|relative| index + relative)
+                .unwrap_or(value.len());
+            if end.saturating_sub(index) >= prefix.len() + 12 {
+                ranges.push((index, end));
+            }
+            break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_npm_prefixed_tokens(value: &str) -> String {
+    let mut ranges = Vec::new();
+    for index in 0..value.len() {
+        if !has_ascii_case_insensitive_prefix_at(value, index, "npm_") {
+            continue;
+        }
+        let end = value[index..]
+            .find(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-')))
+            .map(|relative| index + relative)
+            .unwrap_or(value.len());
+        if end.saturating_sub(index) >= "npm_".len() + 12 {
+            ranges.push((index, end));
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+/// Remove credentials and account names from raw setup diagnostics at the
+/// shared Sentry egress boundary, rather than relying on callers to sanitize.
+fn scrub_sensitive_text(value: &str) -> String {
+    let value = redact_url_credentials(value);
+    let value = redact_bearer_tokens(&value);
+    let value = redact_labeled_secret_values(&value);
+    let value = redact_prefixed_api_keys(&value);
+    redact_home_path_accounts(&value)
+}
+
+/// Setup diagnostics intentionally contain raw command output. Apply the
+/// setup-only npm-token shape here so closed legacy `npm_*` telemetry labels
+/// remain stable while a bare npm access token cannot leave this channel.
+fn scrub_setup_diagnostic_text(value: &str) -> String {
+    redact_npm_prefixed_tokens(&scrub_sensitive_text(value))
 }
 
 fn valid_runner_stack_shape(value: &str) -> bool {
@@ -405,6 +721,10 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "vault_conflict",
     "vault_not_found",
     "vault_permission_denied",
+    "vault_write_scope",
+    // Added at the ~6.16.23 runner pin: the manifest-upload contract class
+    // (hq-cloud src/manifest/contract.ts -> SyncManifestContractError).
+    "sync_manifest_contract",
     "vend_denied",
     "rate_limited",
     "presign_precondition_missing",
@@ -506,6 +826,44 @@ const RUNNER_ERROR_SITE_TOKENS: &[&str] = &[
     "identity",
     "file",
 ];
+// The PRE-RUNNER (first-push phase) attribution vocabularies (HQ-DESKTOP-64).
+// Mirror `hq_desktop_core::runner_error_shape::PreRunnerSite` / `PreRunnerCause`
+// exactly, kept local like the other rollup mirrors so the egress guard stays
+// independent of the producer crate; a `#[cfg(test)]` drift check drives every
+// `PreRunnerSite::ALL` / `PreRunnerCause::ALL` variant through these lists so a
+// producer that adds a token without updating the mirror fails CI. Every token is
+// denylist-safe (no auth/token/secret/... substring) so a server-side scrubber can
+// never blank the axis.
+const PRE_RUNNER_SITE_TOKENS: &[&str] = &["first_push", "first_push_personal"];
+const PRE_RUNNER_CAUSE_TOKENS: &[&str] = &[
+    "scope_exceeds_parent",
+    "vend_http",
+    "vend_transport",
+    "vend_protocol",
+    "ownership_mismatch",
+    "push_failed",
+    "unknown",
+];
+// The unknown_unnamed residual STRUCTURAL PROFILE vocabulary (HQ-DESKTOP-61/62).
+// Mirrors `hq_desktop_core::runner_error_shape::RunnerErrorUnknownProfile::as_str`
+// exactly, kept local like the other rollup mirrors so the egress guard stays
+// independent of the producer crate; a `#[cfg(test)]` drift check drives every
+// `RunnerErrorUnknownProfile::ALL` variant through this list so a producer that adds
+// a token without updating the mirror fails CI instead of blanking a live tag. Every
+// token is denylist-safe (no auth/token/secret/... substring).
+const RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS: &[&str] = &[
+    "stack_frame",
+    "key_value_led",
+    "identifier_colon_led",
+    "path_led",
+    "quoted_led",
+    "digit_led",
+    "upper_word_led",
+    "single_hump_led",
+    "lower_prose",
+    "empty",
+    "other",
+];
 
 /// A `token:count(,token:count)*` rollup whose tokens are drawn from a closed
 /// `vocabulary` and whose counts are bare integers. Bounded like
@@ -543,6 +901,17 @@ fn is_runner_error_cause_signature_rollup(value: &str) -> bool {
                     && !count.is_empty()
                     && count.bytes().all(|byte| byte.is_ascii_digit())
             })
+        })
+}
+
+/// The first-push capture's `pre_runner_status` tag (HQ-DESKTOP-64): the typed HTTP
+/// status a first-push fault carried, spelled `http_<1-3 digits>`, or the `none`
+/// sentinel when it had none. A bounded, closed shape so a producer bug that shipped
+/// a raw status line or vault body degrades to `[Filtered]` instead of leaking.
+fn is_pre_runner_status(value: &str) -> bool {
+    value == "none"
+        || value.strip_prefix("http_").is_some_and(|digits| {
+            (1..=3).contains(&digits.len()) && digits.bytes().all(|byte| byte.is_ascii_digit())
         })
 }
 
@@ -608,6 +977,20 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         )),
         "watcher_job_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
         "watcher_child_kind" => Some(matches!(value, "cmd_shim" | "launcher" | "direct_executable")),
+        // Shim-vs-runner discriminator (HQ-DESKTOP-66): the images of the watcher Job
+        // Object's processes STILL LIVE at the exit boundary, plus their count. The
+        // producer renders a closed vocabulary that reuses the watcher-fault image
+        // tokens (node_exe/cmd_exe/other) plus none/mixed/unavailable, and a bare
+        // integer count. Registering BOTH here is what makes them fail CLOSED — an
+        // unregistered key falls through the `_ => None` arm below and would ship
+        // verbatim; an off-vocabulary token or a path-shaped count degrades to
+        // `[Filtered]` instead. The numeric extra reaches this check as `""` for a
+        // non-string `Value` (type-safe by construction).
+        "watcher_job_survivors" => Some(matches!(
+            value,
+            "none" | "node_exe" | "cmd_exe" | "other" | "mixed" | "unavailable"
+        )),
+        "watcher_job_survivor_count" => Some(value.is_empty() || value.parse::<u32>().is_ok()),
         // Disposition of the signal that terminated an auto-sync watcher
         // (HQ-DESKTOP-5Y). A fixed, closed vocabulary; the bare signal integer
         // rides `watcher_exit_signal`. These independent egress checks degrade a
@@ -659,6 +1042,71 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         "runner_heap_ceiling_source" => Some(matches!(
             value,
             "declared_default" | "env_override" | "user_node_options"
+        )),
+        // Supervisor footprint-preempt decomposition (auto-sync watcher footprint
+        // growth-rate cluster). Bare-integer MB / seconds numeric extras that let
+        // the tree total be split into its largest single member and the non-heap
+        // excess above the declared old-space cap, and the pre-empt's rate be
+        // reconstructed from the prior sample and its age. Each reaches this check
+        // as `""` for a non-string `Value` (type-safe by construction); a string
+        // value must parse as an unsigned integer, so a producer bug that shipped a
+        // path or raw fragment degrades to `[Filtered]` instead.
+        "watcher_tree_rss_mb"
+        | "watcher_tree_largest_member_mb"
+        | "watcher_tree_non_heap_mb"
+        | "watcher_footprint_prev_sample_mb"
+        | "watcher_footprint_sample_gap_secs" => {
+            Some(value.is_empty() || value.parse::<u64>().is_ok())
+        }
+        // Tree PID count for the pre-empt sample, mirroring `watcher_job_process_count`
+        // (a small integer or the fixed `unknown` sentinel) so a single large runner
+        // is distinguishable from many processes summing to the same total.
+        "watcher_tree_process_count" => Some(value == "unknown" || value.parse::<u32>().is_ok()),
+        // Closed-vocabulary bucket of the measured whole-tree growth rate behind a
+        // pre-empt, mirroring `runner_heap_peak_used_bucket`; the exact rate is not
+        // shipped. An off-vocabulary token degrades to `[Filtered]`.
+        "watcher_footprint_growth_bucket" => Some(matches!(
+            value,
+            "under_20mbs" | "20_to_50mbs" | "50_to_120mbs" | "over_120mbs" | "unknown"
+        )),
+        // Live memory-class decomposition read from a signal-triggered Node
+        // diagnostic report just before a footprint pre-empt (auto-sync watcher
+        // footprint growth-rate cluster, HQ-DESKTOP-60): the JS old-space total/used,
+        // the inferred non-heap excess (tree RSS minus JS heap total), and the count
+        // of ACTIVE libuv handles — a direct leak signal for a file watcher, so the
+        // ~2.9 GB the tree total alone could not attribute gets a named class. Each
+        // reaches this check as `""` for an unmeasured value (type-safe by
+        // construction); a string value must parse as an unsigned integer, so a
+        // producer bug that shipped a path or fragment degrades to `[Filtered]`.
+        "watcher_js_heap_total_mb"
+        | "watcher_js_heap_used_mb"
+        | "watcher_inferred_non_heap_mb"
+        | "watcher_libuv_active_handles" => {
+            Some(value.is_empty() || value.parse::<u64>().is_ok())
+        }
+        // Why the memory-class decomposition is or is not present, so an absent report
+        // degrades honestly to a queryable token instead of a guess (mirrors
+        // `WatcherMemoryClassSource::as_str`). The POSIX report path yields
+        // report_read / report_absent / report_unreadable, the manual/no-dir path
+        // report_not_requested, and Windows report_unsupported_platform. An
+        // off-vocabulary token degrades to `[Filtered]`.
+        "watcher_memory_class_source" => Some(matches!(
+            value,
+            "report_read"
+                | "report_absent"
+                | "report_unreadable"
+                | "report_never_completed"
+                | "report_not_requested"
+                | "report_unsupported_platform"
+        )),
+        // Why the rate-aware footprint projection did or did not ARM on the pre-empt
+        // sample (this reopen, HQ-DESKTOP-60), mirroring
+        // `WatcherProjectionArmReason::as_str`: the final-approach band and per-process
+        // breach that re-scoped the r1 gate are self-describing on the wire. Fixed
+        // vocabulary; an off-vocabulary token degrades to `[Filtered]`.
+        "watcher_projection_arm_reason" => Some(matches!(
+            value,
+            "inert" | "below_final_approach_band" | "no_per_process_breach" | "armed"
         )),
         // The runner package version comes from a local package manifest, not
         // runner stderr. Accept only bounded plain SemVer (including its optional
@@ -719,12 +1167,45 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // above — an off-vocabulary token or non-digit count degrades to `[Filtered]`
         // rather than shipping the runner's raw `path` sentinel or a file fragment.
         "runner_error_sites" => Some(is_closed_vocab_count_rollup(value, RUNNER_ERROR_SITE_TOKENS)),
+        // The PRE-RUNNER (first-push phase) attribution axes (HQ-DESKTOP-64): a
+        // fault the desktop observed before the runner spawned. Same egress
+        // discipline as the runner-error rollups — an off-vocabulary token or
+        // non-digit count degrades to `[Filtered]`. Registering them is what makes
+        // them fail CLOSED: an unregistered key falls through the `_ => None` arm
+        // below and would pass egress UNTOUCHED, so a future producer bug shipping an
+        // out-of-vocabulary value (a raw vault body, a path) could leak. With these
+        // arms, that value degrades to `[Filtered]` instead.
+        "pre_runner_failures" => {
+            Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_SITE_TOKENS))
+        }
+        "pre_runner_causes" => {
+            Some(is_closed_vocab_count_rollup(value, PRE_RUNNER_CAUSE_TOKENS))
+        }
+        // The first-push CAPTURE's two tags (HQ-DESKTOP-64) — a separate event from the
+        // exit, carrying a SINGLE typed cause token and status, not a count rollup.
+        // Unregistered they fell through `_ => None` and passed egress verbatim, so a
+        // future producer bug on this capture could leak a raw vault body; registering
+        // them makes that value degrade to `[Filtered]`. `pre_runner_cause` is exactly
+        // one `PreRunnerCause` token; `pre_runner_status` is `http_<1-3 digits>`/`none`.
+        "pre_runner_cause" => Some(PRE_RUNNER_CAUSE_TOKENS.contains(&value)),
+        "pre_runner_status" => Some(is_pre_runner_status(value)),
         // The cause-signature axis (this reopen): a bounded `hex12:count` rollup
         // correlating an `unknown_named` residual across machines. The producer
         // emits only a fixed-length lowercase-hex digest of a gated identifier, so
         // this independent egress check refuses anything else — a raw identifier,
         // path, or message fragment degrades to `[Filtered]` instead of shipping.
         "runner_error_cause_signature" => Some(is_runner_error_cause_signature_rollup(value)),
+        // The unknown_unnamed residual axes (HQ-DESKTOP-61/62): the structural profile
+        // census (a closed-vocab count rollup) and the residual signature (a bounded
+        // `hex12:count` rollup, sharing the cause-signature validator). Registering them
+        // is what makes them fail CLOSED — an unregistered key falls through `_ => None`
+        // below and would pass egress UNTOUCHED, so a producer bug shipping an
+        // out-of-vocabulary token or a raw message fragment degrades to `[Filtered]`.
+        "runner_error_unknown_profiles" => Some(is_closed_vocab_count_rollup(
+            value,
+            RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS,
+        )),
+        "runner_error_residual_signature" => Some(is_runner_error_cause_signature_rollup(value)),
         // Exec-layer target provenance (HQ-DESKTOP-52 / HQ-DESKTOP-51). The
         // producer emits fixed-vocabulary tokens from the runner-target probe;
         // these independent egress checks degrade a producer bug to `[Filtered]`
@@ -764,6 +1245,37 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // timestamp, host name, or identifier to `[Filtered]` instead of leaking
         // it — the same discipline as the pull-based probe extras above.
         "session_end_latch" => Some(matches!(value, "latched" | "absent" | "unavailable")),
+        // Windows fatal-reason attribution — the THIRD cause channel (this reopen,
+        // HQ-DESKTOP-5W). On Windows both existing "why" channels (WER and runner
+        // stderr) come up empty for a 0xC0000409 fail-fast, so a Node
+        // `--report-on-fatalerror` diagnostic report is read at exit to name the
+        // cause. `runner_fatal_source` names WHERE the reported `runner_fatal_class`
+        // came from; `runner_report_read` is the report read's own provenance. Both
+        // are fixed producer vocabulary; these independent egress checks degrade a
+        // producer bug that shipped a path, a raw report byte, or a stderr fragment
+        // to `[Filtered]` instead of projecting it into a tag or Event.culprit.
+        "runner_fatal_source" => Some(matches!(value, "stderr" | "node_report" | "none")),
+        "runner_report_read" => Some(matches!(
+            value,
+            "report_read"
+                | "report_absent"
+                | "report_unreadable"
+                | "report_not_requested"
+                | "report_disabled_by_user_options"
+        )),
+        // Report-directory delivery provenance (HQ-DESKTOP-5W): whether the
+        // crash-surviving report directory was delivered to the child through the
+        // escaped NODE_OPTIONS value only (production), through both NODE_OPTIONS and an
+        // argv mirror (bare-`node` path), withheld by a user `--report-*`, or not
+        // requested. Fixed producer vocabulary; this independent egress check degrades a
+        // producer bug that shipped a path or raw byte to `[Filtered]` instead of
+        // projecting it into a tag. Mirrors `RunnerReportDirDelivery::as_str` in
+        // hq-desktop-core (kept an independent local mirror, like the other
+        // runner-diagnostic axes above).
+        "runner_report_dir_delivery" => Some(matches!(
+            value,
+            "env_escaped" | "env_and_argv" | "disabled_by_user_options" | "not_requested"
+        )),
         _ => None,
     }
 }
@@ -922,6 +1434,28 @@ fn scrub_sensitive_in_value(v: &mut Value) {
                 scrub_sensitive_in_value(child);
             }
         }
+        Value::String(value) => *value = scrub_sensitive_text(value),
+        _ => {}
+    }
+}
+
+fn scrub_setup_diagnostic_in_value(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if is_sensitive_key(key) {
+                    *child = Value::String(FILTERED.into());
+                } else {
+                    scrub_setup_diagnostic_in_value(child);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for child in items.iter_mut() {
+                scrub_setup_diagnostic_in_value(child);
+            }
+        }
+        Value::String(value) => *value = scrub_setup_diagnostic_text(value),
         _ => {}
     }
 }
@@ -1056,7 +1590,7 @@ fn sync_child_exit_detail(
         Some(value) if is_windows_exit_status_hex(value) => Some(value),
         _ => None,
     };
-    Some(match class {
+    let windows_phrase = match class {
         "fault" => match status {
             Some(status) => format!("windows fault {status}"),
             None => "windows fault".to_string(),
@@ -1067,6 +1601,18 @@ fn sync_child_exit_detail(
         // An ordinary exit is not a Windows-signalled shape — prefer a real fatal
         // class if one names the cause.
         _ => return fatal_phrase(),
+    };
+    // A Windows exit class names WHAT the OS signalled; a `fault` shape can only
+    // ever render the raw NT status (`windows fault 0xC0000409`). When the runner's
+    // own output ALSO named WHY it died — a genuine `runner_fatal_class` — render
+    // both (`windows fault 0xC0000409 / heap oom`), so the reason the Windows shape
+    // alone could never state reaches the culprit. This is the surviving half of
+    // HQ-DESKTOP-5W: before, a valid Windows class short-circuited here and the
+    // fatal class was dropped. Byte-identical to before whenever the fatal class is
+    // `none` or invalid — `fatal_phrase()` is then `None`.
+    Some(match fatal_phrase() {
+        Some(reason) => format!("{windows_phrase} / {reason}"),
+        None => windows_phrase,
     })
 }
 
@@ -1181,6 +1727,15 @@ fn before_send_with_native_context(
         for k in sensitive_keys {
             request.headers.insert(k, "[Filtered]".into());
         }
+        if let Some(url) = request.url.as_mut() {
+            if let Ok(scrubbed) = url::Url::parse(&scrub_sensitive_text(url.as_str())) {
+                *url = scrubbed;
+            }
+        }
+    }
+
+    if let Some(message) = event.message.as_mut() {
+        *message = scrub_sensitive_text(message);
     }
 
     // event.extra is BTreeMap<String, Value>; recurse into each value and
@@ -1188,11 +1743,16 @@ fn before_send_with_native_context(
     for (k, v) in event.extra.iter_mut() {
         if is_sensitive_key(k) {
             *v = Value::String("[Filtered]".into());
+        } else if k.starts_with("setup_") {
+            scrub_setup_diagnostic_in_value(v);
         } else {
             scrub_sensitive_in_value(v);
         }
     }
     scrub_runner_diagnostic_fields(&mut event);
+    for value in event.tags.values_mut() {
+        *value = scrub_sensitive_text(value);
+    }
 
     // event.contexts is BTreeMap<String, Context>; `Context` is a typed enum
     // (`Device`, `Os`, `Runtime`, `App`, `Browser`, `Gpu`, `Trace`, `Other`).
@@ -1215,6 +1775,9 @@ fn before_send_with_native_context(
             )
         {
             breadcrumb.message = Some("[Filtered]".into());
+        }
+        if let Some(message) = breadcrumb.message.as_mut() {
+            *message = scrub_sensitive_text(message);
         }
 
         // event.breadcrumbs[].data is BTreeMap<String, Value> — same pattern
@@ -1371,9 +1934,87 @@ mod tests {
         assert!(is_sensitive_key("token"));
         assert!(is_sensitive_key("apikey"));
         assert!(is_sensitive_key("api_key"));
-        assert!(!is_sensitive_key("x-api-key"));
+        assert!(is_sensitive_key("x-api-key"));
+        assert!(is_sensitive_key("Cookie"));
         assert!(!is_sensitive_key("url"));
         assert!(!is_sensitive_key("note"));
+    }
+
+    /// Setup diagnostics retain raw process text; this proves the shared
+    /// egress scrubber removes several independently shaped credentials from
+    /// environment, command-line, and stderr fields.
+    #[test]
+    fn setup_diagnostic_secret_shapes_are_scrubbed_at_egress() {
+        let mut event = Event::default();
+        event.extra.insert("setup_environment".into(), Value::String("API_KEY=sk_live_abcdefghijklmnopqrstuv npm_abcdefghijklmnopqrstuvwxyz".into()));
+        event.extra.insert("setup_command".into(), Value::String(r#"npm --token=Bearer-token-value-123456 PASSWORD="quoted-password-value" {"token":"json-token-value"}"#.into()));
+        event.extra.insert("setup_stderr".into(), Value::String("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature\nAuthorization: Basic YWRhOnNlY3JldA==\nhttps://ada:hunter2@registry.example/private".into()));
+
+        let result = before_send(event).expect("event remains sendable");
+        let sent = result.extra.values().map(|value| match value {
+            Value::String(text) => text.as_str(),
+            _ => "",
+        }).collect::<Vec<_>>().join("\n");
+        for secret in ["sk_live_abcdefghijklmnopqrstuv", "npm_abcdefghijklmnopqrstuvwxyz", "Bearer-token-value-123456", "quoted-password-value", "json-token-value", "eyJhbGciOiJIUzI1NiJ9.payload.signature", "YWRhOnNlY3JldA==", "ada:hunter2"] {
+            assert!(!sent.contains(secret), "credential-shaped text {secret:?} must not leave the process");
+        }
+    }
+
+    /// Absolute paths retain their useful layout without the local account;
+    /// the cap retains the output tail where commands write failure details.
+    #[test]
+    fn setup_diagnostic_paths_are_anonymized_and_streams_keep_the_16kib_tail() {
+        let mut event = Event::default();
+        event.extra.insert("setup_stderr".into(), Value::String(r"C:\Users\Ada\AppData\Local\HQ\error.log /Users/ada/.npm/_logs/error.log".into()));
+        let result = before_send(event).expect("event remains sendable");
+        let Value::String(paths) = &result.extra["setup_stderr"] else {
+            panic!("setup stderr remains text");
+        };
+        assert!(paths.contains(r"C:\Users\[user]\AppData\Local\HQ\error.log"));
+        assert!(paths.contains("/Users/[user]/.npm/_logs/error.log"));
+        assert!(!paths.contains("Ada"));
+        assert!(!paths.contains("/Users/ada"));
+
+        let input = format!("discard-me-{}diagnostic-tail", "x".repeat(SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES));
+        let tail = setup_diagnostic_tail(&input);
+        assert_eq!(tail.len(), SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+        assert!(tail.ends_with("diagnostic-tail"));
+        assert!(!tail.contains("discard-me-"), "the leading output is discarded");
+    }
+
+    /// Correlation is event context, never part of the issue key: one failed
+    /// dependency/category stays one root cause across retries and people.
+    #[test]
+    fn setup_failure_fingerprint_is_only_dependency_and_closed_category() {
+        assert_eq!(
+            setup_failure_fingerprint("node", "exit-nonzero"),
+            ["node", "exit-nonzero"],
+        );
+    }
+
+    /// Diagnostic reporting remains fire-and-forget even when its work is
+    /// slow or panics, which models a stalled or failed Sentry transport.
+    #[test]
+    fn setup_diagnostic_reporter_never_blocks_on_slow_or_failing_work() {
+        let (slow_started, slow_started_rx) = std::sync::mpsc::channel();
+        let start = std::time::Instant::now();
+        dispatch_sentry_report(move || {
+            let _ = slow_started.send(());
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        });
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        slow_started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("detached report should start");
+
+        let (failed_started, failed_started_rx) = std::sync::mpsc::channel();
+        dispatch_sentry_report(move || {
+            let _ = failed_started.send(());
+            panic!("simulated Sentry transport failure");
+        });
+        failed_started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("failed detached report should remain isolated");
     }
 
     #[test]
@@ -1806,6 +2447,33 @@ mod tests {
     }
 
     #[test]
+    fn every_report_dir_delivery_token_survives_and_lookalikes_fail_closed() {
+        use hq_desktop_core::daemon::RunnerReportDirDelivery;
+        // Driven from the producer's OWN vocabulary (HQ-DESKTOP-5W) so the egress check
+        // can never fall behind a newly-added delivery token.
+        for token in RunnerReportDirDelivery::ALL.map(|d| d.as_str()) {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_dir_delivery", token),
+                Some(true),
+                "delivery token {token:?} must survive egress"
+            );
+        }
+        // A path, a raw report byte, or any off-vocabulary value fails closed.
+        for bad in [
+            r#"C:\Users\ada\.hq\runner-reports\watcher\12"#,
+            "env_escaped_plus_extra",
+            "report_absent",
+            "",
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_dir_delivery", bad),
+                Some(false),
+                "off-vocabulary delivery value {bad:?} must fail closed"
+            );
+        }
+    }
+
+    #[test]
     fn every_watcher_fault_token_survives_and_lookalikes_fail_closed() {
         use hq_desktop_core::watcher_fault::{
             UnmatchedStderrShape, WatcherFaultBinary, WatcherFaultProvenance,
@@ -2167,6 +2835,247 @@ mod tests {
     }
 
     #[test]
+    fn pre_runner_axes_are_egress_safe_across_crates() {
+        use hq_desktop_core::runner_error_shape::{PreRunnerCause, PreRunnerSite};
+        // HQ-DESKTOP-64: the two pre-runner attribution axes are NEW producers of
+        // Sentry tags. Their full emit domain is exactly PreRunnerSite::ALL /
+        // PreRunnerCause::ALL's as_str sets — every one of which the independent
+        // egress mirror must accept. Pinning it fails a future token that slips the
+        // mirror instead of shipping a raw byte.
+        let sites: std::collections::HashSet<&str> =
+            PRE_RUNNER_SITE_TOKENS.iter().copied().collect();
+        for site in PreRunnerSite::ALL {
+            let token = site.as_str();
+            assert!(
+                sites.contains(token),
+                "pre-runner site token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field("pre_runner_failures", &format!("{token}:3")),
+                Some(true),
+                "pre-runner site token {token:?} must survive egress"
+            );
+        }
+        let causes: std::collections::HashSet<&str> =
+            PRE_RUNNER_CAUSE_TOKENS.iter().copied().collect();
+        for cause in PreRunnerCause::ALL {
+            let token = cause.as_str();
+            assert!(
+                causes.contains(token),
+                "pre-runner cause token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field("pre_runner_causes", &format!("{token}:3")),
+                Some(true),
+                "pre-runner cause token {token:?} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_runner_axes_survive_before_send_and_out_of_vocabulary_is_filtered() {
+        // A realistic pre-runner envelope survives before_send byte-for-byte.
+        let mut event = Event::default();
+        event
+            .tags
+            .insert("pre_runner_failures".into(), "first_push:1".into());
+        event
+            .tags
+            .insert("pre_runner_causes".into(), "scope_exceeds_parent:1".into());
+        let survived = before_send(event).expect("event remains sendable");
+        assert_eq!(survived.tags["pre_runner_failures"], "first_push:1");
+        assert_eq!(survived.tags["pre_runner_causes"], "scope_exceeds_parent:1");
+
+        // An out-of-vocabulary value (a path-like fragment a producer bug could ship)
+        // degrades to [Filtered] rather than leaking. On base — before these keys are
+        // registered — the SAME value falls through the `_ => None` arm and survives
+        // verbatim, so this is the non-vacuous base-failing egress probe.
+        let mut leaky = Event::default();
+        leaky
+            .tags
+            .insert("pre_runner_causes".into(), "/Users/ada/secret:1".into());
+        leaky
+            .tags
+            .insert("pre_runner_failures".into(), "not_a_site:1".into());
+        let filtered = before_send(leaky).expect("event remains sendable");
+        assert_eq!(filtered.tags["pre_runner_causes"], "[Filtered]");
+        assert_eq!(filtered.tags["pre_runner_failures"], "[Filtered]");
+    }
+
+    #[test]
+    fn pre_runner_tokens_avoid_the_sentry_denylist() {
+        const DENYLIST: &[&str] = &[
+            "auth",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "api_key",
+            "apikey",
+            "session",
+            "private_key",
+            "privatekey",
+        ];
+        for token in PRE_RUNNER_SITE_TOKENS
+            .iter()
+            .chain(PRE_RUNNER_CAUSE_TOKENS.iter())
+        {
+            for denied in DENYLIST {
+                assert!(
+                    !token.contains(denied),
+                    "pre-runner token {token:?} contains denylist substring {denied:?}"
+                );
+            }
+        }
+    }
+
+    // ── unknown_unnamed residual axes (HQ-DESKTOP-61/62) ─────────────────────────
+
+    #[test]
+    fn residual_axes_are_egress_safe_across_crates() {
+        use hq_desktop_core::runner_error_shape::RunnerErrorUnknownProfile;
+        // The structural-profile census is a NEW producer of a Sentry tag. Its full
+        // emit domain is exactly RunnerErrorUnknownProfile::ALL's as_str set — every
+        // one of which the independent egress mirror must accept. Pinning it fails a
+        // future profile token that slips the mirror instead of shipping a raw byte.
+        let allowed: std::collections::HashSet<&str> =
+            RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS.iter().copied().collect();
+        for profile in RunnerErrorUnknownProfile::ALL {
+            let token = profile.as_str();
+            assert!(
+                allowed.contains(token),
+                "profile token {token:?} missing from the egress allow-list"
+            );
+            assert_eq!(
+                valid_runner_diagnostic_field(
+                    "runner_error_unknown_profiles",
+                    &format!("{token}:3")
+                ),
+                Some(true),
+                "profile token {token:?} must survive egress"
+            );
+        }
+        // The residual-signature axis reuses the cause-signature validator: a valid
+        // hex12:count survives, a raw identity fails closed.
+        assert_eq!(
+            valid_runner_diagnostic_field(
+                "runner_error_residual_signature",
+                "ea4e65576be5:4,9205e6d1c2fb:1"
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            valid_runner_diagnostic_field("runner_error_residual_signature", "EWEIRD:4"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn residual_and_pre_runner_capture_axes_survive_before_send_and_malformed_is_filtered() {
+        // Valid envelopes on all four newly-registered keys survive before_send
+        // byte-for-byte.
+        let mut event = Event::default();
+        event.tags.insert(
+            "runner_error_unknown_profiles".into(),
+            "key_value_led:160,lower_prose:8".into(),
+        );
+        event.tags.insert(
+            "runner_error_residual_signature".into(),
+            "ea4e65576be5:9,9205e6d1c2fb:2".into(),
+        );
+        event
+            .tags
+            .insert("pre_runner_cause".into(), "scope_exceeds_parent".into());
+        event.tags.insert("pre_runner_status".into(), "http_403".into());
+        let survived = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            survived.tags["runner_error_unknown_profiles"],
+            "key_value_led:160,lower_prose:8"
+        );
+        assert_eq!(
+            survived.tags["runner_error_residual_signature"],
+            "ea4e65576be5:9,9205e6d1c2fb:2"
+        );
+        assert_eq!(survived.tags["pre_runner_cause"], "scope_exceeds_parent");
+        assert_eq!(survived.tags["pre_runner_status"], "http_403");
+        // `none` is a valid pre_runner_status sentinel.
+        let mut none_status = Event::default();
+        none_status
+            .tags
+            .insert("pre_runner_status".into(), "none".into());
+        assert_eq!(
+            before_send(none_status).expect("sendable").tags["pre_runner_status"],
+            "none"
+        );
+
+        // Fail-closed rejection cases. On base — before these keys are registered — the
+        // SAME values fall through the `_ => None` arm and ship verbatim, so these are
+        // the non-vacuous base-failing egress probes.
+        for (key, value) in [
+            ("runner_error_unknown_profiles", "not_a_profile:1"),
+            ("runner_error_unknown_profiles", "key_value_led:x"),
+            ("runner_error_unknown_profiles", "/Users/ada/secret.env:1"),
+            ("runner_error_residual_signature", "VaultNotFoundError:1"),
+            ("runner_error_residual_signature", "1A2B3C4D5E6F:1"),
+            ("runner_error_residual_signature", "1a2b3c:1"),
+            // The single-value capture keys: a count rollup, a raw body, or a bad
+            // status must all fail closed.
+            ("pre_runner_cause", "scope_exceeds_parent:1"),
+            ("pre_runner_cause", "/Users/ada/secret"),
+            ("pre_runner_status", "http_4030"),
+            ("pre_runner_status", "500"),
+            ("pre_runner_status", "http_x"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "lookalike {key}={value:?} must fail closed"
+            );
+            let mut leaky = Event::default();
+            leaky.tags.insert(key.to_string(), value.to_string());
+            assert_eq!(
+                before_send(leaky).expect("event remains sendable").tags[key],
+                "[Filtered]",
+                "{key}={value:?} must degrade to [Filtered]"
+            );
+        }
+    }
+
+    #[test]
+    fn residual_and_pre_runner_capture_tokens_avoid_the_sentry_denylist() {
+        const DENYLIST: &[&str] = &[
+            "auth",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "api_key",
+            "apikey",
+            "session",
+            "private_key",
+            "privatekey",
+        ];
+        // Every profile token and every newly-registered key name is denylist-safe, so
+        // the server-side @password:filter can never blank the axis.
+        let keys = [
+            "runner_error_unknown_profiles",
+            "runner_error_residual_signature",
+            "pre_runner_cause",
+            "pre_runner_status",
+        ];
+        for token in RUNNER_ERROR_UNKNOWN_PROFILE_TOKENS.iter().chain(keys.iter()) {
+            for denied in DENYLIST {
+                assert!(
+                    !token.contains(denied),
+                    "token/key {token:?} contains denylist substring {denied:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn watcher_fault_fields_survive_and_malformed_fail_closed_before_send() {
         let mut event = Event::default();
         for (key, value) in [
@@ -2464,6 +3373,129 @@ mod tests {
     }
 
     #[test]
+    fn before_send_culprit_names_both_the_windows_shape_and_the_reason() {
+        // HQ-DESKTOP-5W, surviving half: the recurrence's exact watcher envelope PLUS
+        // a now-knowable reason (runner_fatal_class=heap_oom, e.g. from the Node
+        // diagnostic report this reopen adds). The culprit must name BOTH the Windows
+        // shape AND the reason. On base a valid Windows class short-circuits
+        // sync_child_exit_detail and the reason is silently dropped, so this
+        // assertion is RED until that short-circuit is fixed.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("windows_fault_symbol", "STATUS_STACK_BUFFER_OVERRUN"),
+            ("watcher_fault_provenance", "deadline_expired"),
+            ("watcher_fault_faulting_image", "unavailable"),
+            ("watcher_fault_job_culprit_candidate", "node_exe"),
+            ("watcher_fault_job_image_provenance", "job_tree_observed"),
+            ("runner_fatal_class", "heap_oom"),
+            ("runner_fatal_source", "node_report"),
+            ("runner_report_read", "report_read"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/watcher: node_exe (windows fault 0xC0000409 / heap oom)")
+        );
+        // The two new attribution axes are content-safe fixed vocabulary and survive
+        // egress unchanged.
+        assert_eq!(result.tags["runner_fatal_source"], "node_report");
+        assert_eq!(result.tags["runner_report_read"], "report_read");
+    }
+
+    #[test]
+    fn before_send_culprit_windows_fault_with_no_reason_is_byte_identical() {
+        // The SAME recurrence envelope with NO knowable reason (runner_fatal_class=none,
+        // report_absent) renders today's culprit byte-for-byte — the merged
+        // HQ-DESKTOP-5W behaviour is preserved when the third channel yields nothing.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("windows_exit_class", "fault"),
+            ("windows_exit_status", "0xC0000409"),
+            ("watcher_fault_provenance", "deadline_expired"),
+            ("watcher_fault_faulting_image", "unavailable"),
+            ("watcher_fault_job_culprit_candidate", "node_exe"),
+            ("watcher_fault_job_image_provenance", "job_tree_observed"),
+            ("runner_fatal_class", "none"),
+            ("runner_fatal_source", "none"),
+            ("runner_report_read", "report_absent"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/watcher: node_exe (windows fault 0xC0000409)")
+        );
+    }
+
+    #[test]
+    fn runner_fatal_source_and_report_read_axes_fail_closed_at_egress() {
+        // Valid fixed vocabulary passes; anything else — an off-vocabulary token, a
+        // path, or a [Filtered]-shaped value a producer bug might ship — is refused,
+        // so it can never reach a tag or the culprit.
+        for value in ["stderr", "node_report", "none"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_fatal_source", value),
+                Some(true),
+                "valid source {value:?} must pass egress"
+            );
+        }
+        for value in [
+            "report_read",
+            "report_absent",
+            "report_unreadable",
+            "report_not_requested",
+            "report_disabled_by_user_options",
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_read", value),
+                Some(true),
+                "valid read {value:?} must pass egress"
+            );
+        }
+        for bad in ["node_reporte", "", "/var/report.json", "[Filtered]", "heap_oom"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_fatal_source", bad),
+                Some(false),
+                "off-vocabulary source {bad:?} must degrade to [Filtered]"
+            );
+        }
+        for bad in ["report", "", r"C:\Users\Ada\report.json", "[Filtered]"] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_read", bad),
+                Some(false),
+                "off-vocabulary read {bad:?} must degrade to [Filtered]"
+            );
+        }
+
+        // End-to-end through before_send: a poisoned axis is scrubbed to [Filtered];
+        // the culprit still names the (valid) fatal class and never the poison.
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "manual"),
+            ("runner_phase", "push"),
+            ("runner_fatal_class", "heap_oom"),
+            ("runner_fatal_source", "/etc/passwd"),
+            ("runner_report_read", "report"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(result.tags["runner_fatal_source"], "[Filtered]");
+        assert_eq!(result.tags["runner_report_read"], "[Filtered]");
+        assert_eq!(
+            result.culprit.as_deref(),
+            Some("sync/runner push: heap oom")
+        );
+    }
+
+    #[test]
     fn test_runner_stderr_fixed_vocabulary_lookalikes_are_filtered() {
         let mut event = Event::default();
         for message in [
@@ -2544,6 +3576,67 @@ mod tests {
         assert!(breadcrumbs[0].data.is_empty());
 
         reset_native_panic_context_for_test();
+    }
+
+    // Every static seam id must round-trip through `from_id`/`message`, and an id
+    // outside the closed set must map to `None`. Locks the HQ-DESKTOP-44
+    // re-entrant intercept seam (id 12, `app.session-end-intercept`) and proves a
+    // future unmapped id cannot silently materialize an empty breadcrumb.
+    #[test]
+    fn native_panic_seam_ids_round_trip_and_reject_unmapped_ids() {
+        let seams = [
+            (1u8, NativePanicSeam::TrayLeftClick, "tray.left-click"),
+            (2, NativePanicSeam::TrayBlurHide, "tray.blur-hide"),
+            (
+                3,
+                NativePanicSeam::GlobalShortcutTogglePopover,
+                "global-shortcut.toggle-popover",
+            ),
+            (
+                4,
+                NativePanicSeam::GlobalShortcutToggleDesktop,
+                "global-shortcut.toggle-desktop",
+            ),
+            (
+                5,
+                NativePanicSeam::WindowCloseRequestedHide,
+                "window.close-requested-hide",
+            ),
+            (6, NativePanicSeam::WindowThemeChanged, "window.theme-changed"),
+            (
+                7,
+                NativePanicSeam::WindowForceForeground,
+                "window-focus.force-foreground",
+            ),
+            (
+                8,
+                NativePanicSeam::SingleInstanceSurfaceExisting,
+                "single-instance.surface-existing",
+            ),
+            (9, NativePanicSeam::AppExitRequested, "app.exit-requested"),
+            (10, NativePanicSeam::AppSessionEndExit, "app.session-end-exit"),
+            (
+                11,
+                NativePanicSeam::AppSessionEndObserved,
+                "app.session-end-observed",
+            ),
+            (
+                12,
+                NativePanicSeam::AppSessionEndIntercepted,
+                "app.session-end-intercept",
+            ),
+        ];
+
+        for (id, seam, message) in seams {
+            assert_eq!(NativePanicSeam::from_id(id), Some(seam), "id {id} round-trip");
+            assert_eq!(seam as u8, id, "variant {seam:?} keeps its stable id");
+            assert_eq!(seam.message(), message, "id {id} message is stable");
+        }
+
+        // The intercept seam is the newest, so the first unmapped id is 13.
+        assert_eq!(NativePanicSeam::from_id(0), None);
+        assert_eq!(NativePanicSeam::from_id(13), None);
+        assert_eq!(NativePanicSeam::from_id(u8::MAX), None);
     }
 
     #[test]
@@ -2902,6 +3995,10 @@ mod tests {
             ("watcher_job_peak_commit_bucket", "512mb_to_1gb:/Users/Ada"),
             ("watcher_job_process_count", "2 processes /Users/Ada"),
             ("watcher_child_kind", "launcher:/Users/Ada"),
+            // Shim-vs-runner discriminator (HQ-DESKTOP-66): an off-vocabulary token
+            // or a path-shaped count must degrade to `[Filtered]`.
+            ("watcher_job_survivors", "node_exe:/Users/Ada"),
+            ("watcher_job_survivor_count", "2 processes /Users/Ada"),
             ("rss_scope", "shim/secret"),
             // The runner heap-ceiling channels: a non-integer MB or an
             // out-of-vocabulary provenance must degrade to `[Filtered]`.
@@ -2940,6 +4037,16 @@ mod tests {
             ("watcher_child_kind", "cmd_shim"),
             ("watcher_child_kind", "launcher"),
             ("watcher_child_kind", "direct_executable"),
+            // Shim-vs-runner discriminator (HQ-DESKTOP-66): every closed-vocabulary
+            // survivor token and a bare-integer count survive egress.
+            ("watcher_job_survivors", "none"),
+            ("watcher_job_survivors", "node_exe"),
+            ("watcher_job_survivors", "cmd_exe"),
+            ("watcher_job_survivors", "other"),
+            ("watcher_job_survivors", "mixed"),
+            ("watcher_job_survivors", "unavailable"),
+            ("watcher_job_survivor_count", "0"),
+            ("watcher_job_survivor_count", "3"),
             ("rss_scope", "shim"),
             ("rss_scope", "launcher"),
             ("rss_scope", "runner"),
@@ -2961,6 +4068,124 @@ mod tests {
             assert_eq!(
                 result.tags[key], value,
                 "valid {key}={value} must survive egress"
+            );
+        }
+    }
+
+    #[test]
+    fn footprint_preempt_decomposition_fields_survive_egress_and_reject_lookalikes() {
+        // Valid values survive egress: bare-integer MB/seconds, a small PID count or
+        // the `unknown` sentinel, and the closed growth-bucket vocabulary.
+        for (key, value) in [
+            ("watcher_tree_rss_mb", "6506"),
+            ("watcher_tree_rss_mb", ""),
+            ("watcher_tree_largest_member_mb", "4800"),
+            ("watcher_tree_non_heap_mb", "2922"),
+            ("watcher_tree_non_heap_mb", "0"),
+            ("watcher_footprint_prev_sample_mb", "4600"),
+            ("watcher_footprint_prev_sample_mb", ""),
+            ("watcher_footprint_sample_gap_secs", "30"),
+            ("watcher_footprint_sample_gap_secs", ""),
+            ("watcher_tree_process_count", "12"),
+            ("watcher_tree_process_count", "unknown"),
+            ("watcher_footprint_growth_bucket", "under_20mbs"),
+            ("watcher_footprint_growth_bucket", "20_to_50mbs"),
+            ("watcher_footprint_growth_bucket", "50_to_120mbs"),
+            ("watcher_footprint_growth_bucket", "over_120mbs"),
+            ("watcher_footprint_growth_bucket", "unknown"),
+            // The projection arm-reason token (HQ-DESKTOP-60): fixed vocabulary.
+            ("watcher_projection_arm_reason", "inert"),
+            ("watcher_projection_arm_reason", "below_final_approach_band"),
+            ("watcher_projection_arm_reason", "no_per_process_breach"),
+            ("watcher_projection_arm_reason", "armed"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], value,
+                "valid {key}={value} must survive egress"
+            );
+        }
+        // A producer bug that shipped a path, a non-integer, or an out-of-vocabulary
+        // token in any of the new footprint-decomposition fields degrades to
+        // `[Filtered]` rather than leaking it.
+        for (key, value) in [
+            ("watcher_tree_rss_mb", "6506 /Users/Ada"),
+            ("watcher_tree_largest_member_mb", "4800MB"),
+            ("watcher_tree_non_heap_mb", "-1"),
+            ("watcher_footprint_prev_sample_mb", "4600; rm -rf"),
+            ("watcher_footprint_sample_gap_secs", "30s"),
+            ("watcher_tree_process_count", "12 processes /Users/Ada"),
+            ("watcher_footprint_growth_bucket", "40mbs"),
+            ("watcher_footprint_growth_bucket", "50_to_120mbs:/Users/Ada"),
+            ("watcher_projection_arm_reason", "armed /Users/Ada"),
+            ("watcher_projection_arm_reason", "sort_of_armed"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], "[Filtered]", "tag key={key} value={value}");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra key={key} value={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_class_fields_survive_egress_and_reject_lookalikes() {
+        // The live memory-class decomposition read from a signal-triggered report
+        // (HQ-DESKTOP-60): bare-integer MB / counts (or "" when unmeasured) and the
+        // fixed source vocabulary survive egress.
+        for (key, value) in [
+            ("watcher_js_heap_total_mb", "3584"),
+            ("watcher_js_heap_total_mb", ""),
+            ("watcher_js_heap_used_mb", "3072"),
+            ("watcher_inferred_non_heap_mb", "4365"),
+            ("watcher_inferred_non_heap_mb", "0"),
+            ("watcher_libuv_active_handles", "128"),
+            ("watcher_libuv_active_handles", ""),
+            ("watcher_memory_class_source", "report_read"),
+            ("watcher_memory_class_source", "report_absent"),
+            ("watcher_memory_class_source", "report_unreadable"),
+            ("watcher_memory_class_source", "report_never_completed"),
+            ("watcher_memory_class_source", "report_not_requested"),
+            ("watcher_memory_class_source", "report_unsupported_platform"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(
+                result.tags[key], value,
+                "valid {key}={value} must survive egress"
+            );
+        }
+        // A path, non-integer, or out-of-vocabulary token in any new memory-class
+        // field degrades to `[Filtered]` rather than leaking it.
+        for (key, value) in [
+            ("watcher_js_heap_total_mb", "3584 /Users/Ada"),
+            ("watcher_js_heap_used_mb", "3072MB"),
+            ("watcher_inferred_non_heap_mb", "-1"),
+            ("watcher_libuv_active_handles", "128; rm -rf"),
+            ("watcher_memory_class_source", "report_read /Users/Ada"),
+            ("watcher_memory_class_source", "report_guessed"),
+        ] {
+            let mut event = Event::default();
+            event.tags.insert(key.to_string(), value.to_string());
+            event
+                .extra
+                .insert(key.to_string(), Value::String(value.to_string()));
+            let result = before_send(event).expect("event remains sendable");
+            assert_eq!(result.tags[key], "[Filtered]", "tag key={key} value={value}");
+            assert_eq!(
+                result.extra[key],
+                Value::String("[Filtered]".to_string()),
+                "extra key={key} value={value}"
             );
         }
     }

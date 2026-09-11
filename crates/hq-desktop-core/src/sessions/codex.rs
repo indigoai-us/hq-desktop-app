@@ -99,13 +99,24 @@
 //! classification; the dedicated liveness engine (US-004) adds the process
 //! cross-check and `awaiting_input` detection.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
+use super::scan_cache::StableCache;
 use super::{AgentOrigin, AgentSession, AgentTool, SessionStatus};
+
+/// Memo for the rollout **head** parse.
+///
+/// The Mission Control poller re-scans every few seconds and used to re-open and
+/// re-parse the head of every rollout on disk — thousands of files on a working
+/// machine, and a large share of the app's idle CPU. A rollout is append-only:
+/// the `session_meta` / `turn_context` records we read live at the *head*, so for
+/// a given path the parse result cannot change. Keyed by path alone, and pruned
+/// each scan to the rollouts that still exist. See `super::scan_cache`.
+static HEAD_CACHE: StableCache<HeadInfo> = StableCache::new();
 
 /// Provenance tag stamped on every record this reader emits (US-001 `source`).
 const SOURCE_TAG: &str = "codex-rollout";
@@ -166,6 +177,8 @@ struct RolloutLine {
 /// `session_meta`.
 #[derive(Debug, Default, Deserialize)]
 struct RolloutPayload {
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -174,10 +187,22 @@ struct RolloutPayload {
     cwd: Option<String>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    content: Option<Vec<RolloutContent>>,
+    #[serde(default)]
+    source: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RolloutContent {
+    #[serde(default)]
+    text: Option<String>,
 }
 
 /// Fields recovered from a rollout's head.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct HeadInfo {
     /// `payload.id` from `session_meta` (authoritative id; falls back to the
     /// filename-derived id when absent).
@@ -186,6 +211,10 @@ struct HeadInfo {
     model: Option<String>,
     /// Session-start `timestamp` from `session_meta.payload`.
     started_at: Option<String>,
+    company: Option<String>,
+    project: Option<String>,
+    first_user_message: Option<String>,
+    source: Option<serde_json::Value>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,6 +258,15 @@ pub fn codex_dir() -> PathBuf {
 /// `now` is injected (not `SystemTime::now()`) so the age→status window is
 /// deterministic under test.
 pub fn scan_codex_sessions(codex_dir: &Path, now: SystemTime) -> Vec<AgentSession> {
+    scan_codex_sessions_with_hq(codex_dir, None, now)
+}
+
+/// Enrich native conversations with app-owned metadata when an HQ root exists.
+pub fn scan_codex_sessions_with_hq(
+    codex_dir: &Path,
+    hq_root: Option<&Path>,
+    now: SystemTime,
+) -> Vec<AgentSession> {
     let rollouts = enumerate_rollout_files(codex_dir);
 
     if rollouts.is_empty() {
@@ -238,17 +276,60 @@ pub fn scan_codex_sessions(codex_dir: &Path, now: SystemTime) -> Vec<AgentSessio
 
     // Read the index (best-effort) for last-activity + thread-name, keyed by id.
     let index = read_index(&codex_dir.join("session_index.jsonl"));
+    // HQ generates its own app id; Codex assigns a different durable thread id.
+    // Join once by the recorded native identity, never by title or runtime cwd.
+    let linked_meta = hq_root
+        .map(super::claude::read_linked_session_meta)
+        .unwrap_or_default();
+
+    // Prune the head memo to the rollouts that still exist before reading, so a
+    // deleted or archived rollout does not leak an entry for the process lifetime.
+    let seen: HashSet<PathBuf> = rollouts.values().map(|r| r.path.clone()).collect();
+    HEAD_CACHE.retain_paths(&seen);
 
     let mut out: Vec<AgentSession> = Vec::with_capacity(rollouts.len());
     for (file_id, rollout) in &rollouts {
-        let head = read_head_info(&rollout.path);
+        // Memoised: an append-only rollout's head never changes, so this is one
+        // open + parse per rollout for the life of the process, not one per tick.
+        let head = HEAD_CACHE
+            .get_or_compute(&rollout.path, || {
+                let head = read_head_info(&rollout.path);
+                // A rollout may be observed before its first JSON line has
+                // finished writing. Only cache classified heads permanently.
+                head.source.is_some().then_some(head)
+            })
+            .unwrap_or_else(|| read_head_info(&rollout.path));
 
-        // id: prefer the rollout's own `session_meta.payload.id`, else the
-        // filename-embedded id (they match in practice, but the payload is
-        // authoritative).
-        let id = head.id.clone().unwrap_or_else(|| file_id.clone());
+        // `codex exec` rollouts are internal executions (including sub-agents),
+        // not user-owned Desktop tasks. They share the same rollout store but
+        // have no task in Codex's native session index and must not appear as
+        // resumable conversations in HQ.
+        if head.source.as_ref().is_some_and(|source| {
+            matches!(source.as_str(), Some("exec" | "subagent"))
+                || source.get("subagent").is_some()
+        }) {
+            continue;
+        }
+        // Keep legacy index-backed main threads, but do not invent a task from
+        // an unclassified, partially written background rollout.
+        if head.source.is_none() && !index.contains_key(file_id) {
+            continue;
+        }
 
-        let idx = index.get(file_id);
+        // The filename identifies the task represented by this rollout. Forked
+        // Codex tasks retain their parent's id in `session_meta.payload.id` and
+        // append the child id to the filename, so preferring the payload here
+        // collapses the child back into its parent and gives Resume the wrong
+        // native id.
+        let id = file_id.clone();
+        let meta = linked_meta.get(&id);
+
+        // A user-created fork keeps the parent id in session_meta but appends
+        // its own resumable id to the filename. Use the child id for Resume and
+        // the parent index row only as a display-metadata fallback.
+        let idx = index
+            .get(file_id)
+            .or_else(|| head.id.as_ref().and_then(|id| index.get(id)));
 
         // last-activity: prefer the index `updated_at`, else the rollout mtime.
         let mtime_iso = system_time_to_iso(rollout.mtime);
@@ -261,12 +342,35 @@ pub fn scan_codex_sessions(codex_dir: &Path, now: SystemTime) -> Vec<AgentSessio
 
         let cwd = head.cwd.clone().unwrap_or_default();
 
-        // project: cwd basename → index thread_name. Codex carries no HQ
-        // company/project metadata in its rollouts, so company stays empty
-        // (US-004 / enrichment may resolve it later from cwd).
-        let project = basename(&cwd)
-            .or_else(|| idx.and_then(|l| l.thread_name.clone()))
+        let company = meta
+            .and_then(|m| m.company_slug.clone())
+            .or_else(|| head.company.clone())
             .unwrap_or_default();
+        let project = meta
+            .and_then(|m| m.project.clone())
+            .or_else(|| head.project.clone())
+            .unwrap_or_else(|| {
+            // The HQ root is a runtime cwd, not a project. Only use a cwd
+            // basename for non-HQ sessions where it remains meaningful. A
+            // native task title is not project metadata and must stay out of
+            // this field.
+            basename(&cwd)
+                .filter(|name| !name.eq_ignore_ascii_case("hq"))
+                .unwrap_or_default()
+        });
+        let title = idx
+            .and_then(|line| line.thread_name.clone())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                meta.and_then(|m| m.title.clone())
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .or_else(|| {
+                head.first_user_message
+                    .as_deref()
+                    .and_then(title_from_prompt)
+            })
+            .unwrap_or_else(|| project.clone());
 
         let status = status_from_age(&last_activity_at, rollout.mtime, now);
 
@@ -274,9 +378,10 @@ pub fn scan_codex_sessions(codex_dir: &Path, now: SystemTime) -> Vec<AgentSessio
             id,
             tool: AgentTool::Codex,
             origin: AgentOrigin::Local,
+            title,
             cwd,
             project,
-            company: String::new(),
+            company,
             model: head.model.clone().unwrap_or_default(),
             status,
             started_at,
@@ -429,6 +534,9 @@ fn read_head_info(path: &Path) -> HeadInfo {
                 if info.cwd.is_none() {
                     info.cwd = payload.cwd;
                 }
+                if info.source.is_none() {
+                    info.source = payload.source;
+                }
             }
             Some("turn_context") => {
                 // turn_context carries the freshest cwd + the model.
@@ -439,6 +547,30 @@ fn read_head_info(path: &Path) -> HeadInfo {
                     info.model = payload.model;
                 }
             }
+            Some("response_item")
+                if payload.kind.as_deref() == Some("message")
+                    && payload.role.as_deref() == Some("user") =>
+            {
+                let text = payload
+                    .content
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|part| part.text)
+                    .filter(|text| !is_injected_user_context(text))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !text.trim().is_empty() {
+                    if let Some((company, project)) = parse_startwork_context(&text) {
+                        if info.company.is_none() {
+                            info.company = Some(company);
+                            info.project = project;
+                        }
+                    }
+                    if info.first_user_message.is_none() {
+                        info.first_user_message = Some(text);
+                    }
+                }
+            }
             _ => continue,
         }
 
@@ -447,12 +579,79 @@ fn read_head_info(path: &Path) -> HeadInfo {
             && info.cwd.is_some()
             && info.model.is_some()
             && info.started_at.is_some()
+            && info.first_user_message.is_some()
         {
             break;
         }
     }
 
     info
+}
+
+/// Codex persists runtime-supplied context as user-role `input_text` blocks.
+/// These are instructions to the model, not messages authored by the user, so
+/// they must never become transcript bubbles or fallback task titles.
+pub fn is_injected_user_context(text: &str) -> bool {
+    let text = text.trim_start();
+    [
+        "<recommended_plugins>",
+        "<in-app-browser-context",
+        "<app-context>",
+        "<skills_instructions>",
+        "<permissions instructions>",
+        "<collaboration_mode>",
+        "<apps_instructions>",
+        "<plugins_instructions>",
+        "<skill>",
+        "<environment_context>",
+        "<policy-reminder>",
+        "<local-context>",
+        "<journal-index>",
+        "<hook_prompt>",
+        "# AGENTS.md instructions for ",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix))
+}
+
+fn parse_startwork_context(text: &str) -> Option<(String, Option<String>)> {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("/startwork "))?;
+    let mut words = line.split_whitespace();
+    if words.next()? != "/startwork" {
+        return None;
+    }
+    let company = words.next()?.trim_matches(|c: char| c == '`' || c == '"');
+    if company.is_empty() {
+        return None;
+    }
+    let project = words
+        .next()
+        .map(|value| {
+            value
+                .trim_matches(|c: char| c == '`' || c == '"')
+                .to_string()
+        })
+        .filter(|value| !value.is_empty());
+    Some((company.to_string(), project))
+}
+
+fn title_from_prompt(prompt: &str) -> Option<String> {
+    let candidate = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("/startwork "))?;
+    let candidate = candidate
+        .strip_prefix('/')
+        .and_then(|line| line.split_once(' ').map(|(_, rest)| rest))
+        .unwrap_or(candidate)
+        .trim();
+    if candidate.is_empty() {
+        return None;
+    }
+    Some(candidate.chars().take(80).collect())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -488,15 +687,18 @@ fn is_rollout_filename(name: &str) -> bool {
     name.starts_with("rollout-") && name.ends_with(".jsonl")
 }
 
-/// Extract the session id from a rollout filename. The shape is
+/// Extract the session id from a rollout filename. The usual shape is
 /// `rollout-YYYY-MM-DDTHH-MM-SS-<uuid>.jsonl`, where `<uuid>` is the last five
 /// dash-joined groups (a UUID with its own internal dashes). We strip the
 /// `rollout-` prefix and `.jsonl` suffix, then take the trailing UUID (last 5
 /// dash groups) so the leading timestamp (which also contains dashes) is dropped.
+/// Forked Codex tasks use `...-<parent_uuid>_<child_uuid>.jsonl`; the child id
+/// after the final underscore is the task's native resume identifier.
 /// Returns `None` if the name doesn't contain a plausible UUID tail.
 fn rollout_id_from_filename(name: &str) -> Option<String> {
     let stem = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
-    let parts: Vec<&str> = stem.split('-').collect();
+    let id_bearing_stem = stem.rsplit('_').next().unwrap_or(stem);
+    let parts: Vec<&str> = id_bearing_stem.split('-').collect();
     // A UUID is 5 dash-joined groups (8-4-4-4-12). The timestamp prefix adds
     // more leading groups; the id is always the last 5.
     if parts.len() < 5 {
@@ -588,8 +790,17 @@ mod tests {
 
     /// The `session_meta` header line as Codex writes it (line 1 of a rollout).
     fn session_meta_line(id: &str, cwd: &str, started_at: &str) -> String {
+        session_meta_line_with_source(id, cwd, started_at, "vscode")
+    }
+
+    fn session_meta_line_with_source(
+        id: &str,
+        cwd: &str,
+        started_at: &str,
+        source: &str,
+    ) -> String {
         format!(
-            r#"{{"timestamp":"{started_at}","type":"session_meta","payload":{{"id":"{id}","timestamp":"{started_at}","cwd":"{cwd}","originator":"Codex Desktop","cli_version":"0.128.0","source":"vscode","model_provider":"openai"}}}}"#
+            r#"{{"timestamp":"{started_at}","type":"session_meta","payload":{{"id":"{id}","timestamp":"{started_at}","cwd":"{cwd}","originator":"Codex Desktop","cli_version":"0.128.0","source":"{source}","model_provider":"openai"}}}}"#
         )
     }
 
@@ -610,6 +821,18 @@ mod tests {
 
     fn index_line(id: &str, thread_name: &str, updated_at: &str) -> String {
         format!(r#"{{"id":"{id}","thread_name":"{thread_name}","updated_at":"{updated_at}"}}"#)
+    }
+
+    fn user_message_line(text: &str) -> String {
+        serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}]
+            }
+        })
+        .to_string()
     }
 
     /// Write a rollout file at `sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`.
@@ -692,8 +915,9 @@ mod tests {
         assert_eq!(a.origin, AgentOrigin::Local);
         assert_eq!(a.cwd, "/Users/corey/Documents/HQ");
         assert_eq!(a.model, "gpt-5.5", "model lifted from turn_context");
-        assert_eq!(a.project, "HQ", "project from cwd basename");
+        assert_eq!(a.project, "", "the HQ runtime root is not a project");
         assert_eq!(a.company, "", "Codex rollouts carry no HQ company metadata");
+        assert_eq!(a.title, "Mission Control reader");
         assert_eq!(a.source, SOURCE_TAG);
         // Index updated_at is preferred for last-activity.
         assert_eq!(a.last_activity_at, "2026-06-15T18:05:00.000Z");
@@ -709,11 +933,159 @@ mod tests {
     }
 
     #[test]
+    fn extracts_hq_context_and_native_title() {
+        let root = make_fixture_root();
+        let id = "019e0525-596f-7013-82ee-9397e9a1c30b";
+        let rollout = format!(
+            "{}\n{}\n{}\n",
+            session_meta_line(id, "/Users/corey/Documents/HQ", "2026-06-15T18:00:00.000Z"),
+            turn_context_line(
+                "/Users/corey/Documents/HQ",
+                "gpt-5.6-sol",
+                "2026-06-15T18:00:01.000Z"
+            ),
+            user_message_line(
+                "/startwork indigo hq-console-reenvision\n\n/indigo:html-deck hello world deck"
+            ),
+        );
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-00-00", id, &rollout);
+        fs::write(
+            root.join("session_index.jsonl"),
+            format!(
+                "{}\n",
+                index_line(id, "Build the hello world deck", "2026-06-15T18:05:00.000Z")
+            ),
+        )
+        .unwrap();
+
+        let sessions = scan_codex_sessions(&root, SystemTime::now());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].company, "indigo");
+        assert_eq!(sessions[0].project, "hq-console-reenvision");
+        assert_eq!(sessions[0].title, "Build the hello world deck");
+    }
+
+    #[test]
+    fn restores_app_owned_codex_metadata_by_native_identity() {
+        let root = make_fixture_root();
+        let hq = make_fixture_root();
+        let id = "019e0525-596f-7013-82ee-9397e9a1c30b";
+        let rollout = session_meta_line(id, "/Users/test/HQ", "2026-06-15T18:00:00.000Z");
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-00-00", id, &rollout);
+        let meta_dir = hq.join("workspace/sessions/app-owned-id");
+        fs::create_dir_all(&meta_dir).unwrap();
+        fs::write(meta_dir.join("meta.yaml"), format!(
+            "cli_session_id: {id}\ncompany_slug: indigo\nproject: feedback\ntitle: Saved conversation name\n"
+        )).unwrap();
+        let sessions = scan_codex_sessions_with_hq(&root, Some(&hq), SystemTime::now());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, id);
+        assert_eq!(sessions[0].title, "Saved conversation name");
+        assert_eq!(sessions[0].company, "indigo");
+        assert_eq!(sessions[0].project, "feedback");
+        // A provider-native rename remains authoritative over an older HQ label.
+        fs::write(root.join("session_index.jsonl"), index_line(id, "Renamed in Codex", "2026-06-15T18:05:00.000Z")).unwrap();
+        assert_eq!(scan_codex_sessions_with_hq(&root, Some(&hq), SystemTime::now())[0].title, "Renamed in Codex");
+    }
+
+    #[test]
+    fn excludes_exec_rollouts_and_ignores_injected_title_context() {
+        let root = make_fixture_root();
+        let desktop_id = "019e0525-596f-7013-82ee-9397e9a1c30b";
+        let exec_id = "019e0525-596f-7013-82ee-9397e9a1c30c";
+        let desktop = format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            session_meta_line(
+                desktop_id,
+                "/Users/corey/Documents/HQ",
+                "2026-06-15T18:00:00.000Z"
+            ),
+            turn_context_line(
+                "/Users/corey/Documents/HQ",
+                "gpt-5.6-sol",
+                "2026-06-15T18:00:01.000Z"
+            ),
+            user_message_line("<recommended_plugins>\nAirtable"),
+            user_message_line(
+                "<skill>\n<name>startwork</name>\n<path>/tmp/SKILL.md</path>\n---\nhidden instructions\n</skill>",
+            ),
+            user_message_line("/startwork indigo desktop-sessions\n\nFix resume history"),
+        );
+        write_session_rollout(
+            &root,
+            "2026/06/15",
+            "2026-06-15T18-00-00",
+            desktop_id,
+            &desktop,
+        );
+
+        let exec = format!(
+            "{}\n{}\n{}\n",
+            session_meta_line_with_source(
+                exec_id,
+                "/Users/corey/Documents/HQ",
+                "2026-06-15T18:01:00.000Z",
+                "exec"
+            ),
+            turn_context_line(
+                "/Users/corey/Documents/HQ",
+                "gpt-5.6-sol",
+                "2026-06-15T18:01:01.000Z"
+            ),
+            user_message_line("<recommended_plugins>\nAirtable"),
+        );
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", exec_id, &exec);
+
+        let sessions = scan_codex_sessions(&root, SystemTime::now());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, desktop_id);
+        assert_eq!(sessions[0].company, "indigo");
+        assert_eq!(sessions[0].project, "desktop-sessions");
+        assert_eq!(sessions[0].title, "Fix resume history");
+    }
+
+    #[test]
     fn missing_codex_dir_yields_empty() {
         let root = make_fixture_root();
         let nonexistent = root.join("does-not-exist");
         let sessions = scan_codex_sessions(&nonexistent, SystemTime::now());
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn incomplete_helper_header_is_not_cached_as_a_main_thread() {
+        let root = make_fixture_root();
+        let id = "019e0525-596f-7013-82ee-9397e9a1c30c";
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", id, "");
+        let first = scan_codex_sessions(&root, SystemTime::now());
+        let meta = session_meta_line_with_source(id, "/tmp/HQ", "2026-06-15T18:01:00.000Z", "exec");
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", id, &format!("{meta}\n"));
+        assert!(scan_codex_sessions(&root, SystemTime::now()).is_empty(), "completed exec metadata must be re-read");
+        assert!(first.is_empty(), "unclassified rollouts must not flash as main threads");
+    }
+
+    #[test]
+    fn structured_subagent_source_is_excluded_even_with_an_index_title() {
+        let root = make_fixture_root();
+        let id = "019e0525-596f-7013-82ee-9397e9a1c30c";
+        let mut meta: serde_json::Value = serde_json::from_str(&session_meta_line(id, "/tmp/HQ", "2026-06-15T18:01:00.000Z")).unwrap();
+        meta["payload"]["source"] = serde_json::json!({"subagent":{"thread_spawn":{"parent_thread_id":"parent", "depth":1}}});
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", id, &format!("{meta}\n"));
+        fs::write(root.join("session_index.jsonl"), index_line(id, "Helper", "2026-06-15T18:05:00.000Z")).unwrap();
+        assert!(scan_codex_sessions(&root, SystemTime::now()).is_empty());
+    }
+
+    #[test]
+    fn incomplete_main_thread_appears_when_metadata_arrives() {
+        let root = make_fixture_root();
+        let id = "019e0525-596f-7013-82ee-9397e9a1c30b";
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", id, "");
+        assert!(scan_codex_sessions(&root, SystemTime::now()).is_empty());
+        let meta = session_meta_line(id, "/tmp/HQ", "2026-06-15T18:01:00.000Z");
+        write_session_rollout(&root, "2026/06/15", "2026-06-15T18-01-00", id, &format!("{meta}\n"));
+        let sessions = scan_codex_sessions(&root, SystemTime::now());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, id);
     }
 
     #[test]
@@ -867,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn project_falls_back_to_thread_name_when_cwd_absent() {
+    fn native_thread_name_stays_a_title_when_project_is_unknown() {
         let root = make_fixture_root();
         let id = "019e0525-596f-7013-82ee-9397e9a1c30b";
         // Rollout with only an event line — no session_meta cwd, no turn_context.
@@ -886,10 +1258,8 @@ mod tests {
         assert_eq!(s.cwd, "", "no cwd recoverable");
         // id falls back to filename when the rollout head lacked session_meta.
         assert_eq!(s.id, id);
-        assert_eq!(
-            s.project, "Codex thread label",
-            "project falls back to index thread_name when cwd is absent"
-        );
+        assert_eq!(s.project, "", "a task title is not project metadata");
+        assert_eq!(s.title, "Codex thread label");
     }
 
     #[test]
@@ -928,6 +1298,13 @@ mod tests {
             )
             .as_deref(),
             Some("019de12c-d83e-78c2-9bb3-cbb8146965e4")
+        );
+        assert_eq!(
+            rollout_id_from_filename(
+                "rollout-2026-09-02T17-32-55-01a063d4-7aa7-7ec1-bf14-e5ddfea0995d_01a0640a-0c86-7a31-baad-f9d5cbfd379a.jsonl"
+            )
+            .as_deref(),
+            Some("01a0640a-0c86-7a31-baad-f9d5cbfd379a")
         );
         // Not a rollout → None.
         assert_eq!(rollout_id_from_filename("README.md"), None);

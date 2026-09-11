@@ -37,6 +37,85 @@ static DELEGATE_APP: OnceLock<AppHandle> = OnceLock::new();
 /// Guards against re-installing the delegate (the center keeps only a weak
 /// reference, so we leak exactly one delegate for the process lifetime).
 static DELEGATE_REGISTERED: OnceLock<()> = OnceLock::new();
+/// Guards the "notifications are blocked" notice so a user whose permission is
+/// denied is told once per process, not once per event. Remediation itself lives
+/// in Settings > Notifications (permission row + System Settings deep link).
+static BLOCKED_NOTICE_SENT: OnceLock<()> = OnceLock::new();
+
+/// Event emitted (at most once per process) when the native surface is active
+/// but macOS authorization is not granted. Payload is the tri-state permission
+/// string. Settings > Notifications listens for it and re-reads the permission
+/// row so its "Open System Settings" deep-link affordance appears without the
+/// user reopening the screen.
+pub const EVENT_PERMISSION_BLOCKED: &str = "notification:permission-blocked";
+
+/// Tell the user once that OS banners are not authorized. Notifications are NOT
+/// dropped in this state — `deliver_osascript` below still shows a banner via
+/// NotificationCenter's scripting bridge, which is not subject to the UN
+/// authorization gate — but the click-through and Notification Center entry are
+/// lost, and the fix is a two-click trip to System Settings.
+fn note_permission_blocked(state: &str) {
+    if BLOCKED_NOTICE_SENT.set(()).is_err() {
+        return;
+    }
+    crate::util::logfile::log(
+        "notify",
+        &format!(
+            "system notifications not authorized (state={state}) — \
+             falling back to osascript; remediation in Settings > Notifications"
+        ),
+    );
+    if let Some(app) = DELEGATE_APP.get() {
+        use tauri::Emitter;
+        let _ = app.emit(EVENT_PERMISSION_BLOCKED, state);
+    }
+}
+
+/// Ask macOS for notification authorization exactly once, the first time a
+/// notification-worthy event reaches the native path.
+///
+/// System notifications are the default surface now, so a fresh install lands
+/// here before macOS has ever asked. `UNUserNotificationCenter` only shows its
+/// dialog while the status is `notDetermined`, and the only previous trigger was
+/// the Settings "Enable" button — which is exactly the screen a user who wonders
+/// "why don't I get notifications?" hasn't opened.
+///
+/// The request runs on a detached thread because
+/// `requestAuthorizationWithOptions` blocks until the user dismisses the dialog
+/// (up to 60s) and this runs inside the DM / share poll. THIS event therefore
+/// takes the osascript fallback; from the next one on, the granted UN path is
+/// used. The one-shot marker (`notify_authz`) means we never ask twice.
+fn ensure_authorization_requested() {
+    let state = hq_platform::notifications::permission_state_without_app();
+    if state == "granted" {
+        return;
+    }
+    if !hq_desktop_core::notify_authz::should_request_authorization(
+        &state,
+        hq_desktop_core::notify_authz::already_requested(),
+    ) {
+        // Denied (macOS will not re-show the dialog) or already asked once.
+        note_permission_blocked(&state);
+        return;
+    }
+    // Claim the one-shot BEFORE asking, so a second event arriving while the
+    // dialog is up can't stack a second request.
+    hq_desktop_core::notify_authz::mark_requested();
+    crate::util::logfile::log(
+        "notify",
+        "requesting macOS notification authorization (one-time, system surface is the default)",
+    );
+    std::thread::spawn(|| {
+        let after = hq_platform::notifications::request_permission();
+        crate::util::logfile::log(
+            "notify",
+            &format!("macOS notification authorization request resolved: {after}"),
+        );
+        if after != "granted" {
+            note_permission_blocked(&after);
+        }
+    });
+}
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -238,6 +317,7 @@ pub fn deliver_clickable(title: &str, body: &str, window_id: &str, platform: &st
     if !is_bundled() {
         return;
     }
+    ensure_authorization_requested();
     let fired = objc2::rc::autoreleasepool(|_pool| unsafe {
         // `new` = owned (+1); everything else here is autoreleased.
         let content: Retained<AnyObject> = msg_send![class!(UNMutableNotificationContent), new];
@@ -313,6 +393,7 @@ pub fn deliver_clickable(title: &str, body: &str, window_id: &str, platform: &st
 /// `kind` must be `"dm"` or `"share"` — it rides along in `userInfo` so a click
 /// opens the right desktop-alt surface. No-op-safe on every path.
 pub fn deliver_message(title: &str, body: &str, kind: &str) {
+    ensure_authorization_requested();
     let granted = hq_platform::notifications::permission_state_without_app() == "granted";
     if granted && deliver_un_message(title, body, kind) {
         crate::util::logfile::log("notify", &format!("UN {kind} notification fired"));

@@ -135,6 +135,8 @@ export interface BuildChannelStatusInput {
   sessions?: readonly StatusSessionInput[];
   members?: readonly StatusMemberInput[];
   companyLabel?: string | null;
+  /** Presigned company icon, shown beside `companyLabel` in the popover. */
+  companyIconUrl?: string | null;
   /** Server-truth active sessions for the popover (US-010 / legacy work-sessions). */
   serverSessions?: readonly ServerWorkSessionInput[];
   /**
@@ -252,6 +254,13 @@ export interface ChannelStatusModel {
   memberCount: number;
   /** Header subtitle helper: company display name. */
   companyLabel: string | null;
+  /**
+   * Presigned company icon for `companyLabel`. Null when the company has no
+   * icon — the popover then draws the building glyph, so the company row looks
+   * the same shape either way. Optional so existing model fixtures and
+   * callers that never knew about icons stay valid.
+   */
+  companyIconUrl?: string | null;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -844,6 +853,7 @@ export function buildChannelStatusModel(
     agents,
     memberCount,
     companyLabel: input.companyLabel?.trim() || null,
+    companyIconUrl: input.companyIconUrl?.trim() || null,
   };
 }
 

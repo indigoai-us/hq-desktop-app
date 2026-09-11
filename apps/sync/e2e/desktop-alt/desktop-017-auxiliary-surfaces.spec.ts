@@ -120,8 +120,9 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   });
 
   it('provides deterministic onboarding data and a stable in-progress setup preview', () => {
+    expect(mocks).toContain('resolve_hq_path: () =>');
     expect(mocks).toContain(
-      "resolve_hq_path: () => '/Users/corey/Documents/HQ'",
+      "isOnboardingCaptureScenario() ? '/Users/Placeholder/HQ' : '/Users/corey/Documents/HQ'",
     );
     // detect_ai_tools grew scenario support (?scenario=tools-claude-only /
     // tools-codex-only / tools-none) so the Ready screen can be previewed in
@@ -288,15 +289,15 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     const groupStart = rule(channelConversation, '.dm-msg-group-start');
 
     // Intra-group: continuation rows carry no extra top margin and use the
-    // compact vertical pad so adjacent same-author lines collapse to ~2px.
+    // compact vertical pad so adjacent same-author lines sit ~6px apart.
     expect(row, '.dm-msg selector should exist').not.toBe('');
     expect(row).toMatch(/margin-top:\s*0;/);
-    expect(row).toContain('padding: var(--msg-row-pad-y, 1px) 8px;');
+    expect(row).toContain('padding: var(--msg-row-pad-y, 3px) 8px;');
 
     // Inter-group: a new author group re-headers with a modest gap, not the
     // old oversized 10px margin.
     expect(groupStart, '.dm-msg-group-start selector should exist').not.toBe('');
-    expect(groupStart).toContain('margin-top: var(--msg-group-gap, 8px);');
+    expect(groupStart).toContain('margin-top: var(--msg-group-gap, 12px);');
     expect(groupStart).not.toMatch(/margin-top:\s*10px/);
   });
 

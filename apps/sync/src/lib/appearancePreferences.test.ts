@@ -4,6 +4,7 @@ import {
   APPEARANCE_REQUEST_EVENT,
   APPEARANCE_STORAGE_KEY,
   applyAppearancePreferences,
+  effectiveWindowTransparency,
   installAppearancePreferences,
   normalizeAppearancePreferences,
   readAppearancePreferences,
@@ -291,5 +292,37 @@ describe('appearance preferences', () => {
 
   it('uses a dedicated request event rather than relying on same-window storage events', () => {
     expect(APPEARANCE_REQUEST_EVENT).toBe('hq:appearance-request');
+  });
+});
+
+describe('window material without real glass', () => {
+  it('caps transparency on the vibrancy fallback and leaves glass alone', () => {
+    expect(effectiveWindowTransparency(65, 'glass')).toBe(65);
+    expect(effectiveWindowTransparency(65, null)).toBe(65);
+    expect(effectiveWindowTransparency(65, 'vibrancy')).toBe(15);
+    expect(effectiveWindowTransparency(65, 'none')).toBe(15);
+    expect(effectiveWindowTransparency(5, 'vibrancy')).toBe(5);
+  });
+
+  it('re-applies once the native material is known, keeping the stored preference', async () => {
+    const root = { dataset: {} as Record<string, string>, style: { setProperty: vi.fn(), removeProperty: vi.fn() } };
+    const storage = new Map<string, string>();
+    const store = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => void storage.set(k, v), removeItem: (k: string) => void storage.delete(k) };
+    store.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify({ colorTheme: 'system', windowTransparency: 65 }));
+    const dispose = installAppearancePreferences({
+      target: new EventTarget() as unknown as Window,
+      storage: store as unknown as Storage,
+      root: root as never,
+      readMaterial: async () => 'vibrancy',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const factor = (root.style.setProperty as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([name]) => name === '--hq-window-transparency-factor')
+      .map(([, v]) => v);
+    expect(factor[0]).toBe('0.65');
+    expect(factor.at(-1)).toBe('0.15');
+    expect(root.dataset.material).toBe('vibrancy');
+    expect(root.dataset.windowTransparency).toBe('65');
+    dispose();
   });
 });

@@ -67,6 +67,26 @@ export function marketplaceAvatarSrc(
 }
 
 /**
+ * Accept an hq-pro-minted COMPANY ICON url — the company's website favicon,
+ * cached server-side under `branding/{companyUid}/` on the same marketplace
+ * assets host and handed to clients as a short-lived presigned GET (exactly
+ * like member/creator avatars). This is why the packaged `img-src` pin does
+ * NOT need widening for company icons.
+ *
+ * The durable value hq-pro stores on `brand.faviconUrl` is an API path on the
+ * hq-pro API host, which is NOT in `img-src`; that form is deliberately
+ * rejected here so a company icon can never silently fail to paint in the
+ * packaged app. Read the server's `iconUrl` field instead.
+ */
+export function companyIconSrc(
+  raw: string | null | undefined,
+): string | null {
+  return marketplaceHttpsSrc(raw, (pathname) =>
+    pathname.startsWith("/branding/"),
+  );
+}
+
+/**
  * `<img src>` that the packaged CSP will actually paint: bundled/local
  * assets, raster data URLs, blob object URLs, or an hq-pro profile photo on
  * the one allowlisted marketplace assets host. Arbitrary http(s) stays out

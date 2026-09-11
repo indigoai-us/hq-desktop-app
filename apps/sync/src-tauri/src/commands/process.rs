@@ -35,9 +35,7 @@ use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, WIN32_ERROR,
-};
+use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, WIN32_ERROR};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -706,6 +704,53 @@ pub fn register_process(handle: &str, pid: u32) {
     let _ = register_process_gen(handle, pid);
 }
 
+/// Record the Windows Job Object that owns `handle`'s process tree.
+///
+/// The Unix exit drain only needs a pid: the child leads its own process group
+/// and `terminate_pids_for_exit` signals the negated pid, taking the whole
+/// tree. Windows has no process groups, so a bare pid lets the drain terminate
+/// the child and orphan everything it spawned. The job handle is the missing
+/// half, and it has to land on the same registry entry the drain reads.
+///
+/// Children spawned *by this module* get their job through
+/// [`ChildContainment::attach_to_entry`], which is the same field write. This
+/// entry point exists for a child spawned elsewhere — `hq_desktop_core::stdio`
+/// creates its own job at spawn and hands the handle over through the
+/// registrar seam (see `commands::agent_stdio`). Ownership transfers with the
+/// call: `deregister_process` → `close_process_entry` closes it.
+///
+/// When the handle is unknown — it was deregistered between spawn and this
+/// call — the handle is closed here instead of leaked. With
+/// `KILL_ON_JOB_CLOSE` that also tears down the tree, which is the right
+/// outcome for a child nothing is tracking any more.
+#[cfg(target_os = "windows")]
+pub fn register_job_handle(handle: &str, job: isize) {
+    // The registry lock is released before the fallback below: `CloseHandle`
+    // on a KILL_ON_JOB_CLOSE job terminates a process tree, and no teardown
+    // that heavyweight belongs inside this mutex.
+    let attached = {
+        let mut registry = process_registry().lock().unwrap();
+        match registry.active.get_mut(handle) {
+            Some(entry) => {
+                debug_assert!(entry.job_handle.is_none());
+                entry.job_handle = Some(job);
+                true
+            }
+            None => false,
+        }
+    };
+
+    if !attached {
+        log(
+            "process",
+            &format!("register_job_handle: no active entry for {handle}; closing the job"),
+        );
+        unsafe {
+            let _ = CloseHandle(HANDLE(job as *mut std::ffi::c_void));
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn close_process_entry(entry: ProcessEntry) {
     if let Some(job) = entry.job_handle {
@@ -1100,6 +1145,68 @@ pub fn sample_watcher_job_pids_for_generation(handle: &str, generation: u64) {
 #[cfg(not(target_os = "windows"))]
 pub fn sample_watcher_job_pids_for_generation(_handle: &str, _generation: u64) {}
 
+/// Sample the images of the EXACT `generation`'s retained Job Object processes that
+/// are STILL LIVE at the exit boundary — the shim-vs-runner discriminator
+/// (HQ-DESKTOP-66). One read-only
+/// `QueryInformationJobObject(JobObjectBasicProcessIdList)` on the same retained
+/// handle [`watcher_job_accounting_for_generation`] reads, resolved by generation so
+/// a replacement watcher's job is never returned. The live-PID list is read while
+/// the registry lock is held (so a concurrent `deregister`/`close_process_entry`
+/// cannot close the job between lookup and query); the lock is then DROPPED before
+/// any per-PID `OpenProcess` image work. A failed/absent query — or a non-Windows
+/// build — yields `unavailable`. Strictly diagnostic and read-only: it never closes,
+/// terminates, duplicates, or takes the Job Object, and never gates capture, the
+/// fingerprint, or lifecycle.
+#[cfg(target_os = "windows")]
+pub fn watcher_job_survivors_for_generation(
+    handle: &str,
+    generation: u64,
+) -> hq_desktop_core::watcher_fault::WatcherJobSurvivors {
+    use hq_desktop_core::watcher_fault::{WatcherFaultBinary, WatcherJobSurvivors};
+    let registry = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let job = registry
+        .active
+        .get(handle)
+        .filter(|entry| entry.generation == generation)
+        .or_else(|| {
+            registry
+                .retired
+                .get(&generation)
+                .filter(|retired| retired.handle == handle)
+                .map(|retired| &retired.entry)
+        })
+        .and_then(|entry| entry.job_handle);
+    let Some(job) = job else {
+        return WatcherJobSurvivors::unavailable();
+    };
+    // SAFETY: `job` is this app's own retained Job Object handle and the registry
+    // lock is held for the duration of the read, so it cannot be closed here. The
+    // query is read-only; it never closes, terminates, or duplicates the handle.
+    let pids = unsafe { query_job_live_pids(job) };
+    drop(registry);
+    let Some(pids) = pids else {
+        return WatcherJobSurvivors::unavailable();
+    };
+    // Resolve each live PID's image AFTER dropping the registry lock (a PID is just
+    // an integer; the image query needs no lock). An unresolvable PID contributes to
+    // the count only — never a named survivor.
+    let images: Vec<Option<WatcherFaultBinary>> = pids
+        .iter()
+        .map(|pid| resolve_process_image_token(*pid))
+        .collect();
+    WatcherJobSurvivors::from_live_images(&images)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn watcher_job_survivors_for_generation(
+    _handle: &str,
+    _generation: u64,
+) -> hq_desktop_core::watcher_fault::WatcherJobSurvivors {
+    hq_desktop_core::watcher_fault::WatcherJobSurvivors::unavailable()
+}
+
 /// Best-effort working-set (KB) of one live PID via `OpenProcess` +
 /// `GetProcessMemoryInfo`. Read-only: it opens the process for limited query,
 /// reads `WorkingSetSize`, and closes the handle on every path. `None` when the
@@ -1356,8 +1463,8 @@ unsafe fn query_job_live_pids(job: isize) -> Option<Vec<u32>> {
     };
     const CAP: usize = 512;
     let hjob = job as windows_sys::Win32::Foundation::HANDLE;
-    let bytes = std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
-        + CAP * std::mem::size_of::<usize>();
+    let bytes =
+        std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() + CAP * std::mem::size_of::<usize>();
     let mut buffer = vec![0u8; bytes];
     let list = buffer.as_mut_ptr() as *mut JOBOBJECT_BASIC_PROCESS_ID_LIST;
     if QueryInformationJobObject(
@@ -1832,17 +1939,150 @@ fn take_test_windows_terminate_process_result() -> Option<bool> {
     })
 }
 
-/// Enumerate the transitive children of `root_pid` via a process snapshot.
-/// Only pids reachable from the registered root are returned, so the fallback
-/// below can never widen past this app's own child tree.
+/// One row of a process snapshot: a pid, the pid the OS recorded as its
+/// creator, and the process's creation time when it could be read.
+///
+/// `created` is `None` when the process could not be opened for a creation
+/// time — it exited between the snapshot and the query, or it belongs to a
+/// principal this process cannot query. A row without a creation time can
+/// never be validated, so it is neither returned nor walked through.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProcessTreeRow {
+    pid: u32,
+    parent_pid: u32,
+    created: Option<u64>,
+}
+
+/// Transitive descendants of `root_pid` in a snapshot, with two invariants
+/// that the raw parent-pid walk it replaces did not have.
+///
+/// 1. A parent link is honoured only when the child was created no earlier
+///    than the parent. Windows records `th32ParentProcessID` at creation and
+///    never updates it, and it reuses pids aggressively: once a creator exits,
+///    its pid can be handed to a new process, which then looks like the parent
+///    of every orphan the dead creator left behind. On a GitHub-hosted Windows
+///    runner those orphans include the runner's own ancestor chain, so a
+///    fixture child that inherited such a pid made the raw walk return the
+///    test process itself and `TerminateProcess(_, 1)` it mid-sweep (run
+///    33940409752, job 101236599413: exit code 1, no failing test, cargo
+///    still alive to report it). A reused pid is always younger than the
+///    orphans it inherits, so the creation-time rule rejects exactly those
+///    links while keeping every real one.
+/// 2. `protected` pids — this process and its validated ancestors — are never
+///    returned, and nothing beneath them is walked, so the fallback cannot
+///    terminate the app, its launcher, or a sibling tree even if the snapshot
+///    is wrong in a way the first rule does not catch.
+///
+/// A root without a creation time has no verifiable descendants and yields an
+/// empty list; the caller then fails to open the root and reports no effect.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn descendants_in_snapshot(
+    root_pid: u32,
+    rows: &[ProcessTreeRow],
+    protected: &HashSet<u32>,
+) -> Vec<u32> {
+    if protected.contains(&root_pid) {
+        return Vec::new();
+    }
+    let created_of = |pid: u32| -> Option<u64> {
+        rows.iter()
+            .find(|row| row.pid == pid)
+            .and_then(|row| row.created)
+    };
+    let Some(root_created) = created_of(root_pid) else {
+        return Vec::new();
+    };
+
+    let mut descendants: Vec<u32> = Vec::new();
+    let mut frontier = vec![(root_pid, root_created)];
+    while let Some((parent, parent_created)) = frontier.pop() {
+        for row in rows {
+            if row.parent_pid != parent
+                || row.pid == root_pid
+                || row.pid == parent
+                || descendants.contains(&row.pid)
+            {
+                continue;
+            }
+            let Some(child_created) = row.created else {
+                continue;
+            };
+            if child_created < parent_created {
+                // The recorded creator is a reused pid: this row predates the
+                // process that currently owns `parent`.
+                continue;
+            }
+            if protected.contains(&row.pid) {
+                continue;
+            }
+            descendants.push(row.pid);
+            frontier.push((row.pid, child_created));
+        }
+    }
+    descendants
+}
+
+/// `pid` and its creation-validated ancestors: the chain of recorded creators
+/// followed only while each creator is at least as old as the process it is
+/// said to have created. The chain stops at the first stale or unreadable
+/// link, which is exactly where a dead creator's pid stops being meaningful.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn ancestors_in_snapshot(pid: u32, rows: &[ProcessTreeRow]) -> HashSet<u32> {
+    let mut protected = HashSet::new();
+    protected.insert(pid);
+    let mut current = rows.iter().find(|row| row.pid == pid).copied();
+    while let Some(row) = current {
+        let Some(child_created) = row.created else {
+            break;
+        };
+        let Some(parent) = rows
+            .iter()
+            .find(|candidate| candidate.pid == row.parent_pid)
+        else {
+            break;
+        };
+        let Some(parent_created) = parent.created else {
+            break;
+        };
+        if parent_created > child_created || !protected.insert(parent.pid) {
+            break;
+        }
+        current = Some(*parent);
+    }
+    protected
+}
+
+/// The creation time of `pid` as a FILETIME tick count, or `None` when the
+/// process cannot be opened for it (already exited, or not ours to query).
 #[cfg(target_os = "windows")]
-fn windows_descendants(root_pid: u32) -> Vec<u32> {
+fn windows_process_creation_time(pid: u32) -> Option<u64> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::GetProcessTimes;
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    let times =
+        unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) };
+    unsafe {
+        let _ = CloseHandle(process);
+    }
+    times.ok()?;
+    Some((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
+}
+
+/// Snapshot every process with its recorded creator and creation time.
+#[cfg(target_os = "windows")]
+fn windows_process_snapshot() -> Vec<ProcessTreeRow> {
     let snapshot = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
         Ok(snapshot) => snapshot,
         Err(error) => {
             log(
                 "process",
-                &format!("CreateToolhelp32Snapshot failed for pid {root_pid}: {error}"),
+                &format!("CreateToolhelp32Snapshot failed: {error}"),
             );
             return Vec::new();
         }
@@ -1855,7 +2095,11 @@ fn windows_descendants(root_pid: u32) -> Vec<u32> {
     };
     let mut next = unsafe { Process32FirstW(snapshot, &mut entry) };
     while next.is_ok() {
-        rows.push((entry.th32ProcessID, entry.th32ParentProcessID));
+        rows.push(ProcessTreeRow {
+            pid: entry.th32ProcessID,
+            parent_pid: entry.th32ParentProcessID,
+            created: windows_process_creation_time(entry.th32ProcessID),
+        });
         entry = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
             ..Default::default()
@@ -1865,18 +2109,172 @@ fn windows_descendants(root_pid: u32) -> Vec<u32> {
     unsafe {
         let _ = CloseHandle(snapshot);
     }
+    rows
+}
 
-    let mut descendants = Vec::new();
-    let mut frontier = vec![root_pid];
-    while let Some(parent) = frontier.pop() {
-        for (pid, parent_pid) in &rows {
-            if *parent_pid == parent && *pid != root_pid && !descendants.contains(pid) {
-                descendants.push(*pid);
-                frontier.push(*pid);
-            }
+/// Pids the pid-tree fallback must never touch: this process and its
+/// creation-validated ancestors (cargo, the CI shell, the runner service, or
+/// in production the launcher that started the app).
+#[cfg(target_os = "windows")]
+fn windows_protected_pids(rows: &[ProcessTreeRow]) -> HashSet<u32> {
+    ancestors_in_snapshot(std::process::id(), rows)
+}
+
+/// Enumerate the transitive children of `root_pid` via a process snapshot.
+/// Only pids reachable from the registered root through creation-validated
+/// parent links are returned, and this process and its ancestors never are,
+/// so the fallback below can never widen past this app's own child tree —
+/// see `descendants_in_snapshot` for why a raw parent-pid walk could.
+#[cfg(target_os = "windows")]
+fn windows_descendants(root_pid: u32) -> Vec<u32> {
+    let rows = windows_process_snapshot();
+    let protected = windows_protected_pids(&rows);
+    descendants_in_snapshot(root_pid, &rows, &protected)
+}
+
+#[cfg(test)]
+mod process_tree_snapshot_tests {
+    use super::*;
+
+    fn row(pid: u32, parent_pid: u32, created: Option<u64>) -> ProcessTreeRow {
+        ProcessTreeRow {
+            pid,
+            parent_pid,
+            created,
         }
     }
-    descendants
+
+    fn sorted(mut pids: Vec<u32>) -> Vec<u32> {
+        pids.sort_unstable();
+        pids
+    }
+
+    #[test]
+    fn a_creation_ordered_tree_is_walked_transitively() {
+        let rows = vec![
+            row(100, 1, Some(10)),
+            row(200, 100, Some(20)),
+            row(300, 200, Some(30)),
+            row(310, 200, Some(31)),
+            row(900, 1, Some(5)),
+        ];
+        assert_eq!(
+            sorted(descendants_in_snapshot(100, &rows, &HashSet::new())),
+            vec![200, 300, 310]
+        );
+    }
+
+    /// Regression for run 33940409752 / job 101236599413: a fixture root that
+    /// inherited a dead creator's pid "adopted" that creator's orphans, which
+    /// on the CI runner were the test process's own ancestors, and the raw
+    /// walk returned the test process for termination. An orphan is always
+    /// older than the process that reused its creator's pid, so the link is
+    /// rejected and nothing beneath it is walked.
+    #[test]
+    fn an_orphan_recorded_under_a_reused_creator_pid_is_not_a_descendant() {
+        const REUSED_PID: u32 = 4242;
+        let rows = vec![
+            // The fixture root, created recently, holding the recycled pid.
+            row(REUSED_PID, 77, Some(1_000)),
+            // Its genuine child.
+            row(500, REUSED_PID, Some(1_001)),
+            // The runner's ancestor chain: its original creator had pid 4242
+            // and exited long ago. Every link here predates the fixture root.
+            row(60, REUSED_PID, Some(100)),
+            row(61, 60, Some(101)),
+            row(62, 61, Some(102)),
+            row(63, 62, Some(103)),
+        ];
+        assert_eq!(
+            descendants_in_snapshot(REUSED_PID, &rows, &HashSet::new()),
+            vec![500]
+        );
+    }
+
+    #[test]
+    fn a_row_without_a_creation_time_is_neither_returned_nor_walked_through() {
+        let rows = vec![
+            row(100, 1, Some(10)),
+            row(200, 100, None),
+            row(300, 200, Some(30)),
+            row(210, 100, Some(21)),
+        ];
+        assert_eq!(
+            descendants_in_snapshot(100, &rows, &HashSet::new()),
+            vec![210]
+        );
+    }
+
+    #[test]
+    fn a_root_without_a_creation_time_has_no_descendants() {
+        let rows = vec![row(100, 1, None), row(200, 100, Some(20))];
+        assert!(descendants_in_snapshot(100, &rows, &HashSet::new()).is_empty());
+        assert!(descendants_in_snapshot(999, &rows, &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn protected_pids_are_excluded_together_with_everything_beneath_them() {
+        let rows = vec![
+            row(100, 1, Some(10)),
+            row(200, 100, Some(20)),
+            row(300, 200, Some(30)),
+            row(210, 100, Some(21)),
+        ];
+        let protected: HashSet<u32> = [200].into_iter().collect();
+        assert_eq!(descendants_in_snapshot(100, &rows, &protected), vec![210]);
+
+        let root_protected: HashSet<u32> = [100].into_iter().collect();
+        assert!(descendants_in_snapshot(100, &rows, &root_protected).is_empty());
+    }
+
+    #[test]
+    fn a_parent_cycle_from_pid_reuse_terminates() {
+        let rows = vec![
+            row(100, 200, Some(10)),
+            row(200, 100, Some(20)),
+            row(300, 200, Some(30)),
+        ];
+        assert_eq!(
+            sorted(descendants_in_snapshot(100, &rows, &HashSet::new())),
+            vec![200, 300]
+        );
+    }
+
+    #[test]
+    fn ancestors_follow_only_creation_ordered_links() {
+        let rows = vec![
+            // A stale creator pid: 5 is younger than the process it "created".
+            row(5, 1, Some(500)),
+            row(10, 5, Some(100)),
+            row(20, 10, Some(200)),
+            row(30, 20, Some(300)),
+        ];
+        let mut expected: Vec<u32> = ancestors_in_snapshot(30, &rows).into_iter().collect();
+        expected.sort_unstable();
+        assert_eq!(expected, vec![10, 20, 30]);
+
+        assert_eq!(
+            ancestors_in_snapshot(999, &rows)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![999],
+            "an unknown pid still protects itself"
+        );
+    }
+
+    #[test]
+    fn ancestors_stop_at_an_unreadable_link_and_never_loop() {
+        // 10 cannot be validated (no creation time) and, via 20 <- 10 <- 20,
+        // would loop if it were followed.
+        let rows = vec![
+            row(10, 20, None),
+            row(20, 10, Some(200)),
+            row(30, 20, Some(300)),
+        ];
+        let mut chain: Vec<u32> = ancestors_in_snapshot(30, &rows).into_iter().collect();
+        chain.sort_unstable();
+        assert_eq!(chain, vec![20, 30]);
+    }
 }
 
 /// Fall back to the registered root pid when no Job Object was attached.
@@ -1908,9 +2306,25 @@ fn terminate_windows_pid_tree(root_pid: u32) -> bool {
         }
     }
 
+    let rows = windows_process_snapshot();
+    let protected = windows_protected_pids(&rows);
+    if protected.contains(&root_pid) {
+        // The registered root can only be a child this process spawned. A pid
+        // that is this process or one of its ancestors is a reused or corrupt
+        // registration, and sweeping it would terminate the app itself.
+        let message = format!(
+            "refusing pid-tree fallback for root pid {root_pid}: it is this process or one of its ancestors"
+        );
+        log("process", &message);
+        // The log file is not part of a CI run's output; say it where the
+        // harness can show it.
+        eprintln!("[process] {message}");
+        return false;
+    }
+
     // Deepest-first: terminating a parent before its children can leave the
     // grandchild reparented and outside the next snapshot.
-    let mut pids = windows_descendants(root_pid);
+    let mut pids = descendants_in_snapshot(root_pid, &rows, &protected);
     pids.reverse();
 
     for pid in pids {
@@ -3465,9 +3879,7 @@ fn windows_pid_alive(pid: u32) -> Result<bool, String> {
             Ok(process) => process,
             Err(error) if windows_process_open_error_means_exited(&error) => return Ok(false),
             Err(error) => {
-                return Err(format!(
-                    "open HQ process {pid} for exit query: {error}"
-                ));
+                return Err(format!("open HQ process {pid} for exit query: {error}"));
             }
         };
         let mut code = 0u32;
@@ -4421,17 +4833,28 @@ mod windows_spawn_tests {
         let panic = catch_unwind(AssertUnwindSafe(|| {
             let _ = run_process_impl(&handle, &spawn, |_| {});
         }));
-        assert!(panic.is_err(), "the injected fixture panic must reach the test");
+        assert!(
+            panic.is_err(),
+            "the injected fixture panic must reach the test"
+        );
 
         let root = root_pid.load(Ordering::Acquire);
         let descendant = descendant_pid.load(Ordering::Acquire);
         assert_ne!(root, 0, "the fixture root must have been observed");
-        assert_ne!(descendant, 0, "the fixture descendant must have been observed");
-        await_bounded("the panicking fixture root to be reaped", || !pid_alive(root));
+        assert_ne!(
+            descendant, 0,
+            "the fixture descendant must have been observed"
+        );
+        await_bounded("the panicking fixture root to be reaped", || {
+            !pid_alive(root)
+        });
         await_bounded("the panicking fixture descendant to be reaped", || {
             !pid_alive(descendant)
         });
-        assert!(!is_registered(&handle), "a panicking hook must not register a root");
+        assert!(
+            !is_registered(&handle),
+            "a panicking hook must not register a root"
+        );
     }
 }
 
@@ -4452,7 +4875,8 @@ mod registry_exit_order_tests {
 
         // A causeless (None) publication is in flight — mirrors a Cancelled or
         // ForceClear teardown that has begun but not yet completed.
-        let (owns_first, _created_first) = begin_cancellation_publication(&handle, generation, None);
+        let (owns_first, _created_first) =
+            begin_cancellation_publication(&handle, generation, None);
         assert!(owns_first, "the first publisher owns the cycle");
 
         // A racing heartbeat tries to stamp HeartbeatStall while the first actor
@@ -4462,7 +4886,10 @@ mod registry_exit_order_tests {
             generation,
             Some(SyncCancelCause::HeartbeatStall),
         );
-        assert!(!owns_second, "the racing actor does not own the publication");
+        assert!(
+            !owns_second,
+            "the racing actor does not own the publication"
+        );
 
         let cause = {
             let (records, _) = &**cancellation_records();
@@ -6290,6 +6717,122 @@ mod windows_job_attachment_failure_tests {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pid-tree fallback scope — the sweep can never reach this process
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Real-process proofs for the two invariants behind `windows_descendants`.
+/// Run 33940409752 (job 101236599413) ended with the whole test binary dying
+/// with exit code 1 and no failing test: a fixture root had inherited a dead
+/// creator's pid, the raw parent-pid walk attributed that creator's orphans —
+/// the runner's own ancestor chain — to the fixture, and the sweep
+/// `TerminateProcess`ed the test process itself.
+#[cfg(all(test, target_os = "windows"))]
+mod windows_pid_tree_scope_tests {
+    use super::windows_test_fixture::{await_bounded, pid_alive};
+    use super::*;
+
+    /// Owns a deliberately orphaned real process by pid and terminates it on
+    /// every exit path, including a panicking assertion.
+    struct OrphanGuard(u32);
+
+    impl Drop for OrphanGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Ok(process) = OpenProcess(PROCESS_TERMINATE, false, self.0) {
+                    let _ = TerminateProcess(process, 1);
+                    let _ = CloseHandle(process);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_fallback_refuses_this_process_and_its_ancestors() {
+        clear_test_windows_termination_results();
+        let rows = windows_process_snapshot();
+        let protected = windows_protected_pids(&rows);
+        let this = std::process::id();
+        assert!(protected.contains(&this));
+        assert!(
+            protected.len() >= 2,
+            "the test process must resolve at least its live creator (cargo or the CI shell): {protected:?}"
+        );
+        for pid in &protected {
+            // Before the scope guard this would have terminated the test
+            // binary: the regression is the process surviving to assert.
+            assert!(
+                !terminate_windows_pid_tree(*pid),
+                "the fallback must refuse protected pid {pid}"
+            );
+            assert!(
+                !windows_descendants(*pid).contains(&this),
+                "no walk may return this process (root {pid})"
+            );
+        }
+        assert!(pid_alive(this));
+    }
+
+    #[test]
+    fn orphans_of_a_dead_creator_are_not_descendants_of_its_pid() {
+        let dir = tempfile::tempdir().expect("orphan fixture tempdir");
+        let pid_file = dir.path().join("orphan.pid");
+        // The creator starts a detached ten-minute child, records its pid, and
+        // exits. The child keeps the creator's pid as `th32ParentProcessID`
+        // forever, which is exactly the stale link a recycled pid inherits.
+        let mut creator = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &format!(
+                    "$child = Start-Process -PassThru -WindowStyle Hidden -FilePath 'ping.exe' -ArgumentList '127.0.0.1','-n','600'; [System.IO.File]::WriteAllText('{}', \"$($child.Id)\")",
+                    pid_file.to_string_lossy().replace('\'', "''")
+                ),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("orphan creator must spawn");
+        let creator_pid = creator.id();
+        let status = creator.wait().expect("orphan creator must be waited");
+        assert!(status.success(), "orphan creator failed: {status}");
+
+        let orphan = std::fs::read_to_string(&pid_file)
+            .expect("creator must record the orphan pid")
+            .trim()
+            .parse::<u32>()
+            .expect("orphan pid must parse");
+        let _guard = OrphanGuard(orphan);
+        assert!(pid_alive(orphan), "the orphan must outlive its creator");
+
+        let rows = windows_process_snapshot();
+        let orphan_row = rows
+            .iter()
+            .find(|row| row.pid == orphan)
+            .copied()
+            .expect("the orphan must appear in the snapshot");
+        assert_eq!(
+            orphan_row.parent_pid, creator_pid,
+            "Windows must still report the dead creator as the orphan's parent"
+        );
+
+        // Whether the creator's pid is currently free or already recycled by
+        // another process, the orphan predates any process that now holds it.
+        let protected = windows_protected_pids(&rows);
+        assert!(
+            !descendants_in_snapshot(creator_pid, &rows, &protected).contains(&orphan),
+            "an orphan must not be attributed to whatever now holds its creator's pid"
+        );
+        assert!(!windows_descendants(creator_pid).contains(&orphan));
+
+        drop(_guard);
+        await_bounded("the orphan fixture to be reaped", || !pid_alive(orphan));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HQ-DESKTOP-48 — a stale generation can never reach a replacement handle
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -6518,8 +7061,8 @@ mod watcher_fault_e2e_tests {
     /// allow-listed token — proof the reader can never copy a path, username, or
     /// product string out of genuine WER output — and that the query is bounded.
     fn assert_reader_is_content_safe_and_bounded() {
-        let xmls =
-            query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3)).unwrap_or_default();
+        let xmls = query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3))
+            .unwrap_or_default();
         assert!(
             xmls.len() <= WER_MAX_RECORDS,
             "the reader must honour its record cap"
@@ -6582,8 +7125,8 @@ mod watcher_fault_e2e_tests {
         // node.exe 0xC0000409 abort is surfaced as the strong signal without
         // gating the test on WER having logged it on this particular host.
         thread::sleep(Duration::from_secs(2));
-        let xmls =
-            query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3)).unwrap_or_default();
+        let xmls = query_wer_application_error_xml(WER_MAX_RECORDS, Duration::from_secs(3))
+            .unwrap_or_default();
         let mut named_node_abort = false;
         for xml in &xmls {
             let Some(record) = parse_application_error_event(xml) else {
@@ -6637,12 +7180,132 @@ mod watcher_fault_e2e_tests {
         assert!(!outcome.provenance.is_bound());
         assert_eq!(outcome.image_token(), "unavailable");
         assert_eq!(outcome.module_token(), "unavailable");
-        assert!(outcome.counters.sweeps >= 1, "at least one sweep must have run");
+        assert!(
+            outcome.counters.sweeps >= 1,
+            "at least one sweep must have run"
+        );
         eprintln!(
             "watcher-fault E2E: deferred read resolved to {} in {}ms (counters {})",
             outcome.provenance_token(),
             outcome.counters.ms_to_verdict,
             outcome.counters_tag(),
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Child-environment inheritance (US-004 manifest kill-switch passthrough)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, unix))]
+mod child_env_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Serializes the tests below, which mutate this process's environment.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// hq-cloud's `MANIFEST_UPLOAD_DISABLED_ENV` (`src/manifest/upload-manifest.ts`).
+    const KILL_SWITCH: &str = "HQ_SYNC_MANIFEST_DISABLED";
+
+    /// Sets an env var for the duration of a test and removes it on drop, so
+    /// cleanup happens even if an assertion panics mid-test. Without this an
+    /// early failure would leak the variable into every later test in the
+    /// binary.
+    struct EnvGuard(&'static str);
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            std::env::set_var(key, value);
+            Self(key)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(self.0);
+        }
+    }
+
+    /// Run `/bin/sh -c <script>` through the real spawn path and return stdout.
+    fn stdout_of(handle: &str, script: &str, env: Option<HashMap<String, String>>) -> String {
+        let spawn = SpawnArgs {
+            cmd: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            cwd: None,
+            env,
+        };
+        let out = Mutex::new(String::new());
+        run_process_impl(handle, &spawn, |ev| {
+            if let ProcessEvent::Stdout(line) = ev {
+                out.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push_str(&line);
+            }
+        })
+        .expect("spawn /bin/sh");
+        let captured = out.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        captured
+    }
+
+    /// The manifest kill switch reaches the spawned `hq-sync-runner`.
+    ///
+    /// `SpawnArgs.env` is applied with `Command::env(k, v)` per key and there
+    /// is no `env_clear()` anywhere in this module, so the child inherits the
+    /// whole parent environment and the explicit entries merely override.
+    /// That means `HQ_SYNC_MANIFEST_DISABLED`, set in the app's environment,
+    /// is visible to the runner without the desktop app enumerating it. The
+    /// test spawns through `run_process_impl` — the same function the manual
+    /// sync and watch daemon spawns use — so the guarantee is proven end to
+    /// end rather than asserted about the code.
+    #[test]
+    fn kill_switch_env_var_reaches_the_child_process() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set(KILL_SWITCH, "1");
+
+        // Env map shaped like the runner spawn's: explicit keys only, with the
+        // kill switch deliberately NOT among them.
+        let mut env = HashMap::new();
+        env.insert("HQ_ROOT".to_string(), "/tmp/hq".to_string());
+        env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+        assert!(
+            !env.contains_key(KILL_SWITCH),
+            "the kill switch must arrive by inheritance, not an explicit entry"
+        );
+
+        let seen = stdout_of(
+            "child-env-test-kill-switch",
+            "printf '%s' \"$HQ_SYNC_MANIFEST_DISABLED\"",
+            Some(env),
+        );
+
+        assert_eq!(
+            seen, "1",
+            "HQ_SYNC_MANIFEST_DISABLED must reach the runner subprocess"
+        );
+    }
+
+    /// Guard against a future `env_clear()` / allowlist refactor silently
+    /// severing every non-enumerated variable, which would break the kill
+    /// switch above and any other runner-side env override.
+    #[test]
+    fn child_inherits_parent_env_not_an_allowlist() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        const SENTINEL: &str = "HQ_SYNC_TEST_INHERITANCE_SENTINEL";
+        let _guard = EnvGuard::set(SENTINEL, "inherited");
+
+        let mut env = HashMap::new();
+        env.insert("HQ_ROOT".to_string(), "/tmp/hq".to_string());
+        let seen = stdout_of(
+            "child-env-test-inheritance",
+            "printf '%s' \"$HQ_SYNC_TEST_INHERITANCE_SENTINEL\"",
+            Some(env),
+        );
+
+        assert_eq!(
+            seen, "inherited",
+            "child must inherit the parent environment"
         );
     }
 }

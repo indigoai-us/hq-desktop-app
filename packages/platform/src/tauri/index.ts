@@ -23,6 +23,11 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
+import {
+  createFeatureFlagGate,
+  createHqProFlagFetch,
+  type FeatureFlagGate,
+} from "../flags.js";
 
 /** Meetings are cloud-backed — desktop composite routes them via web.meetings. */
 const MEETINGS_USE_CLOUD = unavailable(
@@ -79,9 +84,16 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   private readonly invokeFn: InvokeFn;
   /** Serializes get-settings → merge → save across generic desktop callers. */
   private settingsMutationTail: Promise<void> = Promise.resolve();
+  private readonly flags: FeatureFlagGate;
 
   constructor(config: TauriPlatformAdapterConfig) {
     this.invokeFn = config.invoke;
+    this.flags = createFeatureFlagGate({
+      // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
+      endpoint: "",
+      getToken: () => "",
+      fetch: createHqProFlagFetch(this.invokeFn),
+    });
   }
 
   isAvailable(cap: Capability): boolean {
@@ -182,7 +194,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
-    hasFeature: (flag) => this.call("has_feature", { flag }),
+    hasFeature: (flag) =>
+      this.flags.resolve(flag, () => this.call("has_feature", { flag })),
     listWorkspaces: async () => {
       const result = await this.hqProJson<Json>("GET", "/membership/me");
       if (!result.ok) return result;
@@ -255,6 +268,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         : this.call("list_contacts");
     },
     listDmRequests: () => this.call("list_dm_requests"),
+    respondDmRequest: ({ pairKey, action }) =>
+      this.call("respond_dm_request", { pairKey, action }),
     markChannelRead: (id) => this.call("mark_channel_read", { id }),
     markDmThreadRead: (personUid) =>
       this.call("mark_dm_thread_read", { personUid }),
@@ -273,12 +288,34 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       }),
     listChannelMembers: (channelId) =>
       this.call("list_channel_members", { channelId }),
+    listChannelAgentTasks: (agentUid, channelId) =>
+      this.call("list_channel_agent_tasks", { agentUid, channelId }),
+    listAgentTasks: (agentUid) => this.call("list_agent_tasks", { agentUid }),
     sendChannelMessage: (channelId, body, extras) =>
       this.call("send_channel_message", {
         channelId,
         body,
         mentions: extras?.mentions ?? null,
         attachments: extras?.attachments ?? null,
+      }),
+    runCardAction: (args) =>
+      this.call("run_card_action", {
+        channelId: args.channelId,
+        cardId: args.cardId,
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey: args.idempotencyKey ?? null,
+      }),
+    getCompanyTab: (companyUid, tab) =>
+      this.call("get_company_tab", { companyUid, tab }),
+    runCompanyTabAction: (args) =>
+      this.call("run_company_tab_action", {
+        companyUid: args.companyUid,
+        tab: args.tab,
+        cardId: args.cardId,
+        actionId: args.actionId,
+        values: args.values,
+        idempotencyKey: args.idempotencyKey ?? null,
       }),
     fetchDmThread: ({ withPersonUid, limit, since }) =>
       this.call("fetch_dm_thread", {
@@ -615,6 +652,13 @@ export class TauriPlatformAdapter implements PlatformAdapter {
 
   readonly sessions: PlatformAdapter["sessions"] = {
     listAgentSessions: () => this.call("list_agent_sessions"),
+    preflight: () => this.call("agent_session_preflight"),
+    slashCommands: (tool) => this.call("agent_session_slash_commands", { tool }),
+    installProvider: (tool) =>
+      this.call<string>("install_session_provider", { tool }),
+    loginStart: (tool) => this.call("agent_provider_login_start", { tool }),
+    loginStatus: (tool) => this.call("agent_provider_login_status", { tool }),
+    loginCancel: (tool) => this.call("agent_provider_login_cancel", { tool }),
   };
 
   readonly settings: PlatformAdapter["settings"] = {
@@ -622,10 +666,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getSettings: () => this.call("get_settings"),
     updateSettings: (patch) => this.queueSettingsPatch(patch),
     getSetupStatus: () => this.call("get_setup_status"),
+    markWelcomeSetupComplete: () => this.call("mark_welcome_setup_complete"),
     getTelemetryConsent: () => this.call("get_telemetry_consent"),
   };
 
   readonly workMesh: PlatformAdapter["workMesh"] = {
+    createProjectStory: (projectId, companyUid, story) => this.hqProJson("POST",
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
+      { ...story, companyUid: companyUid.trim() },
+    ),
     readLocalSnapshot: () => this.call("read_work_mesh_snapshot"),
     getProjectView: (projectId, companyUid) =>
       companyUid?.trim()
@@ -639,6 +688,16 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         "POST",
         `/v1/work-mesh/sessions/${encodeURIComponent(sessionId.trim())}/migrate`,
         body,
+      ),
+    listProjectThreads: (projectId, companyUid, cursor) =>
+      this.hqProJson(
+        "GET",
+        `/v1/work-mesh/threads?companyUid=${encodeURIComponent(companyUid.trim())}&projectId=${encodeURIComponent(projectId.trim())}&limit=100${cursor?.trim() ? `&cursor=${encodeURIComponent(cursor.trim())}` : ""}`,
+      ),
+    listThreadEvents: (threadId, companyUid, since) =>
+      this.hqProJson(
+        "GET",
+        `/v1/work-mesh/threads/${encodeURIComponent(threadId.trim())}/events?companyUid=${encodeURIComponent(companyUid.trim())}${since?.trim() ? `&since=${encodeURIComponent(since.trim())}` : ""}`,
       ),
   };
 }

@@ -73,7 +73,7 @@ fn staging_index_cache_is_fresh(built_at: Instant, now: Instant, ttl: Duration) 
 // ── Eligibility + token resolution ────────────────────────────────────────────
 
 /// Read the signed-in email from the locally-cached Cognito id_token. Same
-/// reader the sync path + `event_push_eligible` use; any failure → None.
+/// reader used by the sync path; any failure → None.
 fn signed_in_email() -> Option<String> {
     crate::commands::cognito::read_tokens_from_file()
         .ok()

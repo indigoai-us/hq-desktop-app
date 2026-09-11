@@ -123,6 +123,41 @@ pub fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Result<(),
     write_menubar_obj(path, obj)
 }
 
+/// menubar.json key holding this installation's attempt identifier.
+pub const INSTALL_ATTEMPT_ID_KEY: &str = "installAttemptId";
+
+/// Read the installation-attempt id, minting and persisting one if absent.
+///
+/// This is the join key between the website's signup funnel and the desktop's
+/// onboarding events. It has to be stable for the life of an install — a
+/// counter that changed every launch would make one person look like five — and
+/// it has to be per-install, so a second machine is a second row.
+///
+/// It is minted lazily rather than at install time, and never overwritten. That
+/// matters for an upgrade: an existing user's first launch on a new build must
+/// not be relabelled as a fresh installation attempt just because the key did
+/// not exist before this version shipped. They get an id, they keep it, and
+/// nothing about their launch is reclassified — [`classify_launch`] still reads
+/// the pre-write `machineId`, which this never touches.
+///
+/// `mint` is a parameter so a test can pin the value instead of asserting on a
+/// random UUID.
+pub fn ensure_install_attempt_id(
+    path: &Path,
+    mint: impl FnOnce() -> String,
+) -> Result<String, String> {
+    let obj = read_menubar_obj(path);
+    if let Some(Value::String(existing)) = obj.get(INSTALL_ATTEMPT_ID_KEY) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    let minted = mint();
+    merge_menubar_flags(path, &[(INSTALL_ATTEMPT_ID_KEY, Value::String(minted.clone()))])?;
+    Ok(minted)
+}
+
 /// Retired menubar.json key that used to pick the embedded HQ Work shell
 /// versus the classic popover chat. The desktop workspace is now the only UI,
 /// so an upgraded install carrying `"hqWorkHandoff": false` must not keep the
@@ -614,6 +649,86 @@ mod tests {
         assert_eq!(
             classify_from_map(&read_menubar_obj(&path)),
             LaunchKind::Normal
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod install_attempt_id_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn temp_menubar(contents: Option<&str>) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("menubar.json");
+        if let Some(body) = contents {
+            fs::write(&path, body).expect("write");
+        }
+        (dir, path)
+    }
+
+    #[test]
+    fn mints_and_persists_when_the_file_does_not_exist_yet() {
+        let (_dir, path) = temp_menubar(None);
+        let id = ensure_install_attempt_id(&path, || "minted-once".to_string()).expect("mint");
+        assert_eq!(id, "minted-once");
+
+        let stored = read_menubar_obj(&path);
+        assert_eq!(
+            stored.get(INSTALL_ATTEMPT_ID_KEY),
+            Some(&json!("minted-once"))
+        );
+    }
+
+    #[test]
+    fn returns_the_same_id_on_every_later_launch() {
+        let (_dir, path) = temp_menubar(None);
+        let first = ensure_install_attempt_id(&path, || "minted-once".to_string()).expect("mint");
+        let second = ensure_install_attempt_id(&path, || {
+            panic!("must not mint a second id for the same installation")
+        })
+        .expect("read");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn an_upgrade_keeps_its_settings_and_is_not_relabelled() {
+        // An existing user upgrading into the first build that has this key.
+        // They gain an id; nothing else about them changes, and in particular
+        // `machineId` — which is what tells a fresh install from an upgrade —
+        // is left exactly as it was.
+        let (_dir, path) = temp_menubar(Some(
+            r#"{"machineId":"existing-machine","realtimeSync":false,"someFutureKey":42}"#,
+        ));
+        ensure_install_attempt_id(&path, || "minted-once".to_string()).expect("mint");
+
+        let stored = read_menubar_obj(&path);
+        assert_eq!(stored.get("machineId"), Some(&json!("existing-machine")));
+        assert_eq!(stored.get("realtimeSync"), Some(&json!(false)));
+        assert_eq!(stored.get("someFutureKey"), Some(&json!(42)));
+        assert_eq!(classify_from_map(&stored), LaunchKind::ExistingUpdate);
+    }
+
+    #[test]
+    fn an_empty_or_blank_stored_value_is_replaced() {
+        // A truncated write or a hand-edited file must not leave every event
+        // from this machine landing on the empty-string partition.
+        for stored in [r#"{"installAttemptId":""}"#, r#"{"installAttemptId":"   "}"#] {
+            let (_dir, path) = temp_menubar(Some(stored));
+            let id = ensure_install_attempt_id(&path, || "minted-once".to_string()).expect("mint");
+            assert_eq!(id, "minted-once");
+        }
+    }
+
+    #[test]
+    fn a_non_string_stored_value_is_replaced_rather_than_trusted() {
+        let (_dir, path) = temp_menubar(Some(r#"{"installAttemptId":12345}"#));
+        let id = ensure_install_attempt_id(&path, || "minted-once".to_string()).expect("mint");
+        assert_eq!(id, "minted-once");
+        assert_eq!(
+            read_menubar_obj(&path).get(INSTALL_ATTEMPT_ID_KEY),
+            Some(&json!("minted-once"))
         );
     }
 }

@@ -38,20 +38,16 @@ vi.mock('@tauri-apps/api/app', () => ({
 import { flushSync, mount, unmount } from 'svelte';
 import { failure, ok, type PlatformAdapter } from '@hq/platform';
 import { EMBEDDED_NAVIGATION_EVENT, OPEN_SETTINGS_EVENT } from '@hq/ui';
-import {
-  bootDesktopAltWindow,
-  resolveDesktopAltShell,
-} from '../../src/desktop-alt/boot';
+import { bootDesktopAltWindow } from '../../src/desktop-alt/boot';
 import {
   applyDesktopAltRoute,
   createHqWorkSidebarApi,
 } from '../../src/desktop-alt/hq-work-host';
 import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
-import {
-  hqWorkHandoffEnabled,
-  type HqWorkInvoker,
-} from '../../src/lib/hq-work';
+import { type HqWorkInvoker } from '../../src/lib/hq-work';
 import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
+import { takePendingChannelOpen } from '../../../../packages/ui/src/chat/open-target';
+import { takePendingConversation } from '../../../../packages/ui/src/chat/pending-conversation';
 
 const WHOAMI = {
   personUid: 'prs_ada',
@@ -252,6 +248,9 @@ function mountMessagingSidebar(invokeFn: SyncInvokeFn): void {
 
 /** The sidebar "+" opens the unified create modal directly (no dropdown). */
 async function openCreateModal(): Promise<void> {
+  await vi.waitFor(() => {
+    expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy();
+  });
   (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
   await flush();
 }
@@ -326,32 +325,22 @@ afterEach(async () => {
     component = null;
   }
   host?.remove();
+  document.querySelectorAll('[data-testid="chat-create-modal"]').forEach((node) => node.remove());
+  takePendingChannelOpen();
+  takePendingConversation();
   tauriEvents.listeners.clear();
   vi.clearAllMocks();
 });
 
 describe('US-103 embedded desktop window', () => {
-  describe('flag branch (tray desktop-view → window boot)', () => {
-    it('hq_work_handoff is always on, including a retired false key', () => {
-      expect(hqWorkHandoffEnabled(undefined)).toBe(true);
-      expect(hqWorkHandoffEnabled(null)).toBe(true);
-      expect(hqWorkHandoffEnabled(false)).toBe(true);
-      expect(hqWorkHandoffEnabled(true)).toBe(true);
-    });
-
-    it('Given a retired false flag, when the tray desktop-view action runs, then hq-work mounts', async () => {
+  describe('embedded workspace boot', () => {
+    it('mounts the hq-work workspace', async () => {
       const calls: string[] = [];
-      const shell = await bootDesktopAltWindow({
-        getHandoff: async () => false,
-        mountLegacy: () => {
-          calls.push('legacy');
-        },
+      await bootDesktopAltWindow({
         mountHqWork: () => {
           calls.push('hq-work');
         },
       });
-      expect(shell).toBe('hq-work');
-      expect(await resolveDesktopAltShell(async () => false)).toBe('hq-work');
       expect(calls).toEqual(['hq-work']);
     });
 
@@ -383,16 +372,12 @@ describe('US-103 embedded desktop window', () => {
       expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
     });
 
-    it('Given flag on, when the tray desktop-view action is clicked, then the embedded HQ Work shell renders', async () => {
+    it('renders the embedded HQ Work shell', async () => {
       host = document.createElement('div');
       document.body.appendChild(host);
       const invokeFn = mockInvoke();
       const calls: string[] = [];
-      const shell = await bootDesktopAltWindow({
-        getHandoff: async () => true,
-        mountLegacy: () => {
-          calls.push('legacy');
-        },
+      await bootDesktopAltWindow({
         mountHqWork: () => {
           calls.push('hq-work');
           component = mount(HqWorkWorkShell, {
@@ -401,7 +386,6 @@ describe('US-103 embedded desktop window', () => {
           });
         },
       });
-      expect(shell).toBe('hq-work');
       expect(calls).toEqual(['hq-work']);
       flushSync();
       await flush();
@@ -410,31 +394,13 @@ describe('US-103 embedded desktop window', () => {
       expect(host.querySelector('[data-testid="chat-sidebar"]')).toBeTruthy();
     });
 
-    it('flag-read failure still mounts the hq-work shell', async () => {
-      const shell = await bootDesktopAltWindow({
-        getHandoff: async () => {
-          throw new Error('menubar missing');
-        },
-        mountLegacy: () => {
-          throw new Error('must not mount legacy');
-        },
-        mountHqWork: () => undefined,
-      });
-      expect(shell).toBe('hq-work');
-    });
-
     it('finding-6: boot does not probe HQ Work install', async () => {
       const invokeFn = vi.fn(async (command: string) => {
         throw new Error(`boot must not invoke ${command}`);
       }) as HqWorkInvoker;
-      const shell = await bootDesktopAltWindow({
-        getHandoff: async () => false,
-        mountLegacy: () => {
-          throw new Error('must not mount legacy');
-        },
+      await bootDesktopAltWindow({
         mountHqWork: () => undefined,
       });
-      expect(shell).toBe('hq-work');
       expect(invokeFn).not.toHaveBeenCalled();
     });
   });
@@ -1050,6 +1016,7 @@ describe('US-103 embedded desktop window', () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
+      await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-show-history"]')).not.toBeNull());
       (host.querySelector('[data-testid="chat-show-history"]') as HTMLButtonElement).click();
       await flush();
       setInput('chat-history-search', 'known');
@@ -1074,7 +1041,12 @@ describe('US-103 embedded desktop window', () => {
                       name: 'owner-project',
                       scope: 'project',
                       companyUid: 'cmp_indigo',
-                      lastActivityAt: '2026-08-31T10:00:00.000Z',
+                      // Keep this recent relative to the wall clock: ChatSidebar
+                      // collapses rows older than 7 days under "Show all history…",
+                      // so a hardcoded past date makes this render assertion a
+                      // time-bomb (it started failing on 2026-09-07, a week after
+                      // the previous fixed date). Anchor to "now" instead.
+                      lastActivityAt: new Date(Date.now() - 60_000).toISOString(),
                     },
                   ],
                 }

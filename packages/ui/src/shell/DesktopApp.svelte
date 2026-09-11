@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { parseMeshProjectView, projectViewToBoard } from "@hq/core";
   /**
    * DesktopApp — the windowed V2 shell (design source: hq-sync desktop-alt +
    * its dev-harness ?view=v2 preview).
@@ -22,21 +23,74 @@
   import { failure, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
+  import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
+  import type { RowExtrasResolver } from "../chat/row-extras.js";
+  import DmRequestsPanel from "../chat/DmRequestsPanel.svelte";
+  import {
+    SIDEBAR_OVERLAY_MAX_PX,
+    sidebarLayout,
+  } from "./sidebar-layout.js";
+  import { ImagePreviewCache } from "../chat/messaging/image-preview-cache";
+  import { createImagePreviewStore } from "../chat/messaging/image-preview-store";
+  import { parseMessageAttachments } from "../chat/messaging/channelMessageModels";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
+  import AgentTaskStrip from "../chat/tasks/AgentTaskStrip.svelte";
+  import type { AgentTask } from "../chat/tasks/agent-tasks";
+  import {
+    TaskFeedController,
+    isAgentUid as isAgentTaskUid,
+  } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
-  import { isSetupChannel } from "../chat/setup-channel.js";
+  import SetupRunCard from "../chat/SetupRunCard.svelte";
+  import SetupConnectStep from "../chat/SetupConnectStep.svelte";
+  import SetupFinale from "../chat/SetupFinale.svelte";
+  import { SETUP_FAILURE_COPY } from "../chat/setup-run";
+  import type { SetupRunApi } from "../chat/setup-run.js";
+  import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
+  import { createLaunchActions } from "../settings/launch-actions";
+  import {
+    hasRunWelcomeSetup,
+    isSetupChannel,
+    markWelcomeSetupRun,
+    SETUP_CHANNEL_ID,
+    setupCompanies,
+    setupCompanyActionLabel,
+    setupRosterLoading,
+    withoutCompaniesSummaryCards,
+    withoutSeededCreateCompanyCards,
+  } from "../chat/setup-channel.js";
+  import {
+    findLifecycleCardElement,
+    runAddAgentEntry,
+    runCreateCompanyEntry,
+    type EntryPointResult,
+    type EntryPointTarget,
+  } from "../chat/lifecycle-entry-points.js";
+  import {
+    patchLifecycleCardState,
+    submitLifecycleCardAction,
+    type CardActionIdempotencyStore,
+  } from "../chat/card-action.js";
+  import {
+    agentComposerPlaceholder,
+    isAgentConversationRow,
+    provisioningFromMessages,
+  } from "../chat/agent-channel.js";
   import {
     CONVERSATION_BOOT_GRACE_MS,
     DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     raceTimeout,
   } from "../chat/boot-timeout.js";
   import AttachmentTray from "../chat/messaging/AttachmentTray.svelte";
-  import type { FileAttachmentModel } from "../chat/messaging/channelMessageModels.js";
+  import type {
+    FileAttachmentModel,
+    LifecycleCardActionEvent,
+  } from "../chat/messaging/channelMessageModels.js";
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
@@ -44,6 +98,17 @@
   import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
+  import CompanyTabs from "../chat/CompanyTabs.svelte";
+  import TeamTab from "../chat/tabs/TeamTab.svelte";
+  import SettingsTab from "../chat/tabs/SettingsTab.svelte";
+  import AtlasTab from "../chat/tabs/AtlasTab.svelte";
+  import CompanyHero from "../chat/CompanyHero.svelte";
+  import {
+    parseCompanyTab,
+    type CompanyChannelTabId,
+    type CompanyTabActionEvent,
+    type CompanyTabModel,
+  } from "../chat/tabs/tab-model.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import CommandPalette, {
@@ -100,7 +165,30 @@
     type EmbeddedNavigationTarget,
     type EmbeddedSettingsSection,
   } from "./embedded-navigation.js";
-  import { onDestroy, onMount, untrack } from "svelte";
+  import {
+    createNavigationEntry,
+    createNavigationHistory,
+    destinationCompanyKey,
+    destinationFromEmbeddedTarget,
+    destinationLabel,
+    extraParamCompanyKey,
+    historyNeighbor,
+    type NavigationDestination,
+    type NavigationEntry,
+    type NavigationScrollState,
+  } from "./navigation-history.js";
+  import {
+    captureNavigationScroll,
+    scheduleNavigationScrollRestore,
+  } from "./navigation-scroll.js";
+  import {
+    createNavigationController,
+    type AppliedNavigation,
+    type NavigationMode,
+    type NavigationResolveOutcome,
+  } from "./navigation-controller.js";
+  import { consumeNavigationShortcut } from "./navigation-shortcuts.js";
+  import { onDestroy, onMount, untrack, type Component } from "svelte";
   import {
     applyColorTheme,
     applyUiSize,
@@ -141,6 +229,7 @@
     mentionTargetsFromContacts,
     mentionTargetsFromContactsPayload,
     mergeMentionRosters,
+    stampMentionCompany,
     type MentionTarget,
   } from "../chat/mentions.js";
   import {
@@ -164,6 +253,14 @@
     replyScopeForRow,
   } from "../chat/chat-api.js";
   import { REPLY_OVERLAY_MAX_PX } from "../chat/reply-layout.js";
+  import {
+    activityTimelineMessages,
+    collectProjectThreadIds,
+    groupActivityBursts,
+    mergeActivityIntoTimeline,
+    projectActivityEntries,
+    type ThreadEventsInput,
+  } from "../chat/messaging/projectActivity.js";
   import {
     notificationDestination,
     type NotificationItem,
@@ -234,27 +331,37 @@
   } from "../chat/live-catchup.js";
   import {
     OPEN_CHANNEL_EVENT,
+    OPEN_DM_REQUESTS_EVENT,
     OPEN_SETTINGS_EVENT,
     conversationDeepLinkFromLocation,
     conversationRowForDeepLink,
     requestChannelOpen,
     shouldOpenReplyDeepLink,
     takePendingChannelOpen,
+    takePendingDmRequests,
     type ConversationDeepLink,
     type PendingChannelOpen,
   } from "../chat/open-target.js";
+  import type { DmRequest, RequestAction } from "../chat/dm-requests.js";
   import {
     MESSAGE_PERSON_EVENT,
-    requestConversation,
     takePendingConversation,
     type ConversationTarget,
   } from "../chat/pending-conversation.js";
   import type { ChannelDirectoryRow } from "../chat/channel-directory-reconciler.js";
+  import {
+    mergePaletteRows,
+    paletteConversationItems,
+  } from "./palette-rows.js";
   import type { Workspace } from "../chat/workspaces.js";
   import {
     buildCompanyDisplayMap,
+    buildCompanyIconMap,
     companyDisplayName,
+    companyIconUrl,
   } from "../company/company-display-map.js";
+  import CompanyIcon from "../company/CompanyIcon.svelte";
+  import { formatReadonlyTimestamp } from "../chat/messaging/channelMessageModels.js";
   import {
     accountChromeFromSelf,
     isSelf,
@@ -262,6 +369,7 @@
     type SelfIdentity,
   } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
+  import type { RosterStatus } from "../identity/roster-refresh.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
   import "../chat/messaging/messaging-tokens.css";
@@ -291,10 +399,20 @@
     loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
     /** Platform seam for opening an external URL (run-card preview/diff). */
     onopenurl?: (url: string) => void;
+    /** Bubbled lifecycle-card action (host posts in US-009). */
+    oncardaction?: (event: LifecycleCardActionEvent) => void;
     /** Wake events (host bridges MeshClient → bus); null when offline. */
     wakes?: ChatWakeBus | null;
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
+    /**
+     * Where the host is in loading `companies` for this session. #setup
+     * hides the seeded "Create a company" card and the create hero copy
+     * until the roster has loaded once (`ready` | `failed`). Omitted = ready.
+     */
+    rosterStatus?: RosterStatus | null;
+    /** Re-run the host's roster fetch after `rosterStatus === "failed"`. */
+    onretryroster?: () => void;
     /**
      * Verified signed-in principal (host-supplied: web = Cognito session,
      * desktop = its auth source). Drives "you" tagging + admin gating in the
@@ -409,6 +527,44 @@
     bootTimeoutMs?: number;
     /** First successful conversation/empty paint — host reports `shell_ready`. */
     onShellReady?: () => void;
+    /** Host-registered full-column destinations keyed by page id. */
+    extraPages?: Record<
+      string,
+      {
+        label: string;
+        detail?: string;
+        /** Optional host-owned create action in the window header. */
+        createAction?: { label: string; param: () => string | null };
+        /**
+         * Optional host-owned "Run Setup" destination for #welcome: a fresh
+         * session whose param carries the setup prompt so the page can send
+         * it as soon as the provider is ready. Falls back to `createAction`.
+         */
+        setupAction?: { label: string; param: () => string | null };
+        /**
+         * Optional host guided-run API. When present, #welcome's Run Setup
+         * runs `/setup` natively inside the hero (stepper + question cards)
+         * and only falls back to `setupAction` when the host's preflight says
+         * the Sessions page must go first. "Show details" opens the session
+         * on this page with its id as the param.
+         */
+        setupRun?: SetupRunApi;
+        /** After setup: a fresh session with `/startwork <company>` as its first turn. */
+        startworkAction?: { label: string; param: (company: string | null) => string | null };
+        component: Component<{
+          param?: string | null;
+          restoreScroll?: NavigationScrollState | null;
+          onnavigate?: (
+            param: string | null,
+            options?: { mode?: "push" | "replace" },
+          ) => void;
+        }>;
+      }
+    >;
+    /** Host decoration for sidebar rows: badge, hover card, and actions. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
+    rowExtras?: RowExtrasResolver | null;
   }
 
   let {
@@ -423,8 +579,11 @@
     filesByRow,
     loadFilePreview,
     onopenurl,
+    oncardaction,
     wakes = null,
     companies = null,
+    rosterStatus = null,
+    onretryroster,
     self = null,
     tenantAccountId = null,
     tenantGeneration = 0,
@@ -457,6 +616,10 @@
     getAttachmentObject,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     onShellReady,
+    extraPages,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
+    rowExtras = null,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -533,6 +696,11 @@
     { id: "board", label: "Board" },
     { id: "files", label: "Files" },
   ];
+  const AGENT_CHANNEL_TABS = [
+    { id: "chat", label: "Chat" },
+    { id: "details", label: "Details" },
+  ] as const;
+  type AgentChannelTab = (typeof AGENT_CHANNEL_TABS)[number]["id"];
 
   let view = $state<
     | "conversation"
@@ -542,8 +710,15 @@
     | "atlas"
     | "library"
     | "shared-files"
+    | "extra"
+    | "dm-requests"
   >("conversation");
+  let extraPageId = $state<string | null>(null);
+  let extraPageParam = $state<string | null>(null);
+  /** Which pending request the Requests panel should bring into view first. */
+  let dmRequestsFocusPairKey = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
+  let libraryItemId = $state<string | null>(null);
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
     meetingId: string;
@@ -551,7 +726,26 @@
   } | null>(null);
   let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
+  let navigationPending = $state(false);
+  let navigationUnavailable = $state<{
+    destination: NavigationDestination;
+    reason: string;
+  } | null>(null);
+  let navigationCanGoBack = $state(false);
+  let navigationCanGoForward = $state(false);
+  let navigationBackLabel = $state("");
+  let navigationForwardLabel = $state("");
+  let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
+  let cancelScrollRestore: (() => void) | null = null;
+  const DESTINATION_UNAVAILABLE = "This destination is no longer available.";
   let tab = $state<ChannelTab>("chat");
+  let channelFileKey = $state<string | null>(null);
+  let companyTab = $state<CompanyChannelTabId>("chat");
+  let companyTabData = $state<CompanyTabModel | null>(null);
+  let companyTabLoading = $state(false);
+  let companyWallpaper = $state("aurora");
+  /** Company display name from the settings tab appearance, when fetched. */
+  let companyAppearanceName = $state<string | null>(null);
   let openReplyRootId = $state<string | null>(null);
   /** Right side pane in ARTIFACT mode. Supersedes thread/profile while open;
    *  closing it falls back to whatever pane was open underneath. */
@@ -563,9 +757,24 @@
   let replyPreviewByRoot = $state<Record<string, ReplyPreview>>({});
   let replyCountOverride = $state<Record<string, number>>({});
   let narrowViewport = $state(false);
-  let sidebarCollapsed = $state(false);
+  /**
+   * On a phone the channel list is an overlay, so it must start closed —
+   * otherwise the first thing the app shows is a list covering the
+   * conversation. Resolved synchronously from the initial width so there is no
+   * frame where the list is on screen before an effect hides it.
+   */
+  const startsAsOverlay =
+    typeof window !== "undefined" &&
+    sidebarLayout(window.innerWidth) === "overlay";
+  let phoneViewport = $state(startsAsOverlay);
+  let sidebarCollapsed = $state(startsAsOverlay);
+  let sidebarWidth = $state((() => {
+    try { const saved = Number(localStorage.getItem('hq.sidebar.width')); return saved >= 220 && saved <= 440 ? saved : 260; }
+    catch { return 260; }
+  })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+  let directorySettled = $state(false);
   let conversationBootTimedOut = $state(false);
   $effect(() => {
     if (selectedRow) {
@@ -637,18 +846,32 @@
   /** Channel-header info control → project description dialog. */
   let projectAboutOpen = $state(false);
 
-  const searchKindLabel: Record<ChannelTab | string, string> = {
-    channel: "Channel",
-    dm: "Direct message",
-    group: "Group",
-  };
-
   /**
    * Command-palette items: NAVIGATE actions (Notifications, Settings) plus one
-   * CONVERSATION row per injected search row (ranked by recency in the
-   * palette). Selecting a conversation opens it in the shell.
+   * CONVERSATION row per indexed conversation — the live rail rows unioned with
+   * the host's cached search rows, ranked by match then recency in the palette.
+   * Selecting a conversation opens it in the shell.
    */
   const isWeb = $derived(adapter.kind === "web");
+
+  /** Company uid → NAME so palette details never render a `cmp_…` uid. */
+  const paletteCompanies = $derived(
+    (companies ?? [])
+      .filter((w) => (w.cloudUid ?? "").trim())
+      .map((w) => ({
+        companyUid: (w.cloudUid as string).trim(),
+        label: w.displayName?.trim() || w.slug,
+        iconUrl: w.iconUrl ?? null,
+      })),
+  );
+
+  /**
+   * The palette indexes the LIVE rail rows unioned with the host's cached
+   * `searchRows`. Indexing only the cache let the persisted rail drop a channel
+   * the sidebar was still showing (and vice versa) — a conversation could be in
+   * one surface and missing from the other.
+   */
+  const paletteRows = $derived(mergePaletteRows(railRows, searchRows));
 
   const paletteCommands = $derived.by((): CommandPaletteItem[] => {
     const nav: CommandPaletteItem[] = [
@@ -657,7 +880,7 @@
         label: "Notifications",
         detail: "Open the notifications feed",
         action: () => {
-          view = "notifications";
+          void navigate({ kind: "notifications" });
         },
       },
       {
@@ -665,7 +888,7 @@
         label: "Meetings",
         detail: "Open the meetings agenda",
         action: () => {
-          view = "meetings";
+          void navigate({ kind: "meetings" });
         },
       },
       {
@@ -674,8 +897,7 @@
         detail: "People and agents on projects, live",
         shortcut: "g a",
         action: () => {
-          view = "atlas";
-          meetingFocusRequest = null;
+          void navigate({ kind: "atlas" });
         },
       },
     ];
@@ -691,6 +913,14 @@
       detail: "Open settings",
       action: () => openSettings(),
     });
+    for (const [id, page] of Object.entries(extraPages ?? {})) {
+      nav.push({
+        id: `command-go-${id}`,
+        label: page.label,
+        detail: page.detail ?? page.label,
+        action: () => openExtraPage(id),
+      });
+    }
     if (!isWeb) {
       nav.push({
         id: "command-go-marketplace",
@@ -699,21 +929,50 @@
         action: () => openLibrary("marketplace"),
       });
     }
-    const conversations: CommandPaletteItem[] = searchRows.map((row) => ({
-      id: `conversation-${row.id}`,
-      label: row.title,
-      detail:
-        row.kind === "channel"
-          ? (row.companyUid ?? "channel")
-          : (searchKindLabel[row.kind] ?? "Conversation"),
-      lastActivityAt: row.lastActivityAt,
-      action: () => handleSelect(row),
+    // Human labels only. `paletteConversationItems` resolves the channel
+    // display name / person name / project title for the primary line and the
+    // company name + kind for the secondary line — the old mapping rendered
+    // `row.companyUid`, i.e. a raw `cmp_…` uid, as the detail. Raw ids move to
+    // `keywords` so they stay searchable without being shown.
+    const conversations: CommandPaletteItem[] = paletteConversationItems(
+      paletteRows,
+      { companies: paletteCompanies },
+    ).map((item) => ({
+      id: item.id,
+      label: item.label,
+      detail: item.detail,
+      keywords: item.keywords,
+      lastActivityAt: item.lastActivityAt,
+      // Company channels carry their company's mark so a palette full of
+      // `#`-prefixed labels is scannable by company at a glance.
+      iconUrl: item.iconUrl,
+      showCompanyMark:
+        item.row.kind === "channel" &&
+        (item.row.channelScope ?? "").trim() === "company",
+      action: () => handleSelect(item.row),
     }));
     return [...nav, ...conversations];
   });
 
   const watched = $derived(companies?.length ?? 0);
   const companyNames = $derived(buildCompanyDisplayMap(companies ?? []));
+  /** uid/slug → presigned company icon, for the header + member popover. */
+  const companyIcons = $derived(buildCompanyIconMap(companies ?? []));
+  /**
+   * Icon for the selected conversation's company: the row's server-stamped
+   * icon first, then the roster. Company channels only — a project or personal
+   * channel header keeps its `#`.
+   */
+  const selectedCompanyIcon = $derived.by(() => {
+    const row = selectedRow;
+    if (!row || row.kind !== "channel") return null;
+    if ((row.channelScope ?? "").trim() !== "company") return null;
+    return row.iconUrl ?? companyIconUrl(row.companyUid, companyIcons);
+  });
+  const selectedIsCompanyChannel = $derived(
+    selectedRow?.kind === "channel" &&
+      (selectedRow.channelScope ?? "").trim() === "company",
+  );
 
   /** Company for Atlas — selected conversation company, else first cloud workspace. */
   const atlasCompanyUid = $derived.by(() => {
@@ -760,17 +1019,160 @@
       ((selectedRow?.channelScope ?? "channel") === "project" ||
         Boolean(projectIdForRow(selectedRow))),
   );
+  let agentSurface = $state<AgentChannelTab>("chat");
+  let liveTimeline = $state<ConversationMessageWire[]>([]);
+  let liveTimelineId = $state<string | null>(null);
+  const provisioning = $derived(provisioningFromMessages(liveTimeline));
+  const isAgentChannel = $derived(
+    isAgentConversationRow(selectedRow) ||
+      (!!selectedRow?.channelId &&
+        !isSetupChannel(selectedRow.channelId) &&
+        selectedRow.kind === "channel" &&
+        provisioning.state !== null),
+  );
+  const isCompanyChannel = $derived(
+    selectedRow?.kind === "channel" &&
+      (selectedRow?.channelScope ?? "channel") === "company" &&
+      !isSetupChannel(selectedRow.channelId) &&
+      !isAgentChannel,
+  );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
   const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
 
-  /** Real ChannelView composer placeholder (verbatim from the desktop source). */
-  const composerPlaceholder = $derived(
-    composerPlaceholderFor(selectedRow, headerTitle),
+  /**
+   * Company hero shows the company's display name ("Ramen Bae"), not the
+   * channel slug ("ramen-bae") — the channel header keeps `#ramen-bae`.
+   */
+  const companyHeroTitle = $derived(
+    companyAppearanceName ||
+      companyDisplayName(selectedRow?.companyUid, companyNames) ||
+      headerTitle,
   );
 
-  let liveTimeline = $state<ConversationMessageWire[]>([]);
-  let liveTimelineId = $state<string | null>(null);
+  /** Real ChannelView composer placeholder (verbatim from the desktop source). */
+  /**
+   * The Setup Agent: the guided `/setup` run as a conversation in #welcome.
+   * Its turns stream into the channel timeline as messages, the composer
+   * replies to it while it is listening, and the prompt under the messages
+   * carries choices / cards / the finish buttons. The hero shows its stepper.
+   */
+  // Starting is not finishing: a relaunch mid-run must still land on
+  // #welcome, so only the finish graduates welcome-first boot.
+  const setupAgent = new SetupAgent(extraPages?.sessions?.setupRun ?? null, {
+    onfinished: () => {
+      recordWelcomeSetupRun();
+      // On disk too: the window's memory does not survive a reinstall.
+      void adapter.settings.markWelcomeSetupComplete?.();
+    },
+  });
+  $effect(() => () => setupAgent.dispose());
+  const inSetupChannelWithAgent = $derived(
+    Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupAgent.active),
+  );
+  /** First-seen wall clock per session: synthetic turns need stable, ordered timestamps. */
+  const setupAgentClock = new Map<string, number>();
+  const setupAgentWires = $derived.by((): ConversationMessageWire[] => {
+    const sessionId = setupAgent.sessionId;
+    if (!setupAgent.active || !sessionId) return [];
+    let base = setupAgentClock.get(sessionId);
+    if (base === undefined) {
+      base = Date.now();
+      setupAgentClock.set(sessionId, base);
+    }
+    const start = base;
+    return setupAgent.transcript.map((turn) => ({
+      eventId: turn.id,
+      fromPersonUid: turn.role === "agent" ? SETUP_AGENT_UID : (self?.uid ?? null),
+      fromDisplayName: turn.role === "agent" ? SETUP_AGENT_NAME : (self?.displayName ?? "You"),
+      body: turn.text,
+      createdAt: new Date(start + turn.seq * 1000).toISOString(),
+      direction: turn.role === "agent" ? "in" : "out",
+      replyCount: 0,
+    }));
+  });
+  /** Between the person's turns the agent shows as "thinking", like any other agent. */
+  let setupThinkingSince = 0;
+  const setupThinking = $derived.by((): ThinkingEntry | null => {
+    if (!inSetupChannelWithAgent) return null;
+    // Starting a run (or quietly retrying a passing clash) is thinking too:
+    // the person clicked and must see the agent at work, not a blank beat.
+    if (setupAgent.mode === "starting" || setupAgent.retrying) {
+      if (!setupThinkingSince) setupThinkingSince = Date.now();
+      return { agentUid: SETUP_AGENT_UID, agentName: SETUP_AGENT_NAME, startedAt: setupThinkingSince, phase: "thinking" };
+    }
+    if (setupAgent.mode !== "live") {
+      setupThinkingSince = 0;
+      return null;
+    }
+    const state = setupAgent.state;
+    const phase = setupAgent.snapshot?.phase;
+    // Thinking is only while the engine is actually working on a turn — not
+    // while it waits for the person, and not once it has finished or stopped.
+    // The reported phase can lag or be missed; the event stream is the tiebreak.
+    const working = phase === "working" || phase === "starting" || (phase !== "needsYou" && phase !== "ended" && state?.inFlight);
+    if (!state || state.done || state.ended || state.question || !working) {
+      setupThinkingSince = 0;
+      return null;
+    }
+    if (!setupThinkingSince) setupThinkingSince = Date.now();
+    return { agentUid: SETUP_AGENT_UID, agentName: SETUP_AGENT_NAME, startedAt: setupThinkingSince, phase: "thinking" };
+  });
+  let setupLaunchError = $state<string | null>(null);
+  /** The company `/startwork` orients on after setup: the first company in the roster. */
+  const startworkCompany = $derived(setupCompanies(companies).find((c) => c.kind === "company")?.slug ?? null);
+  const startworkPrompt = $derived(startworkCompany ? `/startwork ${startworkCompany}` : "/startwork");
+  /** The finish buttons: open the HQ folder in a coding tool with `/startwork` ready to go. */
+  async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
+    setupLaunchError = null;
+    const res = await adapter.settings.getSetupStatus();
+    const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
+    if (!folder) {
+      setupLaunchError = "HQ folder is not ready yet.";
+      return;
+    }
+    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt: startworkPrompt });
+    const error = key === "claude" ? await actions.launchClaude() : await actions.launchCodex();
+    if (error) setupLaunchError = error;
+  }
+  /** The run has finished (marker or the person's own "I'm all set"): the finale replaces the prompt. */
+  const setupAgentDone = $derived(
+    inSetupChannelWithAgent && (setupAgent.mode === "done" || Boolean(setupAgent.state?.done)),
+  );
+  /** Once setup is done the composer rests; the finale carries every next step. */
+  const composerDisabled = $derived(setupAgentDone);
+  const SETUP_DONE_PLACEHOLDER = "Setup is complete — pick a next step above.";
+  const composerPlaceholder = $derived(
+    setupAgentDone
+      ? SETUP_DONE_PLACEHOLDER
+      : inSetupChannelWithAgent && setupAgent.listening
+      ? setupAgent.state?.question?.kind === "choice"
+        ? "Type your answer…"
+        : "Reply to Setup Agent…"
+      : isAgentChannel && provisioning.state === "pending"
+        ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
+        : composerPlaceholderFor(selectedRow, headerTitle),
+  );
+  const composerLocked = $derived(
+    composerDisabled || (isAgentChannel && provisioning.state === "pending"),
+  );
+  const agentChannelUid = $derived(
+    selectedRow?.members?.find((m) => m.personUid.startsWith("agt_"))
+      ?.personUid ??
+      provisioning.agentUid ??
+      null,
+  );
+
+  $effect(() => {
+    selectedRow?.id;
+    companyTabData = null;
+    companyWallpaper = "aurora";
+    companyAppearanceName = null;
+  });
+
+  /** Threads fetched per project channel — bounded so a long-lived project
+   *  cannot fan out into hundreds of event requests on channel open. */
+  const PROJECT_ACTIVITY_THREAD_CAP = 25;
   let timelineHydrating = $state(false);
   const timelineCache = new Map<string, ConversationMessageWire[]>();
   /** Last rail activity stamp emitted from a committed DM timeline, per peer. */
@@ -788,6 +1190,51 @@
   // must not keep another channel's optimistic status on screen.
   const AGENT_THINKING_TICK_MS = 5_000;
   let agentThinking = $state<ThinkingEntry[]>([]);
+
+  // Background-task chips for the agents in the selected conversation — the
+  // room-scoped route for a channel (every agent on its roster), the
+  // agent-wide view for a DM with an agent. One controller per selection;
+  // rebuilt when the roster arrives, disposed on switch/teardown. Nothing is
+  // polled when the host exposes neither task view or there is no agent.
+  let taskCtl = $state<TaskFeedController | null>(null);
+  $effect(() => {
+    const row = selectedRow;
+    const channelId = row?.channelId?.trim() || null;
+    const roster = channelId ? (channelRosterById[channelId] ?? []) : [];
+    const peer = row?.personUid?.trim() || null;
+    const agentUids = channelId
+      ? roster.map((m) => m.personUid)
+      : peer && isAgentTaskUid(peer)
+        ? [peer]
+        : [];
+    const roomFetch = adapter.messaging.listChannelAgentTasks;
+    const agentFetch = adapter.messaging.listAgentTasks;
+    const ctl = new TaskFeedController({
+      agentUids,
+      channelId,
+      fetchRoomTasks: roomFetch
+        ? async (agentUid, ch) => unwrapAdapter(await roomFetch(agentUid, ch))
+        : null,
+      fetchTasks: agentFetch ? async (agentUid) => unwrapAdapter(await agentFetch(agentUid)) : null,
+    });
+    taskCtl = ctl;
+    return () => {
+      ctl.dispose();
+      if (taskCtl === ctl) taskCtl = null;
+    };
+  });
+  // Rooms: chips live in the thread they were spawned from (ReplyPanel),
+  // never in the main pane — a room-wide strip mixes every thread's work.
+  // DMs have no threads-of-origin on the agent-wide view, so they keep the
+  // strip beneath the conversation.
+  const mainPaneTasks = $derived<AgentTask[]>(
+    selectedRow?.channelId ? [] : (taskCtl?.tasks ?? []),
+  );
+  const threadTasks = $derived<AgentTask[]>(
+    openReplyRootId
+      ? (taskCtl?.tasks ?? []).filter((t) => t.originMessageId === openReplyRootId)
+      : [],
+  );
 
   $effect(() => {
     void selectedRow?.id;
@@ -902,9 +1349,27 @@
     }
   }
 
+  let historyCursors = $state<Record<string, string | null>>({});
+
+  async function loadEarlierTimeline(): Promise<void> {
+    const row = selectedRow;
+    if (!row) return;
+    const generation = tenantGeneration;
+    const cursor = historyCursors[row.id];
+    if (!cursor) return;
+    const raw = row.channelId
+      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50 }))
+      : null;
+    if (selectedRow?.id !== row.id || tenantGeneration !== generation || raw === null) return;
+    const page = timelinePageFromPayload(raw);
+    historyCursors[row.id] = page.nextCursor === cursor ? null : (page.nextCursor ?? null);
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw));
+  }
+
   async function applyFetchedTimeline(
     row: ConversationRow,
     raw: unknown | null,
+    pendingCardId?: string,
   ): Promise<void> {
     // Apply whenever this row is still selected. Do not require matching
     // timelineSeq — MQTT catch-up / a re-run of the hydrate effect used to
@@ -913,7 +1378,19 @@
     if (selectedRow?.id !== row.id) return;
     timelineHydrating = false;
     if (raw == null) return;
-    const incoming = messagesForDisplay(raw);
+    historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
+    let incoming = messagesForDisplay(raw);
+    // An immediate readback can lag the accepted mutation. Preserve its
+    // pending receipt over a stale open card, but accept any newer state.
+    if (pendingCardId && incoming.some((message) => {
+      const envelope = message.systemEvent;
+      return !!envelope && typeof envelope === "object" &&
+        "type" in envelope && envelope.type === "lifecycle_card" &&
+        "cardId" in envelope && envelope.cardId === pendingCardId &&
+        "state" in envelope && envelope.state === "open";
+    })) {
+      incoming = patchLifecycleCardState(incoming, pendingCardId, { state: "pending", reason: null });
+    }
     commitTimeline(row, incoming);
     clearThinkingFromIncoming(incoming);
   }
@@ -928,12 +1405,12 @@
     if (selectedRow?.id !== row.id) return;
     if (raw == null) return;
     const incoming = messagesForDisplay(raw);
-    commitTimeline(
-      row,
-      existing.length > 0
-        ? mergeFetchedTimeline(existing, raw)
-        : incoming,
-    );
+    // History may have loaded while this refresh was in flight. Merge into
+    // the current timeline so its newly prepended page is not discarded.
+    const current = liveTimelineId === row.id
+      ? liveTimeline
+      : (timelineCache.get(row.id) ?? []);
+    commitTimeline(row, mergeFetchedTimeline(current, raw));
     clearThinkingFromIncoming(incoming);
   }
 
@@ -997,6 +1474,174 @@
         : msg,
     );
   });
+  // ── Project-channel work-mesh activity ───────────────────────────────────
+  //
+  // A project channel's real trail lives in work-mesh threads, not in the chat
+  // table, so the channel used to render empty while a project had a live claim
+  // and a progress log. Fetch that trail for the selected project channel and
+  // fold it into the same timeline. Best-effort by design: any failure leaves
+  // chat-only rendering exactly as before.
+  let projectActivityRows = $state<ConversationMessageWire[]>([]);
+  let projectActivityKey = $state("");
+  let projectActivityLoading = $state(false);
+
+  function activityKeyForRow(row: ConversationRow | null): string {
+    if (!row) return "";
+    const projectId = (row.projectId ?? "").trim() || projectIdForRow(row) || "";
+    const companyUid = (row.companyUid ?? "").trim();
+    return projectId && companyUid ? `${companyUid}/${projectId}` : "";
+  }
+
+  /** Roster-backed actor names so rows never show a raw `prs_…`. */
+  function resolveActivityActor(actorUid: string): string | null {
+    const uid = actorUid.trim();
+    if (!uid) return null;
+    const named = displayNameByUid[uid];
+    if (named?.trim()) return named.trim();
+    const roster = channelRosterById[selectedRow?.channelId?.trim() ?? ""] ?? [];
+    const hit = roster.find((m) => m.personUid === uid);
+    return hit?.displayName?.trim() || null;
+  }
+
+  async function loadProjectActivity(row: ConversationRow): Promise<void> {
+    const key = activityKeyForRow(row);
+    if (!key) {
+      projectActivityRows = [];
+      projectActivityKey = "";
+      return;
+    }
+    const [companyUid, projectId] = key.split("/");
+    const api = adapter.workMesh;
+    if (!api?.listProjectThreads || !api?.listThreadEvents) return;
+    projectActivityLoading = true;
+    try {
+      // The server-side `projectId` filter is additive and may not be deployed
+      // yet, so collectProjectThreadIds filters client-side and pages while a
+      // cursor comes back. Once the filter is live, page one has no cursor.
+      const threadIds = await collectProjectThreadIds(
+        projectId,
+        async (cursor) => {
+          const res = await api.listProjectThreads!(
+            projectId,
+            companyUid,
+            cursor,
+          );
+          if (!res.ok) return null;
+          const payload = res.value as {
+            threads?: unknown;
+            nextCursor?: unknown;
+          } | null;
+          return {
+            threads: Array.isArray(payload?.threads) ? payload.threads : [],
+            nextCursor:
+              typeof payload?.nextCursor === "string" ? payload.nextCursor : null,
+          };
+        },
+        PROJECT_ACTIVITY_THREAD_CAP,
+      );
+      const pages = await Promise.all(
+        threadIds.map(async (threadId): Promise<ThreadEventsInput> => {
+          try {
+            const res = await api.listThreadEvents!(threadId, companyUid);
+            const body = res.ok
+              ? (res.value as { events?: unknown } | null)
+              : null;
+            return {
+              threadId,
+              events: Array.isArray(body?.events) ? body.events : [],
+            };
+          } catch {
+            return { threadId, events: [] };
+          }
+        }),
+      );
+      if (activityKeyForRow(selectedRow) !== key) return;
+      const entries = groupActivityBursts(
+        projectActivityEntries(pages, { resolveActor: resolveActivityActor }),
+      );
+      projectActivityRows = activityTimelineMessages(entries);
+      projectActivityKey = key;
+    } catch (err) {
+      console.warn("[hq-desktop]", {
+        t: Date.now(),
+        event: "project-activity-error",
+        key,
+        err: String(err),
+      });
+    } finally {
+      if (activityKeyForRow(selectedRow) === key) projectActivityLoading = false;
+    }
+  }
+
+  $effect(() => {
+    const row = selectedRow;
+    const key = activityKeyForRow(row);
+    if (!row || !key) {
+      projectActivityRows = [];
+      projectActivityKey = "";
+      projectActivityLoading = false;
+      return;
+    }
+    if (projectActivityKey === key) return;
+    projectActivityRows = [];
+    void loadProjectActivity(row);
+  });
+
+  // Diagnostic: what the setup channel is showing and why. Logged only when
+  // the picture changes, so the log is not spammed on every timeline poll.
+  let lastSetupStateLog = "";
+  $effect(() => {
+    const hqLog = (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog;
+    if (!hqLog || !selectedRow || !isSetupChannel(selectedRow.channelId)) return;
+    const snapshot = JSON.stringify({
+        selected: selectedRow?.channelId ?? null,
+        isSetup: selectedRow ? isSetupChannel(selectedRow.channelId) : null,
+        companies: (companies ?? []).map((c) => `${c.kind}:${c.slug}:${c.state}`),
+        rosterCompanies: rosterCompanies.map((c) => c.slug),
+        rosterStatus: rosterStatus ?? null,
+        hasRosterCompany,
+        createCompanyRequested,
+        timeline: timeline.length,
+        shown: timelineWithActivity.length,
+        kinds: timeline.map((m) => {
+          const ev = (m as { systemEvent?: { type?: string; kind?: string } }).systemEvent;
+          return ev ? `${ev.type}/${ev.kind}` : "msg";
+        }),
+      });
+    if (snapshot === lastSetupStateLog) return;
+    lastSetupStateLog = snapshot;
+    hqLog("setup-state", snapshot);
+  });
+
+  /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
+  const timelineWithActivity = $derived.by(() => {
+    const merged =
+      projectActivityRows.length > 0
+        ? mergeActivityIntoTimeline(timeline, projectActivityRows)
+        : timeline;
+    if (!selectedRow || !isSetupChannel(selectedRow.channelId)) return merged;
+    // #welcome must not lead with "Create a company" for an account whose
+    // roster already holds one (created on the website / another machine).
+    const welcome = withoutCompaniesSummaryCards(
+      withoutSeededCreateCompanyCards(merged, {
+        hasCompany: hasRosterCompany,
+        createRequested: createCompanyRequested,
+        rosterLoading: setupRosterLoading(companies, rosterStatus),
+      }),
+    );
+    // The Setup Agent's turns are local to this Mac: they render in the
+    // channel but are never posted to it.
+    return setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
+  });
+
+  /**
+   * A project channel with no chat AND no work-mesh events is empty of
+   * ACTIVITY, not of messages — the label has to say so.
+   */
+  const conversationEmptyLabel = $derived(
+    isProjectChannel ? "No activity yet" : "No messages yet",
+  );
+
   const messageScope = $derived(messageScopeForRow(selectedRow));
   let liveReactions = $state<ReactionMap>({});
   let reactionScope = $state("");
@@ -1017,9 +1662,58 @@
   const boardHasCards = $derived(
     Boolean(overlayBoard?.columns.some((column) => column.cards.length > 0)),
   );
-  const board = $derived<BoardTabData | null>(
-    boardHasCards ? overlayBoard : (liveTabs?.board ?? overlayBoard),
-  );
+  let createdTasks = $state<Record<string, BoardTabData>>({});
+  $effect(() => {
+    self?.uid;
+    createdTasks = {};
+  });
+  $effect(() => {
+    const key = selectedRow ? activityKeyForRow(selectedRow) : "";
+    const pending = createdTasks[key];
+    const base = boardHasCards ? overlayBoard : liveTabs?.board;
+    if (!pending || !base) return;
+    const remaining = Object.fromEntries(Object.entries(pending.stories).filter(([id]) => !base.stories[id]));
+    if (Object.keys(remaining).length === Object.keys(pending.stories).length) return;
+    const next = {...createdTasks};
+    if (!Object.keys(remaining).length) delete next[key];
+    else next[key] = {...pending, stories: remaining, columns: pending.columns.map(column => ({...column, cards: column.cards.filter(card => remaining[card.storyId])}))};
+    createdTasks = next;
+  });
+  const board = $derived.by((): BoardTabData | null => {
+    const base = boardHasCards ? overlayBoard : (liveTabs?.board ?? overlayBoard);
+    const added = selectedRow ? createdTasks[activityKeyForRow(selectedRow)] : null;
+    if (!added) return base;
+    if (!base) return added;
+    return { ...base, stories: {...added.stories, ...base.stories}, columns: base.columns.map(column => ({
+      ...column, cards: [...column.cards, ...(added.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => !base.stories[card.storyId])],
+    })) };
+  });
+
+  async function createBoardTask(task: {id: string; title: string; description: string; status: string}): Promise<void> {
+    const row = selectedRow;
+    const companyUid = row?.companyUid?.trim();
+    const projectId = row ? projectIdForRow(row) : null;
+    const create = adapter.workMesh.createProjectStory;
+    if (!row || !companyUid || !projectId || !create) throw new Error("Project unavailable");
+    const key = activityKeyForRow(row);
+    const account = self?.uid;
+    // A retry after a lost response must not append the same task twice.
+    const before = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
+    if (!before || before.companyUid !== companyUid || before.projectId !== projectId) throw new Error("Project unavailable");
+    const existing = before.stories.find(story => story.id === task.id);
+    if (existing && existing.title !== task.title) throw new Error("Task ID already exists");
+    if (!existing) unwrapAdapter(await create(projectId, companyUid, {...task, passes: task.status === "done"}));
+    const saved = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
+    const story = saved?.stories.find(story => story.id === task.id);
+    if (!saved || saved.companyUid !== companyUid || saved.projectId !== projectId || !story) throw new Error("Task not confirmed");
+    if (self?.uid !== account) return;
+    const prior = createdTasks[key];
+    const added = projectViewToBoard({...saved, stories: [story]});
+    createdTasks = {...createdTasks, [key]: prior ? {
+      ...added, stories: {...prior.stories, ...added.stories},
+      columns: added.columns.map(column => ({...column, cards: [...(prior.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => card.storyId !== story.id), ...column.cards]})),
+    } : added};
+  }
   const files = $derived<ChannelFileItemModel[]>(
     overlayFiles.length > 0 ? overlayFiles : (liveTabs?.files ?? []),
   );
@@ -1606,6 +2300,7 @@
             companyUid
               ? companyDisplayName(companyUid, companyNames)
               : null,
+            companyUid ? companyIconUrl(companyUid, companyIcons) : null,
           )
         : null);
     // Prefer rebuilding from live read + presence when we have sessions.
@@ -1763,16 +2458,510 @@
     sendReply: async (args) => {
       unwrapAdapter(await adapter.messaging.sendReply(args));
     },
+    listChannelAgentTasks: adapter.messaging.listChannelAgentTasks
+      ? async (args) =>
+          unwrapAdapter(
+            await adapter.messaging.listChannelAgentTasks!(args.agentUid, args.channelId),
+          )
+      : undefined,
+    listAgentTasks: adapter.messaging.listAgentTasks
+      ? async (args) => unwrapAdapter(await adapter.messaging.listAgentTasks!(args.agentUid))
+      : undefined,
+    runCardAction: async (args) => {
+      const raw = unwrapAdapter(
+        await adapter.messaging.runCardAction(args),
+      ) as Record<string, unknown> | undefined;
+      return {
+        cardId: typeof raw?.cardId === "string" ? raw.cardId : args.cardId,
+        actionId: typeof raw?.actionId === "string" ? raw.actionId : args.actionId,
+        eventId: typeof raw?.eventId === "string" ? raw.eventId : undefined,
+        state: typeof raw?.state === "string" ? raw.state : "",
+        fields: raw?.fields,
+        replayed: raw?.replayed === true,
+        // US-006/011: create_agent accept mints the agent channel; keep the
+        // ids so handleCardAction can select it (they were dropped here).
+        agentChannelId:
+          typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
+        agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
+        companyChannelId: typeof raw?.companyChannelId === "string" ? raw.companyChannelId : undefined,
+        companyUid: typeof raw?.companyUid === "string" ? raw.companyUid : undefined,
+        focusCardId:
+          typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
+        // Entry points: the summary card's create_company action answers with
+        // the channel + card it posted; pending checkout answers with a url.
+        channelId:
+          typeof raw?.channelId === "string" ? raw.channelId : undefined,
+        reason: typeof raw?.reason === "string" ? raw.reason : undefined,
+        url: typeof raw?.url === "string" ? raw.url : undefined,
+      };
+    },
+    getCompanyTab: adapter.messaging.getCompanyTab
+      ? async (companyUid, tabId) =>
+          unwrapAdapter(await adapter.messaging.getCompanyTab!(companyUid, tabId))
+      : undefined,
+    runCompanyTabAction: adapter.messaging.runCompanyTabAction
+      ? async (args) => {
+          const raw = unwrapAdapter(
+            await adapter.messaging.runCompanyTabAction!(args),
+          ) as Record<string, unknown> | undefined;
+          return {
+            cardId: typeof raw?.cardId === "string" ? raw.cardId : args.cardId,
+            actionId:
+              typeof raw?.actionId === "string" ? raw.actionId : args.actionId,
+            eventId: typeof raw?.eventId === "string" ? raw.eventId : undefined,
+            state: typeof raw?.state === "string" ? raw.state : "",
+            fields: raw?.fields,
+            replayed: raw?.replayed === true,
+            navigateTo:
+              raw?.navigateTo === "chat" ? "chat" : undefined,
+            focusCardId:
+              typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
+            channelId:
+              typeof raw?.channelId === "string" ? raw.channelId : undefined,
+            reason: typeof raw?.reason === "string" ? raw.reason : undefined,
+            url: typeof raw?.url === "string" ? raw.url : undefined,
+          };
+        }
+      : undefined,
   });
+
+  // ── Lifecycle entry points (New company / New agent) ─────────────────────
+
+  /** Card the shell should scroll to and focus once the timeline paints it. */
+  // Plain (non-reactive) on purpose: the poll compares by identity and a
+  // `$state` proxy would never equal the object it was handed.
+  let pendingFocusCard: Pick<EntryPointTarget, "cardId" | "cardKind"> | null =
+    null;
+  let focusCardTimer: ReturnType<typeof setTimeout> | undefined;
+  const FOCUS_CARD_POLL_MS = 120;
+  const FOCUS_CARD_POLL_LIMIT = 50;
+  /** After the first focus, watch this long for the node being re-rendered. */
+  const FOCUS_CARD_SETTLE_MS = 150;
+  const FOCUS_CARD_SETTLE_LIMIT = 12;
+
+  /**
+   * Poll the shell for the target card. Cards arrive asynchronously (the
+   * channel opens, hydrates, then the wake delivers the posted card), so a
+   * one-shot query would miss it; the poll is bounded so a card that never
+   * shows up cannot leak a timer.
+   */
+  function focusLifecycleCard(
+    target: Pick<EntryPointTarget, "cardId" | "cardKind">,
+  ): void {
+    if (!target.cardId && !target.cardKind) return;
+    if (focusCardTimer !== undefined) clearTimeout(focusCardTimer);
+    pendingFocusCard = target;
+    let attempts = 0;
+    const tryFocus = (): void => {
+      focusCardTimer = undefined;
+      if (pendingFocusCard !== target) return;
+      const root: ParentNode =
+        typeof document !== "undefined" ? document : ({} as ParentNode);
+      const el =
+        typeof root.querySelector === "function"
+          ? findLifecycleCardElement(root, target)
+          : null;
+      if (el) {
+        pendingFocusCard = null;
+        applyCardFocus(el);
+        settleCardFocus(el, target, 0);
+        return;
+      }
+      attempts += 1;
+      if (attempts >= FOCUS_CARD_POLL_LIMIT) {
+        pendingFocusCard = null;
+        return;
+      }
+      focusCardTimer = setTimeout(tryFocus, FOCUS_CARD_POLL_MS);
+    };
+    // First attempt on a macrotask: the caller (create modal, header button)
+    // still has to close / re-enable and restore its own focus first, and the
+    // card must win that exchange.
+    focusCardTimer = setTimeout(tryFocus, 0);
+  }
+
+  function applyCardFocus(el: HTMLElement): void {
+    if (typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "center" });
+    }
+    el.focus({ preventScroll: true });
+  }
+
+  /**
+   * A channel switch hydrates in stages, so the node focused first can be
+   * replaced a moment later (focus falls to <body>). Re-assert onto the
+   * fresh node while ours is detached; never steal focus the user moved.
+   */
+  function settleCardFocus(
+    el: HTMLElement,
+    target: Pick<EntryPointTarget, "cardId" | "cardKind">,
+    attempt: number,
+  ): void {
+    if (attempt >= FOCUS_CARD_SETTLE_LIMIT) return;
+    focusCardTimer = setTimeout(() => {
+      focusCardTimer = undefined;
+      let current = el;
+      if (!current.isConnected) {
+        const next =
+          typeof document !== "undefined"
+            ? findLifecycleCardElement(document, target)
+            : null;
+        if (next) {
+          applyCardFocus(next);
+          current = next;
+        }
+      }
+      settleCardFocus(current, target, attempt + 1);
+    }, FOCUS_CARD_SETTLE_MS);
+  }
+
+  /** Select the target channel (if not already there) and focus its card. */
+  function navigateToEntryTarget(
+    target: EntryPointTarget,
+    companyUid: string | null,
+  ): void {
+    const focus = { cardId: target.cardId, cardKind: target.cardKind };
+    if (selectedRow?.channelId !== target.channelId || view !== "conversation") {
+      requestChannelOpen(target.channelId, {
+        companyUid,
+        focusCardId: target.cardId,
+        focusCardKind: target.cardKind,
+      });
+    }
+    focusLifecycleCard(focus);
+  }
+
+  const canRunEntryPoints = $derived(
+    typeof adapter.messaging.runCardAction === "function",
+  );
+
+  /**
+   * Companies the roster already knows about, whatever their sync state. Any
+   * of them means the account is NOT a blank slate: #welcome leads with that
+   * company and hides the seeded create_company card.
+   */
+  const rosterCompanies = $derived(setupCompanies(companies));
+  /**
+   * Boot lands on #welcome until Run Setup has been used on this machine
+   * (persisted; see `hasRunWelcomeSetup`). Flips in-session the moment the
+   * person starts setup so a later re-open goes to the company channel.
+   */
+  let welcomeSetupRun = $state(hasRunWelcomeSetup());
+  /**
+   * Whether this machine is still owed the welcome channel's guided setup,
+   * from the host's setup status. A person who set HQ up before the welcome
+   * flow existed (Caio: "I previously ran setup, but it showed me this") is
+   * not: boot goes to their channels and #welcome shows the finished state.
+   * Unknown until the host answers; unknown means owed, as before.
+   */
+  let welcomeSetupOwed = $state<boolean | null>(null);
+  /** The boot pick never waits longer than this for the host's answer. */
+  const WELCOME_OWED_TIMEOUT_MS = 2000;
+  onMount(() => {
+    let settled = false;
+    const resolve = (owed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      welcomeSetupOwed = owed;
+      if (owed) return;
+      welcomeSetupRun = true;
+      setupAgent.markAlreadySetUp();
+    };
+    const timer = window.setTimeout(() => resolve(true), WELCOME_OWED_TIMEOUT_MS);
+    void (async () => {
+      try {
+        const res = await adapter.settings.getSetupStatus();
+        const owed = res.ok ? (res.value as { welcomeSetupOwed?: unknown } | null)?.welcomeSetupOwed : undefined;
+        // Only an explicit "not owed" skips the welcome; anything else keeps today's behaviour.
+        resolve(owed !== false);
+      } catch {
+        resolve(true);
+      }
+    })();
+    return () => clearTimeout(timer);
+  });
+  /**
+   * An explicit conversation deep link (`?channel=` / `?person=`) is a
+   * stronger intent than first landing: it must never be swallowed by the
+   * welcome-first boot pick.
+   */
+  const bootDeepLink = conversationDeepLinkFromLocation();
+  const hasBootDeepLink = Boolean(
+    bootDeepLink.channelId?.trim() || bootDeepLink.personUid?.trim(),
+  );
+  function recordWelcomeSetupRun(): void {
+    markWelcomeSetupRun();
+    welcomeSetupRun = true;
+  }
+  const hasRosterCompany = $derived(rosterCompanies.length > 0);
+  /** The finale's "Open <Company>" button: the roster's first company, or nothing. */
+  const finaleCompany = $derived.by(() => {
+    const company = rosterCompanies[0];
+    if (!company) return null;
+    return { label: setupCompanyActionLabel(company), onopen: () => openCompanyFromSetup(company) };
+  });
+  /** The user explicitly asked for another company this session. */
+  let createCompanyRequested = $state(false);
+
+  /** Sidebar / switcher / #welcome "New company": summary card action, then #setup. */
+  async function createCompanyEntry(): Promise<EntryPointResult> {
+    const result = await runCreateCompanyEntry(conversationApi, {
+      hasCompanies: hasRosterCompany,
+    });
+    createCompanyRequested = result.ok;
+    if (result.ok) navigateToEntryTarget(result.target, null);
+    return result;
+  }
+
+  /**
+   * #welcome "Open <Company>" / "Continue setup for <Company>": select the
+   * company's own channel when the rail already has it, otherwise switch the
+   * sidebar into that company's scope so its rows hydrate and auto-open.
+   */
+  function openCompanyFromSetup(company: Workspace): void {
+    const uid = company.cloudUid?.trim() ?? "";
+    const row = uid
+      ? railRows.find(
+          (candidate) =>
+            candidate.kind === "channel" &&
+            !candidate.browseOnly &&
+            candidate.channelScope === "company" &&
+            candidate.companyUid === uid,
+        )
+      : undefined;
+    if (row) {
+      handleSelect(row);
+      return;
+    }
+    if (uid) changeTenantCompany(uid);
+  }
+
+  /** Sidebar / header "New agent": Team tab action, then the company channel. */
+  async function addAgentEntry(companyUid: string): Promise<EntryPointResult> {
+    const result = await runAddAgentEntry(conversationApi, companyUid);
+    if (result.ok) navigateToEntryTarget(result.target, companyUid);
+    return result;
+  }
+
+  /**
+   * Whether the viewer may act on the current company's Team tab. Read from
+   * the tab surface the server sends (its `viewer` is per company), fetched
+   * once per company so the header button is right on the Chat tab too.
+   */
+  let companyTeamCanAct = $state(false);
+  let companyTeamCanActUid: string | null = null;
+  let headerAddAgentBusy = $state(false);
+  let headerAddAgentError = $state<string | null>(null);
+
+  async function loadCompanyTeamCanAct(uid: string): Promise<void> {
+    if (companyTeamCanActUid === uid) return;
+    companyTeamCanActUid = uid;
+    companyTeamCanAct = false;
+    headerAddAgentError = null;
+    const getTab = conversationApi.getCompanyTab;
+    if (!getTab || !conversationApi.runCompanyTabAction) return;
+    try {
+      const parsed = parseCompanyTab(await getTab(uid, "team"));
+      if (companyTeamCanActUid === uid) {
+        companyTeamCanAct = parsed?.viewer.canAct === true;
+      }
+    } catch {
+      if (companyTeamCanActUid === uid) companyTeamCanAct = false;
+    }
+  }
+
+  async function addAgentFromHeader(): Promise<void> {
+    const uid = selectedRow?.companyUid?.trim() ?? "";
+    if (!uid || headerAddAgentBusy) return;
+    headerAddAgentBusy = true;
+    headerAddAgentError = null;
+    try {
+      const result = await addAgentEntry(uid);
+      if (!result.ok) headerAddAgentError = result.reason;
+    } finally {
+      headerAddAgentBusy = false;
+    }
+  }
+
+  const cardActionKeys: CardActionIdempotencyStore = new Map();
+
+  function applyCardActionFailure(cardId: string, message: string, values?: Record<string, string>): void {
+    const row = selectedRow;
+    if (!row) return;
+    const current =
+      liveTimelineId === row.id
+        ? liveTimeline
+        : (messagesByRow?.(row) ?? liveTimeline);
+    commitTimeline(
+      row,
+      patchLifecycleCardState(current, cardId, {
+        state: /timed? out|timeout|network|connection|unavailable|fetch failed|could not reach|\b50[234]\b/i.test(message) ? "open" : "blocked",
+        reason: message,
+        values,
+      }),
+    );
+  }
+
+  async function loadCompanyTabSurface(
+    tabId: CompanyChannelTabId,
+  ): Promise<void> {
+    const uid = selectedRow?.companyUid?.trim() ?? "";
+    if (!uid) {
+      companyTabData = null;
+      return;
+    }
+    const getTab = conversationApi.getCompanyTab;
+    const fetchId = tabId === "chat" ? "settings" : tabId;
+    if (!getTab) {
+      if (tabId !== "chat") {
+        companyTabData = {
+          tab: tabId,
+          companyUid: uid,
+          viewer: { canAct: false },
+          sections: [{ id: tabId, title: tabId, rows: [] }],
+        };
+      }
+      return;
+    }
+    companyTabLoading = true;
+    try {
+      const raw = await getTab(uid, fetchId);
+      const parsed = parseCompanyTab(raw);
+      if (parsed?.appearance?.wallpaper) {
+        companyWallpaper = parsed.appearance.wallpaper;
+      }
+      if (parsed?.appearance?.name?.trim()) {
+        companyAppearanceName = parsed.appearance.name.trim();
+      }
+      companyTabData = tabId === "chat" ? companyTabData : parsed;
+      if (tabId === "team" && parsed && companyTeamCanActUid === uid) {
+        companyTeamCanAct = parsed.viewer.canAct === true;
+      }
+    } catch {
+      if (tabId !== "chat") {
+        companyTabData = {
+          tab: tabId,
+          companyUid: uid,
+          viewer: { canAct: false },
+          sections: [{ id: tabId, title: tabId, rows: [] }],
+        };
+      }
+    } finally {
+      companyTabLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (!isCompanyChannel) return;
+    const tabId = companyTab;
+    void loadCompanyTabSurface(tabId);
+  });
+
+  $effect(() => {
+    if (!isCompanyChannel) {
+      companyTeamCanActUid = null;
+      companyTeamCanAct = false;
+      headerAddAgentError = null;
+      return;
+    }
+    const uid = selectedRow?.companyUid?.trim() ?? "";
+    if (uid) void loadCompanyTeamCanAct(uid);
+  });
+
+  async function handleTeamAction(event: CompanyTabActionEvent): Promise<void> {
+    const run = conversationApi.runCompanyTabAction;
+    if (!run) return;
+    const result = await submitLifecycleCardAction({
+      event,
+      store: cardActionKeys,
+      run: (args) =>
+        run({
+          companyUid: event.companyUid,
+          tab: event.tab,
+          cardId: args.cardId,
+          actionId: args.actionId,
+          values: args.values,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      onFailure: () => {},
+    });
+    if (result?.navigateTo === "chat") {
+      pushConversationSurface({ companyTab: "chat" });
+      return;
+    }
+    await loadCompanyTabSurface(companyTab);
+  }
+
+  async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
+    const actionRow = selectedRow;
+    oncardaction?.(event);
+    if (typeof adapter.messaging.runCardAction !== "function") return;
+    const result = await submitLifecycleCardAction({
+      event,
+      store: cardActionKeys,
+      run: conversationApi.runCardAction,
+      onFailure: (cardId, message) => applyCardActionFailure(cardId, message, event.values),
+    });
+    // The HTTP response settles this interaction; MQTT is supplementary.
+    // Otherwise a missed lifecycle wake leaves localPending stuck forever.
+    if (result && actionRow && selectedRow?.id === actionRow.id) {
+      const state = result.state;
+      if (state === "open" || state === "pending" || state === "done" || state === "skipped" || state === "blocked") {
+        commitTimeline(actionRow, patchLifecycleCardState(liveTimeline, event.cardId, { state, reason: null }));
+      }
+      // Fetch newly created steps even when no live event arrives. Failure
+      // must not turn an already-saved choice into a failed mutation.
+      void fetchTimelineRaw(actionRow)
+        .then((raw) => applyFetchedTimeline(actionRow, raw, state === "pending" ? event.cardId : undefined))
+        .catch(() => {});
+    }
+    const destination = result?.companyChannelId?.trim() || result?.agentChannelId?.trim();
+    if (destination?.startsWith("chn_")) {
+      requestChannelOpen(destination, {
+        title: result?.companyChannelId ? "Company channel" : headerTitle,
+        companyUid: result?.companyUid ?? selectedRow?.companyUid ?? null,
+      });
+      return;
+    }
+    if (!result) return;
+    // Pending checkout: `retry_checkout` answers with the session url.
+    const url = typeof result.url === "string" ? result.url.trim() : "";
+    if (/^https?:\/\//i.test(url)) onopenurl?.(url);
+    // A card that posts another card (companies_summary → create_company)
+    // answers with where it went; land on it.
+    const postedCardId =
+      typeof result.cardId === "string" ? result.cardId.trim() : "";
+    const postedChannelId =
+      typeof result.channelId === "string" ? result.channelId.trim() : "";
+    if (
+      postedCardId &&
+      postedCardId !== event.cardId &&
+      result.state !== "blocked"
+    ) {
+      navigateToEntryTarget(
+        {
+          channelId: postedChannelId || event.channelId,
+          cardId: postedCardId,
+          cardKind: null,
+        },
+        selectedRow?.companyUid ?? null,
+      );
+    }
+  }
 
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
-    if (id) {
-      openProfileMember = null;
-      openAgentMember = null;
-      openArtifactView = null;
-      openReplyRootId = id;
-    }
+    if (!id || !selectedRow) return;
+    openProfileMember = null;
+    openAgentMember = null;
+    openArtifactView = null;
+    openReplyRootId = id;
+    pushConversationSurface({
+      replyRootEventId: id,
+      tab: "chat",
+      agentSurface: "chat",
+      companyTab: "chat",
+    });
   }
 
   /** Artifact mode for the side pane. The thread underneath is left intact so
@@ -1787,10 +2976,10 @@
   }
 
   function closeReply(): void {
-    openReplyRootId = null;
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
+    void leaveCurrentDestination();
   }
 
   function queueReplyForRow(
@@ -1807,8 +2996,6 @@
     const row = selectedRow;
     const scope = replyScopeForRow(row);
     if (!id || !row || !scope) return;
-    view = "conversation";
-    tab = "chat";
     replyApplyInFlight = id;
     try {
       const raw = unwrapAdapter(
@@ -1919,9 +3106,28 @@
     return () => mq.removeEventListener("change", apply);
   });
 
-  function handleSelect(
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia(`(max-width: ${SIDEBAR_OVERLAY_MAX_PX}px)`);
+    const apply = () => {
+      phoneViewport = mq.matches;
+      // Crossing into phone width with the list open would bury the
+      // conversation under it. Widening again leaves the choice to the user.
+      if (mq.matches) sidebarCollapsed = true;
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  });
+
+  function selectConversationRow(
     row: ConversationRow,
-    options?: { replyRootEventId?: string | null; preserveView?: boolean },
+    options?: {
+      replyRootEventId?: string | null;
+      preserveView?: boolean;
+      /** The shell picked this row, not the person using it. */
+      automatic?: boolean;
+    },
   ): void {
     if (selectedRow?.id !== row.id) {
       openProfileMember = null;
@@ -1933,13 +3139,611 @@
       meetingFocusRequest = null;
     }
     tab = "chat";
+    companyTab = "chat";
+    agentSurface = "chat";
+    channelFileKey = null;
     paletteOpen = false;
     membersOpen = false;
     projectAboutOpen = false;
     openReplyRootId = null;
     queueReplyForRow(row, options?.replyRootEventId);
     attachTray = null;
+    // The phone list overlays the conversation it just navigated to, so it has
+    // to get out of the way. On wider screens it is a column and stays put.
+    //
+    // Only for a deliberate pick: the list auto-selects a row as it mounts, so
+    // closing on every select shut the overlay again the instant it opened.
+    if (phoneViewport && options?.automatic !== true) sidebarCollapsed = true;
     onselectrow?.(row);
+  }
+
+  function currentNavigationScope() {
+    const accountId =
+      (self?.uid ?? tenantAccountId ?? "local").trim() || "local";
+    return { accountId, companyUid: tenantCompanyId };
+  }
+
+  function destinationFromConversation(
+    row: ConversationRow,
+    nested?: {
+      replyRootEventId?: string | null;
+      tab?: ChannelTab;
+      companyTab?: CompanyChannelTabId;
+      agentSurface?: AgentChannelTab;
+      fileKey?: string | null;
+    },
+  ): NavigationDestination {
+    const replyRootEventId = nested?.replyRootEventId ?? null;
+    if (row.channelId) {
+      const nextTab = nested?.tab ?? "chat";
+      return {
+        kind: "channel",
+        channelId: row.channelId,
+        replyRootEventId,
+        tab: nextTab,
+        companyTab: nested?.companyTab ?? "chat",
+        agentSurface: nested?.agentSurface ?? "chat",
+        fileKey: nextTab === "files" ? nested?.fileKey ?? null : null,
+      };
+    }
+    if (row.personUid) {
+      return {
+        kind: "dm",
+        personUid: row.personUid,
+        replyRootEventId,
+        agentSurface: nested?.agentSurface ?? "chat",
+      };
+    }
+    return { kind: "messages" };
+  }
+
+  function currentConversationNested() {
+    return {
+      replyRootEventId: openReplyRootId,
+      tab,
+      companyTab,
+      agentSurface,
+      fileKey: channelFileKey,
+    };
+  }
+
+  function pushConversationSurface(
+    patch: Partial<{
+      replyRootEventId: string | null;
+      tab: ChannelTab;
+      companyTab: CompanyChannelTabId;
+      agentSurface: AgentChannelTab;
+      fileKey: string | null;
+    }>,
+  ): void {
+    const row = selectedRow;
+    if (!row) return;
+    const nested = { ...currentConversationNested(), ...patch };
+    if (patch.tab && patch.tab !== "chat") nested.replyRootEventId = null;
+    if (patch.tab && patch.tab !== "files") nested.fileKey = null;
+    if (patch.companyTab && patch.companyTab !== "chat") {
+      nested.tab = "chat";
+      nested.replyRootEventId = null;
+      nested.fileKey = null;
+    }
+    if (patch.agentSurface && patch.agentSurface !== "chat") {
+      nested.replyRootEventId = null;
+    }
+    void navigate(destinationFromConversation(row, nested));
+  }
+
+  function currentShellDestination(): NavigationDestination {
+    if (navigationUnavailable) return navigationUnavailable.destination;
+    switch (view) {
+      case "settings":
+        return { kind: "settings", section: settingsSection };
+      case "notifications":
+        return { kind: "notifications" };
+      case "meetings":
+        return {
+          kind: "meetings",
+          meetingId: meetingFocusRequest?.meetingId ?? null,
+        };
+      case "atlas":
+        return { kind: "atlas" };
+      case "library":
+        return { kind: "library", tab: libraryTab, itemId: libraryItemId };
+      case "shared-files":
+        return { kind: "shared-files" };
+      case "extra":
+        if (extraPageId) return extraDestination(extraPageId, extraPageParam);
+        return { kind: "messages" };
+      default:
+        if (selectedRow) {
+          return destinationFromConversation(
+            selectedRow,
+            currentConversationNested(),
+          );
+        }
+        return { kind: "messages" };
+    }
+  }
+
+  function captureCurrentNavigation(): NavigationEntry | null {
+    try {
+      return createNavigationEntry(
+        currentShellDestination(),
+        currentNavigationScope(),
+        readNavigationScroll(),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  function readNavigationScroll(): NavigationScrollState | null {
+    if (typeof document === "undefined") return null;
+    return captureNavigationScroll(document);
+  }
+
+  function stopScrollRestore(): void {
+    cancelScrollRestore?.();
+    cancelScrollRestore = null;
+  }
+
+  /**
+   * The one live session that is legitimately company-less: #welcome's
+   * native setup run, which exists before the company it creates. "Open setup
+   * chat" lands on it by bare id while the run is in flight; it needs no
+   * company key because this app started it for this account. Everything
+   * else on the Sessions extra keeps needing its key.
+   */
+  function companyAccess(
+    companyKey: string | null | undefined,
+  ): "ok" | "unknown" | "denied" {
+    const key = companyKey?.trim() ?? "";
+    if (!key) return "ok";
+    if (companies == null) return "unknown";
+    return companies.some((company) => {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      return uid === key || slug === key;
+    })
+      ? "ok"
+      : "denied";
+  }
+
+  function companyIsAccessible(companyUid: string | null | undefined): boolean {
+    return companyAccess(companyUid) === "ok";
+  }
+
+  function accessOutcome(
+    destination: NavigationDestination,
+    companyKey: string | null | undefined,
+  ): NavigationResolveOutcome | null {
+    const access = companyAccess(companyKey);
+    if (access === "unknown") {
+      return { status: "transient-failure", error: "Directory still loading" };
+    }
+    if (access === "denied") {
+      return {
+        status: "unavailable",
+        destination,
+        reason: DESTINATION_UNAVAILABLE,
+      };
+    }
+    return null;
+  }
+
+  function rowForDestination(
+    destination: NavigationDestination,
+  ): ConversationRow | null {
+    const rows = [
+      ...searchRows,
+      ...railRows,
+      ...(selectedRow ? [selectedRow] : []),
+    ];
+    if (destination.kind === "channel") {
+      return (
+        rows.find((row) => row.channelId === destination.channelId) ?? null
+      );
+    }
+    if (destination.kind === "dm") {
+      return (
+        rows.find(
+          (row) => row.personUid === destination.personUid && !row.channelId,
+        ) ?? null
+      );
+    }
+    return null;
+  }
+
+  function resolveShellDestination(
+    destination: NavigationDestination,
+    context: {
+      isStale: () => boolean;
+      accountId: string;
+      companyUid: string | null;
+    },
+  ): NavigationResolveOutcome | Promise<NavigationResolveOutcome> {
+    if (context.isStale()) return { status: "cancelled" };
+    if (context.accountId !== currentNavigationScope().accountId) {
+      return {
+        status: "account-changed",
+        accountId: currentNavigationScope().accountId,
+      };
+    }
+    if (destination.kind === "extra") {
+      if (!extraPages?.[destination.page]) {
+        return {
+          status: "rejected",
+          reason: `Unknown destination: ${destination.page}`,
+        };
+      }
+      // A session with no company key is not gated: a personal chat, or a
+      // fresh one whose company the page has not learned yet. Only a key
+      // that is no longer in the membership makes a session unavailable.
+      const extraCompany =
+        destination.companyUid ?? extraParamCompanyKey(destination.param);
+      const extraDenied = accessOutcome(destination, extraCompany);
+      if (extraDenied) return extraDenied;
+      return { status: "ready", destination };
+    }
+    if (destination.kind === "channel" || destination.kind === "dm") {
+      const row = rowForDestination(destination);
+      if (row) {
+        // Rows already in the rail came from the membership directory.
+        // Only blank after companies has loaded and the uid is gone.
+        if (companyAccess(row.companyUid) === "denied") {
+          return {
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          };
+        }
+        return { status: "ready", destination };
+      }
+      return waitForDestinationRow(destination, context);
+    }
+    if (destination.kind === "setup-checkout") {
+      const checkoutDenied = accessOutcome(
+        destination,
+        destination.companyUid,
+      );
+      if (checkoutDenied) return checkoutDenied;
+    }
+    return { status: "ready", destination };
+  }
+
+  function waitForDestinationRow(
+    destination: Extract<NavigationDestination, { kind: "channel" | "dm" }>,
+    context: { isStale: () => boolean },
+  ): Promise<NavigationResolveOutcome> {
+    const attempts = 16;
+    const delayMs = 50;
+    return new Promise((resolve) => {
+      let tries = 0;
+      const tick = (): void => {
+        if (context.isStale()) {
+          resolve({ status: "cancelled" });
+          return;
+        }
+        const row = rowForDestination(destination);
+        if (row) {
+          if (companyAccess(row.companyUid) === "denied") {
+            resolve({
+              status: "unavailable",
+              destination,
+              reason: DESTINATION_UNAVAILABLE,
+            });
+            return;
+          }
+          resolve({ status: "ready", destination });
+          return;
+        }
+        tries += 1;
+        const directoryReady = directorySettled && companies != null;
+        if (tries >= attempts || directoryReady) {
+          if (!directoryReady && companies == null) {
+            resolve({
+              status: "transient-failure",
+              error: "Directory still loading",
+            });
+            return;
+          }
+          resolve({
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          });
+          return;
+        }
+        setTimeout(tick, delayMs);
+      };
+      setTimeout(tick, delayMs);
+    });
+  }
+
+  const navigationHistory = createNavigationHistory();
+
+  function syncNavigationChrome(): void {
+    const snap = navigationHistory.snapshot();
+    navigationCanGoBack = navigationHistory.canGoBack();
+    navigationCanGoForward = navigationHistory.canGoForward();
+    const back = historyNeighbor(snap, "back");
+    const forward = historyNeighbor(snap, "forward");
+    navigationBackLabel = back ? destinationLabel(back.destination) : "";
+    navigationForwardLabel = forward
+      ? destinationLabel(forward.destination)
+      : "";
+  }
+
+  function applyCommittedNavigation(applied: AppliedNavigation): void {
+    syncNavigationChrome();
+    paletteOpen = false;
+    membersOpen = false;
+    projectAboutOpen = false;
+    pendingRestoreScroll = applied.entry.scroll ?? null;
+    stopScrollRestore();
+    if (applied.availability === "unavailable") {
+      navigationUnavailable = {
+        destination: applied.entry.destination,
+        reason: applied.reason ?? DESTINATION_UNAVAILABLE,
+      };
+      selectedRow = null;
+      liveTimeline = [];
+      return;
+    }
+    navigationUnavailable = null;
+    embeddedNavigationError = null;
+    const next = applied.entry.destination;
+    meetingFocusRequest = null;
+    switch (next.kind) {
+      case "messages":
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "notifications":
+        view = "notifications";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "settings":
+        view = "settings";
+        settingsSection = next.section ?? null;
+        extraPageId = null;
+        extraPageParam = null;
+        onOpenSettings?.();
+        break;
+      case "meetings":
+        view = "meetings";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        if (next.meetingId?.trim()) {
+          meetingFocusRequest = {
+            meetingId: next.meetingId.trim(),
+            sequence: ++meetingFocusSequence,
+          };
+        }
+        break;
+      case "atlas":
+        view = "atlas";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "library":
+        libraryTab = next.tab;
+        libraryItemId = next.itemId ?? null;
+        view = "library";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "shared-files":
+        view = "shared-files";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "dm-requests":
+        dmRequestsFocusPairKey = next.pairKey ?? null;
+        view = "dm-requests";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "extra":
+        extraPageId = next.page;
+        extraPageParam = next.param ?? null;
+        view = "extra";
+        settingsSection = null;
+        break;
+      case "setup-checkout": {
+        const alreadySetup =
+          selectedRow?.channelId === SETUP_CHANNEL_ID && view === "conversation";
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        requestChannelOpen(SETUP_CHANNEL_ID, { companyUid: next.companyUid });
+        const row = selectedRow;
+        if (alreadySetup && row) void catchUpTimeline(row);
+        break;
+      }
+      case "channel":
+      case "dm": {
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        libraryItemId = null;
+        const row = rowForDestination(next);
+        const reply = next.replyRootEventId ?? null;
+        const sameRow = Boolean(row && selectedRow?.id === row.id);
+        if (row && !sameRow) {
+          selectConversationRow(row, { replyRootEventId: reply });
+        } else if (row && sameRow) {
+          if ((openReplyRootId ?? null) !== (reply ?? null)) {
+            if (reply) queueReplyForRow(row, reply);
+            else {
+              openReplyRootId = null;
+              pendingReplyRootId = null;
+              pendingReplyForRowId = null;
+            }
+          }
+        }
+        if (next.kind === "channel") {
+          tab = next.tab ?? "chat";
+          companyTab = next.companyTab ?? "chat";
+          agentSurface = next.agentSurface ?? "chat";
+          channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
+        } else {
+          agentSurface = next.agentSurface ?? "chat";
+          channelFileKey = null;
+        }
+        break;
+      }
+    }
+  }
+
+  const navigation = createNavigationController({
+    history: navigationHistory,
+    getScope: () => currentNavigationScope(),
+    captureCurrent: () => captureCurrentNavigation(),
+    captureScroll: () => readNavigationScroll(),
+    resolve: (destination, context) =>
+      resolveShellDestination(destination, context),
+    apply: (applied) => applyCommittedNavigation(applied),
+    onPending: (pending) => {
+      navigationPending = pending != null;
+    },
+    onRejected: (reason) => {
+      embeddedNavigationError = reason;
+    },
+  });
+
+  $effect(() => {
+    const scroll = pendingRestoreScroll;
+    stopScrollRestore();
+    if (!scroll || navigationUnavailable) return;
+    const generation = navigation.generation();
+    cancelScrollRestore = scheduleNavigationScrollRestore(
+      () => (typeof document === "undefined" ? null : document),
+      scroll,
+      {
+        isCancelled: () => navigation.generation() !== generation,
+      },
+    );
+    return () => stopScrollRestore();
+  });
+
+  function navigate(
+    destination: NavigationDestination,
+    mode: NavigationMode = "push",
+  ) {
+    embeddedNavigationError = null;
+    return navigation.navigate(destination, mode);
+  }
+
+  function resolveDestination(
+    destination: NavigationDestination,
+    generation?: number,
+  ) {
+    return navigation.resolveDestination(destination, generation);
+  }
+
+  function commitDestination(
+    outcome: Extract<
+      NavigationResolveOutcome,
+      { status: "ready" | "unavailable" }
+    >,
+    mode: NavigationMode = "push",
+    generation: number = navigation.generation(),
+  ): boolean {
+    return navigation.commitDestination(outcome, mode, generation);
+  }
+
+  function goBack() {
+    return navigation.back();
+  }
+
+  function goForward() {
+    return navigation.forward();
+  }
+
+  function leaveCurrentDestination() {
+    if (navigationHistory.canGoBack()) return goBack();
+    return navigate({ kind: "messages" });
+  }
+
+  $effect(() => {
+    navigation.noteAccount((self?.uid ?? tenantAccountId ?? "").trim());
+  });
+
+  $effect(() => {
+    if (companies == null) return;
+    const allowed = new Set<string>();
+    for (const company of companies) {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      if (uid) allowed.add(uid);
+      if (slug) allowed.add(slug);
+    }
+    navigation.filterAccessible(allowed);
+    const current = navigationHistory.current();
+    const shownExtra =
+      extraPageId != null
+        ? {
+            kind: "extra" as const,
+            page: extraPageId,
+            param: extraPageParam,
+          }
+        : null;
+    const currentIsShownExtra = Boolean(
+      shownExtra &&
+        current?.destination.kind === "extra" &&
+        current.destination.page === shownExtra.page &&
+        (current.destination.param ?? null) === shownExtra.param,
+    );
+    const shownKey = shownExtra
+      ? extraParamCompanyKey(shownExtra.param) ??
+        (currentIsShownExtra && current
+          ? (destinationCompanyKey(current.destination) ?? current.companyUid)
+          : null)
+      : (current?.companyUid ??
+        (current ? destinationCompanyKey(current.destination) : null));
+    const extraPruned = Boolean(shownExtra && !currentIsShownExtra);
+    const lostCompany = Boolean(shownKey && !allowed.has(shownKey));
+    if (!extraPruned && !lostCompany) return;
+    if (navigationUnavailable && !extraPruned && !lostCompany) return;
+    navigationUnavailable = {
+      destination: current?.destination ?? shownExtra ?? { kind: "messages" },
+      reason: DESTINATION_UNAVAILABLE,
+    };
+    extraPageId = null;
+    extraPageParam = null;
+    selectedRow = null;
+    liveTimeline = [];
+  });
+
+  function handleSelect(
+    row: ConversationRow,
+    options?: {
+      replyRootEventId?: string | null;
+      preserveView?: boolean;
+      automatic?: boolean;
+    },
+  ): void {
+    if (options?.automatic || options?.preserveView) {
+      selectConversationRow(row, options);
+      return;
+    }
+    if (selectedRow?.id !== row.id) selectedRow = row;
+    void navigate(
+      destinationFromConversation(row, {
+        replyRootEventId: options?.replyRootEventId ?? null,
+      }),
+    );
   }
 
   function applyConversationDeepLink(
@@ -1982,6 +3786,12 @@
       },
       { preserveView: pending.automatic && view !== "conversation" },
     );
+    if (pending.focusCardId || pending.focusCardKind) {
+      focusLifecycleCard({
+        cardId: pending.focusCardId,
+        cardKind: pending.focusCardKind,
+      });
+    }
   }
 
   function applyPendingConversation(target: ConversationTarget): void {
@@ -1994,6 +3804,41 @@
       },
       { preserveView: target.automatic === true && view !== "conversation" },
     );
+  }
+
+  /** The sidebar's "Connection requests" row (and any host deep link). */
+  function openDmRequests(pairKey?: string | null): void {
+    void navigate({ kind: "dm-requests", pairKey: pairKey?.trim() || null });
+  }
+
+  /**
+   * A request was answered. The panel already pruned it and emitted
+   * `dm:request-update`; refresh the rail (accept promotes a new contact) and,
+   * on accept, open the conversation with the requester through the same
+   * pending-conversation path a deep link uses.
+   */
+  function handleDmRequestResolved(
+    request: DmRequest,
+    action: RequestAction,
+  ): void {
+    rosterWakeSeq += 1;
+    if (action !== "accept") return;
+    const personUid = request.fromPersonUid?.trim() ?? "";
+    if (!personUid) return;
+    const target: ConversationTarget = {
+      personUid,
+      email: request.fromEmail ?? "",
+      displayName: request.fromDisplayName ?? "",
+      replyRootEventId: null,
+    };
+    const known = conversationRowForDeepLink(
+      { channelId: null, personUid, replyRootEventId: null },
+      [...searchRows, ...railRows],
+    );
+    // The rail may not list the new contact yet; fall back to the messages
+    // home rather than leaving the (now empty) request in view.
+    if (known) applyPendingConversation(target);
+    else void navigate({ kind: "messages" });
   }
 
   /**
@@ -2067,8 +3912,10 @@
 
   function changeTenantCompany(companyUid: string | null): void {
     if (tenantCompanyId === companyUid) return;
-    // Company scope is a tenant boundary too. Remove every visible selection
-    // before the re-keyed sidebar begins reads in the replacement scope.
+    // Company switching is in-account navigation: the history stack stays.
+    // Existing tenant-generation guards still cancel in-flight company reads.
+    // Remove every visible selection before the re-keyed sidebar begins reads
+    // in the replacement scope.
     tenantCompanyId = companyUid;
     selectedRow = null;
     liveTimeline = [];
@@ -2096,6 +3943,7 @@
     startMeetingsStore();
     if (view === "meetings") setMeetingsViewActive(true);
     void prefetchMeetings();
+    void navigate({ kind: "messages" });
   }
 
   /**
@@ -2130,7 +3978,13 @@
         // `cancelled` alone is not enough — check the scope we resolved for
         // still matches the scope currently being displayed.
         if (cancelled || mentionRosterScope !== scope || !res.ok) return;
-        liveMentionTargets = mentionTargetsFromContactsPayload(res.value);
+        // The roster request was tenant-scoped but the rows come back without a
+        // company field, so stamp the scope on: that is what lets the picker
+        // render "Izzy · Indigo" instead of a uid fragment.
+        liveMentionTargets = stampMentionCompany(
+          mentionTargetsFromContactsPayload(res.value),
+          scope,
+        );
       });
     return () => {
       cancelled = true;
@@ -2138,6 +3992,7 @@
   });
 
   onDestroy(() => {
+    stopScrollRestore();
     // Account transitions unmount the shared shell; never leave its singleton
     // cache/snapshot visible until the next identity has finished hydrating.
     configureMeetingsApi(null);
@@ -2175,18 +4030,25 @@
     if (row.channelId !== wake.channelId && row.id !== `ch:${wake.channelId}`) {
       return;
     }
-    if (timelineHasEvent(liveTimeline, wake.eventId)) return;
-    const wakeAt = (wake.createdAt ?? "").trim();
-    if (
-      wakeAt &&
-      liveTimeline.some((message) => (message.createdAt ?? "") >= wakeAt)
-    ) {
-      return;
+    // In-place lifecycle-card updates reuse the same eventId. Skip the
+    // already-seen short-circuit and drop `since` so the rewritten envelope
+    // is in the page. New events keep main's createdAt short-circuit.
+    const already = timelineHasEvent(liveTimeline, wake.eventId);
+    if (!already) {
+      const wakeAt = (wake.createdAt ?? "").trim();
+      if (
+        wakeAt &&
+        liveTimeline.some((message) => (message.createdAt ?? "") >= wakeAt)
+      ) {
+        return;
+      }
     }
     const res = await adapter.messaging.fetchChannel({
       channelId: row.channelId,
       limit: 20,
-      since: sinceForChannelWake(liveTimeline, wake.createdAt),
+      since: already
+        ? undefined
+        : sinceForChannelWake(liveTimeline, wake.createdAt),
     });
     if (!res.ok) return;
     if (selectedRow?.id !== row.id) return;
@@ -2305,7 +4167,17 @@
       bus.on("mesh:catchup", () => {
         const row = selectedRow;
         if (row) void catchUpTimeline(row);
+        // Thread events arrive on hq/{companyUid}/thread/# as ids-only wakes,
+        // so a catch-up must re-read the project trail too — otherwise a live
+        // progress event only appears after the user leaves and returns.
+        if (row && activityKeyForRow(row)) void loadProjectActivity(row);
         void catchUpDmInbox();
+      }),
+      bus.on("work-mesh:thread", ({ companyUid }) => {
+        const row = selectedRow;
+        if (!row || !activityKeyForRow(row)) return;
+        if ((row.companyUid ?? "").trim() !== companyUid) return;
+        void loadProjectActivity(row);
       }),
       bus.on("mesh:connection", ({ state }) => {
         meshConnectionState = state;
@@ -2371,7 +4243,8 @@
     }
     const isDm = row.kind === "dm" && !!row.personUid;
     const selfUid = self?.uid?.trim() ?? "";
-    return uploadChatAttachments({
+    const cache = imagePreviewCache;
+    const uploaded = await uploadChatAttachments({
       files,
       companyUid,
       scope: isDm ? "dm" : "chan",
@@ -2392,6 +4265,13 @@
               })
           : putAttachmentObject,
     });
+    // Preserve the local upload preview under its final immutable vault path.
+    void Promise.all(uploaded.map(async (item, index) => {
+      if (item.kind !== "image" || !cache) return;
+      try { await cache.warm(item.companyUid, item.vaultPath, files[index]); }
+      catch (error) { console.warn("[image-preview] Upload preview unavailable", error); }
+    }));
+    return uploaded;
   }
 
   async function persistSend(
@@ -2402,6 +4282,12 @@
     const row = selectedRow;
     if (!row || (!body.trim() && files.length === 0)) {
       throw new Error("Nothing to send");
+    }
+    // While the Setup Agent is listening, the composer is its reply box.
+    if (isSetupChannel(row.channelId) && setupAgent.listening && files.length === 0) {
+      await setupAgent.reply(body.trim());
+      if (setupAgent.error) throw new Error(setupAgent.error);
+      return;
     }
     try {
       let attachments:
@@ -2495,6 +4381,61 @@
       agentThinking = [];
       throw err;
     }
+  }
+
+  let imagePreviewCache = $state<ImagePreviewCache | null>(null);
+  const imagePreviewStore = createImagePreviewStore();
+  let previousPreviewAccount = "";
+  let previousPreviewCache: ImagePreviewCache | null = null;
+  $effect(() => {
+    const account = self?.uid?.trim() || tenantAccountId?.trim() || "";
+    void tenantGeneration;
+    if (previousPreviewAccount && previousPreviewAccount !== account) {
+      void previousPreviewCache?.clearAccount().catch((error) => {
+        console.warn("[image-preview] Account cache cleanup failed", error);
+      });
+    }
+    previousPreviewAccount = account;
+    const cache = account ? new ImagePreviewCache({
+      account,
+      store: imagePreviewStore,
+      load: async (scope, path) => {
+        const signed = await adapter.files.presignVaultGet(scope, path);
+        if (!signed.ok) throw new Error("Image unavailable");
+        const url = presignUrlFromResult(signed.value)?.url;
+        if (!url) throw new Error("Image URL missing");
+        const response = await getVaultBytesForHost(url, 25 * 1024 * 1024);
+        if (!response.ok) throw new Error("Image unavailable");
+        return response.blob();
+      },
+    }) : null;
+    imagePreviewCache = cache;
+    previousPreviewCache = cache;
+    return () => cache?.dispose();
+  });
+
+  // Warm only a small recent slice; the cache limits concurrent byte/decode work.
+  $effect(() => {
+    const cache = imagePreviewCache;
+    const scope = attachmentCompanyUid(selectedRow);
+    const images = liveTimeline.slice(-20).flatMap(parseMessageAttachments)
+      .filter((item) => item.kind === "image" && item.contentType !== "image/svg+xml" && !/\.svg$/i.test(item.name)).slice(-8);
+    if (!cache || !scope) return;
+    for (const item of images) {
+      void cache.warm(item.companyUid || scope, item.vaultPath).catch(() => {
+        // The visible attachment owns the accessible retry/error state.
+      });
+    }
+  });
+
+  async function signOutWithImageCleanup(): Promise<void> {
+    navigation.clear();
+    stopScrollRestore();
+    pendingRestoreScroll = null;
+    const cache = imagePreviewCache;
+    await onsignout?.();
+    try { await cache?.clearAccount(); }
+    catch (error) { console.warn("[image-preview] Sign-out cache cleanup failed", error); }
   }
 
   async function presignAttachment(
@@ -2669,41 +4610,71 @@
         (searchRows ?? []).find(
           (row) => row.personUid === dest.personUid && !row.channelId,
         );
-      handleSelect(existing ?? stub);
+      handleSelect(existing ?? stub, {
+        replyRootEventId: dest.replyRootEventId,
+      });
       return;
     }
     if (dest.kind === "files") {
       // Share rows do not include a company UID. Route to the bounded,
       // server-scoped share list rather than guessing a tenant or aliasing it.
-      view = "shared-files";
-      paletteOpen = false;
-      membersOpen = false;
-      projectAboutOpen = false;
+      void navigate({ kind: "shared-files" });
+    }
+    if (dest.kind === "channel") {
+      const row = railRows.find((candidate) => candidate.channelId === dest.channelId);
+      if (row) {
+        handleSelect(row, { replyRootEventId: dest.replyRootEventId });
+      } else {
+        requestChannelOpen(dest.channelId, {
+          replyRootEventId: dest.replyRootEventId ?? null,
+        });
+      }
     }
   }
 
   function openLibrary(next: LibraryTab = "skills"): void {
-    libraryTab = next;
-    view = "library";
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
+    void navigate({ kind: "library", tab: next });
   }
 
   function toggleNotifications(): void {
-    view = view === "notifications" ? "conversation" : "notifications";
-    meetingFocusRequest = null;
+    if (view === "notifications") void navigate({ kind: "messages" });
+    else void navigate({ kind: "notifications" });
   }
 
   function openSettings(section: EmbeddedSettingsSection | null = null): void {
-    view = "settings";
-    settingsSection = section;
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
-    onOpenSettings?.();
+    void navigate({ kind: "settings", section });
+  }
+
+  function extraDestination(
+    page: string,
+    param: string | null,
+  ): NavigationDestination {
+    const fromParam = extraParamCompanyKey(param);
+    let inherited: string | null = null;
+    if (
+      !fromParam &&
+      page === extraPageId &&
+      param &&
+      param !== "new" &&
+      !param.startsWith("new?")
+    ) {
+      const current = navigationHistory.current();
+      inherited =
+        extraParamCompanyKey(extraPageParam) ??
+        (current?.destination.kind === "extra"
+          ? (current.destination.companyUid ?? null)
+          : null) ??
+        current?.companyUid ??
+        null;
+    }
+    const companyUid = fromParam ?? inherited;
+    return companyUid
+      ? { kind: "extra", page, param, companyUid }
+      : { kind: "extra", page, param };
+  }
+
+  function openExtraPage(id: string, param: string | null = null): void {
+    void navigate(extraDestination(id, param));
   }
 
   function onShellLinkEvent(event: Event): void {
@@ -2715,66 +4686,20 @@
   }
 
   function closeSettings(): void {
-    view = "conversation";
-    settingsSection = null;
-    meetingFocusRequest = null;
+    void leaveCurrentDestination();
   }
 
   /** Apply a host route after DesktopApp's event listeners have mounted. */
   function applyEmbeddedNavigation(target: EmbeddedNavigationTarget): void {
-    embeddedNavigationError = null;
-    switch (target.kind) {
-      case "home":
-      case "messages":
-        view = "conversation";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "inbox":
-        view = "notifications";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "meetings":
-        view = "meetings";
-        settingsSection = null;
-        meetingFocusRequest = target.meetingId?.trim()
-          ? { meetingId: target.meetingId.trim(), sequence: ++meetingFocusSequence }
-          : null;
-        return;
-      case "atlas":
-        view = "atlas";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "library":
-        openLibrary(target.tab);
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "settings":
-        meetingFocusRequest = null;
-        openSettings(target.section ?? null);
-        return;
-      case "channel":
-        meetingFocusRequest = null;
-        requestChannelOpen(target.channelId, {
-          replyRootEventId: target.replyRootEventId,
-        });
-        return;
-      case "dm":
-        meetingFocusRequest = null;
-        requestConversation({
-          personUid: target.personUid,
-          email: "",
-          displayName: "",
-          replyRootEventId: target.replyRootEventId,
-        });
-        return;
-      case "unsupported":
-        embeddedNavigationError = `${target.reason}: ${target.route}`;
-        return;
+    const destination = destinationFromEmbeddedTarget(target);
+    if (!destination) {
+      embeddedNavigationError =
+        target.kind === "unsupported"
+          ? `${target.reason}: ${target.route}`
+          : "Unsupported embedded destination";
+      return;
     }
+    void navigate(destination);
   }
 
   function sweepStaleAttachmentTrays(reason: string): void {
@@ -2843,12 +4768,24 @@
     // US-016: `g a` opens Atlas (Slack-style go chord).
     const goChord = createGoChord((letter) => {
       if (letter !== "a") return false;
-      view = "atlas";
-      meetingFocusRequest = null;
+      void navigate({ kind: "atlas" });
       return true;
     });
 
     function onKey(event: KeyboardEvent) {
+      if (
+        consumeNavigationShortcut(event, {
+          onBack: () => {
+            if (navigationHistory.canGoBack()) void goBack();
+          },
+          onForward: () => {
+            if (navigationHistory.canGoForward()) void goForward();
+          },
+        })
+      ) {
+        goChord.reset();
+        return;
+      }
       const meta = event.metaKey || event.ctrlKey;
       if (meta) {
         const key = event.key.toLowerCase();
@@ -2862,12 +4799,10 @@
           openSettings();
         } else if (key === "1") {
           event.preventDefault();
-          view = "notifications";
-          meetingFocusRequest = null;
+          void navigate({ kind: "notifications" });
         } else if (key === "2") {
           event.preventDefault();
-          view = "meetings";
-          meetingFocusRequest = null;
+          void navigate({ kind: "meetings" });
         } else if (adapter.kind !== "web" && key === "3") {
           event.preventDefault();
           openLibrary("marketplace");
@@ -2905,6 +4840,8 @@
         automatic: detail.automatic === true,
         title: detail.title ?? null,
         companyUid: detail.companyUid ?? null,
+        focusCardId: detail.focusCardId ?? null,
+        focusCardKind: detail.focusCardKind ?? null,
       });
     }
     function onMessagePerson(event: Event): void {
@@ -2921,8 +4858,14 @@
         return;
       applyPendingConversation({ ...detail, automatic: detail.automatic === true });
     }
-  function onOpenSettingsEvent(): void {
+    function onOpenSettingsEvent(): void {
       openSettings();
+    }
+    function onOpenDmRequests(event: Event): void {
+      const detail = (event as CustomEvent<{ pairKey?: string | null }>).detail;
+      // Consume the stash so a later mount does not replay this open.
+      takePendingDmRequests();
+      openDmRequests(detail?.pairKey ?? null);
     }
     function onEmbeddedNavigation(event: Event): void {
       const target = (event as CustomEvent<EmbeddedNavigationTarget>).detail;
@@ -2932,6 +4875,7 @@
     window.addEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
     window.addEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
     window.addEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+    window.addEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
     window.addEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
 
     applyConversationDeepLink(conversationDeepLinkFromLocation());
@@ -2939,14 +4883,18 @@
     if (pendingChannel) applyPendingChannelOpen(pendingChannel);
     const pendingDm = takePendingConversation();
     if (pendingDm) applyPendingConversation(pendingDm);
+    const pendingRequests = takePendingDmRequests();
+    if (pendingRequests) openDmRequests(pendingRequests.pairKey);
     const detachEmbeddedNavigation = onembeddednavigationready?.();
 
     return () => {
       detachEmbeddedNavigation?.();
+      if (focusCardTimer !== undefined) clearTimeout(focusCardTimer);
       overlayQuery.removeEventListener("change", syncOverlay);
       if (syncTimer !== undefined) window.clearInterval(syncTimer);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+      window.removeEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
       window.removeEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
       window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
       window.removeEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
@@ -2971,6 +4919,13 @@
   <V4TitleBar
     {adapter}
     {version}
+    primaryAction={(() => {
+      const entry = Object.entries(extraPages ?? {}).find(([, page]) => page.createAction);
+      if (!entry) return undefined;
+      const [id, page] = entry;
+      const action = page.createAction!;
+      return { label: action.label, onselect: () => openExtraPage(id, action.param()) };
+    })()}
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
@@ -2981,16 +4936,18 @@
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
     onopenNotifications={toggleNotifications}
     onopenMeetings={() => {
-      view = "meetings";
-      meetingFocusRequest = null;
-      paletteOpen = false;
-      membersOpen = false;
-      projectAboutOpen = false;
+      void navigate({ kind: "meetings" });
     }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
     {onopenurl}
+    canGoBack={navigationCanGoBack}
+    canGoForward={navigationCanGoForward}
+    backLabel={navigationBackLabel}
+    forwardLabel={navigationForwardLabel}
+    onback={() => void goBack()}
+    onforward={() => void goForward()}
   />
 
   {#if recommendBanner}
@@ -3010,6 +4967,17 @@
       role="alert"
     >
       Couldn’t open requested destination. {embeddedNavigationError}
+    </div>
+  {/if}
+
+  {#if navigationPending}
+    <div
+      class="embedded-navigation-error"
+      data-testid="navigation-pending"
+      role="status"
+      aria-busy="true"
+    >
+      Opening destination…
     </div>
   {/if}
 
@@ -3046,7 +5014,25 @@
       void confirmMigrateSession(destinationCompanyUid)}
   />
 
-  {#if view === "settings"}
+  {#if navigationUnavailable}
+    <div class="desktop-body" data-testid="navigation-unavailable-host">
+      <div
+        class="navigation-unavailable"
+        data-testid="navigation-unavailable"
+        role="alert"
+      >
+        <p>{navigationUnavailable.reason}</p>
+        <button
+          type="button"
+          data-testid="navigation-unavailable-back"
+          onclick={() => void goBack()}
+          disabled={!navigationCanGoBack}
+        >
+          Back
+        </button>
+      </div>
+    </div>
+  {:else if view === "settings"}
     <!-- Settings is a full destination: it REPLACES everything below the
          titlebar. The channel rail is hidden and the whole area becomes the
          two-column Settings surface. -->
@@ -3059,8 +5045,9 @@
         storage={tenantStorage}
         {version}
         initialSection={settingsSection}
+        onsectionchange={(section) => openSettings(section)}
         onback={closeSettings}
-        onsignout={onsignout}
+        onsignout={onsignout ? signOutWithImageCleanup : undefined}
         onopenconsole={onOpenConsole
           ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
           : undefined}
@@ -3070,10 +5057,14 @@
       />
     </div>
   {:else}
-    <div class="desktop-body">
-      {#if !sidebarCollapsed}
+    <div class="desktop-body" style:--sidebar-width={`${sidebarWidth}px`}>
+      <!-- Kept mounted while closed at phone width: the list owns roster
+           loading and the #setup fallback, so unmounting it leaves the phone
+           with nothing selected. -->
+      {#if !sidebarCollapsed || phoneViewport}
         {#key `${tenantGeneration}:${tenantCompanyId ?? "all"}`}
         <ChatSidebar
+          offscreen={phoneViewport && sidebarCollapsed}
           api={sidebarApi}
           {wakes}
           {companies}
@@ -3088,25 +5079,36 @@
           {seedDirectory}
           {avatarByUid}
           {rosterWakeSeq}
+          requestsWakeSeq={notificationWakeSeq}
           onavatarmap={(map) => (contactAvatarByUid = map)}
           onselect={(row, options) =>
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
+              automatic: options?.automatic === true,
             })}
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
           onnavigateMessages={() => {
-            view = "conversation";
-            meetingFocusRequest = null;
+            void navigate({ kind: "messages" });
           }}
           onopenSettings={() => openSettings()}
-          onsignout={onsignout}
-          onrows={(rows) => (railRows = rows)}
+          onsignout={onsignout ? signOutWithImageCleanup : undefined}
+          oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+          oncreateagent={canRunEntryPoints ? addAgentEntry : null}
+          onrows={(rows) => {
+            railRows = rows;
+            directorySettled = true;
+          }}
           {bootTimeoutMs}
+          welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
+          {rowExtrasLoading}
+          {rowExtrasError}
+          rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
         />
         {/key}
+        {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
@@ -3119,8 +5121,7 @@
             wakeSeq={notificationWakeSeq}
             signedIn={Boolean(self)}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
             onunreadchange={(n) => (unreadCount = n)}
             onopen={openNotification}
@@ -3130,9 +5131,38 @@
           <SharedFilesOverlay
             {adapter}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
+          />
+        {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
+          {@const Page = extraPages[extraPageId].component}
+          <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>
+            {#key `${extraPageId}:${extraPageParam ?? ""}`}
+              <Page
+                param={extraPageParam}
+                restoreScroll={pendingRestoreScroll}
+                onnavigate={(
+                  next: string | null,
+                  options?: { mode?: NavigationMode },
+                ) => {
+                  if (!extraPageId) return;
+                  void navigate(
+                    extraDestination(extraPageId, next),
+                    options?.mode ?? "push",
+                  );
+                }}
+              />
+            {/key}
+          </div>
+        {:else if view === "dm-requests"}
+          <DmRequestsPanel
+            api={sidebarApi}
+            {wakes}
+            focusPairKey={dmRequestsFocusPairKey}
+            onback={() => {
+              void leaveCurrentDestination();
+            }}
+            onresolved={handleDmRequestResolved}
           />
         {:else if view === "meetings"}
           <MeetingsPage
@@ -3141,8 +5171,7 @@
             storage={tenantStorage}
             sessionGeneration={tenantGeneration}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
             openExternal={onopenurl}
             focusRequest={meetingFocusRequest}
@@ -3160,8 +5189,7 @@
               openMigrateSession(sessionId, atlasCompanyUid)}
             migratingSessionId={migratingSessionId}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
           />
         {:else if view === "conversation" && selectedRow}
@@ -3171,7 +5199,10 @@
           >
             <div class="channel-title-block">
               <div class="channel-title">
-                {#if selectedRow.kind === "channel"}
+                {#if selectedIsCompanyChannel}
+                  <!-- Company channels lead with the company's own mark. -->
+                  <CompanyIcon iconUrl={selectedCompanyIcon} size={22} />
+                {:else if selectedRow.kind === "channel"}
                   <span class="channel-hash" aria-hidden="true">#</span>
                 {/if}
                 {#if selectedRow.kind === "dm"}
@@ -3290,7 +5321,53 @@
                   Edit profile
                 </button>
               {/if}
-              {#if isProjectChannel}
+              {#if isAgentChannel}
+                <nav
+                  class="project-tabs"
+                  aria-label="Agent channel views"
+                  data-testid="agent-channel-tabs"
+                >
+                  {#each AGENT_CHANNEL_TABS as t (t.id)}
+                    <button
+                      type="button"
+                      class="project-tab"
+                      class:active={agentSurface === t.id}
+                      aria-current={agentSurface === t.id ? "page" : undefined}
+                      data-testid={`agent-tab-${t.id}`}
+                      onclick={() => pushConversationSurface({ agentSurface: t.id })}
+                    >
+                      <span>{t.label}</span>
+                    </button>
+                  {/each}
+                </nav>
+              {:else if isCompanyChannel}
+                {#if companyTeamCanAct}
+                  {#if headerAddAgentError}
+                    <span
+                      class="header-inline-error"
+                      role="alert"
+                      data-testid="company-add-agent-error"
+                    >
+                      {headerAddAgentError}
+                    </span>
+                  {/if}
+                  <button
+                    type="button"
+                    class="header-ghost-btn"
+                    data-testid="company-add-agent"
+                    aria-label={`Add an agent to ${companyHeroTitle}`}
+                    aria-busy={headerAddAgentBusy ? "true" : undefined}
+                    disabled={headerAddAgentBusy}
+                    onclick={() => void addAgentFromHeader()}
+                  >
+                    Add agent
+                  </button>
+                {/if}
+                <CompanyTabs
+                  active={companyTab}
+                  onselect={(id) => pushConversationSurface({ companyTab: id })}
+                />
+              {:else if isProjectChannel}
                 <nav
                   class="project-tabs"
                   aria-label="Channel views"
@@ -3302,7 +5379,7 @@
                       class="project-tab"
                       class:active={tab === t.id}
                       aria-current={tab === t.id ? "page" : undefined}
-                      onclick={() => (tab = t.id)}
+                      onclick={() => pushConversationSurface({ tab: t.id })}
                     >
                       <span class="project-tab-icon" aria-hidden="true">
                         {#if t.id === "chat"}
@@ -3443,6 +5520,12 @@
                                 companyNames,
                               )
                             : null,
+                          selectedRow.companyUid
+                            ? companyIconUrl(
+                                selectedRow.companyUid,
+                                companyIcons,
+                              )
+                            : null,
                         )}
                       {self}
                       onclose={() => (membersOpen = false)}
@@ -3490,7 +5573,62 @@
             />
           {/if}
 
-          {#if activeTab === "chat"}
+          {#if isAgentChannel && agentSurface === "details" && agentChannelUid}
+            <AgentDetailPanel
+              agentUid={agentChannelUid}
+              displayName={headerTitle}
+              avatarUrl={avatarByUid[agentChannelUid] ?? null}
+              companyUid={selectedRow?.companyUid}
+              {companyNames}
+              {self}
+              {isAdmin}
+              {adapter}
+              packs={loadedAvatarPacks}
+              avatarSaving={agentAvatarSaving}
+              avatarSaveError={agentAvatarSaveError}
+              onsaveavatar={saveOpenAgentAvatar}
+              onclose={() => void leaveCurrentDestination()}
+            />
+          {:else if isCompanyChannel && companyTab !== "chat"}
+            {#if companyTab === "team"}
+              <TeamTab
+                data={companyTabData ?? {
+                  tab: "team",
+                  companyUid: selectedRow.companyUid ?? "",
+                  viewer: { canAct: false },
+                  sections: [],
+                }}
+                onaction={handleTeamAction}
+              />
+            {:else if companyTab === "atlas"}
+              <AtlasTab
+                graph={companyTabData?.graph ?? { nodes: [], edges: [] }}
+              />
+            {:else if companyTab === "settings"}
+              <SettingsTab
+                data={companyTabData ?? {
+                  tab: "settings",
+                  companyUid: selectedRow.companyUid ?? "",
+                  viewer: { canAct: false },
+                  sections: [],
+                }}
+                onaction={handleTeamAction}
+              />
+            {:else}
+              <div
+                class="company-tab-placeholder"
+                data-testid={`company-tab-panel-${companyTab}`}
+              >
+                {#if companyTabLoading}
+                  Loading…
+                {:else if (companyTabData?.sections[0]?.rows.length ?? 0) > 0}
+                  <TeamTab data={companyTabData!} onaction={handleTeamAction} />
+                {:else}
+                  {String(companyTab).charAt(0).toUpperCase() + String(companyTab).slice(1)}
+                {/if}
+              </div>
+            {/if}
+          {:else if activeTab === "chat"}
             <div
               class="chat-stage"
               class:is-setup={isSetupChannel(selectedRow.channelId)}
@@ -3506,24 +5644,146 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
-                  <AgentThinkingRow entries={agentThinking} />
+                  {#if inSetupChannelWithAgent}
+                    {@const agentState = setupAgent.state}
+                    {@const stopFailure = setupAgent.failure}
+                    <div class="setup-agent-prompt" data-testid="setup-agent-prompt">
+                      {#if setupAgentDone}
+                        <!-- Finished: one calm block with every next step. -->
+                        <SetupFinale
+                          onsessions={extraPages?.sessions
+                            ? () =>
+                                openExtraPage(
+                                  "sessions",
+                                  extraPages!.sessions.startworkAction?.param(startworkCompany) ??
+                                    extraPages!.sessions.createAction?.param() ??
+                                    setupAgent.sessionId,
+                                )
+                            : undefined}
+                          onclaude={() => void launchSetupIn("claude")}
+                          oncodex={() => void launchSetupIn("codex")}
+                          launchError={setupLaunchError}
+                          {onopenurl}
+                          company={finaleCompany}
+                          onrunagain={() => void setupAgent.runAgain()}
+                        />
+                      {:else if stopFailure && setupAgent.api && setupAgent.providers}
+                        <!-- The run stopped: say why, and offer the agents right
+                             here — sign in to one, or run again with one that is. -->
+                        <SetupConnectStep
+                          variant="surface"
+                          api={setupAgent.api}
+                          providers={setupAgent.providers}
+                          lead={SETUP_FAILURE_COPY[stopFailure.kind].title}
+                          detail={setupAgent.failureDetail ?? undefined}
+                          onrefresh={() => setupAgent.refreshProviders(true)}
+                          onrun={(tool) => void setupAgent.runAgain(tool)}
+                          runBusy={setupAgent.busy}
+                        />
+                      {:else}
+                      <SetupRunCard
+                        variant="prompt"
+                        mode={setupAgent.mode === "starting" || setupAgent.mode === "idle" ? "live" : setupAgent.mode}
+                        run={agentState}
+                        resumeStep={setupAgent.resumeStep}
+                        busy={setupAgent.busy || setupAgent.mode === "starting"}
+                        error={setupAgent.error}
+                        onanswer={(requestId, questionId, values) => void setupAgent.answerChoice(requestId, questionId, values)}
+                        onpermission={(requestId, decision) => void setupAgent.answerPermission(requestId, decision)}
+                        onsend={(text) => void setupAgent.send(text)}
+                        oncontinue={() => void setupAgent.continueRun()}
+                        onrunagain={() => void setupAgent.runAgain()}
+                        onfinish={() => setupAgent.finish()}
+                        idle={setupAgent.snapshot?.phase === "idle"}
+                        onstoresecret={setupAgent.canStoreSecrets ? (card, value) => setupAgent.storeSecret(card, value) : undefined}
+                      />
+                      {/if}
+                    </div>
+                  {/if}
+                  {#if isAgentChannel && provisioning.state}
+                    <div
+                      class="agent-provision-status"
+                      data-testid="agent-provision-status"
+                    >
+                      {#if provisioning.machineStartedAt}
+                        <div
+                          data-testid="agent-machine-started"
+                          title={provisioning.machineStartedAt}
+                        >
+                          Machine started {formatReadonlyTimestamp(
+                            provisioning.machineStartedAt,
+                          )}
+                        </div>
+                      {/if}
+                      {#if provisioning.checkedInAt}
+                        <div
+                          data-testid="agent-checked-in"
+                          title={provisioning.checkedInAt}
+                        >
+                          {provisioning.agentName} checked in {formatReadonlyTimestamp(
+                            provisioning.checkedInAt,
+                          )}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+                  <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
+                  <AgentTaskStrip tasks={mainPaneTasks} />
                 {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
                     settings={adapter.settings}
                     shell={adapter.shell}
                     {onopenurl}
+                    onopensessions={extraPages?.sessions?.setupAction || extraPages?.sessions?.createAction
+                      ? () =>
+                          openExtraPage(
+                            "sessions",
+                            (extraPages!.sessions.setupAction ?? extraPages!.sessions.createAction!).param(),
+                          )
+                      : undefined}
+                    companies={rosterCompanies}
+                    onopencompany={openCompanyFromSetup}
+                    oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+                    {rosterStatus}
+                    {onretryroster}
+                    onsetupstarted={recordWelcomeSetupRun}
+                    agent={setupAgent}
+                    onopensessiondetails={extraPages?.sessions
+                      ? (sessionId) => openExtraPage("sessions", sessionId)
+                      : undefined}
                   />
                 {/snippet}
+                {#snippet companyHeader()}
+                  <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
+                {/snippet}
                 <ChannelConversation
-                  messages={timeline}
+                  restoreScroll={pendingRestoreScroll}
+                  messages={timelineWithActivity}
+                  onseen={async () => {
+                    const row = selectedRow;
+                    if (!row) return;
+                    if (row.kind === "dm" && row.personUid) {
+                      await sidebarApi.markDmThreadRead(row.personUid);
+                    } else if (row.channelId && !row.browseOnly && row.membership !== "invited") {
+                      await sidebarApi.markChannelRead(row.channelId);
+                    } else return;
+                    wakes?.emit?.("conversation:read", { id: row.id });
+                  }}
+                  hasEarlier={Boolean(historyCursors[selectedRow.id])}
+                  onloadearlier={loadEarlierTimeline}
+                  emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
+                  composerLocked={composerLocked}
                   {onopenurl}
+                  channelId={selectedRow.channelId}
+                  oncardaction={handleCardAction}
                   ontogglereaction={persistReaction}
                   selfDisplayName={self?.displayName ?? null}
                   selfPersonUid={self?.uid ?? null}
                   onsend={persistSend}
+                  previewCache={imagePreviewCache}
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
@@ -3538,10 +5798,14 @@
                   {avatarByUid}
                   {displayNameByUid}
                   activeRootEventId={openReplyRootId}
-                  loading={timelineHydrating && timeline.length === 0}
+                  loading={(timelineHydrating || projectActivityLoading) &&
+                    timelineWithActivity.length === 0}
+                  landAt={isSetupChannel(selectedRow.channelId) ? "top" : "bottom"}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
-                    : undefined}
+                    : isCompanyChannel
+                      ? companyHeader
+                      : undefined}
                   belowMessages={agentThinkingBelow}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
@@ -3558,6 +5822,7 @@
                   <ArtifactPanel
                     artifact={openArtifactView}
                     onclose={closeArtifact}
+                    {onopenurl}
                   />
                 </div>
               {:else if openAgentMember}
@@ -3617,6 +5882,7 @@
                   <ReplyPanel
                     api={conversationApi}
                     rootEventId={openReplyRootId}
+                    tasks={threadTasks}
                     scope={replyScope}
                     channelId={selectedRow.channelId}
                     withPersonUid={selectedRow.personUid}
@@ -3625,7 +5891,9 @@
                     reactions={rowReactions}
                     ontogglereaction={persistReaction}
                     selfDisplayName={self?.displayName ?? null}
+                    selfPersonUid={self?.uid ?? null}
                     onuploadfiles={uploadFilesForSelectedRow}
+                    previewCache={imagePreviewCache}
                     onpresign={presignAttachment}
                     onopenattachment={openAttachmentTray}
                     onopenartifact={openArtifact}
@@ -3646,18 +5914,24 @@
             </div>
           {:else if activeTab === "board"}
             <BoardTab
+              onCreateTask={adapter.workMesh?.createProjectStory && selectedRow?.companyUid ? createBoardTask : undefined}
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
-              onOpenInChannel={() => (tab = "chat")}
+              onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}
             />
           {:else}
             <ChannelFilesTab
               {files}
               previewContext={channelFilePreviewContext}
+              previewKey={channelFileKey}
               onloadpreview={loadChannelFilePreview}
               onauthorizeaction={canPerformChannelFileAction}
               onreveal={revealChannelFile}
               onopen={openChannelFile}
+              onselectfile={(item) =>
+                pushConversationSurface({ tab: "files", fileKey: item.key })}
+              onclosepreview={() =>
+                pushConversationSurface({ tab: "files", fileKey: null })}
             />
           {/if}
         {:else if conversationBootTimedOut}
@@ -3676,16 +5950,18 @@
     </div>
   {/if}
 
-  {#if view === "library"}
+  {#if view === "library" && !navigationUnavailable}
     <LibraryOverlay
       {adapter}
       tab={libraryTab}
+      itemId={libraryItemId}
       {packagesEvents}
       onback={() => {
-        view = "conversation";
-        meetingFocusRequest = null;
+        void leaveCurrentDestination();
       }}
-      onnavigatetab={(next) => (libraryTab = next)}
+      onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
+      onnavigateitem={(id) =>
+        void navigate({ kind: "library", tab: libraryTab, itemId: id })}
     />
   {/if}
 
@@ -3698,6 +5974,7 @@
 
   {#if attachTray}
     <AttachmentTray
+      previewCache={imagePreviewCache}
       items={attachTray.items}
       selectedId={attachTray.selectedId}
       onselect={(id) => {
@@ -3754,6 +6031,16 @@
     overflow: hidden;
   }
 
+  /* Anchors the phone channel-list overlay (see ChatSidebar's matching block);
+     without a positioned ancestor it escapes to the viewport and renders
+     behind the title bar. Pinned to SIDEBAR_OVERLAY_MAX_PX by
+     shell/sidebar-layout.test.ts. */
+  @media (max-width: 640px) {
+    .desktop-body {
+      position: relative;
+    }
+  }
+
   .desktop-main {
     display: flex;
     flex: 1 1 auto;
@@ -3766,6 +6053,34 @@
     /* In-pane destinations (Meetings, Notifications) are not under the
        overlay traffic lights — don't inherit the window-chrome gutter. */
     --titlebar-leading-inset: 16px;
+  }
+
+  .extra-page-host {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .navigation-unavailable {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+    padding: 24px;
+    color: var(--t2, rgba(255, 255, 255, 0.62));
+    font: 400 13px/1.45 var(--font-ui);
+    text-align: center;
+  }
+
+  .navigation-unavailable button:disabled {
+    opacity: 0.5;
   }
 
   .conversation-boot-error {
@@ -4023,6 +6338,48 @@
     margin-left: auto;
   }
 
+  /* 28px ghost button: same control scale as the tab-row actions. */
+  .header-ghost-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--line2, var(--panel-border));
+    border-radius: 0;
+    background: transparent;
+    color: var(--t1);
+    font: 500 12px/1 inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .header-ghost-btn:hover {
+    background: var(--hover);
+  }
+
+  .header-ghost-btn:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .header-ghost-btn:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 2px;
+  }
+
+  .header-inline-error {
+    color: var(--danger, #e5484d);
+    font-size: 12px;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .edit-profile-btn {
     appearance: none;
     -webkit-appearance: none;
@@ -4043,6 +6400,15 @@
   .edit-profile-btn:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
     outline-offset: 2px;
+  }
+
+  .company-tab-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 120px;
+    color: var(--t3);
+    font-size: 13px;
   }
 
   .project-tabs {
@@ -4133,5 +6499,19 @@
     position: relative;
     z-index: 21;
     flex: 0 0 auto;
+  }
+  /* ---- Setup Agent prompt (under the #welcome messages) ---------------- */
+  /* No box: the block sits under the last message on the message-text
+     column — left = row padding 8px + avatar 36px + gap 8px; right = the
+     row's 8px padding — so its edges match the messages above. */
+  .setup-agent-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: none;
+    margin: 8px 8px 8px 52px;
+  }
+  .setup-agent-prompt:empty {
+    display: none;
   }
 </style>

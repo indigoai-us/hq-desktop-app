@@ -5,8 +5,7 @@ import { signIn } from "./helpers";
 /**
  * Empty-state guard for the shared display library.
  *
- * With no work-mesh cache (HQ_WORK_MESH_CACHE=off in the preview server) the
- * signed-in shell must paint honest "No data" / "No conversations" states —
+ * The signed-in shell must paint honest "No data" / "No conversations" states —
  * never the Corey theater fixtures.
  */
 test.describe("v2 display library: empty states, no fixture fallback", () => {

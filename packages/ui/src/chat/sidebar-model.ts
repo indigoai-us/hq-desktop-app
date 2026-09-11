@@ -30,6 +30,11 @@ export interface ConversationRow {
   title: string;
   /** Company scope when known; null for personal / pure DMs / group DMs. */
   companyUid: string | null;
+  /**
+   * Owning company's presigned website favicon, when the server sent one.
+   * Absent → the row draws the building glyph. Company-scoped rows only.
+   */
+  iconUrl?: string | null;
   /** Numeric unread — channels, and DMs when server pairUnreads is present. */
   unreadCount?: number;
   /** Dot indicator for activity (DMs without numeric unread / optional channel activity). */
@@ -75,6 +80,10 @@ export interface ConversationRow {
  */
 const CONVERSATION_ROW_RICHNESS_FIELDS = [
   "companyUid",
+  // Metadata (arrives with the live directory row, absent on a deep-link
+  // stub), so it belongs here — otherwise a stub carrying no icon would look
+  // "not strictly richer" once the real row arrived with one.
+  "iconUrl",
   "projectId",
   "channelId",
   "channelScope",
@@ -119,6 +128,8 @@ export function isStrictlyRicherConversationRow(
 export interface ScopeCompany {
   companyUid: string;
   label: string;
+  /** Presigned company icon, when the membership row carried one. */
+  iconUrl?: string | null;
 }
 
 export type CompanyScope = "all" | "personal" | string;
@@ -533,6 +544,10 @@ export function normalizeChannel(
     members: channel.members,
     channelId: channel.channelId,
     projectId: channel.projectId ?? null,
+    // Only a company-owned row can show a company icon.
+    ...(!isGroup && channel.scope !== "personal" && channel.iconUrl
+      ? { iconUrl: channel.iconUrl }
+      : {}),
     ...(channel.membership != null ? { membership: channel.membership } : {}),
   };
 }
@@ -815,7 +830,15 @@ export function directoryRowToChannel(
     name: row.name || prev?.name || "",
     scope: row.scope,
     companyUid: row.companyUid ?? null,
-    companyName: prev?.companyName ?? null,
+    companyName: row.companyName ?? prev?.companyName ?? null,
+    // `undefined` on the row means "not served / not sent" — keep whatever we
+    // already had. An explicit `null` means "this company has no icon" and DOES
+    // clear it, so removing a website removes the icon without a reload.
+    ...(row.iconUrl !== undefined
+      ? { iconUrl: row.iconUrl }
+      : prev?.iconUrl != null
+        ? { iconUrl: prev.iconUrl }
+        : {}),
     ...(prev?.postPolicy != null ? { postPolicy: prev.postPolicy } : {}),
     ...(prev?.visibility != null ? { visibility: prev.visibility } : {}),
     ...(prev?.membership != null ? { membership: prev.membership } : {}),
@@ -1179,6 +1202,25 @@ export function pickAutoOpenConversation(
 }
 
 /**
+ * Boot pick while #welcome still owns first landing (setup not yet run on
+ * this machine): the synthetic #welcome row wins over every live channel so
+ * a new person sees Run Setup, not a company channel with nothing connected.
+ * Returns null when there is no #welcome row (or a selection already exists)
+ * so callers fall through to the normal auto-open.
+ */
+export function pickWelcomeFirstConversation(
+  rows: readonly ConversationRow[],
+  selectedId?: string | null,
+): ConversationRow | null {
+  if ((selectedId ?? "").trim()) return null;
+  for (const row of rows) {
+    if (row.browseOnly) continue;
+    if (isSetupChannel(row.channelId)) return row;
+  }
+  return null;
+}
+
+/**
  * Conversation to open once first-paint fetches have settled (or timed out).
  * Real rows still win. If the rail is only the synthetic #setup channel,
  * open that rather than leaving the conversation pane on an infinite skeleton.
@@ -1210,9 +1252,21 @@ export function takeDirectorySeed<
     lastActivityAt?: string | number | null;
   },
 >(rows: readonly T[], limit: number = DIRECTORY_SEED_LIMIT): T[] {
-  if (rows.length <= limit) return rows.slice();
-  const unread = rows.filter((row) => (row.unreadCount ?? 0) > 0);
-  const rest = rows
+  // Dedupe by channel id FIRST, at every size. This seed becomes the persisted
+  // rail, the ⌘K index and the first-paint channel list, all of which render
+  // keyed by channel id — one repeated id is an `each_key_duplicate` crash that
+  // takes the whole shell down, not a harmless double row. Order is preserved,
+  // so a list that already fits still comes back in server order.
+  const deduped: T[] = [];
+  const byId = new Set<string>();
+  for (const row of rows) {
+    if (byId.has(row.channelId)) continue;
+    byId.add(row.channelId);
+    deduped.push(row);
+  }
+  if (deduped.length <= limit) return deduped;
+  const unread = deduped.filter((row) => (row.unreadCount ?? 0) > 0);
+  const rest = deduped
     .filter((row) => (row.unreadCount ?? 0) <= 0)
     .slice()
     .sort((a, b) => {
@@ -1220,12 +1274,9 @@ export function takeDirectorySeed<
       const right = String(a.lastActivityAt ?? "");
       return left.localeCompare(right);
     });
-  const seen = new Set(unread.map((row) => row.channelId));
   const extra: T[] = [];
   for (const row of rest) {
     if (unread.length + extra.length >= limit) break;
-    if (seen.has(row.channelId)) continue;
-    seen.add(row.channelId);
     extra.push(row);
   }
   return [...unread, ...extra];

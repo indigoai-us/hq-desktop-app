@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  GENUI_ENABLED,
   extractRichContentFromBody,
   parseRichContent,
   richContentForMessage,
@@ -311,6 +310,61 @@ describe("callout block", () => {
     ).toBeNull();
   });
 
+  it("accepts a `text` alias for `body` (emitter used the markdown field name)", () => {
+    const model = parseRichContent({
+      v: 1,
+      blocks: [{ kind: "callout", tone: "success", title: "Runtime", text: "v2.17" }],
+    });
+    expect(model?.blocks[0]).toEqual({
+      kind: "callout",
+      tone: "success",
+      title: "Runtime",
+      body: "v2.17",
+    });
+  });
+
+  it("prefers `body` over `text` when both are present", () => {
+    const model = parseRichContent({
+      v: 1,
+      blocks: [{ kind: "callout", tone: "info", body: "canonical", text: "alias" }],
+    });
+    expect(model?.blocks[0]).toMatchObject({ kind: "callout", body: "canonical" });
+  });
+
+  it("still rejects a callout with neither body nor text", () => {
+    expect(
+      parseRichContent({
+        v: 1,
+        blocks: [{ kind: "callout", tone: "info", title: "t", extra: "x" }],
+      }),
+    ).toBeNull();
+  });
+
+  it("still rejects a callout whose text alias is an empty string", () => {
+    expect(
+      parseRichContent({ v: 1, blocks: [{ kind: "callout", tone: "info", text: "" }] }),
+    ).toBeNull();
+  });
+
+  it("the `text` alias is sanitized through the same renderer path", () => {
+    const model = parseRichContent({
+      v: 1,
+      blocks: [
+        {
+          kind: "callout",
+          tone: "danger",
+          text: "<script>alert(1)</script> [x](javascript:alert(1))",
+          onClick: "doEvil()",
+        },
+      ],
+    });
+    const block = model?.blocks[0];
+    if (block?.kind !== "callout") throw new Error("expected callout");
+    // Only typed fields survive; alias carries no extra markup path.
+    expect(Object.keys(block).sort()).toEqual(["body", "kind", "tone"]);
+    expect(JSON.stringify(model)).not.toContain("onClick");
+  });
+
   it("body stays inert markdown text — no handler/script survives as a field", () => {
     const model = parseRichContent({
       v: 1,
@@ -332,6 +386,28 @@ describe("callout block", () => {
     expect(Object.keys(block).sort()).toEqual(["body", "kind", "title", "tone"]);
     expect(JSON.stringify(model)).not.toContain("onClick");
     expect(JSON.stringify(model)).not.toContain("<iframe");
+  });
+});
+
+describe("markdown block", () => {
+  it("accepts a `body` alias for `text` (symmetric with callout)", () => {
+    const model = parseRichContent({
+      v: 1,
+      blocks: [{ kind: "markdown", body: "aliased prose" }],
+    });
+    expect(model?.blocks[0]).toEqual({ kind: "markdown", text: "aliased prose" });
+  });
+
+  it("prefers `text` over `body` when both are present", () => {
+    const model = parseRichContent({
+      v: 1,
+      blocks: [{ kind: "markdown", text: "canonical", body: "alias" }],
+    });
+    expect(model?.blocks[0]).toMatchObject({ kind: "markdown", text: "canonical" });
+  });
+
+  it("still rejects a markdown block with neither text nor body", () => {
+    expect(parseRichContent({ v: 1, blocks: [{ kind: "markdown" }] })).toBeNull();
   });
 });
 
@@ -401,11 +477,7 @@ describe("sanitization — a payload can never inject executable content", () =>
   });
 });
 
-describe("GenUI is design-only, behind a disabled flag", () => {
-  it("the flag is OFF", () => {
-    expect(GENUI_ENABLED).toBe(false);
-  });
-
+describe("GenUI is design-only", () => {
   it("drops a genui block so no agent-authored markup is rendered", () => {
     const model = parseRichContent({
       v: 1,
@@ -481,5 +553,82 @@ describe("richContentForMessage — field precedence + fallback guarantee", () =
     const { text, rich } = richContentForMessage({ body: "plain" });
     expect(rich).toBeNull();
     expect(text).toBe("plain");
+  });
+});
+
+describe("parseRichContent — decision block", () => {
+  const decision = (over: Record<string, unknown> = {}) => ({
+    v: 1,
+    blocks: [
+      {
+        kind: "decision",
+        question: "Append the smoke-test line to core.yaml?",
+        options: [
+          { id: "1", label: "Yes, append it", recommended: true },
+          { id: "2", label: "No, use a scratch file" },
+          { id: "3", label: "No, cancel" },
+        ],
+        allowOther: true,
+        questionId: "clarify_abc123",
+        ...over,
+      },
+    ],
+  });
+
+  it("parses a well-formed decision block", () => {
+    const model = parseRichContent(decision());
+    expect(model).not.toBeNull();
+    const block = model!.blocks[0];
+    expect(block.kind).toBe("decision");
+    if (block.kind !== "decision") throw new Error("wrong kind");
+    expect(block.question).toContain("Append");
+    expect(block.options.map((o) => o.label)).toEqual([
+      "Yes, append it",
+      "No, use a scratch file",
+      "No, cancel",
+    ]);
+    expect(block.options[0].recommended).toBe(true);
+    expect(block.allowOther).toBe(true);
+    expect(block.questionId).toBe("clarify_abc123");
+  });
+
+  it("drops a decision with no question or no valid options", () => {
+    expect(parseRichContent(decision({ question: "" }))).toBeNull();
+    expect(parseRichContent(decision({ options: [] }))).toBeNull();
+    expect(parseRichContent(decision({ options: [{ id: "1" }] }))).toBeNull();
+  });
+
+  it("defaults allowOther to true and keeps only the first recommended", () => {
+    const model = parseRichContent(
+      decision({
+        allowOther: undefined,
+        options: [
+          { id: "1", label: "A", recommended: true },
+          { id: "2", label: "B", recommended: true },
+        ],
+      }),
+    );
+    const block = model!.blocks[0];
+    if (block.kind !== "decision") throw new Error("wrong kind");
+    expect(block.allowOther).toBe(true);
+    expect(block.options.filter((o) => o.recommended)).toHaveLength(1);
+    expect(block.options[0].recommended).toBe(true);
+  });
+
+  it("tolerates bare-string options and caps at 10", () => {
+    const many = Array.from({ length: 20 }, (_, i) => `opt${i}`);
+    const model = parseRichContent(decision({ options: many }));
+    const block = model!.blocks[0];
+    if (block.kind !== "decision") throw new Error("wrong kind");
+    expect(block.options).toHaveLength(10);
+    expect(block.options[0]).toEqual({ id: "1", label: "opt0" });
+  });
+
+  it("projects to a numbered plain-text fallback", () => {
+    const model = parseRichContent(decision());
+    const text = richContentToPlainText(model!);
+    expect(text).toContain("Append the smoke-test line to core.yaml?");
+    expect(text).toContain("1. Yes, append it (Recommended)");
+    expect(text).toContain("2. No, use a scratch file");
   });
 });

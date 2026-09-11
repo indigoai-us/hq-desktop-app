@@ -11,7 +11,6 @@
   import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
   import {
     COMPLETE_SETUP,
-    SETUP_NEEDS_PASS,
     escapeForLaunch,
     type OnboardingEscape,
   } from '../../lib/onboarding-escape';
@@ -21,6 +20,20 @@
     toUserFacingPath,
   } from '../../lib/onboarding-path';
   import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
+  import {
+    continuationDeps,
+    loadContinuationContext,
+  } from '../../lib/desktop-continuation-tauri';
+  import {
+    beginContinuation,
+    confirmContinuation,
+    flushReceipts,
+    launchReceipt,
+    recordReceipt,
+    resolveRollout,
+    type ContinuationDeps,
+    type ContinuationState,
+  } from '../../lib/desktop-session-continuation';
   import {
     NO_AI_TOOLS,
     availableLaunches,
@@ -39,6 +52,9 @@
     buildInitialStages,
     buildStagesFromManifest,
     friendlySetupBands,
+    createSetupRunId,
+    normalizeFailedStageIds,
+    reuseInFlightOperation,
     resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
@@ -46,10 +62,10 @@
     setupStageRecoveryAction,
     stageCommandInvocations,
     stageTimeoutMs,
+    setupFailureTelemetryDetails,
     StageTimeoutError,
     STAGE_ORDER,
     withTimeout,
-    type FailedStageDetail,
     type InstallManifest,
     type StageId,
     type StageState,
@@ -66,6 +82,7 @@
     BUILD_STEP_INDEX,
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
+    type WizardMode,
     createWizardRouter,
     DIRECTORY_STEP_INDEX,
     HANDOFF_STEP_INDEX,
@@ -93,7 +110,7 @@
      * setup and no ready screen. The `personUid` the guard is keyed to is passed
      * so the answer can mark the re-prompt "shown" for exactly this person.
      */
-    mode?: 'onboarding' | 'reprompt';
+    mode?: WizardMode;
     onboardingFlow?: OnboardingFlow;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
@@ -139,6 +156,11 @@
   const FADE_OUT_MS = 320;
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
+  // The native HTTP client allows a request to run for 15 seconds. Holding a
+  // first-run screen that long would make setup feel stuck, so browser-session
+  // continuation gets a short, silent head start and then yields to the
+  // unchanged provider buttons.
+  const AUTOMATIC_CONTINUATION_TIMEOUT_MS = 1_500;
   const DEFAULT_STEP: number = WIZARD_STEPS[0].index;
 
   let {
@@ -150,6 +172,11 @@
   }: Props = $props();
 
   const isReprompt = $derived(mode === 'reprompt');
+  /**
+   * Only the consent step is shown and the wizard closes on the answer: the
+   * re-prompt, and an installed machine that just lacks its consent answer.
+   */
+  const consentOnly = $derived(mode !== 'onboarding');
   const onboardingTelemetry = createOnboardingStepTelemetry();
 
   let activeInitialStep = $state<number | null>(null);
@@ -194,6 +221,18 @@
   let currentSignInCall = 0;
   let mounted = true;
 
+  // Browser session continuation belongs on the first screen someone sees
+  // after downloading HQ, not only on the returning-user sign-in surfaces.
+  // The first-run wizard completes an eligible session itself; it never
+  // renders a continuation prompt or account choice.
+  let continuation = $state<ContinuationState>({ phase: 'idle' });
+  let continuationDepsRef: ContinuationDeps | null = null;
+  let continuationPrepared = false;
+  let manualSignInStarted = false;
+  let automaticContinuationRun = 0;
+  let automaticContinuationActive = false;
+  let signInActionsReady = $state(false);
+
   let installPath = $state<string | null>(null);
   let resolvedPath = $state<string | null>(null);
   let homeDir = $state<string | null>(null);
@@ -207,10 +246,11 @@
   let stageCreep = $state(0);
   let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
+  let currentSetupRunId = '';
   let setupCancelled = false;
+  const initialCloudSyncOperation = { operation: null as Promise<void> | null };
   let unlistenInstallProgress: UnlistenFn | null = null;
   let unlistenContentProgress: UnlistenFn | null = null;
-  let setupFailures = $state<FailedStageDetail[]>([]);
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
@@ -253,7 +293,7 @@
     details: StepTelemetryDetails = {},
     flow?: OnboardingFlow,
   ): void {
-    if (isReprompt) return;
+    if (consentOnly) return;
     onboardingTelemetry.record({
       properties: {
         step: stepIdFor(step),
@@ -262,6 +302,21 @@
         flow: flow ?? onboardingFlow,
       },
     });
+  }
+
+  /**
+   * Best-effort: `whoami` is the first place a `prs_*` person uid exists after
+   * token exchange. Never awaited by the wizard; a miss is retried after setup
+   * provisions the person entity.
+   */
+  async function resolveInstallerPersonUid(): Promise<void> {
+    try {
+      const identity = await invokeCommand<{ personUid?: string | null }>('whoami');
+      const uid = typeof identity?.personUid === 'string' ? identity.personUid.trim() : '';
+      if (uid) onboardingTelemetry.setPersonUid(uid);
+    } catch {
+      // Person entity may not exist until setup / ensure_person_entity.
+    }
   }
 
   const displayPath = $derived(
@@ -293,10 +348,7 @@
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
-  const needsAttention = $derived(setupFailures.length > 0);
-  const readyCaution = $derived(
-    launchEscape ?? (needsAttention ? SETUP_NEEDS_PASS : COMPLETE_SETUP),
-  );
+  const readyCaution = $derived(launchEscape ?? COMPLETE_SETUP);
   const userFacingInstallPath = $derived(
     installPath ? toUserFacingPath(installPath) : null,
   );
@@ -313,7 +365,7 @@
   );
   const primaryLaunch = $derived<PrimaryLaunch>(selectPrimaryLaunch(aiTools));
   const manualToolsVisible = $derived(
-    showManualTools || Boolean(launchEscape || detectionFailed || needsAttention),
+    showManualTools || Boolean(launchEscape || detectionFailed),
   );
 
   $effect(() => {
@@ -333,9 +385,25 @@
   });
 
   $effect(() => {
+    // This is intentionally scoped to the first-run sign-in panel. Native
+    // eligibility independently refuses resumed and non-first-launch windows,
+    // but there is no reason to fetch rollout configuration after the wizard
+    // has already moved past authentication.
+    if (
+      isReprompt ||
+      currentStep !== WELCOME_SIGNIN_STEP_INDEX ||
+      continuationPrepared
+    ) {
+      return;
+    }
+    continuationPrepared = true;
+    void prepareContinuation();
+  });
+
+  $effect(() => {
     // In re-prompt mode there is no install/setup — only the consent step — so
     // the setup run must never start even if the step index momentarily reads 2.
-    if (isReprompt || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
+    if (consentOnly || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
     setupStarted = true;
     void startSetupRun();
   });
@@ -371,7 +439,7 @@
     detectorMounted = true;
     directoryCancelled = false;
 
-    if (!isReprompt) {
+    if (!consentOnly) {
       // Every visible panel has an entry event. A resumed, non-initial panel
       // records both its ordinary entry and the resume signal used for drop-off
       // analysis.
@@ -383,16 +451,14 @@
       if (onboardingFlow === 'resume' && currentStep !== WELCOME_SIGNIN_STEP_INDEX) {
         recordStep(currentStep, 'resumed', {}, onboardingFlow);
       }
-      void invokeCommand<boolean>('is_first_run')
-        .then((firstLaunch) => {
-          if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
-        })
-        .catch(() => {});
       // A resumed onboarding session may already have a restored token. Its
       // operational queue is independent of consent and can resume delivery.
       void invokeCommand<{ authenticated: boolean }>('get_auth_state')
         .then((auth) => {
-          if (auth?.authenticated) return onboardingTelemetry.flush();
+          if (auth?.authenticated) {
+            void resolveInstallerPersonUid();
+            return onboardingTelemetry.flush();
+          }
         })
         .catch(() => {});
     }
@@ -490,6 +556,15 @@
 
   async function handleSignIn(provider: SignInProvider) {
     const call = ++currentSignInCall;
+    // Claim the provider path before any await. The continuation config can
+    // settle while this click is being handled; it must not then arm a second
+    // listener over the provider flow the person deliberately chose.
+    manualSignInStarted = true;
+    automaticContinuationActive = false;
+
+    // Preparation observes this claim and leaves continuation unarmed. Manual
+    // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
+
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
@@ -522,18 +597,7 @@
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
-        // The token is now available, so release operational records that were
-        // buffered solely while the OAuth flow was unauthenticated.
-        void onboardingTelemetry.flush().catch(() => {});
-        await refocusWindow();
-        if (!isCurrentSignInCall(call)) return;
-        // The consent question is asked later as its own step after setup.
-        // Operational setup telemetry is emitted independently; skill usage
-        // remains governed by that choice.
-        advanceTo(DIRECTORY_STEP_INDEX, 'completed', {
-          provider: telemetryProvider,
-          outcome: 'authenticated',
-        });
+        await completeAuthenticatedSignIn(call, { provider: telemetryProvider });
       } else {
         signInError = 'Authentication failed. Please try again.';
         recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
@@ -554,6 +618,131 @@
         loadingProvider = null;
       }
     }
+  }
+
+  async function prepareContinuation(): Promise<void> {
+    const run = ++automaticContinuationRun;
+    automaticContinuationActive = true;
+    const timeout = window.setTimeout(() => {
+      if (!isAutomaticContinuationCurrent(run)) return;
+      automaticContinuationActive = false;
+      signInActionsReady = true;
+
+      // Do not leave a native attempt holding its listener after the visible
+      // first-run flow has fallen back. `beginContinuation` records the single
+      // cancelled result when its pending identity wait returns.
+      const attemptId = 'attemptId' in continuation ? continuation.attemptId : undefined;
+      if (attemptId && continuationDepsRef) {
+        void continuationDepsRef.bridge.cancel({ attemptId }).catch(() => undefined);
+      }
+    }, AUTOMATIC_CONTINUATION_TIMEOUT_MS);
+
+    const finishWithProviderButtons = () => {
+      if (run !== automaticContinuationRun || currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
+      automaticContinuationActive = false;
+      window.clearTimeout(timeout);
+      signInActionsReady = true;
+    };
+
+    const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
+    const context = await loadContinuationContext();
+    if (!context) {
+      if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
+      finishWithProviderButtons();
+      return;
+    }
+    const deps = continuationDeps(context);
+    continuationDepsRef = deps;
+
+    // Receipt delivery is best effort and must never delay sign-in.
+    void flushReceipts(deps).catch(() => undefined);
+
+    // `firstLaunchRecorded` is the existing durable first-installation gate.
+    // It survives re-renders and a resumed wizard, while recordReceipt keeps
+    // an undelivered receipt's event id and timestamp stable for retry.
+    if (firstLaunch && onboardingTelemetry.recordFirstLaunch()) {
+      void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
+    }
+
+    // Check before and after the config round trip. A provider click during
+    // that wait is a deliberate choice and must win without arming another
+    // OAuth listener.
+    if (!isAutomaticContinuationCurrent(run)) return;
+    const decision = await resolveRollout(deps);
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (!decision.enabled) {
+      finishWithProviderButtons();
+      return;
+    }
+
+    const next = await beginContinuation(
+      deps,
+      decision,
+      (next) => {
+        if (isAutomaticContinuationCurrent(run)) continuation = next;
+      },
+      () => isAutomaticContinuationCurrent(run),
+    );
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (next.phase !== 'confirming') {
+      finishWithProviderButtons();
+      return;
+    }
+
+    const activated = await confirmContinuation(deps, next, (state) => {
+      if (isAutomaticContinuationCurrent(run)) continuation = state;
+    });
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (activated.phase !== 'activated') {
+      finishWithProviderButtons();
+      return;
+    }
+
+    const auth = await invokeCommand<{ authenticated: boolean }>('get_auth_state').catch(() => null);
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (!auth?.authenticated) {
+      finishWithProviderButtons();
+      return;
+    }
+
+    automaticContinuationActive = false;
+    window.clearTimeout(timeout);
+    await completeAuthenticatedSignIn(currentSignInCall);
+  }
+
+  function isAutomaticContinuationCurrent(run: number): boolean {
+    return (
+      mounted &&
+      run === automaticContinuationRun &&
+      automaticContinuationActive &&
+      !manualSignInStarted &&
+      currentStep === WELCOME_SIGNIN_STEP_INDEX
+    );
+  }
+
+  /**
+   * Both OAuth routes land here after native code has activated the same auth
+   * session. Keeping this as the one wizard completion preserves the normal
+   * post-auth transition, telemetry flush, person lookup, and refocus path.
+   */
+  async function completeAuthenticatedSignIn(
+    call: number,
+    details: StepTelemetryDetails = {},
+  ): Promise<void> {
+    // The token is now available, so release operational records that were
+    // buffered solely while the OAuth flow was unauthenticated.
+    void onboardingTelemetry.flush().catch(() => {});
+    // Person entity may not exist yet; later pings retry after setup.
+    void resolveInstallerPersonUid();
+    await refocusWindow();
+    if (!isCurrentSignInCall(call)) return;
+    // The consent question is asked later as its own step after setup.
+    // Operational setup telemetry is emitted independently; skill usage
+    // remains governed by that choice.
+    advanceTo(DIRECTORY_STEP_INDEX, 'completed', {
+      ...details,
+      outcome: 'authenticated',
+    });
   }
 
   function detectLooksLikeHq(result: DetectHqResult): boolean {
@@ -640,6 +829,7 @@
 
   function beginSetupRun(): number {
     currentRunId += 1;
+    currentSetupRunId = createSetupRunId();
     setupCancelled = false;
     activeInstallHandles.clear();
     activeContentHandles.clear();
@@ -765,7 +955,18 @@
     }
   }
 
-  async function invokeStageCommand(id: StageId, runId: number): Promise<void> {
+  type OnboardingFailureScope = {
+    setupRunId: string;
+    attemptCount: number;
+    flow: OnboardingFlow;
+    frontendSessionId: string;
+  };
+
+  async function invokeStageCommand(
+    id: StageId,
+    runId: number,
+    failureScope: OnboardingFailureScope,
+  ): Promise<void> {
     const invocations = stageCommandInvocations(id, { installPath: effectiveInstallPath });
     if (invocations.length === 0) return;
     if (typeof invoke !== 'function') {
@@ -775,6 +976,9 @@
     const ms = stageTimeoutMs(id);
     for (const invocation of invocations) {
       let args = invocation.args;
+      if (['content', 'deps', 'git-init', 'indexing'].includes(id)) {
+        args = { ...(args ?? {}), failureScope };
+      }
       let handle: string | null = null;
       if (invocation.command === 'fetch_and_extract_template') {
         handle = contentHandle(runId);
@@ -782,8 +986,14 @@
         args = { ...args, handle };
       }
       try {
+        const operation =
+          invocation.command === 'start_initial_cloud_sync'
+            ? reuseInFlightOperation(initialCloudSyncOperation, () =>
+                Promise.resolve(invokeDesktopCommand(invocation.command, args)),
+              )
+            : Promise.resolve(invokeDesktopCommand(invocation.command, args));
         await withTimeout(
-          Promise.resolve(invokeDesktopCommand(invocation.command, args)),
+          operation,
           ms,
           () => new StageTimeoutError(id, ms),
           () => {
@@ -802,18 +1012,57 @@
 
   type StageRunOutcome = 'ok' | 'failed' | 'cancelled';
 
+  type NativeStageFailureDetail = {
+    failedDependency?: unknown;
+    errorCategory?: unknown;
+  };
+
+  async function stageFailureTelemetryDetails(
+    id: StageId,
+    error: unknown,
+    failureScope: OnboardingFailureScope,
+  ) {
+    const timeoutCategory = error instanceof StageTimeoutError ? 'timeout' : undefined;
+    let nativeDetail: NativeStageFailureDetail | undefined;
+    try {
+      nativeDetail = await invokeCommand<NativeStageFailureDetail | undefined>(
+        'take_onboarding_failure_detail',
+        { stage: id, ...failureScope },
+      );
+    } catch {
+      // Failure-detail telemetry must not affect setup recovery or its copy.
+      console.warn('[onboarding] setup failure detail was unavailable');
+    }
+    return setupFailureTelemetryDetails({
+      stageId: id,
+      errorCategory: timeoutCategory ?? nativeDetail?.errorCategory,
+      failedDependency: nativeDetail?.failedDependency,
+    });
+  }
+
   async function runStage(
     id: StageId,
     runId: number,
     attemptCount: number,
   ): Promise<StageRunOutcome> {
     if (!isCurrentRun(runId)) return 'cancelled';
+    const setupRunId = currentSetupRunId;
+    const failureScope = {
+      setupRunId,
+      attemptCount,
+      flow: onboardingFlow,
+      frontendSessionId: onboardingTelemetry.sessionId,
+    };
     const startedAt = Date.now();
-    recordStep(SETUP_STEP_INDEX, 'started', { component: id, attemptCount });
+    recordStep(SETUP_STEP_INDEX, 'started', {
+      component: id,
+      attemptCount,
+      setupRunId,
+    });
     stages = setStageStatus(stages, id, 'running');
     await journalStageStart(id);
 
-    const result = await invokeStageCommand(id, runId).then(
+    const result = await invokeStageCommand(id, runId, failureScope).then(
       () => ({ kind: 'done' as const }),
       (err) => ({ kind: 'failed' as const, err }),
     );
@@ -824,6 +1073,7 @@
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'cancelled',
+        setupRunId,
       });
       return 'cancelled';
     }
@@ -835,6 +1085,7 @@
         component: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
+        setupRunId,
       });
       return 'ok';
     }
@@ -842,11 +1093,15 @@
       const message = errorMessage(result.err);
       stages = setStageStatus(stages, id, 'failed', message);
       await journalStageFailure(id, message);
+      const failureDetails = await stageFailureTelemetryDetails(id, result.err, failureScope);
+      if (!isCurrentRun(runId)) return 'cancelled';
       recordStep(SETUP_STEP_INDEX, 'failed', {
         component: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'stage_command_failed',
+        setupRunId,
+        ...failureDetails,
       });
       return 'failed';
     }
@@ -894,12 +1149,14 @@
     if (isCurrentRun(runId) && !setupCompleted && allSettled(stages)) {
       setupCompleted = true;
       const result = setupCompletionResult(stages);
-      setupFailures = result.failedStages;
+      const failedStages = normalizeFailedStageIds(result.failedStages.map((stage) => stage.id));
       markSetupStepCompleted();
       await journalInstallComplete();
       setupCompletionMetrics = {
         stageCount: stages.length,
-        failedStageCount: setupFailures.length,
+        failedStageCount: result.failedStages.length,
+        failedStages,
+        setupRunId: currentSetupRunId,
         detectedToolCount: aiTools
           ? [
               aiTools.claude_cli,
@@ -914,10 +1171,14 @@
         eventName: 'desktop_setup_completed',
         properties: { ...setupCompletionMetrics },
       });
+      // Setup is what provisions the person entity; stitch the install session.
+      void resolveInstallerPersonUid();
       // Consent precedes the optional connector-import step and final handoff.
       advanceTo(CONSENT_STEP_INDEX, 'completed', {
-        failedStageCount: setupFailures.length,
-        outcome: setupFailures.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
+        failedStageCount: result.failedStages.length,
+        failedStages,
+        setupRunId: currentSetupRunId,
+        outcome: result.failedStages.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
       });
     }
   }
@@ -925,6 +1186,8 @@
   interface SetupCompletionMetrics {
     stageCount: number;
     failedStageCount: number;
+    failedStages: StageId[];
+    setupRunId: string;
     detectedToolCount: number;
   }
   let setupCompletionMetrics = $state<SetupCompletionMetrics | null>(null);
@@ -970,6 +1233,7 @@
       // HQ), so this is a fast confirmation, not a bootstrap.
       try {
         await invokeCommand<boolean>('ensure_person_entity');
+        void resolveInstallerPersonUid();
       } catch (err) {
         // Could not confirm the entity (no token / vault unreachable). Fall
         // through to postOptIn: the local cache still records the answer, and
@@ -1007,7 +1271,7 @@
         return;
       }
 
-      if (isReprompt) {
+      if (consentOnly) {
         // The stale record is now replaced with a fully versioned one. Record
         // that the re-prompt was answered for this person+version (idempotent
         // with the dismissal guard) and close — there is no ready screen.
@@ -1049,7 +1313,7 @@
    */
   async function finishOffline(): Promise<void> {
     if (consentSubmitting || finishing) return;
-    if (isReprompt) {
+    if (consentOnly) {
       // Reprompt has no ready screen. The answer is cached with provenance and
       // reconciled by the consent repair on reconnect; mark the prompt shown so
       // it does not nag again this version, then close.
@@ -1734,7 +1998,9 @@
           class:out-right={outgoingGraphicStep === READY_STEP_INDEX && outgoingGraphicDirection === 'right'}
           data-g={READY_STEP_INDEX}
         >
-          {@render BigCheck()}
+          <span data-testid="onboarding-completion-success-indicator" aria-hidden="true">
+            {@render BigCheck()}
+          </span>
         </div>
 
         <div
@@ -1819,26 +2085,28 @@
               A browser window opened for {loadingProvider} sign-in. Complete it there and you'll return here automatically.
             </p>
           {/if}
-          <div class="btns">
-            <button
-              class="btn btn-primary"
-              type="button"
-              disabled={loadingProvider !== null}
-              aria-busy={loadingProvider === 'Google'}
-              onclick={() => handleSignIn('Google')}
-            >
-              Log in with Google
-            </button>
-            <button
-              class="btn btn-secondary"
-              type="button"
-              disabled={loadingProvider !== null}
-              aria-busy={loadingProvider === 'Microsoft'}
-              onclick={() => handleSignIn('Microsoft')}
-            >
-              Log in with Microsoft
-            </button>
-          </div>
+          {#if signInActionsReady}
+            <div class="btns">
+              <button
+                class="btn btn-primary"
+                type="button"
+                disabled={loadingProvider !== null}
+                aria-busy={loadingProvider === 'Google'}
+                onclick={() => handleSignIn('Google')}
+              >
+                Log in with Google
+              </button>
+              <button
+                class="btn btn-secondary"
+                type="button"
+                disabled={loadingProvider !== null}
+                aria-busy={loadingProvider === 'Microsoft'}
+                onclick={() => handleSignIn('Microsoft')}
+              >
+                Log in with Microsoft
+              </button>
+            </div>
+          {/if}
         </section>
 
         <section
@@ -1901,10 +2169,10 @@
             {/each}
           </div>
           <!-- The setup screen intentionally shows ONLY the friendly checklist (matching
-               the design). Recovery — retry on stall, skip on hard timeout, transient-
-               failure retries — runs AUTOMATICALLY in the setup engine; any stage that
-               still fails is surfaced on the "HQ is ready" screen's needs-attention note,
-               not here. No percentages, stage counts, staging toggle, or manual controls. -->
+               the design). Recovery runs automatically in the setup engine; a stage that
+               still fails is recorded silently for the setup skill, not surfaced on a
+               needs-attention note. No percentages, stage counts, staging toggle, or
+               manual controls. -->
           <div class="btns">
             <button class="btn btn-secondary" type="button" onclick={() => goBackTo(DIRECTORY_STEP_INDEX)}>Back</button>
           </div>
@@ -2083,7 +2351,13 @@
                   ...(event.detectedToolCount === undefined
                     ? {}
                     : { detectedToolCount: event.detectedToolCount }),
+                  ...(event.detectedSourceSet === undefined
+                    ? {}
+                    : { detectedSourceSet: event.detectedSourceSet }),
                   ...(event.outcome === undefined ? {} : { outcome: event.outcome }),
+                  ...(event.errorCategory === undefined
+                    ? {}
+                    : { errorCategory: event.errorCategory }),
                 })}
             />
           {/if}

@@ -99,7 +99,18 @@ function asRow(value: unknown): ChannelDirectoryRow | null {
       asString(
         rec.companyUid ?? rec.company_uid ?? rec.cloudUid ?? nested?.companyUid,
       ) || null,
+    companyName:
+      asString(
+        rec.companyName ?? rec.company_name ?? nested?.companyName,
+      ) || null,
     projectId,
+    // Company icon. Read from the row or the nested directoryRow, tolerating
+    // snake_case like every sibling field. An absent value stays undefined so
+    // it can never overwrite a known icon during reconciliation.
+    iconUrl:
+      asString(
+        rec.iconUrl ?? rec.icon_url ?? nested?.iconUrl ?? nested?.icon_url,
+      ).trim() || undefined,
     name,
     subtitle: asString(rec.subtitle) || asString(nested?.subtitle) || undefined,
     lastActivityAt: pickActivity(

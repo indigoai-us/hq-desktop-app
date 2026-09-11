@@ -555,6 +555,7 @@ export function createFixtureChatSidebarApi(): ChatSidebarApi {
       contacts: CONTACTS,
     }),
     listDmRequests: async (): Promise<RequestsResponse> => ({ requests: [] }),
+    respondDmRequest: async () => {},
     listChannels: async () => ({ channels: [] }),
     markDmThreadRead: async () => {},
     markChannelRead: async () => {},
@@ -583,6 +584,11 @@ export function createFixtureConversationApi(): ConversationApi {
       replyCount: 0,
     }),
     sendReply: async () => {},
+    runCardAction: async (args) => ({
+      cardId: args.cardId,
+      actionId: args.actionId,
+      state: "pending",
+    }),
   };
 }
 

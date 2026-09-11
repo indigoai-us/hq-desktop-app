@@ -105,19 +105,26 @@ const markdownCache = new Map<string, string>();
 /** Full Markdown on agent log/JSON dumps freezes the click loop. */
 export const MESSAGE_MARKDOWN_MAX_CHARS = 1_200;
 
+/** Past this even clearly written prose renders plain: Markdown cost grows with size. */
+export const MESSAGE_MARKDOWN_HARD_MAX_CHARS = 6_000;
+
+function markdownCueCount(lines: string[]): number {
+  return lines.filter((line) =>
+    /^(?:#{1,6}\s+|```|~~~|[-*+]\s+|\d+[.)]\s+|>\s+)/.test(line.trim()) || /\*\*[^*\n]+\*\*/.test(line),
+  ).length;
+}
+
 export function isHeavyMessageBody(body: string): boolean {
   const text = body.trim();
-  if (text.length > MESSAGE_MARKDOWN_MAX_CHARS) return true;
+  if (text.length > MESSAGE_MARKDOWN_HARD_MAX_CHARS) return true;
   if (text.length > 400 && (text.startsWith("{") || text.startsWith("["))) {
     return true;
   }
   const lines = text.split("\n");
-  if (lines.length > 30) {
-    const markdownCues = lines.filter((line) =>
-      /^(?:#{1,6}\s+|```|~~~|[-*+]\s+|\d+[.)]\s+|>\s+)/.test(line.trim()),
-    ).length;
-    return markdownCues < 2;
-  }
+  // A long reply that is written Markdown (headings, lists, bold) is prose an
+  // agent wrote for a person; a dump of the same length has no such cues.
+  if (text.length > MESSAGE_MARKDOWN_MAX_CHARS) return markdownCueCount(lines) < 2;
+  if (lines.length > 30) return markdownCueCount(lines) < 2;
   return false;
 }
 
@@ -235,7 +242,9 @@ export function renderMessageBodyMarkdown(body: string): string {
     autolinkMessageUrls(
       isHeavyMessageBody(body)
         ? renderPlainMessageBody(body)
-        : renderMarkdown(normalizeMessageMarkdown(body)),
+        : // Chat bodies keep single newlines as line breaks (one line per idea),
+          // unlike CommonMark's soft-break-as-space used for knowledge docs.
+          renderMarkdown(normalizeMessageMarkdown(body), { softBreak: "br" }),
     ),
   );
   if (markdownCache.size >= MARKDOWN_CACHE_LIMIT) {

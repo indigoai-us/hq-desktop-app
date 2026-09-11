@@ -314,8 +314,8 @@ pub fn parse_application_error_event(xml: &str) -> Option<WerApplicationError> {
 /// id 1000. Case-sensitive on the provider name (Windows emits it verbatim) but
 /// tolerant of attribute ordering/quoting.
 fn is_application_error_1000(xml: &str) -> bool {
-    let has_provider = xml.contains("Name='Application Error'")
-        || xml.contains("Name=\"Application Error\"");
+    let has_provider =
+        xml.contains("Name='Application Error'") || xml.contains("Name=\"Application Error\"");
     // The EventID element carries the bare id as text: `<EventID ...>1000</EventID>`.
     let has_event_id = xml
         .split("<EventID")
@@ -382,14 +382,20 @@ fn system_time_created_ms(xml: &str) -> Option<i64> {
 }
 
 fn parse_hex_u32(token: &str) -> Option<u32> {
-    let token = token.trim().trim_start_matches("0x").trim_start_matches("0X");
+    let token = token
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X");
     (!token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit()))
         .then(|| u32::from_str_radix(token, 16).ok())
         .flatten()
 }
 
 fn parse_hex_u64(token: &str) -> Option<u64> {
-    let token = token.trim().trim_start_matches("0x").trim_start_matches("0X");
+    let token = token
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X");
     (!token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit()))
         .then(|| u64::from_str_radix(token, 16).ok())
         .flatten()
@@ -618,12 +624,13 @@ pub fn attribute_watcher_fault(
             // an explicit time to avoid binding a stale crash to this generation.
             .unwrap_or(false)
     };
-    let code_agrees = |record: &WerApplicationError| match (observed_exception_code, record.exception_code) {
-        (Some(observed), Some(found)) => observed == found,
-        // No observed code to check against, or the record omitted one: do not
-        // let a missing code veto a time+PID match.
-        _ => true,
-    };
+    let code_agrees =
+        |record: &WerApplicationError| match (observed_exception_code, record.exception_code) {
+            (Some(observed), Some(found)) => observed == found,
+            // No observed code to check against, or the record omitted one: do not
+            // let a missing code veto a time+PID match.
+            _ => true,
+        };
 
     // Strongest: PID membership in the sampled set AND an in-window timestamp.
     if let Some(record) = records.iter().find(|record| {
@@ -748,7 +755,10 @@ impl WatcherJobImageDescriptor {
             (WatcherFaultBinary::NodeExe.as_str(), self.node_exe),
             (WatcherFaultBinary::NpxCmd.as_str(), self.npx_cmd),
             (WatcherFaultBinary::CmdExe.as_str(), self.cmd_exe),
-            (WatcherFaultBinary::HqSyncMenubarExe.as_str(), self.hq_sync_menubar_exe),
+            (
+                WatcherFaultBinary::HqSyncMenubarExe.as_str(),
+                self.hq_sync_menubar_exe,
+            ),
             (WatcherFaultBinary::Other.as_str(), self.other),
         ]
     }
@@ -796,6 +806,127 @@ impl WatcherJobImageDescriptor {
         } else {
             WATCHER_FAULT_UNAVAILABLE
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Watcher Job Object survivors — the shim-vs-runner discriminator (HQ-DESKTOP-66)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The Windows watcher child that dies with an INDETERMINATE status (0xFFFFFFFF)
+/// is the `cmd.exe` batch shim, not the Node runner it dispatches — so the exit
+/// status is the shim's, and whether the runner died with it, died first, or
+/// outlived it is unobserved. This descriptor records the ONE fact that separates
+/// those hypotheses: the images of the Job Object's processes STILL LIVE at the
+/// exit boundary. A surviving `node_exe` means the shim died while the runner kept
+/// running (an orphaned-runner bug the supervisor would double-spawn against); no
+/// survivors means the tree died together.
+///
+/// Rendered to a closed vocabulary — {none, node_exe, cmd_exe, other, mixed,
+/// unavailable}, reusing the shared [`WatcherFaultBinary`] tokens rather than a
+/// second hand-written list — plus a bare survivor count. Strictly diagnostic:
+/// never an attribution, and never fed to capture policy, the fingerprint, or any
+/// lifecycle decision. `unavailable` means the live-PID query could not run
+/// (non-Windows, or the query failed); `none` means it ran and observed zero live
+/// processes at the exit boundary — deliberately NOT the same as "the tree was
+/// already reaped", which the query cannot distinguish and so never claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatcherJobSurvivors {
+    available: bool,
+    count: u32,
+    node_exe: bool,
+    cmd_exe: bool,
+    other: bool,
+}
+
+/// Token for a live-process query that ran and observed zero survivors.
+pub const WATCHER_JOB_SURVIVORS_NONE: &str = "none";
+/// Token for a survivor set spanning two or more distinct image classes.
+pub const WATCHER_JOB_SURVIVORS_MIXED: &str = "mixed";
+
+impl Default for WatcherJobSurvivors {
+    /// The honest default is `unavailable`: no live-PID query has run (non-Windows,
+    /// or the read has not happened / failed), so the tree's survivors are unknown —
+    /// never `none`, which would falsely assert the tree was observed empty.
+    fn default() -> Self {
+        Self::unavailable()
+    }
+}
+
+impl WatcherJobSurvivors {
+    /// The live-PID query could not run (non-Windows, or the retained job handle was
+    /// gone / the query failed). Survivors are unknown and the count is withheld.
+    pub fn unavailable() -> Self {
+        Self {
+            available: false,
+            count: 0,
+            node_exe: false,
+            cmd_exe: false,
+            other: false,
+        }
+    }
+
+    /// Fold the resolved images of the job's LIVE processes at the exit boundary.
+    /// Each entry is one live PID's image mapped through
+    /// [`classify_watcher_fault_binary`] while it was still alive, or `None` when
+    /// the image could not be read (the PID is still counted but contributes no
+    /// class — absence never masquerades as an observation). The count is the number
+    /// of live PIDs. Pure, so it is unit-tested off Windows.
+    pub fn from_live_images(images: &[Option<WatcherFaultBinary>]) -> Self {
+        let mut survivors = Self {
+            available: true,
+            count: images.len().min(u32::MAX as usize) as u32,
+            node_exe: false,
+            cmd_exe: false,
+            other: false,
+        };
+        for image in images {
+            match image {
+                Some(WatcherFaultBinary::NodeExe) => survivors.node_exe = true,
+                Some(WatcherFaultBinary::CmdExe) => survivors.cmd_exe = true,
+                // Every other named image (the npx/menubar/loader family) and any
+                // unrecognised binary collapse to `other`; an unresolved image
+                // (`None`) adds to the count only, so a failed lookup never
+                // masquerades as a named survivor.
+                Some(_) => survivors.other = true,
+                None => {}
+            }
+        }
+        survivors
+    }
+
+    /// The closed-vocabulary survivor token. `unavailable` (no query) and `none`
+    /// (query ran, zero live) stay distinct; a single class renders that class; two
+    /// or more distinct classes render `mixed`; a live-but-unresolvable set renders
+    /// `other` (survivors exist, none nameable).
+    pub fn token(&self) -> &'static str {
+        if !self.available {
+            return WATCHER_FAULT_UNAVAILABLE;
+        }
+        if self.count == 0 {
+            return WATCHER_JOB_SURVIVORS_NONE;
+        }
+        let classes = [
+            (WatcherFaultBinary::NodeExe.as_str(), self.node_exe),
+            (WatcherFaultBinary::CmdExe.as_str(), self.cmd_exe),
+            (WatcherFaultBinary::Other.as_str(), self.other),
+        ];
+        let present: Vec<&'static str> = classes
+            .into_iter()
+            .filter_map(|(token, present)| present.then_some(token))
+            .collect();
+        match present.as_slice() {
+            // Survivors exist but none resolved to a class — still a live tree.
+            [] => WatcherFaultBinary::Other.as_str(),
+            [single] => single,
+            _ => WATCHER_JOB_SURVIVORS_MIXED,
+        }
+    }
+
+    /// The bare live-process count when the query ran; `None` when unavailable, so a
+    /// withheld query never renders a misleading `0`.
+    pub fn count(&self) -> Option<u32> {
+        self.available.then_some(self.count)
     }
 }
 
@@ -893,10 +1024,7 @@ pub fn classify_unmatched_stderr_shape(line: &str) -> UnmatchedStderrShape {
 fn has_drive_path(line: &str) -> bool {
     let bytes = line.as_bytes();
     line.char_indices().any(|(i, c)| {
-        c == ':'
-            && i >= 1
-            && bytes[i - 1].is_ascii_alphabetic()
-            && bytes.get(i + 1) == Some(&b'\\')
+        c == ':' && i >= 1 && bytes[i - 1].is_ascii_alphabetic() && bytes.get(i + 1) == Some(&b'\\')
     })
 }
 
@@ -913,7 +1041,10 @@ fn leading_identifier_colon(line: &str) -> bool {
         return false;
     };
     !head.is_empty()
-        && head.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && head
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
         && head.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
@@ -940,7 +1071,24 @@ impl UnmatchedStderrShapeRollup {
         if classify_runner_fatal_class(line) != RunnerFatalClass::None {
             return;
         }
-        let count = match classify_unmatched_stderr_shape(line) {
+        self.bump(classify_unmatched_stderr_shape(line));
+    }
+
+    /// Record one stderr line UNCONDITIONALLY by structure. Unlike
+    /// [`Self::record_if_unmatched`], this does NOT consult
+    /// [`classify_runner_fatal_class`]: the install-failure route (HQ-DESKTOP-56)
+    /// applies its OWN npm-marker skip predicate before feeding lines here, so the
+    /// sync-runner's fatal-class filter — which is specific to that route's stderr
+    /// vocabulary — must not silently drop npm/OS lines. The sync-runner path keeps
+    /// using `record_if_unmatched`, whose behaviour is unchanged.
+    pub fn record(&mut self, line: &str) {
+        self.bump(classify_unmatched_stderr_shape(line));
+    }
+
+    /// Increment the saturating counter for one already-classified shape. Shared by
+    /// both record entrypoints so their counting can never drift apart.
+    fn bump(&mut self, shape: UnmatchedStderrShape) {
+        let count = match shape {
             UnmatchedStderrShape::NdjsonRecord => &mut self.ndjson_record,
             UnmatchedStderrShape::StackFrame => &mut self.stack_frame,
             UnmatchedStderrShape::HashFrame => &mut self.hash_frame,
@@ -955,7 +1103,10 @@ impl UnmatchedStderrShapeRollup {
 
     fn counts(&self) -> [(&'static str, u32); 8] {
         [
-            (UnmatchedStderrShape::NdjsonRecord.as_str(), self.ndjson_record),
+            (
+                UnmatchedStderrShape::NdjsonRecord.as_str(),
+                self.ndjson_record,
+            ),
             (UnmatchedStderrShape::StackFrame.as_str(), self.stack_frame),
             (UnmatchedStderrShape::HashFrame.as_str(), self.hash_frame),
             (UnmatchedStderrShape::KeyColon.as_str(), self.key_colon),
@@ -970,6 +1121,27 @@ impl UnmatchedStderrShapeRollup {
     /// unmatched lines were seen this generation, so no tag should be sent.
     pub fn tag_value(&self) -> Option<String> {
         render_top_n(&self.counts(), ROLLUP_TAG_TOP_N)
+    }
+
+    /// The single most-frequent shape recorded this generation, with a stable
+    /// declaration-order tie-break (identical to the ordering [`render_top_n`]
+    /// uses, so the dominant shape is always the first token the tag renders).
+    /// `None` when nothing was recorded.
+    pub fn dominant(&self) -> Option<UnmatchedStderrShape> {
+        UnmatchedStderrShape::ALL
+            .into_iter()
+            .zip(self.counts().into_iter().map(|(_, count)| count))
+            .filter(|(_, count)| *count > 0)
+            .fold(
+                None,
+                |best: Option<(UnmatchedStderrShape, u32)>, (shape, count)| match best {
+                    // Strictly-greater replaces; an equal count keeps the earlier
+                    // (declaration-order) shape, matching render_top_n's stable sort.
+                    Some((_, best_count)) if best_count >= count => best,
+                    _ => Some((shape, count)),
+                },
+            )
+            .map(|(shape, _)| shape)
     }
 }
 
@@ -1141,7 +1313,9 @@ pub fn classify_jetsam_kill_reason(raw: &str) -> JetsamKillReason {
         .map(|c| if c == ' ' || c == '_' { '-' } else { c })
         .collect();
     match normalized.as_str() {
-        "per-process-limit" | "perprocesslimit" | "per-process" => JetsamKillReason::PerProcessLimit,
+        "per-process-limit" | "perprocesslimit" | "per-process" => {
+            JetsamKillReason::PerProcessLimit
+        }
         "highwater" | "high-water" | "high-watermark" => JetsamKillReason::Highwater,
         "vm-pageshortage" | "pageshortage" | "vm-page-shortage" => JetsamKillReason::VmPageshortage,
         "vm-thrashing" | "thrashing" => JetsamKillReason::VmThrashing,
@@ -1178,12 +1352,8 @@ pub enum MemoryPressureLevel {
 }
 
 impl MemoryPressureLevel {
-    pub const ALL: [MemoryPressureLevel; 4] = [
-        Self::Normal,
-        Self::Warn,
-        Self::Critical,
-        Self::Unknown,
-    ];
+    pub const ALL: [MemoryPressureLevel; 4] =
+        [Self::Normal, Self::Warn, Self::Critical, Self::Unknown];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1330,11 +1500,7 @@ impl WatcherKillOutcome {
 
     /// A bound jetsam attribution: the binding provenance plus the closed-vocabulary
     /// reason and bucketed rpages of the matched victim.
-    pub fn bound(
-        provenance: WatcherKillProvenance,
-        reason: JetsamKillReason,
-        rpages: u64,
-    ) -> Self {
+    pub fn bound(provenance: WatcherKillProvenance, reason: JetsamKillReason, rpages: u64) -> Self {
         debug_assert!(
             provenance.is_bound(),
             "bound kill outcome requires a bound provenance"
@@ -1402,30 +1568,41 @@ mod tests {
     fn classify_watcher_fault_binary_maps_allow_list_case_insensitively_by_basename() {
         for (name, expected) in [
             ("node.exe", WatcherFaultBinary::NodeExe),
-            (r"C:\Users\Ada\AppData\Local\HQ\node.exe", WatcherFaultBinary::NodeExe),
+            (
+                r"C:\Users\Ada\AppData\Local\HQ\node.exe",
+                WatcherFaultBinary::NodeExe,
+            ),
             ("NPX.CMD", WatcherFaultBinary::NpxCmd),
             ("cmd.exe", WatcherFaultBinary::CmdExe),
             ("hq-sync-menubar.exe", WatcherFaultBinary::HqSyncMenubarExe),
-            (r"C:\Windows\SYSTEM32\ntdll.dll", WatcherFaultBinary::NtdllDll),
+            (
+                r"C:\Windows\SYSTEM32\ntdll.dll",
+                WatcherFaultBinary::NtdllDll,
+            ),
             ("KernelBase.dll", WatcherFaultBinary::KernelbaseDll),
             ("ucrtbase.dll", WatcherFaultBinary::UcrtbaseDll),
             ("msvcrt.dll", WatcherFaultBinary::MsvcrtDll),
             ("some-private-tool.exe", WatcherFaultBinary::Other),
             ("", WatcherFaultBinary::Other),
         ] {
-            assert_eq!(classify_watcher_fault_binary(name), expected, "name: {name:?}");
+            assert_eq!(
+                classify_watcher_fault_binary(name),
+                expected,
+                "name: {name:?}"
+            );
         }
     }
 
     #[test]
     fn classify_watcher_fault_binary_never_emits_input_bytes() {
         // A secret-ish, never-allow-listed name must render only `other`.
-        let token = classify_watcher_fault_binary(
-            r"C:\Users\cognito-token-abc123\private-key-loader.exe",
-        )
-        .as_str();
+        let token =
+            classify_watcher_fault_binary(r"C:\Users\cognito-token-abc123\private-key-loader.exe")
+                .as_str();
         assert_eq!(token, "other");
-        assert!(!token.contains("cognito") && !token.contains("abc123") && !token.contains("private"));
+        assert!(
+            !token.contains("cognito") && !token.contains("abc123") && !token.contains("private")
+        );
     }
 
     #[test]
@@ -1471,7 +1648,8 @@ mod tests {
         let window = (1_000_000_i64, 1_001_000_i64);
 
         // PID in the sampled set + in window → pid_matched, fields populated.
-        let outcome = attribute_watcher_fault(&[base], &[6700], window.0, window.1, Some(0xC000_0409));
+        let outcome =
+            attribute_watcher_fault(&[base], &[6700], window.0, window.1, Some(0xC000_0409));
         assert_eq!(outcome.provenance, WatcherFaultProvenance::PidMatched);
         assert_eq!(outcome.image_token(), "node_exe");
         assert_eq!(outcome.module_token(), "ntdll_dll");
@@ -1479,7 +1657,8 @@ mod tests {
         assert_eq!(outcome.counters.records_parsed, 1);
 
         // Same record, PID NOT sampled → downgrades to window_only, still named.
-        let outcome = attribute_watcher_fault(&[base], &[42], window.0, window.1, Some(0xC000_0409));
+        let outcome =
+            attribute_watcher_fault(&[base], &[42], window.0, window.1, Some(0xC000_0409));
         assert_eq!(outcome.provenance, WatcherFaultProvenance::WindowOnly);
         assert_eq!(outcome.image_token(), "node_exe");
 
@@ -1491,7 +1670,8 @@ mod tests {
             event_time_unix_ms: Some(999_000),
             ..base
         };
-        let outcome = attribute_watcher_fault(&[stale], &[6700], window.0, window.1, Some(0xC000_0409));
+        let outcome =
+            attribute_watcher_fault(&[stale], &[6700], window.0, window.1, Some(0xC000_0409));
         assert_eq!(outcome.provenance, WatcherFaultProvenance::DeadlineExpired);
         assert_eq!(outcome.image_token(), WATCHER_FAULT_UNAVAILABLE);
         assert_eq!(outcome.module_token(), WATCHER_FAULT_UNAVAILABLE);
@@ -1557,10 +1737,19 @@ mod tests {
             event_time_unix_ms: Some(1_000_100),
             ..newest
         };
-        let outcome =
-            attribute_watcher_fault(&[newest, older], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
+        let outcome = attribute_watcher_fault(
+            &[newest, older],
+            &[6700],
+            1_000_000,
+            1_001_000,
+            Some(0xC000_0409),
+        );
         assert_eq!(outcome.provenance, WatcherFaultProvenance::PidMatched);
-        assert_eq!(outcome.fault_offset, Some(0xBEEF), "the newest record must win");
+        assert_eq!(
+            outcome.fault_offset,
+            Some(0xBEEF),
+            "the newest record must win"
+        );
     }
 
     #[test]
@@ -1576,9 +1765,17 @@ mod tests {
         // Even with the PID sampled and in-window, a mismatched code is not our
         // fault → the specific rejected_code_mismatch token (counted) rather than
         // a confident wrong attribution or the ambiguous old `no_record`.
-        let outcome =
-            attribute_watcher_fault(&[other_fault], &[6700], 1_000_000, 1_001_000, Some(0xC000_0409));
-        assert_eq!(outcome.provenance, WatcherFaultProvenance::RejectedCodeMismatch);
+        let outcome = attribute_watcher_fault(
+            &[other_fault],
+            &[6700],
+            1_000_000,
+            1_001_000,
+            Some(0xC000_0409),
+        );
+        assert_eq!(
+            outcome.provenance,
+            WatcherFaultProvenance::RejectedCodeMismatch
+        );
         assert_eq!(outcome.counters.rejected_code_mismatch, 1);
         assert_eq!(outcome.counters.rejected_out_of_window, 0);
         assert_eq!(outcome.counters.rejected_stale, 0);
@@ -1673,7 +1870,11 @@ mod tests {
         let mut deduped = tokens.clone();
         deduped.sort_unstable();
         deduped.dedup();
-        assert_eq!(deduped.len(), tokens.len(), "provenance tokens must be unique");
+        assert_eq!(
+            deduped.len(),
+            tokens.len(),
+            "provenance tokens must be unique"
+        );
         // The exhaustive set separates every cause the prior two tokens merged.
         for expected in [
             "pid_matched",
@@ -1687,7 +1888,10 @@ mod tests {
             "deferred",
             "not_applicable",
         ] {
-            assert!(tokens.contains(&expected), "missing resolved token {expected:?}");
+            assert!(
+                tokens.contains(&expected),
+                "missing resolved token {expected:?}"
+            );
         }
     }
 
@@ -1732,9 +1936,15 @@ mod tests {
             descriptor.record(image);
         }
         // Bounded, deduped, fixed-order set tag; never a path or raw name.
-        assert_eq!(descriptor.images_tag().as_deref(), Some("node_exe,npx_cmd,cmd_exe"));
+        assert_eq!(
+            descriptor.images_tag().as_deref(),
+            Some("node_exe,npx_cmd,cmd_exe")
+        );
         // The shim/dispatch layer is never the culprit candidate — the runner is.
-        assert_eq!(descriptor.culprit_candidate(), Some(WatcherFaultBinary::NodeExe));
+        assert_eq!(
+            descriptor.culprit_candidate(),
+            Some(WatcherFaultBinary::NodeExe)
+        );
         assert_eq!(descriptor.culprit_candidate_token(), "node_exe");
         // Its own honesty token marks it a tree observation, NOT an attribution.
         assert_eq!(descriptor.provenance_token(), "job_tree_observed");
@@ -1743,7 +1953,10 @@ mod tests {
         let mut shim_only = WatcherJobImageDescriptor::default();
         shim_only.record(WatcherFaultBinary::CmdExe);
         assert_eq!(shim_only.culprit_candidate(), None);
-        assert_eq!(shim_only.culprit_candidate_token(), WATCHER_FAULT_UNAVAILABLE);
+        assert_eq!(
+            shim_only.culprit_candidate_token(),
+            WATCHER_FAULT_UNAVAILABLE
+        );
         assert_eq!(shim_only.provenance_token(), "job_tree_observed");
 
         // Nothing observed → no tag, unavailable sentinel, never a named image.
@@ -1773,7 +1986,10 @@ mod tests {
         descriptor.record_optional(None);
         assert_eq!(descriptor.images_tag(), None);
         assert_eq!(descriptor.culprit_candidate(), None);
-        assert_eq!(descriptor.culprit_candidate_token(), WATCHER_FAULT_UNAVAILABLE);
+        assert_eq!(
+            descriptor.culprit_candidate_token(),
+            WATCHER_FAULT_UNAVAILABLE
+        );
         assert_eq!(descriptor.provenance_token(), WATCHER_FAULT_UNAVAILABLE);
 
         // A resolved reading records normally; a later `None` (a post-death sample
@@ -1781,7 +1997,61 @@ mod tests {
         descriptor.record_optional(Some(WatcherFaultBinary::NodeExe));
         descriptor.record_optional(None);
         assert_eq!(descriptor.images_tag().as_deref(), Some("node_exe"));
-        assert_eq!(descriptor.culprit_candidate(), Some(WatcherFaultBinary::NodeExe));
+        assert_eq!(
+            descriptor.culprit_candidate(),
+            Some(WatcherFaultBinary::NodeExe)
+        );
+    }
+
+    #[test]
+    fn watcher_job_survivors_renders_the_shim_vs_runner_discriminator() {
+        // `unavailable` (no query) is the honest default and stays distinct from
+        // `none` (query ran, zero live): the count is withheld only for the former.
+        let unavailable = WatcherJobSurvivors::default();
+        assert_eq!(unavailable.token(), WATCHER_FAULT_UNAVAILABLE);
+        assert_eq!(unavailable.count(), None);
+        assert_eq!(WatcherJobSurvivors::unavailable().token(), "unavailable");
+
+        let none = WatcherJobSurvivors::from_live_images(&[]);
+        assert_eq!(none.token(), "none");
+        assert_eq!(none.count(), Some(0));
+
+        // A surviving Node runner while the shim died — the orphaned-runner signal.
+        let node = WatcherJobSurvivors::from_live_images(&[Some(WatcherFaultBinary::NodeExe)]);
+        assert_eq!(node.token(), "node_exe");
+        assert_eq!(node.count(), Some(1));
+
+        // Only the shim survived — the tree is unwinding shim-first.
+        let cmd = WatcherJobSurvivors::from_live_images(&[Some(WatcherFaultBinary::CmdExe)]);
+        assert_eq!(cmd.token(), "cmd_exe");
+
+        // Every other named image (npx/menubar/loader) collapses to `other`.
+        let other = WatcherJobSurvivors::from_live_images(&[
+            Some(WatcherFaultBinary::NpxCmd),
+            Some(WatcherFaultBinary::HqSyncMenubarExe),
+        ]);
+        assert_eq!(other.token(), "other");
+        assert_eq!(other.count(), Some(2));
+
+        // Two or more distinct classes render `mixed`.
+        let mixed = WatcherJobSurvivors::from_live_images(&[
+            Some(WatcherFaultBinary::NodeExe),
+            Some(WatcherFaultBinary::CmdExe),
+        ]);
+        assert_eq!(mixed.token(), "mixed");
+        assert_eq!(mixed.count(), Some(2));
+
+        // Survivors exist but none resolved: still a live tree, rendered `other`,
+        // and the count reflects every live PID.
+        let unresolved = WatcherJobSurvivors::from_live_images(&[None, None]);
+        assert_eq!(unresolved.token(), "other");
+        assert_eq!(unresolved.count(), Some(2));
+
+        // A resolvable node survivor is never masked by an unresolvable sibling.
+        let node_plus_unresolved =
+            WatcherJobSurvivors::from_live_images(&[Some(WatcherFaultBinary::NodeExe), None]);
+        assert_eq!(node_plus_unresolved.token(), "node_exe");
+        assert_eq!(node_plus_unresolved.count(), Some(2));
     }
 
     #[test]
@@ -1794,9 +2064,15 @@ mod tests {
         assert_eq!(more_specific_image(None, Some(NodeExe)), Some(NodeExe));
         assert_eq!(more_specific_image(Some(Other), None), Some(Other));
         assert_eq!(more_specific_image(Some(NodeExe), None), Some(NodeExe));
-        assert_eq!(more_specific_image(Some(Other), Some(NodeExe)), Some(NodeExe));
+        assert_eq!(
+            more_specific_image(Some(Other), Some(NodeExe)),
+            Some(NodeExe)
+        );
         // Never downgrade a recognised reading to `other` or to absent.
-        assert_eq!(more_specific_image(Some(NodeExe), Some(Other)), Some(NodeExe));
+        assert_eq!(
+            more_specific_image(Some(NodeExe), Some(Other)),
+            Some(NodeExe)
+        );
         // A tie between two recognised images keeps the current one (stable).
         assert_eq!(
             more_specific_image(Some(NodeExe), Some(WatcherFaultBinary::CmdExe)),
@@ -1816,23 +2092,24 @@ mod tests {
             WatcherFaultProvenance::RejectedUnparsable.rejection_specificity()
                 > WatcherFaultProvenance::RejectedOutOfWindow.rejection_specificity()
         );
-        assert_eq!(WatcherFaultProvenance::PidMatched.rejection_specificity(), 0);
+        assert_eq!(
+            WatcherFaultProvenance::PidMatched.rejection_specificity(),
+            0
+        );
         assert_eq!(WatcherFaultProvenance::NoRecords.rejection_specificity(), 0);
 
-        let code_mismatch = WatcherFaultOutcome::unresolved(
-            WatcherFaultProvenance::RejectedCodeMismatch,
-        )
-        .with_counters(WatcherFaultReadCounters {
-            rejected_code_mismatch: 1,
-            ..Default::default()
-        });
-        let out_of_window = WatcherFaultOutcome::unresolved(
-            WatcherFaultProvenance::RejectedOutOfWindow,
-        )
-        .with_counters(WatcherFaultReadCounters {
-            rejected_out_of_window: 5,
-            ..Default::default()
-        });
+        let code_mismatch =
+            WatcherFaultOutcome::unresolved(WatcherFaultProvenance::RejectedCodeMismatch)
+                .with_counters(WatcherFaultReadCounters {
+                    rejected_code_mismatch: 1,
+                    ..Default::default()
+                });
+        let out_of_window =
+            WatcherFaultOutcome::unresolved(WatcherFaultProvenance::RejectedOutOfWindow)
+                .with_counters(WatcherFaultReadCounters {
+                    rejected_out_of_window: 5,
+                    ..Default::default()
+                });
         // Order-independent: the code mismatch is retained whichever sweep saw it,
         // even though the out-of-window sweep carries more rejected records.
         assert_eq!(
@@ -1850,8 +2127,20 @@ mod tests {
                 rejected_out_of_window: 1,
                 ..Default::default()
             });
-        assert_eq!(sparse.stronger_rejection(out_of_window).counters.rejected_out_of_window, 5);
-        assert_eq!(out_of_window.stronger_rejection(sparse).counters.rejected_out_of_window, 5);
+        assert_eq!(
+            sparse
+                .stronger_rejection(out_of_window)
+                .counters
+                .rejected_out_of_window,
+            5
+        );
+        assert_eq!(
+            out_of_window
+                .stronger_rejection(sparse)
+                .counters
+                .rejected_out_of_window,
+            5
+        );
 
         // total_rejected sums ALL non-binding reasons, saturating (stale included).
         let both = WatcherFaultReadCounters {
@@ -1888,17 +2177,42 @@ mod tests {
     #[test]
     fn classify_unmatched_stderr_shape_reads_structure_not_content() {
         for (line, expected) in [
-            (r#"{"type":"error","path":"knowledge/a.md","message":"boom"}"#, UnmatchedStderrShape::NdjsonRecord),
-            ("at Object.<anonymous> (C:/x/y.js:1:1)", UnmatchedStderrShape::StackFrame),
-            ("#12 0x00007ff6 node::Abort", UnmatchedStderrShape::HashFrame),
-            ("Error: something went wrong", UnmatchedStderrShape::KeyColon),
-            (r"C:\Users\Ada\secret\file.txt not found", UnmatchedStderrShape::PathLike),
-            ("/var/log/private/thing/here", UnmatchedStderrShape::PathLike),
+            (
+                r#"{"type":"error","path":"knowledge/a.md","message":"boom"}"#,
+                UnmatchedStderrShape::NdjsonRecord,
+            ),
+            (
+                "at Object.<anonymous> (C:/x/y.js:1:1)",
+                UnmatchedStderrShape::StackFrame,
+            ),
+            (
+                "#12 0x00007ff6 node::Abort",
+                UnmatchedStderrShape::HashFrame,
+            ),
+            (
+                "Error: something went wrong",
+                UnmatchedStderrShape::KeyColon,
+            ),
+            (
+                r"C:\Users\Ada\secret\file.txt not found",
+                UnmatchedStderrShape::PathLike,
+            ),
+            (
+                "/var/log/private/thing/here",
+                UnmatchedStderrShape::PathLike,
+            ),
             ("   ", UnmatchedStderrShape::Blank),
             ("SIGSEGV", UnmatchedStderrShape::Word),
-            ("just some prose without a colon token", UnmatchedStderrShape::Other),
+            (
+                "just some prose without a colon token",
+                UnmatchedStderrShape::Other,
+            ),
         ] {
-            assert_eq!(classify_unmatched_stderr_shape(line), expected, "line: {line:?}");
+            assert_eq!(
+                classify_unmatched_stderr_shape(line),
+                expected,
+                "line: {line:?}"
+            );
         }
     }
 
@@ -1907,7 +2221,11 @@ mod tests {
         let mut rollup = UnmatchedStderrShapeRollup::default();
         // A recognised libuv-fatal line must NOT be counted here.
         rollup.record_if_unmatched("ReadDirectoryChangesW: (5) Access is denied.");
-        assert_eq!(rollup.tag_value(), None, "a classified line must not enter the rollup");
+        assert_eq!(
+            rollup.tag_value(),
+            None,
+            "a classified line must not enter the rollup"
+        );
 
         for _ in 0..6 {
             rollup.record_if_unmatched(r#"{"type":"error","path":"k/a.md","message":"x"}"#);
@@ -1927,7 +2245,9 @@ mod tests {
         rollup.record_if_unmatched(r"C:\Users\cognito-token-abc123\leak.txt is bad");
         let value = rollup.tag_value().expect("nonzero rollup renders a tag");
         assert_eq!(value, "path_like:1");
-        assert!(!value.contains("cognito") && !value.contains("abc123") && !value.contains("Users"));
+        assert!(
+            !value.contains("cognito") && !value.contains("abc123") && !value.contains("Users")
+        );
     }
 
     #[test]
@@ -1936,8 +2256,17 @@ mod tests {
         // denylist substring, or the server-side @password:filter would silently
         // delete the very attribution this module exists to add.
         const DENYLIST: &[&str] = &[
-            "auth", "token", "secret", "password", "passwd", "credential", "api_key", "apikey",
-            "session", "private_key", "privatekey",
+            "auth",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "api_key",
+            "apikey",
+            "session",
+            "private_key",
+            "privatekey",
         ];
         let binary = WatcherFaultBinary::ALL.map(WatcherFaultBinary::as_str);
         let provenance = WatcherFaultProvenance::ALL.map(WatcherFaultProvenance::as_str);
@@ -1969,11 +2298,16 @@ mod tests {
         {
             assert!(!token.is_empty() && token.len() <= 64);
             assert!(
-                token.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                token
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
                 "token {token:?} is not a bare lowercase identifier"
             );
             for denied in DENYLIST {
-                assert!(!token.contains(denied), "token {token:?} contains denylist substring {denied:?}");
+                assert!(
+                    !token.contains(denied),
+                    "token {token:?} contains denylist substring {denied:?}"
+                );
             }
         }
     }
@@ -2069,7 +2403,10 @@ mod tests {
             classify_jetsam_kill_reason("  Per-Process-Limit "),
             JetsamKillReason::PerProcessLimit
         );
-        assert_eq!(classify_jetsam_kill_reason("highwater"), JetsamKillReason::Highwater);
+        assert_eq!(
+            classify_jetsam_kill_reason("highwater"),
+            JetsamKillReason::Highwater
+        );
         assert_eq!(
             classify_jetsam_kill_reason("vm-pageshortage"),
             JetsamKillReason::VmPageshortage
@@ -2102,14 +2439,35 @@ mod tests {
     #[test]
     fn memory_pressure_level_maps_sysctl_and_retains_peak() {
         // Darwin vm_pressure_level_t: 0=normal, 1=warning, 2=urgent, 3/4=critical.
-        assert_eq!(MemoryPressureLevel::from_sysctl_level(0), MemoryPressureLevel::Normal);
-        assert_eq!(MemoryPressureLevel::from_sysctl_level(1), MemoryPressureLevel::Warn);
-        assert_eq!(MemoryPressureLevel::from_sysctl_level(2), MemoryPressureLevel::Warn);
-        assert_eq!(MemoryPressureLevel::from_sysctl_level(3), MemoryPressureLevel::Critical);
-        assert_eq!(MemoryPressureLevel::from_sysctl_level(4), MemoryPressureLevel::Critical);
+        assert_eq!(
+            MemoryPressureLevel::from_sysctl_level(0),
+            MemoryPressureLevel::Normal
+        );
+        assert_eq!(
+            MemoryPressureLevel::from_sysctl_level(1),
+            MemoryPressureLevel::Warn
+        );
+        assert_eq!(
+            MemoryPressureLevel::from_sysctl_level(2),
+            MemoryPressureLevel::Warn
+        );
+        assert_eq!(
+            MemoryPressureLevel::from_sysctl_level(3),
+            MemoryPressureLevel::Critical
+        );
+        assert_eq!(
+            MemoryPressureLevel::from_sysctl_level(4),
+            MemoryPressureLevel::Critical
+        );
         // A garbage/future value never masquerades as normal.
-        assert_eq!(MemoryPressureLevel::from_sysctl_level(9), MemoryPressureLevel::Unknown);
-        assert_eq!(MemoryPressureLevel::from_sysctl_level(-1), MemoryPressureLevel::Unknown);
+        assert_eq!(
+            MemoryPressureLevel::from_sysctl_level(9),
+            MemoryPressureLevel::Unknown
+        );
+        assert_eq!(
+            MemoryPressureLevel::from_sysctl_level(-1),
+            MemoryPressureLevel::Unknown
+        );
         // Peak retention keeps the most severe, and prefers a readable normal over
         // an unreadable unknown.
         assert_eq!(
@@ -2131,7 +2489,10 @@ mod tests {
         // Every variant has a distinct, non-empty as_str, and ALL enumerates them.
         let mut seen = std::collections::HashSet::new();
         for provenance in WatcherKillProvenance::ALL {
-            assert!(seen.insert(provenance.as_str()), "duplicate provenance token");
+            assert!(
+                seen.insert(provenance.as_str()),
+                "duplicate provenance token"
+            );
         }
         assert_eq!(seen.len(), WatcherKillProvenance::ALL.len());
         let mut reasons = std::collections::HashSet::new();
@@ -2166,6 +2527,9 @@ mod tests {
             WatcherKillOutcome::not_applicable().provenance_token(),
             "not_applicable"
         );
-        assert_eq!(WatcherKillOutcome::deferred().provenance_token(), "deferred");
+        assert_eq!(
+            WatcherKillOutcome::deferred().provenance_token(),
+            "deferred"
+        );
     }
 }

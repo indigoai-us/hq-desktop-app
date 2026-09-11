@@ -1,7 +1,16 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@tauri-apps/plugin-http', () => ({
+  fetch: vi.fn(async () => ({ ok: true, status: 200 })),
+}));
+
 import {
   __INTERNALS__,
+  CONNECTOR_IMPORT_OUTCOMES,
+  CONNECTOR_IMPORT_SOURCE_SETS,
   createOnboardingStepTelemetry,
+  desktopPropertiesForOnboardingStep,
+  type InstallerStepPingPayload,
   type OnboardingStepEvent,
 } from './onboarding-step-telemetry';
 
@@ -22,11 +31,28 @@ function memoryStorage(): Storage {
 describe('onboarding step telemetry', () => {
   let storage: Storage;
   let emitted: OnboardingStepEvent[];
+  let pings: InstallerStepPingPayload[];
 
   beforeEach(() => {
     storage = memoryStorage();
     emitted = [];
+    pings = [];
   });
+
+  function createTelemetry(
+    overrides: Parameters<typeof createOnboardingStepTelemetry>[0] = {},
+  ) {
+    return createOnboardingStepTelemetry({
+      storage,
+      emit: async (event) => {
+        emitted.push(event);
+      },
+      pingInstallerStep: (payload) => {
+        pings.push(payload);
+      },
+      ...overrides,
+    });
+  }
 
   it('emits setup transitions immediately, before a consent choice exists', async () => {
     const telemetry = createOnboardingStepTelemetry({
@@ -83,6 +109,164 @@ describe('onboarding step telemetry', () => {
     ]);
   });
 
+  it('keeps failed-run dependency, category, stages, and run identifier in telemetry', () => {
+    const depsFailure = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        failedDependency: 'node',
+        errorCategory: 'network',
+        setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(depsFailure).toMatchObject({
+      component: 'deps',
+      failedDependency: 'node',
+      errorCategory: 'network',
+      setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+
+    const nonDepsFailure = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'git-init',
+        failedDependency: 'private-package' as never,
+        errorCategory: '/Users/example/HQ/error' as never,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(nonDepsFailure).toMatchObject({ errorCategory: 'unknown' });
+    expect(nonDepsFailure).not.toHaveProperty('failedDependency');
+
+    const completion = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'completed',
+        outcome: 'completed_with_failures',
+        failedStages: ['content', 'deps', 'deps', 'indexing'] as never,
+        setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(completion.failedStages).toEqual(['content', 'deps', 'indexing']);
+    expect(completion.setupRunId).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  });
+
+  it('records the bounded Claude Desktop config source and each distinguishable connector outcome', () => {
+    const expectedOutcomes = [
+      'tool_not_installed',
+      'config_path_unavailable',
+      'config_missing',
+      'config_unreadable',
+      'config_invalid',
+      'zero_servers',
+      'imported',
+      'import_failed',
+      'command_failed',
+      'user_skipped',
+      'unknown',
+    ];
+
+    expect(CONNECTOR_IMPORT_OUTCOMES).toEqual(expectedOutcomes);
+    expect(CONNECTOR_IMPORT_SOURCE_SETS).toEqual([
+      'claude_desktop_config',
+      'unknown',
+    ]);
+
+    for (const outcome of expectedOutcomes) {
+      const properties = desktopPropertiesForOnboardingStep({
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        occurredAt: '2026-09-10T10:00:00.000Z',
+        properties: {
+          step: 'connector-import',
+          action: outcome === 'import_failed' || outcome === 'command_failed' ? 'failed' : 'skipped',
+          outcome,
+          detectedSourceSet: 'claude_desktop_config',
+          errorCategory: outcome === 'import_failed' ? 'exit-nonzero' : undefined,
+          surface: 'desktop_installer',
+          platform: 'windows',
+        },
+      });
+      expect(properties.outcome).toBe(outcome);
+      expect(properties.detectedSourceSet).toBe('claude_desktop_config');
+    }
+  });
+
+  it('normalizes unrecognized connector labels and raw importer errors before transport', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-10T10:00:00.000Z',
+      properties: {
+        step: 'connector-import',
+        action: 'failed',
+        outcome: 'all_my_connectors_are_here',
+        detectedSourceSet: '/Users/alice/Library/Application Support/Claude' as never,
+        errorCategory: 'raw importer error from alice@work.example' as never,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+
+    expect(properties).toMatchObject({
+      outcome: 'unknown',
+      detectedSourceSet: 'unknown',
+      errorCategory: 'unknown',
+    });
+    expect(JSON.stringify(properties)).not.toContain('alice');
+    expect(JSON.stringify(properties)).not.toContain('work.example');
+  });
+
+  it('keeps an opaque setup run identifier across its events and changes it for a new run', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => '11111111-1111-4111-8111-111111111111',
+    });
+    telemetry.record({
+      properties: {
+        step: 'setup',
+        action: 'started',
+        component: 'deps',
+        setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      },
+    });
+    telemetry.record({
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        setupRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        failedDependency: 'qmd',
+        errorCategory: 'timeout',
+      },
+    });
+    telemetry.record({
+      properties: {
+        step: 'setup',
+        action: 'started',
+        component: 'deps',
+        setupRunId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      },
+    });
+
+    await telemetry.flush();
+    expect(emitted.map((event) => event.properties.setupRunId)).toEqual([
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    ]);
+  });
+
   it('keeps the install session across wizard remounts without retaining an event buffer', async () => {
     const first = createOnboardingStepTelemetry({
       storage,
@@ -108,6 +292,21 @@ describe('onboarding step telemetry', () => {
     expect(emitted[0]?.sessionId).toBe(first.sessionId);
     expect(emitted[0]?.properties.action).toBe('entered');
     expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain(first.sessionId);
+  });
+
+  it('uses the persisted first-launch gate once across a rerender and resumed wizard', async () => {
+    const first = createTelemetry({
+      newSessionId: () => '22222222-2222-4222-8222-222222222222',
+    });
+
+    expect(first.recordFirstLaunch()).toBe(true);
+    expect(first.recordFirstLaunch()).toBe(false);
+    const resumed = createTelemetry({ newSessionId: () => 'should-not-be-used' });
+    expect(resumed.recordFirstLaunch()).toBe(false);
+
+    await first.flush();
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]?.properties.flow).toBe('first_launch');
   });
 
   it('buffers a pre-auth operational event and flushes it after authentication', async () => {
@@ -206,5 +405,151 @@ describe('onboarding step telemetry', () => {
       },
     ]);
     expect(emitted).toHaveLength(1);
+  });
+
+  it('sends the anonymous installer ping even when authenticated emit has no token', async () => {
+    const telemetry = createOnboardingStepTelemetry({
+      storage,
+      newSessionId: () => 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      emit: async () => {
+        throw new Error('no token');
+      },
+      pingInstallerStep: (payload) => {
+        pings.push(payload);
+      },
+    });
+    telemetry.record({
+      properties: { step: 'welcome-signin', action: 'entered', flow: 'first_install' },
+    });
+    await Promise.resolve();
+
+    expect(emitted).toEqual([]);
+    expect(pings.map((ping) => ping.step)).toEqual(['welcome', 'signin']);
+    expect(pings.every((ping) => ping.installSessionId === telemetry.sessionId)).toBe(true);
+    expect(pings.every((ping) => ping.personUid === undefined)).toBe(true);
+  });
+
+  it('sends the anonymous installer ping with the same sessionId as desktop_onboarding_step', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => '11111111-1111-4111-8111-111111111111',
+    });
+    telemetry.record({
+      properties: { step: 'directory', action: 'entered', flow: 'first_install' },
+    });
+    await Promise.resolve();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        properties: { step: 'directory', action: 'entered' },
+      },
+    ]);
+    expect(pings).toEqual([
+      {
+        installSessionId: '11111111-1111-4111-8111-111111111111',
+        step: 'install',
+        personUid: undefined,
+      },
+    ]);
+    expect(pings[0]?.installSessionId).toBe(emitted[0]?.sessionId);
+  });
+
+  it('omits personUid before sign-in and includes it on later pings', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    telemetry.record({
+      properties: { step: 'welcome-signin', action: 'entered', flow: 'first_install' },
+    });
+    telemetry.setPersonUid('prs_ada');
+    telemetry.record({
+      properties: { step: 'directory', action: 'completed' },
+    });
+    await Promise.resolve();
+
+    expect(pings[0]?.personUid).toBeUndefined();
+    expect(pings.some((ping) => ping.step === 'welcome' && ping.personUid === undefined)).toBe(
+      true,
+    );
+    expect(pings.some((ping) => ping.step === 'signin' && ping.personUid === undefined)).toBe(
+      true,
+    );
+    expect(pings.at(-1)).toEqual({
+      installSessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      step: 'install',
+      personUid: 'prs_ada',
+    });
+  });
+
+  it('ignores a non-prs identity so the server regex is never violated', async () => {
+    const telemetry = createTelemetry();
+    telemetry.setPersonUid('cognito-sub-ada');
+    telemetry.record({
+      properties: { step: 'setup', action: 'entered' },
+    });
+    await Promise.resolve();
+    expect(pings[0]?.personUid).toBeUndefined();
+  });
+
+  it('still emits authenticated desktop_onboarding_step events when the anonymous ping throws', async () => {
+    const telemetry = createOnboardingStepTelemetry({
+      storage,
+      newSessionId: () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      emit: async (event) => {
+        emitted.push(event);
+      },
+      pingInstallerStep: () => {
+        throw new Error('network down');
+      },
+    });
+    telemetry.record({
+      properties: { step: 'welcome-signin', action: 'started', flow: 'first_install' },
+    });
+    await Promise.resolve();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        properties: { step: 'welcome-signin', action: 'started', surface: 'desktop_installer' },
+      },
+    ]);
+  });
+
+  it('does not change the authenticated emit payload when the anonymous ping also fires', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    });
+    telemetry.record({
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        outcome: 'stage_command_failed',
+        component: 'deps',
+      },
+      occurredAt: '2026-09-04T10:00:00.000Z',
+    });
+    await Promise.resolve();
+
+    expect(emitted).toEqual([
+      {
+        sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        occurredAt: '2026-09-04T10:00:00.000Z',
+        properties: {
+          step: 'setup',
+          action: 'failed',
+          outcome: 'stage_command_failed',
+          component: 'deps',
+          surface: 'desktop_installer',
+          platform: expect.any(String),
+        },
+      },
+    ]);
+    expect(pings).toEqual([
+      {
+        installSessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        step: 'setup',
+        personUid: undefined,
+      },
+    ]);
   });
 });

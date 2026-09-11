@@ -40,6 +40,10 @@ export interface OpenChannelOptions {
   title?: string | null;
   /** Workspace of the channel, for the same stub. */
   companyUid?: string | null;
+  /** Lifecycle card to scroll to and focus once the timeline has it. */
+  focusCardId?: string | null;
+  /** Fallback: newest live card of this kind (seeded create_company). */
+  focusCardKind?: string | null;
 }
 
 export interface PendingChannelOpen {
@@ -50,6 +54,8 @@ export interface PendingChannelOpen {
   automatic: boolean;
   title: string | null;
   companyUid: string | null;
+  focusCardId: string | null;
+  focusCardKind: string | null;
 }
 
 export interface ConversationDeepLink {
@@ -70,6 +76,8 @@ let pendingReplyRootEventId: string | null = null;
 let pendingChannelAutomatic = false;
 let pendingChannelTitle: string | null = null;
 let pendingChannelCompanyUid: string | null = null;
+let pendingChannelFocusCardId: string | null = null;
+let pendingChannelFocusCardKind: string | null = null;
 let pendingDmRequests = false;
 /** Optional pairKey to open a specific request; null opens the first pending. */
 let pendingDmRequestPairKey: string | null = null;
@@ -90,6 +98,8 @@ export function requestChannelOpen(
   pendingChannelAutomatic = options.automatic === true;
   pendingChannelTitle = trimOrNull(options.title);
   pendingChannelCompanyUid = trimOrNull(options.companyUid);
+  pendingChannelFocusCardId = trimOrNull(options.focusCardId);
+  pendingChannelFocusCardKind = trimOrNull(options.focusCardKind);
   try {
     window.dispatchEvent(
       new CustomEvent(OPEN_CHANNEL_EVENT, {
@@ -101,6 +111,8 @@ export function requestChannelOpen(
           automatic: pendingChannelAutomatic,
           title: pendingChannelTitle,
           companyUid: pendingChannelCompanyUid,
+          focusCardId: pendingChannelFocusCardId,
+          focusCardKind: pendingChannelFocusCardKind,
         },
       }),
     );
@@ -121,6 +133,8 @@ export function takePendingChannelOpen(): PendingChannelOpen | null {
     automatic: pendingChannelAutomatic,
     title: pendingChannelTitle,
     companyUid: pendingChannelCompanyUid,
+    focusCardId: pendingChannelFocusCardId,
+    focusCardKind: pendingChannelFocusCardKind,
   };
   pendingChannelId = null;
   pendingChannelMessageId = null;
@@ -129,6 +143,8 @@ export function takePendingChannelOpen(): PendingChannelOpen | null {
   pendingChannelAutomatic = false;
   pendingChannelTitle = null;
   pendingChannelCompanyUid = null;
+  pendingChannelFocusCardId = null;
+  pendingChannelFocusCardKind = null;
   return snapshot;
 }
 

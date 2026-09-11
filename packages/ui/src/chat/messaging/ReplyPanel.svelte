@@ -12,6 +12,7 @@
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
   import { authorAvatarUrl } from "./agent-avatars";
+  import type { ImagePreviewCache } from "./image-preview-cache";
   import MessageAttachments from "./MessageAttachments.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import ArtifactCard from "./ArtifactCard.svelte";
@@ -22,6 +23,7 @@
   import AgentThinkingRow from "./AgentThinkingRow.svelte";
   import {
     clearFromMessages,
+    isAgentUid,
     startThinking,
     tick,
     type ThinkingEntry,
@@ -49,15 +51,23 @@
     type ChatAttachmentWire,
   } from "./chat-attachments";
   import { formatComposerSendError } from "./composer-send-error";
+  import AgentTaskStrip from "../tasks/AgentTaskStrip.svelte";
+  import type { AgentTask } from "../tasks/agent-tasks";
   import {
     toggleReaction,
     type ReactionAggregate,
     type ReactionMap,
   } from "./reactions";
-  import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
+  import {
+    isHeavyMessageBody,
+    renderMessageBodyMarkdown,
+  } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
+  import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
+  import type { DecisionOption } from "./richMessageContent";
+  import { decisionAnswersFromMessages } from "./decision-answers";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
   import {
     handleLinkActivate,
@@ -93,6 +103,8 @@
     api: ConversationApi;
     rootEventId: string;
     scope: ReplyThreadScope;
+    /** Background tasks spawned from THIS thread's root message (room view). */
+    tasks?: AgentTask[];
     channelId?: string | null;
     withPersonUid?: string | null;
     /** Timeline root for instant pin while GET /threads is in flight. */
@@ -110,6 +122,7 @@
      */
     onuploadfiles?: (files: File[]) => Promise<ChatAttachmentWire[]>;
     /** Presign a vault GET so reply image thumbs can render bytes. */
+    previewCache?: ImagePreviewCache | null;
     onpresign?: (
       companyUid: string,
       vaultPath: string,
@@ -153,6 +166,7 @@
     }) => void;
     /** Company/contacts roster for @ completion. Empty = no picker. */
     mentionCandidates?: MentionTarget[];
+    selfPersonUid?: string | null;
     /** Platform seam for opening an external URL from a message-body link. */
     onopenurl?: (url: string) => void;
   }
@@ -168,7 +182,9 @@
     reactions = {},
     ontogglereaction,
     selfDisplayName = null,
+    selfPersonUid = null,
     onuploadfiles = undefined,
+    previewCache,
     onpresign = undefined,
     onopenattachment = undefined,
     onopenartifact = undefined,
@@ -183,6 +199,7 @@
     onopenprofile,
     mentionCandidates = [],
     onopenurl,
+    tasks = [],
   }: Props = $props();
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -276,6 +293,57 @@
       );
     }
   }
+
+  /**
+   * Start the working indicator for the agent this thread is addressed to, even
+   * when the reply carries no @mention — answering a decision card (or any plain
+   * reply in an agent DM thread / on an agent-authored root) is inherently
+   * addressed to that agent, mirroring the DM branch in DesktopApp.persistSend.
+   * The mention path above already covers channel threads with an explicit
+   * @agent, so this only fires when no agent mention was present.
+   */
+  function startThinkingForThreadAgent(mentions: MentionTarget[]): void {
+    if (mentions.some((m) => m.participantType === "agent")) return;
+    // A 1:1 agent DM thread: the counterpart uid is the agent.
+    if (scope === "dm" && withPersonUid && isAgentUid(withPersonUid.trim())) {
+      agentThinking = startThinking(
+        agentThinking,
+        {
+          agentUid: withPersonUid.trim(),
+          agentName: root ? messageAuthor(root) : "Agent",
+        },
+        Date.now(),
+      );
+      return;
+    }
+    // Otherwise wake the agent that authored the root (e.g. a decision card the
+    // agent posted into a channel thread).
+    const rootUid = (root?.fromPersonUid ?? "").trim();
+    if (root && isAgentUid(rootUid)) {
+      agentThinking = startThinking(
+        agentThinking,
+        { agentUid: rootUid, agentName: messageAuthor(root) },
+        Date.now(),
+      );
+    }
+  }
+
+  // Persisted answered-decision state for this thread (root + replies, oldest →
+  // newest) so cards lock + highlight their choice across reload / reopen.
+  const answeredDecisions = $derived(
+    decisionAnswersFromMessages([
+      ...(root ? [root] : []),
+      ...replies,
+    ]),
+  );
+  const answeredQuestionIds = $derived(new Set(answeredDecisions.keys()));
+  const answeredChoices = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const [qid, answer] of answeredDecisions) {
+      if (answer.label !== undefined) map.set(qid, answer.label);
+    }
+    return map;
+  });
 
   /** Timestamp-aware: `load()` re-fetches the WHOLE thread on every
    *  reply:new wake, so a historical agent reply must not clear a row that
@@ -540,6 +608,21 @@
     });
   }
 
+  /**
+   * A decision-block button in the thread was clicked. A concrete option sends
+   * its label as a reply; "Other…" focuses the composer for a free-text answer.
+   */
+  async function handleDecision(detail: {
+    questionId?: string;
+    option: DecisionOption | null;
+  }): Promise<void> {
+    if (!detail.option) {
+      composerEl?.focus();
+      return;
+    }
+    await send(detail.option.label);
+  }
+
   async function send(body: string): Promise<void> {
     const text = body.trim();
     if ((!text && pendingFiles.length === 0) || sending) return;
@@ -582,6 +665,7 @@
       );
       emitCount(replyCount + 1, replies);
       startThinkingForMentions(mentions);
+      startThinkingForThreadAgent(mentions);
     } catch {
       replies = replies.map((row) =>
         row.eventId === localId ? { ...row, sendStatus: "failed" } : row,
@@ -782,14 +866,23 @@
                 }
               }}
             >
-              {@html applyMentionMarkup(
-                renderMessageBodyMarkdown(rootRich.text),
-                storedMentions(root),
-              )}
+              {#if isHeavyMessageBody(rootRich.text)}
+                <PlainMessageBody body={rootRich.text} />
+              {:else}
+                {@html applyMentionMarkup(
+                  renderMessageBodyMarkdown(rootRich.text),
+                  storedMentions(root),
+                )}
+              {/if}
             </div>
           {/if}
           {#if rootRich.rich}
-            <RichMessageContent content={rootRich.rich} />
+            <RichMessageContent
+              content={rootRich.rich}
+              ondecision={handleDecision}
+              {answeredQuestionIds}
+              {answeredChoices}
+            />
           {/if}
           {#if root.details?.trim()}
             <ArtifactCard
@@ -808,6 +901,8 @@
             />
           {/if}
           <MessageAttachments
+                    {previewCache}
+                    {vaultCompanyUid}
             attachments={parseMessageAttachments(root)}
             onopen={onopenattachment}
             resolveUrl={resolveAttachmentUrl}
@@ -816,6 +911,8 @@
         </div>
         {#if reactionsFor(rootId).length > 0}
           <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
             messageId={rootId}
             reactions={reactionsFor(rootId)}
             ontoggle={toggle}
@@ -932,16 +1029,27 @@
                     }
                   }}
                 >
-                  {@html applyMentionMarkup(
-                    renderMessageBodyMarkdown(replyRich.text),
-                    storedMentions(msg),
-                  )}
+                  {#if isHeavyMessageBody(replyRich.text)}
+                    <PlainMessageBody body={replyRich.text} />
+                  {:else}
+                    {@html applyMentionMarkup(
+                      renderMessageBodyMarkdown(replyRich.text),
+                      storedMentions(msg),
+                    )}
+                  {/if}
                 </div>
               {/if}
               {#if replyRich.rich}
-                <RichMessageContent content={replyRich.rich} />
+                <RichMessageContent
+                  content={replyRich.rich}
+                  ondecision={handleDecision}
+                  {answeredQuestionIds}
+                  {answeredChoices}
+                />
               {/if}
               <MessageAttachments
+                    {previewCache}
+                    {vaultCompanyUid}
                 attachments={parseMessageAttachments(msg)}
                 onopen={onopenattachment}
                 resolveUrl={resolveAttachmentUrl}
@@ -949,6 +1057,8 @@
               />
               {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
                 <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                   messageId={msg.eventId}
                   reactions={reactionsFor(msg.eventId)}
                   ontoggle={toggle}
@@ -1016,6 +1126,7 @@
     </div>
 
     <AgentThinkingRow entries={agentThinking} />
+    <AgentTaskStrip {tasks} />
 
     <div class="reply-composer">
       {#if showMentionPicker}
@@ -1216,8 +1327,8 @@
 
   .reply-root-author,
   .reply-author {
-    font-size: 13px;
-    font-weight: 700;
+    font-size: 14px;
+    font-weight: 600;
     line-height: var(--msg-author-line-height, 1.3);
     color: var(--t1);
   }
@@ -1281,9 +1392,9 @@
     --message-markdown-muted: var(--t3, #a0a0a0);
     min-width: 0;
     margin: 0;
-    /* Match the sidebar/timeline 13px text size. */
-    font-size: 13px;
-    line-height: 1.5;
+    /* Match the timeline reading size. */
+    font-size: 14px;
+    line-height: 1.55;
     color: var(--t1, var(--message-markdown-text));
     overflow-wrap: anywhere;
   }
@@ -1440,7 +1551,7 @@
     display: flex;
     align-items: baseline;
     gap: 0.4375rem;
-    margin: 0 0 var(--msg-name-body-gap, 0.125rem);
+    margin: 0 0 var(--msg-name-body-gap, 0.1875rem);
     min-width: 0;
   }
 
@@ -1527,7 +1638,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--t1, var(--pop-text));
-    font: 400 13px/1.45 var(--font-ui, inherit);
+    font: 400 14px/1.5 var(--font-ui, inherit);
     caret-color: var(--t1, #f4f4f5);
     box-sizing: border-box;
   }

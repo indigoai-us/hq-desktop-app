@@ -16,6 +16,14 @@ const DONE_ACTIVITY = {
   doneCriteria: null,
   branch: null,
   runtime: null,
+  // Additive fields the v1/v2 normaliser shares with the legacy parser.
+  taskStatus: null,
+  harness: null,
+  actorUid: null,
+  actorType: null,
+  eventId: null,
+  threadId: "work-desktop-dogfood:T-002",
+  burstCount: 1,
 } as const;
 
 function sessionBody(

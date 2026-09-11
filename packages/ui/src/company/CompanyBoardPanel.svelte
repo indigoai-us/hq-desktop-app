@@ -45,7 +45,6 @@
     type CompanyBoardCard,
   } from "./company-board.svelte";
   import { useCompanySummary } from "./company-summary.svelte";
-  import ProjectListView from "../projects/ProjectListView.svelte";
   import ProjectDetailView from "../projects/ProjectDetailView.svelte";
   import GoalCard from "../home/GoalCard.svelte";
   import NeedsYouCard from "../home/NeedsYouCard.svelte";
@@ -233,12 +232,6 @@
     ...boardState.board.review,
     ...boardState.board.done,
   ]);
-
-  const activeProjectCount = $derived(
-    summaryState.summary.board > 0
-      ? summaryState.summary.board
-      : inFlightProjects.length,
-  );
 
   const storiesInProgress = $derived(
     boardState.board.doing.length + boardState.board.review.length ||
@@ -1021,17 +1014,6 @@
         </div>
       </div>
     </div>
-
-    {#if false}
-      <div aria-hidden="true">
-        <ProjectListView
-          projects={companyProjects}
-          {loading}
-          onselect={openProject}
-        />
-        {activeProjectCount}
-      </div>
-    {/if}
   {/if}
 </section>
 

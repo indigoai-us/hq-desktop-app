@@ -27,6 +27,10 @@ import {
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
+import {
+  createFeatureFlagGate,
+  createHqProFlagFetch,
+} from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 
 export type SyncInvokeFn = (
@@ -134,6 +138,12 @@ export function createSyncPlatformAdapter(
   // Production must not use window.fetch; tests pass a throwing stub.
   void config.fetch;
   const invokeFn = config.invoke;
+  const flags = createFeatureFlagGate({
+    // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
+    endpoint: '',
+    getToken: () => '',
+    fetch: createHqProFlagFetch(invokeFn),
+  });
 
   async function call<T>(
     cmd: string,
@@ -333,18 +343,32 @@ export function createSyncPlatformAdapter(
         });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
-      hasFeature: async (flag) => {
-        if (flag === 'meetings') {
-          return call<boolean>('meetings_feature_enabled');
-        }
-        if (flag === 'is_indigo_user') {
-          return call<boolean>('is_indigo_user');
-        }
-        return hqProJson<boolean>('GET', WEB_PATHS.hasFeature(flag));
-      },
+      hasFeature: (flag) =>
+        flags.resolve(flag, () => {
+          if (flag === 'meetings') {
+            return call<boolean>('meetings_feature_enabled');
+          }
+          if (flag === 'is_indigo_user') {
+            return call<boolean>('is_indigo_user');
+          }
+          return hqProJson<boolean>('GET', WEB_PATHS.hasFeature(flag));
+        }),
       listWorkspaces: async () => {
         const result = await call<unknown>('list_syncable_workspaces');
         if (!result.ok) return result;
+        // `list_syncable_workspaces` never rejects on a cloud failure: it
+        // resolves `{ workspaces: [], cloudReachable: false, error }` so the
+        // menubar can say "Cloud unreachable". For the company roster that is
+        // a failed fetch, not an empty one — reporting it as `ok([])` left a
+        // brand-new owner on "Create a company" until they relaunched.
+        const envelope = asRecord(result.value);
+        if (envelope && envelope.cloudReachable === false) {
+          const message =
+            typeof envelope.error === 'string' && envelope.error.trim()
+              ? envelope.error.trim()
+              : 'Couldn’t reach HQ cloud to load your companies.';
+          return failure('cloud-unreachable', message);
+        }
         return ok(unwrapNamedArray(result.value, ['workspaces', 'memberships']));
       },
       // Same REST route the web adapter uses (`WEB_PATHS.profile`); Sync has no
@@ -418,6 +442,10 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['requests']));
       },
+      // Tauri command args are camelCase: `respond_dm_request(pair_key, action)`
+      // is invoked as `{ pairKey, action }`.
+      respondDmRequest: ({ pairKey, action }) =>
+        call('respond_dm_request', { pairKey, action }),
       markChannelRead: (id) => call('mark_channel_read', { channelId: id }),
       markDmThreadRead: (personUid) =>
         call('mark_dm_thread_read', { withPersonUid: personUid }),
@@ -449,6 +477,9 @@ export function createSyncPlatformAdapter(
       },
       listChannelMembers: (channelId) =>
         call('list_channel_members', { channelId }),
+      listChannelAgentTasks: (agentUid, channelId) =>
+        call('list_channel_agent_tasks', { agentUid, channelId }),
+      listAgentTasks: (agentUid) => call('list_agent_tasks', { agentUid }),
       sendChannelMessage: (channelId, body, extras) => {
         const mentions = extras?.mentions;
         const attachments = extras?.attachments;
@@ -464,6 +495,25 @@ export function createSyncPlatformAdapter(
         }
         return call('send_channel_message', { channelId, body });
       },
+      runCardAction: (args) =>
+        call('run_card_action', {
+          channelId: args.channelId,
+          cardId: args.cardId,
+          actionId: args.actionId,
+          values: args.values,
+          idempotencyKey: args.idempotencyKey ?? null,
+        }),
+      getCompanyTab: (companyUid, tab) =>
+        call('get_company_tab', { companyUid, tab }),
+      runCompanyTabAction: (args) =>
+        call('run_company_tab_action', {
+          companyUid: args.companyUid,
+          tab: args.tab,
+          cardId: args.cardId,
+          actionId: args.actionId,
+          values: args.values,
+          idempotencyKey: args.idempotencyKey ?? null,
+        }),
       fetchDmThread: ({ withPersonUid, limit, since }) => {
         if (since) {
           return hqProJson(
@@ -1016,6 +1066,12 @@ export function createSyncPlatformAdapter(
 
     sessions: {
       listAgentSessions: () => call('list_agent_sessions'),
+      preflight: () => call('agent_session_preflight'),
+      slashCommands: (tool) => call('agent_session_slash_commands', { tool }),
+      installProvider: (tool) => call<string>('install_session_provider', { tool }),
+      loginStart: (tool) => call('agent_provider_login_start', { tool }),
+      loginStatus: (tool) => call('agent_provider_login_status', { tool }),
+      loginCancel: (tool) => call('agent_provider_login_cancel', { tool }),
     },
 
     settings: {
@@ -1038,6 +1094,10 @@ export function createSyncPlatformAdapter(
     },
 
     workMesh: {
+      createProjectStory: (projectId, companyUid, story) => hqProJson(
+        'POST', `${WEB_PATHS.workMeshProject(projectId.trim())}/stories`,
+        { ...story, companyUid: companyUid.trim() },
+      ),
       readLocalSnapshot: async () => NOT_MAPPED,
       getProjectView: (projectId, companyUid) =>
         hqProJson(
@@ -1051,6 +1111,24 @@ export function createSyncPlatformAdapter(
           'POST',
           WEB_PATHS.workMeshSessionMigrate(sessionId.trim()),
           body,
+        ),
+      listProjectThreads: (projectId, companyUid, cursor) =>
+        hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.workMeshThreads, {
+            companyUid: companyUid.trim() || null,
+            projectId: projectId.trim() || null,
+            limit: '100',
+            cursor: cursor?.trim() || null,
+          }),
+        ),
+      listThreadEvents: (threadId, companyUid, since) =>
+        hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.workMeshThreadEvents(threadId.trim()), {
+            companyUid: companyUid.trim() || null,
+            since: since?.trim() || null,
+          }),
         ),
     },
   };

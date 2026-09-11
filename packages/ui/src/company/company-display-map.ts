@@ -65,6 +65,45 @@ export function buildCompanyDisplayMap(raw: unknown): Map<string, string> {
   return map;
 }
 
+/**
+ * uid + slug → presigned company icon url.
+ *
+ * Mirrors `buildCompanyDisplayMap`: mesh/PROJECT_VIEW rows only carry a
+ * `companyUid`, so the icon (like the name) is resolved from the membership
+ * roster. Only the server's presigned `iconUrl` is accepted — the durable
+ * `brand.faviconUrl` API path is deliberately ignored because the packaged CSP
+ * cannot paint it (see `companyIconSrc`).
+ */
+export function buildCompanyIconMap(raw: unknown): Map<string, string> {
+  const map = new Map<string, string>();
+  const add = (key: string, icon: string) => {
+    if (key && icon) map.set(key, icon);
+  };
+  for (const row of membershipRowsFrom(raw)) {
+    const uid = str(row.companyUid) || str(row.cloudUid) || str(row.uid);
+    const slug = str(row.companySlug) || str(row.slug);
+    const icon = str(row.iconUrl);
+    if (!icon) continue;
+    add(uid, icon);
+    add(slug, icon);
+  }
+  return map;
+}
+
+/** Presigned company icon for a uid/slug, or null when there is none. */
+export function companyIconUrl(
+  companyUid: string | null | undefined,
+  icons: Map<string, string>,
+  fallback?: string | null,
+): string | null {
+  const key = companyUid?.trim();
+  if (key) {
+    const hit = icons.get(key);
+    if (hit) return hit;
+  }
+  return fallback?.trim() || null;
+}
+
 export function companyDisplayName(
   companyUid: string | null | undefined,
   names: Map<string, string>,
@@ -170,6 +209,7 @@ export function workspacesFromMembershipRows(raw: unknown): Workspace[] {
         ...(isRecord(row.brand) || row.brand === null
           ? { brand: row.brand as Workspace["brand"] }
           : {}),
+        ...(optStr(row.iconUrl) ? { iconUrl: optStr(row.iconUrl) } : {}),
       });
       continue;
     }
@@ -189,6 +229,13 @@ export function workspacesFromMembershipRows(raw: unknown): Workspace[] {
       brokenReason: null,
       invitedBy: null,
       invitedAt: null,
+      // Membership rows from GET /membership/me carry the every-plan company
+      // brand + icon; dropping them here would leave the switcher and header
+      // without an icon on the web/HQ-Work path.
+      ...(isRecord(row.brand) || row.brand === null
+        ? { brand: row.brand as Workspace["brand"] }
+        : {}),
+      ...(optStr(row.iconUrl) ? { iconUrl: optStr(row.iconUrl) } : {}),
     });
   }
   return out;

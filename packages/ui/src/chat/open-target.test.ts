@@ -103,6 +103,8 @@ describe("requestChannelOpen replyRootEventId", () => {
         automatic: false,
         title: null,
         companyUid: null,
+        focusCardId: null,
+        focusCardKind: null,
       },
     ]);
     expect(takePendingChannelOpen()).toEqual({
@@ -113,6 +115,8 @@ describe("requestChannelOpen replyRootEventId", () => {
       automatic: false,
       title: null,
       companyUid: null,
+      focusCardId: null,
+      focusCardKind: null,
     });
     expect(takePendingChannel()).toBeNull();
   });
@@ -133,9 +137,24 @@ describe("requestChannelOpen replyRootEventId", () => {
         automatic: true,
         title: null,
         companyUid: null,
+        focusCardId: null,
+        focusCardKind: null,
       },
     ]);
     expect(takePendingChannelOpen()?.automatic).toBe(true);
+  });
+
+  it("carries a lifecycle card focus target for the shell to scroll to", () => {
+    requestChannelOpen("setup", {
+      focusCardId: " card_create_company_2 ",
+      focusCardKind: "create_company",
+    });
+    expect(takePendingChannelOpen()).toMatchObject({
+      channelId: "setup",
+      focusCardId: "card_create_company_2",
+      focusCardKind: "create_company",
+    });
+    expect(takePendingChannelOpen()).toBeNull();
   });
 });
 

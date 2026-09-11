@@ -18,6 +18,11 @@ tempfile = "3"
 serde_yaml = "0.9"
 dirs = "6"
 fs2 = "0.4"
+# stdio: NDJSON line framing over a child's stdout (`tokio_util::codec`)
+# and the `StreamExt` the framed reader is polled through.
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["codec"] }
+thiserror = "1"
 ignore = "0.4"
 aws-credential-types = "=1.2.14"
 aws-smithy-runtime-api = { version = "=1.12.0", features = ["client"] }

@@ -189,6 +189,50 @@ pub(crate) fn authenticated_state_from_tokens(tokens: &CognitoTokens) -> AuthSta
     }
 }
 
+/// Finish a sign-in.
+///
+/// Persist the credentials, publish the tenant envelope, and announce the new
+/// session. Extracted verbatim from the tail of `oauth_exchange_code` so that
+/// browser continuation converges on the *same* completion rather than a second
+/// implementation of it — two versions of "you are now signed in" is how one of
+/// them quietly stops clearing the previous account's notification session.
+///
+/// The order is the contract and it is not arbitrary:
+///
+/// 1. `replace_notification_credentials` invalidates the outgoing notification
+///    generation, then writes the token file. Nothing may observe a new token
+///    while the previous account's poller is still current.
+/// 2. The envelope is published, which is what tells the embedded Work surface
+///    to withdraw the old tenant.
+/// 3. `auth:session-ready` goes last, because its whole meaning is "the
+///    credentials on disk are now durable" — emitting it earlier would invite
+///    a re-hydration against a token that had not landed yet.
+///
+/// Returns the non-secret auth state. No caller ever needs the tokens back.
+pub(crate) async fn complete_auth_session(
+    app: &AppHandle,
+    tokens: &CognitoTokens,
+) -> Result<AuthState, String> {
+    crate::commands::dm_notify::replace_notification_credentials(app, tokens).await?;
+
+    let state = authenticated_state_from_tokens(tokens);
+    publish_auth_session(
+        app,
+        AuthSessionEnvelope {
+            account_id: state.account_id.clone(),
+            generation: 0,
+            status: AuthSessionStatus::Active,
+            reason: None,
+        },
+    );
+    // Native credentials are durable before this event goes out. Embedded HQ
+    // Work uses this completion edge to re-hydrate account and memberships;
+    // the payload contains only the existing non-secret auth state.
+    app.emit("auth:session-ready", &state)
+        .map_err(|err| err.to_string())?;
+    Ok(state)
+}
+
 fn oldest_person_entity(
     mut persons: Vec<super::vault_client::EntityInfo>,
 ) -> Option<super::vault_client::EntityInfo> {
@@ -344,6 +388,14 @@ pub async fn has_stored_token() -> Result<bool, String> {
 /// token file on disk and the app re-authenticates silently on next launch.
 #[tauri::command]
 pub async fn sign_out(app: AppHandle) -> Result<(), String> {
+    // Before anything else: a browser-continuation attempt that is mid-flight
+    // is now about an account this device is deliberately leaving. Its held
+    // tokens go unwritten, and a confirmation that arrives afterwards finds
+    // nothing to activate. Doing this first means the window in which a
+    // confirmation could race the sign-out does not exist.
+    crate::commands::desktop_auth::note_auth_transition(
+        hq_desktop_core::session_continuation::AttemptEnd::SignedOut,
+    );
     crate::commands::dm_notify::clear_notification_credentials(&app).await?;
     clear_sentry_user();
     publish_auth_session(
@@ -489,6 +541,7 @@ mod tests {
             status: "active".to_string(),
             created_at: created_at.to_string(),
             deleted: false,
+            cloud_activated_at: None,
         }
     }
 
