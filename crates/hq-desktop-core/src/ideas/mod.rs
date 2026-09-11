@@ -16,9 +16,11 @@
 //! attribution is a stored slug with an explicit [`storage::move_record`]
 //! operation; retention is downsample-on-write and never auto-delete.
 
+pub mod pipeline;
 pub mod record;
 pub mod storage;
 
+pub use pipeline::{apply_ocr_outcome, run_ocr_stage, OcrOutcome};
 pub use record::{
     CaptureKind, CaptureRecord, CaptureStatus, IdeasError, Provenance, MAX_IMAGE_EDGE,
 };

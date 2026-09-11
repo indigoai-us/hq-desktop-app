@@ -7,12 +7,20 @@ edition = "2021"
 dirs = "6"
 hq-desktop-core = { path = "../hq-desktop-core" }
 raw-window-handle = "0.6"
+thiserror = "1"
 window-vibrancy = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    # Idea Board OCR (US-006): Windows.Media.Ocr over a decoded SoftwareBitmap.
+    "Foundation",
+    "Foundation_Collections",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage",
+    "Storage_Streams",
 ] }
 winreg = "0.55"
 
@@ -22,4 +30,7 @@ block2 = "0.6"
 libc = "0.2"
 
 [dev-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

@@ -914,12 +914,16 @@ name = "hq-platform"
 version = "0.1.0"
 dependencies = [
  "block2",
+ "chrono",
  "dirs",
  "hq-desktop-core",
+ "image",
  "libc",
  "objc2",
  "raw-window-handle",
  "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
  "window-vibrancy",
  "windows",
  "winreg",
