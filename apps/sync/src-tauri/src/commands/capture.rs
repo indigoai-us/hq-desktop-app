@@ -33,10 +33,11 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 
 use hq_desktop_core::ideas::{
-    create_record, ideas_dir, load_record, mark_cited, model_extract_url, parse_mode,
-    reindex_after_write, run_model_stage, save_record, CaptureImage, CaptureKind, CaptureRecord,
-    CaptureStatus, ExtractionMode, HttpModelExtractor, IdeasError, NewCapture, Provenance, QmdCli,
-    TokenProvider, EXTRACTION_MODE_SETTING, MODEL_DISCLOSURE,
+    create_record, delete_record, ideas_dir, load_record, mark_cited, model_extract_url,
+    move_record, parse_mode, reindex_after_write, run_model_stage, save_record, CaptureImage,
+    CaptureKind, CaptureRecord, CaptureStatus, ExtractionMode, ExtractionSource,
+    HttpModelExtractor, IdeasError, NewCapture, Provenance, QmdCli, TokenProvider,
+    EXTRACTION_MODE_SETTING, MODEL_DISCLOSURE,
 };
 use hq_platform::screenshot::{self, CaptureRegion, FrontmostSnapshot};
 use serde::{Deserialize, Serialize};
@@ -77,6 +78,11 @@ pub const EVENT_CAPTURE_COMPLETED: &str = "capture:completed";
 /// App-wide event carrying a *revised* `CaptureRecord` JSON after each
 /// enrichment stage (OCR, local extraction, opt-in model refinement).
 pub const EVENT_CAPTURE_UPDATED: &str = "capture:updated";
+/// App-wide event fired when a capture leaves the active company's board
+/// (US-010). Payload:
+/// `{"id": <id>, "company_slug": <slug it left>, "reason": "moved"|"deleted",
+///   "to_company": <slug>?}` — `to_company` is present only for `"moved"`.
+pub const EVENT_CAPTURE_REMOVED: &str = "capture:removed";
 
 /// menubar.json key backing [`EXTRACTION_MODE_SETTING`].
 pub const IDEAS_EXTRACTION_MODE_KEY: &str = "ideasExtractionMode";
@@ -1229,6 +1235,239 @@ pub async fn ideas_set_kind(
     Ok(record)
 }
 
+// ---------------------------------------------------------------------------
+// US-010: card detail — kind correction, note/tags, reassign, delete
+// ---------------------------------------------------------------------------
+
+/// Apply a user's kind correction from the card detail.
+///
+/// A hand correction is authoritative, so it always writes
+/// `confidence = 1.0` and `extraction_source = User` — no later automatic pass
+/// should be able to argue with a human. The status follows from the kind:
+/// choosing `image` means "keep this as a plain screenshot" (`Plain`, the
+/// board's plain render state); every other kind means the user asserted the
+/// extraction, i.e. `Extracted`.
+pub fn correct_kind_in_vault(
+    hq_root: &std::path::Path,
+    slug: &str,
+    id: &str,
+    kind: &str,
+) -> Result<CaptureRecord, String> {
+    let parsed: CaptureKind = serde_json::from_value(serde_json::Value::String(kind.to_string()))
+        .map_err(|_| format!("unknown capture kind: {kind}"))?;
+    let status = if matches!(parsed, CaptureKind::Image) {
+        CaptureStatus::Plain
+    } else {
+        CaptureStatus::Extracted
+    };
+    let mut record = load_record(hq_root, slug, id).map_err(|e| e.to_string())?;
+    record.kind = parsed;
+    record.status = status;
+    record.confidence = Some(1.0);
+    record.extraction_source = Some(ExtractionSource::User);
+    save_record(hq_root, &mut record).map_err(|e| e.to_string())?;
+    Ok(record)
+}
+
+/// Set (or clear) the free-text note on a capture.
+///
+/// A note that is empty or all whitespace is stored as `None` rather than
+/// `Some("")`, so "cleared the note" and "never wrote one" are the same state
+/// on disk and in the sidecar.
+pub fn set_note_in_vault(
+    hq_root: &std::path::Path,
+    slug: &str,
+    id: &str,
+    note: &str,
+) -> Result<CaptureRecord, String> {
+    let trimmed = note.trim();
+    let mut record = load_record(hq_root, slug, id).map_err(|e| e.to_string())?;
+    record.note = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    };
+    save_record(hq_root, &mut record).map_err(|e| e.to_string())?;
+    Ok(record)
+}
+
+/// Normalize a tag list from the UI: trim each entry, drop empties, and drop
+/// duplicates while preserving the order the user typed them in.
+fn normalize_tags(tags: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(tags.len());
+    for tag in tags {
+        let trimmed = tag.trim();
+        if trimmed.is_empty() || out.iter().any(|t| t == trimmed) {
+            continue;
+        }
+        out.push(trimmed.to_string());
+    }
+    out
+}
+
+/// Replace the tag list on a capture.
+pub fn set_tags_in_vault(
+    hq_root: &std::path::Path,
+    slug: &str,
+    id: &str,
+    tags: &[String],
+) -> Result<CaptureRecord, String> {
+    let mut record = load_record(hq_root, slug, id).map_err(|e| e.to_string())?;
+    record.tags = normalize_tags(tags);
+    save_record(hq_root, &mut record).map_err(|e| e.to_string())?;
+    Ok(record)
+}
+
+/// Company slugs (manifest order) that actually have a `companies/{slug}`
+/// directory under `hq_root`.
+///
+/// Manifest-order rather than alphabetical so the reassign picker matches the
+/// order the user sees everywhere else in HQ. Slugs listed in the manifest but
+/// not present on this machine are skipped — moving a record into a directory
+/// that does not exist locally would file it somewhere the user cannot see.
+pub fn list_company_slugs(hq_root: &std::path::Path) -> Vec<String> {
+    let companies_dir = hq_root.join("companies");
+    read_manifest_slugs(hq_root)
+        .into_iter()
+        .filter(|s| companies_dir.join(s).is_dir())
+        .collect()
+}
+
+/// Move a capture into another company's vault.
+///
+/// The destination is checked against [`list_company_slugs`] first: an
+/// arbitrary string here would otherwise mint a new `companies/<whatever>`
+/// tree and quietly file the record outside any real tenant.
+pub fn move_capture_in_vault(
+    hq_root: &std::path::Path,
+    from_slug: &str,
+    id: &str,
+    to_company: &str,
+) -> Result<CaptureRecord, String> {
+    let available = list_company_slugs(hq_root);
+    if !available.iter().any(|s| s == to_company) {
+        return Err(format!(
+            "unknown destination company: {to_company} (available: {})",
+            available.join(", ")
+        ));
+    }
+    move_record(hq_root, id, from_slug, to_company).map_err(|e| e.to_string())
+}
+
+/// Delete a capture outright (record.json, image.png, capture.md).
+pub fn delete_capture_in_vault(
+    hq_root: &std::path::Path,
+    slug: &str,
+    id: &str,
+) -> Result<(), String> {
+    delete_record(hq_root, slug, id).map_err(|e| e.to_string())
+}
+
+/// Emit [`EVENT_CAPTURE_UPDATED`] with a record, logging a serialize failure
+/// rather than failing the command — the write already landed.
+fn emit_capture_updated(app: &AppHandle, record: &CaptureRecord) {
+    match serde_json::to_value(record) {
+        Ok(json) => {
+            let _ = app.emit(EVENT_CAPTURE_UPDATED, json);
+        }
+        Err(e) => log(LOG_TAG, &format!("capture update serialize FAILED: {e}")),
+    }
+}
+
+/// Correct a capture's kind from the card detail (US-010).
+#[tauri::command]
+pub async fn ideas_correct_kind(
+    app: AppHandle,
+    id: String,
+    kind: String,
+) -> Result<CaptureRecord, String> {
+    let (hq_root, slug) = resolve_vault_target(&app)?;
+    let record = correct_kind_in_vault(&hq_root, &slug, &id, &kind)?;
+    emit_capture_updated(&app, &record);
+    spawn_reindex(record.id.clone());
+    Ok(record)
+}
+
+/// Set or clear a capture's note (US-010).
+#[tauri::command]
+pub async fn ideas_set_note(
+    app: AppHandle,
+    id: String,
+    note: String,
+) -> Result<CaptureRecord, String> {
+    let (hq_root, slug) = resolve_vault_target(&app)?;
+    let record = set_note_in_vault(&hq_root, &slug, &id, &note)?;
+    emit_capture_updated(&app, &record);
+    spawn_reindex(record.id.clone());
+    Ok(record)
+}
+
+/// Replace a capture's tags (US-010).
+#[tauri::command]
+pub async fn ideas_set_tags(
+    app: AppHandle,
+    id: String,
+    tags: Vec<String>,
+) -> Result<CaptureRecord, String> {
+    let (hq_root, slug) = resolve_vault_target(&app)?;
+    let record = set_tags_in_vault(&hq_root, &slug, &id, &tags)?;
+    emit_capture_updated(&app, &record);
+    spawn_reindex(record.id.clone());
+    Ok(record)
+}
+
+/// Reassign a capture to another company (US-010).
+///
+/// Emits [`EVENT_CAPTURE_REMOVED`] rather than `capture:updated`: from the
+/// active board's point of view the card is gone, and the moved record now
+/// belongs to a vault this board is not showing.
+#[tauri::command]
+pub async fn ideas_move_capture(
+    app: AppHandle,
+    id: String,
+    to_company: String,
+) -> Result<CaptureRecord, String> {
+    let (hq_root, slug) = resolve_vault_target(&app)?;
+    let record = move_capture_in_vault(&hq_root, &slug, &id, &to_company)?;
+    let _ = app.emit(
+        EVENT_CAPTURE_REMOVED,
+        serde_json::json!({
+            "id": id,
+            "company_slug": slug,
+            "reason": "moved",
+            "to_company": to_company,
+        }),
+    );
+    spawn_reindex(record.id.clone());
+    Ok(record)
+}
+
+/// Delete a capture after the UI has confirmed (US-010).
+#[tauri::command]
+pub async fn ideas_delete_capture(app: AppHandle, id: String) -> Result<(), String> {
+    let (hq_root, slug) = resolve_vault_target(&app)?;
+    delete_capture_in_vault(&hq_root, &slug, &id)?;
+    let _ = app.emit(
+        EVENT_CAPTURE_REMOVED,
+        serde_json::json!({
+            "id": id,
+            "company_slug": slug,
+            "reason": "deleted",
+        }),
+    );
+    // `qmd update` rescans the collection, so the deleted sidecar drops out of
+    // search on this pass.
+    spawn_reindex(id);
+    Ok(())
+}
+
+/// Companies a capture can be reassigned to (US-010).
+#[tauri::command]
+pub async fn ideas_list_companies(app: AppHandle) -> Result<Vec<String>, String> {
+    let (hq_root, _slug) = resolve_vault_target(&app)?;
+    Ok(list_company_slugs(&hq_root))
+}
+
 #[cfg(test)]
 mod hq_idea_board_capture_tests {
     use super::*;
@@ -1714,5 +1953,139 @@ mod hq_idea_board_capture_tests {
         assert!(read_manifest_slugs(tmp.path()).is_empty());
         assert!(parse_manifest_slugs("::: not yaml [").is_empty());
         assert!(parse_manifest_slugs("other: 1\n").is_empty());
+    }
+
+    // ── US-010: card detail ────────────────────────────────────────────────
+
+    fn hq_idea_board_seed(hq_root: &std::path::Path, slug: &str) -> CaptureRecord {
+        let provenance = Provenance {
+            app: "Safari".to_string(),
+            window_title: "Window".to_string(),
+            url: None,
+            captured_at: chrono::Utc::now(),
+            display_id: 1,
+        };
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4));
+        create_record(
+            hq_root,
+            NewCapture::pending(slug, CaptureImage::Decoded(image), provenance),
+        )
+        .unwrap()
+    }
+
+    fn hq_idea_board_write_manifest(hq_root: &std::path::Path, slugs: &[&str]) {
+        let companies = hq_root.join("companies");
+        std::fs::create_dir_all(&companies).unwrap();
+        let mut yaml = String::from("companies:\n");
+        for slug in slugs {
+            yaml.push_str(&format!("  {slug}:\n    name: {slug}\n"));
+        }
+        std::fs::write(companies.join("manifest.yaml"), yaml).unwrap();
+    }
+
+    #[test]
+    fn hq_idea_board_correct_kind_marks_user_extracted() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        let seeded = hq_idea_board_seed(hq_root, "alpha");
+
+        let out = correct_kind_in_vault(hq_root, "alpha", &seeded.id, "x_post").unwrap();
+        assert_eq!(out.kind, CaptureKind::XPost);
+        assert_eq!(out.status, CaptureStatus::Extracted);
+        assert_eq!(out.confidence, Some(1.0));
+        assert_eq!(out.extraction_source, Some(ExtractionSource::User));
+
+        let reloaded = load_record(hq_root, "alpha", &seeded.id).unwrap();
+        assert_eq!(reloaded.extraction_source, Some(ExtractionSource::User));
+    }
+
+    #[test]
+    fn hq_idea_board_correct_kind_image_stays_plain() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        let seeded = hq_idea_board_seed(hq_root, "alpha");
+
+        let out = correct_kind_in_vault(hq_root, "alpha", &seeded.id, "image").unwrap();
+        assert_eq!(out.kind, CaptureKind::Image);
+        assert_eq!(out.status, CaptureStatus::Plain);
+        assert_eq!(out.confidence, Some(1.0));
+        assert_eq!(out.extraction_source, Some(ExtractionSource::User));
+
+        assert!(correct_kind_in_vault(hq_root, "alpha", &seeded.id, "nonsense").is_err());
+    }
+
+    #[test]
+    fn hq_idea_board_set_note_trims_and_clears() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        let seeded = hq_idea_board_seed(hq_root, "alpha");
+
+        let out = set_note_in_vault(hq_root, "alpha", &seeded.id, "  follow up  ").unwrap();
+        assert_eq!(out.note.as_deref(), Some("follow up"));
+
+        let cleared = set_note_in_vault(hq_root, "alpha", &seeded.id, "   \n ").unwrap();
+        assert_eq!(cleared.note, None);
+        assert_eq!(load_record(hq_root, "alpha", &seeded.id).unwrap().note, None);
+    }
+
+    #[test]
+    fn hq_idea_board_set_tags_trims_dedupes_preserving_order() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        let seeded = hq_idea_board_seed(hq_root, "alpha");
+
+        let tags: Vec<String> = ["  zeta ", "alpha", "", "zeta", "  ", "beta"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = set_tags_in_vault(hq_root, "alpha", &seeded.id, &tags).unwrap();
+        assert_eq!(out.tags, vec!["zeta", "alpha", "beta"]);
+        assert_eq!(
+            load_record(hq_root, "alpha", &seeded.id).unwrap().tags,
+            vec!["zeta", "alpha", "beta"]
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_list_company_slugs_skips_missing_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        hq_idea_board_write_manifest(hq_root, &["alpha", "ghost", "beta"]);
+        std::fs::create_dir_all(hq_root.join("companies").join("alpha")).unwrap();
+        std::fs::create_dir_all(hq_root.join("companies").join("beta")).unwrap();
+
+        assert_eq!(list_company_slugs(hq_root), vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn hq_idea_board_move_capture_relocates_and_rejects_unknown_company() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        hq_idea_board_write_manifest(hq_root, &["alpha", "beta"]);
+        std::fs::create_dir_all(hq_root.join("companies").join("beta")).unwrap();
+        let seeded = hq_idea_board_seed(hq_root, "alpha");
+
+        let err = move_capture_in_vault(hq_root, "alpha", &seeded.id, "nowhere").unwrap_err();
+        assert!(err.contains("unknown destination company"), "{err}");
+
+        let moved = move_capture_in_vault(hq_root, "alpha", &seeded.id, "beta").unwrap();
+        assert_eq!(moved.company_slug, "beta");
+        assert!(!hq_desktop_core::ideas::record_dir(hq_root, "alpha", &seeded.id).exists());
+        assert!(hq_desktop_core::ideas::record_dir(hq_root, "beta", &seeded.id).is_dir());
+        assert_eq!(list_captures_in_vault(hq_root, "alpha").unwrap().len(), 0);
+        assert_eq!(list_captures_in_vault(hq_root, "beta").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hq_idea_board_delete_capture_removes_record_and_reports_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        let seeded = hq_idea_board_seed(hq_root, "alpha");
+
+        delete_capture_in_vault(hq_root, "alpha", &seeded.id).unwrap();
+        assert!(!hq_desktop_core::ideas::record_dir(hq_root, "alpha", &seeded.id).exists());
+        assert_eq!(list_captures_in_vault(hq_root, "alpha").unwrap().len(), 0);
+
+        assert!(delete_capture_in_vault(hq_root, "alpha", &seeded.id).is_err());
     }
 }

@@ -254,6 +254,27 @@ pub fn move_record(
     Ok(record)
 }
 
+/// Remove a record entirely: `record.json`, `image.png`, and the `capture.md`
+/// sidecar all go with the directory.
+///
+/// Deliberately irreversible and deliberately *not* a tombstone — the board's
+/// delete is a user-confirmed destructive action, and leaving a stub behind
+/// would keep the sidecar in the qmd index. Callers should refresh the index
+/// afterwards (`qmd update` rescans the collection and prunes files that no
+/// longer exist, so the capture drops out of search).
+pub fn delete_record(hq_root: &Path, company_slug: &str, id: &str) -> Result<(), IdeasError> {
+    validate_component(company_slug)?;
+    validate_component(id)?;
+    let dir = record_dir(hq_root, company_slug, id);
+    if !dir.is_dir() {
+        return Err(IdeasError::NotFound {
+            id: id.to_string(),
+            company_slug: company_slug.to_string(),
+        });
+    }
+    fs::remove_dir_all(&dir).map_err(|e| IdeasError::io(&dir, e))
+}
+
 /// Record that an agent cited this capture: `cited_count += 1`.
 ///
 /// Saturating rather than wrapping — a counter that rolls over to 0 would read
@@ -687,5 +708,53 @@ mod tests {
         assert!(Ulid::from_string(&first.id).is_ok());
         assert!(Ulid::from_string(&second.id).is_ok());
         assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn hq_idea_board_delete_record_removes_directory_and_sidecar() {
+        let root = tempfile::tempdir().unwrap();
+        let record = create_record(
+            root.path(),
+            NewCapture::pending("indigo", CaptureImage::Decoded(gradient(8, 8)), provenance()),
+        )
+        .unwrap();
+        let dir = record_dir(root.path(), "indigo", &record.id);
+        assert!(dir.join("record.json").is_file());
+        assert!(dir.join("image.png").is_file());
+        assert!(dir.join(super::super::sidecar::SIDECAR_FILE).is_file());
+
+        delete_record(root.path(), "indigo", &record.id).unwrap();
+
+        assert!(!dir.exists(), "record directory removed");
+        // The parent ideas dir survives — deleting one capture must not take
+        // the company's board with it.
+        assert!(ideas_dir(root.path(), "indigo").is_dir());
+    }
+
+    #[test]
+    fn hq_idea_board_delete_record_missing_id_is_not_found() {
+        let root = tempfile::tempdir().unwrap();
+        let err = delete_record(root.path(), "indigo", "01J000000000000000000000AA").unwrap_err();
+        assert!(
+            matches!(err, IdeasError::NotFound { .. }),
+            "expected NotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_delete_record_validates_path_components() {
+        let root = tempfile::tempdir().unwrap();
+        for (slug, id) in [
+            ("..", "01J000000000000000000000AA"),
+            ("indigo", ".."),
+            ("indigo", "a/b"),
+            ("", "01J000000000000000000000AA"),
+        ] {
+            let err = delete_record(root.path(), slug, id).unwrap_err();
+            assert!(
+                matches!(err, IdeasError::Invalid(_)),
+                "expected Invalid for ({slug:?}, {id:?}), got {err:?}"
+            );
+        }
     }
 }

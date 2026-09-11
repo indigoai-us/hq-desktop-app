@@ -270,7 +270,14 @@ impl QmdIndexer for QmdCli {
     }
 }
 
-/// Refresh the index after a sidecar write, best effort.
+/// Refresh the index after a sidecar write **or a record deletion**, best
+/// effort.
+///
+/// `qmd update` rescans the collection rather than applying a delta, so a
+/// sidecar whose file no longer exists is pruned from the index by the same
+/// call that picks up new and revised ones. Deletion (US-010) therefore needs
+/// no separate "remove from index" path — it deletes the directory and calls
+/// this.
 ///
 /// Logs the record id and the outcome only. Record text (OCR, extracted
 /// fields, note) is never logged — the log is not a capture store.

@@ -114,6 +114,10 @@ pub enum CaptureStatus {
 pub enum ExtractionSource {
     Local,
     Model,
+    /// The user corrected the record by hand from the board's card detail
+    /// (US-010). Outranks both extractors: a human verdict is never
+    /// overwritten by a later automatic pass.
+    User,
 }
 
 /// Where the capture came from on screen.

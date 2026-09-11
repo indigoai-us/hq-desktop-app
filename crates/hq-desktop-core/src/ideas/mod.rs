@@ -54,6 +54,7 @@ pub use sidecar::{
     QmdCli, QmdIndexer, SidecarFrontmatter, INDEX_LOG_TAG, SIDECAR_FILE,
 };
 pub use storage::{
-    create_record, downsample, ideas_dir, load_record, mark_cited, move_record, record_dir,
+    create_record, delete_record, downsample, ideas_dir, load_record, mark_cited, move_record,
+    record_dir,
     save_record, CaptureImage, NewCapture,
 };
