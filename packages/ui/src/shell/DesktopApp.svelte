@@ -5904,7 +5904,14 @@
     border-radius: 8px;
     background: var(--btn-bg);
     color: var(--t1);
-    font: 500 12px/1 inherit;
+    /* Longhands, not the `font:` shorthand: `inherit` is not a valid
+       font-family inside it, so the whole declaration was dropped and this
+       button rendered in the UA default (Arial 13.3px/400) beside 12px/500
+       Geist tabs. */
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
     cursor: pointer;
     white-space: nowrap;
     transition:
@@ -5942,7 +5949,10 @@
     border: none;
     background: transparent;
     color: var(--t2);
-    font: 500 12px/1.45 inherit;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
     cursor: pointer;
     text-decoration: underline;
     text-underline-offset: 3px;
