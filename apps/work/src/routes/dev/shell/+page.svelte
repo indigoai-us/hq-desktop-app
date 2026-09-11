@@ -106,10 +106,19 @@
         // #welcome's lifecycle cards are seeded, not part of the shipped
         // fixtures — so the re-hydrate has to answer with them too. Answering
         // from the generic fixture wiped the cards a beat after they painted.
-        fetchChannel: async (args: { channelId: string }) =>
-          args.channelId === "setup"
-            ? ok({ messages: SETUP_MESSAGES, nextCursor: null })
-            : ok(await fixtureConversation.fetchChannel(args)),
+        fetchChannel: async (args: { channelId: string }) => {
+          if (args.channelId === "setup") {
+            return ok({ messages: SETUP_MESSAGES, nextCursor: null });
+          }
+          const page = await fixtureConversation.fetchChannel(args);
+          if (args.channelId === "agent-orchestrator") {
+            return ok({
+              ...page,
+              messages: [...(page.messages ?? []), ...ATTACHMENT_MESSAGES],
+            });
+          }
+          return ok(page);
+        },
         fetchDmThread: async (args: { withPersonUid: string }) =>
           ok(await fixtureConversation.fetchDmThread(args)),
         // Without this the reply panel asks the fallback slice, gets an empty
@@ -485,10 +494,71 @@
     }),
   );
 
-  const messagesFor = (row: Parameters<typeof fixtureMessagesFor>[0]) =>
-    (row as { channelId?: string })?.channelId === "setup"
-      ? (SETUP_MESSAGES as unknown as ReturnType<typeof fixtureMessagesFor>)
-      : fixtureMessagesFor(row);
+  /**
+   * A sent message carrying files. The timeline's attachment cards are only
+   * reachable with real attachments on the wire, so the harness carries one
+   * image and one document — the two shapes the card renders differently.
+   */
+  const ATTACHMENT_MESSAGES = [
+    {
+      eventId: "evt_attach_doc",
+      direction: "in" as const,
+      fromDisplayName: "Sofia",
+      fromPersonUid: "person-sofia",
+      body: "Here's the spec and the mock for the new titlebar.",
+      createdAt: new Date(Date.now() - 26 * 60_000).toISOString(),
+      attachments: [
+        {
+          id: "att_spec",
+          vaultPath: "chat/chan/agent-orchestrator/titlebar-spec.pdf",
+          companyUid: "cmp_indigo",
+          name: "titlebar-spec.pdf",
+          contentType: "application/pdf",
+          sizeBytes: 248_320,
+          kind: "file",
+        },
+        {
+          id: "att_mock",
+          vaultPath: "chat/chan/agent-orchestrator/titlebar-mock.png",
+          companyUid: "cmp_indigo",
+          name: "titlebar-mock.png",
+          contentType: "image/png",
+          sizeBytes: 1_204_992,
+          kind: "image",
+          // Inline preview: the harness has no vault to resolve a thumb from,
+          // so without this the image card sits in its "unavailable" state.
+          previewUrl:
+            "data:image/svg+xml;utf8," +
+            encodeURIComponent(
+              `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="300">
+                 <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+                   <stop offset="0" stop-color="#c9d6e4"/><stop offset="1" stop-color="#8fa7bf"/>
+                 </linearGradient></defs>
+                 <rect width="480" height="300" fill="url(#g)"/>
+                 <rect x="0" y="0" width="480" height="48" fill="#ffffff" opacity="0.75"/>
+                 <circle cx="26" cy="24" r="6" fill="#ff5f57"/><circle cx="46" cy="24" r="6" fill="#febc2e"/>
+                 <circle cx="66" cy="24" r="6" fill="#28c840"/>
+               </svg>`,
+            ),
+        },
+      ],
+    },
+  ];
+
+  const messagesFor = (row: Parameters<typeof fixtureMessagesFor>[0]) => {
+    const id = (row as { channelId?: string })?.channelId;
+    if (id === "setup") {
+      return SETUP_MESSAGES as unknown as ReturnType<typeof fixtureMessagesFor>;
+    }
+    const base = fixtureMessagesFor(row);
+    if (id === "agent-orchestrator") {
+      return [
+        ...base,
+        ...(ATTACHMENT_MESSAGES as unknown as ReturnType<typeof fixtureMessagesFor>),
+      ];
+    }
+    return base;
+  };
 
   const directory = sidebarApi
     .fetchChannelDirectory(null)

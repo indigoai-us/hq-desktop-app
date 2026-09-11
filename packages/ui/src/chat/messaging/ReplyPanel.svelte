@@ -1248,7 +1248,9 @@
     min-width: 0;
     height: 100%;
     background: var(--side-bg, var(--surface-panel, var(--v4-ground, #161618)));
-    border-left: 1px solid var(--line, var(--border, rgba(255, 255, 255, 0.12)));
+    /* No border here. Both hosts (`DesktopApp` and `ConversationView`) wrap the
+       panel in `.reply-column`, which owns the divider — carrying one as well
+       stacked two hairlines and the split read as a heavy 2px rule. */
     color: var(--t1);
     font: 400 13px/1.45 var(--font-ui);
   }

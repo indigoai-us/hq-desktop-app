@@ -66,6 +66,25 @@ function mountPanel(props: Record<string, unknown> = {}): HTMLDivElement {
   return host;
 }
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+/**
+ * The thread divider belongs to `.reply-column` (both hosts wrap the panel in
+ * one). A border on the panel too stacks two hairlines into a 2px rule.
+ */
+describe("thread divider is drawn once", () => {
+  it("leaves the border to the column that hosts the panel", () => {
+    const source = readFileSync(
+      resolve("src/chat/messaging/ReplyPanel.svelte"),
+      "utf8",
+    );
+    const block = source.match(/\n  \.reply-panel\s*\{[^}]+\}/)?.[0] ?? "";
+    expect(block).not.toBe("");
+    expect(block).not.toMatch(/border-left/);
+  });
+});
+
 describe("ReplyPanel thread parity", () => {
   it("registers only after the initial reply fetch supplies the seen ids", async () => {
     type ReplyThread = Awaited<ReturnType<ConversationApi["fetchReplyThread"]>>;
