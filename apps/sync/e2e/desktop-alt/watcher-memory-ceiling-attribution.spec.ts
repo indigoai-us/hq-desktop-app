@@ -311,20 +311,33 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
 
   // ── Heap-ceiling gate + adaptive sampling cadence (this reopen, HQ-DESKTOP-60) ──
 
-  it('gates the projection on the declared heap ceiling inside footprint_ceiling_step', () => {
-    // The projection carries the resolved heap ceiling and may only fire once the
-    // current comparable footprint EXCEEDS it, so a cold heap-bounded ramp is never
-    // projected away (the 2,776 MB-against-3,584 MB false kill).
+  it('re-scopes the projection arming gate: final-approach band AND per-process breach, not the r1 whole-tree gate', () => {
+    // The r1 whole-tree gate `cur > heap_ceiling_kb` compared a whole-tree SUM against a
+    // single-process cap and false-killed healthy runners (3,623 MB with the largest
+    // member 3,570 MB inside its own cap; 4,493 MB below the band). It is REPLACED (not
+    // re-shipped) by a conjunction of two correctly-scoped conditions inside the shared
+    // evaluation: the current sample is within one overshoot budget of the hard ceiling
+    // (final-approach band) AND the LARGEST single tree member has itself breached the
+    // declared old-space ceiling.
     expect(coreDaemonSource).toContain('pub heap_ceiling_kb: u64');
-    const step = sliceBetween(
+    expect(coreDaemonSource).toContain('pub largest_member_kb: Option<u64>');
+    const evalFn = sliceBetween(
       coreDaemonSource,
-      'pub fn footprint_ceiling_step(',
+      'fn footprint_ceiling_eval(',
       '\n}\n',
-      'footprint_ceiling_step',
+      'footprint_ceiling_eval',
     );
-    expect(step).toContain('let heap_ceiling_kb = projection.heap_ceiling_kb;');
-    expect(step).toContain('heap_ceiling_kb > 0');
-    expect(step).toContain('cur > heap_ceiling_kb');
+    expect(evalFn).toContain('let heap_ceiling_kb = projection.heap_ceiling_kb;');
+    expect(evalFn).toContain('heap_ceiling_kb > 0');
+    // Final-approach band conjunct.
+    expect(evalFn).toContain('cur.saturating_add(budget_kb) >= hard_ceiling_kb');
+    // Per-process breach conjunct: the LARGEST member, never the tree sum.
+    expect(evalFn).toContain('projection.largest_member_kb');
+    expect(evalFn).toContain('largest > heap_ceiling_kb');
+    // The r1 whole-tree gate must NOT be re-shipped anywhere in the core.
+    expect(coreDaemonSource).not.toContain('cur > heap_ceiling_kb');
+    // The decision and its wire attribution derive from one shared evaluation.
+    expect(coreDaemonSource).toContain('pub fn footprint_arm_reason(');
   });
 
   it('adds a pure adaptive-cadence helper sized on the observed rates', () => {
@@ -840,16 +853,35 @@ const MIN_WATCH_SECS = declaredIntConstant('WATCHER_FOOTPRINT_MIN_WATCH_SECS'); 
 const BASE_WATCH_SECS = 30; // SUPERVISOR_INTERVAL
 const OS_KILL_FLOOR_MB = declaredIntConstant('OBSERVED_OS_KILL_FLOOR_MB'); // 5900
 const HEAP_CEILING_MB = RUNNER_HEAP_CEILING_DEFAULT_MB; // 3584
+const WORST_OBSERVED_MB_PER_SEC = declaredIntConstant(
+  'WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC',
+); // 250
 
 /** Mirror of `next_footprint_sample_delay_secs` for a comparable growing sample. */
 function nextDelaySecs(sampleMb: number, rateMbPerSec: number | null): number {
   // Final-approach guard: within one overshoot budget of the hard ceiling, sample
   // at the floor regardless of the measured rate.
   if (sampleMb + OVERSHOOT_BUDGET_MB >= HARD_CEILING_MB) return MIN_WATCH_SECS;
-  if (rateMbPerSec === null) return MIN_WATCH_SECS; // no measured rate yet
-  if (rateMbPerSec <= 0) return BASE_WATCH_SECS; // flat / slow
-  const delay = Math.floor(OVERSHOOT_BUDGET_MB / rateMbPerSec);
-  return Math.min(Math.max(delay, MIN_WATCH_SECS), BASE_WATCH_SECS);
+  const rateDelay =
+    rateMbPerSec === null
+      ? MIN_WATCH_SECS // no measured rate yet
+      : rateMbPerSec <= 0
+        ? BASE_WATCH_SECS // flat / slow
+        : Math.min(
+            Math.max(Math.floor(OVERSHOOT_BUDGET_MB / rateMbPerSec), MIN_WATCH_SECS),
+            BASE_WATCH_SECS,
+          );
+  // Worst-case cap (this reopen, HQ-DESKTOP-60): bound EVERY delay by the time the worst
+  // OBSERVED rate would take to carry this sample to the hard ceiling less the overshoot
+  // budget, so a flat reading that suddenly runs away is still resampled before crossing.
+  const cap = Math.min(
+    Math.max(
+      Math.floor((HARD_CEILING_MB - OVERSHOOT_BUDGET_MB - sampleMb) / WORST_OBSERVED_MB_PER_SEC),
+      MIN_WATCH_SECS,
+    ),
+    BASE_WATCH_SECS,
+  );
+  return Math.max(Math.min(rateDelay, cap), MIN_WATCH_SECS);
 }
 
 /** Mirror of `footprint_ceiling_step`'s decision for a comparable sample pair. */
@@ -859,10 +891,16 @@ function preemptsAt(
   gapSecs: number,
   horizonSecs: number,
   gated: boolean,
+  largestMemberMb: number | null,
 ): boolean {
   if (curMb >= HARD_CEILING_MB) return true; // absolute single-sample trigger
   if (prevMb === null || gapSecs <= 0 || curMb <= prevMb) return false;
-  if (gated && curMb <= HEAP_CEILING_MB) return false; // heap-ceiling gate (post-fix)
+  if (gated) {
+    // Narrowed arming gate (post-fix): the current sample must be inside the
+    // final-approach band AND the LARGEST single member must have breached its cap.
+    if (curMb + OVERSHOOT_BUDGET_MB < HARD_CEILING_MB) return false; // below the band
+    if (largestMemberMb === null || largestMemberMb <= HEAP_CEILING_MB) return false; // no per-process breach
+  }
   const rate = (curMb - prevMb) / gapSecs;
   return curMb + rate * horizonSecs >= HARD_CEILING_MB;
 }
@@ -870,8 +908,9 @@ function preemptsAt(
 /**
  * Simulate the guard over a constant-rate runaway from a FRESH generation and
  * return the footprint (MB) at which it pre-empts. `pre-fix` samples on a fixed 30s
- * cadence with a fixed 30s look-ahead and NO heap gate; `post-fix` samples
- * adaptively with a matched look-ahead and the heap-ceiling gate.
+ * cadence with a fixed 30s look-ahead and NO gate; `post-fix` samples adaptively with
+ * a matched look-ahead and the narrowed arming gate. Models a SINGLE runaway process,
+ * so the largest member equals the tree total.
  */
 function runawayPreemptFootprintMb(startMb: number, rateMbPerSec: number, policy: Policy): number {
   let prev: number | null = null;
@@ -880,7 +919,7 @@ function runawayPreemptFootprintMb(startMb: number, rateMbPerSec: number, policy
   for (let i = 0; i < 100_000; i++) {
     const rate = prev === null || gap <= 0 ? null : (cur - prev) / gap;
     const horizon = policy === 'pre-fix' ? BASE_WATCH_SECS : nextDelaySecs(cur, rate);
-    if (preemptsAt(prev, cur, gap, horizon, policy === 'post-fix')) return cur;
+    if (preemptsAt(prev, cur, gap, horizon, policy === 'post-fix', cur)) return cur;
     const nextGap = policy === 'pre-fix' ? BASE_WATCH_SECS : nextDelaySecs(cur, rate);
     prev = cur;
     gap = nextGap;
@@ -903,12 +942,13 @@ describe('watcher memory-ceiling attribution — adaptive footprint guard (2026-
       FALSE_KILL_2026_09_06.gapSecs,
       BASE_WATCH_SECS,
       false,
+      FALSE_KILL_2026_09_06.curMb,
     );
     expect(preempted).toBe(true);
     expect(FALSE_KILL_2026_09_06.curMb).toBeLessThan(HEAP_CEILING_MB); // inside the heap budget
   });
 
-  it('post-fix: the cold warm-up ramp KEEPS RUNNING (heap-ceiling gate)', () => {
+  it('post-fix: the cold warm-up ramp KEEPS RUNNING (below the final-approach band)', () => {
     const horizon = nextDelaySecs(FALSE_KILL_2026_09_06.curMb, FALSE_KILL_2026_09_06.rateMbPerSec);
     const preempted = preemptsAt(
       FALSE_KILL_2026_09_06.prevMb,
@@ -916,6 +956,9 @@ describe('watcher memory-ceiling attribution — adaptive footprint guard (2026-
       FALSE_KILL_2026_09_06.gapSecs,
       horizon,
       true,
+      // A single cold process, so the largest member equals the tree total; 2,776 + 500
+      // is below the 5,120 MB band regardless, so the arm stays closed.
+      FALSE_KILL_2026_09_06.curMb,
     );
     expect(preempted).toBe(false);
   });
@@ -978,5 +1021,223 @@ describe('watcher memory-ceiling attribution — adaptive footprint guard (2026-
     }
     expect(envelope.tags.watcher_memory_class_source).toBe('report_read');
     assertContentSafeDiagnostics(envelope);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Two-direction envelope simulator over ALL SIX evented rows from this cluster
+// (this reopen, HQ-DESKTOP-60). Each row is replayed VERBATIM from its shipped Sentry
+// extras. pre-fix reproduces the r1 whole-tree gate (both post-fix events FALSELY
+// pre-empt); post-fix asserts the narrowed arming gate's verdict AND, on a pre-empt,
+// the Sentry-bound wire shape including the new fixed-vocabulary arm-reason token.
+// ---------------------------------------------------------------------------
+
+const WATCHER_FOOTPRINT_CEILING_CONSECUTIVE = declaredU32Constant(
+  'WATCHER_FOOTPRINT_CEILING_CONSECUTIVE',
+);
+
+const ARM_REASON_VOCAB = new Set([
+  'absolute',
+  'projection_armed',
+  'ordinary_streak',
+  'below_final_approach',
+  'no_member_breach',
+  'within_horizon',
+  'inert',
+]);
+
+/** Mirror of `footprint_arm_reason` / the shared `footprint_ceiling_eval`. */
+function armReason(
+  prevMb: number | null,
+  curMb: number,
+  gapSecs: number,
+  horizonSecs: number,
+  largestMemberMb: number | null,
+  comparable: boolean,
+): string {
+  if (comparable && curMb >= HARD_CEILING_MB) return 'absolute';
+  let projReason = 'inert';
+  if (comparable && prevMb !== null) {
+    const measurable = HEAP_CEILING_MB > 0 && gapSecs > 0 && horizonSecs > 0 && curMb > prevMb;
+    if (measurable) {
+      const inBand = curMb + OVERSHOOT_BUDGET_MB >= HARD_CEILING_MB;
+      const breach = largestMemberMb !== null && largestMemberMb > HEAP_CEILING_MB;
+      if (!inBand) projReason = 'below_final_approach';
+      else if (!breach) projReason = 'no_member_breach';
+      else {
+        const growth = ((curMb - prevMb) * horizonSecs) / gapSecs;
+        if (curMb + growth >= HARD_CEILING_MB) return 'projection_armed';
+        projReason = 'within_horizon';
+      }
+    }
+  }
+  const ceilingMb = effectiveWatcherFootprintCeilingMb(HEAP_CEILING_MB);
+  const over = comparable && curMb >= ceilingMb;
+  if (over && WATCHER_FOOTPRINT_CEILING_CONSECUTIVE > 0 && 1 >= WATCHER_FOOTPRINT_CEILING_CONSECUTIVE) {
+    return 'ordinary_streak';
+  }
+  return projReason;
+}
+
+interface EventedFootprintRow {
+  label: string;
+  curMb: number;
+  prevMb: number;
+  gapSecs: number;
+  largestMemberMb: number;
+  treePidCount: number;
+  expected: 'keep' | 'preempt';
+  expectedReason: string;
+}
+
+// The six evented rows for this cluster, replayed from their shipped extras.
+const EVENTED_ROWS: EventedFootprintRow[] = [
+  // The genuine runaway (2026-09-06T14:05:14Z): the absolute trigger, unchanged.
+  { label: '2026-09-06T14:05:14Z runaway', curMb: 7949, prevMb: 448, gapSecs: 30, largestMemberMb: 7949, treePidCount: 2, expected: 'preempt', expectedReason: 'absolute' },
+  // Three pre-fix cold ramps: below the band and inside the heap budget. KEEP RUNNING.
+  { label: '2026-09-06 cold ramp 2776', curMb: 2776, prevMb: 288, gapSecs: 30, largestMemberMb: 2776, treePidCount: 1, expected: 'keep', expectedReason: 'below_final_approach' },
+  { label: '2026-09-06 cold ramp 3080', curMb: 3080, prevMb: 2776, gapSecs: 30, largestMemberMb: 3080, treePidCount: 1, expected: 'keep', expectedReason: 'below_final_approach' },
+  { label: '2026-09-06 cold ramp 3337', curMb: 3337, prevMb: 3080, gapSecs: 30, largestMemberMb: 3337, treePidCount: 1, expected: 'keep', expectedReason: 'below_final_approach' },
+  // The two POST-FIX false kills, replayed verbatim from their extras. KEEP RUNNING.
+  { label: '2026-09-08T04:11:48Z v0.10.217', curMb: 4493, prevMb: 3621, gapSecs: 2, largestMemberMb: 4409, treePidCount: 2, expected: 'keep', expectedReason: 'below_final_approach' },
+  { label: '2026-09-08T21:57:02Z v0.10.219', curMb: 3623, prevMb: 1338, gapSecs: 2, largestMemberMb: 3570, treePidCount: 2, expected: 'keep', expectedReason: 'below_final_approach' },
+];
+
+// A synthetic in-band per-process breach, to prove the projection_armed token on the
+// wire — none of the six evented rows arm the projection (7949 is the absolute rule).
+const SYNTHETIC_IN_BAND_BREACH: EventedFootprintRow = {
+  label: 'synthetic in-band per-process breach',
+  curMb: 4700,
+  prevMb: 3700,
+  gapSecs: 2,
+  largestMemberMb: 4700,
+  treePidCount: 1,
+  expected: 'preempt',
+  expectedReason: 'projection_armed',
+};
+
+function decideRow(row: EventedFootprintRow): { preempt: boolean; reason: string } {
+  const rate = row.gapSecs > 0 && row.curMb > row.prevMb ? (row.curMb - row.prevMb) / row.gapSecs : null;
+  const horizon = nextDelaySecs(row.curMb, rate);
+  const preempt = preemptsAt(row.prevMb, row.curMb, row.gapSecs, horizon, true, row.largestMemberMb);
+  const reason = armReason(row.prevMb, row.curMb, row.gapSecs, horizon, row.largestMemberMb, true);
+  return { preempt, reason };
+}
+
+/** Mirror of `record_supervisor_memory_preempt` for one evented pre-empt row. */
+function preemptEnvelope(row: EventedFootprintRow, reason: string): SentryEnvelopeEvent {
+  return {
+    message:
+      `auto-sync watcher pre-empted at declared footprint ceiling ` +
+      `(runner memory exhausted), consecutive failure #1 [footprint ${row.curMb}MB]`,
+    fingerprint: ['sync', 'auto-sync-watcher-termination', MEMORY_TOKEN, 'none', 'none'],
+    tags: {
+      sync_route: 'watcher',
+      rss_scope: 'tree',
+      runner_heap_ceiling_source: 'declared_default',
+      watcher_tree_process_count: String(row.treePidCount),
+      watcher_footprint_growth_bucket: footprintGrowthBucket(row.prevMb, row.curMb, row.gapSecs),
+      watcher_memory_class_source: 'report_read',
+      watcher_footprint_arm_reason: reason,
+    },
+    extras: {
+      runner_heap_ceiling_mb: HEAP_CEILING_MB,
+      watcher_tree_rss_mb: row.curMb,
+      watcher_tree_largest_member_mb: row.largestMemberMb,
+      watcher_tree_non_heap_mb: Math.max(0, row.curMb - HEAP_CEILING_MB),
+      watcher_footprint_prev_sample_mb: row.prevMb,
+      watcher_footprint_sample_gap_secs: row.gapSecs,
+    },
+  };
+}
+
+describe('watcher memory-ceiling attribution — two-direction envelope over all six evented rows', () => {
+  it('post-fix: every evented row gets the correct keep/preempt verdict and arm-reason token', () => {
+    for (const row of EVENTED_ROWS) {
+      const { preempt, reason } = decideRow(row);
+      expect(preempt, `${row.label} verdict`).toBe(row.expected === 'preempt');
+      expect(reason, `${row.label} arm reason`).toBe(row.expectedReason);
+      expect(ARM_REASON_VOCAB.has(reason)).toBe(true);
+    }
+    // The synthetic in-band breach exercises the projection arm firing.
+    const armed = decideRow(SYNTHETIC_IN_BAND_BREACH);
+    expect(armed.preempt).toBe(true);
+    expect(armed.reason).toBe('projection_armed');
+  });
+
+  it('pre-fix (non-vacuity): the r1 whole-tree gate FALSELY pre-empts both post-fix events', () => {
+    for (const row of EVENTED_ROWS.filter((r) => r.curMb === 4493 || r.curMb === 3623)) {
+      // r1 mirror: gated on the whole-tree sum crossing the heap cap, matched horizon.
+      const rate = (row.curMb - row.prevMb) / row.gapSecs;
+      const r1Preempt =
+        row.curMb > HEAP_CEILING_MB && row.curMb + rate * row.gapSecs >= HARD_CEILING_MB;
+      expect(r1Preempt, `${row.label} r1 would false-kill`).toBe(true);
+      // The candidate's narrowed gate keeps it running.
+      expect(decideRow(row).preempt, `${row.label} candidate keeps running`).toBe(false);
+    }
+  });
+
+  it('post-fix: a pre-empt envelope carries the arm-reason token + decomposition and stays content-safe', () => {
+    for (const row of [EVENTED_ROWS[0], SYNTHETIC_IN_BAND_BREACH]) {
+      const { preempt, reason } = decideRow(row);
+      expect(preempt).toBe(true);
+      const ev = preemptEnvelope(row, reason);
+      expect(ev.tags.watcher_footprint_arm_reason).toBe(row.expectedReason);
+      expect(ARM_REASON_VOCAB.has(String(ev.tags.watcher_footprint_arm_reason))).toBe(true);
+      expect(ev.tags.rss_scope).toBe('tree');
+      expect(ev.tags.watcher_tree_process_count).toBe(String(row.treePidCount));
+      expect(ev.extras.watcher_tree_largest_member_mb).toBe(row.largestMemberMb);
+      expect(ev.fingerprint[2]).toBe(MEMORY_TOKEN);
+      assertContentSafeDiagnostics(ev);
+    }
+    // The runaway is the absolute rule; the synthetic in-band breach is the projection.
+    expect(decideRow(EVENTED_ROWS[0]).reason).toBe('absolute');
+    expect(decideRow(SYNTHETIC_IN_BAND_BREACH).reason).toBe('projection_armed');
+  });
+
+  it('registers the arm-reason vocabulary at the telemetry egress boundary', () => {
+    expect(telemetrySource).toContain('"watcher_footprint_arm_reason"');
+    for (const token of ARM_REASON_VOCAB) {
+      expect(telemetrySource).toContain(`"${token}"`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Memory-class delivery contract (this reopen, HQ-DESKTOP-60). The resolver must keep
+// polling past a mid-write capture and resolve to report_read once the report
+// completes, degrading a fresh-but-never-complete report to the distinct
+// report_incomplete token — the exact evidence gap on 100% of the post-fix events.
+// ---------------------------------------------------------------------------
+
+describe('watcher memory-ceiling attribution — memory-class delivery contract', () => {
+  it('keeps polling past a mid-write report and distinguishes incomplete from absent', () => {
+    const resolve = sliceBetween(
+      appDaemonSource,
+      'fn resolve_watcher_memory_class(',
+      '\n}\n',
+      'resolve_watcher_memory_class',
+    );
+    // Only a COMPLETE report ends the loop early; a mid-write capture keeps polling.
+    expect(resolve).toContain('runner_report_is_complete');
+    expect(resolve).toContain('saw_fresh_incomplete');
+    expect(resolve).toContain('Src::ReportIncomplete');
+    // The completeness predicate exists in the core report parser.
+    expect(coreReportSource).toContain('pub fn runner_report_is_complete(');
+    // The new source token is fixed-vocabulary and allow-listed at egress.
+    expect(coreDaemonSource).toContain('ReportIncomplete');
+    expect(coreDaemonSource).toContain('"report_incomplete"');
+    expect(telemetrySource).toContain('"report_incomplete"');
+  });
+
+  it('the resolver stays hard-bounded by the wait window', () => {
+    const resolve = sliceBetween(
+      appDaemonSource,
+      'fn resolve_watcher_memory_class(',
+      '\n}\n',
+      'resolve_watcher_memory_class',
+    );
+    expect(resolve).toContain('SUPERVISOR_MEMORY_REPORT_WAIT');
+    expect(resolve).toContain('while Instant::now() < deadline');
   });
 });

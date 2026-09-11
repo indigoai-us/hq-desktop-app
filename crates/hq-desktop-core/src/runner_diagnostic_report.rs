@@ -317,6 +317,23 @@ pub fn parse_runner_report_memory_class(bytes: &[u8]) -> RunnerReportMemoryClass
     }
 }
 
+/// True when `bytes` are a COMPLETE Node diagnostic report — a fully-written JSON
+/// object — as opposed to a truncated mid-write capture (this reopen, HQ-DESKTOP-60).
+/// Distinguishes "truncated, keep polling" from "complete but carried no memory
+/// class" so the caller records `report_incomplete` (a write race) apart from
+/// `report_unreadable` (a complete report with no `javascriptHeap`). A report caught
+/// mid-write is invalid JSON and yields `false`; a complete report — even one with no
+/// memory section — parses to a JSON object and yields `true`. Pure; empty or
+/// oversized input is not complete.
+pub fn runner_report_is_complete(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.len() > RUNNER_REPORT_MAX_BYTES {
+        return false;
+    }
+    serde_json::from_slice::<Value>(bytes)
+        .map(|value| value.is_object())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,6 +609,38 @@ mod tests {
         // Oversized input is refused WITHOUT parsing.
         let oversized = vec![b'{'; RUNNER_REPORT_MAX_BYTES + 1];
         assert!(!parse_runner_report_memory_class(&oversized).is_present());
+    }
+
+    #[test]
+    fn report_completeness_distinguishes_truncated_from_complete_but_empty() {
+        // The completeness predicate (this reopen, HQ-DESKTOP-60) lets the supervisor
+        // tell a mid-write race apart from a fully-written report with no memory class,
+        // so a truncated capture is retried (report_incomplete) instead of being recorded
+        // as terminally unreadable — the exact race that emptied the decomposition on
+        // 100% of the post-fix events.
+        let full = signal_report_with_memory_class();
+        // A fully-written report is complete AND carries a memory class → report_read.
+        assert!(runner_report_is_complete(full.as_bytes()));
+        assert!(parse_runner_report_memory_class(full.as_bytes()).is_present());
+
+        // A report caught MID-WRITE (truncated) is NOT complete → keep polling.
+        let truncated = &full.as_bytes()[..full.len() / 2];
+        assert!(!runner_report_is_complete(truncated));
+        assert!(!parse_runner_report_memory_class(truncated).is_present());
+
+        // A COMPLETE report with no javascriptHeap section is complete but honestly
+        // empty → the caller records report_unreadable, not report_incomplete.
+        let complete_no_heap =
+            serde_json::json!({ "header": { "trigger": "Signal" } }).to_string();
+        assert!(runner_report_is_complete(complete_no_heap.as_bytes()));
+        assert!(!parse_runner_report_memory_class(complete_no_heap.as_bytes()).is_present());
+
+        // Empty, oversized, and non-object JSON are never a complete report.
+        assert!(!runner_report_is_complete(b""));
+        let oversized = vec![b'{'; RUNNER_REPORT_MAX_BYTES + 1];
+        assert!(!runner_report_is_complete(&oversized));
+        assert!(!runner_report_is_complete(b"[]"));
+        assert!(!runner_report_is_complete(b"42"));
     }
 
     #[test]
