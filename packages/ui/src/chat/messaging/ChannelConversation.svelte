@@ -2443,6 +2443,18 @@
     background: var(--hover);
     color: var(--t1);
   }
+  /* Emoji ink is engine-dependent: WebKit (what the desktop app runs) draws
+     Apple Color Emoji noticeably larger than Chromium (what the browser
+     harness runs) at the same font-size, so a pill tuned in the harness
+     shipped oversized emoji in the app. `-webkit-named-image` is implemented
+     by WebKit and not by Chromium, so this query is the engine test; 11px
+     there lands on the same visual mark 13px gives here. Latin text (Reply)
+     is unaffected — only the emoji glyphs change face. */
+  @supports (background: -webkit-named-image(i)) {
+    .dm-quick-react-btn {
+      font-size: 11px;
+    }
+  }
 
   .dm-quick-reply {
     padding: 0 8px;

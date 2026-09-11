@@ -1587,6 +1587,16 @@
     color: var(--t1);
   }
 
+  /* Same engine correction as the main chat's quick-react bar
+     (ChannelConversation): WebKit inks Apple Color Emoji larger than Chromium
+     at a given font-size, and the app is WebKit while the design harness is
+     Chromium. `-webkit-named-image` is the WebKit-only test. */
+  @supports (background: -webkit-named-image(i)) {
+    .reply-quick-react-btn {
+      font-size: 11px;
+    }
+  }
+
   .reply-col {
     min-width: 0;
     display: flex;

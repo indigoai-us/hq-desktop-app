@@ -103,8 +103,13 @@
       capabilities: TAURI_CAPABILITIES,
       messaging: slice({
         listContacts: async () => ok({ contacts: [] }),
+        // #welcome's lifecycle cards are seeded, not part of the shipped
+        // fixtures — so the re-hydrate has to answer with them too. Answering
+        // from the generic fixture wiped the cards a beat after they painted.
         fetchChannel: async (args: { channelId: string }) =>
-          ok(await fixtureConversation.fetchChannel(args)),
+          args.channelId === "setup"
+            ? ok({ messages: SETUP_MESSAGES, nextCursor: null })
+            : ok(await fixtureConversation.fetchChannel(args)),
         fetchDmThread: async (args: { withPersonUid: string }) =>
           ok(await fixtureConversation.fetchDmThread(args)),
         // Without this the reply panel asks the fallback slice, gets an empty
@@ -118,11 +123,57 @@
       meetings: slice({
         listUpcoming: async () => ok([]),
       }),
+      /**
+       * Core popover data. Answering these from the adapter — rather than
+       * leaving `coreUseFixtures` on — puts the popover on the SAME code path
+       * the desktop app runs, including the update actions, which the fixture
+       * path deliberately hides (a fixture must never offer a real install).
+       * Without them the one state worth reviewing, "update available", could
+       * not be rendered here at all.
+       */
+      packages: slice({
+        listPackagesCached: async () => ok({ packs: { installed: HARNESS_PACKS } }),
+        listPackages: async () => ok({ packs: { installed: HARNESS_PACKS } }),
+      }),
+      updates: slice({
+        getVersions: async () => ok({ core: HARNESS_CORE_VERSION, cli: "5.4.2" }),
+        // Truthy value => "available" (update-orchestration `appStatusFrom`).
+        checkForUpdates: async () =>
+          ok(updateAvailable ? { version: "0.10.241" } : null),
+        checkCoreState: async () =>
+          ok({
+            channel: "release",
+            localVersion: HARNESS_CORE_VERSION,
+            targetVersion: HARNESS_CORE_VERSION,
+            versionBehind: false,
+            driftReport: { count: 0 },
+          }),
+        checkCliUpdate: async () => ok(null),
+        getDownloadedUpdate: async () => ok(null),
+      }),
     } as Record<string | symbol, unknown>,
     {
       get: (target, prop) => (prop in target ? target[prop] : emptySlice),
     },
   ) as unknown as PlatformAdapter;
+
+  /**
+   * `?update=available` paints the desktop-app row in its update state
+   * (UPDATE AVAILABLE + Download & install). Default is up to date, so a
+   * routine design pass is not looking at an update banner it did not ask
+   * for.
+   */
+  const updateAvailable =
+    new URLSearchParams(
+      typeof location === "undefined" ? "" : location.search,
+    ).get("update") === "available";
+
+  const HARNESS_CORE_VERSION = "15.0.87";
+  const HARNESS_PACKS = [
+    { name: "design-styles", version: "1.2.0" },
+    { name: "design-quality", version: "0.9.2" },
+    { name: "gstack", version: "2.1.0" },
+  ];
 
   const self = {
     uid: "prs_designer",
@@ -197,6 +248,98 @@
     memberCount: 1,
   };
 
+  /**
+   * #welcome carries the onboarding lifecycle cards — the server-driven
+   * "Name your company" form and the "Your companies" summary the desktop app
+   * renders from `/v1/notify/channels/.../cards`. Without them the harness's
+   * setup channel was an empty room, and the one surface a brand-new user
+   * meets first could not be design-reviewed here at all.
+   *
+   * Same `lifecycle_card` v1 envelope the app parses (channelMessageModels),
+   * so what renders is the shipped card component, not a mock of it.
+   */
+  const cardMessage = (
+    eventId: string,
+    minutesAgo: number,
+    card: Record<string, unknown>,
+  ) => ({
+    eventId,
+    direction: "in" as const,
+    fromDisplayName: "HQ",
+    fromPersonUid: "agt_hq",
+    body: "",
+    createdAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+    messageKind: "system" as const,
+    systemEvent: { v: 1, type: "lifecycle_card", viewer: { canAct: true }, ...card },
+  });
+
+  const SETUP_MESSAGES = [
+    cardMessage("evt_setup_create", 12, {
+      cardId: "card_create_company",
+      kind: "create_company",
+      companyUid: null,
+      state: "open",
+      title: "Name your company",
+      summary: "This creates the company channel, vault, and team roster.",
+      fields: [
+        {
+          id: "name",
+          label: "Company name",
+          control: "text",
+          required: true,
+          value: "",
+          hint: "Shown in the sidebar and on invites.",
+        },
+        {
+          id: "slug",
+          label: "Slug",
+          control: "text",
+          required: true,
+          value: "",
+        },
+        {
+          id: "website",
+          label: "Website (optional) — we'll use its icon for your company",
+          control: "text",
+          value: "",
+        },
+      ],
+      actions: [{ id: "submit", label: "Create company", style: "primary" }],
+    }),
+    cardMessage("evt_setup_summary", 4, {
+      cardId: "companies_summary",
+      kind: "companies_summary",
+      companyUid: null,
+      state: "open",
+      title: "Your companies",
+      summary: "Each company is a channel. Create another to add one.",
+      fields: [
+        {
+          id: "indigo",
+          label: "Indigo",
+          control: "readonly",
+          value: "cloud:chn_01M2OJYC8RX0AS1CTD0RRWWC",
+        },
+        {
+          id: "hpo",
+          label: "hpo",
+          control: "readonly",
+          value: "cloud:chn_01M26J8A256TVW4TPQW0JJ0R4D",
+        },
+      ],
+      actions: [
+        { id: "indigo", label: "Indigo", style: "secondary" },
+        { id: "hpo", label: "hpo", style: "secondary" },
+        { id: "create_company", label: "Create another company", style: "primary" },
+      ],
+    }),
+  ];
+
+  const messagesFor = (row: Parameters<typeof fixtureMessagesFor>[0]) =>
+    (row as { channelId?: string })?.channelId === "setup"
+      ? (SETUP_MESSAGES as unknown as ReturnType<typeof fixtureMessagesFor>)
+      : fixtureMessagesFor(row);
+
   const directory = sidebarApi
     .fetchChannelDirectory(null)
     .then((feed) => {
@@ -239,17 +382,17 @@
           {wakes}
           {self}
           {seedDirectory}
-          version="dev"
+          version="0.10.233"
           companies={FIXTURE_COMPANIES}
           initialRow={FIXTURE_INITIAL_ROW}
           searchRows={FIXTURE_SEARCH_ROWS}
           settingsProfile={FIXTURE_SETTINGS_PROFILE}
-          messagesByRow={fixtureMessagesFor}
+          messagesByRow={messagesFor}
           reactionsByRow={fixtureReactionsFor}
           boardByRow={fixtureBoardFor}
           filesByRow={fixtureFilesFor}
           channelStatusByRow={fixtureChannelStatusFor}
-          coreFixtures={true}
+          coreFixtures={params.get("core") === "fixtures"}
         extraPages={{
           sessions: {
             label: "Sessions",

@@ -498,9 +498,9 @@
   {/if}
 
   <div class="core-rows" data-testid="core-popover-version-rows">
-    <div class="core-row" data-testid="core-popover-core-row">
-      <span class="core-row-label">{model.hqVersionLabel}</span>
-      <span class="core-row-actions">
+    <div class="core-row core-row-stacked" data-testid="core-popover-core-row">
+      <span class="core-row-head">
+        <span class="core-row-label">{model.hqVersionLabel}</span>
         {#if model.driftOpenable}
           <button
             type="button"
@@ -522,6 +522,8 @@
             {model.driftPill}
           </span>
         {/if}
+      </span>
+      <span class="core-row-actions">
         {#if model.showRestore}
           <button
             type="button"
@@ -548,9 +550,9 @@
       </span>
     </div>
 
-    <div class="core-row" data-testid="core-popover-app-row">
-      <span class="core-row-label">{model.appVersionLabel}</span>
-      <span class="core-row-actions">
+    <div class="core-row core-row-stacked" data-testid="core-popover-app-row">
+      <span class="core-row-head">
+        <span class="core-row-label">{model.appVersionLabel}</span>
         <span
           class="core-pill"
           class:ok={appStatusLabel === "UP TO DATE"}
@@ -569,6 +571,8 @@
         >
           {appStatusLabel}
         </span>
+      </span>
+      <span class="core-row-actions">
         {#if !useFixtures && canInspectCore}
           {#if appActions.showDownload}
             <button
@@ -723,7 +727,11 @@
     gap: 0;
     width: min(300px, calc(100vw - 24px));
     max-height: min(70vh, 520px);
-    overflow: auto;
+    /* A long row must never buy the panel a horizontal scrollbar — it scrolls
+       vertically when tall, and everything else wraps or truncates to the
+       panel's own width. */
+    overflow-x: hidden;
+    overflow-y: auto;
     padding: 6px;
     border: 1px solid var(--panel-border);
     border-radius: 12px;
@@ -903,11 +911,39 @@
     white-space: nowrap;
   }
 
-  .core-row-actions {
-    display: inline-flex;
-    flex-shrink: 0;
+  /* Status right, actions underneath.
+     The panel is 286px wide and the version rows carry both a status pill and
+     a text action; on one line "UPDATE AVAILABLE" + "Download & install" came
+     to ~320px and ran off the panel's right edge. The status is the row's
+     right-hand meta (like PACKS' count); anything actionable drops to its own
+     line, flush with the row label. */
+  .core-row-stacked {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+
+  .core-row-head {
+    display: flex;
     align-items: center;
-    gap: 4px;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .core-row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    /* Left edge of the label, not of the panel — the row's own padding
+       already provides the inset. */
+    justify-content: flex-start;
+    gap: 12px;
+  }
+
+  /* Nothing actionable: don't reserve the second line. */
+  .core-row-actions:empty {
+    display: none;
   }
 
   .core-idle-hint {
@@ -923,7 +959,6 @@
     appearance: none;
     display: inline-flex;
     align-items: center;
-    margin-left: 6px;
     padding: 0;
     border: 0;
     background: transparent;
