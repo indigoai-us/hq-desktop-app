@@ -1477,7 +1477,11 @@
     </div>
   </div>
 
-  <div class="dm-reply" class:is-locked={composerLocked}>
+  <div
+    class="dm-reply"
+    class:is-locked={composerLocked}
+    class:has-content={replyText.trim().length > 0 || pendingFiles.length > 0}
+  >
     <div class="dm-reply-composer">
       {#if showMentionPicker}
         <MentionPicker
@@ -2481,18 +2485,32 @@
     /* Concept `.composer`: 10px radius, 12px of air above the caret. */
     padding: 12px 8px 8px 14px;
     background: var(--raised, var(--pop-hover));
-    border: 1px solid var(--line2, var(--pop-border));
+    /* Three states, quietest first. At rest the composer is a tinted well
+       with no outline — a permanent box around an empty field asked for
+       attention it had not earned. The border is kept but transparent so
+       none of the states shift the layout by a pixel. */
+    border: 1px solid transparent;
     border-radius: 10px;
     transition: border-color 0.12s;
   }
 
-  .dm-reply.is-locked {
-    border-style: dashed;
-    opacity: 0.85;
+  .dm-reply:hover {
+    border-color: var(--line);
   }
 
-  .dm-reply:focus-within {
-    border-color: var(--border-active, var(--c-field-border));
+  /* Being typed in, or holding something. Both mean "in use", and both want
+     a firmer edge than a passing cursor does. */
+  .dm-reply:focus-within,
+  .dm-reply.has-content {
+    border-color: var(--line2, var(--pop-border));
+  }
+
+  /* Locked has to stay visible at rest — it is the one state that explains
+     itself with its border. */
+  .dm-reply.is-locked {
+    border-color: var(--line2, var(--pop-border));
+    border-style: dashed;
+    opacity: 0.85;
   }
 
   .dm-reply-composer {

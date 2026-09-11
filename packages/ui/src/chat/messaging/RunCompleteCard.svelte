@@ -63,15 +63,20 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    /* There is no global border-box reset here, so `width: 100%` plus the
-       14px padding and the hairline pushed the card 30px past its column and
-       out over the window edge. */
+    /* Hugs its content, like the file card. Stretched to the column, a
+       two-line summary left a metre of empty card to its right and read as a
+       banner rather than one thing among the messages.
+
+       There is no global border-box reset here, so the padding and the
+       hairline have to be inside the width — `width: 100%` without this
+       pushed the card 30px past its column and out over the window edge. */
     box-sizing: border-box;
-    width: 100%;
-    max-width: none;
+    width: fit-content;
+    max-width: 100%;
     margin: 6px 0 0;
     padding: 12px 14px;
-    border: 1px solid transparent;
+    /* Same hairline as the file and artifact cards: one card language. */
+    border: 1px solid var(--line);
     border-radius: 10px;
     background: var(--raised, var(--pop-hover));
     color: var(--t1, var(--pop-text));

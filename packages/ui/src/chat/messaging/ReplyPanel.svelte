@@ -1142,7 +1142,10 @@
     <AgentThinkingRow entries={agentThinking} />
     <AgentTaskStrip {tasks} />
 
-    <div class="reply-composer">
+    <div
+      class="reply-composer"
+      class:has-content={draft.trim().length > 0 || pendingFiles.length > 0}
+    >
       {#if showMentionPicker}
         <MentionPicker
           hits={mentionHits}
@@ -1728,14 +1731,21 @@
     flex: 0 0 auto;
     margin: 0 12px 16px;
     padding: 12px 8px 8px 14px;
-    border: 1px solid var(--line2, var(--pop-border));
+    /* Same three states as the main composer: none at rest, light on hover,
+       medium once it is in use. */
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised, var(--pop-hover));
     transition: border-color 0.12s;
   }
 
-  .reply-composer:focus-within {
-    border-color: var(--border-active, var(--c-field-border));
+  .reply-composer:hover {
+    border-color: var(--line);
+  }
+
+  .reply-composer:focus-within,
+  .reply-composer.has-content {
+    border-color: var(--line2, var(--pop-border));
   }
 
   .reply-input {
