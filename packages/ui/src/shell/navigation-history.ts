@@ -376,6 +376,12 @@ export function entriesEqual(a: NavigationEntry, b: NavigationEntry): boolean {
   return canonicalEntryKey(a) === canonicalEntryKey(b);
 }
 
+/** Nav labels that differ from the section id (owner vocabulary, 2026-09-11). */
+function settingsSectionLabel(section: string): string {
+  if (section === "agents") return "AI tools";
+  return titleCase(section);
+}
+
 function titleCase(value: string): string {
   if (!value) return value;
   return value.slice(0, 1).toUpperCase() + value.slice(1);
@@ -417,7 +423,7 @@ export function destinationLabel(destination: NavigationDestination): string {
     case "library":
       return `Library · ${titleCase(dest.tab)}`;
     case "settings":
-      return dest.section ? `Settings · ${titleCase(dest.section)}` : "Settings";
+      return dest.section ? `Settings · ${settingsSectionLabel(dest.section)}` : "Settings";
     case "shared-files":
       return "Shared files";
     case "extra":

@@ -57,7 +57,7 @@
       { id: "companies", label: "Companies" },
       { id: "sep", label: "" },
       { id: "general", label: "General" },
-      { id: "agents", label: "Agents" },
+      { id: "agents", label: "AI tools" },
       { id: "bots", label: "Bots" },
       { id: "appearance", label: "Appearance" },
       { id: "notifications", label: "Notifications" },

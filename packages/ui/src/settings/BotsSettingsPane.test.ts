@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 describe("Settings → Bots (Work shell, local-bots US-009)", () => {
-  it("is a first-class ShellSettings nav item on desktop, right after Agents", () => {
+  it("is a first-class ShellSettings nav item on desktop, right after AI tools", () => {
     const shell = readFileSync(
       fileURLToPath(new URL("./ShellSettings.svelte", import.meta.url)),
       "utf8",

@@ -247,7 +247,7 @@
       </div>
       {#if !runtimeReady(newRuntime)}
         <small class="muted">
-          {runtimeLabel(newRuntime)} is not signed in on this Mac yet — connect it under Agents first, or pick another.
+          {runtimeLabel(newRuntime)} is not signed in on this Mac yet — sign in under AI tools first, or pick another.
         </small>
       {/if}
     </div>

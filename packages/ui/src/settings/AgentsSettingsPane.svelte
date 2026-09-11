@@ -64,14 +64,14 @@
     const sessions = adapter?.sessions;
     if (!sessions?.preflight) {
       loading = false;
-      error = "Agent setup is only available in the HQ desktop app.";
+      error = "AI tool sign-in is only available in the HQ desktop app.";
       return;
     }
     loading = true;
     error = "";
     const result = await sessions.preflight();
     if (!result.ok) {
-      error = result.message || "Could not read agent status.";
+      error = result.message || "Could not read AI tool status.";
       loading = false;
       return;
     }
@@ -187,9 +187,9 @@
 
 <div class="ss-stack" data-testid="settings-agents-pane">
   <div class="ss-section">
-    <p class="ss-section-label">Sessions providers</p>
+    <p class="ss-section-label">AI tools</p>
     <p class="ss-lede">
-      Sessions use the Claude, Codex, or Grok CLI on this Mac. HQ can install the CLI and open the provider’s own sign-in. HQ sign-in is separate. Usage stays with the provider account — remaining quota is not shown here yet.
+      Sign in to the tools your local bots think with. Local bots and sessions use the Claude Code, Codex, or Grok CLI on this Mac; HQ can install the CLI and open the tool’s own sign-in. HQ sign-in is separate. Usage stays with the tool account — remaining quota is not shown here yet.
     </p>
     {#if error}
       <p class="ss-lede" role="alert" data-testid="settings-agents-error">{error}</p>
