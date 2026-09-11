@@ -33,8 +33,9 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 
 use hq_desktop_core::ideas::{
-    create_record, mark_cited, model_extract_url, parse_mode, reindex_after_write, run_model_stage,
-    CaptureImage, ExtractionMode, HttpModelExtractor, IdeasError, NewCapture, Provenance, QmdCli,
+    create_record, ideas_dir, load_record, mark_cited, model_extract_url, parse_mode,
+    reindex_after_write, run_model_stage, save_record, CaptureImage, CaptureKind, CaptureRecord,
+    CaptureStatus, ExtractionMode, HttpModelExtractor, IdeasError, NewCapture, Provenance, QmdCli,
     TokenProvider, EXTRACTION_MODE_SETTING, MODEL_DISCLOSURE,
 };
 use hq_platform::screenshot::{self, CaptureRegion, FrontmostSnapshot};
@@ -1125,9 +1126,191 @@ pub fn run_ideas_mark_cited_cli_main(id: &str) -> ! {
     }
 }
 
+// ---------------------------------------------------------------------------
+// US-009: board data surface (list captures + user kind/status correction)
+// ---------------------------------------------------------------------------
+
+/// Read every capture record for one company, newest first.
+///
+/// Deliberately lenient: a single unreadable or malformed `record.json` must
+/// not blank the whole board, so bad entries are logged and skipped. A missing
+/// ideas directory is an empty board, not an error.
+pub fn list_captures_in_vault(
+    hq_root: &std::path::Path,
+    slug: &str,
+) -> Result<Vec<CaptureRecord>, String> {
+    let dir = ideas_dir(hq_root, slug);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("could not read {}: {e}", dir.display())),
+    };
+
+    let mut records: Vec<CaptureRecord> = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        match load_record(hq_root, slug, &id) {
+            Ok(record) => records.push(record),
+            Err(e) => log(LOG_TAG, &format!("skipping unreadable capture {id}: {e}")),
+        }
+    }
+    // Newest first; `created_at` ties break on the ULID id, which is itself
+    // creation-ordered, so the order is stable across reads.
+    records.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    Ok(records)
+}
+
+/// Parse a snake_case kind/status pair coming from the board UI.
+fn parse_kind_status(kind: &str, status: &str) -> Result<(CaptureKind, CaptureStatus), String> {
+    let kind: CaptureKind =
+        serde_json::from_value(serde_json::Value::String(kind.to_string()))
+            .map_err(|_| format!("unknown capture kind: {kind}"))?;
+    let status: CaptureStatus =
+        serde_json::from_value(serde_json::Value::String(status.to_string()))
+            .map_err(|_| format!("unknown capture status: {status}"))?;
+    Ok((kind, status))
+}
+
+/// Apply the user's verdict on a low-confidence capture.
+///
+/// `extracted` is intentionally left in place even when the record becomes a
+/// plain image: the extraction may still be useful later, and the board reads
+/// `kind`/`status` — never `extracted` alone — to choose a layout. The sidecar
+/// is refreshed by `save_record`, which funnels every write through the same
+/// `capture.md` renderer, so the record and its index never drift.
+pub fn set_kind_in_vault(
+    hq_root: &std::path::Path,
+    slug: &str,
+    id: &str,
+    kind: &str,
+    status: &str,
+) -> Result<CaptureRecord, String> {
+    let (kind, status) = parse_kind_status(kind, status)?;
+    let mut record = load_record(hq_root, slug, id).map_err(|e| e.to_string())?;
+    record.kind = kind;
+    record.status = status;
+    save_record(hq_root, &mut record).map_err(|e| e.to_string())?;
+    Ok(record)
+}
+
+/// List the active company's captures for the Ideas board (US-009).
+#[tauri::command]
+pub async fn ideas_list_captures(app: AppHandle) -> Result<Vec<CaptureRecord>, String> {
+    let (hq_root, slug) = resolve_vault_target(&app)?;
+    list_captures_in_vault(&hq_root, &slug)
+}
+
+/// Accept or reject a low-confidence classification from the board (US-009).
+#[tauri::command]
+pub async fn ideas_set_kind(
+    app: AppHandle,
+    id: String,
+    kind: String,
+    status: String,
+) -> Result<CaptureRecord, String> {
+    let (hq_root, slug) = resolve_vault_target(&app)?;
+    let record = set_kind_in_vault(&hq_root, &slug, &id, &kind, &status)?;
+    match serde_json::to_value(&record) {
+        Ok(json) => {
+            let _ = app.emit(EVENT_CAPTURE_UPDATED, json);
+        }
+        Err(e) => log(LOG_TAG, &format!("capture update serialize FAILED: {e}")),
+    }
+    spawn_reindex(record.id.clone());
+    Ok(record)
+}
+
 #[cfg(test)]
 mod hq_idea_board_capture_tests {
     use super::*;
+
+    #[test]
+    fn hq_idea_board_list_captures_sorts_newest_first_and_skips_junk() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+
+        // A missing ideas dir is an empty board, not an error.
+        assert_eq!(list_captures_in_vault(hq_root, "alpha").unwrap().len(), 0);
+
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let provenance = Provenance {
+                app: format!("App{i}"),
+                window_title: format!("Window {i}"),
+                url: None,
+                captured_at: chrono::Utc::now(),
+                display_id: 1,
+            };
+            let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4));
+            let record = create_record(
+                hq_root,
+                NewCapture::pending("alpha", CaptureImage::Decoded(image), provenance),
+            )
+            .unwrap();
+            ids.push(record.id);
+            std::thread::sleep(std::time::Duration::from_millis(3));
+        }
+
+        // A malformed record and a stray file must not blank the board.
+        let junk_dir = ideas_dir(hq_root, "alpha").join("01JJUNK0000000000000000000");
+        std::fs::create_dir_all(&junk_dir).unwrap();
+        std::fs::write(junk_dir.join("record.json"), b"{ not json").unwrap();
+        std::fs::write(ideas_dir(hq_root, "alpha").join("README.txt"), b"hi").unwrap();
+
+        let listed = list_captures_in_vault(hq_root, "alpha").unwrap();
+        assert_eq!(listed.len(), 3);
+        let listed_ids: Vec<String> = listed.iter().map(|r| r.id.clone()).collect();
+        let mut expected = ids.clone();
+        expected.reverse();
+        assert_eq!(listed_ids, expected, "newest first");
+    }
+
+    #[test]
+    fn hq_idea_board_set_kind_persists_user_verdict() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        let provenance = Provenance {
+            app: "Safari".to_string(),
+            window_title: "X".to_string(),
+            url: None,
+            captured_at: chrono::Utc::now(),
+            display_id: 1,
+        };
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4));
+        let record = create_record(
+            hq_root,
+            NewCapture::pending("alpha", CaptureImage::Decoded(image), provenance),
+        )
+        .unwrap();
+
+        let updated =
+            set_kind_in_vault(hq_root, "alpha", &record.id, "image", "plain").unwrap();
+        assert_eq!(updated.kind, CaptureKind::Image);
+        assert_eq!(updated.status, CaptureStatus::Plain);
+        let reloaded = load_record(hq_root, "alpha", &record.id).unwrap();
+        assert_eq!(reloaded.kind, CaptureKind::Image);
+        assert_eq!(reloaded.status, CaptureStatus::Plain);
+
+        // Accepting keeps the kind and promotes the status.
+        let accepted =
+            set_kind_in_vault(hq_root, "alpha", &record.id, "x_post", "extracted").unwrap();
+        assert_eq!(accepted.kind, CaptureKind::XPost);
+        assert_eq!(accepted.status, CaptureStatus::Extracted);
+
+        // Garbage strings are rejected before anything is written.
+        assert!(set_kind_in_vault(hq_root, "alpha", &record.id, "nope", "plain").is_err());
+        assert!(set_kind_in_vault(hq_root, "alpha", &record.id, "image", "nope").is_err());
+        assert!(set_kind_in_vault(hq_root, "alpha", "01JMISSING", "image", "plain").is_err());
+    }
 
     fn d(x: f64, y: f64, w: f64, h: f64) -> DisplayRect {
         DisplayRect { x, y, w, h, scale: 2.0 }

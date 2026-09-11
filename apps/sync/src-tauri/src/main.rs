@@ -967,6 +967,8 @@ fn main() {
             commands::capture::ideas_get_extraction_settings,
             commands::capture::ideas_set_extraction_mode,
             commands::capture::ideas_mark_cited,
+            commands::capture::ideas_list_captures,
+            commands::capture::ideas_set_kind,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,
