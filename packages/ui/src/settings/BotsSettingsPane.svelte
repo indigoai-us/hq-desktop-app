@@ -1,27 +1,47 @@
 <script lang="ts">
   /**
-   * Settings → Bots (local-bots US-009), Work shell.
+   * Settings → Bots — the one pane for every bot the user works with.
    *
-   * Personal bots that run on THIS computer under the user's own model login.
-   * Every action goes through the platform adapter's desktop-only `bots`
-   * group, which shells to the hq CLI (`hq bot … --json`) behind the host's
-   * launch boundary; nothing here talks to hq-pro directly and no credential
-   * is ever shown.
+   * Every AI teammate is a bot (owner decision, 2026-09-11); the only split is
+   * Cloud (company-hosted, always on) vs Local (this Mac, the user's own
+   * Claude Code / Codex / Grok login).
+   *
+   * - Local group: personal bots from the platform adapter's desktop-only
+   *   `bots` group, which shells to the hq CLI (`hq bot … --json`) behind the
+   *   host's launch boundary. Absent on the web build.
+   * - Cloud group: the caller's cross-company roster via `adapter.agents`
+   *   (member-safe `GET /v1/agents/mobile-roster`). Pause/Resume/Remove only
+   *   for bots whose company the caller owns/administers.
+   *
+   * Nothing here talks to hq-pro directly and no credential is ever shown.
    */
   import { onDestroy, onMount } from "svelte";
   import type { LocalBotRow, PlatformAdapter } from "@hq/platform";
+  import type { Workspace } from "../chat/workspaces.js";
+  import BotKindChip from "../chat/BotKindChip.svelte";
   import { LOCAL_BOT_RUNTIMES, isValidLocalBotName } from "../chat/local-bots.js";
+  import {
+    cloudBotInitial,
+    cloudBotStatusLabel,
+    cloudBotsFromRoster,
+    type CloudBotRow,
+  } from "./cloud-bots.js";
   import "./settings-chrome.css";
 
   interface Props {
     adapter?: PlatformAdapter | null;
+    /** Signed-in memberships; names the Cloud rows and gates their actions. */
+    companies?: Workspace[] | null;
+    /** Explicit admin override (host-known); null defers to membership roles. */
+    isAdmin?: boolean | null;
   }
-  let { adapter = null }: Props = $props();
+  let { adapter = null, companies = null, isAdmin = null }: Props = $props();
 
   type Runtime = LocalBotRow["runtime"];
   const RUNTIMES = LOCAL_BOT_RUNTIMES;
   const POLL_MS = 30_000;
 
+  // ── Local group ─────────────────────────────────────────────────────────────
   let bots = $state<LocalBotRow[]>([]);
   let loading = $state(true);
   let loadError = $state("");
@@ -33,6 +53,17 @@
   let flags = $state<Record<string, boolean> | null>(null);
   let confirmRemove = $state<string | null>(null);
   let timer: ReturnType<typeof setInterval> | undefined;
+
+  // ── Cloud group ─────────────────────────────────────────────────────────────
+  let cloudBots = $state<CloudBotRow[]>([]);
+  let cloudLoading = $state(true);
+  let cloudError = $state("");
+  let cloudBusy = $state<string | null>(null);
+  let cloudLine = $state("");
+  let cloudLineIsError = $state(false);
+  let cloudConfirmRemove = $state<string | null>(null);
+  /** Bots this pane paused; the roster carries no runtime state of its own. */
+  let pausedCloud = $state<Set<string>>(new Set());
 
   function runtimeLabel(id: string): string {
     return RUNTIMES.find((r) => r.id === id)?.label ?? id;
@@ -64,7 +95,7 @@
     const api = adapter?.bots;
     if (!api) {
       loading = false;
-      loadError = "Bots are only available in the HQ desktop app.";
+      loadError = "";
       return;
     }
     if (!quiet) {
@@ -73,7 +104,7 @@
     }
     const result = await api.list();
     if (!result.ok) {
-      loadError = result.message || "Could not read your bots.";
+      loadError = result.message || "Could not read your local bots.";
     } else {
       bots = result.value.bots ?? [];
       loadError = "";
@@ -137,128 +168,300 @@
     flags = next;
   }
 
+  async function loadCloud(quiet = false): Promise<void> {
+    const agents = adapter?.agents;
+    if (!agents?.listMobileRoster) {
+      cloudLoading = false;
+      cloudError = "Cloud bots are unavailable in this host.";
+      return;
+    }
+    if (!quiet) {
+      cloudLoading = true;
+      cloudError = "";
+    }
+    try {
+      const result = await agents.listMobileRoster(null);
+      if (!result.ok) {
+        cloudError = result.message || "Could not read your cloud bots.";
+      } else {
+        cloudBots = cloudBotsFromRoster(result.value, { companies, isAdmin });
+        cloudError = "";
+      }
+    } catch (error) {
+      cloudError = error instanceof Error ? error.message : "Could not read your cloud bots.";
+    }
+    cloudLoading = false;
+  }
+
+  async function actCloud(
+    bot: CloudBotRow,
+    verb: "pause" | "resume" | "remove",
+  ): Promise<void> {
+    const agents = adapter?.agents;
+    if (!agents || cloudBusy) return;
+    cloudBusy = bot.uid;
+    cloudLine = `${verb === "pause" ? "Pausing" : verb === "resume" ? "Resuming" : "Removing"} ${bot.displayName}…`;
+    cloudLineIsError = false;
+    const result =
+      verb === "pause"
+        ? await agents.stop(bot.uid)
+        : verb === "resume"
+          ? await agents.start(bot.uid)
+          : await agents.deprovision(bot.uid);
+    if (!result.ok) {
+      cloudLine = result.message || `Could not ${verb} ${bot.displayName}.`;
+      cloudLineIsError = true;
+    } else {
+      cloudLine = "";
+      const next = new Set(pausedCloud);
+      if (verb === "pause") next.add(bot.uid);
+      else next.delete(bot.uid);
+      pausedCloud = next;
+      await loadCloud(true);
+    }
+    cloudBusy = null;
+    cloudConfirmRemove = null;
+  }
+
   onMount(() => {
     void load();
     void loadPreflight();
-    timer = setInterval(() => void load(true), POLL_MS);
+    void loadCloud();
+    timer = setInterval(() => {
+      void load(true);
+      void loadCloud(true);
+    }, POLL_MS);
   });
   onDestroy(() => clearInterval(timer));
 </script>
 
 <section class="settings-section bots-pane" data-testid="settings-bots">
   <p class="lead">
-    Your personal bot runs on this Mac with your own Claude Code, Codex, or Grok
-    login and works inside your HQ. Message it from the desktop app or your
-    phone whenever this computer is on.
+    Every bot you work with, in one place. Cloud bots run in a company's cloud
+    and are always on; local bots run on this Mac with your own Claude Code,
+    Codex, or Grok login. Message either from the desktop app or your phone.
   </p>
-  {#if loadError}
-    <p class="bots-error" data-testid="settings-bots-error">
-      {loadError}
-      {#if adapter?.bots}
-        <button type="button" class="quiet" onclick={() => void load()}>Retry</button>
-      {/if}
-    </p>
-  {/if}
-  <div class="settings-card" data-testid="settings-bots-list">
-    {#if !loading && bots.length === 0 && !loadError}
-      <p class="muted empty" data-testid="settings-bots-empty">
-        No bots yet. Create one below — it takes about half a minute.
-      </p>
-    {/if}
-    {#each bots as bot (bot.name)}
-      <div
-        class="bot-row"
-        data-testid={`settings-bot-${bot.name}`}
-        data-online={bot.online === true}
-      >
-        <div class="bot-main">
-          <strong>
-            <span class="dot" class:online={bot.online === true} aria-hidden="true"></span>
-            {bot.name}
-          </strong>
-          <small>
-            {runtimeLabel(bot.runtime)}{bot.model ? ` · ${bot.model}` : ""} · {presenceLabel(bot)} · {heartbeatLabel(bot)}
-          </small>
-          {#if bot.state === "failed"}
-            <small class="muted">
-              The bot stopped after repeated errors. Check that {runtimeLabel(bot.runtime)} is signed in, then start it again.
-            </small>
-          {/if}
-        </div>
-        <div class="actions">
-          {#if bot.processAlive}
-            <button type="button" disabled={Boolean(busy)} onclick={() => void act(bot.name, "stop")}>
-              {busy === bot.name ? "Working…" : "Stop"}
-            </button>
-          {:else}
-            <button type="button" disabled={Boolean(busy)} onclick={() => void act(bot.name, "start")}>
-              {busy === bot.name ? "Working…" : "Start"}
-            </button>
-          {/if}
-          {#if confirmRemove === bot.name}
-            <button type="button" class="danger" disabled={Boolean(busy)} onclick={() => void act(bot.name, "remove")}>
-              Really remove
-            </button>
-            <button type="button" class="quiet" disabled={Boolean(busy)} onclick={() => (confirmRemove = null)}>
-              Keep
-            </button>
-          {:else}
-            <button type="button" class="quiet" disabled={Boolean(busy)} onclick={() => (confirmRemove = bot.name)}>
-              Remove
-            </button>
-          {/if}
-        </div>
+
+  <!-- ── Local ─────────────────────────────────────────────────────────── -->
+  <div class="group" data-testid="settings-bots-local">
+    <div class="group-head">
+      <h3 class="group-title">Local</h3>
+      <BotKindChip kind="local" />
+    </div>
+    {#if !adapter?.bots}
+      <div class="settings-card">
+        <p class="muted empty" data-testid="settings-bots-local-unavailable">
+          Local bots run from the HQ desktop app on your Mac. Open HQ there to
+          create one.
+        </p>
       </div>
-    {/each}
+    {:else}
+      {#if loadError}
+        <p class="bots-error" data-testid="settings-bots-error">
+          {loadError}
+          <button type="button" class="quiet" onclick={() => void load()}>Retry</button>
+        </p>
+      {/if}
+      <div class="settings-card" data-testid="settings-bots-list">
+        {#if !loading && bots.length === 0 && !loadError}
+          <p class="muted empty" data-testid="settings-bots-empty">
+            No local bots yet — create one below. It takes about half a minute.
+          </p>
+        {/if}
+        {#each bots as bot (bot.name)}
+          <div
+            class="bot-row"
+            data-testid={`settings-bot-${bot.name}`}
+            data-online={bot.online === true}
+          >
+            <div class="bot-main">
+              <strong>
+                <span class="dot" class:online={bot.online === true} aria-hidden="true"></span>
+                {bot.name}
+                <BotKindChip kind="local" runtime={bot.runtime} />
+              </strong>
+              <small>
+                {runtimeLabel(bot.runtime)}{bot.model ? ` · ${bot.model}` : ""} · {presenceLabel(bot)} · {heartbeatLabel(bot)}
+              </small>
+              {#if bot.state === "failed"}
+                <small class="muted">
+                  The bot stopped after repeated errors. Check that {runtimeLabel(bot.runtime)} is signed in, then start it again.
+                </small>
+              {/if}
+            </div>
+            <div class="actions">
+              {#if bot.processAlive}
+                <button type="button" disabled={Boolean(busy)} onclick={() => void act(bot.name, "stop")}>
+                  {busy === bot.name ? "Working…" : "Stop"}
+                </button>
+              {:else}
+                <button type="button" disabled={Boolean(busy)} onclick={() => void act(bot.name, "start")}>
+                  {busy === bot.name ? "Working…" : "Start"}
+                </button>
+              {/if}
+              {#if confirmRemove === bot.name}
+                <button type="button" class="danger" disabled={Boolean(busy)} onclick={() => void act(bot.name, "remove")}>
+                  Really remove
+                </button>
+                <button type="button" class="quiet" disabled={Boolean(busy)} onclick={() => (confirmRemove = null)}>
+                  Keep
+                </button>
+              {:else}
+                <button type="button" class="quiet" disabled={Boolean(busy)} onclick={() => (confirmRemove = bot.name)}>
+                  Remove
+                </button>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      </div>
+
+      <div class="settings-card create" data-testid="settings-bots-create">
+        <div class="bot-main">
+          <strong>New bot</strong>
+          <small>
+            Pick a name and which signed-in tool it should think with.
+          </small>
+        </div>
+        <div class="create-controls">
+          <input
+            type="text"
+            placeholder="assistant"
+            aria-label="Bot name"
+            bind:value={newName}
+            disabled={Boolean(busy)}
+            onkeydown={(e) => {
+              if (e.key === "Enter") void create();
+            }}
+          />
+          <select aria-label="Runtime" bind:value={newRuntime} disabled={Boolean(busy)}>
+            {#each RUNTIMES as r (r.id)}
+              <option value={r.id}>{r.label}{runtimeReady(r.id) ? "" : " (not signed in)"}</option>
+            {/each}
+          </select>
+          <button
+            type="button"
+            data-testid="settings-bots-create-button"
+            disabled={Boolean(busy) || !newName.trim()}
+            onclick={() => void create()}
+          >
+            {busy === "__create__" ? "Creating…" : "Create"}
+          </button>
+        </div>
+        {#if !runtimeReady(newRuntime)}
+          <small class="muted">
+            {runtimeLabel(newRuntime)} is not signed in on this Mac yet — sign in under AI tools first, or pick another.
+          </small>
+        {/if}
+      </div>
+      {#if line}
+        <p class="status" class:error={lineIsError} aria-live="polite" data-testid="settings-bots-status">{line}</p>
+      {/if}
+    {/if}
   </div>
 
-  {#if adapter?.bots}
-    <div class="settings-card create" data-testid="settings-bots-create">
-      <div class="bot-main">
-        <strong>New bot</strong>
-        <small>
-          Pick a name and which signed-in tool it should think with.
-        </small>
-      </div>
-      <div class="create-controls">
-        <input
-          type="text"
-          placeholder="assistant"
-          aria-label="Bot name"
-          bind:value={newName}
-          disabled={Boolean(busy)}
-          onkeydown={(e) => {
-            if (e.key === "Enter") void create();
-          }}
-        />
-        <select aria-label="Runtime" bind:value={newRuntime} disabled={Boolean(busy)}>
-          {#each RUNTIMES as r (r.id)}
-            <option value={r.id}>{r.label}{runtimeReady(r.id) ? "" : " (not signed in)"}</option>
-          {/each}
-        </select>
-        <button
-          type="button"
-          data-testid="settings-bots-create-button"
-          disabled={Boolean(busy) || !newName.trim()}
-          onclick={() => void create()}
-        >
-          {busy === "__create__" ? "Creating…" : "Create"}
-        </button>
-      </div>
-      {#if !runtimeReady(newRuntime)}
-        <small class="muted">
-          {runtimeLabel(newRuntime)} is not signed in on this Mac yet — sign in under AI tools first, or pick another.
-        </small>
-      {/if}
+  <!-- ── Cloud ─────────────────────────────────────────────────────────── -->
+  <div class="group" data-testid="settings-bots-cloud">
+    <div class="group-head">
+      <h3 class="group-title">Cloud</h3>
+      <BotKindChip kind="cloud" />
     </div>
-  {/if}
-  {#if line}
-    <p class="status" class:error={lineIsError} aria-live="polite" data-testid="settings-bots-status">{line}</p>
-  {/if}
+    {#if cloudError}
+      <p class="bots-error" data-testid="settings-bots-cloud-error">
+        {cloudError}
+        {#if adapter?.agents?.listMobileRoster}
+          <button type="button" class="quiet" onclick={() => void loadCloud()}>Retry</button>
+        {/if}
+      </p>
+    {/if}
+    <div class="settings-card" data-testid="settings-bots-cloud-list">
+      {#if !cloudLoading && cloudBots.length === 0 && !cloudError}
+        <p class="muted empty" data-testid="settings-bots-cloud-empty">
+          No cloud bots yet — add one from a company channel with Add bot.
+        </p>
+      {/if}
+      {#each cloudBots as bot (bot.uid)}
+        <div class="bot-row" data-testid={`settings-cloud-bot-${bot.uid}`} data-status={bot.status}>
+          <div class="bot-main">
+            <strong>
+              <span class="initial" aria-hidden="true">{cloudBotInitial(bot.displayName)}</span>
+              {bot.displayName}
+              <BotKindChip kind="cloud" />
+            </strong>
+            <small>
+              {#if bot.companyLabel}{bot.companyLabel} · {/if}{pausedCloud.has(bot.uid)
+                ? "Paused"
+                : cloudBotStatusLabel(bot.status, bot.phase)}
+            </small>
+          </div>
+          {#if bot.canManage}
+            <div class="actions">
+              {#if pausedCloud.has(bot.uid)}
+                <button
+                  type="button"
+                  data-testid={`settings-cloud-bot-${bot.uid}-resume`}
+                  disabled={Boolean(cloudBusy)}
+                  onclick={() => void actCloud(bot, "resume")}
+                >
+                  {cloudBusy === bot.uid ? "Working…" : "Resume"}
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  data-testid={`settings-cloud-bot-${bot.uid}-pause`}
+                  disabled={Boolean(cloudBusy) || bot.status === "PROVISIONING"}
+                  onclick={() => void actCloud(bot, "pause")}
+                >
+                  {cloudBusy === bot.uid ? "Working…" : "Pause"}
+                </button>
+              {/if}
+              {#if cloudConfirmRemove === bot.uid}
+                <button
+                  type="button"
+                  class="danger"
+                  data-testid={`settings-cloud-bot-${bot.uid}-confirm-remove`}
+                  disabled={Boolean(cloudBusy)}
+                  onclick={() => void actCloud(bot, "remove")}
+                >
+                  Really remove
+                </button>
+                <button type="button" class="quiet" disabled={Boolean(cloudBusy)} onclick={() => (cloudConfirmRemove = null)}>
+                  Keep
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="quiet"
+                  data-testid={`settings-cloud-bot-${bot.uid}-remove`}
+                  disabled={Boolean(cloudBusy)}
+                  onclick={() => (cloudConfirmRemove = bot.uid)}
+                >
+                  Remove
+                </button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/each}
+    </div>
+    {#if cloudLine}
+      <p class="status" class:error={cloudLineIsError} aria-live="polite" data-testid="settings-bots-cloud-status">{cloudLine}</p>
+    {/if}
+  </div>
 </section>
 
 <style>
-  .bots-pane { display: grid; gap: 12px; }
+  .bots-pane { display: grid; gap: 16px; }
+  .group { display: grid; gap: 10px; }
+  .group-head { display: flex; align-items: center; gap: 8px; }
+  .group-title {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--v4-text-3);
+  }
   .lead, .status, .bots-error, small {
     font-size: 12px;
     line-height: 1.55;
@@ -288,6 +491,20 @@
     flex: 0 0 8px;
   }
   .dot.online { background: var(--v4-ok, #42d77d); }
+  .initial {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    border-radius: 50%;
+    background: var(--v4-control-bg);
+    border: 1px solid var(--v4-hairline);
+    color: var(--v4-text-2);
+    font-size: 11px;
+    font-weight: 600;
+  }
   .actions { display: flex; align-items: center; gap: 8px; }
   .create { display: grid; gap: 10px; }
   .create-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

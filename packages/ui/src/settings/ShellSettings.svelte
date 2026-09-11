@@ -414,9 +414,9 @@
       }
       if (section.id === "agents")
         return Boolean(adapter?.sessions?.preflight);
-      // local-bots US-009: desktop-only — the adapter exposes `bots` only when
-      // the host can shell to the hq CLI.
-      if (section.id === "bots") return Boolean(adapter?.bots);
+      // Bots: the Cloud group reads adapter.agents (every host); the Local
+      // group needs the desktop-only `bots` group and hides itself otherwise.
+      if (section.id === "bots") return Boolean(adapter?.bots || adapter?.agents);
       return true;
     }),
   );
@@ -676,7 +676,7 @@
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
       {:else if active === "bots"}
-        <BotsSettingsPane {adapter} />
+        <BotsSettingsPane {adapter} {companies} />
       {:else}
         <PrototypeSettingsPanes
           section={active as
