@@ -747,27 +747,46 @@ describe('US-103 embedded desktop window', () => {
     // channel whose optional "What's this for?" body is its first message.
     // Every guarantee below is the old F-04 guarantee restated for that flow.
 
-    it('opens a picked existing channel exactly once and closes the create modal', async () => {
+    // "New message" is a COMPOSER now (4397bfcf), not a jump list: picking a
+    // result makes it the recipient, and sending is what opens the
+    // conversation. These three used to assert the old jump-on-pick flow.
+    it('sends to a picked existing channel and opens it exactly once', async () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
       await openCreateModal();
       setInput('chat-create-query', 'existing');
       await settleQuery();
-      // The rail auto-opens its first row on mount; only count the pick.
-      const before = calls.length;
+
       click('[data-testid="chat-create-result"]');
       await flush();
+      expect(
+        document.querySelector('[data-testid="chat-compose-recipient"]')?.textContent,
+      ).toContain('existing');
 
-      expect(calls.slice(before).filter((call) => call.cmd === 'mark_channel_read')).toEqual([
-        { cmd: 'mark_channel_read', args: { channelId: 'chn_existing' } },
+      setInput('chat-compose-body', 'hello there');
+      await flush();
+      click('[data-testid="chat-compose-send"]');
+      await flush();
+      await flush();
+
+      expect(calls.filter((call) => call.cmd === 'send_channel_message')).toEqual([
+        { cmd: 'send_channel_message', args: { channelId: 'chn_existing', body: 'hello there' } },
       ]);
-      // Nothing is composed for an existing conversation — opening it is the action.
-      expect(calls.filter((call) => call.cmd === 'send_channel_message')).toEqual([]);
+      // Counted across the WHOLE run. The rail auto-opens the newest real
+      // conversation on mount and that can be this very channel, in which
+      // case the post-send open is a no-op. "Exactly once" is the guarantee
+      // either way; which of the two got there first is a race.
+      expect(
+        calls.filter(
+          (call) =>
+            call.cmd === 'mark_channel_read' && call.args?.channelId === 'chn_existing',
+        ),
+      ).toEqual([{ cmd: 'mark_channel_read', args: { channelId: 'chn_existing' } }]);
       expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
     });
 
-    it('opens a picked existing DM exactly once and closes the create modal', async () => {
+    it('sends to a picked existing DM and opens it exactly once', async () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
@@ -781,10 +800,18 @@ describe('US-103 embedded desktop window', () => {
       bob?.click();
       await flush();
 
+      setInput('chat-compose-body', 'hi Bob');
+      await flush();
+      click('[data-testid="chat-compose-send"]');
+      await flush();
+      await flush();
+
+      expect(calls.filter((call) => call.cmd === 'send_dm')).toEqual([
+        { cmd: 'send_dm', args: { toPersonUid: 'prs_bob', body: 'hi Bob' } },
+      ]);
       expect(calls.filter((call) => call.cmd === 'mark_dm_thread_read')).toEqual([
         { cmd: 'mark_dm_thread_read', args: { withPersonUid: 'prs_bob' } },
       ]);
-      expect(calls.filter((call) => call.cmd === 'send_dm')).toEqual([]);
       expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
     });
 
@@ -802,16 +829,16 @@ describe('US-103 embedded desktop window', () => {
       // Retyping replaces the result list; Enter activates what is VISIBLE.
       setInput('chat-create-query', 'Bob');
       await settleQuery();
-      const before = calls.length;
       const input = document.querySelector('[data-testid="chat-create-query"]') as HTMLInputElement;
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       await flush();
 
-      const after = calls.slice(before);
-      expect(after.filter((call) => call.cmd === 'mark_channel_read')).toEqual([]);
-      expect(after.filter((call) => call.cmd === 'mark_dm_thread_read')).toEqual([
-        { cmd: 'mark_dm_thread_read', args: { withPersonUid: 'prs_bob' } },
-      ]);
+      // Bob became the recipient; the channel that was showing a moment ago
+      // never did, and nothing was sent to it.
+      const recipient = document.querySelector('[data-testid="chat-compose-recipient"]');
+      expect(recipient?.textContent).toContain('Bob');
+      expect(recipient?.textContent).not.toContain('existing');
+      expect(calls.filter((call) => call.cmd === 'send_channel_message')).toEqual([]);
     });
 
     it('refuses to dismiss while a create is in flight, then opens the channel once it lands', async () => {
@@ -1058,19 +1085,25 @@ describe('US-103 embedded desktop window', () => {
       expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
     });
 
+    // Message text is searched from the SAME box as conversation names now;
+    // the separate history dialog (and its own search field) is gone.
     it('renders the native Sync search result envelope exactly once', async () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
-      await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-show-history"]')).not.toBeNull());
-      (host.querySelector('[data-testid="chat-show-history"]') as HTMLButtonElement).click();
+      await vi.waitFor(() =>
+        expect(host.querySelector('[data-testid="chat-search"]')).not.toBeNull(),
+      );
+      (host.querySelector('[data-testid="chat-search"]') as HTMLButtonElement).click();
       await flush();
-      setInput('chat-history-search', 'known');
-      await new Promise((resolve) => setTimeout(resolve, 260));
+      setInput('chat-switcher-input', 'known');
+      await new Promise((resolve) => setTimeout(resolve, 320));
       await flush();
 
       expect(calls.some((call) => call.cmd === 'search_messages')).toBe(true);
-      expect(document.querySelector('[data-testid="chat-search-hit"]')?.textContent).toContain('known audit result');
+      const hits = document.querySelectorAll('[data-testid="chat-search-hit"]');
+      expect(hits).toHaveLength(1);
+      expect(hits[0]?.textContent).toContain('known audit result');
     });
 
     it('passes owner company-project options through the mounted UI, host, adapter, and Tauri command', async () => {
@@ -1102,7 +1135,11 @@ describe('US-103 embedded desktop window', () => {
       await flush();
       (host.querySelector('[data-testid="chat-filter"]') as HTMLButtonElement).click();
       await flush();
-      (document.querySelector('[data-testid="chat-filter-company-projects"]') as HTMLButtonElement).click();
+      // The Show filter collapsed to three views plus this membership toggle
+      // (79de73b3); "Company projects" is no longer a view of its own.
+      (
+        document.querySelector('[data-testid="chat-filter-include-non-members"]') as HTMLButtonElement
+      ).click();
       await new Promise((resolve) => setTimeout(resolve, 300));
       await flush();
 

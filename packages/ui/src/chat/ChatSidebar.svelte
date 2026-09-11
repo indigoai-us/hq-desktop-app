@@ -2658,6 +2658,7 @@
           </span>
           <input
             class="chat-switcher-input"
+            data-testid="chat-switcher-input"
             type="text"
             use:focusOnMount
             placeholder="Search or jump to…"

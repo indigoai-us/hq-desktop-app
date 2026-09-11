@@ -237,26 +237,33 @@ plan gate, which is more useful than a disabled item that explains nothing.
 
 ### B4. The card sequence
 
-**Agent · 1 of 3 — name and handle**
+**Step 1 of 3 — name and handle**
 
 - Fields: `name` (text, required) · `handle` (text, required, hint shows
   availability, e.g. "@polar is available").
 - Action: **Next** (primary).
 
-**Agent · 2 of 3 — runtime**
+**Step 2 of 3 — runtime**
 
 - Radio `runtime`: Claude Code (Anthropic · long-context sessions) · Codex
   (OpenAI · fast background runs) · Grok Build (xAI · headless
   implementation).
 - Action: **Next** (primary).
 
-**Agent · 3 of 3 — size**
+**Step 3 of 3 — size**
 
 - Radio `size`: Basic ($100/mo) · Power ($250/mo) · Dev ($500/mo).
 - Action: **Create agent** (primary).
 
 Each step is a fresh card, so the channel keeps a readable record of the
 choices rather than mutating one card in place.
+
+The step label reads "Step N of 3", the same as company creation. It used to
+say "Agent · N of 3", which restated the card's own title next to it — the
+label's job is to say where you are in the sequence, and the card already
+says what the sequence is. **This string is server copy** (hq-pro posts the
+card), so the client cannot correct it: the dev harness and this spec are
+updated here, and hq-pro has to match.
 
 **After the last step**
 

@@ -567,6 +567,10 @@ describe('embedded Work navigation and lifecycle', () => {
     await flush();
     (host.querySelector('[data-testid="titlebar-core-pill"]') as HTMLButtonElement).click();
     await flush();
+    // Packs collapse by default now, and Marketplace is the last row of that
+    // list rather than a button parked under it.
+    (host.querySelector('[data-testid="core-popover-packs-toggle"]') as HTMLButtonElement).click();
+    await flush();
     (host.querySelector('[data-testid="core-popover-open-marketplace"]') as HTMLButtonElement).click();
     await flush();
     expect(

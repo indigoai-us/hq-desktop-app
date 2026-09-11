@@ -367,7 +367,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
     if (turn === 1) {
       return card('create_agent', 'card_create_agent_1', COMPANY_UID, state, {
         ...shared,
-        stepLabel: 'Agent · 1 of 3',
+        stepLabel: 'Step 1 of 3',
         fields: [
           {
             id: 'name',
@@ -392,7 +392,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
     if (turn === 2) {
       return card('create_agent', 'card_create_agent_2', COMPANY_UID, state, {
         ...shared,
-        stepLabel: 'Agent · 2 of 3',
+        stepLabel: 'Step 2 of 3',
         fields: [
           {
             id: 'runtime',
@@ -413,7 +413,7 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
     }
     return card('create_agent', 'card_create_agent_3', COMPANY_UID, state, {
       ...shared,
-      stepLabel: 'Agent · 3 of 3',
+      stepLabel: 'Step 3 of 3',
       fields: [
         {
           id: 'size',
