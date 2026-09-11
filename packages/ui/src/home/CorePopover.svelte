@@ -102,7 +102,9 @@
     onopenMarketplace,
   }: Props = $props();
 
-  let packsExpanded = $state(true);
+  /** Collapsed on open: the count in the row says enough, and the list
+      pushed Open marketplace and the rest of the panel down every time. */
+  let packsExpanded = $state(false);
   let coreRestoring = $state(false);
   let packs = $state<CorePopoverPack[]>([]);
   let packsLoading = $state(false);

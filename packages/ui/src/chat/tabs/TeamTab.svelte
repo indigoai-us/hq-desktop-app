@@ -236,23 +236,41 @@
     font-size: 12px;
   }
 
+  /* The shell's standard chip (`.core-btn`): 8px radius on `--btn-bg`, a
+     hairline only on hover. */
   .team-btn {
     appearance: none;
     height: 28px;
     padding: 0 10px;
-    border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent);
-    border-radius: 6px;
-    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg);
     color: var(--t1);
     font: inherit;
     font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
+    transition:
+      border-color 0.12s ease,
+      opacity 0.12s ease;
   }
 
+  .team-btn:hover {
+    border-color: var(--line2);
+  }
+
+  /* `--bg` is defined nowhere in the shell, so this fell through to a
+     hard-coded #111 — near-black ink on the near-black `--t1` fill, i.e. an
+     unreadable black block in light mode. The shell's primary is ice ink. */
   .team-btn.primary {
-    background: var(--t1);
-    color: var(--bg, #111);
-    border-color: var(--t1);
+    background: var(--ice-ink);
+    color: var(--badge-fg);
+    border-color: transparent;
+  }
+
+  .team-btn.primary:hover {
+    border-color: transparent;
+    opacity: 0.88;
   }
 
   .team-btn.confirm {

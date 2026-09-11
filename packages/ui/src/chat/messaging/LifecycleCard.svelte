@@ -100,6 +100,17 @@
     return localErrors[field.id] || field.error || null;
   }
 
+  /**
+   * A card whose fields are all readonly is a LIST, not a form. Its rhythm
+   * comes from the row height and the hairline between rows, so the field
+   * grid's 12px gap double-spaces it — and did so differently per card,
+   * depending on how many rows there were.
+   */
+  const allReadonly = $derived(
+    model.fields.length > 0 &&
+      model.fields.every((field) => field.control === "readonly"),
+  );
+
   function isWide(field: LifecycleCardField): boolean {
     if (field.control !== "text") return true;
     return model.fields.filter((row) => row.control === "text").length === 1;
@@ -241,7 +252,7 @@
     {/if}
 
     {#if model.fields.length > 0}
-      <div class="lc-fields">
+      <div class="lc-fields" class:lc-fields-list={allReadonly}>
         {#each model.fields as field (field.id)}
           {@const error = fieldError(field)}
           {@const current = values[field.id] ?? ""}
@@ -560,6 +571,13 @@
 
   .lc-field.wide {
     grid-column: 1 / -1;
+  }
+
+  /* See `allReadonly`: one column, no gap — the rows' own height and rules
+     carry the rhythm. */
+  .lc-fields-list {
+    grid-template-columns: 1fr;
+    row-gap: 0;
   }
 
   /* `.create-label` — the shell's form-label mark. */

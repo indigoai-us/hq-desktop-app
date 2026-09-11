@@ -66,6 +66,17 @@ function mountPopover(
   return host;
 }
 
+/** PACKS opens collapsed — the count in the row stands in for the list. */
+function expandPacks(): void {
+  const toggle = host.querySelector<HTMLElement>(
+    '[data-testid="core-popover-packs-toggle"]',
+  );
+  if (toggle?.getAttribute("aria-expanded") === "false") {
+    toggle.click();
+    flushSync();
+  }
+}
+
 function packRows(): HTMLElement[] {
   return [
     ...host.querySelectorAll<HTMLElement>(
@@ -77,6 +88,7 @@ function packRows(): HTMLElement[] {
 describe("CorePopover PACKS display names", () => {
   it("renders fixture packs as human names with the slug in title", () => {
     mountPopover(makeAdapter(), { useFixtures: true });
+    expandPacks();
     const rows = packRows();
     expect(rows).toHaveLength(CORE_POPOVER_FIXTURE_PACKS.length);
     for (const [i, pack] of CORE_POPOVER_FIXTURE_PACKS.entries()) {
@@ -116,6 +128,7 @@ describe("CorePopover PACKS display names", () => {
     );
     await vi.waitFor(() => {
       flushSync();
+      expandPacks();
       expect(packRows()).toHaveLength(3);
     });
     const rows = packRows();

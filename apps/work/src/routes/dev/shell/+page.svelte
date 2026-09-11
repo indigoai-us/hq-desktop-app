@@ -119,6 +119,21 @@
           rootEventId: string;
         }) => ok(await fixtureConversation.fetchReplyThread(args)),
         listChannelMembers: async () => ok({ members: [] }),
+        /**
+         * Company channel surfaces. The header's Add-agent control and the
+         * Team / Atlas / Settings tabs all read their rows — and their
+         * permission — from this one call, so without it the company channel
+         * rendered as a chat tab with nothing behind the others.
+         */
+        getCompanyTab: async (companyUid: string, tab: string) =>
+          ok(companyTab(companyUid, tab)),
+        runCompanyTabAction: async (args: { cardId?: string; actionId?: string }) =>
+          ok({
+            cardId: args.cardId ?? "",
+            actionId: args.actionId ?? "",
+            state: "open",
+            replayed: false,
+          }),
       }),
       meetings: slice({
         listUpcoming: async () => ok([]),
@@ -156,6 +171,107 @@
       get: (target, prop) => (prop in target ? target[prop] : emptySlice),
     },
   ) as unknown as PlatformAdapter;
+
+  /** Viewer who owns the company, so every actionable control renders. */
+  const HARNESS_VIEWER = { canAct: true, role: "owner" };
+
+  const tabRow = (
+    companyUid: string,
+    id: string,
+    fields: Record<string, unknown>[],
+    actions: Record<string, unknown>[] = [],
+  ) => ({
+    v: 1,
+    type: "lifecycle_card",
+    cardId: id,
+    kind: "tab_row",
+    companyUid,
+    state: "open",
+    viewer: HARNESS_VIEWER,
+    fields,
+    actions,
+  });
+
+  function companyTab(companyUid: string, tab: string) {
+    const base = { tab, companyUid, viewer: HARNESS_VIEWER };
+    if (tab === "team") {
+      return {
+        ...base,
+        sections: [
+          {
+            id: "people",
+            title: "People",
+            rows: [
+              // `name` is the field id the Team tab renders as the person;
+              // anything else renders as a plain value beside it.
+              tabRow(companyUid, "team:corey", [
+                { id: "name", label: "Name", control: "readonly", value: "Corey Berger" },
+                { id: "role", label: "Role", control: "readonly", value: "Owner" },
+              ]),
+              tabRow(
+                companyUid,
+                "team:bryan",
+                [
+                  { id: "name", label: "Name", control: "readonly", value: "Bryan Ng" },
+                  { id: "role", label: "Role", control: "readonly", value: "Admin" },
+                ],
+                [{ id: "remove", label: "Remove", style: "secondary" }],
+              ),
+              tabRow(
+                companyUid,
+                "team:sofia",
+                [
+                  { id: "name", label: "Name", control: "readonly", value: "Sofia Marchetti" },
+                  { id: "role", label: "Role", control: "readonly", value: "Member" },
+                ],
+                [{ id: "remove", label: "Remove", style: "secondary" }],
+              ),
+            ],
+          },
+          {
+            id: "agents",
+            title: "Agents",
+            rows: [
+              tabRow(
+                companyUid,
+                "team:polar",
+                [
+                  { id: "name", label: "Name", control: "readonly", value: "Polar" },
+                  { id: "size", label: "Size", control: "readonly", value: "Basic" },
+                  { id: "price", label: "Price", control: "readonly", value: "$100/mo" },
+                ],
+                [{ id: "remove", label: "Remove", style: "secondary" }],
+              ),
+              tabRow(
+                companyUid,
+                "team:spend",
+                [{ id: "total", label: "Agent spend", control: "readonly", value: "$300/mo" }],
+                [{ id: "add_agent", label: "Add agent", style: "primary" }],
+              ),
+            ],
+          },
+        ],
+      };
+    }
+    if (tab === "settings") {
+      return {
+        ...base,
+        sections: [
+          {
+            id: "plan",
+            title: "Plan",
+            rows: [
+              tabRow(companyUid, "settings:plan", [
+                { id: "plan", label: "Plan", control: "readonly", value: "Workforce" },
+                { id: "seats", label: "Seats", control: "readonly", value: "12 of 25" },
+              ]),
+            ],
+          },
+        ],
+      };
+    }
+    return { ...base, sections: [] };
+  }
 
   /**
    * `?update=available` paints the desktop-app row in its update state
