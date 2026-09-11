@@ -16,21 +16,27 @@
   let { thread, starting = false, startError = null }: Props = $props();
 
   const sessionId = $derived(thread.liveSessionId ?? null);
-  let sawWorking = $state(false);
+  let sawWorking = false;
+  let postedFinishedFor: string | null = null;
 
   $effect(() => {
     const id = sessionId;
     if (!id || liveSessionStore.activeSessionId !== id) return;
     const phase = liveSessionStore.phase;
-    if (phase === 'working') sawWorking = true;
-    if (!sawWorking) return;
-    if (phase === 'idle' || phase === 'ended') {
+    if (phase === 'working') {
+      sawWorking = true;
+      return;
+    }
+    if (!sawWorking || postedFinishedFor === id) return;
+    if (phase !== 'idle' && phase !== 'ended') return;
+    postedFinishedFor = id;
+    queueMicrotask(() => {
       window.dispatchEvent(
         new CustomEvent('hq-channel-session-status', {
           detail: { sessionId: id, status: 'finished' },
         }),
       );
-    }
+    });
   });
 </script>
 

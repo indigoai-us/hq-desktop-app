@@ -3189,7 +3189,15 @@
       localSessionWires = [...localSessionWires, wire];
       return;
     }
-    localSessionWires = localSessionWires.map((row, i) => (i === index ? { ...wire, createdAt: row.createdAt } : row));
+    const prev = localSessionWires[index];
+    const prevStatus =
+      prev?.systemEvent && typeof prev.systemEvent === "object"
+        ? String((prev.systemEvent as { status?: unknown }).status ?? "")
+        : "";
+    if (prevStatus === input.status) return;
+    localSessionWires = localSessionWires.map((row, i) =>
+      i === index ? { ...wire, createdAt: row.createdAt } : row,
+    );
   }
 
   async function ensureChannelSessionTask(thread: SessionThread): Promise<{
