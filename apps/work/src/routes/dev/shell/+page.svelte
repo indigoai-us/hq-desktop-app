@@ -373,7 +373,73 @@
     theme = settingsArea.applyColorTheme(next) as Theme;
   }
 
-  const sidebarApi = createFixtureChatSidebarApi();
+  /**
+   * Quiet older channels. The rail keeps a budget (~28 rows / 16 channels) and
+   * hides the rest behind "Show all history" — with only the shipped fixtures
+   * nothing is ever over budget, so that row and the expanded state could not
+   * be reviewed here at all. A real workspace has this long tail.
+   */
+  const QUIET_ROWS = [
+    "legal-review",
+    "brand-refresh",
+    "hiring-loop",
+    "infra-oncall",
+    "q3-retro",
+    "vendor-contracts",
+    "press-kit",
+    "support-triage",
+    "data-migration",
+    "office-ops",
+    "partner-sync",
+    "security-review",
+    "pricing-wg",
+    "localisation",
+    "customer-advisory",
+    "runbooks",
+    "analytics-dash",
+    "design-tokens",
+    "mobile-beta",
+    "archive-2025",
+  ].map((name, i) => ({
+    channelId: name,
+    type: "project",
+    scope: "project",
+    companyUid: "Indigo",
+    subtitle: "Indigo · project",
+    // Without `joined` the rail treats a channel as browse-only and hides it
+    // behind the admin switch, so the tail never reached the budget at all.
+    membership: "joined",
+    name,
+    lastActivityAt: new Date(
+      Date.now() - (9 + i) * 24 * 60 * 60_000,
+    ).toISOString(),
+    unreadCount: 0,
+    memberCount: 3 + (i % 4),
+    members: [{ personUid: "person-corey", displayName: "Corey" }],
+  }));
+
+  const fixtureSidebarApi = createFixtureChatSidebarApi();
+
+  /**
+   * The sidebar fetches the directory itself, so the quiet tail has to come
+   * from the API and not only from `seedDirectory` — seeding alone was
+   * replaced by the first fetch and the rail went back under budget.
+   */
+  const sidebarApi = {
+    ...fixtureSidebarApi,
+    fetchChannelDirectory: async (
+      ...args: Parameters<typeof fixtureSidebarApi.fetchChannelDirectory>
+    ) => {
+      const feed = await fixtureSidebarApi.fetchChannelDirectory(...args);
+      return {
+        ...feed,
+        rows: [
+          ...(feed.rows ?? []),
+          ...(QUIET_ROWS as unknown as NonNullable<typeof feed.rows>),
+        ],
+      };
+    },
+  };
   const notificationsApi = createFixtureNotificationsApi();
   const wakes = createChatWakeBus();
 

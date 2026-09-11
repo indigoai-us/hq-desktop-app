@@ -72,6 +72,10 @@
        pushed the card 30px past its column and out over the window edge. */
     box-sizing: border-box;
     width: fit-content;
+    /* Floor at the artifact card's width so the two stack down the column on
+       one edge. Free to hug below that, a one-line run card was a third the
+       width of the card under it and the pair looked like a mistake. */
+    min-width: min(440px, 100%);
     max-width: 100%;
     margin: 6px 0 0;
     padding: 12px 14px;

@@ -431,6 +431,8 @@
 
   let lastWeekExpanded = $state(false);
   let historyOpen = $state(false);
+  /** The rail is showing every filtered row, not just the live budget. */
+  let historyExpanded = $state(false);
   let historyQuery = $state("");
   /** Server message-content hits for non-empty history query (US-013). */
   let messageSearchHits = $state<MessageSearchHit[]>([]);
@@ -742,7 +744,7 @@
 
   const companyScoped = $derived(scope !== "all" && scope !== "personal");
   const railRows = $derived(
-    sortMode === "type" || companyScoped
+    sortMode === "type" || companyScoped || historyExpanded
       ? filteredRows
       : takeRailConversations(filteredRows, {
           selectedId: activeId,
@@ -2495,16 +2497,26 @@
       {/if}
     {/if}
 
-    <button
-      type="button"
-      class="chat-history-affordance"
-      data-testid="chat-show-history"
-      onclick={openHistory}
-    >
-      Show all history{historyHiddenCount > 0
-        ? ` (${historyHiddenCount})`
-        : ""}…
-    </button>
+    <!-- Expands the rail in place. It used to open a search dialog, which
+         was the top search button's job wearing a different hat — and the
+         question this row actually answers ("what else is in here?") is one
+         you want answered in the list you are already reading. -->
+    {#if historyExpanded || historyHiddenCount > 0}
+      <button
+        type="button"
+        class="chat-history-affordance"
+        data-testid="chat-show-history"
+        aria-expanded={historyExpanded}
+        onclick={() => (historyExpanded = !historyExpanded)}
+      >
+        <span class="chat-history-caret" class:is-open={historyExpanded}>
+          <CaretRight size={11} weight="bold" aria-hidden="true" />
+        </span>
+        {historyExpanded
+          ? "Show less"
+          : `Show all history${historyHiddenCount > 0 ? ` (${historyHiddenCount})` : ""}`}
+      </button>
+    {/if}
 
     {#if loadError && !hasNonSetupRows}
       <div class="chat-empty" role="alert" data-testid="chat-load-error">
@@ -2866,6 +2878,26 @@
             </div>
           {/each}
         </div>
+        <!-- This switcher matches conversation NAMES. Message text is a
+             different search, and the sidebar's history row used to be its
+             only door — that row is now an expander, so the door moved here,
+             beside the search it belongs to. -->
+        <button
+          type="button"
+          class="chat-switcher-messages"
+          data-testid="chat-search-messages"
+          onclick={() => {
+            const q = searchQuery.trim();
+            searchOpen = false;
+            openHistory();
+            historyQuery = q;
+          }}
+        >
+          <MagnifyingGlass size={13} aria-hidden="true" />
+          {searchQuery.trim()
+            ? `Search messages for “${searchQuery.trim()}”`
+            : "Search messages…"}
+        </button>
       </div>
     </div>
   {/if}
@@ -3895,7 +3927,30 @@
     font-weight: 400;
   }
 
+  .chat-switcher-messages {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 9px 12px;
+    border: 0;
+    border-top: 1px solid var(--line);
+    background: transparent;
+    color: var(--t2);
+    font: 500 12px/1.3 var(--font-ui);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .chat-switcher-messages:hover {
+    background: var(--hover);
+    color: var(--t1);
+  }
+
   .chat-history-affordance {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     width: 100%;
     margin-top: 8px;
     padding: 6px 8px;
@@ -3908,6 +3963,19 @@
     font-weight: 500;
     text-align: left;
     cursor: pointer;
+  }
+
+  /* Same disclosure caret as the day-group headers, so the row reads as one
+     of them rather than as a link out. */
+  .chat-history-caret {
+    display: inline-flex;
+    flex: 0 0 auto;
+    color: var(--t3);
+    transition: transform 0.12s ease;
+  }
+
+  .chat-history-caret.is-open {
+    transform: rotate(90deg);
   }
 
   .chat-history-affordance:hover {

@@ -1045,3 +1045,56 @@ it('keeps a populated rail clickable while project-session metadata is still loa
   expect(host.querySelector('[data-testid="sidebar-loading"]')).toBeNull();
   expect(host.querySelector('.chat-row-title')).not.toBeNull();
 });
+
+describe("ChatSidebar history affordance", () => {
+  // It used to open a search dialog — the top search button's job in a second
+  // costume. The question the row answers ("what else is in here?") belongs in
+  // the list you are already reading.
+  it("expands the rail in place instead of opening a dialog", async () => {
+    const rows: ChannelDirectoryRow[] = Array.from({ length: 40 }, (_, i) => ({
+      channelId: `chn_${i}`,
+      type: "project",
+      scope: "project",
+      companyUid: "cmp_1",
+      name: `channel-${i}`,
+      lastActivityAt: new Date(Date.now() - i * 60_000).toISOString(),
+    }));
+    const api = stubApi({
+      fetchChannelDirectory: async () => ({
+        snapshot: true,
+        cursor: "cur_1",
+        cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        rows,
+      }),
+    });
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api, seedDirectory: rows },
+    });
+
+    const toggle = await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-show-history"]',
+      );
+      expect(el, "history affordance").toBeTruthy();
+      return el!;
+    });
+
+    const before = host.querySelectorAll("[data-conversation-id]").length;
+    expect(before).toBeLessThan(rows.length);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+    toggle.click();
+    await tick();
+
+    expect(document.querySelector('[data-testid="chat-history-view"]')).toBeNull();
+    expect(
+      host.querySelectorAll("[data-conversation-id]").length,
+    ).toBeGreaterThan(before);
+    expect(
+      host
+        .querySelector('[data-testid="chat-show-history"]')
+        ?.textContent?.trim(),
+    ).toBe("Show less");
+  });
+});
