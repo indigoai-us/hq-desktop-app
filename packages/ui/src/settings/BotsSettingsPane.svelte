@@ -602,17 +602,6 @@
   .actions { display: flex; align-items: center; gap: 8px; }
   .create { display: grid; gap: 10px; }
   .create-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  input, select {
-    font: inherit;
-    font-size: 13px;
-    min-height: 36px;
-    padding: 6px 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
-  }
-  input { flex: 1 1 160px; min-width: 120px; }
   button {
     font: inherit;
     font-size: 13px;

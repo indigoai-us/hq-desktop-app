@@ -117,6 +117,14 @@ async function mountPane(adapter: PlatformAdapter) {
   await tick();
 }
 
+/** Let the flow's effects and the pane's awaits land. */
+async function settleFlow(times = 6): Promise<void> {
+  for (let i = 0; i < times; i += 1) {
+    await tick();
+    await Promise.resolve();
+  }
+}
+
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
@@ -147,6 +155,37 @@ describe("Settings → Bots (Work shell)", () => {
     }
     expect(pane).not.toContain("@tauri-apps");
     expect(pane).not.toContain("fetch(");
+  });
+
+  it("New bot opens the same three-step flow the sidebar uses and creates through the adapter", async () => {
+    const create = vi.fn(async () => ok({}));
+    const adapter = fakeAdapter({ bots: { create, workers: vi.fn(async () => ok({ workers: [] })) } });
+    await mountPane(adapter);
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="settings-bots-create-button"]')).not.toBeNull();
+    });
+
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-bots-create-button"]')!.click();
+    await settleFlow();
+    expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).not.toBeNull();
+    // The flow itself, not a one-off form.
+    expect(host.querySelector('[data-testid="create-bot-kind-step"]')).not.toBeNull();
+
+    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+    await settleFlow();
+    expect(host.querySelector('[data-testid="create-bot-home-step"]')).not.toBeNull();
+    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+    await settleFlow();
+    // "assistant" is taken by the bot already on this Mac, so the flow moved on.
+    expect(host.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')?.value).toBe("scout");
+
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).toBeNull();
+    });
+    expect(host.querySelector('[data-testid="settings-bots-status"]')?.textContent).toContain("scout");
   });
 
   it("renders the Local group from adapter.bots and the Cloud group from adapter.agents", async () => {
