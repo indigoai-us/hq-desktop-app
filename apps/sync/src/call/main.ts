@@ -15,7 +15,7 @@ import { mount } from 'svelte';
 
 import CallShell from './CallShell.svelte';
 import { safeUnlisten } from '../lib/listener-registry';
-import { startCallWindow, type CallWindowHandle } from './bootstrap';
+import { handleCloseRequested, startCallWindow, type CallWindowHandle } from './bootstrap';
 import { callView } from './view.svelte';
 import type { TrackLike } from '@hq/meet-core';
 
@@ -59,15 +59,30 @@ const started = startCallWindow({
  * Closing the call window means leaving the call: the session releases the
  * tracks and peer connections it owns (camera + microphone stop), the registry
  * entry is cleared, and only then does the close proceed.
+ *
+ * Crucially this never early-returns while the bootstrap is still in flight —
+ * see `handleCloseRequested`. Closing before the handle exists used to close
+ * the window with the Rust registry still armed, which refused every later open
+ * with CALL_ACTIVE until the app restarted.
  */
 void getCurrentWindow().onCloseRequested(async (event) => {
-  if (!handle) return;
-  event.preventDefault();
-  await handle.leave('window-close');
-  await handle.close();
-  await getCurrentWindow().destroy();
+  await handleCloseRequested({
+    handle: () => handle,
+    started,
+    // Published by the bootstrap as soon as the target resolves — that is,
+    // well before the handle exists.
+    sessionId: () => callView.state.sessionId,
+    invoke: (command, args) => invoke(command, args),
+    preventDefault: () => event.preventDefault(),
+    destroy: () => getCurrentWindow().destroy(),
+  });
 });
 
+/**
+ * Attach a remote track for rendering. Ended tracks are pruned from both the
+ * element's stream and the view model, so renegotiation and reconnect replace
+ * tracks rather than piling stale ones up across session generations.
+ */
 function attachRemote(track: TrackLike): void {
   const media = track as unknown as MediaStreamTrack;
   const selector = media.kind === 'audio' ? 'audio' : 'video.remote';
@@ -75,8 +90,15 @@ function attachRemote(track: TrackLike): void {
   if (!element) return;
   const existing = element.srcObject as MediaStream | null;
   const stream = existing ?? new MediaStream();
+  for (const stale of stream.getTracks()) {
+    if (stale.readyState === 'ended') stream.removeTrack(stale);
+  }
   stream.addTrack(media);
   element.srcObject = stream;
+  media.addEventListener('ended', () => {
+    stream.removeTrack(media);
+    callView.remoteTracks = callView.remoteTracks.filter((entry) => entry !== track);
+  });
 }
 
 export default started;

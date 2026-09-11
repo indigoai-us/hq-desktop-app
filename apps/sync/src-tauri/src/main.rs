@@ -516,6 +516,21 @@ fn main() {
                 if window.label() == crate::recovery::WINDOW_LABEL {
                     crate::recovery::on_recovery_closed(window.app_handle());
                 }
+                // US-016: the call window — and ONLY the call window — owns the
+                // call registry. Once it is destroyed (user close, crash, kill)
+                // the session is gone with it, so drop every entry and any
+                // undrained pending target. Without this a crashed call window
+                // would leave the registry hot and refuse the next open with
+                // CALL_ACTIVE forever.
+                if crate::commands::calls::owns_window_label(window.label()) {
+                    let released = crate::commands::calls::release_all_sessions();
+                    if !released.is_empty() {
+                        crate::util::logfile::log(
+                            "calls",
+                            &format!("window destroyed; released={}", released.join(",")),
+                        );
+                    }
+                }
             }
             // No eager standalone-install probe here. `refresh_hq_work_install_cache`
             // force-probes with no TTL — on macOS that falls through to a fresh

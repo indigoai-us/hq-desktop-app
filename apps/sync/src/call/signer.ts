@@ -47,10 +47,15 @@ export async function createDeviceSigner(): Promise<DeviceSigner> {
     async sign(envelope: Record<string, unknown>): Promise<string> {
       const message = signedBytes(envelope);
       const signature = new Uint8Array(
+        // The view goes straight in: `.buffer` would hand `subtle.sign` the
+        // whole backing store, which is only the same bytes when the view
+        // happens to span it exactly. The cast is purely to satisfy
+        // `BufferSource`, whose lib.dom typing wants an `ArrayBuffer`-backed
+        // view; the bytes, offset and length are unchanged.
         await subtle().sign(
           { name: "Ed25519" },
           pair.privateKey,
-          message.buffer as ArrayBuffer,
+          message as Uint8Array<ArrayBuffer>,
         ),
       );
       return toBase64Url(signature);

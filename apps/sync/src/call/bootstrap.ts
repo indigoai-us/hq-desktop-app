@@ -130,6 +130,22 @@ export async function resolveCallTarget(
   const pending = await deps.invoke("calls_take_pending_target");
   if (isCallWindowTarget(pending)) return pending;
 
+  const warm = await waitForWarmTarget(deps);
+  if (warm) return warm;
+
+  // The arm-then-emit race: Rust arms the pending slot and only then emits, so
+  // a target armed after our first drain but whose emit we missed (window
+  // mid-reload, listener registered a tick late) is still sitting in the slot.
+  // Drain once more before giving up — the slot yields at most one target, so
+  // this can never double-deliver.
+  const late = await deps.invoke("calls_take_pending_target").catch(() => null);
+  return isCallWindowTarget(late) ? late : null;
+}
+
+/** Bounded wait for the window-scoped warm target. Null on timeout. */
+function waitForWarmTarget(
+  deps: Pick<CallWindowDeps, "listen" | "targetWaitMs">,
+): Promise<CallWindowTarget | null> {
   const waitMs = deps.targetWaitMs ?? DEFAULT_TARGET_WAIT_MS;
   return new Promise<CallWindowTarget | null>((resolve) => {
     let settled = false;
@@ -392,6 +408,87 @@ export async function startCallWindow(
       for (const off of listeners.splice(0)) off();
     },
   };
+}
+
+/** How long a close waits for an in-flight bootstrap to hand back a handle. */
+export const CLOSE_BOOTSTRAP_WAIT_MS = 1_000;
+
+export interface CloseRequestedDeps {
+  /** The live handle, or null while `startCallWindow` is still in flight. */
+  handle: () => CallWindowHandle | null;
+  /** The in-flight bootstrap. Awaited (bounded) when there is no handle yet. */
+  started: Promise<CallWindowHandle>;
+  /** The session id, known as soon as the target resolved. */
+  sessionId: () => string | null;
+  invoke: CallInvoke;
+  /** Stop the close so teardown can finish first. */
+  preventDefault: () => void;
+  destroy: () => Promise<void>;
+  waitMs?: number;
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
+}
+
+/**
+ * Close the call window WITHOUT ever leaking a live call.
+ *
+ * The dangerous case is closing *before* the bootstrap resolved: there is no
+ * handle to leave with, but Rust may already hold an armed registry entry, and
+ * returning early there would close the window and leave the registry hot —
+ * every later open refused with `CALL_ACTIVE`. So the close is always
+ * prevented, the in-flight bootstrap is given a bounded chance to land, the
+ * handle (if one arrived) leaves the call, any known session is released, and
+ * only then does the window actually go away.
+ */
+export async function handleCloseRequested(
+  deps: CloseRequestedDeps,
+): Promise<void> {
+  deps.preventDefault();
+
+  if (!deps.handle()) {
+    const waitMs = deps.waitMs ?? CLOSE_BOOTSTRAP_WAIT_MS;
+    const setTimer =
+      deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+    const clearTimer =
+      deps.clearTimer ?? ((handle: unknown) => clearTimeout(handle as never));
+    let timer: unknown;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimer(() => resolve(null), waitMs);
+    });
+    try {
+      await Promise.race([deps.started.catch(() => null), timeout]);
+    } finally {
+      clearTimer(timer);
+    }
+  }
+
+  const handle = deps.handle();
+  try {
+    await handle?.leave("window-close");
+  } catch {
+    // The window is going away regardless; a failed leave must never wedge it.
+  }
+
+  // Belt and braces: if the bootstrap never landed, `leave` never ran, so the
+  // registry entry Rust armed for this session is still there. Release it by id
+  // — `calls_release` is idempotent, so doing it after a successful leave is
+  // harmless too.
+  const sessionId = deps.sessionId();
+  if (!handle && sessionId) {
+    await deps
+      .invoke("calls_release", {
+        sessionId,
+        reason: "window-close-before-ready",
+      })
+      .catch(() => {});
+  }
+
+  try {
+    await handle?.close();
+  } catch {
+    // Same: listener teardown must not block the destroy.
+  }
+  await deps.destroy();
 }
 
 async function releaseOnly(

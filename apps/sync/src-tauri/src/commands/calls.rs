@@ -46,6 +46,12 @@ pub const MAX_PENDING_BYTES: usize = 256 * 1024;
 /// How long app quit waits for the call window to confirm disposal.
 pub const DISPOSE_WAIT: Duration = Duration::from_millis(1500);
 const DISPOSE_POLL: Duration = Duration::from_millis(25);
+/// JS `Number.MAX_SAFE_INTEGER`. Every timestamp in a target crosses the invoke
+/// seam into a webview, so anything past this cannot round-trip honestly.
+pub const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_992; // 2^53
+/// Upper bound on any grant interval: one hour. Longer is a malformed target,
+/// not a policy we honour.
+pub const MAX_INTERVAL_MS: u64 = 3_600_000;
 
 // ── Target ───────────────────────────────────────────────────────────────────
 
@@ -99,16 +105,19 @@ pub struct CallOpenResult {
     pub focused: bool,
 }
 
-/// Field names that must never appear anywhere in a serialized target.
-const CREDENTIAL_FIELD_NAMES: [&str; 8] = [
+/// Credential *stems*. A normalized key (lowercased, `_`/`-` stripped) that
+/// CONTAINS any of these is refused, so `access_token`, `refreshToken` and
+/// `x-api-key` are caught, not just the bare names. `sessionId` is deliberately
+/// not a stem: the session id is the registry key and carries no secret.
+const CREDENTIAL_FIELD_STEMS: [&str; 8] = [
     "token",
     "credential",
-    "credentials",
     "password",
     "secret",
     "authorization",
     "bearer",
     "apikey",
+    "privatekey",
 ];
 
 /// True when no key anywhere in `value` looks like credential material.
@@ -118,7 +127,9 @@ pub fn json_has_no_credential_fields(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Object(map) => map.iter().all(|(key, nested)| {
             let normalized = key.to_ascii_lowercase().replace(['_', '-'], "");
-            !CREDENTIAL_FIELD_NAMES.contains(&normalized.as_str())
+            !CREDENTIAL_FIELD_STEMS
+                .iter()
+                .any(|stem| normalized.contains(stem))
                 && json_has_no_credential_fields(nested)
         }),
         serde_json::Value::Array(items) => items.iter().all(json_has_no_credential_fields),
@@ -139,20 +150,33 @@ pub fn validate_target(target: &CallWindowTarget) -> Result<(), String> {
     ] {
         // sessionId is the one composite id: `a:b:c:d`. Every segment still has
         // to be url-safe, so a target can never smuggle a path or a query.
+        // `split` always yields at least one part, so an empty value simply
+        // fails `is_url_safe_id` — no separate emptiness branch needed.
         let parts: Vec<&str> = if field == "sessionId" {
             value.split(':').collect()
         } else {
             vec![value]
         };
-        if parts.is_empty() || !parts.iter().all(|part| is_url_safe_id(part)) {
+        if !parts.iter().all(|part| is_url_safe_id(part)) {
             return Err(format!("invalid {field}"));
         }
     }
-    if target.epoch < 0 {
+    if target.epoch < 0 || target.epoch > MAX_SAFE_INTEGER {
         return Err("invalid epoch".to_string());
     }
-    if target.grant.expires_at <= 0 {
+    if target.grant.expires_at <= 0 || target.grant.expires_at > MAX_SAFE_INTEGER {
         return Err("invalid grant.expiresAt".to_string());
+    }
+    for (field, value) in [
+        ("grant.renewAfterMs", target.grant.renew_after_ms),
+        ("grant.trafficStopMs", target.grant.traffic_stop_ms),
+        ("grant.controlPollMs", target.grant.control_poll_ms),
+    ] {
+        if let Some(ms) = value {
+            if ms == 0 || ms > MAX_INTERVAL_MS {
+                return Err(format!("invalid {field}"));
+            }
+        }
     }
     let serialized =
         serde_json::to_value(target).map_err(|error| format!("invalid target: {error}"))?;
@@ -264,6 +288,14 @@ impl CallRegistry {
         self.entries.remove(session_id).is_some()
     }
 
+    /// Drain every entry and the pending slot. Returns the released ids.
+    pub fn release_all(&mut self) -> Vec<String> {
+        let released = self.active_session_ids();
+        self.entries.clear();
+        self.pending = None;
+        released
+    }
+
     pub fn active_session_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.entries.keys().cloned().collect();
         ids.sort();
@@ -292,6 +324,16 @@ impl CallRegistry {
 /// that is the whole point of the story.
 pub fn owns_window_label(label: &str) -> bool {
     label == CALL_WINDOW_LABEL
+}
+
+/// The call window was destroyed (closed, crashed, or killed). Drop every
+/// entry and any undrained pending target so the registry is cold again and the
+/// next open is a clean cold start rather than `CALL_ACTIVE`.
+///
+/// Called from the `Destroyed` window-event hook in `main.rs`, gated on
+/// `owns_window_label`, so no other window can ever clear a live call.
+pub fn release_all_sessions() -> Vec<String> {
+    with_registry(|registry| registry.release_all())
 }
 
 static REGISTRY: OnceLock<Mutex<CallRegistry>> = OnceLock::new();
@@ -337,7 +379,14 @@ pub fn persist_pending_at(
     std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     let final_path = recovery_path(dir);
     let temp_path = final_path.with_extension("json.tmp");
-    std::fs::write(&temp_path, &encoded).map_err(|error| error.to_string())?;
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::File::create(&temp_path).map_err(|error| error.to_string())?;
+        file.write_all(&encoded).map_err(|error| error.to_string())?;
+        // Durable before the rename: a crash between write and rename must not
+        // leave a renamed-but-empty recovery file.
+        file.sync_all().map_err(|error| error.to_string())?;
+    }
     std::fs::rename(&temp_path, &final_path).map_err(|error| error.to_string())
 }
 
@@ -664,6 +713,97 @@ mod tests {
         assert!(validate_target(&bad).is_err());
         let mut bad = target("s-1");
         bad.grant.expires_at = 0;
+        assert!(validate_target(&bad).is_err());
+    }
+
+    #[test]
+    fn destroying_the_call_window_returns_the_registry_to_cold() {
+        let mut registry = CallRegistry::default();
+        registry.arm(target("s-1"));
+        assert!(registry.mark_ready("s-1"));
+        // Exactly what the `Destroyed` hook in main.rs does, gated on the label.
+        assert!(owns_window_label(CALL_WINDOW_LABEL));
+        let released = registry.release_all();
+        assert_eq!(released, vec!["s-1".to_string()]);
+        assert!(registry.is_empty());
+        assert_eq!(registry.take_pending(), None);
+        // A brand new session is a clean cold start, not CALL_ACTIVE.
+        assert_eq!(registry.decide_open(false, &target("s-2")), OpenDecision::Cold);
+    }
+
+    #[test]
+    fn a_destroyed_window_never_leaves_a_conflicting_entry_behind() {
+        let mut registry = CallRegistry::default();
+        registry.arm(target("s-1"));
+        // Crash before ready: pending is still undrained.
+        assert_eq!(registry.release_all(), vec!["s-1".to_string()]);
+        assert_eq!(registry.decide_open(true, &target("s-2")), OpenDecision::Warm);
+        // Idempotent.
+        assert!(registry.release_all().is_empty());
+    }
+
+    #[test]
+    fn validation_rejects_out_of_range_timestamps_and_intervals() {
+        let mut bad = target("s-1");
+        bad.epoch = MAX_SAFE_INTEGER + 1;
+        assert!(validate_target(&bad).is_err());
+        let mut ok = target("s-1");
+        ok.epoch = MAX_SAFE_INTEGER;
+        assert!(validate_target(&ok).is_ok());
+
+        let mut bad = target("s-1");
+        bad.grant.expires_at = MAX_SAFE_INTEGER + 1;
+        assert!(validate_target(&bad).is_err());
+
+        for build in [
+            (|t: &mut CallWindowTarget, ms: Option<u64>| t.grant.renew_after_ms = ms)
+                as fn(&mut CallWindowTarget, Option<u64>),
+            |t: &mut CallWindowTarget, ms: Option<u64>| t.grant.traffic_stop_ms = ms,
+            |t: &mut CallWindowTarget, ms: Option<u64>| t.grant.control_poll_ms = ms,
+        ] {
+            let mut zero = target("s-1");
+            build(&mut zero, Some(0));
+            assert!(validate_target(&zero).is_err(), "zero interval must be refused");
+            let mut over = target("s-1");
+            build(&mut over, Some(MAX_INTERVAL_MS + 1));
+            assert!(validate_target(&over).is_err(), "interval past the ceiling");
+            let mut edge = target("s-1");
+            build(&mut edge, Some(MAX_INTERVAL_MS));
+            assert!(validate_target(&edge).is_ok(), "the ceiling itself is valid");
+            let mut absent = target("s-1");
+            build(&mut absent, None);
+            assert!(validate_target(&absent).is_ok(), "absent stays optional");
+        }
+    }
+
+    #[test]
+    fn credential_stems_match_by_substring_but_session_id_is_not_a_secret() {
+        for banned in [
+            "access_token",
+            "refreshToken",
+            "X-Api-Key",
+            "servicePrivateKey",
+            "clientSecret",
+            "authorizationHeader",
+            "userPassword",
+            "bearerToken",
+            "credentials",
+        ] {
+            let value = serde_json::json!({ "deep": { banned: "x" } });
+            assert!(
+                !json_has_no_credential_fields(&value),
+                "{banned} must be refused"
+            );
+        }
+        for allowed in ["sessionId", "session_id", "roomId", "grantId", "runAt"] {
+            let value = serde_json::json!({ allowed: "x" });
+            assert!(
+                json_has_no_credential_fields(&value),
+                "{allowed} is not credential material"
+            );
+        }
+        let mut bad = target("s-1");
+        bad.evidence = serde_json::json!({ "access_token": "x" });
         assert!(validate_target(&bad).is_err());
     }
 

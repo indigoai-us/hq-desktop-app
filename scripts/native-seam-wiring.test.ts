@@ -208,6 +208,19 @@ const boundaryContracts: BoundaryContract[] = [
     beforeMarkers: ["commands::process::terminate_all_for_exit("],
   },
   {
+    // US-016. A live call owns its own OS window and its own camera and
+    // microphone. The app-quit path must ask it to dispose BEFORE the children
+    // are torn down, or a quit during a call leaves the capture devices to the
+    // process teardown rather than to a clean session dispose. Pinned against
+    // deletion and against being reordered after `terminate_all_for_exit`.
+    label: "session-end call-window disposal",
+    file: "main",
+    hook: "commands::calls::dispose_call_windows_for_exit(",
+    startMarker: "if let tauri::RunEvent::ExitRequested { .. } = event {",
+    endMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    beforeMarkers: ["commands::process::terminate_all_for_exit("],
+  },
+  {
     label: "running phase",
     file: "main",
     hook:

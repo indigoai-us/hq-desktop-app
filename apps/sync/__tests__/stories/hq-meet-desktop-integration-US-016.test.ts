@@ -372,7 +372,13 @@ describe("US-016 e2e 2: one authorized target reaches the call window", () => {
     });
     expect(seen).toContain("error");
     expect(handle.session).toBeNull();
-    expect(bench.commands()).toEqual(["calls_take_pending_target"]);
+    // Two drains and nothing else: the second closes the arm-then-emit race
+    // (a target armed after the first drain whose emit this window missed).
+    // The window still never acknowledges a mount it has no target for.
+    expect(bench.commands()).toEqual([
+      "calls_take_pending_target",
+      "calls_take_pending_target",
+    ]);
   });
 });
 

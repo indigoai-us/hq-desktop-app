@@ -12,11 +12,13 @@ import { PINNED_CONTRACT_HASH } from "@hq/platform";
 import {
   CALL_DISPOSE_EVENT,
   CALL_TARGET_EVENT,
+  handleCloseRequested,
   pendingCompletionState,
   resolveCallTarget,
   startCallWindow,
   type CallInvoke,
   type CallWindowDeps,
+  type CallWindowHandle,
 } from "./bootstrap";
 import { hasNoCredentialFields, isCallWindowTarget } from "./target";
 import type { CallWindowTarget } from "./target";
@@ -36,6 +38,13 @@ const EVIDENCE = {
   passed: true,
 };
 
+/**
+ * Fixed, not `Date.now() + …`: two `target()` calls a millisecond apart used to
+ * produce targets that failed `toEqual` against each other, which made every
+ * identity assertion here a coin flip. Well inside the 2^53 bound Rust pins.
+ */
+const EXPIRES_AT = 1_800_000_000_000;
+
 function target(overrides: Partial<CallWindowTarget> = {}): CallWindowTarget {
   return {
     sessionId: "cmp-1:room-1:call-1:7",
@@ -45,7 +54,7 @@ function target(overrides: Partial<CallWindowTarget> = {}): CallWindowTarget {
     epoch: 7,
     grant: {
       grantId: "grant-1",
-      expiresAt: Date.now() + 600_000,
+      expiresAt: EXPIRES_AT,
       renewAfterMs: 30_000,
       trafficStopMs: 10_000,
       controlPollMs: 1_000,
@@ -159,6 +168,207 @@ describe("resolveCallTarget", () => {
   });
 });
 
+describe("resolveCallTarget re-drains the pending slot on timeout", () => {
+  it("closes the arm-then-emit race", async () => {
+    // Nothing pending on the first drain; the target is armed while the window
+    // is waiting, and its emit never reaches this listener.
+    let drains = 0;
+    const bench = harness({
+      targetWaitMs: 5,
+      invoke: async (command) => {
+        if (command !== "calls_take_pending_target") return null;
+        drains += 1;
+        return drains === 1 ? null : target();
+      },
+    });
+    expect(await resolveCallTarget(bench.deps)).toEqual(target());
+    expect(drains).toBe(2);
+  });
+
+  it("re-drains exactly once and still gives up when the slot stays empty", async () => {
+    const bench = harness({ targetWaitMs: 5 });
+    expect(await resolveCallTarget(bench.deps)).toBeNull();
+    expect(
+      bench.calls.filter((call) => call.command === "calls_take_pending_target"),
+    ).toHaveLength(2);
+  });
+
+  it("prefers the warm event and never re-drains when one arrives", async () => {
+    const bench = harness({ targetWaitMs: 1_000 });
+    const pending = resolveCallTarget(bench.deps);
+    await Promise.resolve();
+    bench.emit(CALL_TARGET_EVENT, target());
+    expect(await pending).toEqual(target());
+    expect(
+      bench.calls.filter((call) => call.command === "calls_take_pending_target"),
+    ).toHaveLength(1);
+  });
+});
+
+describe("handleCloseRequested", () => {
+  function closeBench(options: {
+    handle?: CallWindowHandle | null;
+    started?: Promise<CallWindowHandle>;
+    sessionId?: string | null;
+  }) {
+    const order: string[] = [];
+    const invoked: Array<{ command: string; args?: Record<string, unknown> }> =
+      [];
+    let handle = options.handle ?? null;
+    const deps = {
+      handle: () => handle,
+      started:
+        options.started ??
+        (Promise.resolve(handle as CallWindowHandle) as Promise<CallWindowHandle>),
+      sessionId: () => options.sessionId ?? null,
+      invoke: async (command: string, args?: Record<string, unknown>) => {
+        order.push(`invoke:${command}`);
+        invoked.push({ command, ...(args ? { args } : {}) });
+        return null;
+      },
+      preventDefault: () => order.push("preventDefault"),
+      destroy: async () => {
+        order.push("destroy");
+      },
+      waitMs: 20,
+    };
+    return {
+      deps,
+      order,
+      invoked,
+      land: (next: CallWindowHandle) => {
+        handle = next;
+      },
+    };
+  }
+
+  function fakeHandle(order: string[]): CallWindowHandle {
+    return {
+      target: target(),
+      session: null,
+      state: () => ({
+        status: "joined",
+        code: null,
+        sessionId: target().sessionId,
+        peerCount: 1,
+      }),
+      leave: async (reason?: string) => {
+        order.push(`leave:${reason}`);
+      },
+      dispose: async () => {},
+      close: async () => {
+        order.push("close");
+      },
+    };
+  }
+
+  it("closing after ready leaves, closes, then destroys — in that order", async () => {
+    const bench = closeBench({});
+    const handle = fakeHandle(bench.order);
+    bench.land(handle);
+    await handleCloseRequested({ ...bench.deps, handle: () => handle });
+    expect(bench.order).toEqual([
+      "preventDefault",
+      "leave:window-close",
+      "close",
+      "destroy",
+    ]);
+    // `leave` already released the entry; no second release by id.
+    expect(bench.invoked).toEqual([]);
+  });
+
+  it("closing before ready waits for the bootstrap and then leaves normally", async () => {
+    const order: string[] = [];
+    let land: (handle: CallWindowHandle) => void = () => {};
+    const started = new Promise<CallWindowHandle>((resolve) => {
+      land = resolve;
+    });
+    let handle: CallWindowHandle | null = null;
+    const closing = handleCloseRequested({
+      handle: () => handle,
+      started,
+      sessionId: () => target().sessionId,
+      invoke: async (command, args) => {
+        order.push(`invoke:${command}${JSON.stringify(args)}`);
+        return null;
+      },
+      preventDefault: () => order.push("preventDefault"),
+      destroy: async () => {
+        order.push("destroy");
+      },
+      waitMs: 500,
+    });
+    await Promise.resolve();
+    expect(order).toEqual(["preventDefault"]);
+    const ready = fakeHandle(order);
+    handle = ready;
+    land(ready);
+    await closing;
+    expect(order).toEqual([
+      "preventDefault",
+      "leave:window-close",
+      "close",
+      "destroy",
+    ]);
+  });
+
+  it("never closes the window with the registry still armed", async () => {
+    // The bootstrap never lands: without the release, Rust would keep the entry
+    // and refuse every later open with CALL_ACTIVE.
+    const bench = closeBench({
+      started: new Promise<CallWindowHandle>(() => {}),
+      sessionId: target().sessionId,
+    });
+    await handleCloseRequested(bench.deps);
+    expect(bench.order).toEqual([
+      "preventDefault",
+      "invoke:calls_release",
+      "destroy",
+    ]);
+    expect(bench.invoked).toEqual([
+      {
+        command: "calls_release",
+        args: {
+          sessionId: target().sessionId,
+          reason: "window-close-before-ready",
+        },
+      },
+    ]);
+  });
+
+  it("destroys the window even with no session id and a rejected bootstrap", async () => {
+    const bench = closeBench({
+      started: Promise.reject(new Error("bootstrap failed")),
+      sessionId: null,
+    });
+    await handleCloseRequested(bench.deps);
+    expect(bench.order).toEqual(["preventDefault", "destroy"]);
+    expect(bench.invoked).toEqual([]);
+  });
+
+  it("destroys the window even when leave throws", async () => {
+    const order: string[] = [];
+    const handle: CallWindowHandle = {
+      ...fakeHandle(order),
+      leave: async () => {
+        order.push("leave");
+        throw new Error("leave exploded");
+      },
+    };
+    await handleCloseRequested({
+      handle: () => handle,
+      started: Promise.resolve(handle),
+      sessionId: () => target().sessionId,
+      invoke: async () => null,
+      preventDefault: () => order.push("preventDefault"),
+      destroy: async () => {
+        order.push("destroy");
+      },
+    });
+    expect(order).toEqual(["preventDefault", "leave", "close", "destroy"]);
+  });
+});
+
 describe("startCallWindow", () => {
   it("acknowledges the mount and reaches Rust in the pinned order", async () => {
     const bench = harness({ pending: target() });
@@ -242,6 +452,30 @@ describe("no credential ever reaches this window", () => {
     );
     expect(hasNoCredentialFields([{ "API-Key": "x" }])).toBe(false);
     expect(hasNoCredentialFields(target())).toBe(true);
+  });
+
+  it("refuses credential-shaped keys by stem, not just exact name", () => {
+    for (const banned of [
+      "access_token",
+      "refreshToken",
+      "X-Api-Key",
+      "servicePrivateKey",
+      "clientSecret",
+      "authorizationHeader",
+      "userPassword",
+      "bearerToken",
+      "credentials",
+    ]) {
+      expect(hasNoCredentialFields({ deep: { [banned]: "x" } })).toBe(false);
+      expect(
+        isCallWindowTarget(target({ evidence: { [banned]: "x" } })),
+      ).toBe(false);
+    }
+    for (const allowed of ["sessionId", "session_id", "roomId", "grantId"]) {
+      expect(hasNoCredentialFields({ [allowed]: "x" })).toBe(true);
+    }
+    // sessionId is the registry key, not a secret — the real target keeps it.
+    expect(isCallWindowTarget(target())).toBe(true);
   });
 
   it("keeps the durable pending record content-free", () => {

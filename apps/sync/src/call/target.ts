@@ -34,16 +34,22 @@ export interface CallWindowTarget {
   evidence: unknown;
 }
 
-/** Field names that must never appear in anything handed to this window. */
-const CREDENTIAL_FIELDS = [
+/**
+ * Credential *stems*. A normalized key (lowercased, `_`/`-` stripped) that
+ * CONTAINS one of these is refused, so `access_token`, `refreshToken` and
+ * `x-api-key` are caught, not just the bare names. Mirrors
+ * `CREDENTIAL_FIELD_STEMS` in `commands/calls.rs`. `sessionId` is deliberately
+ * absent: the session id is the registry key and carries no secret.
+ */
+const CREDENTIAL_FIELD_STEMS = [
   "token",
   "credential",
-  "credentials",
   "password",
   "secret",
   "authorization",
   "bearer",
   "apikey",
+  "privatekey",
 ];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -57,7 +63,8 @@ export function hasNoCredentialFields(value: unknown): boolean {
   return Object.entries(value).every(([key, nested]) => {
     const normalized = key.toLowerCase().replace(/[_-]/g, "");
     return (
-      !CREDENTIAL_FIELDS.includes(normalized) && hasNoCredentialFields(nested)
+      !CREDENTIAL_FIELD_STEMS.some((stem) => normalized.includes(stem)) &&
+      hasNoCredentialFields(nested)
     );
   });
 }
