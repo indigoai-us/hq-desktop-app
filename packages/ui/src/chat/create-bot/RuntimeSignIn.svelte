@@ -31,7 +31,7 @@
 
   let { runtime, api, onconnected, oncancel, pollMs = 1500 }: Props = $props();
 
-  let state = $state<RuntimeSignInState["state"]>("disconnected");
+  let phase = $state<RuntimeSignInState["state"]>("disconnected");
   let message = $state("");
   let busy = $state(false);
   let generation = 0;
@@ -46,7 +46,7 @@
 
   async function apply(result: RuntimeSignInState, token: number): Promise<void> {
     if (token !== generation) return;
-    state = result.state;
+    phase = result.state;
     message = result.message ?? "";
     if (result.state === "connected") {
       stopPolling();
@@ -61,7 +61,7 @@
       await apply(await api.loginStatus(runtime), token);
     } catch {
       if (token === generation) {
-        state = "error";
+        phase = "error";
         message = "Could not check sign-in. Please try again.";
       }
     }
@@ -77,7 +77,7 @@
       await apply(await api.loginStart(runtime), token);
     } catch {
       if (token === generation) {
-        state = "error";
+        phase = "error";
         message = "Could not open sign-in. Check that the app is installed, then try again.";
       }
     } finally {
@@ -96,7 +96,7 @@
       }
     }
     if (token !== generation) return;
-    state = "disconnected";
+    phase = "disconnected";
     message = "";
     oncancel?.();
   }
@@ -112,16 +112,16 @@
   });
 </script>
 
-<div class="signin" data-testid="runtime-signin" data-runtime={runtime} data-state={state} aria-live="polite">
-  {#if state === "waiting"}
+<div class="signin" data-testid="runtime-signin" data-runtime={runtime} data-state={phase} aria-live="polite">
+  {#if phase === "waiting"}
     <span class="signin-text">Finish signing in to {label} in your browser — HQ will notice on its own.</span>
     <button type="button" class="signin-btn" data-testid="runtime-signin-cancel" onclick={() => void cancel()}>Cancel</button>
-  {:else if state === "connected"}
+  {:else if phase === "connected"}
     <span class="signin-text ok">{label} is signed in.</span>
   {:else if busy}
     <span class="signin-text">Opening {label} sign-in…</span>
   {:else}
-    <span class="signin-text" class:error={state === "error"}>{message || "Sign-in did not complete."}</span>
+    <span class="signin-text" class:error={phase === "error"}>{message || "Sign-in did not complete."}</span>
     <button type="button" class="signin-btn" data-testid="runtime-signin-retry" onclick={() => void start()}>Try again</button>
     <button type="button" class="signin-btn quiet" data-testid="runtime-signin-cancel" onclick={() => void cancel()}>Cancel</button>
   {/if}
