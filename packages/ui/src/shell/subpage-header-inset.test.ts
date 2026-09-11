@@ -95,7 +95,9 @@ describe("sub-page Back headers share PageHeader + titlebar inset", () => {
   });
 
   it("does not let a new full-window Back header skip PageHeader", () => {
-    const inPanelBack = /Back to (team list|knowledge tree|goals list|search|queue)/;
+    // In-panel Backs name where they go; only a page-chrome Back is bare.
+    const inPanelBack =
+      /Back to (team list|knowledge tree|goals list|search|queue|create menu)/;
     const offenders: string[] = [];
     for (const file of svelteFiles(SRC)) {
       const rel = relative(SRC, file);

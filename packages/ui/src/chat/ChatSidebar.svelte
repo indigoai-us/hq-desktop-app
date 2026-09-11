@@ -135,6 +135,7 @@
   import Caret from "../common/Caret.svelte";
   import CaretUpDown from "phosphor-svelte/lib/CaretUpDown";
   import CaretRight from "phosphor-svelte/lib/CaretRight";
+  import CaretLeft from "phosphor-svelte/lib/CaretLeft";
   import Chat from "phosphor-svelte/lib/Chat";
   import ChatCircle from "phosphor-svelte/lib/ChatCircle";
   import Check from "phosphor-svelte/lib/Check";
@@ -358,6 +359,8 @@
   let sortMode = $state<SortMode>("recent");
   let newEntryBusy = $state<"company" | "agent" | null>(null);
   let newEntryError = $state<string | null>(null);
+  /** The "+" menu is showing "which company?" instead of its own rows. */
+  let agentPickerOpen = $state(false);
   let showFilter = $state<ShowFilter>(loadShowFilter(storage));
   /** Admin-only: browse project channels in this company you have not joined. */
   let includeNonMembers = $state(loadIncludeNonMemberChannels(storage));
@@ -917,6 +920,7 @@
     const next = !newMenuOpen;
     closeAllOverlays();
     newEntryError = null;
+    agentPickerOpen = false;
     newMenuOpen = next;
   }
 
@@ -951,14 +955,46 @@
     void runNewEntry("company", oncreatecompany);
   }
 
-  /** One company: straight there. Several: the active scope, else the first. */
+  /**
+   * An agent belongs to exactly one company and costs $100-$500/month, so the
+   * company is asked for, not guessed. Defaulting to "the active scope, else
+   * the first in the list" billed the wrong company on a mis-click and the
+   * mistake only surfaced later, on an invoice.
+   *
+   * The one case with no question is the one with no choice: a single
+   * company.
+   */
   function newAgentFromMenu(): void {
     if (!oncreateagent) return;
-    const target =
-      agentCompanies.find((c) => c.companyUid === scope) ?? agentCompanies[0];
-    if (!target) return;
-    void runNewEntry("agent", () => oncreateagent!(target.companyUid));
+    if (agentCompanies.length === 1) {
+      pickAgentCompany(agentCompanies[0].companyUid);
+      return;
+    }
+    if (agentCompanies.length === 0) return;
+    newEntryError = null;
+    agentPickerOpen = true;
   }
+
+  function pickAgentCompany(companyUid: string): void {
+    if (!oncreateagent) return;
+    void runNewEntry("agent", () => oncreateagent!(companyUid));
+  }
+
+  /** Back out of the picker to the menu it replaced, not out of the menu. */
+  function closeAgentPicker(): void {
+    agentPickerOpen = false;
+    newEntryError = null;
+  }
+
+  /**
+   * Scope first, so the company you are already looking at is the top row —
+   * the rest keep the switcher's order.
+   */
+  const agentPickerCompanies = $derived.by<ScopeCompany[]>(() => {
+    const current = agentCompanies.filter((c) => c.companyUid === scope);
+    if (current.length === 0) return agentCompanies;
+    return [...current, ...agentCompanies.filter((c) => c.companyUid !== scope)];
+  });
 
   /** Close the create modal; optionally open the channel it just created. */
   function closeCreate(
@@ -1178,6 +1214,14 @@
       }
       if (searchOpen) {
         searchOpen = false;
+        event.preventDefault();
+        return;
+      }
+      // Escape steps OUT of the company picker before it closes the menu —
+      // one press per level, so a mis-click into the picker is one key to
+      // undo rather than one key to start over.
+      if (agentPickerOpen) {
+        closeAgentPicker();
         event.preventDefault();
         return;
       }
@@ -2029,64 +2073,108 @@
             use:menuPortal={{ anchor: newWrapEl, placement: "bottom-start" }}
             onmousedown={(e) => e.stopPropagation()}
           >
-            <button
-              type="button"
-              class="chat-popover-row"
-              role="menuitem"
-              data-testid="chat-new-message-item"
-              onclick={() => newFromMenu("find")}
-            >
-              <span class="chat-popover-ic" aria-hidden="true">
-                <ChatCircle size={14} />
-              </span>
-              New message
-            </button>
-            <button
-              type="button"
-              class="chat-popover-row"
-              role="menuitem"
-              data-testid="chat-new-project-item"
-              onclick={() => newFromMenu("create")}
-            >
-              <span class="chat-popover-ic" aria-hidden="true">
-                <Hash size={14} />
-              </span>
-              New project
-            </button>
-            <!-- Creating a company or an agent is not a message, so these do
-                 not belong inside the composer. They live here, beside the
-                 other two things the plus makes. -->
-            {#if oncreatecompany}
+            {#if agentPickerOpen}
+              <!-- The picker replaces the menu's rows rather than stacking a
+                   dialog on top of it: one question, answered in the surface
+                   that asked it, with Escape stepping back rather than out. -->
+              <div class="chat-filter-caption">Add an agent to</div>
+              {#each agentPickerCompanies as company (company.companyUid)}
+                <button
+                  type="button"
+                  class="chat-popover-row chat-scope-row"
+                  role="menuitem"
+                  data-testid="chat-new-agent-company"
+                  data-company-uid={company.companyUid}
+                  aria-busy={newEntryBusy === "agent" ? "true" : undefined}
+                  disabled={newEntryBusy != null}
+                  onclick={() => pickAgentCompany(company.companyUid)}
+                >
+                  <span
+                    class={`chat-scope-avatar tone-${scopeTones.get(company.label) ?? 0}`}
+                    aria-hidden="true"
+                  >
+                    {initialsFor(company.label)}
+                  </span>
+                  <span class="chat-scope-row-label">{company.label}</span>
+                  {#if company.companyUid === scope}
+                    <span class="chat-scope-shortcut">Current</span>
+                  {/if}
+                </button>
+              {/each}
+              <div class="chat-scope-sep" role="separator"></div>
               <button
                 type="button"
                 class="chat-popover-row"
                 role="menuitem"
-                data-testid="chat-new-company-item"
-                aria-busy={newEntryBusy === "company" ? "true" : undefined}
-                disabled={newEntryBusy != null}
-                onclick={newCompanyFromMenu}
+                data-testid="chat-new-agent-back"
+                aria-label="Back to create menu"
+                onclick={closeAgentPicker}
               >
                 <span class="chat-popover-ic" aria-hidden="true">
-                  <Buildings size={14} />
+                  <CaretLeft size={14} />
                 </span>
-                New company
+                Back
               </button>
-            {/if}
-            {#if oncreateagent && agentCompanies.length > 0}
+            {:else}
               <button
                 type="button"
                 class="chat-popover-row"
                 role="menuitem"
-                data-testid="chat-new-agent-item"
-                aria-busy={newEntryBusy === "agent" ? "true" : undefined}
-                disabled={newEntryBusy != null}
-                onclick={newAgentFromMenu}
+                data-testid="chat-new-message-item"
+                onclick={() => newFromMenu("find")}
               >
                 <span class="chat-popover-ic" aria-hidden="true">
-                  <Robot size={14} />
+                  <ChatCircle size={14} />
                 </span>
-                New agent
+                New message
               </button>
+              <button
+                type="button"
+                class="chat-popover-row"
+                role="menuitem"
+                data-testid="chat-new-project-item"
+                onclick={() => newFromMenu("create")}
+              >
+                <span class="chat-popover-ic" aria-hidden="true">
+                  <Hash size={14} />
+                </span>
+                New project
+              </button>
+              <!-- Creating a company or an agent is not a message, so these do
+                   not belong inside the composer. They live here, beside the
+                   other two things the plus makes. -->
+              {#if oncreatecompany}
+                <button
+                  type="button"
+                  class="chat-popover-row"
+                  role="menuitem"
+                  data-testid="chat-new-company-item"
+                  aria-busy={newEntryBusy === "company" ? "true" : undefined}
+                  disabled={newEntryBusy != null}
+                  onclick={newCompanyFromMenu}
+                >
+                  <span class="chat-popover-ic" aria-hidden="true">
+                    <Buildings size={14} />
+                  </span>
+                  New company
+                </button>
+              {/if}
+              {#if oncreateagent && agentCompanies.length > 0}
+                <button
+                  type="button"
+                  class="chat-popover-row"
+                  role="menuitem"
+                  data-testid="chat-new-agent-item"
+                  aria-busy={newEntryBusy === "agent" ? "true" : undefined}
+                  disabled={newEntryBusy != null}
+                  onclick={newAgentFromMenu}
+                >
+                  <span class="chat-popover-ic" aria-hidden="true">
+                    <Robot size={14} />
+                  </span>
+                  New agent
+                </button>
+              {/if}
             {/if}
             {#if newEntryError}
               <p class="chat-scope-error" role="alert" data-testid="chat-new-error">

@@ -6,6 +6,8 @@
   import { onDestroy } from "svelte";
   import type { ImagePreviewCache } from "./image-preview-cache";
   import type { FileAttachmentModel } from "./channelMessageModels";
+  import DownloadSimple from "phosphor-svelte/lib/DownloadSimple";
+  import "./doc-card.css";
   import { attachmentPreviewKind, downloadAttachment } from "./attachment-preview";
   import { fileTypeLabel } from "./chat-attachments";
 
@@ -154,27 +156,41 @@
         </button>
       {:else}
         {@const key = keyFor(item)}
+        <!-- Same shell as the artifact card (doc-card.css): both are the
+             "there is more here" handle under a message. -->
         <button
           type="button"
-          class="att-card"
+          class="doc-card is-compact att-card"
           data-testid="attachment-card"
           aria-label={`Download ${item.name}`}
           aria-busy={saving[key] ? "true" : undefined}
           disabled={saving[key]}
           onclick={() => void saveFile(item)}
         >
-          <span class="att-icon" aria-hidden="true"
+          <span class="doc-card-icon" aria-hidden="true"
             >{fileTypeLabel(item.name, item.contentType)}</span
           >
-          <span class="att-copy">
-            <span class="att-name">{item.name}</span>
-            {#if saveError[key]}
-              <span class="att-meta is-error">{saveError[key]}</span>
-            {:else if saving[key]}
-              <span class="att-meta">Saving…</span>
-            {:else if item.sizeLabel}
-              <span class="att-meta">{item.sizeLabel}</span>
-            {/if}
+          <span class="doc-card-copy">
+            <span class="doc-card-title">{item.name}</span>
+            <!-- The icon well already says PDF; repeating the type here
+                 made the card stutter. Well = what it is, meta = how big. -->
+            <span class="doc-card-meta" class:is-error={!!saveError[key]}>
+              {#if saveError[key]}
+                <span>{saveError[key]}</span>
+              {:else if saving[key]}
+                <span>Saving…</span>
+              {:else if item.sizeLabel}
+                <span>{item.sizeLabel}</span>
+              {/if}
+            </span>
+          </span>
+          <!-- A span, not a button: the whole card is the button, and one
+               cannot nest inside another. It is the affordance, not the
+               control. -->
+          <span class="doc-card-actions">
+            <span class="doc-card-btn is-primary" aria-hidden="true">
+              <DownloadSimple size={15} />
+            </span>
           </span>
         </button>
       {/if}
@@ -286,63 +302,10 @@
     font: 400 13px/1.4 var(--font-ui);
   }
 
-  /* Same tile language as the image, sized to its own content: a document
-     has no thumbnail, so it states what it is instead of faking one. */
+  /* The card's shell, type and buttons live in `doc-card.css`; the only
+     local rule is the strip's own margin, which the image tiles set. */
   .att-card {
     appearance: none;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    max-width: 240px;
-    padding: 8px 10px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--raised);
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-    transition: border-color 0.12s;
-  }
-
-  .att-card:hover {
-    border-color: var(--line2);
-  }
-
-  .att-icon {
-    flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 6px;
-    background: var(--btn-bg);
-    color: var(--t2);
-    font: 700 9px/1 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.04em;
-  }
-
-  .att-copy {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .att-name {
-    overflow: hidden;
-    color: var(--t1);
-    font: 500 12px/1.3 var(--font-ui);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .att-meta {
-    color: var(--t3, var(--t2));
-    font: 400 11px/1.2 var(--font-ui);
-  }
-
-  .att-meta.is-error {
-    color: var(--red, #f0616d);
+    margin-top: 0;
   }
 </style>

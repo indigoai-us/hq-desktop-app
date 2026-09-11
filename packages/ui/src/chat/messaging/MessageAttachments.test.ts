@@ -219,9 +219,8 @@ describe("MessageAttachments document cards", () => {
       .click();
 
     await vi.waitFor(() => {
-      expect(host.querySelector(".att-meta.is-error")?.textContent).toContain(
-        "Couldn’t download",
-      );
+      const meta = host.querySelector(".doc-card-meta.is-error");
+      expect(meta?.textContent ?? "").toContain("Couldn’t download");
     });
   });
 });

@@ -114,7 +114,11 @@
           if (args.channelId === "agent-orchestrator") {
             return ok({
               ...page,
-              messages: [...(page.messages ?? []), ...ATTACHMENT_MESSAGES],
+              messages: [
+                ...(page.messages ?? []),
+                ...ARTIFACT_MESSAGES,
+                ...ATTACHMENT_MESSAGES,
+              ],
             });
           }
           if (args.channelId === COMPANY_CHANNEL_ID && AGENT_MESSAGES.length) {
@@ -588,7 +592,7 @@
         kind: "create_agent",
         companyUid: "cmp_indigo",
         state: "open",
-        stepLabel: "Agent · 1 of 3",
+        stepLabel: "Step 1 of 3",
         title: "Create an agent",
         summary: "A fleet agent gets its own channel, vault grants, and runtime.",
         fields: [
@@ -613,6 +617,63 @@
     );
   }
 
+  /**
+   * An artifact — a long structured block that travelled INSIDE a message
+   * (`hq dm --details`), not a vault file. It renders as a collapsed card
+   * that opens the full text in the side pane. The shipped fixtures carry
+   * none, so the card and the file card could never be compared side by side
+   * even though they sit under the same bubble.
+   */
+  const ARTIFACT_MESSAGES = [
+    {
+      eventId: "evt_artifact_details",
+      direction: "in" as const,
+      fromDisplayName: "HQ",
+      fromPersonUid: "agt_hq",
+      body: "Wrote up how to build and test the desktop app.",
+      createdAt: new Date(Date.now() - 34 * 60_000).toISOString(),
+      details: [
+        "New: docs + skills for building and testing the HQ desktop app",
+        "",
+        "Guide (in the desktop app repo, PR #786):",
+        "",
+        "- Build the sidecar first, then the Tauri host. The sidecar is a",
+        "  separate cargo workspace and the host will not pick up a stale one.",
+        "- `pnpm -C apps/sync tauri dev` for the live shell; the design",
+        "  harness at /dev/shell runs the same components in the browser.",
+        "- Ad-hoc codesign after any change to the bundled frameworks, or",
+        "  macOS refuses to launch the app with no useful error.",
+        "- Tests: `pnpm -C packages/ui test` for components, `pnpm -C",
+        "  apps/sync e2e` for the desktop paths.",
+        "",
+        "Skills: build-desktop, test-desktop, and release-desktop now carry",
+        "the same steps, so an agent picking up the repo does not have to",
+        "rediscover them.",
+        "",
+        "Ask in #hq-desktop if a step does not reproduce.",
+      ].join("\n"),
+    },
+  ];
+
+  /**
+   * A SECOND company, so "New agent" has something to ask about. The shipped
+   * fixtures carry one, which makes the company picker unreachable — and the
+   * picker is the whole point of that entry point: an agent belongs to
+   * exactly one company and costs real money, so it is chosen, not guessed.
+   */
+  const HARNESS_COMPANIES = [
+    FIXTURE_COMPANIES[0],
+    {
+      slug: "ramen-bae",
+      displayName: "Ramen Bae",
+      kind: "company",
+      state: "synced",
+      role: "owner",
+      cloudUid: "RamenBae",
+    } as (typeof FIXTURE_COMPANIES)[number],
+    ...FIXTURE_COMPANIES.slice(1),
+  ];
+
   const messagesFor = (row: Parameters<typeof fixtureMessagesFor>[0]) => {
     const id = (row as { channelId?: string })?.channelId;
     if (id === "setup") {
@@ -622,6 +683,7 @@
     if (id === "agent-orchestrator") {
       return [
         ...base,
+        ...(ARTIFACT_MESSAGES as unknown as ReturnType<typeof fixtureMessagesFor>),
         ...(ATTACHMENT_MESSAGES as unknown as ReturnType<typeof fixtureMessagesFor>),
       ];
     }
@@ -683,7 +745,7 @@
           {seedDirectory}
           version="0.10.233"
           tenantAccountId="acct_harness"
-          companies={FIXTURE_COMPANIES}
+          companies={HARNESS_COMPANIES}
           initialRow={FIXTURE_INITIAL_ROW}
           searchRows={FIXTURE_SEARCH_ROWS}
           settingsProfile={FIXTURE_SETTINGS_PROFILE}

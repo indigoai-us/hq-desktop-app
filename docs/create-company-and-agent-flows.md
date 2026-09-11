@@ -200,18 +200,20 @@ a `create_agent` card has been posted or resurfaced.
 Entry points 2 and 3 already know the company. Entry point 1 does not, and
 this is the single place in either flow where a dialog is justified.
 
-Behaviour for the sidebar "New agent" item:
+Behaviour for the sidebar "New agent" item (**implemented**):
 
-- **Scope is a single company** → use it. No question.
-- **Scope is "All" or "Personal", and exactly one company is eligible** → use
-  it. No question. (Eligible = the viewer can add agents there.)
-- **Scope is "All" or "Personal", and two or more companies are eligible** →
-  open a small picker.
+- **Exactly one eligible company** → use it. No question, because there is no
+  choice. (Eligible = the viewer can add agents there.)
+- **Two or more** → open the picker. The current scope does NOT stand in for
+  an answer, even when it names a company — being *in* a company is not the
+  same as saying the agent belongs to it.
 
 The picker is a **menu, not a modal**: it replaces the "+" menu's contents in
-place, titled "Add an agent to…", listing each eligible company with its icon
-and plan. Escape returns to the "+" menu. It asks one question and then gets
-out of the way.
+place, captioned "Add an agent to", listing each eligible company with its
+avatar. The company matching the current scope sorts first and is marked
+"Current", so the likely answer is one row away without being the default.
+Escape steps back to the "+" menu rather than closing it, and a "Back" row
+does the same with the mouse. One question, then out of the way.
 
 Do not silently default to "the first company in the list". Picking the wrong
 company here costs $100–$500/month, and the mistake is discovered later, in a

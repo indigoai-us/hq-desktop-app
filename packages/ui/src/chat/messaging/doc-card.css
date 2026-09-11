@@ -1,0 +1,188 @@
+/* Shared "document card" language.
+ *
+ * Two things hang under a chat bubble and mean roughly the same thing to the
+ * reader — "there is more here than the message shows":
+ *
+ *   - an ARTIFACT card (ArtifactCard.svelte) for a long structured block that
+ *     travelled inside the message (`hq dm --details` / `--prompt`, delegation
+ *     and handoff cards), and
+ *   - a FILE card (MessageAttachments.svelte) for a real attachment in the
+ *     vault.
+ *
+ * They used to look nothing alike: the artifact card carried a 44px animated
+ * gradient mesh tile and 13.5/12.5px type that exists nowhere else in the
+ * shell, while the file card was a small grey pill. Same job, same shell.
+ *
+ * Global (not Svelte-scoped) on purpose — two components share these classes,
+ * and duplicating the rules in both would let them drift, which is the bug
+ * this file exists to fix.
+ *
+ * Scale is the shell's own: 10px radius and a hairline that only warms on
+ * hover (the attachment-tile convention), 13/500 titles, 12/1.4 body, and a
+ * mono caption for the metadata row.
+ */
+
+.doc-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 440px;
+  margin-top: 4px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raised);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease;
+}
+
+.doc-card:hover:not(:disabled) {
+  border-color: var(--line2);
+}
+
+.doc-card:focus-visible {
+  border-color: var(--ice-ink);
+  outline: none;
+}
+
+.doc-card:disabled {
+  cursor: default;
+}
+
+/* Sized to its content rather than to the column: a file card carries a name
+   and a size, and stretching that to 440px left a lake of empty card. */
+.doc-card.is-compact {
+  width: fit-content;
+  min-width: 180px;
+}
+
+/* Icon well. Either a glyph (artifact) or the file's three-letter type
+   (PDF / XLSX / …), which is worth more than a generic document icon. */
+.doc-card-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--btn-bg);
+  color: var(--t2);
+  font: 700 9px/1 var(--font-mono, ui-monospace, Menlo, monospace);
+  letter-spacing: 0.04em;
+}
+
+.doc-card-copy {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.doc-card-title {
+  overflow: hidden;
+  color: var(--t1);
+  font: 500 13px/1.35 var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-card-summary {
+  overflow: hidden;
+  color: var(--t2);
+  font: 400 12px/1.4 var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One caption line, one type family. The kind is the only part that shouts. */
+.doc-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 2px;
+  color: var(--t3, var(--t2));
+  font: 400 10px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.doc-card-kind {
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.doc-card-meta.is-error {
+  color: var(--red, #f0616d);
+}
+
+/* Actions stay out of the way until the card is hovered or keyboard-focused,
+   so a run of cards reads as a list rather than a wall of buttons. */
+.doc-card-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.doc-card:hover .doc-card-actions,
+.doc-card:focus-within .doc-card-actions,
+.doc-card:focus-visible .doc-card-actions {
+  opacity: 1;
+}
+
+/* Icon, not a word. Three cards in a row carried "Copy Open" / "Download"
+   twice over, which read as a toolbar competing with the title for the eye —
+   the glyph says the same thing at a third of the width. Each still carries
+   its own `aria-label`, and hovering names it. */
+.doc-card-btn {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--t2);
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.doc-card-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--t1);
+}
+
+.doc-card-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Same primary tint as Install / Restore in the Core menu. */
+.doc-card-btn.is-primary {
+  color: var(--ice-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .doc-card,
+  .doc-card-actions,
+  .doc-card-btn {
+    transition: none;
+  }
+}

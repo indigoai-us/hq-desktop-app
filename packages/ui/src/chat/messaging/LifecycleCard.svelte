@@ -218,10 +218,13 @@
   tabindex="-1"
 >
   <header class="lc-hd">
+    <h4 class="lc-title">{model.title}</h4>
+    <!-- Step and status both ride the right edge. Leading with the step
+         pushed the title off its own left margin, so a run of cards had no
+         straight edge to read down. -->
     {#if liveStep && model.stepLabel}
       <span class="lc-k">{model.stepLabel}</span>
     {/if}
-    <h4 class="lc-title">{model.title}</h4>
     {#if statusText}
       <span
         class="lc-st"
@@ -479,6 +482,7 @@
   /* Section caption, same mark as the shell's other mono captions
      (`.p-sec` in ChannelStatusPopover, the popover meta rows). */
   .lc-k {
+    margin-left: auto;
     font-family: var(--font-mono, ui-monospace, Menlo, monospace);
     font-size: 9px;
     font-weight: 600;
@@ -497,6 +501,9 @@
     font-weight: 600;
     color: var(--t1, var(--pop-text));
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .lc-st {

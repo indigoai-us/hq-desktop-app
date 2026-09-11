@@ -188,17 +188,58 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(oncreateagent).toHaveBeenCalledWith("cmp_ramen_bae");
   });
 
-  it("New agent with several companies targets the scope you are in", async () => {
-    // The modal's inline company picker went with the modal. A menu row cannot
-    // hold one, so it resolves the target the way the rest of the rail does:
-    // the active scope, else the first company.
+  // An agent belongs to one company and costs real money, so with more than
+  // one to choose from the menu asks instead of guessing. It used to target
+  // "the active scope, else the first company", which billed the wrong one on
+  // a mis-click and only surfaced later, on an invoice.
+  it("New agent asks which company when there is more than one", async () => {
     const oncreateagent = vi.fn(async () => okTarget);
     mountSidebar({ companies: [INDIGO, ACME], oncreateagent });
     await settle();
     await openMenu();
     q<HTMLButtonElement>('[data-testid="chat-new-agent-item"]')!.click();
     await settle(10);
+
+    expect(oncreateagent).not.toHaveBeenCalled();
+    const rows = [
+      ...document.querySelectorAll<HTMLButtonElement>(
+        '[data-testid="chat-new-agent-company"]',
+      ),
+    ];
+    expect(rows.map((r) => r.dataset.companyUid)).toEqual([
+      "cmp_indigo",
+      "cmp_acme",
+    ]);
+
+    rows[1].click();
+    await settle(10);
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme");
+  });
+
+  it("New agent skips the question when there is only one company", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    mountSidebar({ companies: [INDIGO], oncreateagent });
+    await settle();
+    await openMenu();
+    q<HTMLButtonElement>('[data-testid="chat-new-agent-item"]')!.click();
+    await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo");
+    expect(q('[data-testid="chat-new-agent-company"]')).toBeFalsy();
+  });
+
+  it("Back returns to the menu the picker replaced", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    mountSidebar({ companies: [INDIGO, ACME], oncreateagent });
+    await settle();
+    await openMenu();
+    q<HTMLButtonElement>('[data-testid="chat-new-agent-item"]')!.click();
+    await settle(10);
+    q<HTMLButtonElement>('[data-testid="chat-new-agent-back"]')!.click();
+    await settle();
+
+    expect(q('[data-testid="chat-new-agent-company"]')).toBeFalsy();
+    expect(q('[data-testid="chat-new-agent-item"]')).toBeTruthy();
+    expect(oncreateagent).not.toHaveBeenCalled();
   });
 
   it("shows a blocked reason inline in the menu and keeps it open", async () => {

@@ -96,13 +96,16 @@ describe("ArtifactCard collapsed summary", () => {
     ).toBe("Just a heading");
   });
 
-  it("renders a kind-tinted mesh tile with an icon", () => {
+  // The card shares `doc-card.css` with the file attachment card — the two
+  // say the same thing to the reader, so they are the same object. It used to
+  // carry an animated gradient mesh tile, the only gradient in the shell.
+  it("uses the shared document-card shell, not chrome of its own", () => {
     mountCard({ text: LONG, kind: "prompt" });
-    expect(host.querySelector(".artifact-tile .artifact-tile-mesh")).not.toBeNull();
-    expect(host.querySelector(".artifact-tile svg")).not.toBeNull();
-    expect(
-      host.querySelector("[data-artifact-card='true']")?.getAttribute("data-kind"),
-    ).toBe("prompt");
+    const card = host.querySelector("[data-artifact-card='true']");
+    expect(card?.classList.contains("doc-card")).toBe(true);
+    expect(host.querySelector(".doc-card-icon svg")).not.toBeNull();
+    expect(host.querySelector(".artifact-tile-mesh")).toBeNull();
+    expect(card?.getAttribute("data-kind")).toBe("prompt");
   });
 });
 
