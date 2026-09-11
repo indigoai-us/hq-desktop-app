@@ -4,8 +4,10 @@
    * 30-day usage, and owner/admin settings. Data comes from adapter.agents
    * (hq-pro). Missing/forbidden endpoints render an honest empty state.
    */
-  import type { AgentsApi, PlatformAdapter } from "@hq/platform";
+  import type { AgentsApi, LocalBotRow, PlatformAdapter } from "@hq/platform";
   import IdentityMark from "./messaging/IdentityMark.svelte";
+  import BotKindChip from "./BotKindChip.svelte";
+  import { botKindFor } from "./bot-kind.js";
   import AvatarPickerSlot from "./AvatarPickerSlot.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import type { SelfIdentity } from "../identity/self.js";
@@ -45,6 +47,8 @@
     avatarSaveError?: string | null;
     onsaveavatar?: (selection: AvatarSelection) => void | Promise<void>;
     onclose?: () => void;
+    /** The user's local bots — tells the Cloud / Local chip which is which. */
+    localBots?: ReadonlyArray<LocalBotRow> | null;
   }
 
   let {
@@ -63,6 +67,7 @@
     avatarSaveError = null,
     onsaveavatar,
     onclose,
+    localBots = null,
   }: Props = $props();
 
   let header = $state<AgentDetailHeader>(
@@ -348,8 +353,13 @@
       <div class="ad-identity-copy">
         <h2 class="ad-name" data-testid="agent-detail-name">{header.displayName}</h2>
         <p class="ad-status" data-testid="agent-detail-status">
-          AGENT · {header.status}
+          BOT · {header.status}
         </p>
+        <BotKindChip
+          kind={botKindFor(header.uid, localBots) ?? "cloud"}
+          runtime={localBots?.find((b) => b.agentUid === header.uid)?.runtime ?? null}
+          size="md"
+        />
       </div>
     </div>
 

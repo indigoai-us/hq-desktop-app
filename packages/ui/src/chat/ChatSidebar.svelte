@@ -40,7 +40,9 @@
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
   import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
-  import { localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
+  import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
+  import { botKindFor } from "./bot-kind.js";
+  import BotKindChip from "./BotKindChip.svelte";
   import {
     shouldArmDirectorySafety,
     shouldBumpDmUnread,
@@ -2826,6 +2828,15 @@
         {/if}
         <span class="chat-row-copy">
           <span class="chat-row-title">{row.title}</span>
+          {#if row.kind === "dm"}
+            {@const botKind = botKindFor(row.personUid, localBots)}
+            {#if botKind}
+              <BotKindChip
+                kind={botKind}
+                runtime={localBotForRow(localBots ?? [], row)?.runtime ?? null}
+              />
+            {/if}
+          {/if}
           {#if extras?.badge}
             <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
               {extras.badge}

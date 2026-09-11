@@ -10,7 +10,9 @@
    * Loads via Tauri `get_company_team_telemetry` (hq-pro company telemetry).
    * Tenant isolation: command resolves slug → companyUid server-side.
    */
-  import type { CompanyApi, MessagingApi } from "@hq/platform";
+  import type { CompanyApi, LocalBotRow, MessagingApi } from "@hq/platform";
+  import BotKindChip from "../chat/BotKindChip.svelte";
+  import { botKindFor } from "../chat/bot-kind.js";
   import { companyConsoleUrl, companyInviteUrl } from "../common/hq-console";
   import {
     defaultTelemetryRange,
@@ -32,6 +34,8 @@
     messaging?: MessagingApi | null;
     /** Open a URL in the host's external browser (defaults to window.open). */
     openExternal?: (url: string) => Promise<void> | void;
+    /** The user's local bots — tells the Cloud / Local chip which is which. */
+    localBots?: ReadonlyArray<LocalBotRow> | null;
   }
 
   interface ContactRow {
@@ -52,6 +56,7 @@
     openExternal = (url: string) => {
       window.open(url, "_blank", "noopener,noreferrer");
     },
+    localBots = null,
   }: Props = $props();
 
   let loading = $state(true);
@@ -356,6 +361,12 @@
                 <span class="member-row-title">{member.displayName}</span>
                 <span class="member-row-meta">{memberListMeta(member)}</span>
               </span>
+              {#if member.kind === "agent"}
+                <BotKindChip
+                  kind={botKindFor(member.id, localBots) ?? "cloud"}
+                  runtime={localBots?.find((b) => b.agentUid === member.id)?.runtime ?? null}
+                />
+              {/if}
               <span class="kind-badge" data-testid="team-kind-badge"
                 >{kindLabel}</span
               >
@@ -390,6 +401,13 @@
                   <span class="kind-badge" data-testid="team-detail-kind">
                     {memberKindLabel(selectedMember.kind)}
                   </span>
+                  {#if selectedMember.kind === "agent"}
+                    <BotKindChip
+                      kind={botKindFor(selectedMember.id, localBots) ?? "cloud"}
+                      runtime={localBots?.find((b) => b.agentUid === selectedMember.id)?.runtime ?? null}
+                      size="md"
+                    />
+                  {/if}
                 </div>
                 {#if selectedMember.email && selectedMember.email !== selectedMember.displayName}
                   <span

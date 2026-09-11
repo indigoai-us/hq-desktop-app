@@ -35,6 +35,8 @@
   import { parseMessageAttachments } from "../chat/messaging/channelMessageModels";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
+  import BotKindChip from "../chat/BotKindChip.svelte";
+  import { botKindFor } from "../chat/bot-kind.js";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
@@ -5302,6 +5304,11 @@
                         />
                       </span>
                       <h2 data-testid="channel-name">{headerTitle}</h2>
+                      <BotKindChip
+                        kind={botKindFor(selectedRow.personUid, localBots) ?? "cloud"}
+                        runtime={selectedLocalBot?.runtime ?? null}
+                        size="md"
+                      />
                     </button>
                   {:else}
                     <span
@@ -5596,6 +5603,7 @@
                             : null,
                         )}
                       {self}
+                      {localBots}
                       onclose={() => (membersOpen = false)}
                       {onopenurl}
                       onopenprofile={(row) => {
@@ -5652,6 +5660,7 @@
           {:else if isAgentChannel && agentSurface === "details" && agentChannelUid}
             <AgentDetailPanel
               agentUid={agentChannelUid}
+              {localBots}
               displayName={headerTitle}
               avatarUrl={avatarByUid[agentChannelUid] ?? null}
               companyUid={selectedRow?.companyUid}
@@ -5856,6 +5865,7 @@
                 {/snippet}
                 <ChannelConversation
                   restoreScroll={pendingRestoreScroll}
+                  {localBots}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;
@@ -5950,6 +5960,7 @@
                 >
                   <AgentDetailPanel
                     agentUid={openAgentMember.personUid}
+                    {localBots}
                     displayName={openAgentMember.displayName}
                     avatarUrl={openAgentMember.avatarUrl ??
                       avatarByUid[openAgentMember.personUid] ??
@@ -5997,6 +6008,7 @@
                 >
                   <ReplyPanel
                     api={conversationApi}
+                    {localBots}
                     rootEventId={openReplyRootId}
                     tasks={threadTasks}
                     scope={replyScope}

@@ -20,6 +20,7 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
+  import type { LocalBotRow } from "@hq/platform";
   import AgentThinkingRow from "./AgentThinkingRow.svelte";
   import {
     clearFromMessages,
@@ -170,6 +171,8 @@
     selfPersonUid?: string | null;
     /** Platform seam for opening an external URL from a message-body link. */
     onopenurl?: (url: string) => void;
+    /** The user's local bots — tells the Cloud / Local chip which is which. */
+    localBots?: ReadonlyArray<LocalBotRow> | null;
   }
 
   let {
@@ -201,6 +204,7 @@
     mentionCandidates = [],
     onopenurl,
     tasks = [],
+    localBots = null,
   }: Props = $props();
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -1138,6 +1142,7 @@
         <MentionPicker
           hits={mentionHits}
           highlight={mentionHighlight}
+          {localBots}
           onpick={applyMention}
         />
       {/if}

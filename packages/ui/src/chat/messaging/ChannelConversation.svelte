@@ -29,6 +29,7 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
+  import type { LocalBotRow } from "@hq/platform";
   import ArtifactCard from "./ArtifactCard.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
   import type { ImagePreviewCache } from "./image-preview-cache";
@@ -229,6 +230,8 @@
      * of pinning to the newest message, and do not follow live arrivals.
      */
     restoreScroll?: NavigationScrollState | null;
+    /** The user's local bots — tells the Cloud / Local chip which is which. */
+    localBots?: ReadonlyArray<LocalBotRow> | null;
   }
 
   let {
@@ -269,6 +272,7 @@
     draftStorage = null,
     composerLocked = false,
     restoreScroll = null,
+    localBots = null,
   }: Props = $props();
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -1472,6 +1476,7 @@
         <MentionPicker
           hits={mentionHits}
           highlight={mentionHighlight}
+          {localBots}
           onpick={applyMention}
         />
       {:else if showAgentMenu}

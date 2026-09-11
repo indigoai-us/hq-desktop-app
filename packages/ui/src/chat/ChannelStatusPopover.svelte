@@ -13,6 +13,9 @@
     ChannelStatusModel,
     StatusPersonRow,
   } from "./channel-status-model.js";
+  import type { LocalBotRow } from "@hq/platform";
+  import BotKindChip from "./BotKindChip.svelte";
+  import { botKindFor } from "./bot-kind.js";
   import { projectReposForDisplay } from "./channel-status-model.js";
   import { isSelf, type SelfIdentity } from "../identity/self.js";
   import CompanyIcon from "../company/CompanyIcon.svelte";
@@ -50,6 +53,8 @@
     onmigratesession?: (sessionId: string) => void;
     /** Migrate in flight for a session id — disables that row's control. */
     migratingSessionId?: string | null;
+    /** The user's local bots — tells the Cloud / Local chip which is which. */
+    localBots?: ReadonlyArray<LocalBotRow> | null;
   }
 
   let {
@@ -64,6 +69,7 @@
     deleting = false,
     onmigratesession,
     migratingSessionId = null,
+    localBots = null,
   }: Props = $props();
 
   /** The signed-in member's role in this channel — gates removing others. */
@@ -193,6 +199,16 @@
     };
   });
 </script>
+
+{#snippet kindChip(uid: string)}
+  {@const kind = botKindFor(uid, localBots)}
+  {#if kind}
+    <BotKindChip
+      {kind}
+      runtime={localBots?.find((b) => b.agentUid === uid)?.runtime ?? null}
+    />
+  {/if}
+{/snippet}
 
 <div
   class="status-popover"
@@ -508,6 +524,7 @@
                 <span class="m-name">{a.displayName}</span>
                 <span class="m-email">View bot</span>
               </span>
+              {@render kindChip(a.personUid)}
             </button>
           {:else}
             <span class="m-ava ai" aria-hidden="true">
@@ -531,6 +548,7 @@
               {/if}
             </span>
             <span class="m-name">{a.displayName}</span>
+            {@render kindChip(a.personUid)}
           {/if}
         </div>
       {/each}
