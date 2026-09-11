@@ -451,8 +451,10 @@ describe('US-018 desktop: OfficePanel host-level states', () => {
     // read for the company we left happened after the switch.
     expect(asked.length).toBeGreaterThanOrEqual(2);
     for (const url of asked) {
+      // US-019 added the knock read to this surface. It is held to the same
+      // rule: an explicit companyUid on every request, one of these two paths.
       expect(url).toMatch(
-        /^\/v1\/meet-native\/office\?companyUid=cmp_[ab]&limit=25$/,
+        /^\/v1\/meet-native\/(office\?companyUid=cmp_[ab]&limit=25|knocks\?companyUid=cmp_[ab]&limit=50)$/,
       );
     }
     const order = asked.map((url) => (url.includes('cmp_b') ? 'cmp_b' : 'cmp_a'));

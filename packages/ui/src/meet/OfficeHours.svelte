@@ -11,6 +11,9 @@
    * The component owns no network: it renders an injected `OfficeStore` and
    * calls back out for the room actions the host performs.
    */
+  import KnockCard from "./KnockCard.svelte";
+  import { isNoteTooLong, KNOCK_LIMITS, type Knock } from "./knocks.js";
+  import type { KnockStore } from "./knocks.svelte.js";
   import {
     OFFICE_DURATIONS,
     type OfficeConnectivity,
@@ -37,6 +40,28 @@
     onopenroom?: (person: OfficePerson) => void | Promise<void>;
     /** Retry after an error state. */
     onretry?: () => void | Promise<void>;
+
+    /**
+     * Knock state (US-019). Absent → the office renders with no knock surface
+     * at all, rather than with dead controls.
+     *
+     * The view reads the store and calls back out: it never knocks by itself,
+     * because knocking needs a ROOM binding and the host owns room creation.
+     */
+    knocks?: KnockStore | null;
+    /** Knock a person, with an optional short note. */
+    onknock?: (person: OfficePerson, note: string) => void | Promise<void>;
+    /** Accept: the host opens the call window. Never starts capture here. */
+    onacceptknock?: (knock: Knock) => void | Promise<void>;
+    /** Reply with text instead of opening the door. */
+    onreplyknock?: (knock: Knock, text: string) => void | Promise<void>;
+    ondeferknock?: (knock: Knock) => void | Promise<void>;
+    ondismissknock?: (knock: Knock) => void | Promise<void>;
+    oncancelknock?: (knock: Knock) => void | Promise<void>;
+    /** What this device will take into the room, shown before any capture. */
+    joinIntent?: { microphone: boolean; transcript: boolean };
+    /** Suggested reply text when there is no DM composer to open. */
+    replySuggestion?: (knock: Knock) => string;
   }
 
   let {
@@ -48,6 +73,15 @@
     onstartroom,
     onopenroom,
     onretry,
+    knocks = null,
+    onknock,
+    onacceptknock,
+    onreplyknock,
+    ondeferknock,
+    ondismissknock,
+    oncancelknock,
+    joinIntent = { microphone: false, transcript: false },
+    replySuggestion = () => "",
   }: Props = $props();
 
   /** Re-render heartbeat: countdowns and lease expiry are time-dependent. */
@@ -118,6 +152,51 @@
   }
 
   const busy = $derived(view.saving);
+
+  /**
+   * Knock surface. The composer is opened per row so the office is not a wall
+   * of text boxes, and the note is optional — a bare knock is the common case.
+   */
+  let composingFor = $state<string | null>(null);
+  let note = $state("");
+  const knockBusy = $derived(knocks?.state.busy === true);
+  const noteTooLong = $derived(isNoteTooLong(note));
+  const received = $derived.by(() => {
+    void tick;
+    return knocks?.visibleReceived() ?? [];
+  });
+  const sent = $derived.by(() => {
+    void tick;
+    return knocks?.visibleSent().filter((knock) => knock.state === "pending") ?? [];
+  });
+  const lastSend = $derived(knocks?.state.lastSend ?? null);
+
+  /**
+   * What actually happened to the last knock, in words. `created:false,
+   * duplicate:true` means the server answered with the knock already pending;
+   * `suppressed` means it deliberately did not disturb anyone.
+   */
+  const sendFeedback = $derived.by(() => {
+    if (!lastSend) return null;
+    if (!lastSend.ok) return lastSend.error?.message ?? "That knock was refused.";
+    if (lastSend.suppressed === "dnd") {
+      return "They are on do not disturb, so nothing was shown to them. Your knock was recorded.";
+    }
+    if (lastSend.suppressed === "pending" || lastSend.duplicate) {
+      return "You already have a knock waiting with them. Nothing new was sent.";
+    }
+    return lastSend.waked
+      ? "Knock sent."
+      : "Knock sent. They may not see it until they open HQ.";
+  });
+
+  async function sendKnock(person: OfficePerson): Promise<void> {
+    if (noteTooLong) return;
+    const text = note;
+    composingFor = null;
+    note = "";
+    await onknock?.(person, text);
+  }
 </script>
 
 <section class="office" aria-labelledby="office-title">
@@ -235,6 +314,67 @@
       </div>
     </div>
 
+    {#if knocks}
+      <section class="office-knocks" aria-labelledby="office-knocks-title">
+        <h2 id="office-knocks-title">Knocks</h2>
+        {#if sendFeedback}
+          <p
+            class="office-knock-feedback"
+            role="status"
+            aria-live="polite"
+            data-testid="office-knock-feedback"
+          >
+            {sendFeedback}
+          </p>
+        {/if}
+        {#if knocks.state.error}
+          <p role="alert" data-testid="office-knock-error">
+            {knocks.state.error.message}
+          </p>
+        {/if}
+        {#if received.length === 0 && sent.length === 0}
+          <p class="office-empty" data-testid="office-knocks-empty">
+            No one is at your door.
+          </p>
+        {:else}
+          <ul class="office-knock-list" data-testid="office-knock-list">
+            {#each received as knock (knock.knockId)}
+              <li>
+                <KnockCard
+                  {knock}
+                  direction="received"
+                  {displayName}
+                  {now}
+                  {tickMs}
+                  {joinIntent}
+                  busy={knockBusy}
+                  replySuggestion={replySuggestion(knock)}
+                  onaccept={onacceptknock}
+                  onreply={onreplyknock}
+                  ondefer={ondeferknock}
+                  ondismiss={ondismissknock}
+                />
+              </li>
+            {/each}
+            {#each sent as knock (knock.knockId)}
+              <li>
+                <KnockCard
+                  {knock}
+                  direction="sent"
+                  {displayName}
+                  {now}
+                  {tickMs}
+                  {joinIntent}
+                  busy={knockBusy}
+                  oncancel={oncancelknock}
+                />
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    {/if}
+
     {#if view.status === "loading" && people.length === 0}
       <p class="office-empty" data-testid="office-loading">Loading the office…</p>
     {:else if people.length === 0}
@@ -291,18 +431,48 @@
             </span>
 
             <span class="office-actions">
-              <!--
-                Knocking is not built yet. A permanently disabled button is a
-                dead end for keyboard and screen-reader users — it is focus-
-                skipped, announces nothing about why, and still looks like the
-                primary action. A plain note says the same thing honestly.
-              -->
-              <span
-                class="office-soon"
-                data-testid={`office-knock-soon-${person.personUid}`}
-              >
-                Knocks coming next
-              </span>
+              {#if knocks && person.willingness !== "dnd"}
+                <button
+                  type="button"
+                  class="office-button"
+                  data-testid={`office-knock-${person.personUid}`}
+                  disabled={knockBusy}
+                  onclick={() =>
+                    (composingFor =
+                      composingFor === person.personUid
+                        ? null
+                        : person.personUid)}
+                  aria-expanded={composingFor === person.personUid}
+                >
+                  Knock
+                </button>
+              {:else if knocks}
+                <!--
+                  Do-not-disturb is stated, not hidden behind a dead button: a
+                  permanently disabled control is focus-skipped and explains
+                  nothing. The server would suppress the knock anyway.
+                -->
+                <span
+                  class="office-soon"
+                  data-testid={`office-knock-dnd-${person.personUid}`}
+                >
+                  Do not disturb — no knocks
+                </span>
+              {:else}
+                <!--
+                  No knock surface was handed in (a host that has not wired
+                  US-019). A permanently disabled button would be a dead end for
+                  keyboard and screen-reader users — focus-skipped, announcing
+                  nothing about why, and still looking like the primary action.
+                  A plain note says the same thing honestly.
+                -->
+                <span
+                  class="office-soon"
+                  data-testid={`office-knock-soon-${person.personUid}`}
+                >
+                  Knocks coming next
+                </span>
+              {/if}
               {#if joinable(person)}
                 <button
                   type="button"
@@ -314,6 +484,55 @@
                 </button>
               {/if}
             </span>
+
+            {#if knocks && composingFor === person.personUid}
+              <div
+                class="office-knock-composer"
+                data-testid={`office-knock-composer-${person.personUid}`}
+              >
+                <label for={`office-knock-note-${person.personUid}`}>
+                  Add a note (optional)
+                </label>
+                <input
+                  id={`office-knock-note-${person.personUid}`}
+                  data-testid={`office-knock-note-${person.personUid}`}
+                  type="text"
+                  bind:value={note}
+                  placeholder="Two minutes on the pricing page?"
+                />
+                <span class="office-expiry">
+                  Up to {KNOCK_LIMITS.noteMaxBytes} bytes. They get a quiet
+                  notification, not a ring.
+                </span>
+                {#if noteTooLong}
+                  <span role="alert" data-testid="office-knock-note-too-long">
+                    That note is too long. Shorten it and knock again.
+                  </span>
+                {/if}
+                <span class="office-actions">
+                  <button
+                    type="button"
+                    class="office-button office-button-primary"
+                    data-testid={`office-knock-send-${person.personUid}`}
+                    disabled={knockBusy || noteTooLong}
+                    onclick={() => void sendKnock(person)}
+                  >
+                    Send knock
+                  </button>
+                  <button
+                    type="button"
+                    class="office-button"
+                    data-testid={`office-knock-cancel-${person.personUid}`}
+                    onclick={() => {
+                      composingFor = null;
+                      note = "";
+                    }}
+                  >
+                    Never mind
+                  </button>
+                </span>
+              </div>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -525,6 +744,54 @@
   .office-actions {
     display: flex;
     gap: var(--v4-space-2, 8px);
+  }
+
+  .office-knocks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--v4-space-2, 8px);
+  }
+
+  .office-knocks h2 {
+    margin: 0;
+    font-size: var(--type-section, 17px);
+    font-weight: 600;
+  }
+
+  .office-knock-feedback {
+    margin: 0;
+    font-size: var(--type-secondary, 14px);
+  }
+
+  .office-knock-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--v4-space-2, 8px);
+  }
+
+  .office-knock-composer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--v4-row-stack-gap, 3px);
+    flex: 1 0 100%;
+    font-size: var(--type-secondary, 14px);
+  }
+
+  .office-knock-composer input {
+    font: inherit;
+    padding: 6px 8px;
+    border: 1px solid var(--v4-border, rgba(0, 0, 0, 0.12));
+    border-radius: var(--v4-radius-button, 6px);
+    background: transparent;
+    color: inherit;
+  }
+
+  .office-knock-composer input:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
   }
 
   .office-empty {

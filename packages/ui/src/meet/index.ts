@@ -22,6 +22,36 @@ export {
   type SelfMediaView,
   type TileConnection,
 } from "./call-view-model.js";
+export { default as KnockCard } from "./KnockCard.svelte";
+export {
+  KNOCK_FRIENDLY,
+  KNOCK_LIMITS,
+  KNOCK_STATES,
+  cannedReply,
+  expireKnock,
+  isKnockActionable,
+  isNoteTooLong,
+  knockFailure,
+  knockSecondsLeft,
+  mergeKnock,
+  noteByteLength,
+  parseKnock,
+  parseKnockList,
+  sortKnocks,
+  type Knock,
+  type KnockCapability,
+  type KnockDirection,
+  type KnockError,
+  type KnockSendOutcome,
+  type KnockState,
+} from "./knocks.js";
+export {
+  createKnockStore,
+  type KnockRoomBinding,
+  type KnockState as KnockStoreState,
+  type KnockStore,
+  type KnockStoreOptions,
+} from "./knocks.svelte.js";
 export { default as OfficeHours } from "./OfficeHours.svelte";
 export { default as OfficePanel } from "./OfficePanel.svelte";
 export type { OfficeCallsHost, OfficeCallTarget } from "./office-host.js";
