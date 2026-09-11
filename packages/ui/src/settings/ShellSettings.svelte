@@ -16,6 +16,7 @@
   import CompaniesSettingsPane from "./CompaniesSettingsPane.svelte";
   import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
   import AgentsSettingsPane from "./AgentsSettingsPane.svelte";
+  import BotsSettingsPane from "./BotsSettingsPane.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
   import { avatarBase64FromFile } from "./avatar-image.js";
   import {
@@ -43,6 +44,7 @@
     | "companies"
     | "general"
     | "agents"
+    | "bots"
     | "appearance"
     | "notifications"
     | "sync"
@@ -56,6 +58,7 @@
       { id: "sep", label: "" },
       { id: "general", label: "General" },
       { id: "agents", label: "Agents" },
+      { id: "bots", label: "Bots" },
       { id: "appearance", label: "Appearance" },
       { id: "notifications", label: "Notifications" },
       { id: "sync", label: "Sync" },
@@ -411,6 +414,9 @@
       }
       if (section.id === "agents")
         return Boolean(adapter?.sessions?.preflight);
+      // local-bots US-009: desktop-only — the adapter exposes `bots` only when
+      // the host can shell to the hq CLI.
+      if (section.id === "bots") return Boolean(adapter?.bots);
       return true;
     }),
   );
@@ -669,6 +675,8 @@
         />
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
+      {:else if active === "bots"}
+        <BotsSettingsPane {adapter} />
       {:else}
         <PrototypeSettingsPanes
           section={active as

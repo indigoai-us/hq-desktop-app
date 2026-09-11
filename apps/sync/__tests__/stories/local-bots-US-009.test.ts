@@ -15,25 +15,40 @@ const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
 const source = (...parts: string[]) => readFileSync(root(...parts), 'utf8');
 
 describe('US-009: Settings → Bots', () => {
-  it('is a routed Settings section next to Agents', () => {
+  // The live desktop Settings surface is @hq/ui's ShellSettings (Work shell),
+  // not the desktop-alt SettingsPage — the pane must be wired there or the
+  // user never sees it (verified by opening the built app, 2026-09-11).
+  const ui = (...parts: string[]) => source('..', '..', 'packages', 'ui', 'src', ...parts);
+
+  it('is a routable settings tab (the host parses settings:bots through desktop-alt route.ts)', () => {
     expect(SETTINGS_SECTIONS).toContainEqual({ id: 'bots', label: 'Bots' });
     expect(resolvePendingDesktopRoute('settings:bots')).toEqual({ kind: 'settings', tab: 'bots' });
-    expect(source('src/desktop-alt/pages/SettingsPage.svelte')).toContain('<LocalBotsSettings />');
   });
 
-  it('lists bots with runtime, online state and last heartbeat, and offers Create / Start / Stop / Remove', () => {
-    const panel = source('src/desktop-alt/components/LocalBotsSettings.svelte');
+  it('is a first-class ShellSettings nav item right after Agents, gated on the desktop bots adapter', () => {
+    const shell = ui('settings', 'ShellSettings.svelte');
+    expect(shell).toContain('{ id: "agents", label: "Agents" },\n      { id: "bots", label: "Bots" },');
+    expect(shell).toContain('if (section.id === "bots") return Boolean(adapter?.bots);');
+    expect(shell).toContain('<BotsSettingsPane {adapter} />');
+    expect(ui('shell', 'embedded-navigation.ts')).toContain("'bots',");
+    expect(ui('settings', 'SettingsNavIcon.svelte')).toContain('name === "bots"');
+  });
+
+  it('lists bots with runtime, online state and last heartbeat, and offers Create / Start / Stop / Remove through the adapter', () => {
+    const panel = ui('settings', 'BotsSettingsPane.svelte');
     expect(panel).toContain('data-testid="settings-bots"');
-    expect(panel).toContain("invoke<{ bots?: BotRow[] }>('local_bots_list')");
-    expect(panel).toContain("invoke('local_bots_create'");
-    expect(panel).toContain("'local_bots_start'");
-    expect(panel).toContain("'local_bots_stop'");
-    expect(panel).toContain("'local_bots_remove'");
+    expect(panel).toContain('await api.list()');
+    expect(panel).toContain('await api.create({ name, runtime: newRuntime })');
+    expect(panel).toContain('await api[verb](name)');
+    expect(panel).toContain('act(bot.name, "start")');
+    expect(panel).toContain('act(bot.name, "stop")');
+    expect(panel).toContain('act(bot.name, "remove")');
     expect(panel).toContain('heartbeatLabel(bot)');
     expect(panel).toContain('runtimeLabel(bot.runtime)');
     expect(panel).toContain('presenceLabel(bot)');
     expect(panel).toContain('Really remove');
     expect(panel).toContain('const MAX_BOTS = 3');
+    expect(panel).not.toContain("from '@tauri-apps/api/core'");
   });
 
   it('every bot action shells to the hq CLI through the launch boundary, never hq-pro directly', () => {
@@ -72,6 +87,16 @@ describe('US-009: bot presence in the DM list and thread', () => {
     expect(shell).toContain('localBotOfflineNotice(selectedLocalBot)');
     expect(shell).toContain('api.start(bot.name)');
     expect(shell).toContain('? localBotHeader');
+  });
+
+  it('the sync adapter the Work shell actually uses (createSyncPlatformAdapter) exposes bots', () => {
+    // The shell is built on createSyncPlatformAdapter, not TauriPlatformAdapter —
+    // without this group the Bots nav item is filtered out (seen live 2026-09-11).
+    const sync = source('..', '..', 'packages', 'platform', 'src', 'tauri', 'sync-adapter.ts');
+    expect(source('src/desktop-alt/HqWorkWorkShell.svelte')).toContain('createSyncPlatformAdapter');
+    expect(sync).toContain("list: () => call('local_bots_list')");
+    expect(sync).toContain("create: (input) => call('local_bots_create', { name: input.name, runtime: input.runtime })");
+    expect(sync).toContain("remove: (name) => call('local_bots_remove', { name })");
   });
 
   it('the platform contract exposes bots as a desktop-only optional group backed by the Tauri commands', () => {

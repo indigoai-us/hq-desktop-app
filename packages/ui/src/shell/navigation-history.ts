@@ -10,6 +10,7 @@ import type {
   EmbeddedNavigationTarget,
   EmbeddedSettingsSection,
 } from "./embedded-navigation.js";
+import { EMBEDDED_SETTINGS_SECTIONS } from "./embedded-navigation.js";
 import type { LibraryTab } from "../library/library-overlay-model.js";
 import type { CompanyChannelTabId } from "../chat/tabs/tab-model.js";
 
@@ -134,17 +135,10 @@ const LIBRARY_TABS = new Set<LibraryTab>([
   "submit",
   "profile",
 ]);
-const SETTINGS_SECTIONS = new Set<EmbeddedSettingsSection>([
-  "profile",
-  "companies",
-  "general",
-  "agents",
-  "appearance",
-  "notifications",
-  "sync",
-  "meetings",
-  "updates",
-]);
+// Derived from the single source of truth so a new section (e.g. "bots",
+// local-bots US-009) cannot be silently dropped from history canonicalisation
+// — a hand-copied list here reset Settings → Bots to Profile on every click.
+const SETTINGS_SECTIONS = new Set<EmbeddedSettingsSection>(EMBEDDED_SETTINGS_SECTIONS);
 
 const FORBIDDEN_ENTRY_KEYS = new Set([
   "component",

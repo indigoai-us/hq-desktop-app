@@ -1070,6 +1070,16 @@ export function createSyncPlatformAdapter(
       loginCancel: (tool) => call('agent_provider_login_cancel', { tool }),
     },
 
+    // local-bots US-009: desktop-only — every call shells to `hq bot … --json`
+    // behind the host's launch boundary (src-tauri/src/commands/bots.rs).
+    bots: {
+      list: () => call('local_bots_list'),
+      create: (input) => call('local_bots_create', { name: input.name, runtime: input.runtime }),
+      start: (name) => call('local_bots_start', { name }),
+      stop: (name) => call('local_bots_stop', { name }),
+      remove: (name) => call('local_bots_remove', { name }),
+    },
+
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
