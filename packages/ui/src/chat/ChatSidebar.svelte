@@ -4241,12 +4241,14 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding-right: 2px;
   }
 
+  /* No right padding: the caption's own 8px inset already lines this up with
+     the check marks on the rows below, and a padded button parked the label
+     6px short of that column. */
   .chat-filter-reset {
     appearance: none;
-    padding: 0 6px;
+    padding: 0 0 0 6px;
     border: 0;
     background: transparent;
     color: var(--t3);
