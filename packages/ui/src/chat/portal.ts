@@ -112,18 +112,26 @@ export function menuPortal(node: HTMLElement, params: MenuPortalParams) {
     // The concept insets its user panel 10px from the sidebar's own edges
     // (280 - 20 = 260 wide); measuring from the footer instead inherited the
     // rail's 14px padding on top of that and came out 24px narrow.
-    if (current.placement === "top-stretch") {
+    if (
+      current.placement === "top-stretch" ||
+      current.placement === "bottom-stretch"
+    ) {
       const gap = 4;
       const railEl = anchor.closest(current.railSelector ?? ".chat-sidebar");
       const stretchTo =
         railEl instanceof HTMLElement ? railEl.getBoundingClientRect() : r;
       const inset = railEl instanceof HTMLElement ? 10 : 8;
-      node.style.top = "auto";
-      node.style.bottom = `${cb.bottom - r.top + gap}px`;
       node.style.left = `${stretchTo.left + inset - cb.left}px`;
       node.style.right = `${cb.right - stretchTo.right + inset}px`;
       node.style.width = "auto";
       node.style.maxWidth = "";
+      if (current.placement === "top-stretch") {
+        node.style.top = "auto";
+        node.style.bottom = `${cb.bottom - r.top + gap}px`;
+      } else {
+        node.style.bottom = "auto";
+        node.style.top = `${r.bottom + gap - cb.top}px`;
+      }
       return;
     }
     // Measure the menu at the width its own stylesheet asks for. Forcing

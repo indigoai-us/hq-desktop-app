@@ -137,12 +137,15 @@ describe("DesktopApp composer drafts", () => {
     expect(
       host
         .querySelector(`[data-conversation-id="${rowA.id}"]`)
+        // Trailing mark: a sibling of the row button, past pin and badge.
+        ?.closest(".chat-li")
         ?.querySelector('[data-testid="chat-row-draft"]'),
       "rail marks A as having a draft",
     ).toBeTruthy();
     expect(
       host
         .querySelector(`[data-conversation-id="${ROW_B_ID}"]`)
+        ?.closest(".chat-li")
         ?.querySelector('[data-testid="chat-row-draft"]'),
     ).toBeNull();
 

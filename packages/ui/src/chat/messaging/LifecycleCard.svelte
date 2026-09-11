@@ -755,22 +755,22 @@
     min-width: 0;
     overflow: hidden;
     color: var(--t2, var(--pop-muted));
-    font-size: 13px;
+    font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  /* Identifiers and vault paths land here — mono, muted, and truncating, so
-     one long id cannot set the width of the whole column. */
+  /* Plan prices, vault ids, timestamps all land here, so it stays in the UI
+     font — mono flattered an id and mangled a sentence. Truncating, so one
+     long value cannot set the width of the column. */
   .lc-ro-value {
     display: inline-flex;
     align-items: center;
     gap: 8px;
     min-width: 0;
     overflow: hidden;
-    color: var(--t3, var(--pop-muted));
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
+    color: var(--t1, var(--pop-text));
+    font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

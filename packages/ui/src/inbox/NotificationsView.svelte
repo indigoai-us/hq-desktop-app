@@ -604,6 +604,10 @@
     background: var(--line2);
     color: var(--t1);
     font: 600 11px var(--font-ui);
+    /* `line-height: 1`, as IdentityMark does — `normal` is the font's own
+       line box, which WebKit and Chromium disagree about, and a centred
+       all-caps monogram then sits high in one of them. */
+    line-height: 1;
   }
 
   .notif-main {

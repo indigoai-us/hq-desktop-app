@@ -5887,26 +5887,33 @@
   }
 
   /* 28px ghost button: same control scale as the tab-row actions. */
+  /* The shell's standard secondary chip (`.core-btn`): 8px radius on
+     `--btn-bg`, hairline on hover only. A square hard-bordered box next to
+     the pill-shaped tab group was this button's own invention. */
   .header-ghost-btn {
     appearance: none;
     -webkit-appearance: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 5px;
     height: 28px;
     min-height: 28px;
     padding: 0 10px;
-    border: 1px solid var(--line2, var(--panel-border));
-    border-radius: 0;
-    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg);
     color: var(--t1);
     font: 500 12px/1 inherit;
     cursor: pointer;
     white-space: nowrap;
+    transition:
+      border-color 0.12s ease,
+      background-color 0.12s ease;
   }
 
   .header-ghost-btn:hover {
-    background: var(--hover);
+    border-color: var(--line2);
   }
 
   .header-ghost-btn:disabled {

@@ -7,6 +7,10 @@
     COMPANY_CHANNEL_TABS,
     type CompanyChannelTabId,
   } from "./tabs/tab-model.js";
+  import Chat from "phosphor-svelte/lib/Chat";
+  import Compass from "phosphor-svelte/lib/Compass";
+  import Users from "phosphor-svelte/lib/Users";
+  import Gear from "phosphor-svelte/lib/Gear";
 
   interface Props {
     active: CompanyChannelTabId;
@@ -30,6 +34,17 @@
       data-testid={`company-tab-${t.id}`}
       onclick={() => onselect(t.id)}
     >
+      <span class="company-tab-icon" aria-hidden="true">
+        {#if t.id === "chat"}
+          <Chat size={14} aria-hidden="true" />
+        {:else if t.id === "atlas"}
+          <Compass size={14} aria-hidden="true" />
+        {:else if t.id === "team"}
+          <Users size={14} aria-hidden="true" />
+        {:else}
+          <Gear size={14} aria-hidden="true" />
+        {/if}
+      </span>
       <span>{t.label}</span>
     </button>
   {/each}
@@ -52,6 +67,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    /* Same 5px icon gap as `.project-tab` — the two tab groups sit in the
+       same header slot and had no business reading differently. */
+    gap: 5px;
     min-height: 28px;
     padding: 4px 10px;
     border: none;
@@ -63,6 +81,12 @@
     font-weight: 500;
     line-height: 1;
     cursor: pointer;
+  }
+
+  .company-tab-icon {
+    display: inline-flex;
+    align-items: center;
+    line-height: 0;
   }
 
   .company-tab:hover {

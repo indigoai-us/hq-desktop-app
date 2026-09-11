@@ -577,7 +577,7 @@
           {#if appActions.showDownload}
             <button
               type="button"
-              class="core-btn primary"
+              class="core-text-btn accent"
               data-testid="core-popover-download-install"
               title={updateStore.installError ?? undefined}
               onclick={() => void handleDownloadInstall()}
@@ -587,7 +587,7 @@
           {:else if appActions.showRestart}
             <button
               type="button"
-              class="core-btn primary"
+              class="core-text-btn accent"
               data-testid="core-popover-restart-update"
               title={updateStore.installError ?? undefined}
               onclick={() => void handleRestartToUpdate()}
@@ -920,7 +920,7 @@
   .core-row-stacked {
     flex-direction: column;
     align-items: stretch;
-    gap: 2px;
+    gap: 6px;
   }
 
   .core-row-head {
@@ -970,8 +970,11 @@
     cursor: pointer;
   }
 
+  /* Primary voice for a text action: the shell's ice ink, a notch heavier
+     than the neutral action sitting beside it. */
   .core-text-btn.accent {
     color: var(--ice-ink);
+    font-weight: 600;
   }
 
   .core-text-btn:hover:not(:disabled) {

@@ -47,6 +47,18 @@ describe("ChatSidebar identity footer layout", () => {
     expect(src).toMatch(/\{#if canSeeCompanyProjects\}/);
   });
 
+  it("spans the company scope menu to the rail instead of a fixed width", () => {
+    // A fixed 252px panel hung off the sidebar's right edge on a narrower
+    // window. `bottom-stretch` spans it to the rail, like the footer account
+    // menu's `top-stretch`.
+    expect(src).toContain('placement: "bottom-stretch"');
+    const block = src.match(/\.chat-popover\.chat-scope-menu\s*\{[^}]+\}/);
+    expect(block?.[0]).toBeTruthy();
+    expect(block?.[0]).not.toMatch(/width:\s*252px/);
+    expect(block?.[0]).toMatch(/min-width:\s*0/);
+    expect(block?.[0]).toMatch(/box-sizing:\s*border-box/);
+  });
+
   it("sizes the filter popover to the concept's panel width", () => {
     expect(src).toContain("FILTER_POPOVER_MAX_PX");
     expect(src).toContain("FILTER_POPOVER_RAIL_OVERHANG_PX");

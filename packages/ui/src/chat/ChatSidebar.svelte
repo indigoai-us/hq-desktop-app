@@ -1904,7 +1904,7 @@
           role="menu"
           tabindex="-1"
           aria-label="Company scope"
-          use:menuPortal={{ anchor: scopeMenuEl, placement: "bottom-start" }}
+          use:menuPortal={{ anchor: scopeMenuEl, placement: "bottom-stretch" }}
           onmousedown={(e) => e.stopPropagation()}
         >
           {#each scopeOptions as option, i (option.id)}
@@ -2869,9 +2869,6 @@
             {/if}
           </span>
         {/if}
-        {#if draftIdSet.has(row.id)}
-          {@render draftMark()}
-        {/if}
         <span class="chat-row-copy">
           <span class="chat-row-title">{railRowTitle(row)}</span>
           {#if extras?.badge}
@@ -2924,6 +2921,12 @@
           data-testid="chat-unread-dot"
           aria-label="Unread"
         ></span>
+      {/if}
+      <!-- Trailing, not leading: the pencil is row status, and between the
+           channel glyph and the title it pushed every drafted row's name out
+           of the column the rest of the list lines up on. -->
+      {#if draftIdSet.has(row.id)}
+        {@render draftMark()}
       {/if}
     </div>
     {#if hasChildren && childrenOpen}
@@ -3032,6 +3035,13 @@
     background: var(--btn-bg);
     color: var(--t2);
     font: 700 9px var(--font-ui);
+    /* `line-height: 1`, as IdentityMark does. The `font:` shorthand resets
+       line-height to `normal`, and `normal` is the font's own line box —
+       WebKit folds the line gap into it where Chromium does not, so a
+       centred all-caps monogram sat visibly high in the app and looked
+       fine in the browser harness. An explicit number removes the
+       variable. */
+    line-height: 1;
     letter-spacing: 0.18px;
   }
 
@@ -3110,16 +3120,17 @@
   }
 
 
-  /* S3: 252px panel, 32px single-line rows (tile + label + chord inline),
-     no wrap and no resting scrollbar artifact — token contract §6 scopePanel. */
+  /* 32px single-line rows (tile + label + chord inline), no wrap and no
+     resting scrollbar artifact — token contract §6 scopePanel.
+     Width comes from the rail, not from this sheet: at a fixed 252px the
+     panel hung off the sidebar's right edge on a narrower window. The
+     `bottom-stretch` portal spans it to the rail, inset 10px each side — the
+     same span the footer account menu uses. */
   /* Double-class, because `.chat-popover` is authored later in this sheet and
-     would otherwise win `left` / `right` / `min-width` on equal specificity —
-     which stretched the menu edge-to-edge instead of the concept's 252px. */
+     would otherwise win `left` / `right` / `min-width` on equal specificity. */
   .chat-popover.chat-scope-menu {
-    left: 0;
-    right: auto;
-    width: 252px;
-    min-width: 252px;
+    box-sizing: border-box;
+    min-width: 0;
     max-height: min(60vh, 420px);
     overflow-y: auto;
     scrollbar-width: none;
@@ -3161,6 +3172,13 @@
     background: var(--btn-bg);
     color: var(--t2);
     font: 700 8px var(--font-ui);
+    /* `line-height: 1`, as IdentityMark does. The `font:` shorthand resets
+       line-height to `normal`, and `normal` is the font's own line box —
+       WebKit folds the line gap into it where Chromium does not, so a
+       centred all-caps monogram sat visibly high in the app and looked
+       fine in the browser harness. An explicit number removes the
+       variable. */
+    line-height: 1;
     letter-spacing: 0.02em;
   }
 
@@ -3642,6 +3660,13 @@
     background: var(--line2);
     color: var(--t2);
     font: 600 9px var(--font-ui);
+    /* `line-height: 1`, as IdentityMark does. The `font:` shorthand resets
+       line-height to `normal`, and `normal` is the font's own line box —
+       WebKit folds the line gap into it where Chromium does not, so a
+       centred all-caps monogram sat visibly high in the app and looked
+       fine in the browser harness. An explicit number removes the
+       variable. */
+    line-height: 1;
     letter-spacing: 0.02em;
   }
 

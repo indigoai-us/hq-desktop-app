@@ -18,7 +18,6 @@
   } from "./channel-status-model.js";
   import { projectReposForDisplay } from "./channel-status-model.js";
   import { isSelf, type SelfIdentity } from "../identity/self.js";
-  import CompanyIcon from "../company/CompanyIcon.svelte";
   import "./tokens.css";
   import "./chat-tokens.css";
 
@@ -241,12 +240,11 @@
     {#if model.companyLabel}
       <div class="p-item kv static" data-testid="status-company">
         <span class="k">Company</span>
-        <span class="status-company-val">
-          <CompanyIcon iconUrl={model.companyIconUrl ?? null} size={16} />
-          <span class="val" data-testid="status-company-name"
-            >{model.companyLabel}</span
-          >
-        </span>
+        <!-- Name only: the row already says "Company", and the mark sat
+             between the key and its value like a second column. -->
+        <span class="val" data-testid="status-company-name"
+          >{model.companyLabel}</span
+        >
       </div>
     {/if}
     <div class="p-item kv static">
@@ -654,12 +652,6 @@
     padding-top: 5px;
   }
 
-  .status-company-val {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
   .p-item {
     display: flex;
     align-items: center;
@@ -677,8 +669,10 @@
     text-align: left;
   }
 
+  /* 8px, the caption's inset — at 10px every key in this section started 2px
+     right of the PROJECT eyebrow above it and the column read as crooked. */
   .p-item.kv {
-    padding: 5px 10px;
+    padding: 5px 8px;
     font-size: 11px;
   }
 

@@ -335,6 +335,40 @@
     }),
   ];
 
+  /**
+   * The same card seen by someone who cannot act on it: the server sends
+   * readonly rows and a "who to ask" line instead of controls. It is a
+   * distinct visual state and easy to regress, so the harness carries one.
+   */
+  SETUP_MESSAGES.push(
+    cardMessage("evt_setup_plan", 2, {
+      cardId: "card_upgrade_plan",
+      kind: "upgrade_plan",
+      companyUid: "cmp_indigo",
+      state: "open",
+      title: "Choose a plan",
+      summary: "Agents, integrations, and cloud sessions unlock on Workforce.",
+      fields: [
+        { id: "starter", label: "Starter", control: "readonly", value: "Free" },
+        {
+          id: "workforce",
+          label: "Workforce",
+          control: "readonly",
+          value: "$500/mo flat · agents unlocked",
+        },
+        {
+          id: "enterprise",
+          label: "Enterprise",
+          control: "readonly",
+          value: "Talk to us",
+        },
+      ],
+      actions: [],
+      // No actorName on the wire, so the card asks for "the owner".
+      viewer: { canAct: false },
+    }),
+  );
+
   const messagesFor = (row: Parameters<typeof fixtureMessagesFor>[0]) =>
     (row as { channelId?: string })?.channelId === "setup"
       ? (SETUP_MESSAGES as unknown as ReturnType<typeof fixtureMessagesFor>)
@@ -375,6 +409,11 @@
       {#await directory}
         <p class="off">Loading fixtures…</p>
       {:then seedDirectory}
+        <!-- `tenantAccountId`: composer drafts (and the rest of the shell's
+             per-tenant state) live under an account-scoped key, and that
+             storage is a deliberate no-op without an account — so a draft
+             never persisted here and the rail's draft pencil could not be
+             seen at all. -->
         <DesktopApp
           {adapter}
           {sidebarApi}
@@ -383,6 +422,7 @@
           {self}
           {seedDirectory}
           version="0.10.233"
+          tenantAccountId="acct_harness"
           companies={FIXTURE_COMPANIES}
           initialRow={FIXTURE_INITIAL_ROW}
           searchRows={FIXTURE_SEARCH_ROWS}

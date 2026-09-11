@@ -781,6 +781,13 @@
     background: var(--line2);
     color: var(--t1);
     font: 600 10px var(--font-ui);
+    /* `line-height: 1`, as IdentityMark does. The `font:` shorthand resets
+       line-height to `normal`, and `normal` is the font's own line box —
+       WebKit folds the line gap into it where Chromium does not, so a
+       centred all-caps monogram sat visibly high in the app and looked
+       fine in the browser harness. An explicit number removes the
+       variable. */
+    line-height: 1;
   }
 
   .conv-body {

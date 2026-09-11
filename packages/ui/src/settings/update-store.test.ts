@@ -463,7 +463,8 @@ describe("shared store keeps pane and popover in lockstep", () => {
       flushSync();
       expect(paneHost.textContent).toContain("UPDATE AVAILABLE");
       expect(popoverHost.textContent).toContain("UPDATE AVAILABLE");
-      expect(popoverHost.textContent).toContain("Download & install");
+      // The popover's download action is the primary "Install" chip.
+      expect(popoverHost.textContent).toContain("Install");
     });
     expect(popoverHost.textContent).not.toContain("UP TO DATE");
     const updates = adapter.updates as unknown as {

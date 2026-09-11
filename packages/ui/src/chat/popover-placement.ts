@@ -11,7 +11,13 @@ export const ANCHOR_GAP_PX = 4;
 export const FILTER_POPOVER_MAX_PX = 360;
 export const FILTER_POPOVER_RAIL_OVERHANG_PX = 40;
 
-export type MenuPlacement = "bottom-start" | "bottom-end" | "top-stretch";
+export type MenuPlacement =
+  | "bottom-start"
+  | "bottom-end"
+  /** Span the rail, above the anchor (footer account menu). */
+  | "top-stretch"
+  /** Span the rail, below the anchor (company scope menu). */
+  | "bottom-stretch";
 
 export type AnchorRect = {
   top: number;

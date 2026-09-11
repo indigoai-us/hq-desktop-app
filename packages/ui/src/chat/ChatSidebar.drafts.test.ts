@@ -61,10 +61,15 @@ const tenantStorage = () =>
     companyId: "all",
   });
 
+/**
+ * The pencil is a trailing sibling of the row button, not a child of it — it
+ * marks the row's right edge, past the pin and any unread badge.
+ */
 function draftMarkerFor(rowId: string): Element | null {
   return (
     host
       .querySelector(`[data-conversation-id="${rowId}"]`)
+      ?.closest(".chat-li")
       ?.querySelector('[data-testid="chat-row-draft"]') ?? null
   );
 }
@@ -136,7 +141,14 @@ describe("ChatSidebar draft markers", () => {
       expect(host.querySelector('[data-conversation-id="ch:chn_b"]')).toBeTruthy();
     });
     const row = host.querySelector('[data-conversation-id="ch:chn_b"]')!;
-    expect(row.querySelector('[data-testid="chat-row-draft"]')).toBeTruthy();
+    const li = row.closest(".chat-li")!;
+    expect(li.querySelector('[data-testid="chat-row-draft"]')).toBeTruthy();
+    // Trailing mark: last child of the row, after the pin and the badge, so a
+    // drafted row's title stays in the same column as every other row's.
+    expect(row.querySelector('[data-testid="chat-row-draft"]')).toBeNull();
+    expect(li.lastElementChild?.getAttribute("data-testid")).toBe(
+      "chat-row-draft",
+    );
     // The badge sits beside the row button inside `.chat-li`, right of the pin.
     expect(
       row
