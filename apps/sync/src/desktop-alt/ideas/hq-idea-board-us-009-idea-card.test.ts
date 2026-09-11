@@ -172,6 +172,24 @@ describe('US-009 IdeaCard', () => {
     expect(cited.querySelector('.idea-card-cited')?.textContent).toContain('by agents');
   });
 
+  it('mounts a record with duplicate palette hexes and duplicate tags', () => {
+    // Regression: keying #each by value threw Svelte's each_key_duplicate and
+    // took the whole board down.
+    expect(() =>
+      render({
+        record: record({
+          id: 'dupe',
+          kind: 'color',
+          tags: ['a', 'a'],
+          extracted: { palette: ['#ffffff', '#111111', '#ffffff'] },
+        }),
+      }),
+    ).not.toThrow();
+    expect(host.querySelectorAll('.swatches .swatch')).toHaveLength(3);
+    expect(host.querySelectorAll('.ctags .ctag')).toHaveLength(1);
+    expect(host.querySelector('.idea-card')?.getAttribute('data-id')).toBe('dupe');
+  });
+
   it('reports the user verdict from the low-confidence strip', () => {
     const onaccept = vi.fn();
     const ondismiss = vi.fn();

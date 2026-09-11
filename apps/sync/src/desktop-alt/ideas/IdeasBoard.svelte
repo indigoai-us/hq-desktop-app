@@ -8,6 +8,7 @@
   import IdeaCard from './IdeaCard.svelte';
   import {
     buildSearchIndex,
+    cardKind,
     FILTER_CHIPS,
     searchCaptures,
     type IdeaChip,
@@ -50,7 +51,7 @@
   });
 
   function accept(record: IdeaCapture): void {
-    void store.setKind(record.id, record.kind, 'extracted');
+    void store.setKind(record.id, cardKind(record), 'extracted');
   }
 
   function dismiss(record: IdeaCapture): void {
@@ -84,7 +85,7 @@
     </div>
   </div>
 
-  {#if store.state === 'loading'}
+  {#if store.state === 'loading' || store.state === 'idle'}
     <div class="ideas-loading" data-testid="ideas-loading">Loading captures…</div>
   {:else if store.state === 'error'}
     <div class="ideas-error" data-testid="ideas-error">
@@ -100,15 +101,17 @@
       </p>
     </div>
   {:else}
-    <div class="ideas-masonry" data-testid="ideas-masonry">
-      {#each visible as record (record.id)}
-        <IdeaCard
-          {record}
-          thumbnail={store.thumbnails[record.id] ?? null}
-          onaccept={accept}
-          ondismiss={dismiss}
-        />
-      {/each}
+    <div class="ideas-grid-container">
+      <div class="ideas-masonry" data-testid="ideas-masonry">
+        {#each visible as record (record.id)}
+          <IdeaCard
+            {record}
+            thumbnail={store.thumbnails[record.id] ?? null}
+            onaccept={accept}
+            ondismiss={dismiss}
+          />
+        {/each}
+      </div>
     </div>
     {#if visible.length === 0}
       <p class="ideas-noresults" data-testid="ideas-noresults">Nothing matches that yet.</p>
@@ -122,6 +125,11 @@
     background: var(--bg);
     font-family: var(--font-sans);
     color: var(--fg);
+  }
+
+  /* Unpadded so the container queries below measure the grid's own width
+     rather than the board's padded box. */
+  .ideas-grid-container {
     container-type: inline-size;
   }
 

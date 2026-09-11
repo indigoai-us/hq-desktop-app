@@ -40,6 +40,9 @@
       : [],
   );
 
+  /** De-duped so repeated tags cannot collide as keys, capped at four. */
+  const tags = $derived([...new Set(record.tags ?? [])].slice(0, 4));
+
   const readTime = $derived(readTimeMinutes(text('body') || record.ocr_text || ''));
   const handle = $derived(text('handle'));
   const avatarInitial = $derived((text('author') || record.provenance?.app || '?').charAt(0));
@@ -54,6 +57,7 @@
 
 <article
   class="idea-card"
+  data-id={record.id}
   data-kind={kind}
   data-status={status}
   data-testid="idea-card"
@@ -83,7 +87,7 @@
       </div>
     {:else if kind === 'color'}
       <div class="swatches" data-testid="idea-card-swatches">
-        {#each palette as hex (hex)}
+        {#each palette as hex, i (i)}
           <span class="swatch" style="background:{hex}" title={hex}></span>
         {/each}
       </div>
@@ -123,7 +127,7 @@
 
       {#if record.tags?.length}
         <div class="ctags">
-          {#each record.tags.slice(0, 4) as tag (tag)}
+          {#each tags as tag, i (i)}
             <span class="ctag">{tag}</span>
           {/each}
         </div>
@@ -189,7 +193,7 @@
     left: 0;
     top: 0;
     bottom: 0;
-    width: 2px;
+    width: 3px;
     background: var(--idea-rule);
   }
 

@@ -118,11 +118,27 @@ describe('US-009 IdeasBoard', () => {
     expect(el.querySelector('.ideas-masonry')).toBeNull();
   });
 
-  it('shows a loading state while the list command is in flight', async () => {
+  it('shows a loading state while the list command is in flight, never the empty state', async () => {
     invoke.mockImplementation(() => new Promise(() => {}));
     const el = await render();
     expect(el.querySelector('.ideas-loading')).not.toBeNull();
+    expect(el.querySelector('.ideas-empty')).toBeNull();
     expect(el.querySelector('.ideas-masonry')).toBeNull();
+  });
+
+  it('promotes a low-confidence record to its resolved kind, never unknown', async () => {
+    const row = record({ id: 'id-low', kind: 'unknown', status: 'low_confidence' });
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === 'ideas_list_captures' ? [row] : { mimeType: 'image/png', dataBase64: 'AAAA' },
+    );
+    const el = await render();
+
+    el.querySelector<HTMLButtonElement>('.idea-lowconf-accept')?.click();
+    await settle();
+
+    const call = invoke.mock.calls.find(([cmd]) => cmd === 'ideas_set_kind');
+    expect(call).toBeDefined();
+    expect(call?.[1]).toMatchObject({ kind: 'image', status: 'extracted' });
   });
 
   it('shows an error state with a retry that reloads', async () => {
