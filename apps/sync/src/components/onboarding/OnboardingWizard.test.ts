@@ -1305,3 +1305,11 @@ describe('anonymous installer step pings', () => {
     expect(wizardSource).toContain('void resolveInstallerPersonUid()');
   });
 });
+
+describe('setup failure correlation', () => {
+  it('passes the onboarding flow and the product-telemetry session to native setup failures', () => {
+    expect(wizardSource).toMatch(
+      /const failureScope = \{\s+setupRunId,\s+attemptCount,\s+flow: onboardingFlow,\s+frontendSessionId: onboardingTelemetry\.sessionId,\s+\};/,
+    );
+  });
+});
