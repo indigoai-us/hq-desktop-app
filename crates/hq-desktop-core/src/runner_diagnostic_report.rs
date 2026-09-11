@@ -317,17 +317,23 @@ pub fn parse_runner_report_memory_class(bytes: &[u8]) -> RunnerReportMemoryClass
     }
 }
 
-/// True when `bytes` are a COMPLETE Node diagnostic report — a fully-written JSON
-/// object — as opposed to a truncated mid-write capture (this reopen, HQ-DESKTOP-60).
-/// Distinguishes "truncated, keep polling" from "complete but carried no memory
-/// class" so the caller records `report_incomplete` (a write race) apart from
-/// `report_unreadable` (a complete report with no `javascriptHeap`). A report caught
-/// mid-write is invalid JSON and yields `false`; a complete report — even one with no
-/// memory section — parses to a JSON object and yields `true`. Pure; empty or
-/// oversized input is not complete.
+/// True when `bytes` are a TERMINAL Node diagnostic report — one that will not change
+/// its parse outcome by polling again — as opposed to a transient mid-write capture
+/// (this reopen, HQ-DESKTOP-60). Distinguishes "truncated, keep polling"
+/// (`report_incomplete`) from an outcome that is already settled: a complete JSON
+/// object (parses to a memory class, or is honestly empty → `report_unreadable`), OR
+/// a report past the size cap. An oversized report is fully written but
+/// [`parse_runner_report_memory_class`] rejects it PERMANENTLY, so it is terminal, not
+/// retryable — reporting it complete lets the caller record `report_unreadable` and
+/// stop polling immediately instead of rereading a never-parseable file for the whole
+/// window and mislabeling it `report_incomplete`. A report caught mid-write is invalid
+/// JSON and yields `false`. Pure; empty input is not complete.
 pub fn runner_report_is_complete(bytes: &[u8]) -> bool {
-    if bytes.is_empty() || bytes.len() > RUNNER_REPORT_MAX_BYTES {
+    if bytes.is_empty() {
         return false;
+    }
+    if bytes.len() > RUNNER_REPORT_MAX_BYTES {
+        return true;
     }
     serde_json::from_slice::<Value>(bytes)
         .map(|value| value.is_object())
@@ -635,12 +641,16 @@ mod tests {
         assert!(runner_report_is_complete(complete_no_heap.as_bytes()));
         assert!(!parse_runner_report_memory_class(complete_no_heap.as_bytes()).is_present());
 
-        // Empty, oversized, and non-object JSON are never a complete report.
+        // Empty and non-object JSON are never a complete report (mid-write → retry).
         assert!(!runner_report_is_complete(b""));
-        let oversized = vec![b'{'; RUNNER_REPORT_MAX_BYTES + 1];
-        assert!(!runner_report_is_complete(&oversized));
         assert!(!runner_report_is_complete(b"[]"));
         assert!(!runner_report_is_complete(b"42"));
+        // An OVERSIZED report is terminal-complete: it will never parse, so the caller
+        // records report_unreadable and stops polling immediately, rather than rereading
+        // it for the whole window and mislabeling it report_incomplete (Codex P2).
+        let oversized = vec![b'{'; RUNNER_REPORT_MAX_BYTES + 1];
+        assert!(runner_report_is_complete(&oversized));
+        assert!(!parse_runner_report_memory_class(&oversized).is_present());
     }
 
     #[test]
