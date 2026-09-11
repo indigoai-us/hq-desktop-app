@@ -110,7 +110,7 @@
     min-height: 0;
     min-width: 0;
     height: 100%;
-    background: var(--surface-panel, var(--v4-ground, #161618));
+    background: var(--v4-reading-surface, var(--surface-panel, var(--v4-ground, #161618)));
     border-left: 1px solid var(--line, var(--border, rgba(255, 255, 255, 0.12)));
     color: var(--t1, inherit);
     font: 400 13px/1.45 var(--font-ui, inherit);

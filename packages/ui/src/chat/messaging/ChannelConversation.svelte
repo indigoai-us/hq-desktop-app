@@ -1841,6 +1841,8 @@
   }
 
   .dm-thread-wrap {
+    min-width: 0;
+    overflow: hidden;
     position: relative;
     flex: 1;
     min-height: 0;

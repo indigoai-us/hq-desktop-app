@@ -1688,6 +1688,9 @@
   .sessions.embedded {
     --session-column-width: 100%;
     --session-gutter: 12px;
+    background: var(--v4-reading-surface, var(--v4-ground, #161618));
+    min-width: 0;
+    overflow: hidden;
   }
 
   .composer-dock {
