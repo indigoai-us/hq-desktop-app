@@ -273,12 +273,12 @@ describe("ChatSidebar filters", () => {
         ),
       ].find((b) => b.textContent?.includes(text));
 
-    // Pick the person (narrows to their DMs), then switch Show → Project channels.
+    // Pick the person (narrows to their DMs), then switch Show → Project
+    // channels. People are a multi-select, so the menu stays open after the
+    // first click — re-opening it here would toggle it shut.
     openFilter();
     await vi.waitFor(() => expect(filterButton("Ada Lovelace")).toBeTruthy());
     filterButton("Ada Lovelace")!.click();
-    await tick();
-    openFilter();
     await tick();
     const projectsBtn = filterButton("Project channels");
     expect(projectsBtn, "Project channels filter").toBeTruthy();
@@ -290,6 +290,95 @@ describe("ChatSidebar filters", () => {
     expect(
       host.querySelector('[data-conversation-id="ch:chn_proj"]'),
     ).toBeTruthy();
+  });
+});
+
+describe("ChatSidebar people filter is a multi-select", () => {
+  it("stacks people, clears them, and resets every filter", async () => {
+    const api = stubApi({
+      listContacts: async () => ({
+        contacts: [
+          {
+            personUid: "prs_ada",
+            displayName: "Ada Lovelace",
+            companyUid: "cmp_1",
+            lastActivityAt: now(),
+          },
+          {
+            personUid: "prs_grace",
+            displayName: "Grace Hopper",
+            companyUid: "cmp_1",
+            lastActivityAt: now(),
+          },
+        ],
+      }),
+    });
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api, seedDirectory: [seedRow] },
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector('[data-conversation-id="ch:chn_proj"]'),
+      ).toBeTruthy();
+    });
+
+    const popover = () =>
+      document.querySelector('[data-testid="chat-filter-popover"]');
+    const button = (text: string) =>
+      [...(popover()?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+        (b) => b.textContent?.includes(text),
+      );
+    const people = () =>
+      [
+        ...(popover()?.querySelectorAll<HTMLButtonElement>(
+          '[data-testid="chat-filter-person"]',
+        ) ?? []),
+      ];
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-filter"]')!
+      .click();
+    await vi.waitFor(() => expect(people()).toHaveLength(2));
+
+    // Two people at once — the menu stays open between clicks.
+    people()[0]!.click();
+    await tick();
+    people()[1]!.click();
+    await tick();
+    expect(
+      people().filter((b) => b.getAttribute("aria-checked") === "true"),
+    ).toHaveLength(2);
+
+    // Clear drops the people but leaves the rest of the panel alone.
+    const clear = popover()!.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-filter-clear-people"]',
+    );
+    expect(clear, "Clear appears once someone is picked").toBeTruthy();
+    clear!.click();
+    await tick();
+    expect(
+      people().filter((b) => b.getAttribute("aria-checked") === "true"),
+    ).toHaveLength(0);
+
+    // Reset appears with any non-default filter and puts them all back.
+    // Picking a Show view closes the menu (it is a single choice), so reopen.
+    button("Project channels")!.click();
+    await tick();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-filter"]')!
+      .click();
+    await tick();
+    const reset = popover()!.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-filter-reset"]',
+    );
+    expect(reset, "Reset appears once a filter differs from default").toBeTruthy();
+    reset!.click();
+    await tick();
+    expect(
+      popover()?.querySelector('[data-testid="chat-filter-reset"]') ?? null,
+      "Reset hides again once everything is back to default",
+    ).toBeNull();
   });
 });
 

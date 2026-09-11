@@ -268,12 +268,23 @@
     color: var(--t3, var(--muted, var(--pop-muted)));
   }
 
+  /* Right edge, revealed on hover — the same treatment a message row's
+     timestamp gets. Parked after the summary it read as part of the
+     sentence. */
   .sys-time {
     flex-shrink: 0;
+    margin-left: auto;
+    padding-left: 8px;
     font-size: 10px;
     font-family: var(--font-mono, inherit);
     color: var(--t3, var(--muted-3, var(--pop-muted)));
-    opacity: 0.7;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+
+  .sys-line:hover .sys-time,
+  .sys-line:focus-visible .sys-time {
+    opacity: 1;
   }
 
   .work-mesh-detail {

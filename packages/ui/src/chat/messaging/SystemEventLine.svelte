@@ -52,7 +52,7 @@
     <span class="sys-summary">· {model.summary}</span>
   {/if}
   {#if time}
-    <span class="sys-time">· {time}</span>
+    <span class="sys-time">{time}</span>
   {/if}
 </div>
 
@@ -94,6 +94,23 @@
   .sys-title {
     font-weight: 400;
     color: var(--t3, var(--muted-2, var(--pop-muted)));
+  }
+
+  /* The stamp is row metadata, not part of the sentence: it sits on the row's
+     right edge and only appears on hover, the way message timestamps do. */
+  .sys-time {
+    flex-shrink: 0;
+    margin-left: auto;
+    padding-left: 8px;
+    font-family: var(--font-mono, inherit);
+    font-size: 10px;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+
+  .sys-line:hover .sys-time,
+  .sys-line:focus-within .sys-time {
+    opacity: 1;
   }
 
   .sys-summary,

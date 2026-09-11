@@ -111,6 +111,7 @@
     type ConversationRow,
     type DmContactInput,
     type MessageSearchHit,
+    DEFAULT_SHOW_FILTER,
     type ShowFilter,
     type SortMode,
     type ScopeCompany,
@@ -360,12 +361,34 @@
   let showFilter = $state<ShowFilter>(loadShowFilter(storage));
   /** Admin-only: browse project channels in this company you have not joined. */
   let includeNonMembers = $state(loadIncludeNonMemberChannels(storage));
-  let personFilter = $state<string | null>(null);
+  /** People filter is a SET: the concept lets you stack several at once. */
+  let personFilters = $state<string[]>([]);
+
+  function togglePersonFilter(uid: string): void {
+    personFilters = personFilters.includes(uid)
+      ? personFilters.filter((id) => id !== uid)
+      : [...personFilters, uid];
+  }
+
+  /** Any filter differing from the panel's defaults — drives Reset. */
+  const filtersDirty = $derived(
+    showFilter !== DEFAULT_SHOW_FILTER ||
+      personFilters.length > 0 ||
+      includeNonMembers ||
+      sortMode !== "recent",
+  );
+
+  function resetFilters(): void {
+    personFilters = [];
+    sortMode = "recent";
+    if (includeNonMembers) setIncludeNonMembers(false);
+    setShowFilter(DEFAULT_SHOW_FILTER);
+  }
   // People aren't company-scoped — switching company scope clears a stale
   // person filter so it can't silently empty the newly scoped list.
   $effect(() => {
     void scope;
-    personFilter = null;
+    personFilters = [];
   });
 
   function setShowFilter(next: ShowFilter): void {
@@ -709,7 +732,7 @@
         show: showFilter,
         includeNonMembers,
         sort: sortMode,
-        personUid: personFilter,
+        personUid: personFilters,
       },
     ),
   );
@@ -2088,9 +2111,7 @@
         <button
           type="button"
           class="chat-icon-btn"
-          class:on={showFilter !== "all" ||
-            personFilter != null ||
-            includeNonMembers}
+          class:on={filtersDirty}
           data-testid="chat-filter"
           aria-label="Filter conversations"
           aria-expanded={filterOpen}
@@ -2119,7 +2140,19 @@
                  bar off the rounded edge and inside the padding, the way every
                  other scroll region in the concept is built. -->
             <div class="chat-filter-scroll">
-            <div class="chat-filter-caption">Sort by</div>
+            <div class="chat-filter-caption chat-filter-caption-row">
+              <span>Sort by</span>
+              {#if filtersDirty}
+                <button
+                  type="button"
+                  class="chat-filter-reset"
+                  data-testid="chat-filter-reset"
+                  onclick={resetFilters}
+                >
+                  Reset
+                </button>
+              {/if}
+            </div>
             <div class="chat-sort-toggle" role="group" aria-label="Sort by">
               <button
                 type="button"
@@ -2150,7 +2183,9 @@
               class:active={showFilter === "all"}
               data-testid="chat-filter-all"
               onclick={() => {
-                personFilter = null;
+                // People rows are DMs/groups, so person + a Show view compose
+                // to an empty list. Picking a view drops the person selection.
+                personFilters = [];
                 setShowFilter("all");
               }}
             >
@@ -2165,7 +2200,9 @@
               class="chat-filter-row"
               class:active={showFilter === "projects"}
               onclick={() => {
-                personFilter = null;
+                // People rows are DMs/groups, so person + a Show view compose
+                // to an empty list. Picking a view drops the person selection.
+                personFilters = [];
                 setShowFilter("projects");
               }}
             >
@@ -2180,7 +2217,9 @@
               class="chat-filter-row"
               class:active={showFilter === "dms"}
               onclick={() => {
-                personFilter = null;
+                // People rows are DMs/groups, so person + a Show view compose
+                // to an empty list. Picking a view drops the person selection.
+                personFilters = [];
                 setShowFilter("dms");
               }}
             >
@@ -2220,7 +2259,19 @@
             {/if}
 
             {#if people.length > 0}
-              <div class="chat-filter-caption pad-top">People</div>
+              <div class="chat-filter-caption pad-top chat-filter-caption-row">
+                <span>People</span>
+                {#if personFilters.length > 0}
+                  <button
+                    type="button"
+                    class="chat-filter-reset"
+                    data-testid="chat-filter-clear-people"
+                    onclick={() => (personFilters = [])}
+                  >
+                    Clear
+                  </button>
+                {/if}
+              </div>
               <div class="chat-people-list">
                 {#each people as person (person.personUid)}
                   {@const isYou =
@@ -2229,18 +2280,21 @@
                   {@const personName = person.label
                     .replace(/\s*\(you\)\s*/i, "")
                     .trim()}
+                  {@const selected = personFilters.includes(person.personUid)}
                   <button
                     type="button"
                     class="chat-person-row"
-                    class:active={personFilter === person.personUid}
-                    aria-pressed={personFilter === person.personUid}
+                    class:active={selected}
+                    role="menuitemcheckbox"
+                    aria-checked={selected}
+                    data-testid="chat-filter-person"
                     onclick={() => {
-                      const selecting = personFilter !== person.personUid;
-                      personFilter = selecting ? person.personUid : null;
+                      const selecting = !selected;
+                      togglePersonFilter(person.personUid);
                       // A person's rows are DMs/groups — clear any Show filter
                       // that would strip them (else the combo yields []).
                       if (selecting) showFilter = "all";
-                      filterOpen = false;
+                      // Menu stays open: picking people is a multi-select.
                     }}
                   >
                     <span class="chat-person-avatar" aria-hidden="true"
@@ -2249,6 +2303,11 @@
                     <span class="chat-person-name">{personName}</span>
                     {#if isYou}
                       <span class="chat-person-tag">you</span>
+                    {/if}
+                    {#if selected}
+                      <span class="chat-filter-check" aria-hidden="true"
+                        ><Check size={12} weight="bold" /></span
+                      >
                     {/if}
                   </button>
                 {/each}
@@ -4172,6 +4231,35 @@
     padding: 6px 2px 6px 6px;
     overflow: hidden;
     z-index: 80;
+  }
+
+  /* Concept `.fp-head`: the caption keeps its inset and the action sits on
+     the panel's right edge, so Reset / Clear read as part of the caption
+     rather than as another row in the list. */
+  .chat-filter-caption-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-right: 2px;
+  }
+
+  .chat-filter-reset {
+    appearance: none;
+    padding: 0 6px;
+    border: 0;
+    background: transparent;
+    color: var(--t3);
+    font-family: var(--font-ui);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+    cursor: pointer;
+  }
+
+  .chat-filter-reset:hover {
+    color: var(--t1);
   }
 
   .chat-filter-scroll {

@@ -27,7 +27,12 @@
     label?: string | null;
     /** Hover dwell before showing, in ms. Focus always shows immediately. */
     delay?: number;
-    /** Horizontal alignment of the bubble relative to the trigger. */
+    /**
+     * Kept for callers that still pass it; ignored. The bubble is always
+     * centred on its trigger and shifted only as far as the window edge
+     * forces — an alignment chosen up front was wrong as soon as the window
+     * was a different width.
+     */
     align?: "center" | "start" | "end";
     /**
      * Let the label wrap. The default bubble is a one-line hint for an icon
@@ -48,7 +53,7 @@
   let {
     label = null,
     delay = 400,
-    align = "center",
+    align: _align = "center",
     multiline = false,
     suppressed = false,
     trigger,
@@ -57,6 +62,32 @@
   const id = `tooltip-${Math.random().toString(36).slice(2, 10)}`;
   let open = $state(false);
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let bubbleEl = $state<HTMLElement | null>(null);
+  /** px to nudge the centred bubble so it stays inside the window. */
+  let shift = $state(0);
+
+  /** Keep the tooltip 8px clear of either window edge, centred otherwise. */
+  function clampToViewport(): void {
+    const el = bubbleEl;
+    if (!el || typeof window === "undefined") return;
+    shift = 0;
+    // Measure with no shift applied, then correct in one step.
+    const margin = 8;
+    const rect = el.getBoundingClientRect();
+    const overLeft = margin - rect.left;
+    const overRight = rect.right - (window.innerWidth - margin);
+    if (overLeft > 0) shift = overLeft;
+    else if (overRight > 0) shift = -overRight;
+  }
+
+  $effect(() => {
+    if (!open) {
+      shift = 0;
+      return;
+    }
+    void bubbleEl;
+    clampToViewport();
+  });
 
   function clearTimer(): void {
     if (timer !== null) {
@@ -105,10 +136,10 @@
   {@render trigger(label && !suppressed ? id : "")}
   {#if open && label && !suppressed}
     <span
+      bind:this={bubbleEl}
       class="tooltip-bubble"
-      class:align-start={align === "start"}
-      class:align-end={align === "end"}
       class:multiline
+      style={shift === 0 ? undefined : `--tooltip-shift: ${shift}px`}
       role="tooltip"
       {id}
       data-testid="tooltip-bubble"
@@ -134,7 +165,9 @@
     position: absolute;
     top: calc(100% + 6px);
     left: 50%;
-    transform: translateX(-50%);
+    /* Centred on the trigger; `--tooltip-shift` is set only when the window
+       edge would clip the bubble. */
+    transform: translateX(calc(-50% + var(--tooltip-shift, 0px)));
     z-index: 10001;
     max-width: 220px;
     padding: 4px 8px;
@@ -161,27 +194,12 @@
     white-space: normal;
   }
 
-  .tooltip-bubble.align-start {
-    left: 0;
-    transform: none;
-  }
-
-  .tooltip-bubble.align-end {
-    left: auto;
-    right: 0;
-    transform: none;
-  }
-
   @keyframes tooltip-in {
     from {
       opacity: 0;
-      transform: translateX(var(--tooltip-shift, -50%)) translateY(-2px);
+      transform: translateX(calc(-50% + var(--tooltip-shift, 0px)))
+        translateY(-2px);
     }
-  }
-
-  .tooltip-bubble.align-start,
-  .tooltip-bubble.align-end {
-    --tooltip-shift: 0;
   }
 
   @media (prefers-reduced-motion: reduce) {

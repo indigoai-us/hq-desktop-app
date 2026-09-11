@@ -121,6 +121,9 @@
           {:else}
             <span class="att-thumb-fallback" class:is-loading={!broken[keyFor(item)]} role="status">{broken[keyFor(item)] ? "Image unavailable · Retry" : "Loading image…"}</span>
           {/if}
+          <!-- Concept `.msg-img-meta`: the tile names itself in a small pill
+               on the artwork, rather than in a caption row beneath it. -->
+          <span class="att-thumb-meta">{item.name}</span>
         </button>
       {:else}
         <button
@@ -146,31 +149,63 @@
 {/if}
 
 <style>
+  /* `align-items: flex-start` so a document card keeps its own height —
+     stretched to an image tile's height it read as a tall empty panel. */
   .msg-attachments {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    align-items: flex-start;
+    gap: 6px;
     margin-top: 8px;
   }
 
+  /* Concept `.msg-img`: a 320x168 tile on a hairline that only warms on
+     hover. The old 220px-tall single-image tile dominated the timeline. */
   .att-thumb {
     appearance: none;
     position: relative;
+    display: flex;
+    align-items: flex-end;
     flex: 0 0 auto;
     width: 160px;
     height: 120px;
-    padding: 0;
+    padding: 10px;
     overflow: hidden;
-    border: 1px solid var(--line2);
-    border-radius: 8px;
-    background: var(--sel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--raised);
     cursor: pointer;
+    transition: border-color 0.12s;
   }
 
   .att-thumb.is-single {
     width: min(320px, 100%);
-    height: 220px;
+    height: 168px;
     max-width: 100%;
+  }
+
+  .att-thumb:hover {
+    border-color: var(--line2);
+  }
+
+  /* The artwork fills the tile; the pill sits on top of it. */
+  .att-thumb img {
+    position: absolute;
+    inset: 0;
+  }
+
+  .att-thumb-meta {
+    position: relative;
+    max-width: 100%;
+    padding: 3px 7px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.42);
+    color: rgba(255, 255, 255, 0.86);
+    font: 400 9px/1.4 var(--font-mono, ui-monospace, Menlo, monospace);
+    letter-spacing: 0.03em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .att-thumb img {
@@ -195,35 +230,37 @@
     font: 400 13px/1.4 var(--font-ui);
   }
 
+  /* Same tile language as the image, sized to its own content: a document
+     has no thumbnail, so it states what it is instead of faking one. */
   .att-card {
     appearance: none;
     display: flex;
     align-items: center;
     gap: 8px;
-    min-width: 160px;
+    min-width: 0;
     max-width: 240px;
     padding: 8px 10px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 8px;
-    background: var(--sel, rgba(255, 255, 255, 0.05));
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--raised);
     color: inherit;
     text-align: left;
     cursor: pointer;
+    transition: border-color 0.12s;
   }
 
-  .att-card:hover,
-  .att-thumb:hover {
-    background: var(--hover, rgba(255, 255, 255, 0.08));
+  .att-card:hover {
+    border-color: var(--line2);
   }
 
   .att-icon {
     flex: 0 0 auto;
     display: grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     border-radius: 6px;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--btn-bg);
     color: var(--t2);
     font: 700 9px/1 var(--font-mono, ui-monospace, Menlo, monospace);
     letter-spacing: 0.04em;

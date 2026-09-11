@@ -9,6 +9,8 @@
    * proxy the Blob; `URL.createObjectURL` needs a real File.
    */
   import { onDestroy } from "svelte";
+  import FileText from "phosphor-svelte/lib/FileText";
+  import X from "phosphor-svelte/lib/X";
   import { isImageFile } from "./chat-attachments";
 
   interface Props {
@@ -61,42 +63,46 @@
   {#each files as file, i (file.name + file.size + i)}
     {#if isImageFile(file)}
       <span
-        class="composer-thumb"
+        class="composer-att"
         data-testid="composer-image-preview"
         title={file.name}
       >
         <img
-          class="composer-thumb-img"
+          class="composer-att-img"
           src={pendingPreviewUrl(file)}
           alt={file.name}
         />
+        <span class="composer-att-name">{file.name}</span>
         <button
           type="button"
-          class="composer-thumb-remove"
+          class="composer-att-remove"
           aria-label={`Remove ${file.name}`}
           title={`Remove ${file.name}`}
           onclick={() => onremove(i)}
           onkeydown={(e) => onRemoveKey(e, i)}
         >
-          ×
+          <X size={10} weight="bold" aria-hidden="true" />
         </button>
       </span>
     {:else}
       <span
-        class="composer-chip"
+        class="composer-att is-file"
         data-testid="composer-file-chip"
         title={file.name}
       >
-        <span class="composer-chip-name">{file.name}</span>
+        <span class="composer-att-icon" aria-hidden="true">
+          <FileText size={17} />
+        </span>
+        <span class="composer-att-name">{file.name}</span>
         <button
           type="button"
-          class="composer-chip-remove"
+          class="composer-att-remove"
           aria-label={`Remove ${file.name}`}
           title={`Remove ${file.name}`}
           onclick={() => onremove(i)}
           onkeydown={(e) => onRemoveKey(e, i)}
         >
-          ×
+          <X size={10} weight="bold" aria-hidden="true" />
         </button>
       </span>
     {/if}
@@ -107,112 +113,106 @@
 </div>
 
 <style>
+  /* Concept `.cmp-tray` / `.cmp-att`: small 96x64 tiles that name themselves
+     in a pill, rather than a large square preview beside a pill-shaped chip —
+     two different shapes for the same thing. */
   .composer-pending {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     padding: 0 2px 8px;
   }
 
-  .composer-thumb {
+  .composer-att {
     position: relative;
+    display: flex;
+    align-items: flex-end;
     flex: 0 0 auto;
-    width: 80px;
-    height: 80px;
+    box-sizing: border-box;
+    width: 96px;
+    height: 64px;
+    padding: 5px;
     overflow: hidden;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--line);
     border-radius: 8px;
-    background: var(--sel, rgba(255, 255, 255, 0.06));
+    background: var(--raised);
   }
 
-  .composer-thumb-img {
+  /* A document has no thumbnail to show, so the tile states what it is
+     rather than faking a preview. */
+  .composer-att.is-file {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 8px 7px 5px;
+  }
+
+  .composer-att-icon {
+    display: flex;
+    color: var(--t2);
+    line-height: 0;
+  }
+
+  .composer-att-img {
+    position: absolute;
+    inset: 0;
     display: block;
     width: 100%;
     height: 100%;
     object-fit: cover;
   }
 
-  .composer-thumb-remove {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    appearance: none;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    border: 0;
-    border-radius: 999px;
-    background: rgba(0, 0, 0, 0.62);
-    color: #fff;
-    font-size: 14px;
-    line-height: 20px;
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 120ms ease, transform 120ms ease;
-  }
-
-  .composer-thumb-remove:hover,
-  .composer-thumb-remove:focus-visible {
-    background: rgba(0, 0, 0, 0.82);
-  }
-
-  .composer-thumb-remove:focus-visible {
-    outline: 2px solid var(--ice-ink, #c9d6e4);
-    outline-offset: 2px;
-  }
-
-  .composer-thumb-remove:active {
-    transform: scale(0.97);
-  }
-
-  .composer-thumb:hover .composer-thumb-remove,
-  .composer-thumb:focus-within .composer-thumb-remove,
-  .composer-thumb-remove:focus-visible {
-    opacity: 1;
-  }
-
-  @media (hover: none) {
-    .composer-thumb-remove {
-      opacity: 1;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .composer-thumb-remove {
-      transition: none;
-    }
-  }
-
-  .composer-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 220px;
-    padding: 4px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 999px;
-    background: var(--sel, rgba(255, 255, 255, 0.06));
-    font-size: 12px;
-  }
-
-  .composer-chip-name {
+  .composer-att-name {
+    position: relative;
+    max-width: 100%;
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.45);
+    color: rgba(255, 255, 255, 0.85);
+    font: 400 8px/1.4 var(--font-mono, ui-monospace, Menlo, monospace);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .composer-chip-remove {
-    appearance: none;
-    border: 0;
-    background: transparent;
+  .composer-att.is-file .composer-att-name {
+    background: var(--btn-bg);
     color: var(--t2);
-    cursor: pointer;
   }
 
-  .composer-chip-remove:hover,
-  .composer-chip-remove:focus-visible {
-    color: var(--t1, #fff);
+  .composer-att-remove {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    appearance: none;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    cursor: pointer;
+    transition: background-color 120ms ease;
+  }
+
+  .composer-att-remove:hover,
+  .composer-att-remove:focus-visible {
+    background: rgba(0, 0, 0, 0.75);
+  }
+
+  .composer-att-remove:focus-visible {
+    outline: 2px solid var(--ice-ink, #c9d6e4);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .composer-att-remove {
+      transition: none;
+    }
   }
 
   .composer-attach-error {

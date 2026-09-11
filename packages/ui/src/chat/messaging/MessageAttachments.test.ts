@@ -157,7 +157,11 @@ describe("cached inline image rendering", () => {
     mountStrip({ attachments: [item()], previewCache, vaultCompanyUid: "company" });
     const frame = host.querySelector("[data-testid=attachment-thumb]");
     expect(frame?.textContent).toContain("Loading image");
-    expect(frame?.textContent).not.toContain("photo.png");
+    // The tile names itself in a pill on the artwork, in every state — so the
+    // placeholder and the filename now coexist by design.
+    expect(frame?.querySelector(".att-thumb-meta")?.textContent).toBe(
+      "photo.png",
+    );
     await vi.waitFor(() => expect(frame?.textContent).toContain("Retry"));
     (frame as HTMLButtonElement).click();
     await vi.waitFor(() => expect(frame?.querySelector("img")).not.toBeNull());

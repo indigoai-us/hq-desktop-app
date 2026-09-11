@@ -110,6 +110,10 @@ describe("ChannelConversation lifecycle cards", () => {
     const line = root.querySelector("[data-testid='system-event-line']");
     expect(line?.textContent).toContain("HQ");
     expect(line?.textContent).toContain("Corey Epstein created Ramen Bae");
-    expect(line?.querySelector(".sys-time")?.textContent).toMatch(/·/);
+    // The stamp is right-aligned row metadata now, not a clause in the
+    // sentence, so it carries no leading separator.
+    expect(line?.querySelector(".sys-time")?.textContent?.trim()).toMatch(
+      /\d/,
+    );
   });
 });

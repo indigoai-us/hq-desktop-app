@@ -567,7 +567,7 @@
       data-no-drag
       data-tauri-drag-region="false"
     >
-      <Tooltip label={backHoverLabel} align="start">
+      <Tooltip label={backHoverLabel}>
         {#snippet trigger(describedBy: string)}
           <button
             type="button"
@@ -583,7 +583,7 @@
           </button>
         {/snippet}
       </Tooltip>
-      <Tooltip label={forwardHoverLabel} align="start">
+      <Tooltip label={forwardHoverLabel}>
         {#snippet trigger(describedBy: string)}
           <button
             type="button"
@@ -622,7 +622,6 @@
     <div class="v4-launch-wrap" bind:this={launchContainer}>
       <Tooltip
         label="Open your HQ folder in an AI tool"
-        align="start"
         suppressed={launchOpen}
       >
         {#snippet trigger(describedBy: string)}
@@ -750,7 +749,6 @@
       <div class="v4-core-wrap" bind:this={coreContainer}>
         <Tooltip
           label="HQ Core: sync, packs, and updates"
-          align="end"
           suppressed={coreOpen}
         >
           {#snippet trigger(describedBy: string)}

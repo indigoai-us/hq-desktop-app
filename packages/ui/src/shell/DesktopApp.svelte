@@ -4975,7 +4975,6 @@
                         label={projectAboutBody(
                           channelStatus?.project.description ?? null,
                         )}
-                        align="start"
                         multiline
                       >
                         {#snippet trigger(describedBy: string)}

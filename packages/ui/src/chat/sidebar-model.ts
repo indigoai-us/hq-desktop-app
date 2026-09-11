@@ -962,16 +962,26 @@ export function filterByShow(
 }
 
 /** Filter to a single DM counterpart (personUid). */
+/**
+ * Keep the rows that involve ANY of the given people (the filter panel is a
+ * multi-select). A single uid is still accepted for callers that only ever
+ * pick one.
+ */
 export function filterByPerson(
   rows: ConversationRow[],
-  personUid: string | null | undefined,
+  personUid: string | readonly string[] | null | undefined,
 ): ConversationRow[] {
-  if (!personUid) return rows.slice();
+  const uids = (
+    typeof personUid === "string" ? [personUid] : (personUid ?? [])
+  ).filter((uid) => uid.trim().length > 0);
+  if (uids.length === 0) return rows.slice();
   return rows.filter(
     (row) =>
-      (row.kind === "dm" && row.personUid === personUid) ||
+      (row.kind === "dm" && !!row.personUid && uids.includes(row.personUid)) ||
       (row.kind === "group" &&
-        (row.members ?? []).some((m) => m.personUid === personUid)),
+        (row.members ?? []).some(
+          (m) => !!m.personUid && uids.includes(m.personUid),
+        )),
   );
 }
 
@@ -1015,7 +1025,7 @@ export function applySidebarFilters(
     /** Admin-only: keep browse-only rows for channels the caller is not in. */
     includeNonMembers?: boolean;
     sort?: SortMode;
-    personUid?: string | null;
+    personUid?: string | readonly string[] | null;
   } = {},
 ): ConversationRow[] {
   let next = rows;
