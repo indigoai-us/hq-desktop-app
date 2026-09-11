@@ -47,6 +47,17 @@ pub fn dispatch_sentry_report(report: impl FnOnce() + Send + 'static) {
         });
 }
 
+/// Emit a bounded, best-effort Sentry warning from a static message. Runs
+/// off-thread via [`dispatch_sentry_report`] (never blocks the caller) and is a
+/// no-op when Sentry is disabled (empty DSN on dev/PR CI). Used for
+/// fleet-visibility signals such as a failed native-hook install, where losing
+/// the signal is acceptable but blocking the caller is not.
+pub fn capture_warning(message: &'static str) {
+    dispatch_sentry_report(move || {
+        sentry::capture_message(message, sentry::Level::Warning);
+    });
+}
+
 /// Lifecycle state recorded with native-panic reports. The state is deliberately
 /// small and static because it is updated from the native event-loop thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +103,14 @@ pub enum NativePanicSeam {
     /// `AppSessionEndExit`, so a residual report shows whether the two signals
     /// agreed.
     AppSessionEndObserved = 11,
+    /// The Windows `WH_CALLWNDPROC` session-end intercept fired: a committed
+    /// `WM_ENDSESSION(TRUE)` was seen at the window-procedure boundary *before*
+    /// tao's own handler, so the bounded teardown and the process exit ran from
+    /// the intercept rather than from `RunEvent::Exit` (HQ-DESKTOP-44 re-entrant
+    /// path). This is the primary session-end seam on builds that carry the
+    /// intercept; `AppSessionEndExit` stays the fallback marker for the
+    /// `RunEvent::Exit` arm on the non-re-entrant path.
+    AppSessionEndIntercepted = 12,
 }
 
 impl NativePanicSeam {
@@ -108,6 +127,7 @@ impl NativePanicSeam {
             9 => Some(Self::AppExitRequested),
             10 => Some(Self::AppSessionEndExit),
             11 => Some(Self::AppSessionEndObserved),
+            12 => Some(Self::AppSessionEndIntercepted),
             _ => None,
         }
     }
@@ -125,6 +145,7 @@ impl NativePanicSeam {
             Self::AppExitRequested => "app.exit-requested",
             Self::AppSessionEndExit => "app.session-end-exit",
             Self::AppSessionEndObserved => "app.session-end-observed",
+            Self::AppSessionEndIntercepted => "app.session-end-intercept",
         }
     }
 }
@@ -3555,6 +3576,67 @@ mod tests {
         assert!(breadcrumbs[0].data.is_empty());
 
         reset_native_panic_context_for_test();
+    }
+
+    // Every static seam id must round-trip through `from_id`/`message`, and an id
+    // outside the closed set must map to `None`. Locks the HQ-DESKTOP-44
+    // re-entrant intercept seam (id 12, `app.session-end-intercept`) and proves a
+    // future unmapped id cannot silently materialize an empty breadcrumb.
+    #[test]
+    fn native_panic_seam_ids_round_trip_and_reject_unmapped_ids() {
+        let seams = [
+            (1u8, NativePanicSeam::TrayLeftClick, "tray.left-click"),
+            (2, NativePanicSeam::TrayBlurHide, "tray.blur-hide"),
+            (
+                3,
+                NativePanicSeam::GlobalShortcutTogglePopover,
+                "global-shortcut.toggle-popover",
+            ),
+            (
+                4,
+                NativePanicSeam::GlobalShortcutToggleDesktop,
+                "global-shortcut.toggle-desktop",
+            ),
+            (
+                5,
+                NativePanicSeam::WindowCloseRequestedHide,
+                "window.close-requested-hide",
+            ),
+            (6, NativePanicSeam::WindowThemeChanged, "window.theme-changed"),
+            (
+                7,
+                NativePanicSeam::WindowForceForeground,
+                "window-focus.force-foreground",
+            ),
+            (
+                8,
+                NativePanicSeam::SingleInstanceSurfaceExisting,
+                "single-instance.surface-existing",
+            ),
+            (9, NativePanicSeam::AppExitRequested, "app.exit-requested"),
+            (10, NativePanicSeam::AppSessionEndExit, "app.session-end-exit"),
+            (
+                11,
+                NativePanicSeam::AppSessionEndObserved,
+                "app.session-end-observed",
+            ),
+            (
+                12,
+                NativePanicSeam::AppSessionEndIntercepted,
+                "app.session-end-intercept",
+            ),
+        ];
+
+        for (id, seam, message) in seams {
+            assert_eq!(NativePanicSeam::from_id(id), Some(seam), "id {id} round-trip");
+            assert_eq!(seam as u8, id, "variant {seam:?} keeps its stable id");
+            assert_eq!(seam.message(), message, "id {id} message is stable");
+        }
+
+        // The intercept seam is the newest, so the first unmapped id is 13.
+        assert_eq!(NativePanicSeam::from_id(0), None);
+        assert_eq!(NativePanicSeam::from_id(13), None);
+        assert_eq!(NativePanicSeam::from_id(u8::MAX), None);
     }
 
     #[test]
