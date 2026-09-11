@@ -957,6 +957,8 @@ async function drain() { while (!closed || queue.length) await take(); }
     }
 
     async fn start_with(mode: PermissionMode, script: &str) -> Harness {
+        super::super::warm_up_agent_session_node().await;
+
         let dir = tempfile::tempdir().expect("tempdir");
         let replies = dir.path().join("replies.jsonl");
         let program = install_fake(dir.path(), &replies, script);
@@ -1013,10 +1015,11 @@ async function drain() { while (!closed || queue.length) await take(); }
         }
     }
 
-    /// Poll until `predicate` holds, or fail. Bounded so a regression is a
-    /// failing test rather than a hanging suite.
+    /// Poll until `predicate` holds, or fail. The 10-second budget matches
+    /// Codex and Grok because each provider starts the same fake Node child;
+    /// a regression still fails rather than hanging the suite.
     async fn until(label: &str, mut predicate: impl FnMut() -> bool) {
-        for _ in 0..200 {
+        for _ in 0..400 {
             if predicate() {
                 return;
             }
@@ -1356,10 +1359,12 @@ async function drain() { while (!closed || queue.length) await take(); }
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
 
-    /// Bounded wait for the OS to reap `pid`.
+    /// Wait up to 10 seconds for the OS to reap `pid`. This matches Codex and
+    /// Grok's test-poll budget because each provider starts the same fake Node
+    /// child.
     #[cfg(unix)]
     async fn until_gone(pid: u32) -> bool {
-        for _ in 0..200 {
+        for _ in 0..400 {
             if !alive(pid) {
                 return true;
             }

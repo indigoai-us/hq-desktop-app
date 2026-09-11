@@ -167,6 +167,57 @@ pub fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
+/// Pay Node's one-time cold-start cost before a session fixture begins one of
+/// its short behavioral waits. All provider fixtures use the same Node child
+/// shape, so this is shared across their test modules and runs once per test
+/// binary.
+#[cfg(test)]
+pub(crate) async fn warm_up_agent_session_node() {
+    static NODE_WARM_UP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+    NODE_WARM_UP
+        .get_or_init(|| async {
+            const WARM_UP_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+            let started = std::time::Instant::now();
+            let result = tokio::time::timeout(WARM_UP_BUDGET, async {
+                let dir = tempfile::tempdir().expect("create agent-session warm-up tempdir");
+                let script = dir.path().join("agent-session-warm-up.cjs");
+                std::fs::write(&script, "process.exit(0);\n")
+                    .expect("write agent-session warm-up script");
+
+                let launch = hq_desktop_core::stdio::StdioLaunch {
+                    program: hq_desktop_core::paths::resolve_bin("node"),
+                    args: vec![script.to_string_lossy().into_owned()],
+                    env: vec![],
+                    env_remove: vec![],
+                    cwd: dir.path().to_path_buf(),
+                };
+                let mut child = hq_desktop_core::stdio::StdioChild::spawn(&launch)
+                    .await
+                    .expect("spawn agent-session warm-up Node child");
+                let status = child
+                    .wait_for_exit(WARM_UP_BUDGET)
+                    .await
+                    .expect("agent-session warm-up Node child did not exit");
+                assert!(
+                    status.success(),
+                    "agent-session warm-up Node child exited unsuccessfully: {status}"
+                );
+            })
+            .await;
+            println!(
+                "agent-session warm-up: {} ms",
+                started.elapsed().as_millis()
+            );
+
+            if result.is_err() {
+                panic!("agent-session warm-up spawn never completed within 60 seconds");
+            }
+        })
+        .await;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Wire payloads
 // ─────────────────────────────────────────────────────────────────────────────

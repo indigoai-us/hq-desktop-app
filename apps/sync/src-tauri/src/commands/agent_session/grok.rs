@@ -1033,6 +1033,8 @@ async function drain() { while (!closed || queue.length) await take(); }
     }
 
     async fn start_with(script: &str) -> Harness {
+        super::super::warm_up_agent_session_node().await;
+
         let dir = tempfile::tempdir().unwrap();
         let replies = dir.path().join("replies.jsonl");
         let program = install_fake(dir.path(), &replies, script);
