@@ -117,6 +117,12 @@
               messages: [...(page.messages ?? []), ...ATTACHMENT_MESSAGES],
             });
           }
+          if (args.channelId === COMPANY_CHANNEL_ID && AGENT_MESSAGES.length) {
+            return ok({
+              ...page,
+              messages: [...(page.messages ?? []), ...AGENT_MESSAGES],
+            });
+          }
           return ok(page);
         },
         fetchDmThread: async (args: { withPersonUid: string }) =>
@@ -136,13 +142,28 @@
          */
         getCompanyTab: async (companyUid: string, tab: string) =>
           ok(companyTab(companyUid, tab)),
-        runCompanyTabAction: async (args: { cardId?: string; actionId?: string }) =>
-          ok({
-            cardId: args.cardId ?? "",
+        /**
+         * "Add agent" is a router: the real server posts a `create_agent`
+         * card into the company channel and answers with WHERE it put it.
+         * Without that `channelId` the entry point has nowhere to navigate
+         * and reports "The server didn't say where the agent step was
+         * posted" — which is the client behaving correctly against a stub
+         * that was not finished, not a broken button.
+         */
+        runCompanyTabAction: async (args: {
+          cardId?: string;
+          actionId?: string;
+        }) => {
+          const addingAgent = args.actionId === "add_agent";
+          if (addingAgent) postAgentCard();
+          return ok({
+            cardId: addingAgent ? "card_create_agent_1" : (args.cardId ?? ""),
             actionId: args.actionId ?? "",
             state: "open",
             replayed: false,
-          }),
+            ...(addingAgent ? { channelId: COMPANY_CHANNEL_ID } : {}),
+          });
+        },
       }),
       meetings: slice({
         listUpcoming: async () => ok([]),
@@ -546,6 +567,52 @@
     },
   ];
 
+  /**
+   * The company channel the harness routes "Add agent" to. The shipped
+   * fixtures carry one company-scoped channel; agent cards land in it.
+   */
+  const COMPANY_CHANNEL_ID = "gtm-standup";
+
+  /**
+   * Posted lazily by the Add-agent action rather than seeded, because the
+   * company channel is also the surface people review on its own and a
+   * standing create-an-agent form is not part of it.
+   */
+  const AGENT_MESSAGES: ReturnType<typeof cardMessage>[] = [];
+
+  function postAgentCard(): void {
+    if (AGENT_MESSAGES.length > 0) return;
+    AGENT_MESSAGES.push(
+      cardMessage("evt_create_agent", 0, {
+        cardId: "card_create_agent_1",
+        kind: "create_agent",
+        companyUid: "cmp_indigo",
+        state: "open",
+        stepLabel: "Agent · 1 of 3",
+        title: "Create an agent",
+        summary: "A fleet agent gets its own channel, vault grants, and runtime.",
+        fields: [
+          {
+            id: "name",
+            label: "Agent name",
+            control: "text",
+            value: "",
+            required: true,
+          },
+          {
+            id: "handle",
+            label: "Handle",
+            control: "text",
+            value: "",
+            required: true,
+            hint: "@polar is available",
+          },
+        ],
+        actions: [{ id: "next", label: "Next", style: "primary" }],
+      }),
+    );
+  }
+
   const messagesFor = (row: Parameters<typeof fixtureMessagesFor>[0]) => {
     const id = (row as { channelId?: string })?.channelId;
     if (id === "setup") {
@@ -556,6 +623,12 @@
       return [
         ...base,
         ...(ATTACHMENT_MESSAGES as unknown as ReturnType<typeof fixtureMessagesFor>),
+      ];
+    }
+    if (id === COMPANY_CHANNEL_ID && AGENT_MESSAGES.length > 0) {
+      return [
+        ...base,
+        ...(AGENT_MESSAGES as unknown as ReturnType<typeof fixtureMessagesFor>),
       ];
     }
     return base;
