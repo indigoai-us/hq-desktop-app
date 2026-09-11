@@ -418,6 +418,47 @@
     members: [{ personUid: "person-corey", displayName: "Corey" }],
   }));
 
+  /**
+   * Message-text hits for the unified search. The shipped fixture answers
+   * with an empty list, so the Messages half of that dialog could not be
+   * reviewed at all — this matches on the body text the seeded threads
+   * actually contain.
+   */
+  const SEARCHABLE_MESSAGES = [
+    {
+      messageId: "evt_m1",
+      scope: "channel",
+      channelId: "agent-orchestrator",
+      companyUid: "Indigo",
+      body: "Nice. Bump the review one to me and re-run the sweep after the deploy.",
+      createdAt: new Date(Date.now() - 22 * 60_000).toISOString(),
+    },
+    {
+      messageId: "evt_m2",
+      scope: "channel",
+      channelId: "agent-orchestrator",
+      companyUid: "Indigo",
+      body: "Here's the spec and the mock for the new titlebar.",
+      createdAt: new Date(Date.now() - 26 * 60_000).toISOString(),
+    },
+    {
+      messageId: "evt_m3",
+      scope: "channel",
+      channelId: "hq-sync",
+      companyUid: "Indigo",
+      body: "Sync ran clean overnight — no conflicts to review this morning.",
+      createdAt: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+    },
+    {
+      messageId: "evt_m4",
+      scope: "dm",
+      counterpartyUid: "person-bryan",
+      companyUid: "Indigo",
+      body: "Can you take a look at the titlebar spec before standup?",
+      createdAt: new Date(Date.now() - 5 * 60 * 60_000).toISOString(),
+    },
+  ];
+
   const fixtureSidebarApi = createFixtureChatSidebarApi();
 
   /**
@@ -427,6 +468,15 @@
    */
   const sidebarApi = {
     ...fixtureSidebarApi,
+    searchMessages: async (args: { q?: string }) => {
+      const q = (args?.q ?? "").trim().toLowerCase();
+      if (!q) return { results: [] };
+      return {
+        results: SEARCHABLE_MESSAGES.filter((m) =>
+          m.body.toLowerCase().includes(q),
+        ) as never[],
+      };
+    },
     fetchChannelDirectory: async (
       ...args: Parameters<typeof fixtureSidebarApi.fetchChannelDirectory>
     ) => {

@@ -6,7 +6,6 @@
   import { onDestroy, onMount } from "svelte";
   import type { ImagePreviewCache } from "./image-preview-cache";
   import type { FileAttachmentModel } from "./channelMessageModels";
-  import { fileTypeLabel } from "./chat-attachments";
   import X from "phosphor-svelte/lib/X";
   import AttachmentPreview from "./AttachmentPreview.svelte";
 
@@ -14,7 +13,13 @@
     items: FileAttachmentModel[];
     previewCache?: ImagePreviewCache | null;
     selectedId: string | null;
-    onselect: (id: string) => void;
+    /**
+     * Kept for hosts that still pass it; the tray no longer switches between
+     * attachments. A filmstrip under a full-window image was a second way to
+     * do what clicking the next thumbnail in the message already does, and it
+     * took a band off the bottom of every preview to offer it.
+     */
+    onselect?: (id: string) => void;
     onclose: () => void;
     resolveUrl?: (attachment: FileAttachmentModel) => Promise<string | null>;
     /** Releases host-created object URLs used for browser-strip thumbnails. */
@@ -22,7 +27,7 @@
     onopenurl?: (url: string) => void;
   }
 
-  let { items, selectedId, onselect, onclose, resolveUrl, onreleaseurl, previewCache }: Props = $props();
+  let { items, selectedId, onselect: _onselect, onclose, resolveUrl, onreleaseurl, previewCache }: Props = $props();
 
   const selected = $derived(
     items.find((item) => (item.id || item.vaultPath) === selectedId) ??
@@ -145,27 +150,6 @@
       {/if}
     </div>
 
-    <nav class="att-tray-browser" aria-label="Attachment browser">
-      {#each items as item (item.id || item.vaultPath)}
-        {@const id = item.id || item.vaultPath}
-        <button
-          type="button"
-          class="att-tray-item"
-          class:active={selected && id === (selected.id || selected.vaultPath)}
-          data-testid="attachment-tray-item"
-          onclick={() => onselect(id)}
-        >
-          {#if (item.kind === "image" || /\.(png|jpe?g|gif|webp|svg)$/i.test(item.name)) && srcFor(item)}
-            <img src={srcFor(item)} alt="" />
-          {:else}
-            <span class="att-tray-item-icon"
-              >{fileTypeLabel(item.name, item.contentType)}</span
-            >
-          {/if}
-          <span class="att-tray-item-name">{item.name}</span>
-        </button>
-      {/each}
-    </nav>
   </div>
 </div>
 
@@ -217,113 +201,12 @@
     min-height: 0;
   }
 
-  .att-tray-image {
-    max-width: 100%;
-    max-height: 100%;
-    border-radius: 8px;
-    object-fit: contain;
-  }
-
-  .att-tray-file {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    text-align: center;
-  }
-
-  .att-tray-file-icon {
-    display: grid;
-    place-items: center;
-    width: 56px;
-    height: 56px;
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.08);
-    font: 700 12px/1 var(--font-mono, ui-monospace, Menlo, monospace);
-  }
-
-  .att-tray-file-name {
-    margin: 0;
-    font: 500 13px/1.3 var(--font-ui);
-    overflow-wrap: anywhere;
-  }
-
   .att-tray-empty {
     flex: 1 1 auto;
     display: grid;
     place-items: center;
-  }
-
-  .att-tray-file-meta,
-  .att-tray-empty {
     margin: 0;
     color: rgba(255, 255, 255, 0.55);
     font: 400 12px/1.3 var(--font-ui);
-  }
-
-  .att-tray-open {
-    appearance: none;
-    margin-top: 6px;
-    padding: 6px 12px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 6px;
-    background: var(--btn-bg, rgba(255, 255, 255, 0.07));
-    color: inherit;
-    cursor: pointer;
-  }
-
-  /* Only worth a strip when there is something to switch between. */
-  .att-tray-browser {
-    flex: 0 0 auto;
-    display: flex;
-    gap: 8px;
-    padding: 12px 20px 16px;
-    overflow-x: auto;
-  }
-
-  .att-tray-browser:has(> :only-child) {
-    display: none;
-  }
-
-  .att-tray-item {
-    appearance: none;
-    display: flex;
-    flex: 0 0 auto;
-    flex-direction: column;
-    gap: 4px;
-    width: 72px;
-    padding: 0;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    background: transparent;
-    color: inherit;
-    cursor: pointer;
-  }
-
-  .att-tray-item.active {
-    border-color: var(--ice-ink, #c9d6e4);
-  }
-
-  .att-tray-item img,
-  .att-tray-item-icon {
-    width: 72px;
-    height: 56px;
-    border-radius: 6px;
-    object-fit: cover;
-    background: rgba(255, 255, 255, 0.06);
-  }
-
-  .att-tray-item-icon {
-    display: grid;
-    place-items: center;
-    font: 700 10px/1 var(--font-mono, ui-monospace, Menlo, monospace);
-  }
-
-  .att-tray-item-name {
-    overflow: hidden;
-    color: rgba(255, 255, 255, 0.55);
-    font: 400 10px/1.2 var(--font-ui);
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 </style>

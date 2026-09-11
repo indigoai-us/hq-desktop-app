@@ -64,13 +64,11 @@
     applySidebarFilters,
     clearDmDot,
     clearPairUnread,
-    conversationKindLabel,
     distinctDmPeople,
     duplicateHumanDmTitles,
     formatSearchHitTime,
     groupByDay,
     groupByType,
-    historySearchScopeLabel,
     initialsFor,
     monogramFor,
     buildScopeOptions,
@@ -99,8 +97,6 @@
     scopePillLabel,
     startOfLocalDay,
     searchCompanyUidFromScope,
-    searchHistory,
-    historyDayGroups,
     searchHitSnippet,
     takeRailConversations,
     pickAutoOpenConversation,
@@ -430,10 +426,8 @@
   }
 
   let lastWeekExpanded = $state(false);
-  let historyOpen = $state(false);
   /** The rail is showing every filtered row, not just the live budget. */
   let historyExpanded = $state(false);
-  let historyQuery = $state("");
   /** Server message-content hits for non-empty history query (US-013). */
   let messageSearchHits = $state<MessageSearchHit[]>([]);
   let messageSearchLoading = $state(false);
@@ -461,11 +455,10 @@
   /**
    * Debounced mirrors of the free-text query inputs. The result-computing
    * `$derived`s read these, not the raw bound values, so the O(n) client
-   * filters (`filterSwitcher`/`searchHistory` over the full roster) run at most
+   * filters (`filterSwitcher` over the full roster) run at most
    * once per idle window instead of on every keystroke. The inputs stay bound
    * to the raw values, so typing/cursor/IME are unaffected.
    */
-  let historyQueryDebounced = $state("");
   /** Right-click conversation context menu (anchored at the cursor). */
   let contextMenu = $state<{
     row: ConversationRow;
@@ -538,16 +531,6 @@
   let activeId = $state<string | null>(null);
   $effect(() => {
     activeId = selectedId;
-  });
-
-  // History searches are debounced; conversation completion stays synchronous
-  // so Enter can never open a result from the previous query.
-  $effect(() => {
-    const h = historyQuery;
-    const timer = setTimeout(() => {
-      historyQueryDebounced = h;
-    }, 110);
-    return () => clearTimeout(timer);
   });
 
   const scopeCompanies = $derived(
@@ -807,8 +790,18 @@
   const switcherResults = $derived(
     filterSwitcher(liveSwitcherRows, searchQuery).slice(0, 200),
   );
+  /**
+   * Conversations then messages, as ONE list. The arrow keys and Enter run
+   * over this, not over the two sections separately — a highlight that
+   * stopped at a section boundary would make the second half unreachable
+   * from the keyboard.
+   */
+  const searchItems = $derived([
+    ...switcherResults.map((row) => ({ kind: "row" as const, row })),
+    ...messageSearchHits.map((hit) => ({ kind: "hit" as const, hit })),
+  ]);
   $effect(() => {
-    switcherResults;
+    searchItems.length;
     activeSearchIndex = 0;
   });
 
@@ -825,23 +818,23 @@
       closeSearch();
     } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      if (!switcherResults.length) return;
-      activeSearchIndex = (activeSearchIndex + (event.key === "ArrowDown" ? 1 : -1) + switcherResults.length) % switcherResults.length;
-      document.getElementById(`conversation-search-${activeSearchIndex}`)?.scrollIntoView?.({ block: "nearest" });
-    } else if (event.key === "Enter" && switcherResults[activeSearchIndex]) {
+      if (!searchItems.length) return;
+      activeSearchIndex =
+        (activeSearchIndex +
+          (event.key === "ArrowDown" ? 1 : -1) +
+          searchItems.length) %
+        searchItems.length;
+      document
+        .getElementById(`conversation-search-${activeSearchIndex}`)
+        ?.scrollIntoView?.({ block: "nearest" });
+    } else if (event.key === "Enter" && searchItems[activeSearchIndex]) {
       event.preventDefault();
-      selectSwitcherRow(switcherResults[activeSearchIndex]);
+      const item = searchItems[activeSearchIndex];
+      if (item.kind === "row") selectSwitcherRow(item.row);
+      else openSearchHit(item.hit);
     }
   }
-  const historyRows = $derived(
-    searchHistory(filteredRows, historyQueryDebounced),
-  );
-  const historyGroups = $derived(historyDayGroups(historyRows));
-  const historyScopeLabel = $derived(
-    historySearchScopeLabel(scope, scopeCompanies),
-  );
-  const historyCompanyUid = $derived(searchCompanyUidFromScope(scope));
-  const historyHasQuery = $derived(historyQuery.trim().length > 0);
+  const searchCompanyUid = $derived(searchCompanyUidFromScope(scope));
   const scopeLabel = $derived(scopePillLabel(scope, scopeCompanies));
   const scopeOptions = $derived(buildScopeOptions(scopeCompanies));
   const scopeTones = $derived(
@@ -1154,7 +1147,7 @@
   }
 
   $effect(() => {
-    if (searchOpen || historyOpen || createOpen) return;
+    if (searchOpen || createOpen) return;
     document
       .querySelectorAll(
         "[data-testid='chat-search-overlay'], [data-testid='chat-create-modal']",
@@ -1246,16 +1239,19 @@
     };
   });
 
+  // One search box, two kinds of answer. Conversation names match locally and
+  // synchronously; message text is a debounced server call. They share the
+  // query so the user never has to say which one they meant.
   $effect(() => {
-    if (!historyOpen) return;
-    const q = historyQuery.trim();
+    if (!searchOpen) return;
+    const q = searchQuery.trim();
     if (!q) {
       messageSearchHits = [];
       messageSearchError = null;
       messageSearchLoading = false;
       return;
     }
-    const companyUid = historyCompanyUid;
+    const companyUid = searchCompanyUid;
     const seq = ++messageSearchSeq;
     messageSearchLoading = true;
     messageSearchError = null;
@@ -1876,21 +1872,6 @@
   function openConnectionRequests() {
     onnavigateMessages?.();
     requestDmRequestsOpen();
-  }
-
-  function openHistory() {
-    historyOpen = true;
-    historyQuery = "";
-    messageSearchHits = [];
-    messageSearchError = null;
-    messageSearchLoading = false;
-  }
-
-  function closeHistory() {
-    historyOpen = false;
-    historyQuery = "";
-    messageSearchHits = [];
-    messageSearchError = null;
   }
 
   function openSearchHit(hit: MessageSearchHit) {
@@ -2646,158 +2627,6 @@
     {/if}
   {/if}
 
-  {#if historyOpen}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="chat-overlay top"
-      data-testid="chat-history-view"
-      use:portal
-      onclick={(e) => {
-        if (e.target === e.currentTarget) closeHistory();
-      }}
-      onkeydown={(e) => {
-        if (e.key === "Escape") closeHistory();
-      }}
-    >
-      <div
-        class="chat-switcher"
-        role="dialog"
-        aria-label="Conversation history"
-        tabindex="-1"
-      >
-        <div class="chat-switcher-search">
-          <span class="chat-switcher-search-ic" aria-hidden="true">
-            <MagnifyingGlass size={16} aria-hidden="true" />
-          </span>
-          <input
-            class="chat-switcher-input"
-            type="text"
-            use:focusOnMount
-            placeholder="Search history…"
-            bind:value={historyQuery}
-            aria-label="Search conversation history"
-            data-testid="chat-history-search"
-          />
-          <span class="chat-history-scope" data-testid="chat-history-scope">
-            {historyScopeLabel}
-          </span>
-        </div>
-        <p class="chat-history-helper" data-testid="chat-history-helper">
-          Searches recent messages (about the last 1,000)
-        </p>
-        <div
-          class="chat-switcher-list chat-history-list"
-          role="list"
-          data-testid="chat-history-results"
-        >
-          {#if historyHasQuery}
-            {#if messageSearchLoading && messageSearchHits.length === 0}
-              <div class="chat-empty" role="status">Searching…</div>
-            {:else if messageSearchError}
-              <div class="chat-empty" role="alert">{messageSearchError}</div>
-            {:else if messageSearchHits.length === 0}
-              <div class="chat-empty">No matching messages</div>
-            {:else}
-              {#each messageSearchHits as hit (hit.messageId + (hit.createdAt ?? ""))}
-                {@const row = resolveSearchHitRow(hit, allRows)}
-                <div role="listitem" class="chat-li">
-                  <button
-                    type="button"
-                    class="chat-row chat-search-hit"
-                    data-testid="chat-search-hit"
-                    onclick={() => openSearchHit(hit)}
-                  >
-                    {#if row.kind === "channel"}
-                      <span class="chat-glyph" data-glyph="hash" aria-hidden="true"><Hash size={13} /></span>
-                    {:else if row.kind === "group"}
-                      <span class="chat-avatar group" aria-hidden="true">
-                        {row.memberCount ?? row.members?.length ?? 0}
-                      </span>
-                    {:else}
-                      {@const avatar = rowAvatar(row, avatarByUid)}
-                      <span
-                        class="chat-avatar"
-                        aria-hidden="true"
-                        data-avatar={avatar.kind}
-                      >
-                        {#if avatar.src}
-                          <img src={avatar.src} alt="" />
-                        {:else}
-                          {avatar.initials}
-                        {/if}
-                      </span>
-                    {/if}
-                    <span class="chat-search-hit-copy">
-                      <span class="chat-search-hit-title">
-                        {#if draftIdSet.has(row.id)}
-                          {@render draftMark()}
-                        {/if}
-                        <span class="chat-row-title">{railRowTitle(row)}</span>
-                      </span>
-                      <span class="chat-search-snippet"
-                        >{searchHitSnippet(hit)}</span
-                      >
-                    </span>
-                    <span class="chat-search-meta">
-                      <span class="chat-type-tag"
-                        >{conversationKindLabel(row.kind)}</span
-                      >
-                      <span class="chat-search-time"
-                        >{formatSearchHitTime(hit.createdAt)}</span
-                      >
-                    </span>
-                  </button>
-                </div>
-              {/each}
-            {/if}
-          {:else}
-            {#each historyGroups as group (group.label)}
-              <div
-                class="chat-history-day"
-                data-testid="chat-history-day"
-                aria-hidden="true"
-              >
-                {group.label}
-              </div>
-              {#each group.rows as row (row.id)}
-                <button
-                  type="button"
-                  class="chat-switcher-row"
-                  role="listitem"
-                  class:unread={!!row.unreadCount || row.unreadDot}
-                  onclick={() => void openRow(row)}
-                >
-                  {#if row.kind === "channel"}
-                    <span class="chat-switcher-hash" aria-hidden="true">#</span>
-                  {:else if row.kind === "group"}
-                    <span class="chat-switcher-avatar" aria-hidden="true">
-                      {row.memberCount ?? row.members?.length ?? 0}
-                    </span>
-                  {:else}
-                    {@const avatar = rowAvatar(row, avatarByUid)}
-                    <span
-                      class="chat-switcher-avatar"
-                      aria-hidden="true"
-                      data-avatar={avatar.kind}
-                    >
-                      {#if avatar.src}
-                        <img src={avatar.src} alt="" />
-                      {:else}
-                        {avatar.initials}
-                      {/if}
-                    </span>
-                  {/if}
-                  <span class="chat-switcher-name">{row.title}</span>
-                </button>
-              {/each}
-            {:else}
-              <div class="chat-empty">No conversations</div>
-            {/each}
-          {/if}
-        </div>
-      </div>
-    </div>
-  {/if}
   {#if searchOpen}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -2847,7 +2676,20 @@
             <X size={13} weight="bold" aria-hidden="true" />
           </button>
         </div>
-        <div class="chat-switcher-list" id="conversation-search-results" role="listbox" aria-label="Conversations">
+        <div
+          class="chat-switcher-list"
+          id="conversation-search-results"
+          role="listbox"
+          aria-label="Search results"
+        >
+          <!-- Conversations resolve instantly; messages arrive from the
+               server a beat later. Both live in this one list so nobody has
+               to decide up front which kind of thing they are looking for. -->
+          {#if switcherResults.length > 0}
+            <div class="chat-switcher-caption" aria-hidden="true">
+              Conversations
+            </div>
+          {/if}
           {#each switcherResults as row, index (row.id)}
             <button
               type="button"
@@ -2869,32 +2711,68 @@
               <span class="chat-switcher-name">{row.name}</span>
               <span class="chat-switcher-company">{row.company}</span>
             </button>
-          {:else}
-            <div class="chat-empty">
-              {searchQuery.trim() ? "No matches" : "No conversations"}
-            </div>
           {/each}
+
+          {#if searchQuery.trim()}
+            <div class="chat-switcher-caption" aria-hidden="true">
+              Messages
+              {#if messageSearchLoading}
+                <span class="chat-switcher-caption-note">searching…</span>
+              {/if}
+            </div>
+            {#if messageSearchError}
+              <div class="chat-empty" role="alert">{messageSearchError}</div>
+            {:else if messageSearchHits.length === 0 && !messageSearchLoading}
+              <div class="chat-empty">No matching messages</div>
+            {:else}
+              {#each messageSearchHits as hit, hitIndex (hit.messageId + (hit.createdAt ?? ""))}
+                {@const row = resolveSearchHitRow(hit, allRows)}
+                {@const index = switcherResults.length + hitIndex}
+                <button
+                  type="button"
+                  class="chat-switcher-row chat-switcher-hit"
+                  role="option"
+                  id={`conversation-search-${index}`}
+                  aria-selected={index === activeSearchIndex}
+                  class:active={index === activeSearchIndex}
+                  tabindex="-1"
+                  data-testid="chat-search-hit"
+                  onclick={() => openSearchHit(hit)}
+                >
+                  {#if row.kind === "channel"}
+                    <span class="chat-switcher-hash" aria-hidden="true">#</span>
+                  {:else}
+                    {@const avatar = rowAvatar(row, avatarByUid)}
+                    <span
+                      class="chat-switcher-avatar"
+                      aria-hidden="true"
+                      data-avatar={avatar.kind}
+                    >
+                      {#if avatar.src}
+                        <img src={avatar.src} alt="" />
+                      {:else}
+                        {avatar.initials}
+                      {/if}
+                    </span>
+                  {/if}
+                  <span class="chat-switcher-hit-copy">
+                    <span class="chat-switcher-name">{railRowTitle(row)}</span>
+                    <span class="chat-switcher-snippet"
+                      >{searchHitSnippet(hit)}</span
+                    >
+                  </span>
+                  <span class="chat-switcher-company"
+                    >{formatSearchHitTime(hit.createdAt)}</span
+                  >
+                </button>
+              {/each}
+            {/if}
+          {/if}
+
+          {#if searchItems.length === 0 && !searchQuery.trim()}
+            <div class="chat-empty">No conversations</div>
+          {/if}
         </div>
-        <!-- This switcher matches conversation NAMES. Message text is a
-             different search, and the sidebar's history row used to be its
-             only door — that row is now an expander, so the door moved here,
-             beside the search it belongs to. -->
-        <button
-          type="button"
-          class="chat-switcher-messages"
-          data-testid="chat-search-messages"
-          onclick={() => {
-            const q = searchQuery.trim();
-            searchOpen = false;
-            openHistory();
-            historyQuery = q;
-          }}
-        >
-          <MagnifyingGlass size={13} aria-hidden="true" />
-          {searchQuery.trim()
-            ? `Search messages for “${searchQuery.trim()}”`
-            : "Search messages…"}
-        </button>
       </div>
     </div>
   {/if}
@@ -3924,26 +3802,6 @@
     font-weight: 400;
   }
 
-  .chat-switcher-messages {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 9px 12px;
-    border: 0;
-    border-top: 1px solid var(--line);
-    background: transparent;
-    color: var(--t2);
-    font: 500 12px/1.3 var(--font-ui);
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .chat-switcher-messages:hover {
-    background: var(--hover);
-    color: var(--t1);
-  }
-
   .chat-history-affordance {
     display: flex;
     align-items: center;
@@ -4205,60 +4063,37 @@
   /* The history results own their scroll region — without this the (up to
      ~1000-row) list overflows the fixed-height glass sidebar (overflow:hidden)
      and renders clipped and un-scrollable. */
-  .chat-history-list {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-  }
-
-  .chat-history-head {
+  /* Section captions inside the unified search. Same mark as the filter
+     popover's `.chat-filter-caption`. */
+  .chat-switcher-caption {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 4px 8px;
-  }
-
-  .chat-history-scope {
-    margin-left: auto;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 11px);
-    font-weight: 500;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .chat-history-day {
-    margin: 10px 0 2px;
-    padding: 0 10px;
+    align-items: baseline;
+    gap: 6px;
+    margin: 0;
+    padding: 10px 10px 4px;
     color: var(--t3);
-    font-size: 10px;
+    font-family: var(--font-mono);
+    font-size: 9px;
     font-weight: 600;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
-  .chat-history-day:first-child {
-    margin-top: 2px;
-  }
-
-  .chat-history-helper {
-    /* Align with the switcher rows: 6px list inset + 10px row padding. */
-    margin: 0 6px 8px;
-    padding: 0 10px;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 11px);
+  .chat-switcher-caption-note {
     font-weight: 400;
-    line-height: 1.35;
+    letter-spacing: 0.04em;
+    text-transform: none;
   }
 
-  .chat-search-hit {
+  /* A message hit is two lines — where it was said, then what was said —
+     so it sits taller than a conversation row and tops-aligns its icon. */
+  .chat-switcher-hit {
     align-items: flex-start;
-    min-height: 44px;
-    padding-top: 6px;
-    padding-bottom: 6px;
+    padding-top: 7px;
+    padding-bottom: 7px;
   }
 
-  .chat-search-hit-copy {
+  .chat-switcher-hit-copy {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -4266,66 +4101,14 @@
     min-width: 0;
   }
 
-  .chat-search-hit-title {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .chat-search-snippet {
+  .chat-switcher-snippet {
     overflow: hidden;
-    color: var(--v4-text-3);
-    font-size: var(--type-secondary, 12px);
+    color: var(--t3, var(--t2));
+    font-size: 12px;
     font-weight: 400;
     line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .chat-search-meta {
-    display: flex;
-    flex: 0 0 auto;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 2px;
-    max-width: 88px;
-  }
-
-  .chat-type-tag {
-    color: var(--v4-text-3);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .chat-search-time {
-    color: var(--v4-text-3);
-    font-size: 10px;
-    font-weight: 400;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .chat-search-input {
-    box-sizing: border-box;
-    width: calc(100% - 8px);
-    margin: 0 4px 8px;
-    height: 30px;
-    padding: 0 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: var(--type-secondary, 13px);
-    font-weight: 400;
-  }
-
-  .chat-search-input:focus {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: -2px;
   }
 
   .chat-text-btn {
