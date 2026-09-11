@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_EVIDENCE_FUTURE_SKEW_MS,
   DEFAULT_EVIDENCE_MAX_AGE_MS,
   EVIDENCE_SCHEMA,
   PINNED_CONTRACT_HASH,
@@ -117,6 +118,42 @@ describe("validateServiceEvidence", () => {
       validateServiceEvidence(RECEIPT, {
         now: runAt + DEFAULT_EVIDENCE_MAX_AGE_MS + 1,
         maxAgeMs: DEFAULT_EVIDENCE_MAX_AGE_MS * 2,
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("bounds a future-dated receipt by clock skew, not by maxAgeMs", () => {
+    const runAt = Date.parse(RECEIPT.runAt);
+
+    // Exactly at the skew bound: tolerated.
+    expect(
+      validateServiceEvidence(RECEIPT, {
+        now: runAt - DEFAULT_EVIDENCE_FUTURE_SKEW_MS,
+      }).ok,
+    ).toBe(true);
+
+    // One millisecond past it: refused, even though it is far inside maxAgeMs.
+    const skewed = validateServiceEvidence(RECEIPT, {
+      now: runAt - DEFAULT_EVIDENCE_FUTURE_SKEW_MS - 1,
+    });
+    expect(skewed.ok).toBe(false);
+    if (skewed.ok) return;
+    expect(skewed.code).toBe("EVIDENCE_STALE");
+
+    // A widened staleness window does not widen the forward bound.
+    const widened = validateServiceEvidence(RECEIPT, {
+      now: runAt - DEFAULT_EVIDENCE_FUTURE_SKEW_MS - 1,
+      maxAgeMs: DEFAULT_EVIDENCE_MAX_AGE_MS * 10,
+    });
+    expect(widened.ok).toBe(false);
+    if (widened.ok) return;
+    expect(widened.code).toBe("EVIDENCE_STALE");
+
+    // The tolerance itself is overridable.
+    expect(
+      validateServiceEvidence(RECEIPT, {
+        now: runAt - DEFAULT_EVIDENCE_FUTURE_SKEW_MS - 1,
+        futureSkewMs: DEFAULT_EVIDENCE_FUTURE_SKEW_MS * 2,
       }).ok,
     ).toBe(true);
   });

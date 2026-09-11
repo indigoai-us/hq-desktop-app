@@ -22,6 +22,16 @@ export const PINNED_CONTRACT_HASH =
 /** Receipts older than this are treated as stale evidence (30 days). */
 export const DEFAULT_EVIDENCE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * How far ahead of the local clock a receipt may be dated (5 minutes).
+ *
+ * A receipt is evidence of a run that already happened, so a `runAt` in the
+ * future is either clock skew or a forged date. Only genuine skew is tolerated;
+ * anything beyond it fails as EVIDENCE_STALE, the same code a too-old receipt
+ * gets. Widening `maxAgeMs` does not widen this — the two bounds are separate.
+ */
+export const DEFAULT_EVIDENCE_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
 export const EVIDENCE_FAILURE_CODES = [
   /** Nothing was supplied, or it was not an object. */
   "EVIDENCE_MISSING",
@@ -31,7 +41,7 @@ export const EVIDENCE_FAILURE_CODES = [
   "EVIDENCE_FAILED",
   /** The receipt pins a different contract hash than this mirror. */
   "EVIDENCE_CONTRACT_MISMATCH",
-  /** The receipt is older than the configured max age (or dated ahead). */
+  /** Older than the configured max age, or dated ahead beyond clock skew. */
   "EVIDENCE_STALE",
 ] as const;
 
@@ -61,6 +71,8 @@ export interface EvidenceOptions {
   now?: number | Date;
   /** Override the staleness window. */
   maxAgeMs?: number;
+  /** Override the forward clock-skew tolerance for a future-dated `runAt`. */
+  futureSkewMs?: number;
   /** Override the pinned contract hash (tests / a future contract bump). */
   contractHash?: string;
 }
@@ -189,11 +201,13 @@ export function validateServiceEvidence(
         ? nowOption.getTime()
         : nowOption;
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_EVIDENCE_MAX_AGE_MS;
+  const futureSkewMs =
+    options.futureSkewMs ?? DEFAULT_EVIDENCE_FUTURE_SKEW_MS;
   const age = now - runAt;
   if (age > maxAgeMs) {
     return fail("EVIDENCE_STALE", "Service evidence is older than the allowed window.");
   }
-  if (age < -maxAgeMs) {
+  if (age < -futureSkewMs) {
     return fail("EVIDENCE_STALE", "Service evidence is dated in the future.");
   }
 

@@ -153,7 +153,16 @@ export function createCallsApi(transport: CallsTransport): CallsApi {
     return run();
   }
 
-  const versioned = (body: Json): Json => ({ version: CALLS_VERSION, ...body });
+  /**
+   * Stamp the pinned contract version on a request body.
+   *
+   * The body is spread FIRST so a caller-supplied `version` can never override
+   * `CALLS_VERSION`: this adapter mirrors exactly one contract, and shipping a
+   * different version string would be a silent lie to the backend. Sending an
+   * unsupported version is the backend's job to reject (UNSUPPORTED_VERSION);
+   * our job is to never send one.
+   */
+  const versioned = (body: Json): Json => ({ ...body, version: CALLS_VERSION });
 
   return {
     contractVersion: CALLS_VERSION,

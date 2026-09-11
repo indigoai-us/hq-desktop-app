@@ -15,6 +15,7 @@ import {
   keyId,
   sha256,
   signedBytes,
+  toBase64Url,
   toHex,
   verifyChunkBytes,
   verifyEnvelope,
@@ -256,12 +257,69 @@ describe("canonical JSON, digests and signatures", () => {
     ).rejects.toThrow(CallsContractError);
   });
 
-  it("detects a forged transcript digest as DIGEST_MISMATCH", async () => {
+  it("covers the digest with the signature, so tampering fails as INVALID_SIGNATURE", async () => {
+    // `signedBytes` excludes only `signature`, so `digest` is inside the signed
+    // pre-image: rewriting it on a golden envelope breaks the signature before
+    // the digest is ever compared. DIGEST_MISMATCH is therefore unreachable by
+    // tampering alone — it needs a body signed *with* a wrong digest (below).
     const vector = CRYPTO_VECTORS.find((v) => v.kind === "segment")!;
     const envelope = record("segment.json");
     await expect(
       verifyEnvelope({ ...envelope, digest: "0".repeat(64) }, vector.publicKey),
     ).rejects.toMatchObject({ code: "INVALID_SIGNATURE" });
+  });
+
+  it("reaches DIGEST_MISMATCH for a validly signed body whose digest is wrong", async () => {
+    // The case the backend catches: a signer that computed `digest` over other
+    // content and then signed the envelope honestly. The golden vectors carry
+    // no private key, so the signature is produced here with a throwaway
+    // Ed25519 pair over the golden segment's own field shape.
+    const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
+      "sign",
+      "verify",
+    ])) as CryptoKeyPair;
+    const rawKey = toBase64Url(
+      new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)),
+    );
+
+    const base = {
+      ...record("segment.json"),
+      peerKey: await keyId(rawKey),
+      digest: "0".repeat(64),
+    };
+    delete (base as Record<string, unknown>).signature;
+    expect(base.digest).not.toBe(await contentDigest(base));
+
+    const message = signedBytes(base);
+    const signature = new Uint8Array(
+      await crypto.subtle.sign(
+        { name: "Ed25519" },
+        pair.privateKey,
+        message.buffer as ArrayBuffer,
+      ),
+    );
+    const envelope = { ...base, signature: toBase64Url(signature) };
+
+    await expect(verifyEnvelope(envelope, rawKey)).rejects.toMatchObject({
+      code: "DIGEST_MISMATCH",
+    });
+
+    // Same envelope with the honest digest verifies, so the failure above is
+    // the digest check and not a signing mistake in this test.
+    const honest = { ...base, digest: await contentDigest(base) };
+    const honestSignature = new Uint8Array(
+      await crypto.subtle.sign(
+        { name: "Ed25519" },
+        pair.privateKey,
+        signedBytes(honest).buffer as ArrayBuffer,
+      ),
+    );
+    await expect(
+      verifyEnvelope(
+        { ...honest, signature: toBase64Url(honestSignature) },
+        rawKey,
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it("canonicalizes objects by sorted key, rejecting lone surrogates", () => {

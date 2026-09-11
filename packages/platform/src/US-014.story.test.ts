@@ -21,6 +21,7 @@ import {
   CALLS_PREFLIGHT_REQUIRED,
   CALLS_UNSUPPORTED_HOST,
   CALLS_VERSION,
+  DEFAULT_EVIDENCE_FUTURE_SKEW_MS,
   DEFAULT_EVIDENCE_MAX_AGE_MS,
   EVIDENCE_SCHEMA,
   PINNED_CONTRACT_HASH,
@@ -287,6 +288,14 @@ describe("US-014: Implement the versioned call platform adapter", () => {
     });
     expect(future.ok).toBe(false);
     if (!future.ok) expect(future.code).toBe("EVIDENCE_STALE");
+
+    // A future-dated receipt is bounded by clock skew, not by the staleness
+    // window: minutes ahead of the local clock already fails.
+    const nearFuture = await adapter.calls.preflight(RECEIPT, {
+      now: runAt - DEFAULT_EVIDENCE_FUTURE_SKEW_MS - 1,
+    });
+    expect(nearFuture.ok).toBe(false);
+    if (!nearFuture.ok) expect(nearFuture.code).toBe("EVIDENCE_STALE");
 
     // Still inside the window it passes, so the refusals above are the clock.
     expect(

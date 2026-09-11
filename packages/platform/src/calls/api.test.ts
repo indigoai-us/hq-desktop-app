@@ -9,6 +9,7 @@ import {
   CALLS_UNSUPPORTED_HOST,
   createUnsupportedCallsApi,
 } from "./api.js";
+import { CALLS_VERSION } from "./contract.js";
 import { EVIDENCE_SCHEMA, PINNED_CONTRACT_HASH } from "./evidence.js";
 
 const RECEIPT = {
@@ -310,6 +311,27 @@ describe("native calls transport", () => {
     if (result.ok) return;
     expect(result.reason).toBe("error");
     expect(result.code).toBe("COMPANY_ACCESS_DENIED");
+  });
+
+  it("stamps the pinned contract version, ignoring a caller-supplied version", async () => {
+    const { adapter, invocations } = await unlocked();
+    await adapter.calls.createKnock({
+      companyUid: "company_a",
+      version: "hq-meet/2",
+    } as unknown as Parameters<typeof adapter.calls.createKnock>[0]);
+    await adapter.calls.roomLifecycle("room_a", "end", {
+      companyUid: "company_a",
+      version: "hq-meet/99",
+    } as unknown as Parameters<typeof adapter.calls.roomLifecycle>[2]);
+
+    expect(invocations).toHaveLength(2);
+    for (const invocation of invocations) {
+      const body = JSON.parse(invocation.args!.body as string) as Record<
+        string,
+        unknown
+      >;
+      expect(body.version).toBe(CALLS_VERSION);
+    }
   });
 
   it("rejects empty company scoping before touching the network", async () => {
