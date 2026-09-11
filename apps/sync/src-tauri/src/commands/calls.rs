@@ -49,9 +49,6 @@ const DISPOSE_POLL: Duration = Duration::from_millis(25);
 /// JS `Number.MAX_SAFE_INTEGER`. Every timestamp in a target crosses the invoke
 /// seam into a webview, so anything past this cannot round-trip honestly.
 pub const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_992; // 2^53
-/// Upper bound on any grant interval: one hour. Longer is a malformed target,
-/// not a policy we honour.
-pub const MAX_INTERVAL_MS: u64 = 3_600_000;
 
 // ── Target ───────────────────────────────────────────────────────────────────
 

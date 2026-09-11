@@ -55,7 +55,10 @@ import {
   type MediaPreferences,
   type PreferenceStorage,
 } from "./permissions";
-import { SERVICE_EVIDENCE } from "./service-evidence";
+import {
+  BUNDLED_EVIDENCE_MAX_AGE_MS,
+  SERVICE_EVIDENCE,
+} from "./service-evidence";
 import { createDeviceSigner, type DeviceSigner } from "./signer";
 import { isCallWindowTarget, type CallWindowTarget } from "./target";
 
@@ -470,7 +473,12 @@ export async function startCallWindow(
 
   // Service evidence is a property of THIS BUILD, not of the opener: the
   // bundled US-011 receipt is used identically here and in the main window.
-  const preflight = await adapter.calls.preflight(SERVICE_EVIDENCE);
+  // The bundled receipt ages with the BUILD, not with this session, so it
+  // carries its own explicit lifetime rather than the per-session default.
+  // Still fail-closed: past the bound this refuses with EVIDENCE_STALE.
+  const preflight = await adapter.calls.preflight(SERVICE_EVIDENCE, {
+    maxAgeMs: BUNDLED_EVIDENCE_MAX_AGE_MS,
+  });
   if (!preflight.ok) {
     publish({ status: "error", code: preflight.code });
     await releaseOnly(deps, target, "preflight-failed");

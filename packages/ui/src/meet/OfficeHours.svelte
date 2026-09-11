@@ -291,15 +291,18 @@
             </span>
 
             <span class="office-actions">
-              <button
-                type="button"
-                class="office-button"
-                data-testid={`office-knock-${person.personUid}`}
-                disabled
-                title="Knocks arrive in the next update"
+              <!--
+                Knocking is not built yet. A permanently disabled button is a
+                dead end for keyboard and screen-reader users — it is focus-
+                skipped, announces nothing about why, and still looks like the
+                primary action. A plain note says the same thing honestly.
+              -->
+              <span
+                class="office-soon"
+                data-testid={`office-knock-soon-${person.personUid}`}
               >
-                Knock
-              </button>
+                Knocks coming next
+              </span>
               {#if joinable(person)}
                 <button
                   type="button"
@@ -422,6 +425,12 @@
   .office-segment[aria-pressed="true"] {
     font-weight: 600;
     box-shadow: inset 0 -3px 0 currentColor;
+  }
+
+  .office-soon {
+    color: var(--v4-text-3, #6b7280);
+    font-size: var(--type-caption, 12px);
+    white-space: nowrap;
   }
 
   .office-segment:disabled,

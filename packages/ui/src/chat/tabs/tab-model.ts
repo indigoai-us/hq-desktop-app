@@ -21,9 +21,55 @@ export const COMPANY_CHANNEL_TABS = [
   { id: "settings", label: "Settings" },
 ] as const;
 
-export type CompanyChannelTabId = (typeof COMPANY_CHANNEL_TABS)[number]["id"];
+/**
+ * US-018: the native-calling Office destination.
+ *
+ * It is NOT in `COMPANY_CHANNEL_TABS` because it is the one company tab that
+ * is capability-gated and the one that is not backed by
+ * `GET /v1/companies/{uid}/tabs/{tab}` — it renders a live native surface, not
+ * server-returned rows. Use `companyChannelTabsFor(capabilities)` to build the
+ * list a host should actually show.
+ */
+export const COMPANY_OFFICE_TAB = { id: "office", label: "Office" } as const;
 
-export type CompanyTabSurfaceId = Exclude<CompanyChannelTabId, "chat">;
+export type CompanyChannelTabId =
+  | (typeof COMPANY_CHANNEL_TABS)[number]["id"]
+  | typeof COMPANY_OFFICE_TAB.id;
+
+/** Tabs whose content comes from the company-tab endpoint. */
+export type CompanyTabSurfaceId = Exclude<
+  CompanyChannelTabId,
+  "chat" | "office"
+>;
+
+/** Host capabilities that decide which gated company tabs are listed. */
+export interface CompanyTabCapabilities {
+  /** `PlatformAdapter.capabilities.nativeCalls`. Defaults to false. */
+  nativeCalls?: boolean;
+}
+
+/**
+ * The company tabs to render for a host. Office is appended ONLY when the
+ * platform adapter reports native calling, so a browser (or a build without
+ * it) never advertises a door it cannot open. The default is closed: a caller
+ * that forgets to pass capabilities gets the ungated four.
+ */
+export function companyChannelTabsFor(
+  capabilities: CompanyTabCapabilities = {},
+): ReadonlyArray<{ id: CompanyChannelTabId; label: string }> {
+  const tabs: Array<{ id: CompanyChannelTabId; label: string }> = [
+    ...COMPANY_CHANNEL_TABS,
+  ];
+  if (capabilities.nativeCalls === true) tabs.push({ ...COMPANY_OFFICE_TAB });
+  return tabs;
+}
+
+/** True for the company tabs that are fetched from the company-tab endpoint. */
+export function isCompanyTabSurfaceId(
+  id: CompanyChannelTabId,
+): id is CompanyTabSurfaceId {
+  return id !== "chat" && id !== "office";
+}
 
 export interface CompanyTabSectionModel {
   id: string;
@@ -46,7 +92,10 @@ export interface CompanyTabActionEvent extends LifecycleCardActionEvent {
 }
 
 export function isCompanyChannelTabId(id: string): id is CompanyChannelTabId {
-  return COMPANY_CHANNEL_TABS.some((tab) => tab.id === id);
+  return (
+    id === COMPANY_OFFICE_TAB.id ||
+    COMPANY_CHANNEL_TABS.some((tab) => tab.id === id)
+  );
 }
 
 export function needsInlineConfirm(

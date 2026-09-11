@@ -188,10 +188,12 @@ describe("US-018 e2e-1: distinct willingness and occupancy are each visible, and
     // The word "available" is never rendered — reachability is its own label.
     expect(rowText.toLowerCase()).not.toContain("available");
     expect(rowText).toContain("Do not disturb");
-    // The only walk-in affordance (Knock) is disabled for everyone in this
-    // release; DND must certainly not offer one.
-    const knock = testid(root, "office-knock-prs_busy") as HTMLButtonElement;
-    expect(knock.disabled).toBe(true);
+    // There is no walk-in affordance at all in this release: knocking is an
+    // inert note, not a dead button, so DND offers nothing to press.
+    expect(testid(root, "office-knock-prs_busy")).toBeNull();
+    expect(testid(root, "office-knock-soon-prs_busy")?.textContent).toContain(
+      "Knocks coming next",
+    );
 
     // And nothing anywhere reads "online" as a standalone availability claim.
     expect((root.textContent ?? "").toLowerCase()).toContain(
@@ -708,17 +710,24 @@ describe("US-018 e2e-3: keyboard-only office hours, room opening, and understand
     expect(text(root, "office-empty")).toContain("Open your door");
   });
 
-  it("disables the Knock placeholder with a tooltip rather than hiding it", async () => {
+  it("states that knocking is coming without leaving a dead control behind", async () => {
     const store = buildStore(async () => MIXED_ROSTER);
     await store.load("cmp_a");
     const root = render({ store });
 
     for (const uid of ["prs_open", "prs_busy", "prs_away"]) {
-      const knock = testid(root, `office-knock-${uid}`) as HTMLButtonElement;
-      expect(knock).not.toBeNull();
-      expect(knock.disabled).toBe(true);
-      expect(knock.title).toBe("Knocks arrive in the next update");
+      // A permanently disabled button is skipped by keyboard focus and
+      // announces no reason, so it reads as a broken primary action. The
+      // replacement is a plain, non-interactive sentence.
+      expect(testid(root, `office-knock-${uid}`)).toBeNull();
+      const note = testid(root, `office-knock-soon-${uid}`)!;
+      expect(note).not.toBeNull();
+      expect(note.tagName).toBe("SPAN");
+      expect(note.textContent).toContain("Knocks coming next");
     }
+    // No disabled control survives anywhere in the roster list.
+    const list = testid(root, "office-list")!;
+    expect(list.querySelectorAll("button[disabled]").length).toBe(0);
   });
 
   it("announces status changes politely and labels the view for assistive tech", async () => {

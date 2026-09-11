@@ -133,13 +133,14 @@ describe("OfficeHours", () => {
     expect(opened).toEqual(["prs_busy"]);
   });
 
-  it("disables Knock with the US-019 explanation", async () => {
+  it("omits the Knock control entirely and says knocks are coming (US-019)", async () => {
     const store = buildStore(async () => ROSTER);
     await store.load("cmp_a");
     const root = render({ store, selfPersonUid: "prs_self", now: () => NOW, tickMs: 0 });
-    const knock = testid(root, "office-knock-prs_open") as HTMLButtonElement;
-    expect(knock.disabled).toBe(true);
-    expect(knock.title).toBe("Knocks arrive in the next update");
+    expect(testid(root, "office-knock-prs_open")).toBeNull();
+    const note = testid(root, "office-knock-soon-prs_open")!;
+    expect(note.tagName).toBe("SPAN");
+    expect(note.textContent).toContain("Knocks coming next");
   });
 
   it("sets willingness from a keyboard-reachable button and shows the expiry", async () => {

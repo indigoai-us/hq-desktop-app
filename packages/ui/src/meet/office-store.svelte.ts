@@ -239,6 +239,17 @@ function failureOf(result: AdapterResult<unknown>): OfficeError {
 
 export interface OfficeStore {
   readonly state: OfficeState;
+  /**
+   * Synchronously bind the store to a company and clear everything the
+   * previous company put on screen.
+   *
+   * A host whose company switch has to `await` something first (identity,
+   * preflight) must call this FIRST, in the same tick as the switch. Without
+   * it the previous company's roster stays rendered for as long as the host's
+   * preparation takes — a stale assertion about who is reachable, under the
+   * new company's heading. `load()` calls it for you.
+   */
+  reset(companyUid: string | null): void;
   /** Switch to a company: clears state, then loads its first page. */
   load(companyUid: string): Promise<void>;
   /** Re-read the CURRENT company from scratch (page 1). */
@@ -345,10 +356,16 @@ export function createOfficeStore(options: OfficeStoreOptions): OfficeStore {
     };
   }
 
-  async function start(companyUid: string, keepRoster: boolean): Promise<void> {
+  /**
+   * Synchronous half of a load: bump the generation (so any in-flight answer
+   * for the previous request is discarded) and install the new company's
+   * empty — or, on a refresh, retained — view. Returns the generation the
+   * caller must quote when folding a response back in.
+   */
+  function begin(companyUid: string | null, keepRoster: boolean): number {
     const gen = ++generation;
     state = {
-      status: "loading",
+      status: companyUid ? "loading" : "idle",
       companyUid,
       people: keepRoster ? state.people : [],
       self: keepRoster ? state.self : null,
@@ -357,6 +374,11 @@ export function createOfficeStore(options: OfficeStoreOptions): OfficeStore {
       nextCursor: null,
       saving: false,
     };
+    return gen;
+  }
+
+  async function start(companyUid: string, keepRoster: boolean): Promise<void> {
+    const gen = begin(companyUid, keepRoster);
     await fetchPage(companyUid, gen, null);
   }
 
@@ -388,6 +410,14 @@ export function createOfficeStore(options: OfficeStoreOptions): OfficeStore {
         connectivity: oneOf(presence.connectivity, OFFICE_CONNECTIVITY, "offline"),
         connectivityExpiresAt: finite(presence.expiresAt),
       };
+    }
+    // A failed page cleared the roster on purpose: `status: "error"` means the
+    // view is asserting "we do not know who is here". Folding our own row back
+    // in would turn that into a one-person office that looks authoritative.
+    // The own state is still recorded, so a later retry renders it.
+    if (state.status === "error") {
+      state = { ...state, self: next };
+      return;
     }
     state = {
       ...state,
@@ -436,6 +466,9 @@ export function createOfficeStore(options: OfficeStoreOptions): OfficeStore {
   return {
     get state() {
       return state;
+    },
+    reset(companyUid: string | null): void {
+      begin(companyUid, false);
     },
     async load(companyUid: string): Promise<void> {
       await start(companyUid, false);

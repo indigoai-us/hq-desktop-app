@@ -272,6 +272,72 @@ describe("office store", () => {
     expect(s.state.nextCursor).toBeNull();
   });
 
+  it("clears the previous company SYNCHRONOUSLY on reset, before any await", async () => {
+    const h = harness();
+    h.discover.mockResolvedValue(
+      page([{ personUid: "prs_only_a", connectivity: "online", willingness: "open" }]),
+    );
+    const s = store(h);
+    await s.load("cmp_a");
+    expect(s.state.people.map((p) => p.personUid)).toEqual(["prs_only_a"]);
+
+    // A host whose company switch must await identity/preflight first calls
+    // reset in the SAME tick as the switch. Nothing may survive that call —
+    // not a row, not a cursor, not an error, and not the old company uid.
+    const before = s.generation();
+    s.reset("cmp_b");
+    expect(s.state.companyUid).toBe("cmp_b");
+    expect(s.state.people).toEqual([]);
+    expect(s.state.self).toBeNull();
+    expect(s.state.observedAt).toBeNull();
+    expect(s.state.nextCursor).toBeNull();
+    expect(s.state.error).toBeNull();
+    expect(s.state.status).toBe("loading");
+    // The generation bump is what makes a late cmp_a answer unusable.
+    expect(s.generation()).toBe(before + 1);
+
+    // Resetting to "no company" parks the store rather than loading nothing.
+    s.reset(null);
+    expect(s.state.companyUid).toBeNull();
+    expect(s.state.status).toBe("idle");
+  });
+
+  it("does not fold the own row back into a roster the error state cleared", async () => {
+    const h = harness();
+    h.discover.mockResolvedValue(
+      page([{ personUid: "prs_self", connectivity: "online", willingness: "open" }]),
+    );
+    const s = store(h);
+    await s.load("cmp_a");
+    expect(s.state.people).toHaveLength(1);
+
+    // A refused refresh clears the roster on purpose: the view is now saying
+    // "we do not know who is here".
+    h.discover.mockResolvedValue(
+      failure("INTERNAL", "boom") as AdapterResult<Json>,
+    );
+    await s.refresh();
+    expect(s.state.status).toBe("error");
+    expect(s.state.people).toEqual([]);
+
+    // Writing our own willingness must NOT resurrect a one-person office that
+    // looks like an authoritative roster.
+    h.preference.mockResolvedValue(
+      ok({
+        preference: {
+          companyUid: "cmp_a",
+          willingness: "open",
+          expiresAt: 2_000_000,
+        },
+      } as Json) as AdapterResult<Json>,
+    );
+    await s.setWillingness("open", 60_000);
+    expect(s.state.people).toEqual([]);
+    expect(s.state.status).toBe("error");
+    // The own state is still recorded, so a later retry renders it.
+    expect(s.state.self?.willingness).toBe("open");
+  });
+
   it("never infers a room the backend omitted", () => {
     const parsed = parseOfficePerson({
       personUid: "prs_a",

@@ -17,8 +17,19 @@
 // The refusal path is the authorization statement: until the bundled US-011
 // service-evidence preflight passes, the panel must make ZERO authorized calls.
 //
+// REACHABILITY (added after review): the desktop-alt route/sidebar tree above
+// is NOT what `main.ts` mounts. The shipping shell is HqWorkWorkShell →
+// @hq/work WorkShell → @hq/ui DesktopApp, so this file also pins that a signed
+// -in user can reach Office THERE. The panel itself is one shared
+// implementation (`packages/ui/src/meet/OfficePanel.svelte`); the end-to-end
+// plumbing lives in `src/desktop-alt/office-shipping-path.test.ts` and the
+// @hq/ui half in `packages/ui/src/meet/office-reachability.test.ts`.
+//
 // Everything is driven through an injected `invoke`; no Tauri, no network, no
 // real clock.
+
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -52,6 +63,10 @@ import {
 } from '../../src/desktop-alt/v4/model';
 import OfficePanel from '../../src/desktop-alt/panels/OfficePanel.svelte';
 import serviceEvidence from '../../src/call/service-evidence.json';
+import { companyChannelTabsFor } from '@hq/ui';
+
+const repoFile = (relative: string): string =>
+  readFileSync(resolve(process.cwd(), relative), 'utf8');
 
 const baseCompany: Workspace = {
   slug: 'indigo',
@@ -236,10 +251,12 @@ describe('US-018 desktop: OfficePanel host-level states', () => {
   });
 
   it('refuses in its own voice, and makes no authorized call, when the device is not verified', async () => {
-    // The bundled US-011 receipt is stale past its max age: the adapter's
-    // preflight gate closes, and the panel must surface that rather than
-    // reaching hq-pro with an unverified build.
-    vi.setSystemTime(RUN_AT + 60 * 24 * 60 * 60 * 1000);
+    // The bundled US-011 receipt is stale past its OWN max age
+    // (BUNDLED_EVIDENCE_MAX_AGE_MS, 90 days — a bundled artifact cannot
+    // refresh itself, so it gets an explicit lifetime rather than the 30-day
+    // per-session default). The adapter's preflight gate closes, and the panel
+    // must surface that rather than reaching hq-pro with an unverified build.
+    vi.setSystemTime(RUN_AT + 100 * 24 * 60 * 60 * 1000);
     const invokeFn = vi.fn(async () => null as unknown);
     const root = render({
       companyUid: 'cmp_indigo',
@@ -449,5 +466,58 @@ describe('US-018 desktop: OfficePanel host-level states', () => {
     expect(rendered).not.toContain('prs_only_a');
     expect(rendered).not.toContain('room_cmp_a');
     expect(rendered).not.toContain('call_cmp_a');
+  });
+});
+
+
+describe('US-018 desktop: Office is reachable in the shell that actually ships', () => {
+  it('mounts only HqWorkWorkShell, so that tree is the one that must offer Office', () => {
+    const main = repoFile('src/desktop-alt/main.ts');
+    expect(main).toContain("import('./HqWorkWorkShell.svelte')");
+    expect(main).not.toContain("import('./DesktopApp.svelte')");
+  });
+
+  it('gates the shipping company tab list on the adapter capability', () => {
+    // Same rule as the desktop-alt sidebar above, applied to the tabs the
+    // shipping shell renders — and closed by default.
+    expect(companyChannelTabsFor().map((tab) => tab.id)).not.toContain('office');
+    expect(
+      companyChannelTabsFor({ nativeCalls: false }).map((tab) => tab.id),
+    ).not.toContain('office');
+    expect(
+      companyChannelTabsFor({ nativeCalls: true }).map((tab) => tab.id),
+    ).toContain('office');
+  });
+
+  it('renders the one shared Office panel from the shipping shell', () => {
+    const desktopApp = repoFile('../../packages/ui/src/shell/DesktopApp.svelte');
+    expect(desktopApp).toContain(
+      'import OfficePanel from "../meet/OfficePanel.svelte"',
+    );
+    expect(desktopApp).toContain('{#if companyTab === "office"}');
+    expect(desktopApp).toContain('tabs={companyTabsForHost}');
+    // Both halves of the seam reach the panel, or it can neither preflight nor
+    // open a window.
+    const mountBlock = desktopApp.slice(
+      desktopApp.indexOf('<OfficePanel'),
+      desktopApp.indexOf('<OfficePanel') + 400,
+    );
+    expect(mountBlock).toContain('{adapter}');
+    expect(mountBlock).toContain('{callsHost}');
+  });
+
+  it('carries the native calling seams down the shipping host chain', () => {
+    expect(repoFile('src/desktop-alt/HqWorkWorkShell.svelte')).toContain(
+      'callsHost={capabilities.calls}',
+    );
+    expect(repoFile('../../apps/work/src/lib/WorkShell.svelte')).toContain(
+      '{callsHost}',
+    );
+  });
+
+  it('keeps desktop-alt as a binding to that panel, never a second copy', () => {
+    const alt = repoFile('src/desktop-alt/panels/OfficePanel.svelte');
+    expect(alt).toContain('<meet.OfficePanel');
+    expect(alt).not.toContain('createOfficeStore');
   });
 });

@@ -176,6 +176,19 @@ export * as meetings from "./meetings/index.js";
 
 // Native calling — shared office-hours surface (US-018).
 export * as meet from "./meet/index.js";
+// US-018: the capability-gated company tab list a host renders.
+export {
+  COMPANY_CHANNEL_TABS,
+  COMPANY_OFFICE_TAB,
+  companyChannelTabsFor,
+  isCompanyChannelTabId,
+  isCompanyTabSurfaceId,
+  type CompanyChannelTabId,
+  type CompanyTabCapabilities,
+} from "./chat/tabs/tab-model.js";
+// US-018: the native seams a host must supply for the Office surface. Exported
+// flat so hosts can type their capability object without a deep import.
+export type { OfficeCallsHost, OfficeCallTarget } from "./meet/office-host.js";
 export * as company from "./company/index.js";
 
 // Atlas v0 (work-mesh-live US-016) — company roster × live projects.
