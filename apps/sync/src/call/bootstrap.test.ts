@@ -7,12 +7,14 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { createContentDeliveryGate } from "@hq/meet-core";
 import { PINNED_CONTRACT_HASH } from "@hq/platform";
 
 import {
   CALL_DISPOSE_EVENT,
   CALL_TARGET_EVENT,
   handleCloseRequested,
+  initialCallViewState,
   pendingCompletionState,
   resolveCallTarget,
   startCallWindow,
@@ -246,12 +248,19 @@ describe("handleCloseRequested", () => {
     return {
       target: target(),
       session: null,
+      media: null,
+      account: null,
+      consent: null,
+      content: createContentDeliveryGate(),
       state: () => ({
+        ...initialCallViewState(),
         status: "joined",
-        code: null,
         sessionId: target().sessionId,
         peerCount: 1,
       }),
+      retryIdentity: async () => {},
+      setDevice: async () => {},
+      setTranscription: async () => {},
       leave: async (reason?: string) => {
         order.push(`leave:${reason}`);
       },

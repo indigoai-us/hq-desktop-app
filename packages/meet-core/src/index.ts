@@ -36,3 +36,20 @@ export {
   type EnvelopeSigner,
   type HqSignalingOptions,
 } from "./hq-signaling.js";
+export {
+  consentAckFields,
+  createConsentGate,
+  type ConsentAckFields,
+  type ConsentGate,
+  type ConsentGateOptions,
+  type ConsentGateSnapshot,
+  type ConsentProofView,
+  type ConsentRosterView,
+  type ConsentStatus,
+} from "./consent-gate.js";
+export {
+  createContentDeliveryGate,
+  type ContentCloseReason,
+  type ContentDeliveryGate,
+  type ContentGateEvent,
+} from "./content-gate.js";

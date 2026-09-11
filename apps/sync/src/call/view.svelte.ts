@@ -8,6 +8,7 @@
  */
 
 import type { TrackLike } from '@hq/meet-core';
+import { initialCallViewState } from './bootstrap';
 import type { CallViewState, CallWindowHandle } from './bootstrap';
 
 export const callView = $state<{
@@ -15,7 +16,7 @@ export const callView = $state<{
   handle: CallWindowHandle | null;
   remoteTracks: TrackLike[];
 }>({
-  state: { status: 'connecting', code: null, sessionId: null, peerCount: 0 },
+  state: initialCallViewState(),
   handle: null,
   remoteTracks: [],
 });

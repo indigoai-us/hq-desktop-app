@@ -254,10 +254,17 @@ describe("US-016 e2e 1: an active call survives Desktop navigation and close", (
     await handle.close();
   });
 
-  it("subscribes to nothing but its own two window-scoped call events", async () => {
+  it("subscribes to nothing company-scoped — only its own window events", async () => {
     const bench = harness({ pending: target() });
     const handle = await startCallWindow(bench.deps);
-    expect(bench.listened).toEqual([CALL_DISPOSE_EVENT]);
+    // The auth session event joined this set in US-017: the call window has to
+    // learn about sign-out and account switches to release on them. It is
+    // account-scoped, not company-scoped, so navigating the main window to
+    // another company still cannot reach this call.
+    expect(bench.listened.slice().sort()).toEqual(
+      ["auth:session-changed", CALL_DISPOSE_EVENT].sort(),
+    );
+    expect(bench.listened.some((event) => event.includes("company"))).toBe(false);
     expect(bench.listened).not.toContain("tauri://close-requested");
     expect(bench.listened).not.toContain("tauri://destroyed");
     await handle.close();

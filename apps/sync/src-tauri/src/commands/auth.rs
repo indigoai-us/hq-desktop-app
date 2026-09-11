@@ -101,6 +101,18 @@ pub(crate) fn publish_auth_session(
             AUTH_SESSION_CHANGED_EVENT,
             &current.0,
         );
+        // The call window (US-017) binds its identity, its device signing key
+        // and its media to one account generation. A sign-out or account
+        // switch must reach it directly — it does not observe the Work shell,
+        // and a live call must never outlive the account that authorized it.
+        // The envelope carries no bearer material, only an account id and a
+        // generation, so widening delivery to this second labelled window
+        // adds no credential exposure.
+        let _ = app.emit_to(
+            crate::commands::calls::CALL_WINDOW_LABEL,
+            AUTH_SESSION_CHANGED_EVENT,
+            &current.0,
+        );
     }
     current.0
 }

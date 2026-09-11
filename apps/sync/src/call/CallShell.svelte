@@ -1,32 +1,97 @@
 <script lang="ts">
   /**
-   * Minimal call shell (US-016): a drag-region titlebar, a content-free status
-   * line, a Leave button and the remote/local video slots. Full in-call
-   * controls are US-020; office and knocks are US-018/019.
+   * Minimal call shell (US-016), bound to the active account (US-017): a
+   * drag-region titlebar, a content-free status line, the remote/local video
+   * slots, and the explicit join controls.
+   *
+   * The microphone and camera buttons are the ONLY path to `getUserMedia` in
+   * this window — receiving a knock, mounting, or restoring a remembered
+   * preference never reaches them. A denial renders its OS recovery path next
+   * to a Retry rather than silently staying off. Full in-call controls are
+   * US-020; office and knocks are US-018/019.
    */
   import { callView } from './view.svelte';
 
   let leaving = $state(false);
+  let busy = $state<'microphone' | 'camera' | 'transcription' | null>(null);
 
   const view = $derived(callView.state);
   const remoteTracks = $derived(callView.remoteTracks);
+  const mic = $derived(view.media.microphone);
+  const cam = $derived(view.media.camera);
+  /** Controls stay inert until this window proved whose account it is. */
+  const controlsEnabled = $derived(view.status === 'joined' || view.status === 'connecting');
+  const denial = $derived(
+    mic.recovery && (mic.status === 'denied' || mic.status === 'error')
+      ? { kind: 'Microphone', recovery: mic.recovery, device: 'microphone' as const }
+      : cam.recovery && (cam.status === 'denied' || cam.status === 'error')
+        ? { kind: 'Camera', recovery: cam.recovery, device: 'camera' as const }
+        : null,
+  );
+  const transcriptionLabel = $derived(
+    view.transcription === 'ready'
+      ? 'Transcription on'
+      : view.transcription === 'paused'
+        ? view.consentUnavailable
+          ? 'Transcription paused \u00b7 waiting for consent'
+          : 'Transcription paused'
+        : 'Transcription off',
+  );
 
   const statusLabel = $derived(
     view.status === 'connecting'
       ? 'Connecting…'
-      : view.status === 'waiting'
-        ? 'Waiting for the call…'
-        : view.status === 'joined'
-          ? `In call · ${view.peerCount} connected`
-          : view.status === 'left'
-            ? 'Left the call'
-            : `Call error${view.code ? ` · ${view.code}` : ''}`,
+      : view.status === 'identity'
+        ? 'Confirm your account to join this call.'
+        : view.status === 'waiting'
+          ? 'Waiting for the call…'
+          : view.status === 'joined'
+            ? `In call · ${view.peerCount} connected`
+            : view.status === 'left'
+              ? 'Left the call'
+              : `Call error${view.code ? ` · ${view.code}` : ''}`,
   );
 
   async function leave() {
     if (leaving) return;
     leaving = true;
     await callView.handle?.leave('leave-button');
+  }
+
+  /** The explicit join control. Nothing else in this window may capture. */
+  async function toggleDevice(kind: 'microphone' | 'camera') {
+    if (busy) return;
+    busy = kind;
+    try {
+      const on = kind === 'microphone' ? mic.active : cam.active;
+      await callView.handle?.setDevice(kind, !on);
+    } finally {
+      busy = null;
+    }
+  }
+
+  async function retryDevice(kind: 'microphone' | 'camera') {
+    if (busy) return;
+    busy = kind;
+    try {
+      await callView.handle?.setDevice(kind, true);
+    } finally {
+      busy = null;
+    }
+  }
+
+  async function toggleTranscription() {
+    if (busy) return;
+    busy = 'transcription';
+    try {
+      await callView.handle?.setTranscription(view.transcription === 'off');
+    } finally {
+      busy = null;
+    }
+  }
+
+  async function retryIdentity() {
+    await callView.handle?.retryIdentity();
   }
 </script>
 
@@ -43,7 +108,51 @@
     <audio data-testid="remote-audio" autoplay></audio>
   </main>
 
+  {#if view.status === 'identity' && view.recoverable}
+    <div class="notice" data-testid="call-identity-error" role="alert">
+      <span>Confirm your account to join this call.</span>
+      <button type="button" data-testid="call-identity-retry" onclick={retryIdentity}>Retry</button>
+    </div>
+  {/if}
+
+  {#if denial}
+    <div class="notice" data-testid="call-permission-denied" role="alert">
+      <span data-testid="call-permission-recovery">{denial.kind}: {denial.recovery}</span>
+      <button
+        type="button"
+        data-testid="call-permission-retry"
+        disabled={busy !== null}
+        onclick={() => retryDevice(denial.device)}>Retry</button
+      >
+    </div>
+  {/if}
+
   <footer class="bar">
+    <button
+      type="button"
+      class="control"
+      data-testid="toggle-microphone"
+      aria-pressed={mic.active}
+      disabled={!controlsEnabled || busy !== null}
+      onclick={() => toggleDevice('microphone')}>{mic.active ? 'Mute' : 'Unmute'}</button
+    >
+    <button
+      type="button"
+      class="control"
+      data-testid="toggle-camera"
+      aria-pressed={cam.active}
+      disabled={!controlsEnabled || busy !== null}
+      onclick={() => toggleDevice('camera')}>{cam.active ? 'Stop video' : 'Start video'}</button
+    >
+    <button
+      type="button"
+      class="control"
+      data-testid="toggle-transcription"
+      aria-pressed={view.transcription !== 'off'}
+      disabled={!controlsEnabled || busy !== null}
+      onclick={toggleTranscription}>Allow transcription</button
+    >
+    <span class="transcription" data-testid="transcription-state">{transcriptionLabel}</span>
     <p class="status" data-testid="call-status" aria-live="polite">{statusLabel}</p>
     <span class="tracks" data-testid="remote-track-count">{remoteTracks.length}</span>
     <button
@@ -114,6 +223,40 @@
   .tracks {
     font-size: 11px;
     opacity: 0.5;
+  }
+  .notice {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    flex: none;
+    font-size: 12px;
+    background: rgba(192, 54, 44, 0.18);
+  }
+  .notice span {
+    flex: 1 1 auto;
+  }
+  .notice button,
+  .control {
+    border: 0;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 12px;
+    background: rgba(255, 255, 255, 0.14);
+    color: inherit;
+    cursor: pointer;
+  }
+  .control[aria-pressed='true'] {
+    background: rgba(255, 255, 255, 0.34);
+  }
+  .control:disabled,
+  .notice button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .transcription {
+    font-size: 11px;
+    opacity: 0.6;
   }
   .leave {
     border: 0;
