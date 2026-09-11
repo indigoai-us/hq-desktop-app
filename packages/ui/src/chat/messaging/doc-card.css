@@ -32,7 +32,11 @@
   max-width: 440px;
   margin-top: 4px;
   padding: 9px 10px;
-  border: 1px solid var(--line);
+  /* No outline. The tinted fill already separates the card from the message
+     above it, and a hairline on top of that drew a second edge a few pixels
+     inside the first. Kept transparent rather than dropped so focus can
+     paint one without moving anything. */
+  border: 1px solid transparent;
   border-radius: 10px;
   background: var(--raised);
   color: inherit;
@@ -43,8 +47,9 @@
     background-color 0.12s ease;
 }
 
+/* Hover lifts the fill instead of drawing an edge. */
 .doc-card:hover:not(:disabled) {
-  border-color: var(--line2);
+  background: var(--hover);
 }
 
 .doc-card:focus-visible {

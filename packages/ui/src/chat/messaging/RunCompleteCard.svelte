@@ -79,8 +79,9 @@
     max-width: 100%;
     margin: 6px 0 0;
     padding: 12px 14px;
-    /* Same hairline as the file and artifact cards: one card language. */
-    border: 1px solid var(--line);
+    /* No outline, like the file and artifact cards — the fill is the edge.
+       Kept in the box model so nothing shifts if a state ever paints one. */
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised, var(--pop-hover));
     color: var(--t1, var(--pop-text));

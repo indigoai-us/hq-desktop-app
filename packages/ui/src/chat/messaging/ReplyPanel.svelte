@@ -1142,10 +1142,7 @@
     <AgentThinkingRow entries={agentThinking} />
     <AgentTaskStrip {tasks} />
 
-    <div
-      class="reply-composer"
-      class:has-content={draft.trim().length > 0 || pendingFiles.length > 0}
-    >
+    <div class="reply-composer">
       {#if showMentionPicker}
         <MentionPicker
           hits={mentionHits}
@@ -1731,21 +1728,14 @@
     flex: 0 0 auto;
     margin: 0 12px 16px;
     padding: 12px 8px 8px 14px;
-    /* Same three states as the main composer: none at rest, light on hover,
-       medium once it is in use. */
-    border: 1px solid transparent;
+    border: 1px solid var(--line2, var(--pop-border));
     border-radius: 10px;
     background: var(--raised, var(--pop-hover));
     transition: border-color 0.12s;
   }
 
-  .reply-composer:hover {
-    border-color: var(--line);
-  }
-
-  .reply-composer:focus-within,
-  .reply-composer.has-content {
-    border-color: var(--line2, var(--pop-border));
+  .reply-composer:focus-within {
+    border-color: var(--border-active, var(--c-field-border));
   }
 
   .reply-input {
@@ -1759,7 +1749,8 @@
     border-radius: 0;
     background: transparent;
     color: var(--t1, var(--pop-text));
-    font: 400 14px/1.5 var(--font-ui, inherit);
+    /* Matches the chat body and the main composer. */
+    font: 400 13px/1.46 var(--font-ui, inherit);
     caret-color: var(--t1, #f4f4f5);
     box-sizing: border-box;
   }

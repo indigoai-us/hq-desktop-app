@@ -1477,11 +1477,7 @@
     </div>
   </div>
 
-  <div
-    class="dm-reply"
-    class:is-locked={composerLocked}
-    class:has-content={replyText.trim().length > 0 || pendingFiles.length > 0}
-  >
+  <div class="dm-reply" class:is-locked={composerLocked}>
     <div class="dm-reply-composer">
       {#if showMentionPicker}
         <MentionPicker
@@ -2485,32 +2481,18 @@
     /* Concept `.composer`: 10px radius, 12px of air above the caret. */
     padding: 12px 8px 8px 14px;
     background: var(--raised, var(--pop-hover));
-    /* Three states, quietest first. At rest the composer is a tinted well
-       with no outline — a permanent box around an empty field asked for
-       attention it had not earned. The border is kept but transparent so
-       none of the states shift the layout by a pixel. */
-    border: 1px solid transparent;
+    border: 1px solid var(--line2, var(--pop-border));
     border-radius: 10px;
     transition: border-color 0.12s;
   }
 
-  .dm-reply:hover {
-    border-color: var(--line);
-  }
-
-  /* Being typed in, or holding something. Both mean "in use", and both want
-     a firmer edge than a passing cursor does. */
-  .dm-reply:focus-within,
-  .dm-reply.has-content {
-    border-color: var(--line2, var(--pop-border));
-  }
-
-  /* Locked has to stay visible at rest — it is the one state that explains
-     itself with its border. */
   .dm-reply.is-locked {
-    border-color: var(--line2, var(--pop-border));
     border-style: dashed;
     opacity: 0.85;
+  }
+
+  .dm-reply:focus-within {
+    border-color: var(--border-active, var(--c-field-border));
   }
 
   .dm-reply-composer {
@@ -2531,7 +2513,10 @@
     word-wrap: break-word;
     overflow: hidden;
     color: transparent;
-    font: 400 14px/1.5 var(--font-ui);
+    /* Must stay byte-identical to `.dm-reply-input` — this is an absolutely
+       positioned mirror of it, and any difference in metrics slides the
+       mention highlights off the words they belong to. */
+    font: 400 13px/1.46 var(--font-ui);
   }
 
   .composer-mention {
@@ -2550,7 +2535,10 @@
     border: none;
     background: none;
     color: var(--t1, var(--pop-text));
-    font: 400 14px/1.5 var(--font-ui);
+    /* The chat body's size. What you type and what you have typed are the
+       same copy, so the composer setting its own larger size made the
+       message shrink the moment it was sent. */
+    font: 400 13px/1.46 var(--font-ui);
     caret-color: var(--t1, #f4f4f5);
   }
 

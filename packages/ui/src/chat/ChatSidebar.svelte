@@ -2509,9 +2509,6 @@
         aria-expanded={historyExpanded}
         onclick={() => (historyExpanded = !historyExpanded)}
       >
-        <span class="chat-history-caret" class:is-open={historyExpanded}>
-          <CaretRight size={11} weight="bold" aria-hidden="true" />
-        </span>
         {historyExpanded
           ? "Show less"
           : `Show all history${historyHiddenCount > 0 ? ` (${historyHiddenCount})` : ""}`}
@@ -3963,19 +3960,6 @@
     font-weight: 500;
     text-align: left;
     cursor: pointer;
-  }
-
-  /* Same disclosure caret as the day-group headers, so the row reads as one
-     of them rather than as a link out. */
-  .chat-history-caret {
-    display: inline-flex;
-    flex: 0 0 auto;
-    color: var(--t3);
-    transition: transform 0.12s ease;
-  }
-
-  .chat-history-caret.is-open {
-    transform: rotate(90deg);
   }
 
   .chat-history-affordance:hover {
