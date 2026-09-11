@@ -21,6 +21,7 @@ export {
   keyId,
   sha256,
   signedBytes,
+  toBase64Url,
   verifyChunkBytes,
   verifyEnvelope,
 } from "./calls/crypto.js";

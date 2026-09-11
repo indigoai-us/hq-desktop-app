@@ -35,6 +35,9 @@ importers:
       '@hq/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@hq/meet-core':
+        specifier: workspace:*
+        version: link:../../packages/meet-core
       '@hq/platform':
         specifier: workspace:*
         version: link:../../packages/platform

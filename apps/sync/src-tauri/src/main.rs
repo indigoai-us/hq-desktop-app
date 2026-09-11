@@ -783,6 +783,13 @@ fn main() {
             commands::meetings::meetings_cancel_bot,
             commands::meetings::meetings_set_company,
             commands::meetings::meetings_take_pending_focus,
+            commands::calls::calls_open_window,
+            commands::calls::calls_take_pending_target,
+            commands::calls::calls_window_ready,
+            commands::calls::calls_release,
+            commands::calls::calls_persist_pending,
+            commands::calls::calls_take_recovered,
+            commands::calls::calls_disposed,
             commands::meetings::open_meetings_window,
             commands::meetings::meetings_check_bot_for_url,
             commands::meetings::meetings_notify_detected,
@@ -1393,6 +1400,14 @@ fn main() {
                 {
                     observer.shutdown(std::time::Duration::from_millis(500));
                 }
+                // US-016: a live call owns its own window. Give it a bounded
+                // chance to dispose its session (stopping camera + microphone
+                // and flushing pending completion work) before the process
+                // tears down. Never blocks the quit past its own budget.
+                commands::calls::dispose_call_windows_for_exit(
+                    _app_handle,
+                    commands::calls::DISPOSE_WAIT,
+                );
                 commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
             }
 

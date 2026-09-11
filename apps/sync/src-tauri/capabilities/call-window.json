@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "call-window",
+  "description": "Capability set for the dedicated native call window built in commands/calls.rs (label `call`, entry call.html / src/call/main.ts, US-016). Least privilege for exactly what that entry does: core:default covers the custom calls_* application commands (custom commands need no per-command ACL token on this app — see the default capability's own note); core:event:default carries the window-scoped `calls:target` / `calls:dispose` messages (emit_to, never a global broadcast); core:window:allow-close + allow-set-focus back the leave-then-close path and duplicate-open focus; core:window:allow-start-dragging is required because the call shell header is a data-tauri-drag-region (without it wry's start_dragging invoke is denied by the ACL and surfaces as an UnhandledRejection — same failure as HQ-SYNC-WEB-3 on activity-log). Deliberately NOT granted: http, shell, fs, notification, global-shortcut, set-size, app theme. The call window never fetches directly (hq-pro traffic goes through the native hq_pro_fetch seam) and never receives credential material.",
+  "windows": ["call"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-start-dragging"
+  ]
+}
