@@ -1999,3 +1999,40 @@ export function formatSearchHitTime(
   if (day === yesterdayStart) return `Yesterday ${time}`;
   return `${MONTHS[d.getMonth()]} ${d.getDate()} ${time}`;
 }
+
+/** One run of a snippet, flagged when it is part of the search match. */
+export interface HighlightPart {
+  text: string;
+  match: boolean;
+}
+
+/**
+ * Split `text` on every case-insensitive occurrence of `query`, so a caller
+ * can mark the matching runs.
+ *
+ * Returns parts rather than markup on purpose: a search result is arbitrary
+ * message text, and building an HTML string here would put user content on a
+ * path that has to be escaped by hand. The caller renders `match` parts in a
+ * `<mark>` and Svelte escapes both.
+ */
+export function highlightMatches(
+  text: string,
+  query: string,
+): HighlightPart[] {
+  const needle = query.trim().toLowerCase();
+  if (!text) return [];
+  if (!needle) return [{ text, match: false }];
+
+  const parts: HighlightPart[] = [];
+  const haystack = text.toLowerCase();
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) break;
+    if (at > from) parts.push({ text: text.slice(from, at), match: false });
+    parts.push({ text: text.slice(at, at + needle.length), match: true });
+    from = at + needle.length;
+  }
+  if (from < text.length) parts.push({ text: text.slice(from), match: false });
+  return parts;
+}

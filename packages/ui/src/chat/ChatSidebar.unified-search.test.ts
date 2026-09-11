@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { flushSync, mount, tick, unmount } from "svelte";
 import ChatSidebar from "./ChatSidebar.svelte";
-import type { ChannelDirectoryRow, ChatSidebarApi } from "./chat-api.js";
+import type { ChatSidebarApi } from "./chat-api.js";
+import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
 
 const now = () => new Date().toISOString();
 
@@ -69,7 +70,7 @@ describe("ChatSidebar unified search", () => {
   // dialog you had to click into, so you had to know which kind of thing you
   // were looking for before you started looking.
   it("searches conversations and message text from the same query", async () => {
-    const searchMessages = vi.fn(async () => ({
+    const searchMessages = vi.fn(async (_args: { q: string }) => ({
       results: [
         {
           messageId: "evt_1",
@@ -116,7 +117,9 @@ describe("ChatSidebar unified search", () => {
       },
       { timeout: 3000 },
     );
-    expect(searchMessages.mock.calls[0][0]).toMatchObject({ q: "launch" });
+    expect(searchMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ q: "launch" }),
+    );
     expect(
       document.querySelector('[data-testid="chat-search-hit"]')?.textContent,
     ).toContain("launch checklist");

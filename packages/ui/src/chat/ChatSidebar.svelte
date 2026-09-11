@@ -97,6 +97,7 @@
     scopePillLabel,
     startOfLocalDay,
     searchCompanyUidFromScope,
+    highlightMatches,
     searchHitSnippet,
     takeRailConversations,
     pickAutoOpenConversation,
@@ -2739,27 +2740,38 @@
                   data-testid="chat-search-hit"
                   onclick={() => openSearchHit(hit)}
                 >
-                  {#if row.kind === "channel"}
-                    <span class="chat-switcher-hash" aria-hidden="true">#</span>
-                  {:else}
-                    {@const avatar = rowAvatar(row, avatarByUid)}
-                    <span
-                      class="chat-switcher-avatar"
-                      aria-hidden="true"
-                      data-avatar={avatar.kind}
-                    >
-                      {#if avatar.src}
-                        <img src={avatar.src} alt="" />
-                      {:else}
-                        {avatar.initials}
-                      {/if}
-                    </span>
-                  {/if}
+                  <!-- The glyph belongs to the NAME, not to the whole
+                       two-line block — centred beside both lines it read as
+                       an icon for the snippet as much as for the channel. -->
                   <span class="chat-switcher-hit-copy">
-                    <span class="chat-switcher-name">{railRowTitle(row)}</span>
-                    <span class="chat-switcher-snippet"
-                      >{searchHitSnippet(hit)}</span
-                    >
+                    <span class="chat-switcher-hit-title">
+                      {#if row.kind === "channel"}
+                        <span class="chat-switcher-hash" aria-hidden="true"
+                          >#</span
+                        >
+                      {:else}
+                        {@const avatar = rowAvatar(row, avatarByUid)}
+                        <span
+                          class="chat-switcher-avatar"
+                          aria-hidden="true"
+                          data-avatar={avatar.kind}
+                        >
+                          {#if avatar.src}
+                            <img src={avatar.src} alt="" />
+                          {:else}
+                            {avatar.initials}
+                          {/if}
+                        </span>
+                      {/if}
+                      <span class="chat-switcher-name">{railRowTitle(row)}</span>
+                    </span>
+                    <span class="chat-switcher-snippet">
+                      {#each highlightMatches(searchHitSnippet(hit), searchQuery) as part}
+                        {#if part.match}
+                          <mark class="chat-switcher-mark">{part.text}</mark>
+                        {:else}{part.text}{/if}
+                      {/each}
+                    </span>
                   </span>
                   <span class="chat-switcher-company"
                     >{formatSearchHitTime(hit.createdAt)}</span
@@ -4101,7 +4113,26 @@
     min-width: 0;
   }
 
+  .chat-switcher-hit-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  /* Shows WHY a message matched. Without it a hit is a line of prose you
+     have to re-read to find your own query in. */
+  .chat-switcher-mark {
+    background: var(--sel, rgba(99, 102, 241, 0.18));
+    border-radius: 3px;
+    color: var(--t1);
+    font-weight: 600;
+  }
+
   .chat-switcher-snippet {
+    /* 20px glyph + the title row's 8px gap: the snippet starts under the
+       channel NAME, not under its icon, so the two lines share a margin. */
+    padding-left: 28px;
     overflow: hidden;
     color: var(--t3, var(--t2));
     font-size: 12px;
