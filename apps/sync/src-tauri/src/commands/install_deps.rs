@@ -5744,10 +5744,11 @@ fn send_setup_dependency_failure(scope: &OnboardingFailureScope, dependency: &'s
 /// client is a no-op, and a slow or panicking transport is isolated in this
 /// detached reporter thread rather than delaying the setup command.
 fn queue_setup_dependency_failure(scope: OnboardingFailureScope, dependency: &'static str, category: OnboardingErrorCategory, diagnostic: SetupCommandDiagnostic, blocked_dependents: Vec<String>) {
-    let hub = sentry::Hub::current().clone();
-    if hub.client().is_none() {
+    let source_hub = sentry::Hub::current();
+    if source_hub.client().is_none() {
         return;
     }
+    let hub = Arc::new(sentry::Hub::new_from_top(source_hub));
     hq_telemetry::dispatch_sentry_report(move || {
         sentry::Hub::run(hub, || {
             send_setup_dependency_failure(&scope, dependency, category, diagnostic, &blocked_dependents);
