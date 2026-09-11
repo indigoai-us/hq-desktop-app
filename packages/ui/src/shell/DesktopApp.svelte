@@ -923,8 +923,10 @@
         setBotProgress(uid, { retrying: false, state: "failed", reason: result.message || `Could not start ${bot.name}.` });
         return;
       }
-      setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
+      // Re-read presence FIRST: flipping to "installing" while the list still
+      // says "failed" lets the presence effect below stamp it failed again.
       await refreshLocalBots();
+      setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
       return;
     }
     clearBotProgress(uid);
@@ -940,12 +942,17 @@
     if (entries.length === 0) return;
     const now = Date.now();
     for (const [uid, entry] of entries) {
-      if (entry.state === "online" || entry.state === "failed") continue;
+      if (entry.state === "online") continue;
       const bot = localBots.find((b) => b.agentUid === uid);
+      // A heartbeat is the last word: a bot that checked in is online even if
+      // the card had already given up on it.
       if (bot?.online === true) {
         setBotProgress(uid, { state: "online" });
         window.setTimeout(() => clearBotProgress(uid), 1500);
-      } else if (bot?.state === "failed") {
+        continue;
+      }
+      if (entry.state === "failed") continue;
+      if (bot?.state === "failed") {
         setBotProgress(uid, { state: "failed", reason: localBotOfflineNotice(bot) });
       } else if (now - entry.startedAt > BOT_PROGRESS_TIMEOUT_MS) {
         setBotProgress(uid, { state: "failed", reason: `${entry.name} did not come online. Check that its tool is signed in, then retry.` });
@@ -5996,7 +6003,7 @@
                     {@const uid = selectedRow.personUid}
                     <BotProgressCard
                       name={selectedBotProgress.name}
-                      state={selectedBotProgress.state}
+                      phase={selectedBotProgress.state}
                       reason={selectedBotProgress.reason}
                       retrying={selectedBotProgress.retrying}
                       onretry={() => void retryBotProgress(uid)}

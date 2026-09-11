@@ -5,18 +5,25 @@
    * inline with one Retry. The host removes the card once presence reports
    * online or the bot's first message lands.
    */
+  import { untrack } from "svelte";
+
   export type BotProgressState = "creating" | "installing" | "online" | "failed";
 
   interface Props {
     name: string;
-    state: BotProgressState;
+    /**
+     * Where the bot is. Named `phase`, not `state`: a prop called `state`
+     * shadows the `$state` rune inside this component and Svelte then reads
+     * `$state(...)` as a store subscription.
+     */
+    phase: BotProgressState;
     /** Why it failed (CLI's own words); shown with Retry. */
     reason?: string | null;
     onretry?: () => void | Promise<void>;
     retrying?: boolean;
   }
 
-  let { name, state, reason = null, onretry, retrying = false }: Props = $props();
+  let { name, phase, reason = null, onretry, retrying = false }: Props = $props();
 
   const STEPS = [
     { id: "creating", label: "Creating identity" },
@@ -24,30 +31,44 @@
     { id: "online", label: "Online" },
   ] as const;
 
-  /** Index of the step currently in progress; `failed` freezes the last one reached. */
-  const activeIndex = $derived(state === "creating" ? 0 : state === "installing" ? 1 : 2);
+  /**
+   * Index of the step currently in progress. A failure has no step of its own,
+   * so it freezes the furthest step this card ever reached — the host flips
+   * `installing → failed`, and the card must not blame "Online" for it. The
+   * card only exists once the identity is created, so a card that mounts
+   * already failed died installing.
+   */
+  let reached = $state(untrack(() => (phase === "creating" ? 0 : 1)));
+  $effect(() => {
+    if (phase === "creating") reached = Math.max(reached, 0);
+    else if (phase === "installing") reached = Math.max(reached, 1);
+    else if (phase === "online") reached = 2;
+  });
+  const activeIndex = $derived(
+    phase === "failed" ? reached : phase === "creating" ? 0 : phase === "installing" ? 1 : 2,
+  );
 
   function stepState(index: number): "done" | "active" | "todo" | "failed" {
-    if (state === "failed") {
+    if (phase === "failed") {
       return index < activeIndex ? "done" : index === activeIndex ? "failed" : "todo";
     }
-    if (state === "online") return "done";
+    if (phase === "online") return "done";
     return index < activeIndex ? "done" : index === activeIndex ? "active" : "todo";
   }
 
   const title = $derived(
-    state === "online"
+    phase === "online"
       ? `${name} is online`
-      : state === "failed"
+      : phase === "failed"
         ? `${name} could not start`
         : `Setting up ${name}…`,
   );
 </script>
 
-<div class="progress" data-testid="bot-progress-card" data-state={state} role="status" aria-live="polite">
+<div class="progress" data-testid="bot-progress-card" data-state={phase} role="status" aria-live="polite">
   <div class="progress-head">
     <span class="progress-title">{title}</span>
-    {#if state !== "online" && state !== "failed"}
+    {#if phase !== "online" && phase !== "failed"}
       <span class="progress-hint">About half a minute</span>
     {/if}
   </div>
@@ -66,7 +87,7 @@
       </li>
     {/each}
   </ol>
-  {#if state === "failed"}
+  {#if phase === "failed"}
     <div class="progress-failed">
       <span class="progress-reason" data-testid="bot-progress-reason">{reason || "Something went wrong while starting the bot."}</span>
       {#if onretry}
