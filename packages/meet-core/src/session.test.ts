@@ -5,6 +5,7 @@ import type {
   CallGrant,
   InboundSignal,
   PeerIdentity,
+  SignalingPort,
 } from "./ports.js";
 import { createCallSession, type CallSession } from "./session.js";
 import { TRANSPORT_TUNING } from "./transport.js";
@@ -379,5 +380,133 @@ describe("snapshots", () => {
   it("reports transport tuning that matches the ported prototype cap", () => {
     expect(TRANSPORT_TUNING.maxIceRestarts).toBe(5);
     expect(TRANSPORT_TUNING.restartBackoffMaxMs).toBe(15_000);
+  });
+});
+
+describe("a join that fails after the roster arrived", () => {
+  /** A port that admits a roster (so transports exist) and then rejects. */
+  function failingPort(error: Error): {
+    signaling: SignalingPort;
+    stops: () => number;
+  } {
+    let stops = 0;
+    return {
+      signaling: {
+        async start(handlers) {
+          handlers.onRoster({
+            rosterRevision: 2,
+            peers: [alice, bob],
+            trafficStopMs: 5_000,
+          });
+          throw error;
+        },
+        async send() {
+          // never reached
+        },
+        async stop() {
+          stops += 1;
+        },
+      },
+      stops: () => stops,
+    };
+  }
+
+  function failingFixture(error: Error) {
+    const scheduler = new FakeScheduler();
+    const connections = new FakeConnectionFactory();
+    const track = new FakeTrack("dev_a-audio", "audio");
+    const media = new FakeMediaPort([track]);
+    const port = failingPort(error);
+    const session = createCallSession({
+      binding,
+      self: alice,
+      sessionId: "sess-fail",
+      ports: {
+        signaling: port.signaling,
+        media,
+        connections,
+        clock: scheduler,
+        timers: scheduler,
+        random: () => 0,
+      },
+    });
+    return { scheduler, connections, track, session, stops: port.stops };
+  }
+
+  it("tears down every transport, timer, track and the grant", async () => {
+    const fail = failingFixture(new Error("START_FAILED"));
+    await expect(
+      fail.session.join(grantFor(2, fail.scheduler.now() + 60_000)),
+    ).rejects.toThrow(/START_FAILED/);
+    await flush();
+
+    // The roster created a connection before the failure surfaced.
+    expect(fail.connections.created.length).toBeGreaterThan(0);
+    expect(fail.connections.created.every((pc) => pc.closed)).toBe(true);
+    expect(fail.scheduler.pending).toBe(0);
+    expect(fail.stops()).toBe(1);
+    expect(fail.track.stopped).toBe(true);
+
+    const snapshot = fail.session.snapshot();
+    expect(snapshot.grantId).toBeNull();
+    expect(snapshot.phase).toBe("idle");
+    expect(snapshot.peers).toHaveLength(0);
+    expect(
+      snapshot.errors.some((error) => error.code === "SIGNALING_START_FAILED"),
+    ).toBe(true);
+  });
+
+  it("records the failure without the error's own text", async () => {
+    const fail = failingFixture(
+      new Error("setRemoteDescription failed for sdp v=0 secret 10.0.0.1"),
+    );
+    await expect(
+      fail.session.join(grantFor(2, fail.scheduler.now() + 60_000)),
+    ).rejects.toThrow();
+    await flush();
+
+    const snapshot = fail.session.snapshot();
+    const recorded = snapshot.errors.find(
+      (error) => error.code === "SIGNALING_START_FAILED",
+    );
+    expect(recorded?.message).toBe("Operation failed.");
+    const serialized = JSON.stringify(snapshot);
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("sdp");
+    expect(serialized).not.toContain("10.0.0.1");
+  });
+});
+
+describe("inbound signal dedupe", () => {
+  it("applies a redelivered offer once and counts the duplicate", async () => {
+    const { session, scheduler, fabric } = fixture();
+    await session.join(grantFor(1, scheduler.now() + 60_000));
+    fabric.admit(alice, bob);
+    await flush();
+
+    const offer: InboundSignal = {
+      binding,
+      from: bob,
+      rosterRevision: fabric.rosterRevision,
+      sequence: 5,
+      type: "offer",
+      payload: { type: "offer", sdp: "remote-offer" },
+    };
+    fabric.inject(alice, offer);
+    await flush();
+    fabric.inject(alice, { ...offer });
+    await flush();
+
+    const answers = fabric.sent.filter((signal) => signal.type === "answer");
+    expect(answers).toHaveLength(1);
+    expect(session.snapshot().diagnostics.duplicateSignal).toBe(1);
+
+    // A newer sequence from the same sender is still applied.
+    fabric.inject(alice, { ...offer, sequence: 6 });
+    await flush();
+    expect(fabric.sent.filter((signal) => signal.type === "answer")).toHaveLength(
+      2,
+    );
+    expect(session.snapshot().diagnostics.duplicateSignal).toBe(1);
   });
 });

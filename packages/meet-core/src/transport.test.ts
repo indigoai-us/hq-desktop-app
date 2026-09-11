@@ -128,6 +128,59 @@ describe("PeerTransport", () => {
     expect(transport.snapshot().status).toBe("failed");
   });
 
+  it("resets the restart budget when connect() recreates a failed connection", async () => {
+    const { transport, connections, scheduler } = harness();
+    transport.connect();
+    await flush();
+    const dead = connections.last;
+    dead.signalingState = "stable";
+
+    for (let attempt = 0; attempt < TRANSPORT_TUNING.maxIceRestarts; attempt += 1) {
+      dead.setIceState("failed");
+      scheduler.advance(TRANSPORT_TUNING.restartBackoffMaxMs + 1);
+    }
+    // The budget is spent; the next failure is terminal for this connection.
+    dead.setIceState("failed");
+    scheduler.advance(TRANSPORT_TUNING.restartBackoffMaxMs + 1);
+    expect(transport.snapshot().status).toBe("failed");
+    expect(transport.snapshot().restartAttempts).toBe(
+      TRANSPORT_TUNING.maxIceRestarts,
+    );
+
+    // A fresh connect() is a fresh start: the recreated connection must still
+    // have its full recovery budget, not be failed on its first ICE hiccup.
+    transport.connect();
+    await flush();
+    expect(connections.created).toHaveLength(2);
+    expect(transport.snapshot().restartAttempts).toBe(0);
+
+    const revived = connections.last;
+    revived.signalingState = "stable";
+    revived.setIceState("failed");
+    scheduler.advance(TRANSPORT_TUNING.restartBackoffMaxMs + 1);
+    expect(revived.restarts).toBe(1);
+  });
+
+  it("abandons a description whose connection was replaced mid-await", async () => {
+    const { transport, connections, sent } = harness();
+    transport.connect();
+    await flush();
+    sent.length = 0;
+    const stale = connections.last;
+    stale.signalingState = "stable";
+
+    // The connection dies and is recreated while setRemoteDescription is still
+    // in flight; the dead connection must not answer for the live one.
+    const pending = transport.handleDescription({ type: "offer", sdp: "remote" });
+    stale.connectionState = "failed";
+    transport.connect();
+    await pending;
+    await flush();
+
+    expect(connections.created).toHaveLength(2);
+    expect(sent.some((signal) => signal.type === "answer")).toBe(false);
+  });
+
   it("renegotiates from scratch when signaling is stuck mid-negotiation", async () => {
     const { transport, connections, scheduler } = harness();
     transport.connect();

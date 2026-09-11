@@ -385,3 +385,228 @@ describe("createHqSignalingPort", () => {
     await port.stop();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Terminal refusals, backoff and ack durability
+// ---------------------------------------------------------------------------
+
+type ControlResult =
+  | { ok: true; value: Json }
+  | { ok: false; code: string; message: string };
+
+/** A CallsApi whose reconcile result is scripted per call, refusals included. */
+function refusingCallsApi(reconcile: (call: number) => ControlResult): {
+  api: CallsApi;
+  controls: ControlCall[];
+  reconciles: () => number;
+} {
+  const controls: ControlCall[] = [];
+  let reconciles = 0;
+  const api = new Proxy({} as CallsApi, {
+    get(_target, property) {
+      if (property === "contractVersion") return "hq-meet/1";
+      if (property === "signalingControl") {
+        return async (operation: string, body: Record<string, unknown>) => {
+          controls.push({ operation, body });
+          if (operation !== "reconcile") return { ok: true as const, value: {} };
+          reconciles += 1;
+          return reconcile(reconciles);
+        };
+      }
+      throw new Error("unexpected CallsApi use");
+    },
+  });
+  return { api, controls, reconciles: () => reconciles };
+}
+
+const okBody = (extra: Record<string, unknown> = {}): ControlResult => ({
+  ok: true,
+  value: {
+    code: "OK",
+    signals: [],
+    eventIds: [],
+    rosterRevision: 7,
+    peers: [self],
+    controlPollMs: 1_000,
+    ...extra,
+  } as Json,
+});
+
+const drain = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+describe("control refusals", () => {
+  it("stops polling for good on a terminal refusal", async () => {
+    const backend = refusingCallsApi(() => ({
+      ok: false,
+      code: "GRANT_EXPIRED",
+      message: "The admission grant expired.",
+    }));
+    const scheduler = new FakeScheduler();
+    const port = createHqSignalingPort(backend.api, signer, {
+      binding,
+      self,
+      clock: scheduler,
+      timers: scheduler,
+    });
+    const sink = collector();
+    await port.start(sink.handlers, grant);
+
+    expect(sink.errors).toEqual([
+      { code: "GRANT_EXPIRED", message: "The admission grant expired." },
+    ]);
+    expect(backend.reconciles()).toBe(1);
+    // No timer survives a terminal refusal, and none is ever armed again.
+    expect(scheduler.pending).toBe(0);
+    for (let tick = 0; tick < 5; tick += 1) {
+      scheduler.advance(10_000);
+      await drain();
+    }
+    expect(backend.reconciles()).toBe(1);
+    expect(sink.errors).toHaveLength(1);
+
+    await port.stop();
+  });
+
+  it("backs off exponentially while throttled and resets after an OK", async () => {
+    const backend = refusingCallsApi((call) =>
+      call <= 2
+        ? { ok: false, code: "RATE_LIMITED", message: "Too many requests." }
+        : okBody(),
+    );
+    const scheduler = new FakeScheduler();
+    const port = createHqSignalingPort(backend.api, signer, {
+      binding,
+      self,
+      clock: scheduler,
+      timers: scheduler,
+      defaultPollMs: 1_000,
+    });
+    const sink = collector();
+    await port.start(sink.handlers, grant);
+    expect(backend.reconciles()).toBe(1);
+
+    // First refusal doubles the 1s poll to 2s.
+    scheduler.advance(1_000);
+    await drain();
+    expect(backend.reconciles()).toBe(1);
+    scheduler.advance(1_000);
+    await drain();
+    expect(backend.reconciles()).toBe(2);
+
+    // Second refusal doubles it again, to 4s.
+    scheduler.advance(2_000);
+    await drain();
+    expect(backend.reconciles()).toBe(2);
+    scheduler.advance(2_000);
+    await drain();
+    expect(backend.reconciles()).toBe(3);
+
+    // That reconcile was OK, so the interval is back to the backend's 1s.
+    scheduler.advance(1_000);
+    await drain();
+    expect(backend.reconciles()).toBe(4);
+    expect(sink.errors.map((error) => error.code)).toEqual([
+      "RATE_LIMITED",
+      "RATE_LIMITED",
+    ]);
+
+    await port.stop();
+  });
+
+  it("re-acks delivered ids when a reconcile throws", async () => {
+    const backend = refusingCallsApi((call) =>
+      okBody(call === 1 ? { eventIds: ["evt_1", "evt_2"] } : {}),
+    );
+    let failSign = false;
+    const flakySigner: EnvelopeSigner = {
+      async sign(envelope) {
+        if (failSign) {
+          failSign = false;
+          throw new Error("SIGNER_UNAVAILABLE");
+        }
+        return signer.sign(envelope);
+      },
+    };
+    const scheduler = new FakeScheduler();
+    const port = createHqSignalingPort(backend.api, flakySigner, {
+      binding,
+      self,
+      clock: scheduler,
+      timers: scheduler,
+      defaultPollMs: 1_000,
+    });
+    const sink = collector();
+    await port.start(sink.handlers, grant);
+    expect(backend.reconciles()).toBe(1);
+
+    // The signer throws before the request leaves: the acks must survive it.
+    failSign = true;
+    scheduler.advance(1_000);
+    await drain();
+    expect(backend.reconciles()).toBe(1);
+    expect(sink.errors[0]?.code).toBe("SIGNALING_POLL_FAILED");
+
+    scheduler.advance(1_000);
+    await drain();
+    expect(backend.controls[1]?.body.ackIds).toEqual(["evt_1", "evt_2"]);
+
+    await port.stop();
+  });
+});
+
+describe("grant renewal", () => {
+  it("reads the new expiry from the renew response's grant", async () => {
+    const controls: ControlCall[] = [];
+    const api = new Proxy({} as CallsApi, {
+      get(_target, property) {
+        if (property === "contractVersion") return "hq-meet/1";
+        if (property === "signalingControl") {
+          return async (operation: string, body: Record<string, unknown>) => {
+            controls.push({ operation, body });
+            // The backend's renew response carries the expiry inside `grant`;
+            // there is no top-level `expiresAt`.
+            if (operation === "renew") {
+              return {
+                ok: true as const,
+                value: {
+                  grant: {
+                    grantId: "grant_2",
+                    rosterRevision: 7,
+                    expiresAt: T0 + 600_000,
+                  },
+                } as Json,
+              };
+            }
+            return okBody() as { ok: true; value: Json };
+          };
+        }
+        throw new Error("unexpected CallsApi use");
+      },
+    });
+    const scheduler = new FakeScheduler();
+    const port = createHqSignalingPort(api, signer, {
+      binding,
+      self,
+      clock: scheduler,
+      timers: scheduler,
+      defaultPollMs: 1_000,
+      defaultRenewAfterMs: 2_000,
+    });
+    await port.start(collector().handlers, {
+      ...grant,
+      expiresAt: T0 + 5_000,
+    });
+
+    for (let tick = 0; tick < 6; tick += 1) {
+      scheduler.advance(1_000);
+      await drain();
+    }
+
+    const renews = controls.filter((call) => call.operation === "renew");
+    // One renew, not one per poll: the renewed lease pushed the deadline out.
+    expect(renews).toHaveLength(1);
+    expect(controls[controls.length - 1]?.body.grantId).toBe("grant_2");
+
+    await port.stop();
+  });
+});

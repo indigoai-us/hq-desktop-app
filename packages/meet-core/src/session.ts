@@ -44,7 +44,9 @@ export type CallPhase =
 
 /** Content-free counters. Never SDP, candidates, keys or person content. */
 export interface CallDiagnostics {
-  [counter: string]: number;
+  /** Inbound signals dropped because their sequence was already applied. */
+  duplicateSignal?: number;
+  [counter: string]: number | undefined;
 }
 
 /** A content-free error surfaced to the host. */
@@ -148,6 +150,8 @@ class Session implements CallSession {
   private admitted = new Map<string, PeerIdentity>();
   private transports = new Map<string, PeerTransport>();
   private ownedTracks = new Set<TrackLike>();
+  /** Highest inbound `sequence` already applied, per sending peer. */
+  private lastSequence = new Map<string, number>();
   private errors: CallError[] = [];
   private diagnostics: CallDiagnostics = {};
 
@@ -195,6 +199,11 @@ class Session implements CallSession {
       );
     } catch (error) {
       if (!this.current(generation)) return;
+      // `start()` may already have delivered a roster before rejecting, so
+      // transports, timers and owned tracks can exist. Release all of them and
+      // the grant before the failure reaches the host.
+      await this.teardown();
+      this.grant = null;
       this.phase = "idle";
       this.recordError("SIGNALING_START_FAILED", describe(error));
       this.emitState();
@@ -230,9 +239,9 @@ class Session implements CallSession {
   }
 
   private async teardown(): Promise<void> {
-    for (const transport of this.transports.values()) transport.close();
-    this.transports.clear();
+    this.dropAllTransports();
     this.admitted.clear();
+    this.lastSequence.clear();
     this.clearTrafficStop();
     this.releaseOwnedTracks();
     this.grant = null;
@@ -247,8 +256,9 @@ class Session implements CallSession {
   }
 
   private resetCallState(): void {
-    this.transports.clear();
+    this.dropAllTransports();
     this.admitted.clear();
+    this.lastSequence.clear();
     this.errors = [];
     this.diagnostics = {};
     this.trafficStopped = false;
@@ -386,6 +396,17 @@ class Session implements CallSession {
     if (this.trafficStopped) {
       this.count("trafficStopped");
       return;
+    }
+    // A redelivered signal (ack loss, duplicate poll) must never be applied
+    // twice: a replayed offer would renegotiate a healthy connection.
+    const senderId = peerIdOf(signal.from);
+    if (signal.sequence >= 0) {
+      const seen = this.lastSequence.get(senderId);
+      if (seen !== undefined && signal.sequence <= seen) {
+        this.count("duplicateSignal");
+        return;
+      }
+      this.lastSequence.set(senderId, signal.sequence);
     }
 
     const transport = this.transportFor(signal.from);
@@ -594,10 +615,24 @@ class Session implements CallSession {
   }
 }
 
-/** Error text without leaking payloads: code and shape only. */
+/** A bare, code-like token: the only error text allowed through verbatim. */
+const CODE_LIKE = /^[A-Za-z][A-Za-z0-9_.-]*$/;
+
+/** Max length of a code-like token echoed into a snapshot. */
+const MAX_CODE_LENGTH = 120;
+
+/**
+ * Error text without leaking payloads. Only a bare code-like token survives;
+ * anything else (a raw `Error.message` that could carry SDP, a candidate, a
+ * key or person content) collapses to a generic string.
+ */
 function describe(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return "Unknown error";
+  if (!(error instanceof Error)) return "Unknown error";
+  const message = error.message;
+  if (message.length <= MAX_CODE_LENGTH && CODE_LIKE.test(message)) {
+    return message;
+  }
+  return "Operation failed.";
 }
 
 export function createCallSession(options: CallSessionOptions): CallSession {

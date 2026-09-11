@@ -149,6 +149,9 @@ export class PeerTransport {
       state === "failed" ||
       state === "closed"
     ) {
+      // A recreate is a fresh start: the previous connection's recovery budget
+      // does not carry over, or the peer would be declared failed immediately.
+      this.restartAttempts = 0;
       this.create();
     }
     this.attachLocalTracks();
@@ -227,12 +230,16 @@ export class PeerTransport {
     if (collision) this.deps.count("offerCollisionRolledBack");
 
     await pc.setRemoteDescription(description);
+    // The await above yields: a close, a recreate or a roster removal may have
+    // replaced this connection while it ran, exactly as in `negotiate()`.
+    if (this.closed || this.pc !== pc) return;
     await this.flushCandidates();
+    if (this.closed || this.pc !== pc) return;
 
     if (description.type === "offer") {
       await pc.setLocalDescription();
       const local = pc.localDescription;
-      if (!local || this.closed) return;
+      if (!local || this.closed || this.pc !== pc) return;
       this.deps.send({ to: this.remote, type: "answer", payload: local });
     }
   }

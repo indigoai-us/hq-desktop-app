@@ -52,6 +52,26 @@ export interface HqSignalingOptions {
 const VERSION = "hq-meet/1";
 const DEFAULT_POLL_MS = 1_000;
 const DEFAULT_RENEW_AFTER_MS = 30_000;
+/** Backoff ceiling for a throttled or unavailable signaling queue. */
+const MAX_BACKOFF_MS = 30_000;
+
+/**
+ * Refusals that no amount of retrying can fix: the grant, the identity, the
+ * epoch or the contract itself is wrong. Polling stops for good and the host
+ * decides what happens next (rejoin, re-admit, upgrade).
+ */
+const TERMINAL_CODES = new Set([
+  "GRANT_EXPIRED",
+  "COMPANY_ACCESS_DENIED",
+  "IDENTITY_MISMATCH",
+  "STALE_EPOCH",
+  "CALL_SEALED",
+  "UNSUPPORTED_VERSION",
+  "INVALID_SIGNATURE",
+]);
+
+/** Refusals that mean "slow down", not "stop". */
+const BACKOFF_CODES = new Set(["RATE_LIMITED", "SIGNAL_UNAVAILABLE"]);
 
 const B64 =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -157,9 +177,34 @@ export function createHqSignalingPort(
   let rosterRevision = 0;
   let pendingAcks: string[] = [];
   let nextRenewAt = Number.POSITIVE_INFINITY;
-  let currentPollMs = pollMs;
+  let basePollMs = pollMs;
+  let backoffMs: number | null = null;
   let renewLeadMs = renewAfterDefault;
   let leaseExpiresAt: number | null = null;
+
+  /** The interval for the next poll: the backoff while throttled, else base. */
+  function pollDelay(): number {
+    return backoffMs ?? basePollMs;
+  }
+
+  function stopPolling(): void {
+    running = false;
+    if (pollTimer !== undefined) {
+      timers.clearTimeout(pollTimer);
+      pollTimer = undefined;
+    }
+  }
+
+  /** A refused control call: terminal refusals end the port, throttles slow it. */
+  function handleRefusal(code: string): void {
+    if (TERMINAL_CODES.has(code)) {
+      stopPolling();
+      return;
+    }
+    if (BACKOFF_CODES.has(code)) {
+      backoffMs = Math.min((backoffMs ?? basePollMs) * 2, MAX_BACKOFF_MS);
+    }
+  }
 
   async function control(
     operation: "renew" | "reconcile",
@@ -187,7 +232,9 @@ export function createHqSignalingPort(
       signature,
     } as Json);
     if (!result.ok) {
-      handlers?.onError(refusalCode(result.code), refusal(result.message));
+      const code = refusalCode(result.code);
+      handlers?.onError(code, refusal(result.message));
+      handleRefusal(code);
       return null;
     }
     return record(result.value);
@@ -200,7 +247,7 @@ export function createHqSignalingPort(
    */
   function applyTiming(body: Record<string, unknown>): void {
     const poll = body.controlPollMs;
-    if (typeof poll === "number" && poll > 0) currentPollMs = poll;
+    if (typeof poll === "number" && poll > 0) basePollMs = poll;
     if (typeof body.renewAfterMs === "number" && body.renewAfterMs >= 0) {
       renewLeadMs = body.renewAfterMs;
     }
@@ -288,8 +335,18 @@ export function createHqSignalingPort(
     if (clock.now() >= nextRenewAt) {
       const renewed = await control("renew");
       if (renewed) {
-        applyTiming(renewed);
         const renewedGrant = record(renewed.grant);
+        // The renew response carries the new expiry inside `grant`, not at the
+        // top level, so the lease deadline is read from there.
+        const renewedExpiresAt =
+          typeof renewedGrant?.expiresAt === "number"
+            ? renewedGrant.expiresAt
+            : undefined;
+        applyTiming(
+          renewedExpiresAt === undefined
+            ? renewed
+            : { ...renewed, expiresAt: renewedExpiresAt },
+        );
         if (renewedGrant && grant) {
           grant = {
             ...grant,
@@ -313,11 +370,22 @@ export function createHqSignalingPort(
 
     const acks = pendingAcks;
     pendingAcks = [];
-    const body = await control(
-      "reconcile",
-      acks.length > 0 ? { ackIds: acks } : {},
-    );
-    if (!running) return;
+    let body: Record<string, unknown> | null;
+    try {
+      body = await control(
+        "reconcile",
+        acks.length > 0 ? { ackIds: acks } : {},
+      );
+    } catch (error) {
+      // A thrown signer or transport must not swallow the acks either: they are
+      // still outstanding and go back on the queue before the error propagates.
+      pendingAcks = [...acks, ...pendingAcks];
+      throw error;
+    }
+    if (!running) {
+      pendingAcks = [...acks, ...pendingAcks];
+      return;
+    }
     if (!body) {
       // Reconcile failed: the acks are still outstanding, retry them next tick.
       pendingAcks = [...acks, ...pendingAcks];
@@ -325,6 +393,11 @@ export function createHqSignalingPort(
     }
     if (typeof body.code === "string" && body.code !== "OK") {
       handlers?.onError(body.code, "Signaling queue is not usable.");
+      handleRefusal(body.code);
+      if (!running) return;
+    } else {
+      // A healthy reconcile clears any throttling backoff.
+      backoffMs = null;
     }
     applyTiming(body);
     publishRoster(body);
@@ -345,7 +418,7 @@ export function createHqSignalingPort(
         .finally(() => {
           schedule();
         });
-    }, currentPollMs);
+    }, pollDelay());
   }
 
   return {
@@ -356,7 +429,8 @@ export function createHqSignalingPort(
       rosterRevision = nextGrant.rosterRevision;
       sequence = 0;
       pendingAcks = [];
-      currentPollMs = pollMs;
+      basePollMs = pollMs;
+      backoffMs = null;
       renewLeadMs = renewAfterDefault;
       leaseExpiresAt = nextGrant.expiresAt;
       nextRenewAt = nextGrant.expiresAt - renewLeadMs;
@@ -398,11 +472,7 @@ export function createHqSignalingPort(
     },
 
     async stop() {
-      running = false;
-      if (pollTimer !== undefined) {
-        timers.clearTimeout(pollTimer);
-        pollTimer = undefined;
-      }
+      stopPolling();
       handlers = null;
       grant = null;
       pendingAcks = [];
