@@ -1,5 +1,4 @@
 import type { MeshStory } from "./types.js";
-import { normalizeStoryStage } from "./map.js";
 
 export const CHANNEL_SESSION_ORIGIN_PREFIX = "hq-channel-session:";
 
@@ -16,21 +15,12 @@ export function channelSessionOriginKey(
 export function findDuplicateChannelSessionStory(
   stories: readonly MeshStory[],
   originKey: string,
-  title: string,
+  _title?: string,
 ): MeshStory | null {
   const key = originKey.trim();
-  if (key) {
-    const byKey = stories.find((story) =>
-      (story.description ?? "").includes(key),
-    );
-    if (byKey) return byKey;
-  }
-  const titled = title.trim().toLowerCase();
-  if (!titled) return null;
-  const open = stories.filter((story) => normalizeStoryStage(story) !== "done");
+  if (!key) return null;
   return (
-    open.find((story) => (story.title ?? "").trim().toLowerCase() === titled) ??
-    null
+    stories.find((story) => (story.description ?? "").includes(key)) ?? null
   );
 }
 

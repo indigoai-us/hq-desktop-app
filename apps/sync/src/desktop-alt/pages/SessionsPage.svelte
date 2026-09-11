@@ -155,6 +155,8 @@
     /** Unique unsent-draft identity for composer persistence. */
     draftKey?: string | null;
     restoreScroll?: import('@hq/ui').NavigationScrollState | null;
+    /** Thread-column embed: fill the pane, skip /startwork on first send. */
+    embedded?: boolean;
   }
 
   let {
@@ -170,6 +172,7 @@
     restorePath,
     draftKey = null,
     restoreScroll = null,
+    embedded = false,
   }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
@@ -1276,7 +1279,11 @@
       // Orientation, selected skill and natural-language prompt are one
       // atomic first message. The transcript splits context from the visible
       // prompt only as presentation; the CLI receives one send.
-      const first = planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)[0]!;
+      const first = planFirstSend(
+        wire,
+        { company, project },
+        !embedded && startworkEnabled && !setupChat,
+      )[0]!;
       const firstMeta: UserTurnMeta = first.label
         ? { ...meta, hidden: false, contextLabel: first.label, displayText: first.displayText }
         : meta;
@@ -1444,7 +1451,7 @@
 
 <svelte:window onkeydown={onPageKeydown} />
 
-<div class="sessions" data-testid="sessions-page" bind:this={pageEl}>
+<div class="sessions" class:embedded data-testid="sessions-page" bind:this={pageEl}>
   {#if sessionUnavailable}
     <div
       class="session-note"
@@ -1676,6 +1683,11 @@
     min-width: 0;
     height: 100%;
     font-family: var(--font-sans);
+  }
+
+  .sessions.embedded {
+    --session-column-width: 100%;
+    --session-gutter: 12px;
   }
 
   .composer-dock {

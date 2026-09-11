@@ -948,10 +948,13 @@
       <WorkShell
         {channelSessionBody}
         onstartlivesession={async (input) => {
+          // Channel Session is a normal chat in the thread column — do not
+          // wrap the first turn in /startwork (that skill interviews, then
+          // sits, which looks like "working then stopped").
           const first = planFirstSend(
             input.contextPrompt,
             { company: input.companySlug, project: input.projectId },
-            true,
+            false,
           )[0]!;
           const sessionId = await liveSessionStore.startAndSend(
             {

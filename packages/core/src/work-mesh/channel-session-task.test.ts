@@ -36,13 +36,13 @@ describe("channel-session-task", () => {
     expect(found?.id).toBe("US-008");
   });
 
-  it("reuses an open story with the same title, not a done one", () => {
+  it("does not reuse a story just because the title matches", () => {
     const found = findDuplicateChannelSessionStory(
       [...stories, { id: "US-009", title: "Cache models", status: "queued" }],
       "hq-channel-session:message:new",
       "Cache models",
     );
-    expect(found?.id).toBe("US-009");
+    expect(found).toBeNull();
   });
 
   it("allocates the next US- id", () => {

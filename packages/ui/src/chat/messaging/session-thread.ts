@@ -101,17 +101,7 @@ export function createSessionThread(input: {
 
 export function contextPromptForThread(thread: SessionThread): string {
   if (thread.origin.kind === "message") {
-    return [
-      `Continue this work in the current project channel.`,
-      ``,
-      `${thread.origin.author} wrote:`,
-      `> ${thread.origin.excerpt.replace(/\n/g, "\n> ")}`,
-      ``,
-      `Work that request. Stay in this session.`,
-    ].join("\n");
+    return thread.origin.excerpt.trim();
   }
-  return [
-    `A session was started from #${thread.origin.channelTitle}.`,
-    `Work in this project. Ask if the next step is unclear.`,
-  ].join("\n");
+  return `Work in #${thread.origin.channelTitle || "this channel"}.`;
 }

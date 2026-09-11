@@ -68,27 +68,29 @@
     </div>
   </header>
 
-  {#if thread.origin.kind === "message"}
-    <blockquote class="origin-quote" data-testid="session-thread-origin">
-      <span class="origin-who">{originLabel}</span>
-      <span class="origin-body">{thread.origin.excerpt}</span>
-    </blockquote>
-  {:else}
-    <p class="origin-channel" data-testid="session-thread-origin">
-      Channel session · {originLabel}
-    </p>
-  {/if}
+  {#if !body}
+    {#if thread.origin.kind === "message"}
+      <blockquote class="origin-quote" data-testid="session-thread-origin">
+        <span class="origin-who">{originLabel}</span>
+        <span class="origin-body">{thread.origin.excerpt}</span>
+      </blockquote>
+    {:else}
+      <p class="origin-channel" data-testid="session-thread-origin">
+        Channel session · {originLabel}
+      </p>
+    {/if}
 
-  <div class="session-meta" data-testid="session-thread-actor">
-    <span class="who">{thread.actorName}</span>
-    {#if thread.actorKind === "agent"}
-      <span class="agent-mark" title="Agent">✦</span>
-    {/if}
-    {#if taskLabel}
-      <span class="sep">·</span>
-      <span class="task" data-testid="session-thread-task">{taskLabel}</span>
-    {/if}
-  </div>
+    <div class="session-meta" data-testid="session-thread-actor">
+      <span class="who">{thread.actorName}</span>
+      {#if thread.actorKind === "agent"}
+        <span class="agent-mark" title="Agent">✦</span>
+      {/if}
+      {#if taskLabel}
+        <span class="sep">·</span>
+        <span class="task" data-testid="session-thread-task">{taskLabel}</span>
+      {/if}
+    </div>
+  {/if}
 
   <div class="session-body">
     {#if body}
