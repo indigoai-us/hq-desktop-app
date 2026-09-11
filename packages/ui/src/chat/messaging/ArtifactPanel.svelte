@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Check from "phosphor-svelte/lib/Check";
+  import CopySimple from "phosphor-svelte/lib/CopySimple";
   import X from "phosphor-svelte/lib/X";
   /**
    * ArtifactPanel — artifact mode for the host's right side pane (the same
@@ -10,6 +12,7 @@
    * face at reading size — monospace only for real code.
    */
   import { onMount } from "svelte";
+  import Tooltip from "../../common/Tooltip.svelte";
 
   import { handleLinkActivate } from "../../common/external-links.js";
   import { renderMarkdown } from "../../common/markdown.js";
@@ -105,16 +108,25 @@
       </span>
     </span>
     <span class="artifact-panel-actions">
-      <button
-        type="button"
-        class="artifact-panel-btn"
-        data-testid="artifact-panel-copy"
-        onclick={copy}
-        disabled={copying}
-        aria-label={copied ? "Artifact copied" : "Copy artifact"}
-      >
-        {copied ? "Copied" : "Copy"}
-      </button>
+      <Tooltip label={copied ? "Copied" : "Copy"} delay={250}>
+        {#snippet trigger(tipId)}
+          <button
+            type="button"
+            class="artifact-panel-btn"
+            data-testid="artifact-panel-copy"
+            aria-describedby={tipId}
+            onclick={copy}
+            disabled={copying}
+            aria-label={copied ? "Artifact copied" : "Copy artifact"}
+          >
+            {#if copied}
+              <Check size={14} weight="bold" aria-hidden="true" />
+            {:else}
+              <CopySimple size={14} aria-hidden="true" />
+            {/if}
+          </button>
+        {/snippet}
+      </Tooltip>
       <button
         type="button"
         class="artifact-panel-btn artifact-panel-close"
@@ -180,20 +192,25 @@
     }
   }
 
+  /* No rule under the header. The body already starts with its own heading,
+     so the divider drew a line between a title and a repeat of that title —
+     the other detail panels (BoardTab, ThreadDetail) do not rule theirs
+     either. */
   .artifact-panel-head {
     display: flex;
     flex: 0 0 auto;
     align-items: flex-start;
     gap: 10px;
-    padding: 14px 14px 12px 18px;
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.07));
+    padding: 14px 14px 4px 18px;
   }
 
+  /* 8px title-to-tag, the detail-panel standard (BoardTab's 6px gap plus the
+     badge's 2px offset). At 4px the chip crowded the title's descenders. */
   .artifact-panel-titles {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: 4px;
+    gap: 8px;
     min-width: 0;
   }
 
@@ -246,14 +263,15 @@
     gap: 2px;
   }
 
+  /* Icon-only, like every other control in this header. */
   .artifact-panel-btn {
     appearance: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 26px;
+    width: 26px;
     height: 26px;
-    padding: 0 9px;
+    padding: 0;
     border: 0;
     border-radius: 6px;
     background: transparent;
@@ -279,10 +297,6 @@
   .artifact-panel-btn:disabled {
     opacity: 0.6;
     cursor: default;
-  }
-
-  .artifact-panel-close {
-    padding: 0;
   }
 
   .artifact-panel-body {

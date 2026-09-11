@@ -105,9 +105,7 @@
       >
     {/if}
     <span class="doc-card-meta">
-      <span class="doc-card-kind" data-testid="artifact-card-kind"
-        >{artifact.kindLabel}</span
-      >
+      <span data-testid="artifact-card-kind">{artifact.kindLabel}</span>
       <span aria-hidden="true">·</span>
       <span data-testid="artifact-card-size">{artifact.sizeLabel}</span>
     </span>

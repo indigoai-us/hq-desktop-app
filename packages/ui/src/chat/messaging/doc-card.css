@@ -102,7 +102,9 @@
   white-space: nowrap;
 }
 
-/* One caption line, one type family. The kind is the only part that shouts. */
+/* One caption line, one style throughout. The kind used to be bold, uppercase
+   and wide-tracked, which made "DETAILS" read as a heading over its own
+   metadata instead of the first item in it. */
 .doc-card-meta {
   display: flex;
   align-items: center;
@@ -114,12 +116,6 @@
   letter-spacing: 0.04em;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-
-.doc-card-kind {
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
 }
 
 .doc-card-meta.is-error {
