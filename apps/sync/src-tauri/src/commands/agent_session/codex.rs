@@ -1003,14 +1003,23 @@ while (!closed || queue.length) {
 
     /// A sink that records everything, so a test can assert on the exact
     /// stream the frontend would receive.
-    #[derive(Default)]
     struct RecordingSink {
         events: std::sync::Mutex<Vec<(u64, SessionEvent)>>,
         phases: std::sync::Mutex<Vec<PhaseChange>>,
         needs: std::sync::Mutex<Vec<NeedsYou>>,
+        started_at: std::time::Instant,
     }
 
     impl RecordingSink {
+        fn new(started_at: std::time::Instant) -> Self {
+            Self {
+                events: Default::default(),
+                phases: Default::default(),
+                needs: Default::default(),
+                started_at,
+            }
+        }
+
         fn events(&self) -> Vec<(u64, SessionEvent)> {
             self.events.lock().unwrap().clone()
         }
@@ -1031,6 +1040,12 @@ while (!closed || queue.length) {
             event: &SessionEvent,
         ) {
             self.events.lock().unwrap().push((seq, event.clone()));
+            if matches!(event, SessionEvent::Started { .. }) {
+                eprintln!(
+                    "[agent-session-test-latency] provider=codex event=started elapsed_ms={}",
+                    self.started_at.elapsed().as_millis()
+                );
+            }
         }
         fn emit_phase(&self, _session_id: &str, change: PhaseChange) {
             self.phases.lock().unwrap().push(change);
@@ -1227,6 +1242,7 @@ async function drain() { while (!closed || queue.length) await take(); }
     }
 
     async fn start_with(mode: PermissionMode, script: &str) -> Harness {
+        let started_at = std::time::Instant::now();
         let dir = tempfile::tempdir().expect("tempdir");
         let replies = dir.path().join("replies.jsonl");
         let program = install_fake(dir.path(), &replies, script);
@@ -1253,7 +1269,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         let (tx, rx) = mpsc::unbounded_channel();
         state.lock().await.set_channel(&spec.session_id, tx.clone());
 
-        let sink = Arc::new(RecordingSink::default());
+        let sink = Arc::new(RecordingSink::new(started_at));
         let join = tokio::spawn(run_session_loop(
             child,
             spec.session_id.clone(),
