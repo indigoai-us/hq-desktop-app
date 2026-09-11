@@ -1,0 +1,33 @@
+{
+ "name": "ambiguous-pdf-preview-figure",
+ "expected_kind": "image",
+ "source": "PDF figure open in Preview",
+ "ambiguous": true,
+ "provenance": {
+  "app": "Preview",
+  "window_title": "attention-is-all-you-need.pdf",
+  "url": null
+ },
+ "lines": [
+  {
+   "text": "Figure 1: The Transformer - model architecture.",
+   "bbox": {
+    "x": 0.2,
+    "y": 0.04,
+    "width": 0.517,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Scaled Dot-Product Attention",
+   "bbox": {
+    "x": 0.3,
+    "y": 0.08,
+    "width": 0.308,
+    "height": 0.026
+   },
+   "confidence": 0.92
+  }
+ ]
+}

@@ -15,6 +15,10 @@
 //! Neither backend passes its native convention through.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use hq_desktop_core::ideas::pipeline::{run_extraction_stage, run_ocr_stage};
+use hq_desktop_core::ideas::{CaptureRecord, ExtractLine, IdeasError, LineBox};
 
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -128,7 +132,64 @@ pub fn platform_backend() -> Box<dyn OcrBackend + Send + Sync> {
     }
 }
 
-/// Run OCR for a stored capture and fold the result into its record.
+/// Map engine lines onto the platform-neutral extraction input (US-007).
+pub fn to_extract_lines(lines: &[OcrLine]) -> Vec<ExtractLine> {
+    lines
+        .iter()
+        .map(|l| ExtractLine {
+            text: l.text.clone(),
+            bbox: LineBox {
+                x: l.bbox.x,
+                y: l.bbox.y,
+                width: l.bbox.width,
+                height: l.bbox.height,
+            },
+            confidence: l.confidence,
+        })
+        .collect()
+}
+
+/// Step 1 of the post-capture pipeline: OCR only.
+///
+/// Folds the recognized text into the record (first in-place update the
+/// toast sees) and returns the recognized lines with geometry so the caller
+/// can feed [`extract_record`]. On OCR failure the line list is empty; the
+/// record still lands at `status = plain` with `ocr_text = None`.
+pub async fn ocr_only_record(
+    hq_root: &Path,
+    company_slug: &str,
+    id: &str,
+) -> Result<(CaptureRecord, Vec<ExtractLine>), IdeasError> {
+    let captured: Arc<Mutex<Vec<ExtractLine>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&captured);
+    let record = run_ocr_stage(hq_root, company_slug, id, move |image_path| {
+        let result = platform_backend()
+            .recognize(image_path)
+            .map_err(|e| e.to_string())?;
+        if let Ok(mut slot) = sink.lock() {
+            *slot = to_extract_lines(&result.lines);
+        }
+        Ok(result.text)
+    })
+    .await?;
+    let lines = captured.lock().map(|slot| slot.clone()).unwrap_or_default();
+    Ok((record, lines))
+}
+
+/// Step 2 of the post-capture pipeline: local extraction over the OCR lines
+/// (second in-place update the toast sees). Falls back to the record's
+/// `ocr_text` when `lines` is empty; never deletes, never fails the capture.
+pub async fn extract_record(
+    hq_root: &Path,
+    company_slug: &str,
+    id: &str,
+    lines: Vec<ExtractLine>,
+) -> Result<CaptureRecord, IdeasError> {
+    run_extraction_stage(hq_root, company_slug, id, lines).await
+}
+
+/// Run OCR for a stored capture and fold the result into its record, then run
+/// local extraction over the recognized lines (US-006 + US-007).
 ///
 /// Recognition happens on the blocking pool (see
 /// [`hq_desktop_core::ideas::pipeline::run_ocr_stage`]), so the capture path
@@ -138,18 +199,14 @@ pub fn platform_backend() -> Box<dyn OcrBackend + Send + Sync> {
 /// tokio::spawn(async move { let _ = ocr_record(&root, &slug, &id).await; });
 /// ```
 ///
-/// On any failure the record still lands at `status = plain` with
-/// `ocr_text = None`; it is never deleted.
+/// The record is saved twice — once after OCR, once after extraction — so a
+/// live toast (US-005) sees text arrive, then the typed card. On any failure
+/// the record still lands at `status = plain`; it is never deleted.
 pub async fn ocr_record(
     hq_root: &Path,
     company_slug: &str,
     id: &str,
-) -> Result<hq_desktop_core::ideas::CaptureRecord, hq_desktop_core::ideas::IdeasError> {
-    hq_desktop_core::ideas::pipeline::run_ocr_stage(hq_root, company_slug, id, |image_path| {
-        platform_backend()
-            .recognize(image_path)
-            .map(|result| result.text)
-            .map_err(|e| e.to_string())
-    })
-    .await
+) -> Result<CaptureRecord, IdeasError> {
+    let (_after_ocr, lines) = ocr_only_record(hq_root, company_slug, id).await?;
+    extract_record(hq_root, company_slug, id, lines).await
 }

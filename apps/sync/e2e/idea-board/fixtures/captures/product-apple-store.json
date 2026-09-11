@@ -1,0 +1,63 @@
+{
+ "name": "product-apple-store",
+ "expected_kind": "product",
+ "source": "Apple online store configurator",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Safari",
+  "window_title": "Buy MacBook Air 15-inch - Apple",
+  "url": "https://www.apple.com/shop/buy-mac/macbook-air/15-inch"
+ },
+ "lines": [
+  {
+   "text": "Buy MacBook Air",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.165,
+    "height": 0.05
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "15-inch model with M4 chip",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.102,
+    "width": 0.286,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "From $1299 or $108.25/mo. for 12 mo.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.144,
+    "width": 0.396,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Free delivery",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.186,
+    "width": 0.143,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Add to Bag",
+   "bbox": {
+    "x": 0.6,
+    "y": 0.223,
+    "width": 0.25,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  }
+ ]
+}

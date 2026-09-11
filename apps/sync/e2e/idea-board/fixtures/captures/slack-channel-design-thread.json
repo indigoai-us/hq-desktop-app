@@ -1,0 +1,73 @@
+{
+ "name": "slack-channel-design-thread",
+ "expected_kind": "image",
+ "source": "Slack channel with a threaded exchange",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Slack",
+  "window_title": "design-reviews - Indigo - Slack",
+  "url": null
+ },
+ "lines": [
+  {
+   "text": "#design-reviews",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.165,
+    "height": 0.032
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Maya Chen 10:42 AM",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.084,
+    "width": 0.198,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Dropped the new onboarding frames in Figma, thoughts before EOD?",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.124,
+    "width": 0.704,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Jordan 10:51 AM",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.166,
+    "width": 0.165,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Love the second variant. The progress dots feel heavy though.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.206,
+    "width": 0.671,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "3 replies Last reply today at 11:02 AM",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.248,
+    "width": 0.418,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  }
+ ]
+}

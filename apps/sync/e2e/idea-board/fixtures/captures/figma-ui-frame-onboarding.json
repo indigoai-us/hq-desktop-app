@@ -1,0 +1,77 @@
+{
+ "name": "figma-ui-frame-onboarding",
+ "expected_kind": "image",
+ "source": "Figma UI frame screenshot — mostly white, expected image",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Figma",
+  "window_title": "Onboarding v3 – Figma",
+  "url": "https://www.figma.com/design/AbC123/Onboarding-v3?node-id=12-4"
+ },
+ "lines": [
+  {
+   "text": "Onboarding / Step 2",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.209,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Welcome to HQ",
+   "bbox": {
+    "x": 0.3,
+    "y": 0.08,
+    "width": 0.143,
+    "height": 0.045
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Pick the company this capture belongs to",
+   "bbox": {
+    "x": 0.25,
+    "y": 0.137,
+    "width": 0.44,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Continue",
+   "bbox": {
+    "x": 0.4,
+    "y": 0.179,
+    "width": 0.2,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Frame 24 · Auto layout",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.221,
+    "width": 0.242,
+    "height": 0.022
+   },
+   "confidence": 0.92
+  }
+ ],
+ "flat_colors": [
+  {
+   "hex": "#ffffff",
+   "fraction": 0.8
+  },
+  {
+   "hex": "#111111",
+   "fraction": 0.1
+  },
+  {
+   "hex": "#4f46e5",
+   "fraction": 0.1
+  }
+ ]
+}

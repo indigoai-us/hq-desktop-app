@@ -1,0 +1,63 @@
+{
+ "name": "article-medium-design",
+ "expected_kind": "article",
+ "source": "Medium article with read time and dot-separated meta (dot competes with X timestamp)",
+ "ambiguous": true,
+ "provenance": {
+  "app": "Arc",
+  "window_title": "Why every design system eventually becomes a Figma file nobody opens | by Dan Mall | Medium",
+  "url": "https://medium.com/@danmall/why-every-design-system-1a2b3c"
+ },
+ "lines": [
+  {
+   "text": "Why every design system eventually becomes a Figma file nobody opens",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.748,
+    "height": 0.055
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Dan Mall · Follow",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.107,
+    "width": 0.187,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "7 min read · Sep 4, 2026",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.144,
+    "width": 0.264,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Every design system starts as a promise: build once, use everywhere. Two years later it is",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.181,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "a library with 400 components and a Slack channel where people ask which button to use.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.223,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  }
+ ]
+}

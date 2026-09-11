@@ -93,3 +93,105 @@ where
 
     apply_ocr_outcome(hq_root, company_slug, id, outcome)
 }
+
+// ----------------------------------------------------------------------------
+// US-007: local extraction stage
+// ----------------------------------------------------------------------------
+
+use super::extract::{
+    local::classify, sample_palette, status_for, ExtractLine, Extraction, ExtractionInput,
+};
+use super::record::CaptureKind;
+
+const EXTRACT_LOG_TAG: &str = "ideas-extract";
+
+/// Apply a classifier verdict to a stored record.
+///
+/// `status` follows [`status_for`]; below the plain bar the kind is forced to
+/// `Unknown` and `extracted` is cleared so a rejected guess never lingers in
+/// the record. Tags are kept in every case (host / app tags are still true).
+pub fn apply_extraction(
+    hq_root: &Path,
+    company_slug: &str,
+    id: &str,
+    extraction: Extraction,
+) -> Result<CaptureRecord, IdeasError> {
+    let mut record = load_record(hq_root, company_slug, id)?;
+    let confidence = if extraction.confidence.is_nan() {
+        0.0
+    } else {
+        extraction.confidence.clamp(0.0, 1.0)
+    };
+    let status = status_for(confidence);
+    record.confidence = Some(confidence);
+    record.tags = extraction.tags;
+    match status {
+        CaptureStatus::Plain => {
+            record.kind = CaptureKind::Unknown;
+            record.extracted = None;
+        }
+        _ => {
+            record.kind = extraction.kind;
+            record.extracted = Some(if extraction.extracted.is_object() {
+                extraction.extracted
+            } else {
+                serde_json::json!({})
+            });
+        }
+    }
+    record.status = status;
+    save_record(hq_root, &mut record)?;
+    Ok(record)
+}
+
+/// Run local extraction for a stored record and revise it in place.
+///
+/// `lines` are the OCR lines with geometry; when empty the record's own
+/// `ocr_text` is split into synthetic lines. The capture image is decoded
+/// (best-effort) for colour cues, and the classifier runs on the blocking
+/// pool. Any failure or panic leaves the record exactly as it was — except a
+/// still-`pending` record, which settles at `plain` so it never hangs. The
+/// capture is never deleted. OCR text is never logged.
+pub async fn run_extraction_stage(
+    hq_root: &Path,
+    company_slug: &str,
+    id: &str,
+    lines: Vec<ExtractLine>,
+) -> Result<CaptureRecord, IdeasError> {
+    let record = load_record(hq_root, company_slug, id)?;
+    let input = if lines.is_empty() {
+        ExtractionInput::from_text(record.ocr_text.as_deref().unwrap_or(""), &record.provenance)
+    } else {
+        ExtractionInput::from_lines(lines, &record.provenance)
+    };
+    let image_path = hq_root.join(&record.image_path);
+
+    let verdict = tokio::task::spawn_blocking(move || {
+        let palette = image::open(&image_path)
+            .map(|img| sample_palette(&img))
+            .unwrap_or_default();
+        classify(&input.with_palette(palette))
+    })
+    .await;
+
+    match verdict {
+        Ok(extraction) => apply_extraction(hq_root, company_slug, id, extraction),
+        Err(join_err) => {
+            let why = if join_err.is_panic() {
+                "classifier panicked"
+            } else {
+                "classifier was cancelled"
+            };
+            logfile::log(
+                EXTRACT_LOG_TAG,
+                &format!("extraction failed for record {id}: {why}"),
+            );
+            let mut record = load_record(hq_root, company_slug, id)?;
+            if record.status == CaptureStatus::Pending {
+                record.status = CaptureStatus::Plain;
+                save_record(hq_root, &mut record)?;
+            }
+            Ok(record)
+        }
+    }
+}

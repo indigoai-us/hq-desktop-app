@@ -1,4 +1,5 @@
-//! Idea Board capture records (US-002).
+//! Idea Board capture records (US-002), OCR stage (US-006), and local
+//! extraction (US-007).
 //!
 //! A capture is a single screenshot-derived record living in the active
 //! company's vault:
@@ -16,11 +17,18 @@
 //! attribution is a stored slug with an explicit [`storage::move_record`]
 //! operation; retention is downsample-on-write and never auto-delete.
 
+pub mod extract;
 pub mod pipeline;
 pub mod record;
 pub mod storage;
 
-pub use pipeline::{apply_ocr_outcome, run_ocr_stage, OcrOutcome};
+pub use extract::{
+    local::classify, sample_palette, status_for, ColorSample, ExtractLine, Extraction,
+    ExtractionInput, LineBox, EXTRACTED_THRESHOLD, LOW_CONFIDENCE_THRESHOLD, MAX_PALETTE, MAX_TAGS,
+};
+pub use pipeline::{
+    apply_extraction, apply_ocr_outcome, run_extraction_stage, run_ocr_stage, OcrOutcome,
+};
 pub use record::{
     CaptureKind, CaptureRecord, CaptureStatus, IdeasError, Provenance, MAX_IMAGE_EDGE,
 };

@@ -1,0 +1,85 @@
+{
+ "name": "figma-brand-palette",
+ "expected_kind": "color",
+ "source": "Figma palette frame with swatches and hex labels",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Figma",
+  "window_title": "Brand · Palette – Figma",
+  "url": null
+ },
+ "lines": [
+  {
+   "text": "Palette / Primary",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.187,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "#1D4ED8 Indigo 700",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.082,
+    "width": 0.198,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "#F97316 Orange 500",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.122,
+    "width": 0.198,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "#10B981 Emerald 500",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.162,
+    "width": 0.209,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "#FACC15 Yellow 400",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.202,
+    "width": 0.198,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  }
+ ],
+ "flat_colors": [
+  {
+   "hex": "#1d4ed8",
+   "fraction": 0.22
+  },
+  {
+   "hex": "#f97316",
+   "fraction": 0.22
+  },
+  {
+   "hex": "#10b981",
+   "fraction": 0.22
+  },
+  {
+   "hex": "#facc15",
+   "fraction": 0.2
+  },
+  {
+   "hex": "#ffffff",
+   "fraction": 0.14
+  }
+ ]
+}

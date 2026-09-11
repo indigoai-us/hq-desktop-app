@@ -1,0 +1,63 @@
+{
+ "name": "x-post-native-app-no-url",
+ "expected_kind": "x_post",
+ "source": "X native macOS app, no URL exposed",
+ "ambiguous": false,
+ "provenance": {
+  "app": "X",
+  "window_title": "Home / X",
+  "url": null
+ },
+ "lines": [
+  {
+   "text": "Sara Hooker @sarahookr · 12h",
+   "bbox": {
+    "x": 0.16,
+    "y": 0.04,
+    "width": 0.308,
+    "height": 0.035
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Scaling laws are a description, not a law of nature. Treat them like weather forecasts:",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.087,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "useful, local, and occasionally very wrong.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.129,
+    "width": 0.473,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "87 214 1.9K 63",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.171,
+    "width": 0.154,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Show this thread",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.208,
+    "width": 0.176,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  }
+ ]
+}

@@ -1,0 +1,63 @@
+{
+ "name": "x-post-iphone-mirroring",
+ "expected_kind": "x_post",
+ "source": "iPhone Mirroring window of the X iOS app",
+ "ambiguous": false,
+ "provenance": {
+  "app": "iPhone Mirroring",
+  "window_title": "iPhone Mirroring",
+  "url": null
+ },
+ "lines": [
+  {
+   "text": "Paul Graham @paulg",
+   "bbox": {
+    "x": 0.16,
+    "y": 0.04,
+    "width": 0.198,
+    "height": 0.035
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "The most surprising thing about being good at something is how much of it is",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.087,
+    "width": 0.836,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "just showing up more times than everyone else.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.129,
+    "width": 0.506,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "7:12 PM · Sep 8, 2026 · 950K Views",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.171,
+    "width": 0.374,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "1.4K 3.2K 21K 880",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.208,
+    "width": 0.187,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  }
+ ]
+}

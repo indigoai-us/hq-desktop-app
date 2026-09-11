@@ -1,0 +1,93 @@
+{
+ "name": "product-amazon-power-bank",
+ "expected_kind": "product",
+ "source": "Amazon product detail page",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Safari",
+  "window_title": "Amazon.com: Anker 737 Power Bank (PowerCore 24K)",
+  "url": "https://www.amazon.com/dp/B09VPHVT2Z"
+ },
+ "lines": [
+  {
+   "text": "Anker 737 Power Bank (PowerCore 24K), 24,000mAh 3-Port Portable Charger with 140W Output",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.9,
+    "height": 0.04
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Visit the Anker Store",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.092,
+    "width": 0.231,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "4.6 out of 5 stars 31,204 ratings",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.129,
+    "width": 0.363,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "$109.99",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.166,
+    "width": 0.077,
+    "height": 0.045
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "FREE Returns",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.223,
+    "width": 0.132,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "In Stock",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.26,
+    "width": 0.088,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Add to Cart",
+   "bbox": {
+    "x": 0.6,
+    "y": 0.297,
+    "width": 0.25,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Buy Now",
+   "bbox": {
+    "x": 0.6,
+    "y": 0.339,
+    "width": 0.25,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  }
+ ]
+}

@@ -1,0 +1,63 @@
+{
+ "name": "x-post-karpathy-safari",
+ "expected_kind": "x_post",
+ "source": "Safari, x.com status page (desktop)",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Safari",
+  "window_title": "Andrej Karpathy on X: \"The hottest new programming language is English\" / X",
+  "url": "https://x.com/karpathy/status/1617979122625712128"
+ },
+ "lines": [
+  {
+   "text": "Andrej Karpathy ✓ @karpathy",
+   "bbox": {
+    "x": 0.16,
+    "y": 0.04,
+    "width": 0.297,
+    "height": 0.035
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "The hottest new programming language is English",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.087,
+    "width": 0.517,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "9:41 AM · Sep 10, 2026 · 4.1M Views",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.129,
+    "width": 0.385,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "2.4K 8.1K 42K 1.2K",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.166,
+    "width": 0.198,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Post your reply",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.203,
+    "width": 0.165,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  }
+ ]
+}

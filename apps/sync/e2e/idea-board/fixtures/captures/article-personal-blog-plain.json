@@ -1,0 +1,73 @@
+{
+ "name": "article-personal-blog-plain",
+ "expected_kind": "article",
+ "source": "Personal blog: title + date, no byline, no read time",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Firefox",
+  "window_title": "Notes on a Twelve-Year-Old Codebase",
+  "url": "https://jvns.ca/blog/2026/09/03/notes-on-old-codebase/"
+ },
+ "lines": [
+  {
+   "text": "Julia Evans",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.121,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Notes on a Twelve-Year-Old Codebase",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.08,
+    "width": 0.385,
+    "height": 0.055
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "September 3, 2026",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.147,
+    "width": 0.187,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "I have been maintaining the same small tool since 2014 and I want to write down what has",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.184,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "actually changed versus what I expected to change. Almost none of it is the language.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.226,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "The dependencies are the thing that rots, and the tests are the thing that saves you.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.268,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  }
+ ]
+}

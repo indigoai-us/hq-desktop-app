@@ -1,0 +1,73 @@
+{
+ "name": "product-etsy-listing",
+ "expected_kind": "product",
+ "source": "Etsy listing",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Safari",
+  "window_title": "Hand-thrown Stoneware Mug, Speckled Glaze - Etsy",
+  "url": "https://www.etsy.com/listing/1234567890/hand-thrown-stoneware-mug"
+ },
+ "lines": [
+  {
+   "text": "Hand-thrown Stoneware Mug, Speckled Glaze, 12oz",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.517,
+    "height": 0.04
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "★★★★★ (2,318 reviews)",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.092,
+    "width": 0.231,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "$34.00",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.129,
+    "width": 0.066,
+    "height": 0.045
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "In stock, ready to ship",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.186,
+    "width": 0.253,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Add to cart",
+   "bbox": {
+    "x": 0.6,
+    "y": 0.223,
+    "width": 0.25,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Ships from Portland, OR",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.265,
+    "width": 0.253,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  }
+ ]
+}

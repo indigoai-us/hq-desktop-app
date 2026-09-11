@@ -1,0 +1,83 @@
+{
+ "name": "article-nytimes-safari",
+ "expected_kind": "article",
+ "source": "NYT business article, desktop Safari",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Safari",
+  "window_title": "The Quiet Rise of the Four-Day Workweek - The New York Times",
+  "url": "https://www.nytimes.com/2026/09/09/business/four-day-workweek.html"
+ },
+ "lines": [
+  {
+   "text": "The New York Times",
+   "bbox": {
+    "x": 0.35,
+    "y": 0.04,
+    "width": 0.198,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "The Quiet Rise of the Four-Day Workweek",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.08,
+    "width": 0.429,
+    "height": 0.06
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Companies that tried it during the pandemic mostly kept it. Now the laggards are noticing.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.152,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "By Emma Goldberg",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.194,
+    "width": 0.176,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Sept. 9, 2026",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.231,
+    "width": 0.143,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "When Kickstarter moved to a four-day week in 2021, the company expected to lose a little",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.268,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "productivity in exchange for retention. Instead, output rose and the change stuck.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.31,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  }
+ ]
+}

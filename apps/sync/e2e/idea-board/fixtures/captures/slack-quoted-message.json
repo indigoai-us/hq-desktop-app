@@ -1,0 +1,43 @@
+{
+ "name": "slack-quoted-message",
+ "expected_kind": "quote",
+ "source": "Single Slack message that is a quotation with attribution — content says quote, chrome says Slack",
+ "ambiguous": true,
+ "provenance": {
+  "app": "Slack",
+  "window_title": "random - Indigo - Slack",
+  "url": null
+ },
+ "lines": [
+  {
+   "text": "Priya 4:31 PM",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.143,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "“Make the easy path the right path, and nobody will need the rulebook.”",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.08,
+    "width": 0.781,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "— Kelsey Hightower, at the Tuesday all-hands",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.122,
+    "width": 0.484,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  }
+ ]
+}

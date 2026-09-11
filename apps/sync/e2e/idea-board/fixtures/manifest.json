@@ -1,0 +1,162 @@
+{
+ "version": 1,
+ "description": "US-007 local extraction bake-off set. Each capture is an OCR dump shaped on a real screenshot: lines with normalized top-left bboxes, provenance, and (for colour cases) flat_colors the test renders into a PNG and samples. expected_kind is the honest human label; ambiguous=true marks captures where being low_confidence is a fine outcome — but a status=extracted with the wrong kind is never acceptable.",
+ "fixtures": [
+  {
+   "path": "captures/x-post-karpathy-safari.json",
+   "expected_kind": "x_post",
+   "source": "Safari, x.com status page (desktop)",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/x-post-figma-tip-chrome.json",
+   "expected_kind": "x_post",
+   "source": "Chrome, twitter.com legacy host redirect",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/x-post-native-app-no-url.json",
+   "expected_kind": "x_post",
+   "source": "X native macOS app, no URL exposed",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/x-post-iphone-mirroring.json",
+   "expected_kind": "x_post",
+   "source": "iPhone Mirroring window of the X iOS app",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/x-post-quote-tweet-nested.json",
+   "expected_kind": "x_post",
+   "source": "Quote post containing a quoted post with curly quotes (competing quote cues)",
+   "ambiguous": true
+  },
+  {
+   "path": "captures/x-post-unfurl-in-slack.json",
+   "expected_kind": "x_post",
+   "source": "Tweet unfurled inside a Slack channel — Slack chrome vs tweet content",
+   "ambiguous": true
+  },
+  {
+   "path": "captures/article-nytimes-safari.json",
+   "expected_kind": "article",
+   "source": "NYT business article, desktop Safari",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/article-verge-chrome.json",
+   "expected_kind": "article",
+   "source": "The Verge review with byline and read time",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/article-substack-newsletter.json",
+   "expected_kind": "article",
+   "source": "Substack post, author line without 'By'",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/article-medium-design.json",
+   "expected_kind": "article",
+   "source": "Medium article with read time and dot-separated meta (dot competes with X timestamp)",
+   "ambiguous": true
+  },
+  {
+   "path": "captures/article-personal-blog-plain.json",
+   "expected_kind": "article",
+   "source": "Personal blog: title + date, no byline, no read time",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/article-paywall-with-price.json",
+   "expected_kind": "article",
+   "source": "Article with paywall price CTA — price cue must not flip it to product",
+   "ambiguous": true
+  },
+  {
+   "path": "captures/product-amazon-power-bank.json",
+   "expected_kind": "product",
+   "source": "Amazon product detail page",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/product-apple-store.json",
+   "expected_kind": "product",
+   "source": "Apple online store configurator",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/product-shopify-boutique.json",
+   "expected_kind": "product",
+   "source": "Shopify-powered boutique on a custom domain (no shopify host)",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/product-etsy-listing.json",
+   "expected_kind": "product",
+   "source": "Etsy listing",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/figma-brand-palette.json",
+   "expected_kind": "color",
+   "source": "Figma palette frame with swatches and hex labels",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/figma-ui-frame-onboarding.json",
+   "expected_kind": "image",
+   "source": "Figma UI frame screenshot — mostly white, expected image",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/figma-color-styles-hex-only.json",
+   "expected_kind": "color",
+   "source": "Figma color styles panel — hex codes in text, swatches too small to dominate",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/slack-channel-design-thread.json",
+   "expected_kind": "image",
+   "source": "Slack channel with a threaded exchange",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/slack-dm-link-share.json",
+   "expected_kind": "image",
+   "source": "Slack DM with a shared link and an em-dash mid-sentence (attribution-like)",
+   "ambiguous": true
+  },
+  {
+   "path": "captures/slack-quoted-message.json",
+   "expected_kind": "quote",
+   "source": "Single Slack message that is a quotation with attribution — content says quote, chrome says Slack",
+   "ambiguous": true
+  },
+  {
+   "path": "captures/quote-goodreads.json",
+   "expected_kind": "quote",
+   "source": "Goodreads quote page",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/quote-card-instagram.json",
+   "expected_kind": "quote",
+   "source": "Instagram quote card (typography on a flat background)",
+   "ambiguous": false
+  },
+  {
+   "path": "captures/ambiguous-terminal-window.json",
+   "expected_kind": "image",
+   "source": "Terminal window — no kind fits; anything at low confidence or unknown is acceptable",
+   "ambiguous": true
+  },
+  {
+   "path": "captures/ambiguous-pdf-preview-figure.json",
+   "expected_kind": "image",
+   "source": "PDF figure open in Preview",
+   "ambiguous": true
+  }
+ ]
+}

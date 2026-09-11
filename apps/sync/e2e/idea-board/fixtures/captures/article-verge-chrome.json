@@ -1,0 +1,83 @@
+{
+ "name": "article-verge-chrome",
+ "expected_kind": "article",
+ "source": "The Verge review with byline and read time",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Google Chrome",
+  "window_title": "Apple’s M5 MacBook Pro review: the fastest laptop we have ever tested - The Verge",
+  "url": "https://www.theverge.com/reviews/apple-m5-macbook-pro-review"
+ },
+ "lines": [
+  {
+   "text": "THE VERGE",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.099,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Apple’s M5 MacBook Pro review: the fastest laptop we have ever tested",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.077,
+    "width": 0.759,
+    "height": 0.055
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Nothing in the category comes within a third of its multicore score.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.144,
+    "width": 0.748,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "By Nilay Patel, editor-in-chief",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.186,
+    "width": 0.341,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Sep 9, 2026, 9:00 AM EDT · 12 min read",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.223,
+    "width": 0.418,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "The review unit arrived on a Tuesday and by Wednesday we had run every benchmark twice.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.26,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "It is not close.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.302,
+    "width": 0.176,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  }
+ ]
+}

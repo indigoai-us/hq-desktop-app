@@ -1,0 +1,73 @@
+{
+ "name": "x-post-quote-tweet-nested",
+ "expected_kind": "x_post",
+ "source": "Quote post containing a quoted post with curly quotes (competing quote cues)",
+ "ambiguous": true,
+ "provenance": {
+  "app": "Safari",
+  "window_title": "Rasmus Andersson on X / X",
+  "url": "https://x.com/rsms/status/1700002"
+ },
+ "lines": [
+  {
+   "text": "Rasmus Andersson @rsms · 1d",
+   "bbox": {
+    "x": 0.16,
+    "y": 0.04,
+    "width": 0.297,
+    "height": 0.035
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "This, but for every design tool.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.087,
+    "width": 0.352,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Linear @linear · 2d",
+   "bbox": {
+    "x": 0.12,
+    "y": 0.129,
+    "width": 0.209,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "“Speed is a feature. Latency is a tax on attention.”",
+   "bbox": {
+    "x": 0.12,
+    "y": 0.171,
+    "width": 0.572,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "9:03 AM · Sep 9, 2026",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.211,
+    "width": 0.231,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "64 220 2.1K 140",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.248,
+    "width": 0.165,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  }
+ ]
+}

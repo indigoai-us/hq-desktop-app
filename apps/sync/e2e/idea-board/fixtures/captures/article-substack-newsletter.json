@@ -1,0 +1,93 @@
+{
+ "name": "article-substack-newsletter",
+ "expected_kind": "article",
+ "source": "Substack post, author line without 'By'",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Safari",
+  "window_title": "The Long Middle - by Anu Atluru",
+  "url": "https://anu.substack.com/p/the-long-middle"
+ },
+ "lines": [
+  {
+   "text": "Working Theorys",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.165,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "The Long Middle",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.08,
+    "width": 0.165,
+    "height": 0.06
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "On the part of a company's life nobody writes essays about",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.152,
+    "width": 0.638,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Anu Atluru",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.194,
+    "width": 0.11,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Sep 6, 2026 · 9 min read",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.231,
+    "width": 0.264,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Founders talk about the beginning because it is romantic and the exit because it is",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.268,
+    "width": 0.9,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "legible. The middle is where the company actually happens.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.31,
+    "width": 0.638,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Subscribe to Working Theorys newsletter",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.352,
+    "width": 0.429,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  }
+ ]
+}

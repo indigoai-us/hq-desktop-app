@@ -1,0 +1,43 @@
+{
+ "name": "ambiguous-terminal-window",
+ "expected_kind": "image",
+ "source": "Terminal window — no kind fits; anything at low confidence or unknown is acceptable",
+ "ambiguous": true,
+ "provenance": {
+  "app": "Terminal",
+  "window_title": "zsh — 120x40",
+  "url": null
+ },
+ "lines": [
+  {
+   "text": "$ cargo test -p hq-desktop-core",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.341,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "running 2393 tests",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.077,
+    "width": 0.198,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "test result: ok. 2393 passed; 0 failed",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.114,
+    "width": 0.418,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  }
+ ]
+}

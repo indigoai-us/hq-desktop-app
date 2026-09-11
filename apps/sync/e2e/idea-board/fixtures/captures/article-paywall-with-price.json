@@ -1,0 +1,83 @@
+{
+ "name": "article-paywall-with-price",
+ "expected_kind": "article",
+ "source": "Article with paywall price CTA — price cue must not flip it to product",
+ "ambiguous": true,
+ "provenance": {
+  "app": "Safari",
+  "window_title": "Inside the Company Trying to Sell Sleep - The Atlantic",
+  "url": "https://www.theatlantic.com/technology/archive/2026/09/sleep-startups/"
+ },
+ "lines": [
+  {
+   "text": "The Atlantic",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.04,
+    "width": 0.132,
+    "height": 0.028
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Inside the Company Trying to Sell Sleep",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.08,
+    "width": 0.429,
+    "height": 0.055
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "By Charlie Warzel",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.147,
+    "width": 0.187,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "September 8, 2026",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.184,
+    "width": 0.187,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "The pitch is simple: you are tired, and they have a ring for that.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.221,
+    "width": 0.726,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Subscribe for $1/week",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.263,
+    "width": 0.231,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Already a subscriber? Sign in",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.305,
+    "width": 0.319,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  }
+ ]
+}

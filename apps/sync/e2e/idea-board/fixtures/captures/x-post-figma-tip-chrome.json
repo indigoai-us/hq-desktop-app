@@ -1,0 +1,63 @@
+{
+ "name": "x-post-figma-tip-chrome",
+ "expected_kind": "x_post",
+ "source": "Chrome, twitter.com legacy host redirect",
+ "ambiguous": false,
+ "provenance": {
+  "app": "Google Chrome",
+  "window_title": "Figma on X / X",
+  "url": "https://twitter.com/figma/status/1690001"
+ },
+ "lines": [
+  {
+   "text": "Figma ✓ @figma · 5h",
+   "bbox": {
+    "x": 0.16,
+    "y": 0.04,
+    "width": 0.209,
+    "height": 0.035
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Auto layout tip: hold ⌘ while dragging a gap to resize every sibling at once.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.087,
+    "width": 0.847,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "We see you, spacing perfectionists.",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.129,
+    "width": 0.385,
+    "height": 0.03
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "Reply Repost Like Bookmark Share",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.171,
+    "width": 0.352,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  },
+  {
+   "text": "312 1.1K 6.3K 402",
+   "bbox": {
+    "x": 0.06,
+    "y": 0.208,
+    "width": 0.187,
+    "height": 0.025
+   },
+   "confidence": 0.92
+  }
+ ]
+}
