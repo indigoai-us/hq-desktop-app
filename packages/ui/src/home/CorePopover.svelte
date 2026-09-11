@@ -920,7 +920,7 @@
   .core-row-stacked {
     flex-direction: column;
     align-items: stretch;
-    gap: 6px;
+    gap: 3px;
   }
 
   .core-row-head {
