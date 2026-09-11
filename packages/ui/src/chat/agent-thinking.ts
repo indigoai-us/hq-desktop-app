@@ -251,3 +251,76 @@ export function labelFor(entry: ThinkingEntry): string {
   }
   return `${entry.agentName} is thinking…`;
 }
+
+// ---------------------------------------------------------------------------
+// Per-conversation map. The desktop shell keeps one flat list per OPEN row
+// for a long time and wiped it on every row switch, so "Izzy is thinking…"
+// vanished when the user peeked at another conversation and came back. The
+// helpers below layer a `rowId → entries` map over the flat primitives so a
+// row's optimistic status survives navigation and clears only on the signal
+// that actually ends it: a NEWER message from that agent in THAT row (or a
+// failed send in that row, or the hard expiry). Each helper returns a NEW
+// object and never mutates its input; empty rows are dropped so the map does
+// not accumulate keys for every conversation ever visited.
+
+/** Thinking rows keyed by conversation row id (`dm:<uid>` / `ch:<channelId>`). */
+export type ThinkingByRow = Record<string, ThinkingEntry[]>;
+
+/** `startThinking` scoped to `rowId`. Returns a NEW map. */
+export function startThinkingIn(
+  map: ThinkingByRow,
+  rowId: string,
+  agent: { agentUid: string; agentName: string },
+  now: number,
+  opts?: { afterMs?: number },
+): ThinkingByRow {
+  return { ...map, [rowId]: startThinking(map[rowId] ?? [], agent, now, opts) };
+}
+
+/** `tick` applied to every row; rows left empty by the expiry are removed.
+ * Returns a NEW map. */
+export function tickAll(
+  map: ThinkingByRow,
+  now: number,
+  opts?: TickOpts,
+): ThinkingByRow {
+  const out: ThinkingByRow = {};
+  for (const [rowId, entries] of Object.entries(map)) {
+    const next = tick(entries, now, opts);
+    if (next.length > 0) out[rowId] = next;
+  }
+  return out;
+}
+
+/** `clearFromMessages` scoped to `rowId` (messages from another conversation
+ * must never clear this row's status). A row left empty is removed. Returns
+ * a NEW map. */
+export function clearRowFromMessages(
+  map: ThinkingByRow,
+  rowId: string,
+  messages: ReadonlyArray<{
+    fromPersonUid?: string | null;
+    createdAt?: string | null;
+  }>,
+): ThinkingByRow {
+  const entries = map[rowId];
+  if (!entries || entries.length === 0) return { ...map };
+  const next = clearFromMessages(entries, messages);
+  if (next.length === entries.length) return { ...map };
+  return dropOrSet(map, rowId, next);
+}
+
+/** Remove every row for `rowId` (failed send in that conversation). Returns
+ * a NEW map. */
+export function dropRow(map: ThinkingByRow, rowId: string): ThinkingByRow {
+  return dropOrSet(map, rowId, []);
+}
+
+function dropOrSet(
+  map: ThinkingByRow,
+  rowId: string,
+  entries: ThinkingEntry[],
+): ThinkingByRow {
+  const { [rowId]: _dropped, ...rest } = map;
+  return entries.length > 0 ? { ...rest, [rowId]: entries } : rest;
+}

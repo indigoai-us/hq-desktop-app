@@ -39,9 +39,14 @@ export {
   clearForAgents,
   clearFromMessages,
   labelFor,
+  startThinkingIn,
+  tickAll,
+  clearRowFromMessages,
+  dropRow,
   type MentionCandidate,
   type ThinkingPhase,
   type ThinkingEntry,
+  type ThinkingByRow,
   type TickOpts,
 } from "./chat/agent-thinking.js";
 export * from "./chat/dm-requests.js";

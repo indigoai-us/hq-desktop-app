@@ -232,11 +232,13 @@
     type MentionTarget,
   } from "../chat/mentions.js";
   import {
-    clearFromMessages,
+    clearRowFromMessages,
+    dropRow,
     isAgentUid,
     newestMessageAtFrom,
-    startThinking,
-    tick,
+    startThinkingIn,
+    tickAll,
+    type ThinkingByRow,
     type ThinkingEntry,
   } from "../chat/agent-thinking.js";
   import {
@@ -1217,11 +1219,17 @@
    */
   let dmThreadsUnsupported = false;
 
-  // Client-side "agent is thinking" rows for the open channel. Local only —
-  // the backend has no typing/ack events. Per-conversation: a row switch
-  // must not keep another channel's optimistic status on screen.
+  // Client-side "agent is thinking" rows, keyed by conversation row id.
+  // Local only — the backend has no typing/ack events. Per-conversation so
+  // a row switch neither shows another conversation's status nor forgets
+  // this one's: the indicator survives navigating away and back and clears
+  // on the signal that ends it (a NEWER message from that agent in that
+  // row, a failed send there, or the hard expiry) — never a row switch.
   const AGENT_THINKING_TICK_MS = 5_000;
-  let agentThinking = $state<ThinkingEntry[]>([]);
+  let thinkingByRow = $state<ThinkingByRow>({});
+  const agentThinking = $derived<ThinkingEntry[]>(
+    selectedRow ? (thinkingByRow[selectedRow.id] ?? []) : [],
+  );
 
   // Background-task chips for the agents in the selected conversation — the
   // room-scoped route for a channel (every agent on its roster), the
@@ -1268,28 +1276,29 @@
       : [],
   );
 
-  $effect(() => {
-    void selectedRow?.id;
-    agentThinking = [];
-  });
-
   onMount(() => {
     const handle = window.setInterval(() => {
-      agentThinking = tick(agentThinking, Date.now());
+      thinkingByRow = tickAll(thinkingByRow, Date.now());
     }, AGENT_THINKING_TICK_MS);
     return () => clearInterval(handle);
   });
 
-  /** Clear thinking rows when those agents appear in a freshly fetched page
-   *  (recent messages only — not the full merged timeline, or historical
-   *  agent posts would immediately kill a new mention's indicator). */
+  /** Clear a conversation's thinking rows when those agents appear in a
+   *  freshly fetched page for THAT conversation (recent messages only — not
+   *  the full merged timeline, or historical agent posts would immediately
+   *  kill a new mention's indicator). Background wakes for a conversation
+   *  that is not open pass a one-message page built from the wake. */
   function clearThinkingFromIncoming(
-    messages: ConversationMessageWire[],
+    messages: ReadonlyArray<{
+      fromPersonUid?: string | null;
+      createdAt?: string | null;
+    }>,
+    rowId: string,
   ): void {
-    if (agentThinking.length === 0) return;
+    if (!thinkingByRow[rowId]?.length) return;
     // Timestamp-aware so a full-history hydrate or overlapping catch-up page
     // containing an OLD agent message cannot clear a newer row.
-    agentThinking = clearFromMessages(agentThinking, messages);
+    thinkingByRow = clearRowFromMessages(thinkingByRow, rowId, messages);
   }
 
   function commitTimeline(
@@ -1424,7 +1433,7 @@
       incoming = patchLifecycleCardState(incoming, pendingCardId, { state: "pending", reason: null });
     }
     commitTimeline(row, incoming);
-    clearThinkingFromIncoming(incoming);
+    clearThinkingFromIncoming(incoming, row.id);
   }
 
   async function catchUpTimeline(row: ConversationRow): Promise<void> {
@@ -1443,7 +1452,7 @@
       ? liveTimeline
       : (timelineCache.get(row.id) ?? []);
     commitTimeline(row, mergeFetchedTimeline(current, raw));
-    clearThinkingFromIncoming(incoming);
+    clearThinkingFromIncoming(incoming, row.id);
   }
 
   $effect(() => {
@@ -3881,6 +3890,7 @@
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
+    thinkingByRow = {};
     openReplyRootId = null;
     openProfileMember = null;
     openAgentMember = null;
@@ -3981,7 +3991,18 @@
     channelId: string;
     eventId?: string;
     createdAt?: string;
+    fromPersonUid?: string;
   }): Promise<void> {
+    // An agent's reply in a channel that is NOT open ends its thinking row
+    // there too — otherwise the stale status greets the user on return. The
+    // open channel clears from the fetched page below (same timestamp rule).
+    const wakeFrom = (wake.fromPersonUid ?? "").trim();
+    if (wakeFrom && isAgentUid(wakeFrom)) {
+      clearThinkingFromIncoming(
+        [{ fromPersonUid: wakeFrom, createdAt: wake.createdAt ?? null }],
+        `ch:${wake.channelId}`,
+      );
+    }
     const row = selectedRow;
     if (!row?.channelId) return;
     if (row.channelId !== wake.channelId && row.id !== `ch:${wake.channelId}`) {
@@ -4011,7 +4032,7 @@
     if (selectedRow?.id !== row.id) return;
     const incoming = messagesForDisplay(res.value);
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value));
-    clearThinkingFromIncoming(incoming);
+    clearThinkingFromIncoming(incoming, row.id);
   }
 
   /**
@@ -4118,7 +4139,16 @@
       bus.on("channel:new-message", (wake) => {
         void applyChannelWake(wake);
       }),
-      bus.on("dm:new-message", () => {
+      bus.on("dm:new-message", (wake) => {
+        // An inbound agent DM ends that agent's thinking row even when its
+        // conversation is not open (the open one clears from its page).
+        const from = (wake.fromPersonUid ?? "").trim();
+        if (wake.direction !== "out" && from && isAgentUid(from)) {
+          clearThinkingFromIncoming(
+            [{ fromPersonUid: from, createdAt: wake.createdAt ?? null }],
+            `dm:${from}`,
+          );
+        }
         void catchUpDmInbox();
       }),
       bus.on("mesh:catchup", () => {
@@ -4278,8 +4308,9 @@
           // Pin the row to "newer than the agent's last message" — a local
           // bot's previous reply is usually < 2 min old and would otherwise
           // clear the fresh row on the next catch-up (skew fallback).
-          agentThinking = startThinking(
-            agentThinking,
+          thinkingByRow = startThinkingIn(
+            thinkingByRow,
+            row.id,
             {
               agentUid: row.personUid,
               agentName: row.title?.trim() || "Agent",
@@ -4317,13 +4348,17 @@
       // row in the DM branch above).
       for (const mention of mentions) {
         if (mention.participantType !== "agent") continue;
-        agentThinking = startThinking(
-          agentThinking,
+        thinkingByRow = startThinkingIn(
+          thinkingByRow,
+          row.id,
           {
             agentUid: mention.participantUid,
             agentName: mention.displayName,
           },
           Date.now(),
+          // Pin to "newer than the agent's last post here" — same fast-
+          // responder guard as the DM branch.
+          { afterMs: newestMessageAtFrom(liveTimeline, mention.participantUid) },
         );
       }
       // Mention sends write a same-timestamp member_added sibling the POST
@@ -4337,9 +4372,10 @@
         console.warn("[hq-desktop] post-send catch-up failed", err);
       }
     } catch (err) {
-      // Send never left — drop every optimistic thinking row so the status
-      // cannot outlive a failed mention.
-      agentThinking = [];
+      // Send never left — drop this conversation's optimistic thinking rows
+      // so the status cannot outlive a failed mention. Other conversations'
+      // rows are unrelated to this failure and stay.
+      thinkingByRow = dropRow(thinkingByRow, row.id);
       throw err;
     }
   }

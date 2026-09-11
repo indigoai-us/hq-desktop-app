@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   type MentionCandidate,
   type ThinkingEntry,
+  type ThinkingByRow,
   isAgentUid,
   detectAgentMentions,
   startThinking,
@@ -10,6 +11,10 @@ import {
   clearFromMessages,
   newestMessageAtFrom,
   labelFor,
+  startThinkingIn,
+  tickAll,
+  clearRowFromMessages,
+  dropRow,
 } from './agent-thinking.js';
 
 function member(personUid: string, displayName: string): MentionCandidate {
@@ -261,5 +266,70 @@ describe('fast responders (local bots): afterMs replaces the skew fallback', () 
     expect(
       clearFromMessages(rows, [{ fromPersonUid: BOT, createdAt: new Date(now - 60_000).toISOString() }]),
     ).toHaveLength(0);
+  });
+});
+
+describe('per-row map (thinking survives navigation)', () => {
+  const izzy = { agentUid: 'agt_izzy', agentName: 'Izzy' };
+  const lin = { agentUid: 'agt_lin', agentName: 'Lin' };
+  const A = 'ch:chn_a';
+  const B = 'dm:agt_izzy';
+
+  it('startThinkingIn scopes the row to its conversation and never mutates', () => {
+    const empty: ThinkingByRow = {};
+    const one = startThinkingIn(empty, A, izzy, 1000, { afterMs: 500 });
+    expect(empty).toEqual({});
+    expect(one).toEqual({
+      [A]: [{ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: 1000, phase: 'thinking', afterMs: 500 }],
+    });
+    const two = startThinkingIn(one, B, izzy, 2000);
+    expect(one[B]).toBeUndefined();
+    expect(two[A]).toBe(one[A]);
+    expect(two[B]?.[0]?.startedAt).toBe(2000);
+    // Restart in the same row replaces in place (idempotent per agent).
+    const again = startThinkingIn(two, A, izzy, 3000);
+    expect(again[A]).toHaveLength(1);
+    expect(again[A]?.[0]?.startedAt).toBe(3000);
+    expect(again[A]?.[0]?.afterMs).toBeUndefined();
+  });
+
+  it('tickAll advances every row and drops rows emptied by expiry', () => {
+    let map = startThinkingIn({}, A, izzy, 0);
+    map = startThinkingIn(map, B, lin, 500_000);
+    const ticked = tickAll(map, 600_000);
+    expect(ticked[A], 'expired row removed').toBeUndefined();
+    expect(ticked[B]).toEqual([{ ...map[B]![0]!, phase: 'thinking' }]);
+    const slow = tickAll(map, 160_000);
+    expect(slow[A]?.[0]?.phase).toBe('slow');
+    expect(slow[B]?.[0]?.phase).toBe('thinking');
+    expect(map[A]?.[0]?.phase, 'input untouched').toBe('thinking');
+  });
+
+  it('clearRowFromMessages only touches the named row and honours afterMs', () => {
+    const started = 1_000_000_000_000;
+    let map = startThinkingIn({}, A, izzy, started, { afterMs: started - 30_000 });
+    map = startThinkingIn(map, B, izzy, started);
+    const reply = [{ fromPersonUid: 'agt_izzy', createdAt: new Date(started + 5_000).toISOString() }];
+    const cleared = clearRowFromMessages(map, A, reply);
+    expect(cleared[A], 'row A cleared and dropped').toBeUndefined();
+    expect(cleared[B], 'row B untouched by A traffic').toEqual(map[B]);
+    expect(map[A], 'input untouched').toHaveLength(1);
+    // An OLD reply (<= afterMs) in the same row keeps the status.
+    const stale = clearRowFromMessages(map, A, [
+      { fromPersonUid: 'agt_izzy', createdAt: new Date(started - 30_000).toISOString() },
+    ]);
+    expect(stale[A]).toEqual(map[A]);
+    expect(stale).not.toBe(map);
+    // Unknown row is a no-op copy.
+    expect(clearRowFromMessages(map, 'ch:nope', reply)).toEqual(map);
+  });
+
+  it('dropRow removes exactly one row', () => {
+    let map = startThinkingIn({}, A, izzy, 0);
+    map = startThinkingIn(map, B, lin, 0);
+    const dropped = dropRow(map, A);
+    expect(dropped).toEqual({ [B]: map[B] });
+    expect(map[A]).toHaveLength(1);
+    expect(dropRow(dropped, 'ch:nope')).toEqual(dropped);
   });
 });
