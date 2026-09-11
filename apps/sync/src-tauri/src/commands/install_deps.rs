@@ -6449,6 +6449,154 @@ mod install_deps_planner_tests {
         ))
     }
 
+    struct ConcurrentSetupTransport {
+        arrived: std::sync::mpsc::Sender<&'static str>,
+        released: std::sync::Arc<(
+            std::sync::Mutex<std::collections::HashSet<&'static str>>,
+            std::sync::Condvar,
+        )>,
+        events: std::sync::Mutex<Vec<sentry::protocol::Event<'static>>>,
+    }
+
+    impl ConcurrentSetupTransport {
+        fn release(&self, dependency: &'static str) {
+            let (released, wake) = &*self.released;
+            released.lock().unwrap().insert(dependency);
+            wake.notify_all();
+        }
+
+        fn events(&self) -> Vec<sentry::protocol::Event<'static>> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl sentry::Transport for ConcurrentSetupTransport {
+        fn send_envelope(&self, envelope: sentry::Envelope) {
+            let Some(event) = envelope.event().cloned() else {
+                return;
+            };
+            let dependency = match event.tags.get("setup_dependency").map(|tag| tag.as_ref()) {
+                Some("node") => "node",
+                Some("qmd") => "qmd",
+                _ => {
+                    self.events.lock().unwrap().push(event);
+                    return;
+                }
+            };
+            self.events.lock().unwrap().push(event);
+            let _ = self.arrived.send(dependency);
+            let (released, wake) = &*self.released;
+            let mut released = released.lock().unwrap();
+            while !released.contains(dependency) {
+                released = wake.wait(released).unwrap();
+            }
+        }
+    }
+
+    /// Concurrent detached setup reporters must keep their Sentry scopes and
+    /// issue grouping independent. The transport forces the first reporter to
+    /// finish while the second scope is active, which was the production panic.
+    #[test]
+    fn concurrent_setup_failure_reporters_keep_scopes_and_envelopes_independent() {
+        let (arrived, arrived_rx) = std::sync::mpsc::channel();
+        let released = std::sync::Arc::new((
+            std::sync::Mutex::new(std::collections::HashSet::new()),
+            std::sync::Condvar::new(),
+        ));
+        let transport = std::sync::Arc::new(ConcurrentSetupTransport {
+            arrived,
+            released,
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let hub = setup_hub(transport.clone());
+
+        let scope_guard_panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let scope_guard_panic_observer = scope_guard_panicked.clone();
+        let previous_panic_hook =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(std::panic::take_hook())));
+        let previous_panic_hook_for_observer = previous_panic_hook.clone();
+        std::panic::set_hook(Box::new(move |info| {
+            if info.to_string().contains("Popped scope guard out of order") {
+                scope_guard_panic_observer.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            previous_panic_hook_for_observer
+                .lock()
+                .unwrap()
+                .as_ref()
+                .expect("previous panic hook is installed")(info);
+        }));
+
+        sentry::Hub::run(hub.clone(), || {
+            queue_setup_dependency_failure(
+                failure_scope(
+                    "11111111-1111-4111-8111-111111111111",
+                    1,
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                ),
+                "node",
+                OnboardingErrorCategory::ExitNonzero,
+                setup_diagnostic(),
+                vec![],
+            );
+        });
+        let node_arrival = arrived_rx.recv_timeout(std::time::Duration::from_secs(1));
+
+        sentry::Hub::run(hub, || {
+            queue_setup_dependency_failure(
+                failure_scope(
+                    "22222222-2222-4222-8222-222222222222",
+                    1,
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                ),
+                "qmd",
+                OnboardingErrorCategory::ExitNonzero,
+                setup_diagnostic(),
+                vec![],
+            );
+        });
+        let qmd_arrival = arrived_rx.recv_timeout(std::time::Duration::from_secs(1));
+
+        transport.release("node");
+        transport.release("qmd");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let observed_scope_guard_panic =
+            scope_guard_panicked.load(std::sync::atomic::Ordering::SeqCst);
+        let _ = std::panic::take_hook();
+        let previous_panic_hook = previous_panic_hook
+            .lock()
+            .unwrap()
+            .take()
+            .expect("previous panic hook is installed");
+        std::panic::set_hook(previous_panic_hook);
+
+        assert_eq!(
+            node_arrival.expect("node reporter should reach the transport"),
+            "node"
+        );
+        assert_eq!(
+            qmd_arrival.expect("qmd reporter should reach the transport"),
+            "qmd"
+        );
+        assert!(
+            !observed_scope_guard_panic,
+            "concurrent reporters must not panic while dropping their Sentry scopes"
+        );
+
+        let events = transport.events();
+        assert_eq!(events.len(), 2);
+        for (dependency, category) in [("node", "exit-nonzero"), ("qmd", "exit-nonzero")] {
+            let event = events
+                .iter()
+                .find(|event| {
+                    event.tags.get("setup_dependency").map(|tag| tag.as_ref()) == Some(dependency)
+                })
+                .expect("each concurrent reporter should capture its own envelope");
+            assert_eq!(event.tags["setup_dependency"], dependency);
+            assert_eq!(event.fingerprint, vec![dependency, category]);
+        }
+    }
+
     /// A slow transport and a transport failure run only on the reporter
     /// thread, so the setup command returns immediately in either case.
     #[test]
