@@ -164,7 +164,17 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// public-row freezing, and related sync-runner memory behavior; it adds no
 /// runner event or error-emission change. No new vocabulary arm is needed, but
 /// the source-version marker moves with the verified runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.35";
+///
+/// The `~6.16.35` -> `~6.16.36` bump (streaming v3 snapshot-journal decoding,
+/// hq-cloud#529, and the reader-only HQSNAP4 snapshot format, hq-cloud#531)
+/// was re-derived from both hq-cloud trees: all 56 identities remain at each
+/// tag, with no identity-set diff, and `src/bin/sync-runner-events.ts`
+/// `ERROR_TYPES` remains (`error`, `auth-error`). HQSNAP4 validation adds new
+/// plain `Error` messages — for example, `HQSNAP4 payload has an invalid byte
+/// length` — rather than a named runner-error identity; if surfaced, they use
+/// the existing generic `error` event type. No new vocabulary arm is needed,
+/// but the source-version marker moves with the verified runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.36";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
