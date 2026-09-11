@@ -2714,7 +2714,11 @@
             </button>
           {/each}
 
-          {#if searchQuery.trim()}
+          <!-- The Messages caption only appears when there is something
+               under it. A caption over "no matching messages" labelled an
+               absence, and read as a failure of the message search rather
+               than of the query. -->
+          {#if searchQuery.trim() && (messageSearchLoading || messageSearchError || messageSearchHits.length > 0)}
             <div class="chat-switcher-caption" aria-hidden="true">
               Messages
               {#if messageSearchLoading}
@@ -2723,8 +2727,6 @@
             </div>
             {#if messageSearchError}
               <div class="chat-empty" role="alert">{messageSearchError}</div>
-            {:else if messageSearchHits.length === 0 && !messageSearchLoading}
-              <div class="chat-empty">No matching messages</div>
             {:else}
               {#each messageSearchHits as hit, hitIndex (hit.messageId + (hit.createdAt ?? ""))}
                 {@const row = resolveSearchHitRow(hit, allRows)}
@@ -2781,8 +2783,13 @@
             {/if}
           {/if}
 
-          {#if searchItems.length === 0 && !searchQuery.trim()}
-            <div class="chat-empty">No conversations</div>
+          <!-- One line for the whole dialog, not one per empty section: with
+               a query that matches nothing, "no conversations" and "no
+               messages" stacked to say the same thing twice. -->
+          {#if searchItems.length === 0 && !messageSearchLoading && !messageSearchError}
+            <div class="chat-empty">
+              {searchQuery.trim() ? "No matching results" : "No conversations"}
+            </div>
           {/if}
         </div>
       </div>
@@ -4127,6 +4134,12 @@
     border-radius: 3px;
     color: var(--t1);
     font-weight: 600;
+  }
+
+  /* Shares the caption's inset so an empty result starts on the same left
+     margin as the section labels above it. */
+  .chat-switcher-list .chat-empty {
+    padding: 12px 10px;
   }
 
   .chat-switcher-snippet {
