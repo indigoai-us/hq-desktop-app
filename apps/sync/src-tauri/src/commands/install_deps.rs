@@ -6557,6 +6557,13 @@ mod install_deps_planner_tests {
         let qmd_arrival = arrived_rx.recv_timeout(std::time::Duration::from_secs(1));
 
         transport.release("node");
+        let scope_guard_panic_deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !scope_guard_panicked.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < scope_guard_panic_deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         transport.release("qmd");
         std::thread::sleep(std::time::Duration::from_millis(100));
 
