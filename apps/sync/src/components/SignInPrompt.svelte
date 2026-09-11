@@ -85,9 +85,14 @@
     const decision = await resolveRollout(deps);
     if (!decision.enabled || manualSignInStarted) return;
 
-    await beginContinuation(deps, decision, (next) => {
-      continuation = next;
-    });
+    await beginContinuation(
+      deps,
+      decision,
+      (next) => {
+        continuation = next;
+      },
+      () => !manualSignInStarted,
+    );
   }
 
   async function handleContinuationConfirm() {
@@ -155,6 +160,8 @@
     // Claim the flow before anything awaits, so a continuation whose config
     // lands mid-click sees this rather than racing it.
     manualSignInStarted = true;
+    // Preparation observes this claim and leaves continuation unarmed. Manual
+    // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
     loadingProvider = provider;
     error = '';
     lastProvider = provider;

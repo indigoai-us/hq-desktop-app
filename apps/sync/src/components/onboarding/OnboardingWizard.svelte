@@ -21,6 +21,20 @@
   } from '../../lib/onboarding-path';
   import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
   import {
+    continuationDeps,
+    loadContinuationContext,
+  } from '../../lib/desktop-continuation-tauri';
+  import {
+    beginContinuation,
+    confirmContinuation,
+    flushReceipts,
+    launchReceipt,
+    recordReceipt,
+    resolveRollout,
+    type ContinuationDeps,
+    type ContinuationState,
+  } from '../../lib/desktop-session-continuation';
+  import {
     NO_AI_TOOLS,
     availableLaunches,
     installUrlFor,
@@ -142,6 +156,11 @@
   const FADE_OUT_MS = 320;
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
+  // The native HTTP client allows a request to run for 15 seconds. Holding a
+  // first-run screen that long would make setup feel stuck, so browser-session
+  // continuation gets a short, silent head start and then yields to the
+  // unchanged provider buttons.
+  const AUTOMATIC_CONTINUATION_TIMEOUT_MS = 1_500;
   const DEFAULT_STEP: number = WIZARD_STEPS[0].index;
 
   let {
@@ -201,6 +220,18 @@
   let signInError = $state('');
   let currentSignInCall = 0;
   let mounted = true;
+
+  // Browser session continuation belongs on the first screen someone sees
+  // after downloading HQ, not only on the returning-user sign-in surfaces.
+  // The first-run wizard completes an eligible session itself; it never
+  // renders a continuation prompt or account choice.
+  let continuation = $state<ContinuationState>({ phase: 'idle' });
+  let continuationDepsRef: ContinuationDeps | null = null;
+  let continuationPrepared = false;
+  let manualSignInStarted = false;
+  let automaticContinuationRun = 0;
+  let automaticContinuationActive = false;
+  let signInActionsReady = $state(false);
 
   let installPath = $state<string | null>(null);
   let resolvedPath = $state<string | null>(null);
@@ -354,6 +385,22 @@
   });
 
   $effect(() => {
+    // This is intentionally scoped to the first-run sign-in panel. Native
+    // eligibility independently refuses resumed and non-first-launch windows,
+    // but there is no reason to fetch rollout configuration after the wizard
+    // has already moved past authentication.
+    if (
+      isReprompt ||
+      currentStep !== WELCOME_SIGNIN_STEP_INDEX ||
+      continuationPrepared
+    ) {
+      return;
+    }
+    continuationPrepared = true;
+    void prepareContinuation();
+  });
+
+  $effect(() => {
     // In re-prompt mode there is no install/setup — only the consent step — so
     // the setup run must never start even if the step index momentarily reads 2.
     if (consentOnly || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
@@ -404,11 +451,6 @@
       if (onboardingFlow === 'resume' && currentStep !== WELCOME_SIGNIN_STEP_INDEX) {
         recordStep(currentStep, 'resumed', {}, onboardingFlow);
       }
-      void invokeCommand<boolean>('is_first_run')
-        .then((firstLaunch) => {
-          if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
-        })
-        .catch(() => {});
       // A resumed onboarding session may already have a restored token. Its
       // operational queue is independent of consent and can resume delivery.
       void invokeCommand<{ authenticated: boolean }>('get_auth_state')
@@ -514,6 +556,15 @@
 
   async function handleSignIn(provider: SignInProvider) {
     const call = ++currentSignInCall;
+    // Claim the provider path before any await. The continuation config can
+    // settle while this click is being handled; it must not then arm a second
+    // listener over the provider flow the person deliberately chose.
+    manualSignInStarted = true;
+    automaticContinuationActive = false;
+
+    // Preparation observes this claim and leaves continuation unarmed. Manual
+    // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
+
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
@@ -546,20 +597,7 @@
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
-        // The token is now available, so release operational records that were
-        // buffered solely while the OAuth flow was unauthenticated.
-        void onboardingTelemetry.flush().catch(() => {});
-        // Person entity may not exist yet; later pings retry after setup.
-        void resolveInstallerPersonUid();
-        await refocusWindow();
-        if (!isCurrentSignInCall(call)) return;
-        // The consent question is asked later as its own step after setup.
-        // Operational setup telemetry is emitted independently; skill usage
-        // remains governed by that choice.
-        advanceTo(DIRECTORY_STEP_INDEX, 'completed', {
-          provider: telemetryProvider,
-          outcome: 'authenticated',
-        });
+        await completeAuthenticatedSignIn(call, { provider: telemetryProvider });
       } else {
         signInError = 'Authentication failed. Please try again.';
         recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
@@ -580,6 +618,131 @@
         loadingProvider = null;
       }
     }
+  }
+
+  async function prepareContinuation(): Promise<void> {
+    const run = ++automaticContinuationRun;
+    automaticContinuationActive = true;
+    const timeout = window.setTimeout(() => {
+      if (!isAutomaticContinuationCurrent(run)) return;
+      automaticContinuationActive = false;
+      signInActionsReady = true;
+
+      // Do not leave a native attempt holding its listener after the visible
+      // first-run flow has fallen back. `beginContinuation` records the single
+      // cancelled result when its pending identity wait returns.
+      const attemptId = 'attemptId' in continuation ? continuation.attemptId : undefined;
+      if (attemptId && continuationDepsRef) {
+        void continuationDepsRef.bridge.cancel({ attemptId }).catch(() => undefined);
+      }
+    }, AUTOMATIC_CONTINUATION_TIMEOUT_MS);
+
+    const finishWithProviderButtons = () => {
+      if (run !== automaticContinuationRun || currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
+      automaticContinuationActive = false;
+      window.clearTimeout(timeout);
+      signInActionsReady = true;
+    };
+
+    const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
+    const context = await loadContinuationContext();
+    if (!context) {
+      if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
+      finishWithProviderButtons();
+      return;
+    }
+    const deps = continuationDeps(context);
+    continuationDepsRef = deps;
+
+    // Receipt delivery is best effort and must never delay sign-in.
+    void flushReceipts(deps).catch(() => undefined);
+
+    // `firstLaunchRecorded` is the existing durable first-installation gate.
+    // It survives re-renders and a resumed wizard, while recordReceipt keeps
+    // an undelivered receipt's event id and timestamp stable for retry.
+    if (firstLaunch && onboardingTelemetry.recordFirstLaunch()) {
+      void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
+    }
+
+    // Check before and after the config round trip. A provider click during
+    // that wait is a deliberate choice and must win without arming another
+    // OAuth listener.
+    if (!isAutomaticContinuationCurrent(run)) return;
+    const decision = await resolveRollout(deps);
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (!decision.enabled) {
+      finishWithProviderButtons();
+      return;
+    }
+
+    const next = await beginContinuation(
+      deps,
+      decision,
+      (next) => {
+        if (isAutomaticContinuationCurrent(run)) continuation = next;
+      },
+      () => isAutomaticContinuationCurrent(run),
+    );
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (next.phase !== 'confirming') {
+      finishWithProviderButtons();
+      return;
+    }
+
+    const activated = await confirmContinuation(deps, next, (state) => {
+      if (isAutomaticContinuationCurrent(run)) continuation = state;
+    });
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (activated.phase !== 'activated') {
+      finishWithProviderButtons();
+      return;
+    }
+
+    const auth = await invokeCommand<{ authenticated: boolean }>('get_auth_state').catch(() => null);
+    if (!isAutomaticContinuationCurrent(run)) return;
+    if (!auth?.authenticated) {
+      finishWithProviderButtons();
+      return;
+    }
+
+    automaticContinuationActive = false;
+    window.clearTimeout(timeout);
+    await completeAuthenticatedSignIn(currentSignInCall);
+  }
+
+  function isAutomaticContinuationCurrent(run: number): boolean {
+    return (
+      mounted &&
+      run === automaticContinuationRun &&
+      automaticContinuationActive &&
+      !manualSignInStarted &&
+      currentStep === WELCOME_SIGNIN_STEP_INDEX
+    );
+  }
+
+  /**
+   * Both OAuth routes land here after native code has activated the same auth
+   * session. Keeping this as the one wizard completion preserves the normal
+   * post-auth transition, telemetry flush, person lookup, and refocus path.
+   */
+  async function completeAuthenticatedSignIn(
+    call: number,
+    details: StepTelemetryDetails = {},
+  ): Promise<void> {
+    // The token is now available, so release operational records that were
+    // buffered solely while the OAuth flow was unauthenticated.
+    void onboardingTelemetry.flush().catch(() => {});
+    // Person entity may not exist yet; later pings retry after setup.
+    void resolveInstallerPersonUid();
+    await refocusWindow();
+    if (!isCurrentSignInCall(call)) return;
+    // The consent question is asked later as its own step after setup.
+    // Operational setup telemetry is emitted independently; skill usage
+    // remains governed by that choice.
+    advanceTo(DIRECTORY_STEP_INDEX, 'completed', {
+      ...details,
+      outcome: 'authenticated',
+    });
   }
 
   function detectLooksLikeHq(result: DetectHqResult): boolean {
@@ -1915,26 +2078,28 @@
               A browser window opened for {loadingProvider} sign-in. Complete it there and you'll return here automatically.
             </p>
           {/if}
-          <div class="btns">
-            <button
-              class="btn btn-primary"
-              type="button"
-              disabled={loadingProvider !== null}
-              aria-busy={loadingProvider === 'Google'}
-              onclick={() => handleSignIn('Google')}
-            >
-              Log in with Google
-            </button>
-            <button
-              class="btn btn-secondary"
-              type="button"
-              disabled={loadingProvider !== null}
-              aria-busy={loadingProvider === 'Microsoft'}
-              onclick={() => handleSignIn('Microsoft')}
-            >
-              Log in with Microsoft
-            </button>
-          </div>
+          {#if signInActionsReady}
+            <div class="btns">
+              <button
+                class="btn btn-primary"
+                type="button"
+                disabled={loadingProvider !== null}
+                aria-busy={loadingProvider === 'Google'}
+                onclick={() => handleSignIn('Google')}
+              >
+                Log in with Google
+              </button>
+              <button
+                class="btn btn-secondary"
+                type="button"
+                disabled={loadingProvider !== null}
+                aria-busy={loadingProvider === 'Microsoft'}
+                onclick={() => handleSignIn('Microsoft')}
+              >
+                Log in with Microsoft
+              </button>
+            </div>
+          {/if}
         </section>
 
         <section

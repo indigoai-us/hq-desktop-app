@@ -49,6 +49,14 @@ function harnessScenario(): string | null {
   return null;
 }
 
+function onboardingContinuationVariant(): 'control' | 'continuation' {
+  if (typeof window === 'undefined') return 'control';
+  const params = new URLSearchParams(window.location.search);
+  return params.get('view') === 'onboarding' && params.get('continuation') === 'on'
+    ? 'continuation'
+    : 'control';
+}
+
 function isOnboardingCaptureScenario(): boolean {
   const scenario = harnessScenario();
   return (
@@ -1172,6 +1180,27 @@ This final paragraph verifies spacing after a thematic break.
     harnessScenario() === 'onboarding-capture-completion-failed-required-stage'
       ? new Promise<never>(() => {})
       : null,
+  // The first-run sign-in preview supports both real rollout arms. The
+  // continuation arm uses display-only fixture text rather than an address so
+  // screenshots can demonstrate the account affordance without exposing an
+  // email-shaped value.
+  desktop_continuation_context: () => ({
+    installAttemptId: 'preview-installation',
+    appVersion: '0.10.229',
+    apiBase: 'https://api.preview.invalid',
+  }),
+  desktop_continuation_config: () => ({
+    protocolVersion: 1,
+    minimumDesktopVersion: '0.10.229',
+    variant: onboardingContinuationVariant(),
+    rolloutPercent: 100,
+  }),
+  desktop_continuation_may_start: () => null,
+  desktop_continuation_start: () => ({ attemptId: 'preview-continuation-attempt' }),
+  desktop_continuation_await_identity: () => ({ email: 'your browser account' }),
+  desktop_continuation_confirm: () => null,
+  desktop_continuation_cancel: () => null,
+  desktop_continuation_deliver: () => 200,
   // Scenarios let the Ready screen be inspected in every machine state the
   // real detector can produce: `?scenario=tools-claude-only` (the fresh-VM
   // case that has only Claude Code), `?scenario=tools-codex-only`, and

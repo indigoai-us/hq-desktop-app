@@ -481,6 +481,30 @@ describe('one continuation attempt', () => {
     const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, collect);
     expect(final.phase).toBe('confirming');
   });
+
+  it('releases a just-armed attempt when explicit provider sign-in wins the race', async () => {
+    const { deps, delivered } = harness();
+    let continuationStillPreferred = true;
+    (deps.bridge.start as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      // This mirrors a provider click between native listener arming and the
+      // renderer receiving its attempt id. The continuation cannot be allowed
+      // to hold the listener after the person explicitly chose a provider.
+      continuationStillPreferred = false;
+      return { attemptId: 'attempt-1' };
+    });
+
+    const final = await beginContinuation(
+      deps,
+      { enabled: true, config: enabledConfig() },
+      collect,
+      () => continuationStillPreferred,
+    );
+
+    expect(deps.bridge.cancel).toHaveBeenCalledWith({ attemptId: 'attempt-1' });
+    expect(deps.bridge.awaitIdentity).not.toHaveBeenCalled();
+    expect(final).toEqual({ phase: 'fallback', errorKind: 'cancelled' });
+    expect(outcomes(delivered)).toEqual(['started', 'cancelled']);
+  });
 });
 
 describe('error classification is a closed set', () => {

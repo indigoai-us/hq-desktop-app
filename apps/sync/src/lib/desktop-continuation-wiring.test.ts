@@ -27,6 +27,7 @@ const oauth = read('src-tauri/src/commands/oauth.rs');
 const main = read('src-tauri/src/main.rs');
 const adapter = read('src/lib/desktop-continuation-tauri.ts');
 const signInPrompt = read('src/components/SignInPrompt.svelte');
+const onboardingWizard = read('src/components/onboarding/OnboardingWizard.svelte');
 const desktopAltCapability = read('src-tauri/capabilities/desktop-alt.json');
 
 /** The body of a `fn`/`async fn` named `name`, up to its closing brace. */
@@ -113,10 +114,37 @@ describe('a manual sign-in invalidates anything continuation is holding', () => 
       signInPrompt.indexOf('async function prepareContinuation()'),
       signInPrompt.indexOf('async function handleContinuationConfirm'),
     );
-    // Checked on both sides of the config round trip: the click can land
-    // during it, and arming a second flow would cancel the listener the manual
-    // attempt is waiting on.
-    expect(prepare.match(/manualSignInStarted/g) ?? []).toHaveLength(2);
+    // Checked before and after the config round trip, then handed to the
+    // continuation state machine for the native-arming gap. A click during
+    // any of those windows must win over the automatic route.
+    expect(prepare.match(/manualSignInStarted/g) ?? []).toHaveLength(3);
+    expect(prepare).toContain('() => !manualSignInStarted');
+  });
+
+  it('starts explicit OAuth without waiting for continuation preparation in either sign-in surface', () => {
+    for (const source of [signInPrompt, onboardingWizard]) {
+      const start = source.indexOf('async function handleSignIn');
+      const handle = source.slice(start, source.indexOf('\n  async function ', start + 1));
+      expect(handle).toContain('manualSignInStarted = true;');
+      expect(handle).not.toContain('await continuationPreparation');
+      expect(handle.indexOf('loadingProvider = provider;')).toBeLessThan(
+        handle.indexOf("'start_oauth_login'"),
+      );
+    }
+  });
+});
+
+describe('the first-launch denominator is recorded before rollout evaluation', () => {
+  it('uses the existing durable first-launch gate to enqueue one launch receipt', () => {
+    const prepare = onboardingWizard.slice(
+      onboardingWizard.indexOf('async function prepareContinuation'),
+      onboardingWizard.indexOf('async function handleContinuationConfirm'),
+    );
+    expect(prepare).toContain('onboardingTelemetry.recordFirstLaunch()');
+    expect(prepare).toContain('recordReceipt(deps, launchReceipt(deps))');
+    expect(prepare.indexOf('recordReceipt(deps, launchReceipt(deps))')).toBeLessThan(
+      prepare.indexOf('resolveRollout(deps)'),
+    );
   });
 });
 
