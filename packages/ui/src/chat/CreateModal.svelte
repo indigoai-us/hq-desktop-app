@@ -1858,7 +1858,8 @@
               data-testid="chat-bot-worker"
               aria-labelledby="create-bot-worker-label"
               disabled={entryBusy !== null}
-              bind:value={botWorker}
+              value={botWorker}
+              onchange={(event) => (botWorker = (event.currentTarget as HTMLSelectElement).value)}
             >
               <option value="">A fresh persona</option>
               {#each botWorkers as w (w.id)}

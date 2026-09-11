@@ -246,8 +246,9 @@
     localBotForRow,
     localBotOfflineNotice,
     localBotPresence,
+    type LocalBotEntryResult,
   } from "../chat/local-bots.js";
-  import type { LocalBotRow } from "@hq/platform";
+  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
   import type {
     ChatSidebarApi,
     ChatWakeBus,
@@ -797,6 +798,63 @@
     const handle = window.setInterval(() => void refreshLocalBots(), LOCAL_BOTS_POLL_MS);
     return () => clearInterval(handle);
   });
+  /** Which runtimes are signed in here (`{ claude: true, … }`); null until known. */
+  let localBotRuntimeReady = $state<Record<string, boolean> | null>(null);
+  /** Company/core workers a bot can be created from; loaded once on demand. */
+  let localBotWorkers = $state<LocalBotWorkerOption[] | null>(null);
+  async function loadLocalBotRuntimeReady(): Promise<void> {
+    const preflight = adapter.sessions?.preflight;
+    if (!preflight || localBotRuntimeReady) return;
+    const result = await preflight();
+    if (!result.ok) return;
+    const rec = result.value as Record<string, unknown>;
+    const next: Record<string, boolean> = {};
+    for (const id of ["claude", "codex", "grok"]) {
+      next[id] = rec[`${id}Available`] === true && rec[`${id}LoggedIn`] === true;
+    }
+    localBotRuntimeReady = next;
+  }
+  async function loadLocalBotWorkers(): Promise<void> {
+    const workers = adapter.bots?.workers;
+    if (!workers || localBotWorkers) return;
+    const result = await workers();
+    if (result.ok) localBotWorkers = result.value.workers ?? [];
+  }
+  onMount(() => {
+    if (!adapter.bots) return;
+    void loadLocalBotRuntimeReady();
+    void loadLocalBotWorkers();
+  });
+  /**
+   * Sidebar "+" → New bot. The CLI provisions the identity, scaffolds the
+   * worker (or binds a company worker), installs the launch agent and starts
+   * the bot; we then open its DM. The intro DM may not have landed yet, so a
+   * synthetic row makes the thread openable immediately and the offline
+   * notice covers "starting up".
+   */
+  async function createBotEntry(input: LocalBotCreateInput): Promise<LocalBotEntryResult> {
+    const api = adapter.bots;
+    if (!api) return { ok: false, reason: "Bots are only available in the HQ desktop app." };
+    const result = await api.create(input);
+    if (!result.ok) return { ok: false, reason: result.message || `Could not create ${input.name}.` };
+    const value = (result.value ?? {}) as Record<string, unknown>;
+    const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
+    await refreshLocalBots();
+    if (!agentUid) return { ok: true, agentUid: "", name: input.name };
+    const existing = railRows.find((r) => r.kind === "dm" && r.personUid === agentUid);
+    const row: ConversationRow = existing ?? {
+      id: `dm:${agentUid}`,
+      kind: "dm",
+      title: input.name,
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: Date.now(),
+      pinned: false,
+      personUid: agentUid,
+    };
+    handleSelect(row);
+    return { ok: true, agentUid, name: input.name };
+  }
   const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
   const selectedLocalBotOffline = $derived(
     Boolean(selectedLocalBot && selectedLocalBot.online !== true),
@@ -5081,6 +5139,10 @@
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           oncreateagent={canRunEntryPoints ? addAgentEntry : null}
+          oncreatebot={adapter.bots ? createBotEntry : null}
+          botRuntimeReady={localBotRuntimeReady}
+          botCount={localBots.length}
+          botWorkers={localBotWorkers}
           onrows={(rows) => {
             railRows = rows;
             directorySettled = true;
