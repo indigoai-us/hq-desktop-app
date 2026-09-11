@@ -79,12 +79,19 @@ fn us_002_fixture_4000x3000_is_downsampled_to_2000_and_record_json_matches_schem
 
     // ── the original is never retained separately ──────────────────────────
     let entries = entry_names(&dir);
-    let expected: BTreeSet<String> = ["image.png".to_string(), "record.json".to_string()]
-        .into_iter()
-        .collect();
+    // `capture.md` is the qmd sidecar every persistence path writes (US-011);
+    // the set stays exact, so a retained original or a leftover .tmp still fails.
+    let expected: BTreeSet<String> = [
+        "capture.md".to_string(),
+        "image.png".to_string(),
+        "record.json".to_string(),
+    ]
+    .into_iter()
+    .collect();
     assert_eq!(
         entries, expected,
-        "record dir must hold exactly image.png + record.json (no original, no leftover tmp)"
+        "record dir must hold exactly image.png + record.json + capture.md \
+         (no original, no leftover tmp)"
     );
 
     // ── record.json schema ─────────────────────────────────────────────────
@@ -229,10 +236,14 @@ fn us_002_move_record_relocates_files_to_company_b_and_rewrites_attribution() {
     let dest = record_dir(root.path(), "b", &record.id);
     assert_eq!(
         entry_names(&dest),
-        ["image.png".to_string(), "record.json".to_string()]
-            .into_iter()
-            .collect::<BTreeSet<String>>(),
-        "company b must hold exactly record.json + image.png"
+        [
+            "capture.md".to_string(),
+            "image.png".to_string(),
+            "record.json".to_string()
+        ]
+        .into_iter()
+        .collect::<BTreeSet<String>>(),
+        "company b must hold exactly record.json + image.png + capture.md"
     );
 
     // ── attribution follows the files ──────────────────────────────────────
