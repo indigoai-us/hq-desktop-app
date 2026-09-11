@@ -4037,6 +4037,19 @@
             displayName,
           })),
         ),
+        // Everyone already IN the open channel. A teammate's personal bot is
+        // not on the company contacts roster (it has no membership), so
+        // without this a channel member could never @mention it — the picker
+        // said "No one matches" while the bot sat on the roster.
+        mentionTargetsFromContacts(
+          (selectedRow?.channelId
+            ? (channelRosterById[selectedRow.channelId.trim()] ?? [])
+            : []
+          ).map((member) => ({
+            personUid: member.personUid,
+            displayName: member.displayName,
+          })),
+        ),
         // The user's own local bots: never on the contacts roster, but
         // @mentionable anywhere the user can add them.
         mentionTargetsFromContacts(
