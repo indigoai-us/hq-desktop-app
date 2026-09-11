@@ -277,6 +277,25 @@ async function drive(args) {
   return startedAt;
 }
 
+/**
+ * Read the `extraction` section of an existing results file, if any. A
+ * missing or unparseable file yields `undefined` — this is a best-effort
+ * carry-over, never a reason to fail the latency bench.
+ * @param {string} out
+ * @returns {unknown}
+ */
+export function readExtractionSection(out) {
+  try {
+    const existing = JSON.parse(readFileSync(out, 'utf8'));
+    if (existing && typeof existing === 'object' && 'extraction' in existing) {
+      return existing.extraction;
+    }
+  } catch {
+    // no previous results, or not JSON — nothing to preserve
+  }
+  return undefined;
+}
+
 export async function main(argv = process.argv.slice(2)) {
   let args;
   try {
@@ -328,6 +347,11 @@ export async function main(argv = process.argv.slice(2)) {
     budgets: BUDGET_MS,
     ...result,
   };
+  // The latency bench owns only the latency keys. `extraction` is written by
+  // a different measurement (US-008's model-path bench, from the Rust test
+  // suite) into the same file, so carry it across rather than clobbering it.
+  const carried = readExtractionSection(args.out);
+  if (carried !== undefined) report.extraction = carried;
   mkdirSync(dirname(args.out), { recursive: true });
   writeFileSync(args.out, `${JSON.stringify(report, null, 2)}\n`);
 

@@ -1,30 +1,68 @@
 {
-  "generatedAt": "2026-09-10T20:37:22.803Z",
-  "source": "log-file",
-  "logPath": "e2e/idea-board/fixtures/hq-idea-board-us-003-chord-overlay-live-macos.txt",
-  "platform": "darwin",
-  "requestedCycles": null,
   "budgets": {
     "chordToOverlay": 80,
     "releaseToPng": 120
   },
   "chordToOverlay": {
-    "samples": 28,
+    "budgetMs": 80,
+    "max": 6,
+    "min": 0,
     "p50": 1,
     "p95": 1,
-    "min": 0,
-    "max": 6,
-    "budgetMs": 80,
+    "samples": 28,
     "withinBudget": true
   },
+  "extraction": {
+    "model": {
+      "accuracy_note": "live accuracy requires the hq-pro /v1/ideas/extract endpoint; not yet deployed — mechanics measured with a recording extractor, zero fabricated model outputs",
+      "confident_wrong": null,
+      "endpoint": "/v1/ideas/extract",
+      "estimated_input_tokens": {
+        "max": 200.0,
+        "mean": 144.96153846153845,
+        "min": 106.0
+      },
+      "fixtures": 26,
+      "kind_accuracy": null,
+      "live": false,
+      "local_baseline": {
+        "confident_wrong": 0,
+        "kind_accuracy": 0.9230769230769231
+      },
+      "measuredAt": "2026-09-11T06:14:32.157754+00:00",
+      "per_capture_cost_usd_estimate": {
+        "max": 0.0017,
+        "mean": 0.0016449615384615385,
+        "min": 0.0016059999999999998
+      },
+      "pricing_assumptions": {
+        "assumed_output_tokens": 300.0,
+        "image_tokens_formula": "(width * height) / 750",
+        "input_usd_per_mtok": 1.0,
+        "output_usd_per_mtok": 5.0
+      },
+      "pricing_source": "estimate — verify live",
+      "request_bytes": {
+        "max": 1278.0,
+        "mean": 1090.1923076923076,
+        "min": 900.0
+      },
+      "requests_sent_to_mock": 26
+    }
+  },
+  "generatedAt": "2026-09-11T05:28:29.517Z",
+  "logPath": "apps/sync/e2e/idea-board/fixtures/hq-idea-board-us-003-chord-overlay-live-macos.txt",
+  "pass": false,
+  "platform": "darwin",
   "releaseToPng": {
-    "samples": 0,
+    "budgetMs": 120,
+    "max": null,
+    "min": null,
     "p50": null,
     "p95": null,
-    "min": null,
-    "max": null,
-    "budgetMs": 120,
+    "samples": 0,
     "withinBudget": false
   },
-  "pass": false
+  "requestedCycles": null,
+  "source": "log-file"
 }
