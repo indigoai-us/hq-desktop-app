@@ -408,11 +408,11 @@ export function destinationLabel(destination: NavigationDestination): string {
       if (dest.companyTab && dest.companyTab !== "chat") {
         return `Company · ${titleCase(dest.companyTab)}`;
       }
-      if (dest.agentSurface === "details") return "Agent details";
+      if (dest.agentSurface === "details") return "Bot details";
       return "Channel";
     case "dm":
       if (dest.replyRootEventId) return "Thread";
-      if (dest.agentSurface === "details") return "Agent details";
+      if (dest.agentSurface === "details") return "Bot details";
       return "Direct message";
     case "notifications":
       return "Notifications";
