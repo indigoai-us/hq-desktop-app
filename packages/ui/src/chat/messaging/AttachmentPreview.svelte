@@ -4,7 +4,7 @@
    * Typed attachment preview + download. Shared by the message strip tray
    * and the right-side attachments browser.
    */
-  import { onDestroy } from "svelte";
+  import { onDestroy, type Snippet } from "svelte";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import { fileTypeLabel } from "./chat-attachments";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
@@ -24,9 +24,15 @@
     /** Releases a host-created object URL after this preview no longer uses it. */
     onreleaseurl?: (url: string) => void;
     compact?: boolean;
+    /**
+     * Extra controls for the end of the toolbar. The toolbar IS the preview's
+     * chrome — a host that needs a close button puts it here rather than
+     * stacking a second bar of its own above this one.
+     */
+    trailing?: Snippet;
   }
 
-  let { item, resolveUrl, onreleaseurl, thumbnailUrl = null, compact = false }: Props = $props();
+  let { item, resolveUrl, onreleaseurl, thumbnailUrl = null, compact = false, trailing }: Props = $props();
 
   const kind = $derived(
     attachmentPreviewKind({
@@ -180,12 +186,9 @@
     {#if item.sizeLabel}
       <span class="att-preview-meta">{item.sizeLabel}</span>
     {/if}
-  </div>
-
-  <div class="att-preview-stage">
     <button
       type="button"
-      class="att-download"
+      class="att-preview-ic push-right"
       data-testid="attachment-download"
       aria-label={downloading ? "Saving" : `Download ${item.name}`}
       disabled={!src || downloading}
@@ -194,8 +197,12 @@
         void download();
       }}
     >
-      <DownloadSimple size={14} aria-hidden="true" />
+      <DownloadSimple size={15} aria-hidden="true" />
     </button>
+    {@render trailing?.()}
+  </div>
+
+  <div class="att-preview-stage">
     {#if kind === "image" && (src || (!error && !thumbnailFailed && thumbnailUrl))}
       <img
         class="att-preview-image"
@@ -264,67 +271,82 @@
   .att-preview {
     display: flex;
     flex-direction: column;
-    gap: 10px;
     width: 100%;
     min-width: 0;
     min-height: 0;
   }
 
+  /* Concept `.lb-bar`: one 46px row that names the file and holds every
+     control. The file used to be named twice — once by the host's header and
+     again here — with a download button stranded over the artwork. */
   .att-preview-toolbar {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+    height: 46px;
+    padding: 0 14px 0 20px;
     min-width: 0;
   }
 
   .att-preview-stage {
     position: relative;
+    flex: 1 1 auto;
     display: grid;
     place-items: center;
     min-width: 0;
     min-height: 0;
     width: 100%;
+    padding: 4px 40px 40px;
   }
 
   .att-preview-name {
     min-width: 0;
     overflow: hidden;
     color: var(--t1);
-    font: 600 13px/1.3 var(--font-ui);
+    font: 500 12px/1.3 var(--font-ui);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .att-preview-meta {
+    flex-shrink: 0;
     color: var(--t3, var(--t2));
-    font: 400 11px/1.2 var(--font-ui);
+    font: 400 10px/1.2 var(--font-mono, ui-monospace, Menlo, monospace);
   }
 
-  .att-download {
+  .push-right {
+    margin-left: auto;
+  }
+
+  /* Concept `.lb-ic`. `:global` so a host can drop its own button into the
+     `trailing` snippet and have it match without restating this. */
+  .att-preview-toolbar :global(.att-preview-ic) {
     appearance: none;
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    z-index: 2;
+    flex-shrink: 0;
     display: grid;
     place-items: center;
     width: 28px;
     height: 28px;
     padding: 0;
     border: 0;
-    border-radius: 8px;
-    background: rgba(12, 12, 14, 0.72);
-    color: #fff;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--t2);
     cursor: pointer;
+    transition:
+      background 0.12s,
+      color 0.12s;
   }
 
-  .att-download:disabled {
+  .att-preview-toolbar :global(.att-preview-ic:disabled) {
     opacity: 0.35;
     cursor: default;
   }
 
-  .att-download:hover:not(:disabled) {
-    background: rgba(12, 12, 14, 0.9);
+  .att-preview-toolbar :global(.att-preview-ic:hover:not(:disabled)) {
+    background: var(--hover, rgba(255, 255, 255, 0.14));
+    color: var(--t1);
   }
 
   .att-preview-status {
@@ -337,10 +359,12 @@
     color: #f87171;
   }
 
+  /* Concept `.lb-img`: the artwork is the point, so it takes the stage. */
   .att-preview-image {
     max-width: 100%;
     max-height: 100%;
-    border-radius: 8px;
+    border-radius: 12px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
     object-fit: contain;
   }
 

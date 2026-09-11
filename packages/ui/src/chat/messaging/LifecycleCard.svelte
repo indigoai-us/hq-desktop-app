@@ -441,6 +441,9 @@
 </article>
 
 <style>
+  /* Ruled top AND bottom. The card is a form sitting inside a message
+     column, so it needs both edges to read as its own block — with only the
+     top rule the last control ran straight into whatever followed. */
   .lc {
     display: flex;
     flex-direction: column;
@@ -448,7 +451,9 @@
     width: 100%;
     margin-top: 12px;
     padding-top: 12px;
+    padding-bottom: 12px;
     border-top: 1px solid var(--line, var(--pop-border));
+    border-bottom: 1px solid var(--line, var(--pop-border));
     background: transparent;
     outline: none;
   }
@@ -480,12 +485,13 @@
     white-space: nowrap;
   }
 
-  /* The in-chat card standard (RunCompleteCard): 13/500 title, 12/1.45 body.
-     15px read as a page heading inside a message column. */
+  /* One step up from the in-chat card standard (RunCompleteCard's 13/500):
+     a lifecycle card owns the whole message, so its title is the heading of
+     a form rather than a label on a row. 15px read as a page heading. */
   .lc-title {
     margin: 0;
-    font-size: 13px;
-    font-weight: 500;
+    font-size: 14px;
+    font-weight: 600;
     color: var(--t1, var(--pop-text));
     min-width: 0;
   }

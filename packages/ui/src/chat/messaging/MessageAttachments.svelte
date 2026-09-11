@@ -178,10 +178,15 @@
     transition: border-color 0.12s;
   }
 
+  /* A lone image hugs its own artwork. The fixed 320x168 box letterboxed
+     anything that was not 40:21 — a portrait shot sat in a wide tile with
+     dead margin down both sides. Here the tile shrink-wraps the image and
+     only the cap (320 wide / 220 tall) constrains it. */
   .att-thumb.is-single {
-    width: min(320px, 100%);
-    height: 168px;
-    max-width: 100%;
+    width: auto;
+    height: auto;
+    max-width: min(320px, 100%);
+    padding: 0;
   }
 
   .att-thumb:hover {
@@ -215,10 +220,27 @@
     object-fit: cover;
   }
 
+  /* In flow, not `inset: 0` — the image is what gives the tile its size. */
   .att-thumb.is-single img {
-    width: 100%;
-    height: 100%;
+    position: static;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 220px;
     object-fit: contain;
+  }
+
+  .att-thumb.is-single .att-thumb-meta {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    max-width: calc(100% - 20px);
+  }
+
+  /* Nothing to hug yet, so the placeholder keeps the old box. */
+  .att-thumb.is-single .att-thumb-fallback {
+    width: 320px;
+    height: 168px;
   }
 
   .att-thumb-fallback {

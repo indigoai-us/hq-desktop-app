@@ -284,9 +284,10 @@
 
   /**
    * `?update=available` paints the desktop-app row in its update state
-   * (UPDATE AVAILABLE + Download & install). Default is up to date, so a
-   * routine design pass is not looking at an update banner it did not ask
-   * for.
+   * (UPDATE AVAILABLE + Install). Default is up to date, so a routine design
+   * pass is not looking at an update banner it did not ask for. Set it on the
+   * URL — it is deliberately NOT a harness-bar chip, because the bar is for
+   * things you flip constantly (theme) and this is not one of them.
    */
   const updateAvailable =
     new URLSearchParams(
@@ -646,20 +647,6 @@
           {option}
         </button>
       {/each}
-      <!-- The update check runs once and caches, so this reloads with the
-           flag rather than flipping a live store the popover would ignore. -->
-      <button
-        type="button"
-        class:on={updateAvailable}
-        onclick={() => {
-          const next = new URL(location.href);
-          if (updateAvailable) next.searchParams.delete("update");
-          else next.searchParams.set("update", "available");
-          location.href = next.toString();
-        }}
-      >
-        update
-      </button>
     </div>
   </div>
 {:else}
