@@ -420,6 +420,20 @@
           {option}
         </button>
       {/each}
+      <!-- The update check runs once and caches, so this reloads with the
+           flag rather than flipping a live store the popover would ignore. -->
+      <button
+        type="button"
+        class:on={updateAvailable}
+        onclick={() => {
+          const next = new URL(location.href);
+          if (updateAvailable) next.searchParams.delete("update");
+          else next.searchParams.set("update", "available");
+          location.href = next.toString();
+        }}
+      >
+        update
+      </button>
     </div>
   </div>
 {:else}

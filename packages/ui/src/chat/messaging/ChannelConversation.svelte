@@ -1264,7 +1264,9 @@
                     {onopenurl}
                     {oncardaction}
                   />
-                  {@render quickReact(msg.eventId)}
+                  <!-- No hover pill on a lifecycle card: it is a form to
+                       fill in, not a post to react to or thread off. The
+                       card's own actions are the only affordance. -->
                 </div>
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar

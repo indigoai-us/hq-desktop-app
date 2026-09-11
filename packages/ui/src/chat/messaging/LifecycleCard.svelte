@@ -256,7 +256,7 @@
                 >{field.label}</label
               >
               {#if canEdit}
-                <div class="lc-in" data-size="32" class:err={!!error} class:ok={!!field.hint && !error}>
+                <div class="lc-in" data-size="31" class:err={!!error}>
                   <input
                     id={fieldInputId(field)}
                     class="lc-input"
@@ -277,13 +277,14 @@
                       )}
                     onkeydown={(event) => onTextKeydown(event, field)}
                   />
-                  {#if field.hint}
-                    <span
-                      class="lc-hint"
-                      id={`${fieldInputId(field)}-hint`}>{field.hint}</span
-                    >
-                  {/if}
                 </div>
+                {#if field.hint && !error}
+                  <!-- Helper copy belongs under the field, like every other
+                       form in the shell. Inside the box it read as a value. -->
+                  <p class="lc-hint" id={`${fieldInputId(field)}-hint`}>
+                    {field.hint}
+                  </p>
+                {/if}
               {:else}
                 <div class="lc-in lc-in-ro" aria-readonly="true">
                   <span title={isIsoTimestampValue(current) ? current : undefined}
@@ -319,7 +320,7 @@
                     <button
                       type="button"
                       class="lc-seg-btn"
-                      data-size="32"
+                      data-size="31"
                       class:on={current === option.id}
                       role="radio"
                       aria-checked={current === option.id}
@@ -405,7 +406,7 @@
             class:ghost={action.style === "secondary"}
             class:link={action.style === "link"}
             class:row={action.style === "link"}
-            data-size={action.style === "link" ? "28" : "32"}
+            data-size={action.style === "link" ? "26" : "28"}
             data-testid={`lifecycle-action-${action.id}`}
             disabled={action.style !== "link" &&
               displayState !== "pending" &&
@@ -456,21 +457,24 @@
     min-width: 0;
   }
 
+  /* Section caption, same mark as the shell's other mono captions
+     (`.p-sec` in ChannelStatusPopover, the popover meta rows). */
   .lc-k {
     font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.12em;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--t2, var(--pop-muted));
+    color: var(--t3, var(--pop-muted));
     white-space: nowrap;
   }
 
+  /* The in-chat card standard (RunCompleteCard): 13/500 title, 12/1.45 body.
+     15px read as a page heading inside a message column. */
   .lc-title {
     margin: 0;
-    font-size: 15px;
+    font-size: 13px;
     font-weight: 500;
-    letter-spacing: -0.005em;
     color: var(--t1, var(--pop-text));
     min-width: 0;
   }
@@ -481,9 +485,9 @@
     align-items: center;
     gap: 6px;
     font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.12em;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--t3, var(--pop-muted));
     white-space: nowrap;
@@ -527,8 +531,8 @@
   .lc-reason,
   .lc-ask {
     margin: 0;
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: 12px;
+    line-height: 1.45;
     color: var(--t2, var(--pop-muted));
   }
 
@@ -550,7 +554,7 @@
   .lc-field {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 5px;
     min-width: 0;
   }
 
@@ -558,77 +562,81 @@
     grid-column: 1 / -1;
   }
 
+  /* `.create-label` — the shell's form-label mark. */
   .lc-label {
     font-size: 12px;
-    color: var(--t2, var(--pop-muted));
+    font-weight: 400;
+    color: var(--t3, var(--pop-muted));
   }
 
+  /* `.create-select` / the shell's standard control: 31px, 8px radius,
+     --btn-bg, hairline only on hover and focus. */
   .lc-in {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 8px;
-    height: 32px;
+    height: 31px;
     padding: 0 10px;
     border: 1px solid transparent;
-    border-radius: 6px;
-    background: var(--raised, var(--pop-hover));
+    border-radius: 8px;
+    background: var(--btn-bg, var(--pop-hover));
     box-sizing: border-box;
+    transition: border-color 0.12s;
   }
 
-  .lc-in.ok {
-    border-color: color-mix(in oklab, var(--ok, #34c759) 50%, transparent);
+  .lc-in:hover {
+    border-color: var(--line2, var(--pop-border));
   }
 
-  .lc-in.err {
+  .lc-in:focus-within {
+    border-color: var(--line2, var(--pop-border));
+  }
+
+  .lc-in.err,
+  .lc-in.err:hover {
     border-color: color-mix(in oklab, var(--red, #f0616d) 60%, transparent);
   }
 
   .lc-input {
     flex: 1 1 auto;
     min-width: 0;
-    height: 30px;
+    height: 29px;
     padding: 0;
     border: 0;
     background: transparent;
     color: var(--t1, var(--pop-text));
-    font: inherit;
-    font-size: 13px;
+    font: 400 13px var(--font-ui);
     outline: none;
   }
 
-  .lc-hint {
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
+  .lc-input::placeholder {
     color: var(--t3, var(--pop-muted));
-    white-space: nowrap;
   }
 
-  .lc-in.ok .lc-hint {
-    color: var(--ok, #34c759);
-  }
-
-  .lc-in.err .lc-hint {
-    color: var(--red, #f0616d);
+  /* `.create-help` */
+  .lc-hint,
+  .lc-error {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--t2, var(--pop-muted));
   }
 
   .lc-error {
-    margin: 0;
-    font-size: 12px;
     color: var(--red, #f0616d);
   }
 
   .lc-seg {
     display: inline-flex;
     border: 1px solid var(--line2, var(--pop-border));
-    border-radius: 6px;
+    border-radius: 8px;
     overflow: hidden;
     width: fit-content;
     max-width: 100%;
   }
 
   .lc-seg-btn {
-    height: 32px;
+    height: 31px;
     padding: 0 14px;
     border: 0;
     border-left: 1px solid var(--line, var(--pop-border));
@@ -658,7 +666,7 @@
     display: flex;
     flex-direction: column;
     border: 1px solid var(--line2, var(--pop-border));
-    border-radius: 6px;
+    border-radius: 8px;
     overflow: hidden;
   }
 
@@ -744,37 +752,54 @@
   }
 
   .lc-ro-label {
+    min-width: 0;
+    overflow: hidden;
     color: var(--t2, var(--pop-muted));
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
+  /* Identifiers and vault paths land here — mono, muted, and truncating, so
+     one long id cannot set the width of the whole column. */
   .lc-ro-value {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    color: var(--t1, var(--pop-text));
+    min-width: 0;
+    overflow: hidden;
+    color: var(--t3, var(--pop-muted));
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .lc-acts {
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: var(--control-gap, 6px);
     align-items: center;
+    margin-top: 2px;
   }
 
+  /* The shell's standard button (`.core-btn` / `.run-card-btn`): 8px radius,
+     --btn-bg, hairline on hover only. Square corners and a hard border were
+     this component's own invention. */
   .lc-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    height: 32px;
-    min-height: 32px;
-    padding: 0 14px;
-    border: 1px solid var(--line2, var(--pop-border));
-    border-radius: 0;
-    background: transparent;
+    gap: 5px;
+    height: 28px;
+    min-height: 28px;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg, transparent);
     color: var(--t1, var(--pop-text));
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 500;
     text-decoration: none;
     cursor: pointer;
@@ -785,23 +810,39 @@
       opacity 140ms cubic-bezier(0.25, 1, 0.5, 1);
   }
 
+  .lc-btn:hover:not(:disabled) {
+    border-color: var(--line2, var(--pop-border));
+  }
+
   .lc-btn.primary {
-    border-color: var(--t1, var(--pop-text));
-    background: var(--t1, var(--pop-text));
-    color: var(--elevated, #0a0b0d);
+    border-color: transparent;
+    background: var(--ice-ink);
+    color: var(--badge-fg);
+  }
+
+  .lc-btn.primary:hover:not(:disabled) {
+    border-color: transparent;
+    opacity: 0.88;
   }
 
   .lc-btn.ghost {
     background: transparent;
     border-color: var(--line2, var(--pop-border));
+    color: var(--t2, var(--pop-muted));
+  }
+
+  .lc-btn.ghost:hover:not(:disabled) {
     color: var(--t1, var(--pop-text));
   }
 
   .lc-btn.link,
   .lc-btn.row {
-    height: 28px;
-    padding: 0 10px;
-    font-size: 12px;
+    height: 26px;
+    padding: 0 8px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--t2, var(--pop-muted));
+    font-size: 11px;
     text-decoration: none;
   }
 
@@ -814,8 +855,8 @@
   .lc-seg-btn:focus-visible,
   .lc-radio:focus-visible,
   .lc-input:focus-visible {
-    outline: 2px solid var(--t1, var(--pop-text));
-    outline-offset: 1px;
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: var(--v4-focus-offset, 2px);
   }
 
   .lc-summary .lc-fields {

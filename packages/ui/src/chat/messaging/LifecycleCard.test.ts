@@ -80,8 +80,8 @@ describe("LifecycleCard controls and states", () => {
     ) as HTMLButtonElement;
     expect(primary.textContent).toContain("Create Ramen Bae");
     expect(primary.classList.contains("primary")).toBe(true);
-    expect(primary.getAttribute("data-size")).toBe("32");
-    expect(root.querySelector(".lc-in")?.getAttribute("data-size")).toBe("32");
+    expect(primary.getAttribute("data-size")).toBe("28");
+    expect(root.querySelector(".lc-in")?.getAttribute("data-size")).toBe("31");
   });
 
   it("shows an inline field error", () => {
@@ -106,7 +106,7 @@ describe("LifecycleCard controls and states", () => {
     expect(root.querySelector(".lc-in")?.classList.contains("err")).toBe(true);
   });
 
-  it("renders a select as a 32px segmented control", () => {
+  it("renders a select as a 31px segmented control", () => {
     const root = mountCard(
       card({
         kind: "create_agent",
@@ -135,7 +135,7 @@ describe("LifecycleCard controls and states", () => {
     expect(selected).not.toBeNull();
     expect(selected?.textContent).toBe("Codex");
     expect(selected?.getAttribute("aria-checked")).toBe("true");
-    expect(selected?.getAttribute("data-size")).toBe("32");
+    expect(selected?.getAttribute("data-size")).toBe("31");
   });
 
   it("renders radio rows with prices at 40px", () => {
@@ -235,7 +235,7 @@ describe("LifecycleCard controls and states", () => {
     expect(getComputedStyle(link).textDecorationLine === "underline").toBe(
       false,
     );
-    expect(link.getAttribute("data-size")).toBe("28");
+    expect(link.getAttribute("data-size")).toBe("26");
     link.click();
     await tick();
     expect(onopenurl).toHaveBeenCalledWith("https://hqforwork.com/enterprise");
@@ -412,15 +412,22 @@ describe("LifecycleCard controls and states", () => {
     expect(skipped.querySelector(".lc-k")).toBeNull();
   });
 
-  it("locks control scale in CSS: 32 / 28 / 40 / 36", () => {
+  // The shell's control scale (`.create-select` 31px, `.core-btn`-class
+  // buttons 28px), not this component's own.
+  it("locks control scale in CSS: 31 / 28 / 26 / 40 / 36", () => {
     const css = readFileSync(
       resolve("src/chat/messaging/LifecycleCard.svelte"),
       "utf8",
     );
-    expect(css).toMatch(/\.lc-in \{[\s\S]*?height: 32px;/);
-    expect(css).toMatch(/\.lc-seg-btn \{[\s\S]*?height: 32px;/);
-    expect(css).toMatch(/\.lc-btn \{[\s\S]*?height: 32px;/);
-    expect(css).toMatch(/\.lc-btn\.link,[\s\S]*?height: 28px;/);
+    expect(css).toMatch(/\.lc-in \{[\s\S]*?height: 31px;/);
+    expect(css).toMatch(/\.lc-seg-btn \{[\s\S]*?height: 31px;/);
+    expect(css).toMatch(/\.lc-btn \{[\s\S]*?height: 28px;/);
+    expect(css).toMatch(/\.lc-btn\.link,[\s\S]*?height: 26px;/);
+    // 8px radius everywhere — square corners were the old look.
+    expect(css).toMatch(/\.lc-btn \{[\s\S]*?border-radius: 8px;/);
+    expect(css).toMatch(/\.lc-in \{[\s\S]*?border-radius: 8px;/);
+    // Primary is the shell's ice-ink chip, not a black block.
+    expect(css).toMatch(/\.lc-btn\.primary \{[\s\S]*?background: var\(--ice-ink\);/);
     expect(css).toMatch(/\.lc-radio \{[\s\S]*?height: 40px;/);
     expect(css).toMatch(/\.lc-ro \{[\s\S]*?height: 36px;/);
     expect(css).toMatch(/text-decoration: none;/);

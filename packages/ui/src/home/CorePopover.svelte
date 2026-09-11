@@ -577,17 +577,17 @@
           {#if appActions.showDownload}
             <button
               type="button"
-              class="core-text-btn accent"
+              class="core-btn primary"
               data-testid="core-popover-download-install"
               title={updateStore.installError ?? undefined}
               onclick={() => void handleDownloadInstall()}
             >
-              Download &amp; install
+              Install
             </button>
           {:else if appActions.showRestart}
             <button
               type="button"
-              class="core-text-btn accent"
+              class="core-btn primary"
               data-testid="core-popover-restart-update"
               title={updateStore.installError ?? undefined}
               onclick={() => void handleRestartToUpdate()}
@@ -938,7 +938,7 @@
     /* Left edge of the label, not of the panel — the row's own padding
        already provides the inset. */
     justify-content: flex-start;
-    gap: 12px;
+    gap: 10px;
   }
 
   /* Nothing actionable: don't reserve the second line. */
