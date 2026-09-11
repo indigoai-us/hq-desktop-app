@@ -661,7 +661,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
 
   readonly bots: NonNullable<PlatformAdapter["bots"]> = {
     list: () => this.call("local_bots_list"),
-    create: (input) => this.call("local_bots_create", { name: input.name, runtime: input.runtime }),
+    create: (input) =>
+      this.call("local_bots_create", {
+        name: input.name,
+        runtime: input.runtime,
+        model: input.model ?? null,
+        autoApprove: input.autoApprove ?? null,
+        worker: input.worker ?? null,
+      }),
+    workers: () => this.call("local_bots_workers"),
     start: (name) => this.call("local_bots_start", { name }),
     stop: (name) => this.call("local_bots_stop", { name }),
     remove: (name) => this.call("local_bots_remove", { name }),

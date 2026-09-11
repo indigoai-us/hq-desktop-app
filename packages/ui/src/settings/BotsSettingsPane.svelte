@@ -10,6 +10,7 @@
    */
   import { onDestroy, onMount } from "svelte";
   import type { LocalBotRow, PlatformAdapter } from "@hq/platform";
+  import { LOCAL_BOT_RUNTIMES, MAX_LOCAL_BOTS, isValidLocalBotName } from "../chat/local-bots.js";
   import "./settings-chrome.css";
 
   interface Props {
@@ -18,13 +19,9 @@
   let { adapter = null }: Props = $props();
 
   type Runtime = LocalBotRow["runtime"];
-  const RUNTIMES: Array<{ id: Runtime; label: string }> = [
-    { id: "claude", label: "Claude Code" },
-    { id: "codex", label: "Codex" },
-    { id: "grok", label: "Grok" },
-  ];
+  const RUNTIMES = LOCAL_BOT_RUNTIMES;
   const POLL_MS = 30_000;
-  const MAX_BOTS = 3;
+  const MAX_BOTS = MAX_LOCAL_BOTS;
 
   let bots = $state<LocalBotRow[]>([]);
   let loading = $state(true);
@@ -62,9 +59,7 @@
     const h = Math.round(m / 60);
     return h < 48 ? `Checked in ${h}h ago` : `Checked in ${Math.round(h / 24)}d ago`;
   }
-  function validBotName(name: string): boolean {
-    return /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(name) && !name.includes("--");
-  }
+  const validBotName = isValidLocalBotName;
 
   async function load(quiet = false): Promise<void> {
     const api = adapter?.bots;

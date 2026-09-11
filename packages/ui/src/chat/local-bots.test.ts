@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import {
+  isValidLocalBotName,
   lastHeartbeatLabel,
   localBotForRow,
   localBotOfflineNotice,
@@ -47,5 +48,17 @@ describe("local bot presence (US-009)", () => {
     expect(lastHeartbeatLabel("2026-09-10T11:30:00.000Z", now)).toBe("checked in 31m ago");
     expect(lastHeartbeatLabel(null, now)).toBeNull();
     expect(lastHeartbeatLabel("garbage", now)).toBeNull();
+  });
+});
+
+describe("isValidLocalBotName", () => {
+  it("accepts slugs and rejects everything the CLI rejects", () => {
+    expect(isValidLocalBotName("assistant")).toBe(true);
+    expect(isValidLocalBotName("scout-2")).toBe(true);
+    expect(isValidLocalBotName("Scout")).toBe(false);
+    expect(isValidLocalBotName("-x")).toBe(false);
+    expect(isValidLocalBotName("a--b")).toBe(false);
+    expect(isValidLocalBotName("")).toBe(false);
+    expect(isValidLocalBotName("a".repeat(41))).toBe(false);
   });
 });

@@ -281,3 +281,77 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(q('[data-testid="chat-scope-new-company"]')).toBeNull();
   });
 });
+
+describe("ChatSidebar 'New bot' entry point (local bots)", () => {
+  it("hides the row when the host has no local bots", async () => {
+    mountSidebar({ companies: [INDIGO] });
+    await settle();
+    await openModal();
+    expect(q('[data-testid="chat-create-new-bot"]')).toBeNull();
+  });
+
+  it("opens the bot step and submits name, runtime, and pre-approval to the host", async () => {
+    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
+    mountSidebar({ companies: [INDIGO], oncreatebot, botCount: 1 });
+    await settle();
+    await openModal();
+    const plus = q<HTMLButtonElement>('[data-testid="chat-new-message"]');
+    expect(plus?.getAttribute("aria-label")).toBe("New message, channel, company, agent, or bot");
+    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
+    expect(row).toBeTruthy();
+    expect(row?.textContent).toContain("Runs on this Mac");
+    row!.click();
+    await settle();
+    expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
+    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    expect(name.value).toBe("assistant");
+    q<HTMLButtonElement>('[data-testid="chat-bot-runtime-grok"]')!.click();
+    await settle();
+    q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
+    await settle(10);
+    expect(oncreatebot).toHaveBeenCalledWith({ name: "assistant", runtime: "grok", autoApprove: true });
+    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
+  });
+
+  it("shows the host's reason inline and stays open when creation fails", async () => {
+    const oncreatebot = vi.fn(async () => ({ ok: false as const, reason: "Claude Code is not signed in." }));
+    mountSidebar({ companies: [INDIGO], oncreatebot });
+    await settle();
+    await openModal();
+    q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+    await settle();
+    q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
+    await settle(10);
+    expect(q('[data-testid="chat-create-entry-error"]')?.textContent).toContain("not signed in");
+    expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
+  });
+
+  it("blocks a bad name and disables the row at the cap", async () => {
+    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "x" }));
+    mountSidebar({ companies: [INDIGO], oncreatebot, botCount: 3 });
+    await settle();
+    await openModal();
+    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!;
+    expect(row.disabled).toBe(true);
+    expect(row.textContent).toContain("Limit of 3 reached");
+    await unmount(component!);
+    component = null;
+    mountSidebar({ companies: [INDIGO], oncreatebot, botRuntimeReady: { claude: false, codex: true, grok: true } });
+    await settle();
+    await openModal();
+    q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+    await settle();
+    // Default runtime (claude) is not signed in → submit blocked until another is picked.
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-runtime-claude"]')!.textContent).toContain("not signed in");
+    q<HTMLButtonElement>('[data-testid="chat-bot-runtime-codex"]')!.click();
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    name.value = "Bad Name";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
+    expect(oncreatebot).not.toHaveBeenCalled();
+  });
+});

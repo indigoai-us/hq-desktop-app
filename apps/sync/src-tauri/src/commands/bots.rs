@@ -33,6 +33,68 @@ fn validate_name(name: &str) -> Result<String, String> {
     }
 }
 
+/// Model override handed to `hq bot create --model`. Closed character set so
+/// nothing shell- or flag-like can ride along (argv is never shell-parsed,
+/// but the CLI would otherwise see a nonsense model id).
+fn validate_model(model: &str) -> Result<String, String> {
+    let trimmed = model.trim();
+    let ok = !trimmed.is_empty()
+        && trimmed.len() <= 64
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+        && !trimmed.starts_with('-');
+    if ok {
+        Ok(trimmed.to_string())
+    } else {
+        Err("Model ids use letters, digits, dots, colons, underscores, and hyphens.".to_string())
+    }
+}
+
+/// Worker id from `core/workers/registry.yaml` (`hq bot create --worker`).
+fn validate_worker(worker: &str) -> Result<String, String> {
+    let trimmed = worker.trim();
+    let ok = !trimmed.is_empty()
+        && trimmed.len() <= 64
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-'))
+        && !trimmed.starts_with('-');
+    if ok {
+        Ok(trimmed.to_string())
+    } else {
+        Err("Worker ids use lowercase letters, digits, underscores, and hyphens.".to_string())
+    }
+}
+
+/// argv for `hq bot create` (without the trailing `--json`, which
+/// `run_hq_bot` appends). Pure so the flag mapping is unit-testable — the
+/// JS side sends camelCase (`autoApprove`) and Tauri maps it to
+/// `auto_approve`; a mismatch would silently drop the setting.
+fn create_args(
+    name: &str,
+    runtime: &str,
+    model: Option<&str>,
+    auto_approve: Option<bool>,
+    worker: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let name = validate_name(name)?;
+    let runtime = validate_runtime(runtime)?;
+    let mut args = vec!["create".to_string(), name, "--runtime".to_string(), runtime.to_string()];
+    if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        args.push("--model".to_string());
+        args.push(validate_model(model)?);
+    }
+    if auto_approve == Some(false) {
+        args.push("--no-auto-approve".to_string());
+    }
+    if let Some(worker) = worker.map(str::trim).filter(|w| !w.is_empty()) {
+        args.push("--worker".to_string());
+        args.push(validate_worker(worker)?);
+    }
+    Ok(args)
+}
+
 fn validate_runtime(runtime: &str) -> Result<&'static str, String> {
     match runtime.trim() {
         "claude" => Ok("claude"),
@@ -112,13 +174,27 @@ pub async fn local_bots_list() -> Result<Value, String> {
     run_hq_bot(&["list"], Duration::from_secs(45)).await
 }
 
-/// `hq bot create <name> --runtime <runtime> --json`: provisions the identity,
-/// scaffolds the worker folder, installs the launchd agent, and starts the bot.
+/// `hq bot create <name> --runtime <runtime> [--model m] [--no-auto-approve]
+/// [--worker id] --json`: provisions the identity, scaffolds (or binds) the
+/// worker folder, installs the launchd agent, and starts the bot.
 #[tauri::command]
-pub async fn local_bots_create(name: String, runtime: String) -> Result<Value, String> {
-    let name = validate_name(&name)?;
-    let runtime = validate_runtime(&runtime)?;
-    run_hq_bot(&["create", &name, "--runtime", runtime], Duration::from_secs(150)).await
+pub async fn local_bots_create(
+    name: String,
+    runtime: String,
+    model: Option<String>,
+    auto_approve: Option<bool>,
+    worker: Option<String>,
+) -> Result<Value, String> {
+    let args = create_args(&name, &runtime, model.as_deref(), auto_approve, worker.as_deref())?;
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_hq_bot(&argv, Duration::from_secs(150)).await
+}
+
+/// `hq bot workers --json` → `{ workers: [{ id, path, company?, description? }] }`:
+/// company/core workers a bot can be created from.
+#[tauri::command]
+pub async fn local_bots_workers() -> Result<Value, String> {
+    run_hq_bot(&["workers"], Duration::from_secs(45)).await
 }
 
 #[tauri::command]
@@ -152,6 +228,26 @@ mod tests {
         assert!(validate_name("a--b").is_err());
         assert!(validate_name("../etc").is_err());
         assert!(validate_name("").is_err());
+    }
+
+    #[test]
+    fn create_args_map_every_setting_to_a_cli_flag() {
+        assert_eq!(
+            create_args("scout", "claude", None, None, None).unwrap(),
+            vec!["create", "scout", "--runtime", "claude"]
+        );
+        assert_eq!(
+            create_args("scout", "grok", Some("grok-4.5"), Some(true), Some("")).unwrap(),
+            vec!["create", "scout", "--runtime", "grok", "--model", "grok-4.5"]
+        );
+        assert_eq!(
+            create_args("iris", "claude", None, Some(false), Some("iris-cx")).unwrap(),
+            vec!["create", "iris", "--runtime", "claude", "--no-auto-approve", "--worker", "iris-cx"]
+        );
+        assert!(create_args("scout", "claude", Some("--dangerously"), None, None).is_err());
+        assert!(create_args("scout", "claude", None, None, Some("../x")).is_err());
+        assert!(create_args("scout", "claude", None, None, Some("Iris")).is_err());
+        assert!(create_args("Scout", "claude", None, None, None).is_err());
     }
 
     #[test]

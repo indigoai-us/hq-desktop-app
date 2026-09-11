@@ -712,6 +712,7 @@ fn main() {
             commands::bots::local_bots_start,
             commands::bots::local_bots_stop,
             commands::bots::local_bots_remove,
+            commands::bots::local_bots_workers,
             commands::packages::list_packages,
             commands::packages::list_packages_cached,
             commands::packages::check_package_updates,

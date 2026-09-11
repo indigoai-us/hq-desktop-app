@@ -1037,6 +1037,31 @@ export interface LocalBotRow {
   daemonInstalled: boolean;
   daemonLoaded: boolean;
   dir: string;
+  /** Set when the bot was created from a company/core worker (`--worker`). */
+  workerId?: string;
+  companySlug?: string;
+}
+
+/** A worker a bot can be created from (`hq bot workers --json`). */
+export interface LocalBotWorkerOption {
+  id: string;
+  /** hqRoot-relative worker folder. */
+  path: string;
+  company?: string;
+  description?: string;
+  type?: string;
+}
+
+/** Input to `LocalBotsApi.create` — mirrors `hq bot create` flags. */
+export interface LocalBotCreateInput {
+  name: string;
+  runtime: "claude" | "codex" | "grok";
+  /** Optional model override passed to the runtime CLI. */
+  model?: string;
+  /** Pre-approve every tool/command (default true; headless bots cannot prompt). */
+  autoApprove?: boolean;
+  /** Create the bot from this worker id instead of a fresh persona. */
+  worker?: string;
 }
 
 /**
@@ -1046,10 +1071,9 @@ export interface LocalBotRow {
  */
 export interface LocalBotsApi {
   list(): AdapterPromise<{ bots: LocalBotRow[] }>;
-  create(input: {
-    name: string;
-    runtime: "claude" | "codex" | "grok";
-  }): AdapterPromise<Json>;
+  create(input: LocalBotCreateInput): AdapterPromise<Json>;
+  /** Workers a bot can be created from; optional for older hosts. */
+  workers?(): AdapterPromise<{ workers: LocalBotWorkerOption[] }>;
   start(name: string): AdapterPromise<Json>;
   stop(name: string): AdapterPromise<Json>;
   remove(name: string): AdapterPromise<Json>;

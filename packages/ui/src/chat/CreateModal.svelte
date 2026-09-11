@@ -16,6 +16,13 @@
    */
   import type { Channel } from "./channels.js";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
+  import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
+  import {
+    LOCAL_BOT_RUNTIMES,
+    MAX_LOCAL_BOTS,
+    isValidLocalBotName,
+    type LocalBotEntryResult,
+  } from "./local-bots.js";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type { SelfIdentity } from "../identity/self.js";
   import {
@@ -103,6 +110,18 @@
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
     /**
+     * Personal local bot (local-bots): the host creates it through the desktop
+     * adapter and opens its DM; the modal collects name + settings. Unset on
+     * hosts without local bots (web) and the row is hidden.
+     */
+    oncreatebot?: ((input: LocalBotCreateInput) => Promise<LocalBotEntryResult>) | null;
+    /** `{ claude: true, codex: false, … }` — which runtimes are signed in here. */
+    botRuntimeReady?: Record<string, boolean> | null;
+    /** How many bots the user already has (the row disables at the cap). */
+    botCount?: number;
+    /** Company/core workers a bot can be created from (empty → plain bot only). */
+    botWorkers?: readonly LocalBotWorkerOption[] | null;
+    /**
      * What to create inside a company: a company channel (default) or a
      * project channel — an invite-only channel that is the home of one
      * project (its files, work, and people). #welcome's "Start a project
@@ -125,6 +144,10 @@
     oncreatecompany = null,
     oncreateagent = null,
     agentCompanies = null,
+    oncreatebot = null,
+    botRuntimeReady = null,
+    botCount = 0,
+    botWorkers = null,
     initialKind = "channel",
   }: Props = $props();
 
@@ -136,15 +159,15 @@
     (agentCompanies ?? scopeCompanies).filter((c) => c.companyUid.trim()),
   );
   const showEntryPoints = $derived(
-    !!oncreatecompany || (!!oncreateagent && agentTargets.length > 0),
+    !!oncreatecompany || (!!oncreateagent && agentTargets.length > 0) || !!oncreatebot,
   );
-  let entryBusy = $state<"company" | "agent" | null>(null);
+  let entryBusy = $state<"company" | "agent" | "bot" | null>(null);
   let entryError = $state<string | null>(null);
   let agentPickerOpen = $state(false);
 
   async function runEntry(
-    kind: "company" | "agent",
-    run: () => Promise<EntryPointResult>,
+    kind: "company" | "agent" | "bot",
+    run: () => Promise<EntryPointResult | LocalBotEntryResult>,
   ): Promise<void> {
     if (entryBusy) return;
     entryBusy = kind;
@@ -185,6 +208,45 @@
     void runEntry("agent", () => oncreateagent!(companyUid));
   }
 
+  // ── New bot (personal local bot) ──────────────────────────────────────────
+  let botName = $state("assistant");
+  let botRuntime = $state<LocalBotCreateInput["runtime"]>("claude");
+  let botAutoApprove = $state(true);
+  let botModel = $state("");
+  let botWorker = $state("");
+  const botNameNormalized = $derived(botName.trim().toLowerCase());
+  const botNameValid = $derived(isValidLocalBotName(botNameNormalized));
+  const botAtCap = $derived(botCount >= MAX_LOCAL_BOTS);
+  function botRuntimeReadyFor(id: string): boolean {
+    if (!botRuntimeReady) return true;
+    return botRuntimeReady[id] !== false;
+  }
+  const botSubmitDisabled = $derived(
+    entryBusy !== null || !botNameValid || botAtCap || !botRuntimeReadyFor(botRuntime),
+  );
+
+  function newBot(): void {
+    if (!oncreatebot || botAtCap) return;
+    entryError = null;
+    agentPickerOpen = false;
+    step = "bot";
+  }
+
+  function submitBot(): void {
+    if (!oncreatebot || botSubmitDisabled) return;
+    const model = botModel.trim();
+    const worker = botWorker.trim();
+    void runEntry("bot", () =>
+      oncreatebot!({
+        name: botNameNormalized,
+        runtime: botRuntime,
+        autoApprove: botAutoApprove,
+        ...(model ? { model } : {}),
+        ...(worker ? { worker } : {}),
+      }),
+    );
+  }
+
   function onEntryPickerKey(event: KeyboardEvent): void {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     const buttons = Array.from(
@@ -202,7 +264,7 @@
     next?.focus();
   }
 
-  type Step = "find" | "create" | "summary";
+  type Step = "find" | "create" | "summary" | "bot";
 
   interface MemberChip {
     key: string;
@@ -805,6 +867,12 @@
         backToFind();
         return;
       }
+      if (step === "bot") {
+        if (entryBusy) return;
+        entryError = null;
+        step = "find";
+        return;
+      }
       closeAll();
     }
     window.addEventListener("keydown", onKey, true);
@@ -828,6 +896,9 @@
       if (step === "create" && !submitDisabled) {
         event.preventDefault();
         void submitCreate();
+      } else if (step === "bot" && !botSubmitDisabled) {
+        event.preventDefault();
+        submitBot();
       }
       return;
     }
@@ -1472,20 +1543,25 @@
           onkeydown={onFindKey}
         />
       {:else}
-        {#if step === "create"}
+        {#if step === "create" || step === "bot"}
           <button
             type="button"
             class="create-back"
             data-testid="chat-create-back"
             aria-label="Back to search"
-            disabled={creating}
-            onclick={backToFind}
+            disabled={creating || entryBusy !== null}
+            onclick={() => {
+              if (step === "bot") {
+                entryError = null;
+                step = "find";
+              } else backToFind();
+            }}
           >
             <span aria-hidden="true">‹</span>
           </button>
         {/if}
         <h2 id="create-modal-title" class="create-title">
-          {step === "create" ? "New channel" : "Channel created"}
+          {step === "create" ? "New channel" : step === "bot" ? "New bot" : "Channel created"}
         </h2>
         <span class="create-spacer"></span>
       {/if}
@@ -1683,6 +1759,37 @@
               </div>
             {/if}
           {/if}
+          {#if oncreatebot}
+            <button
+              type="button"
+              class="create-row create-entry-row"
+              data-testid="chat-create-new-bot"
+              aria-busy={entryBusy === "bot" ? "true" : undefined}
+              disabled={entryBusy !== null || botAtCap}
+              onclick={newBot}
+            >
+              <span class="create-entry-ic" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none">
+                  <path
+                    d="M3 6.5 5 4h6l2 2.5v5a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 11.5v-5Z"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                    stroke-linejoin="round"
+                  />
+                  <path
+                    d="M6 8.5h.5M9.5 8.5h.5M6.5 11h3"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </span>
+              <span class="create-entry-label">New bot</span>
+              <span class="create-entry-hint">
+                {botAtCap ? `Limit of ${MAX_LOCAL_BOTS} reached` : "Runs on this Mac"}
+              </span>
+            </button>
+          {/if}
           {#if entryError}
             <p
               class="create-note create-entry-error"
@@ -1694,6 +1801,142 @@
           {/if}
         </div>
       {/if}
+    {:else if step === "bot"}
+      <div class="create-body" data-testid="chat-create-bot-step">
+        <div class="create-field">
+          <span class="create-label" id="create-bot-name-label">Name</span>
+          <input
+            class="create-input"
+            type="text"
+            maxlength="40"
+            data-testid="chat-bot-name"
+            use:focusEndOnMount
+            placeholder="assistant"
+            aria-labelledby="create-bot-name-label"
+            aria-describedby="create-bot-name-help"
+            disabled={entryBusy !== null}
+            bind:value={botName}
+            onkeydown={onFieldKey}
+          />
+        </div>
+        <p class="create-help" id="create-bot-name-help">
+          {botName.trim() && !botNameValid
+            ? "Lowercase letters, digits, and single hyphens."
+            : "How it appears in Messages. Lowercase, dashes only."}
+        </p>
+
+        <div class="create-field">
+          <span class="create-label" id="create-bot-runtime-label">Thinks with</span>
+          <div class="create-kind" role="radiogroup" aria-labelledby="create-bot-runtime-label">
+            {#each LOCAL_BOT_RUNTIMES as rt (rt.id)}
+              <button
+                type="button"
+                role="radio"
+                class="create-kind-option"
+                class:selected={botRuntime === rt.id}
+                aria-checked={botRuntime === rt.id}
+                data-testid={`chat-bot-runtime-${rt.id}`}
+                disabled={entryBusy !== null}
+                onclick={() => (botRuntime = rt.id)}
+              >
+                {rt.label}{botRuntimeReadyFor(rt.id) ? "" : " · not signed in"}
+              </button>
+            {/each}
+          </div>
+        </div>
+        <p class="create-help">
+          {botRuntimeReadyFor(botRuntime)
+            ? "Uses your own login on this Mac — no extra cost."
+            : "Sign in to this tool under Settings → Agents first, or pick another."}
+        </p>
+
+        {#if botWorkers && botWorkers.length > 0}
+          <div class="create-field">
+            <span class="create-label" id="create-bot-worker-label">Start from</span>
+            <select
+              class="create-input create-select"
+              data-testid="chat-bot-worker"
+              aria-labelledby="create-bot-worker-label"
+              disabled={entryBusy !== null}
+              bind:value={botWorker}
+            >
+              <option value="">A fresh persona</option>
+              {#each botWorkers as w (w.id)}
+                <option value={w.id}>{w.id}{w.company ? ` · ${w.company}` : ""}</option>
+              {/each}
+            </select>
+          </div>
+          <p class="create-help">
+            {botWorker
+              ? (botWorkers.find((w) => w.id === botWorker)?.description ?? "Uses that worker's instructions, skills, and company rules.")
+              : "Or turn one of your company workers into a bot."}
+          </p>
+        {/if}
+
+        <div class="create-field">
+          <span class="create-label" id="create-bot-approve-label">Permissions</span>
+          <button
+            type="button"
+            role="switch"
+            class="create-kind-option create-switch"
+            class:selected={botAutoApprove}
+            aria-checked={botAutoApprove}
+            aria-labelledby="create-bot-approve-label"
+            data-testid="chat-bot-auto-approve"
+            disabled={entryBusy !== null}
+            onclick={() => (botAutoApprove = !botAutoApprove)}
+          >
+            {botAutoApprove ? "Pre-approve every action" : "Ask before each action"}
+          </button>
+        </div>
+        <p class="create-help">
+          {botAutoApprove
+            ? "It acts with your permissions and never waits on a prompt."
+            : "Gated commands will fail — a bot can't answer approval prompts."}
+        </p>
+
+        <div class="create-field">
+          <span class="create-label" id="create-bot-model-label">Model</span>
+          <input
+            class="create-input"
+            type="text"
+            maxlength="64"
+            data-testid="chat-bot-model"
+            placeholder="Default"
+            aria-labelledby="create-bot-model-label"
+            disabled={entryBusy !== null}
+            bind:value={botModel}
+            onkeydown={onFieldKey}
+          />
+        </div>
+      </div>
+
+      {#if entryError}
+        <p class="create-error" role="alert" data-testid="chat-create-entry-error">
+          {entryError}
+        </p>
+      {/if}
+
+      <div class="create-footer">
+        {#if botAtCap}
+          <span class="create-hint create-hint-block" id="create-bot-submit-reason"
+            >You have {MAX_LOCAL_BOTS} bots, the most this version allows.</span
+          >
+        {:else}
+          <span class="create-hint" aria-hidden="true">⌘↵ TO CREATE</span>
+        {/if}
+        <button
+          type="button"
+          class="create-submit"
+          data-testid="chat-bot-create"
+          disabled={botSubmitDisabled}
+          aria-busy={entryBusy === "bot"}
+          aria-describedby={botAtCap ? "create-bot-submit-reason" : undefined}
+          onclick={submitBot}
+        >
+          {entryBusy === "bot" ? "Creating… (about half a minute)" : "Create bot"}
+        </button>
+      </div>
     {:else if step === "create"}
       <div class="create-body" inert={confirmSubject !== null}>
         <div class="create-field">
@@ -2495,6 +2738,14 @@
     outline: none;
   }
 
+  .create-select {
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+  }
+  .create-switch.selected {
+    color: var(--text-1, inherit);
+  }
   .create-input::placeholder {
     color: var(--t3);
   }

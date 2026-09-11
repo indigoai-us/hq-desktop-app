@@ -13,6 +13,28 @@ import type { ConversationRow } from "./sidebar-model.js";
 
 export const LOCAL_BOTS_POLL_MS = 30_000;
 
+/** Runtimes a bot can think with, in picker order. */
+export const LOCAL_BOT_RUNTIMES: ReadonlyArray<{ id: LocalBotRow["runtime"]; label: string }> = [
+  { id: "claude", label: "Claude Code" },
+  { id: "codex", label: "Codex" },
+  { id: "grok", label: "Grok" },
+];
+
+/** Cap for this version (mirrors the server-side cap in hq-pro-agents). */
+export const MAX_LOCAL_BOTS = 3;
+
+/** Same rule as the CLI's validateBotName and the Tauri command's validate_name. */
+export function isValidLocalBotName(name: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(name) && !name.includes("--");
+}
+
+export function localBotRuntimeLabel(id: string): string {
+  return LOCAL_BOT_RUNTIMES.find((r) => r.id === id)?.label ?? id;
+}
+
+/** Result of the sidebar "New bot" entry point (see CreateModal). */
+export type LocalBotEntryResult = { ok: true; agentUid: string; name: string } | { ok: false; reason: string };
+
 export type LocalBotPresence = "online" | "offline";
 
 /** The local bot behind a DM row, if that agent lives on this machine. */

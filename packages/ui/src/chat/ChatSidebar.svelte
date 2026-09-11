@@ -39,6 +39,8 @@
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
+  import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
+  import type { LocalBotEntryResult } from "./local-bots.js";
   import {
     shouldArmDirectorySafety,
     shouldBumpDmUnread,
@@ -191,6 +193,11 @@
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
     oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
+    /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
+    oncreatebot?: ((input: LocalBotCreateInput) => Promise<LocalBotEntryResult>) | null;
+    botRuntimeReady?: Record<string, boolean> | null;
+    botCount?: number;
+    botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
@@ -257,6 +264,10 @@
     onsignout,
     oncreatecompany = null,
     oncreateagent = null,
+    oncreatebot = null,
+    botRuntimeReady = null,
+    botCount = 0,
+    botWorkers = null,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     welcomeFirst = false,
@@ -395,6 +406,13 @@
    * new-channel modals.
    */
   let createOpen = $state(false);
+  const createButtonLabel = $derived(
+    oncreatebot
+      ? "New message, channel, company, agent, or bot"
+      : oncreatecompany || oncreateagent
+        ? "New message, channel, company, or agent"
+        : "New message or channel",
+  );
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
@@ -1928,12 +1946,8 @@
         class="chat-icon-btn"
         bind:this={plusBtnEl}
         data-testid="chat-new-message"
-        aria-label={oncreatecompany || oncreateagent
-          ? "New message, channel, company, or agent"
-          : "New message or channel"}
-        title={oncreatecompany || oncreateagent
-          ? "New message, channel, company, or agent"
-          : "New message or channel"}
+        aria-label={createButtonLabel}
+        title={createButtonLabel}
         aria-haspopup="dialog"
         aria-expanded={createOpen}
         onclick={openCreateFromButton}
@@ -2660,6 +2674,10 @@
       {oncreatecompany}
       {oncreateagent}
       {agentCompanies}
+      {oncreatebot}
+      {botRuntimeReady}
+      {botCount}
+      {botWorkers}
       initialKind={createKind}
     />
   {/if}

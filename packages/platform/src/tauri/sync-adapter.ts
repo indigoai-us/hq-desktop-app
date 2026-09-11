@@ -1074,7 +1074,15 @@ export function createSyncPlatformAdapter(
     // behind the host's launch boundary (src-tauri/src/commands/bots.rs).
     bots: {
       list: () => call('local_bots_list'),
-      create: (input) => call('local_bots_create', { name: input.name, runtime: input.runtime }),
+      create: (input) =>
+      call('local_bots_create', {
+        name: input.name,
+        runtime: input.runtime,
+        model: input.model ?? null,
+        autoApprove: input.autoApprove ?? null,
+        worker: input.worker ?? null,
+      }),
+    workers: () => call('local_bots_workers'),
       start: (name) => call('local_bots_start', { name }),
       stop: (name) => call('local_bots_stop', { name }),
       remove: (name) => call('local_bots_remove', { name }),
