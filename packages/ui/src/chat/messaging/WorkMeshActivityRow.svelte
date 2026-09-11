@@ -5,6 +5,7 @@
   // legacy activity with details expands a muted key/value block.
   import { formatLastActivity } from "../channel-status-model";
   import type { WorkSessionCardModel } from "./channelMessageModels";
+  import { isDesktopLiveSessionId } from "./session-thread";
   import {
     isOpaqueActorId,
     taskStatusLabel,
@@ -131,7 +132,9 @@
 </script>
 
 {#if card}
-  {@const canOpen = Boolean(card.sessionId && onopensession)}
+  {@const canOpen = Boolean(
+    card.sessionId && onopensession && isDesktopLiveSessionId(card.sessionId),
+  )}
   <div
     class="work-mesh-block"
     data-testid="work-mesh-card"

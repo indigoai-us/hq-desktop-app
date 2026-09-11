@@ -99,6 +99,52 @@ export function createSessionThread(input: {
   };
 }
 
+/** Mesh Board spawn ids look like `ws_spawn_<company>|<project>|<US-001>`. */
+export function parseWorkMeshSpawnId(
+  id: string | null | undefined,
+): { project: string; taskId: string } | null {
+  const raw = (id ?? "").trim();
+  if (!raw.startsWith("ws_spawn_") || !raw.includes("|")) return null;
+  const parts = raw.split("|");
+  if (parts.length < 3) return null;
+  const project = parts[1]?.trim() ?? "";
+  const taskId = parts[2]?.trim() ?? "";
+  if (!project || !taskId) return null;
+  return { project, taskId };
+}
+
+/** True when HQ Desktop can `open()` this id as a local agent session. */
+export function isDesktopLiveSessionId(id: string | null | undefined): boolean {
+  const raw = (id ?? "").trim();
+  if (!raw || raw.includes("|") || raw.startsWith("ws_spawn_")) return false;
+  if (raw.startsWith("sess-thread-")) return false;
+  return true;
+}
+
+/** Keep the latest work_session card per mesh/desktop session id. */
+export function coalesceWorkSessionWires<
+  T extends { eventId: string; systemEvent?: unknown },
+>(rows: readonly T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i]!;
+    const event = row.systemEvent;
+    const sessionId =
+      event &&
+      typeof event === "object" &&
+      (event as { type?: unknown }).type === "work_session"
+        ? String((event as { sessionId?: unknown }).sessionId ?? "").trim()
+        : "";
+    if (sessionId) {
+      if (seen.has(sessionId)) continue;
+      seen.add(sessionId);
+    }
+    out.push(row);
+  }
+  return out.reverse();
+}
+
 export function contextPromptForThread(thread: SessionThread): string {
   if (thread.origin.kind === "message") {
     return thread.origin.excerpt.trim();

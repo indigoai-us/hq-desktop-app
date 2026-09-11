@@ -144,4 +144,28 @@ describe("WorkMeshActivityRow — work_session card", () => {
     button.click();
     expect(onopensession).toHaveBeenCalledWith("sess-1");
   });
+
+  it("does not treat a mesh spawn id as an openable desktop session", async () => {
+    const onopensession = vi.fn();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(WorkMeshActivityRow, {
+      target: host,
+      props: {
+        card: card({
+          sessionId:
+            "ws_spawn_cmp_01KQ2RYAHXHDPCTY9GPQPTH3DG|hq-desktop-sessions-testing|US-001",
+          title: "US-001",
+        }),
+        onopensession,
+      },
+    });
+    await tick();
+    const button = host.querySelector(
+      '[data-testid="work-mesh-card-open"]',
+    ) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    button.click();
+    expect(onopensession).not.toHaveBeenCalled();
+  });
 });

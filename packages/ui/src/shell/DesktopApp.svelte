@@ -102,9 +102,11 @@
   } from "../chat/messaging/ReplyPanel.svelte";
   import SessionThreadPanel from "../chat/messaging/SessionThreadPanel.svelte";
   import {
+    coalesceWorkSessionWires,
     contextPromptForThread,
     createSessionThread,
     excerptFromBody,
+    isDesktopLiveSessionId,
     type SessionThread,
   } from "../chat/messaging/session-thread.js";
   import type { Snippet } from "svelte";
@@ -1757,8 +1759,8 @@
     }
     const extras = selectedRow ? taskGenLines[activityKeyForRow(selectedRow)] ?? [] : [];
     if (extras.length) rows = [...rows, ...extras];
-    if (localSessionWires.length === 0) return rows;
-    return [...rows, ...localSessionWires];
+    if (localSessionWires.length === 0) return coalesceWorkSessionWires(rows);
+    return coalesceWorkSessionWires([...rows, ...localSessionWires]);
   });
 
   /**
@@ -3313,10 +3315,11 @@
     const known =
       sessionThreadsById[id] ??
       Object.values(sessionThreadsById).find((row) => row.liveSessionId === id);
-    if (known) {
+    if (known?.liveSessionId && isDesktopLiveSessionId(known.liveSessionId)) {
       revealSessionThread(known);
       return;
     }
+    if (!isDesktopLiveSessionId(id)) return;
     const row = selectedRow;
     const thread = createSessionThread({
       origin: {
