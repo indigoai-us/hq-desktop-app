@@ -968,24 +968,31 @@ fn spawn_enrichment(app: AppHandle, hq_root: std::path::PathBuf, company_slug: S
             ),
         }
 
+        // The optional model stage. Deliberately *not* written with early
+        // `return`s: `spawn_reindex` below must run on every path out of this
+        // task — the model stage is off by default, so an early return here
+        // would mean the common capture is never re-indexed.
         let mode = current_extraction_mode();
-        if !should_run_model(mode) {
-            return;
-        }
-        let extractor = match build_model_extractor() {
-            Ok(x) => x,
-            Err(e) => {
-                log(
+        if should_run_model(mode) {
+            match build_model_extractor() {
+                Ok(extractor) => {
+                    match run_model_stage(&hq_root, &company_slug, &id, mode, &extractor).await {
+                        Ok(record) => emit(&record),
+                        Err(e) => {
+                            log(LOG_TAG, &format!("model stage failed for record {id}: {e}"))
+                        }
+                    }
+                }
+                Err(e) => log(
                     LOG_TAG,
                     &format!("model stage unavailable for record {id}: {e}"),
-                );
-                return;
+                ),
             }
-        };
-        match run_model_stage(&hq_root, &company_slug, &id, mode, &extractor).await {
-            Ok(record) => emit(&record),
-            Err(e) => log(LOG_TAG, &format!("model stage failed for record {id}: {e}")),
         }
+
+        // Unconditional: `capture.md` was written by `create_record` and
+        // refreshed by each enrichment stage, so the index owes a refresh
+        // whether or not the model stage ran.
         spawn_reindex(id);
     });
 }

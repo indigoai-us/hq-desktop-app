@@ -46,4 +46,22 @@ describe('hq-idea-board US-011: citation label and ideas_mark_cited wiring', () 
     expect(capture).toContain('IDEAS_MARK_CITED_FLAG');
     expect(capture).toContain('--ideas-mark-cited');
   });
+
+  // Regression: spawn_reindex used to sit after `if !should_run_model(mode) {
+  // return; }`, so with the shipped default (model extraction off) a capture
+  // was never re-indexed and the AC "qmd update after a capture makes it
+  // findable" did not hold on the common path. The enrichment task must reach
+  // spawn_reindex on every exit. src-tauri has no lib target, so this is
+  // asserted against the source the same way the wiring above is.
+  it('reindexes after every enrichment path, not only when the model stage runs', () => {
+    const capture = readFileSync(resolve(appRoot, 'src-tauri/src/commands/capture.rs'), 'utf8');
+    const start = capture.indexOf('fn spawn_enrichment(');
+    expect(start).toBeGreaterThan(-1);
+    const body = capture.slice(start, capture.indexOf('\nfn spawn_reindex(', start));
+
+    expect(body).toContain('spawn_reindex(id);');
+    // No bare `return;` may short-circuit the task before the reindex call.
+    const beforeReindex = body.slice(0, body.lastIndexOf('spawn_reindex(id);'));
+    expect(beforeReindex).not.toMatch(/^\s*return;\s*$/m);
+  });
 });
