@@ -341,6 +341,34 @@ teardown (session-end observer shutdown, `terminate_all_for_exit`, then a capped
 Sentry flush — children before flush, ~1.75s total against Windows' 5s default
 `WaitToKillAppTimeout`) and then exits, denying the pump another iteration.
 
+### The re-entrant second path (HQ-DESKTOP-44 regression reopen)
+
+`RunEvent::Exit` only fires when tao's handler was **free** at `WM_ENDSESSION`.
+There is a second delivery it can never see: a `WM_ENDSESSION` that arrives while
+the handler is **taken** — the main thread is inside a nested Win32 message pump
+that wry runs during WebView2 environment/controller creation
+(`webview2_com::wait_with_pump` looping on `GetMessageW`), which tauri drives from
+inside the event loop (a webview built off the main thread, and the config
+windows + `.setup()` that run inside the `RunEvent::Ready` dispatch). tao's
+`WM_ENDSESSION` arm then calls `loop_destroyed()` re-entrantly,
+`call_event_handler` does `event_handler.take().expect(...)` on a `None`, and tao
+panics **`either event handler is re-entrant (likely), or no event handler is
+registered (very unlikely)`** out of its window procedure — aborting the process
+before `RunEvent::Exit` is ever reached. That is the regression this issue
+reopened: the prior fix holds for the free-handler path, but this one was
+untouched.
+
+The remedy is a seam **before** tao's arm: a thread-local `WH_CALLWNDPROC` hook
+installed on the event-loop thread in `main()`
+(`commands::session_end_intercept::install_session_end_intercept`). The system
+calls a `WH_CALLWNDPROC` hook for every message *sent* to a window on the thread,
+before the destination window procedure, and `WM_ENDSESSION` is a sent message.
+The hook sees the committed `WM_ENDSESSION(TRUE)`, runs the **same** bounded
+teardown, and exits — whether or not tao's handler is currently taken. The
+`RunEvent::Exit` arm stays as the fallback for the non-re-entrant path; both route
+through the shared, idempotent `windows_session_end_teardown` (a process-wide
+once-latch), so whichever fires first wins and the other is a no-op.
+
 Rules for anyone touching this area:
 
 - **Do not** move the session-end fast exit off its `#[cfg(target_os = "windows")]`
@@ -354,6 +382,23 @@ Rules for anyone touching this area:
 - Everything in the session-end teardown runs inside a Windows window
   procedure. Keep every step individually capped, and keep it panic-free — a
   panic there aborts the process just as the original bug did.
+- **Do not** move `install_session_end_intercept()` after
+  `tauri::Builder::build()`. The `WH_CALLWNDPROC` intercept must be installed on
+  the event-loop thread in `main()` *before* the builder, or a `WM_ENDSESSION`
+  landing during the config-window WebView2 creation inside `RunEvent::Ready`
+  (handler already taken) is missed. Pinned by
+  `scripts/native-seam-wiring.test.ts`.
+- **Do not** let the intercept and the `RunEvent::Exit` arm diverge. Both call
+  the one `windows_session_end_teardown`, guarded by a process-wide once-latch;
+  the intercept records `NativePanicSeam::AppSessionEndIntercepted`, the arm
+  records `AppSessionEndExit`, and the teardown itself records the rest. Keep the
+  teardown panic-free and idempotent.
+- The deterministic re-entrancy proof is **double-gated** — compiled only under
+  the `e2e-automation` feature AND armed only by
+  `HQ_SYNC_SESSION_END_REENTRANCY_PROBE` — so it can never park the main thread of
+  a shipped build. It parks the main thread in a `wait_with_pump`-shaped nested
+  pump so the live `windows-session-end.spec.ts` re-entrant case can drive
+  `WM_ENDSESSION` into it (red on the base, green on the candidate).
 - **Do not** reorder the ownership report after `terminate_all_for_exit`.
   Immediately before terminating, the session-end branch writes
   `registered_pids()` to the path named by `HQ_SYNC_SESSION_END_OWNED_PIDS`

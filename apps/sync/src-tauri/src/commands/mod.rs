@@ -68,6 +68,7 @@ pub mod recall_sdk;
 pub mod run_cli_provision;
 pub mod session_artifacts;
 pub mod session_end_attribution;
+pub mod session_end_intercept;
 pub mod session_end_latch;
 pub mod session_end_observer;
 pub mod session_mentions;
