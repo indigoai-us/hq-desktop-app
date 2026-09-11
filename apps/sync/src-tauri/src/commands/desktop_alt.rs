@@ -85,7 +85,7 @@ impl DesktopSessionScope {
         }
     }
 
-    fn active_company_slug(&self) -> Option<String> {
+    pub fn active_company_slug(&self) -> Option<String> {
         self.active_company.lock().ok()?.clone()
     }
 }

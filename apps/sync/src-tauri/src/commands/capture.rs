@@ -600,9 +600,63 @@ fn overlay_window_number(window: &tauri::WebviewWindow) -> u32 {
     0
 }
 
-/// Resolve `(hq_root, company_slug)` the same way `commands::config::get_config`
-/// does: menubar override wins, then `config.json`'s `hqFolderPath`.
-fn resolve_vault_target() -> Result<(std::path::PathBuf, String), String> {
+/// Company slugs from `{hq_root}/companies/manifest.yaml`, in file order.
+fn parse_manifest_slugs(yaml: &str) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct Manifest {
+        companies: Option<serde_yaml::Mapping>,
+    }
+    serde_yaml::from_str::<Manifest>(yaml)
+        .ok()
+        .and_then(|m| m.companies)
+        .map(|map| {
+            map.keys()
+                .filter_map(|k| k.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_manifest_slugs(hq_root: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(hq_root.join("companies").join("manifest.yaml"))
+        .map(|c| parse_manifest_slugs(&c))
+        .unwrap_or_default()
+}
+
+/// Pick the company a capture is filed under.
+///
+/// Precedence: the desktop session's ACTIVE company (when its dir exists) >
+/// `config.json`'s slug (except the `personal` placeholder when the manifest
+/// offers a real company) > the first manifest company whose dir exists > the
+/// first manifest company > nothing.
+pub fn pick_company_slug(
+    active: Option<&str>,
+    config_slug: Option<&str>,
+    manifest_slugs: &[String],
+    dir_exists: impl Fn(&str) -> bool,
+) -> Option<String> {
+    if let Some(a) = active.map(str::trim).filter(|s| !s.is_empty()) {
+        if dir_exists(a) {
+            return Some(a.to_string());
+        }
+    }
+    if let Some(c) = config_slug.map(str::trim).filter(|s| !s.is_empty()) {
+        let placeholder = c == "personal" && manifest_slugs.iter().any(|s| dir_exists(s));
+        if !placeholder {
+            return Some(c.to_string());
+        }
+    }
+    if let Some(s) = manifest_slugs.iter().find(|s| dir_exists(s)) {
+        return Some(s.clone());
+    }
+    manifest_slugs.first().cloned()
+}
+
+/// Resolve `(hq_root, company_slug)`. The hq root follows `get_config`
+/// (menubar override wins, then `config.json`'s `hqFolderPath`); the company
+/// is resolved by `pick_company_slug`, so menubar-only installs with no
+/// `config.json` still file captures against the active/manifest company.
+fn resolve_vault_target(app: &AppHandle) -> Result<(std::path::PathBuf, String), String> {
     let menubar_path = hq_desktop_core::paths::menubar_json_path()?;
     let menubar_override = if menubar_path.exists() {
         std::fs::read_to_string(&menubar_path)
@@ -612,13 +666,38 @@ fn resolve_vault_target() -> Result<(std::path::PathBuf, String), String> {
     } else {
         None
     };
-    let config = hq_desktop_core::config::read_hq_config_lenient()?
-        .ok_or_else(|| "unconfigured".to_string())?;
+    let config = hq_desktop_core::config::read_hq_config_lenient()
+        .ok()
+        .flatten();
     let hq_root = hq_desktop_core::paths::resolve_hq_folder(
-        config.hq_folder_path.as_deref(),
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
         menubar_override.as_deref(),
     );
-    Ok((hq_root, config.company_slug))
+
+    let active = app
+        .try_state::<crate::commands::desktop_alt::DesktopSessionScope>()
+        .and_then(|s| s.active_company_slug());
+    let config_slug = config.as_ref().map(|c| c.company_slug.clone());
+    let manifest_slugs = read_manifest_slugs(&hq_root);
+    let companies_dir = hq_root.join("companies");
+
+    let slug = pick_company_slug(
+        active.as_deref(),
+        config_slug.as_deref(),
+        &manifest_slugs,
+        |s| companies_dir.join(s).is_dir(),
+    )
+    .ok_or_else(|| "unconfigured".to_string())?;
+
+    let source = if Some(slug.as_str()) == active.as_deref() {
+        "active"
+    } else if Some(slug.as_str()) == config_slug.as_deref() {
+        "config"
+    } else {
+        "manifest"
+    };
+    log(LOG_TAG, &format!("idea.capture.target company={slug} source={source}"));
+    Ok((hq_root, slug))
 }
 
 /// Background half of the capture: grab pixels, store the record, mark, emit.
@@ -641,7 +720,7 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
         log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=pixel_buffer_mismatch"));
         return;
     };
-    let (hq_root, company_slug) = match resolve_vault_target() {
+    let (hq_root, company_slug) = match resolve_vault_target(app) {
         Ok(v) => v,
         Err(e) => {
             log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=unconfigured detail={e}"));
@@ -907,5 +986,96 @@ mod hq_idea_board_capture_tests {
                 assert_eq!(step(reg, seq[1]), seq[1]);
             }
         }
+    }
+
+    #[test]
+    fn hq_idea_board_pick_company_prefers_active_when_dir_exists() {
+        let manifest = vec!["indigo".to_string()];
+        assert_eq!(
+            pick_company_slug(Some("acme"), Some("indigo"), &manifest, |s| s == "acme"),
+            Some("acme".to_string())
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_pick_company_ignores_active_without_dir() {
+        let manifest = vec!["indigo".to_string()];
+        assert_eq!(
+            pick_company_slug(Some("ghost"), Some("indigo"), &manifest, |s| s == "indigo"),
+            Some("indigo".to_string())
+        );
+        // blank active is ignored too
+        assert_eq!(
+            pick_company_slug(Some("  "), None, &manifest, |s| s == "indigo"),
+            Some("indigo".to_string())
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_pick_company_falls_back_to_config_without_dir() {
+        // config slug wins even when its dir is missing — create_record makes it.
+        assert_eq!(
+            pick_company_slug(None, Some("fresh"), &[], |_| false),
+            Some("fresh".to_string())
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_pick_company_skips_personal_placeholder() {
+        let manifest = vec!["indigo".to_string()];
+        assert_eq!(
+            pick_company_slug(None, Some("personal"), &manifest, |s| s == "indigo"),
+            Some("indigo".to_string())
+        );
+        // ...but keeps it when the manifest offers nothing real
+        assert_eq!(
+            pick_company_slug(None, Some("personal"), &manifest, |_| false),
+            Some("personal".to_string())
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_pick_company_first_manifest_slug_with_dir() {
+        let manifest = vec!["old".to_string(), "indigo".to_string()];
+        assert_eq!(
+            pick_company_slug(None, None, &manifest, |s| s == "indigo"),
+            Some("indigo".to_string())
+        );
+        // no dirs at all -> first manifest entry
+        assert_eq!(
+            pick_company_slug(None, None, &manifest, |_| false),
+            Some("old".to_string())
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_pick_company_empty_manifest_is_none() {
+        assert_eq!(pick_company_slug(None, None, &[], |_| false), None);
+    }
+
+    #[test]
+    fn hq_idea_board_manifest_parses_in_file_order_and_picks_existing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let companies = tmp.path().join("companies");
+        std::fs::create_dir_all(companies.join("indigo")).unwrap();
+        std::fs::write(
+            companies.join("manifest.yaml"),
+            "companies:\n  old:\n    cloud_uid: abc\n    name: Old\n  indigo:\n    cloud_uid: def\n    name: Indigo\n",
+        )
+        .unwrap();
+
+        let slugs = read_manifest_slugs(tmp.path());
+        assert_eq!(slugs, vec!["old".to_string(), "indigo".to_string()]);
+
+        let picked = pick_company_slug(None, None, &slugs, |s| companies.join(s).is_dir());
+        assert_eq!(picked, Some("indigo".to_string()));
+    }
+
+    #[test]
+    fn hq_idea_board_manifest_missing_or_garbage_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(read_manifest_slugs(tmp.path()).is_empty());
+        assert!(parse_manifest_slugs("::: not yaml [").is_empty());
+        assert!(parse_manifest_slugs("other: 1\n").is_empty());
     }
 }
