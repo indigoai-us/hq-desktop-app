@@ -36,6 +36,7 @@ const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
 const coreSource = readRepoFile('../../crates/hq-desktop-core/src/sync_outcome.rs');
 const shapeSource = readRepoFile('../../crates/hq-desktop-core/src/runner_error_shape.rs');
 const telemetrySource = readRepoFile('../../crates/hq-telemetry/src/lib.rs');
+const watcherFaultSource = readRepoFile('../../crates/hq-desktop-core/src/watcher_fault.rs');
 
 /**
  * Slice the region between two unique anchors. Throws rather than degrading —
@@ -308,10 +309,37 @@ describe('manual runner-exit attribution — manual capture seam (commands::sync
       'runner_stderr_breadcrumb',
     );
     expect(breadcrumb).toContain('classify_runner_error_class(line).breadcrumb_token()');
+    // HQ-DESKTOP-67: the structural shape is wired from the single source at the one
+    // builder (never at a call site), as the three-token `(class;fatal;shape)` grammar.
+    expect(breadcrumb).toContain('classify_unmatched_stderr_shape(line)');
+    expect(breadcrumb).toContain('({error_class};{fatal_class};{shape})');
     // The renderer must not re-introduce a literal denylist-colliding class token.
     for (const denied of DENYLIST) {
       expect(breadcrumb).not.toMatch(new RegExp(`=>\\s*"[^"]*${denied}[^"]*"`));
     }
+  });
+});
+
+describe('manual runner-exit attribution — structural shape token vocabulary (hq-desktop-core)', () => {
+  // The closed UnmatchedStderrShape vocabulary now rides the per-line breadcrumb as a
+  // third token. Slice its `as_str` arms (the exact tokens the renderer can emit).
+  const shapeTokens = sliceBetween(
+    watcherFaultSource,
+    'impl UnmatchedStderrShape {',
+    'pub fn classify_unmatched_stderr_shape(',
+    'UnmatchedStderrShape::as_str',
+  );
+
+  it('emits no shape token containing a Sentry denylist substring', () => {
+    // Every shape the breadcrumb can now carry must be denylist-safe, or the
+    // server-side @password:filter deletes the very breadcrumb the shape enriches —
+    // the same failure class the original HQ-DESKTOP-4T auth/identity loss was.
+    for (const denied of DENYLIST) {
+      expect(shapeTokens).not.toMatch(new RegExp(`=>\\s*"[^"]*${denied}[^"]*"`));
+    }
+    // Non-vacuous: the dominant real-world shapes are present in the sliced arms.
+    expect(shapeTokens).toContain('"path_like"');
+    expect(shapeTokens).toContain('"ndjson_record"');
   });
 });
 
@@ -354,6 +382,16 @@ describe('manual runner-exit attribution — content-safe allowlist (hq-telemetr
     expect(allowlist).toContain('"node_check_abort"');
     // Legacy `auth` stays accepted so in-flight older clients remain sendable.
     expect(allowlist).toContain('"auth"');
+  });
+
+  it('accepts the three-token grammar with a validated structural shape', () => {
+    // HQ-DESKTOP-67: the third breadcrumb token is validated against the closed
+    // UnmatchedStderrShape vocabulary — the slice includes the local shape-token
+    // mirror — while the one- and two-token grammars stay accepted for in-flight
+    // older clients (the early `return true` arms).
+    expect(allowlist).toContain('is_unmatched_stderr_shape_token(shape)');
+    expect(allowlist).toContain('"path_like"');
+    expect(allowlist).toContain('"ndjson_record"');
   });
 
   it('guards all four runner-error rollup axes at egress', () => {
