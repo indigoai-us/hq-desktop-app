@@ -999,7 +999,7 @@ while (!closed || queue.length) {
     use hq_desktop_core::agent_session::types::{
         DoneStatus, PermissionMode, SessionPhase, SessionTool, TurnOverrides,
     };
-    use tokio::sync::{mpsc, watch};
+    use tokio::sync::mpsc;
 
     /// A sink that records everything, so a test can assert on the exact
     /// stream the frontend would receive.
@@ -1007,24 +1007,17 @@ while (!closed || queue.length) {
         events: std::sync::Mutex<Vec<(u64, SessionEvent)>>,
         phases: std::sync::Mutex<Vec<PhaseChange>>,
         needs: std::sync::Mutex<Vec<NeedsYou>>,
-        updates: watch::Sender<()>,
         started_at: std::time::Instant,
     }
 
     impl RecordingSink {
         fn new(started_at: std::time::Instant) -> Self {
-            let (updates, _) = watch::channel(());
             Self {
                 events: Default::default(),
                 phases: Default::default(),
                 needs: Default::default(),
-                updates,
                 started_at,
             }
-        }
-
-        fn updates(&self) -> watch::Receiver<()> {
-            self.updates.subscribe()
         }
 
         fn events(&self) -> Vec<(u64, SessionEvent)> {
@@ -1047,7 +1040,6 @@ while (!closed || queue.length) {
             event: &SessionEvent,
         ) {
             self.events.lock().unwrap().push((seq, event.clone()));
-            self.updates.send_replace(());
             if matches!(event, SessionEvent::Started { .. }) {
                 eprintln!(
                     "[agent-session-test-latency] provider=codex event=started elapsed_ms={}",
@@ -1057,11 +1049,9 @@ while (!closed || queue.length) {
         }
         fn emit_phase(&self, _session_id: &str, change: PhaseChange) {
             self.phases.lock().unwrap().push(change);
-            self.updates.send_replace(());
         }
         fn emit_needs_you(&self, _session_id: &str, needs: &NeedsYou) {
             self.needs.lock().unwrap().push(needs.clone());
-            self.updates.send_replace(());
         }
     }
 
@@ -1324,26 +1314,14 @@ async function drain() { while (!closed || queue.length) await take(); }
         assert_eq!(result.unwrap().unwrap().thread_id, "th-1");
     }
 
-    const EVENT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
-
-    async fn until(label: &str, sink: &RecordingSink, mut predicate: impl FnMut() -> bool) {
-        let mut updates = sink.updates();
-        if tokio::time::timeout(EVENT_WAIT_TIMEOUT, async {
-            loop {
-                if predicate() {
-                    return;
-                }
-                updates
-                    .changed()
-                    .await
-                    .expect("recording sink lives through the wait");
+    async fn until(label: &str, mut predicate: impl FnMut() -> bool) {
+        for _ in 0..400 {
+            if predicate() {
+                return;
             }
-        })
-        .await
-        .is_err()
-        {
-            panic!("timed out waiting for {label}");
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
+        panic!("timed out waiting for {label}");
     }
 
     #[tokio::test]
@@ -1351,10 +1329,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         let h = start_with(PermissionMode::Prompt, FAKE_CODEX).await;
 
         // Started lands from the handshake, before any frame is read.
-        until("the handshake event", &h.sink, || {
-            !h.sink.events().is_empty()
-        })
-        .await;
+        until("the handshake event", || !h.sink.events().is_empty()).await;
         assert!(
             matches!(&h.sink.events()[0].1, SessionEvent::Started { session_id, tool, model, commands, .. }
                 if session_id == "th-1"
@@ -1368,10 +1343,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         h.tx.send(Outbound::Line("write a file".into()))
             .expect("send turn");
 
-        until("the approval request", &h.sink, || {
-            !h.sink.needs().is_empty()
-        })
-        .await;
+        until("the approval request", || !h.sink.needs().is_empty()).await;
 
         let events = h.sink.events();
         assert!(
@@ -1419,7 +1391,7 @@ async function drain() { while (!closed || queue.length) await take(); }
                 .on_response_sent("0", now_iso());
         }
 
-        until("the turn to finish", &h.sink, || {
+        until("the turn to finish", || {
             h.sink
                 .events()
                 .iter()
@@ -1519,10 +1491,7 @@ async function drain() { while (!closed || queue.length) await take(); }
 
         // The handshake announcement lands first, exactly as it does in the
         // app — which is what made this a race worth pinning.
-        until("the handshake event", &h.sink, || {
-            !h.sink.events().is_empty()
-        })
-        .await;
+        until("the handshake event", || !h.sink.events().is_empty()).await;
         assert_eq!(
             h.state.lock().await.registry.get("sess-cx").unwrap().phase,
             SessionPhase::Idle
@@ -1551,7 +1520,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         // Everything the real CLI streams before it says anything: the thread
         // bookkeeping, five MCP startup notices, ten HQ hook frames, and Codex
         // echoing our own message back. None of it is a turn ending.
-        until("the first token", &h.sink, || {
+        until("the first token", || {
             h.sink
                 .events()
                 .iter()
@@ -1579,7 +1548,7 @@ async function drain() { while (!closed || queue.length) await take(); }
             "Codex echoing the turn back must not double the prompt"
         );
 
-        until("the turn to finish", &h.sink, || {
+        until("the turn to finish", || {
             h.sink
                 .events()
                 .iter()
@@ -1610,7 +1579,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         h.tx.send(Outbound::Line(user_input("again", &[]).to_string()))
             .expect("send turn");
 
-        until("the second turn/start", &h.sink, || {
+        until("the second turn/start", || {
             h.sent()
                 .iter()
                 .filter(|m| m["method"] == "turn/start")
@@ -1642,14 +1611,11 @@ async function drain() { while (!closed || queue.length) await take(); }
     #[tokio::test]
     async fn a_permission_pill_change_rebinds_the_next_turns_approval_policy() {
         let h = start_with(PermissionMode::Prompt, FAKE_CODEX_SLOW_FIRST_TURN).await;
-        until("the handshake event", &h.sink, || {
-            !h.sink.events().is_empty()
-        })
-        .await;
+        until("the handshake event", || !h.sink.events().is_empty()).await;
 
         h.tx.send(Outbound::Line(user_input("hello", &[]).to_string()))
             .expect("send turn");
-        until("the turn to finish", &h.sink, || {
+        until("the turn to finish", || {
             h.sink
                 .events()
                 .iter()
@@ -1662,7 +1628,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         h.tx.send(Outbound::Line(user_input("again", &[]).to_string()))
             .expect("send turn");
 
-        until("the second turn/start", &h.sink, || {
+        until("the second turn/start", || {
             h.sent()
                 .iter()
                 .filter(|m| m["method"] == "turn/start")
@@ -1691,7 +1657,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         h.tx.send(Outbound::Line("write a file".into()))
             .expect("send turn");
 
-        until("the turn to finish", &h.sink, || {
+        until("the turn to finish", || {
             h.sink
                 .events()
                 .iter()
@@ -1759,7 +1725,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         h.tx.send(Outbound::Line("think for a while".into()))
             .expect("send turn");
 
-        until("the stream to start", &h.sink, || {
+        until("the stream to start", || {
             h.sink
                 .events()
                 .iter()
@@ -1769,7 +1735,7 @@ async function drain() { while (!closed || queue.length) await take(); }
 
         h.tx.send(Outbound::Interrupt).expect("send interrupt");
 
-        until("the turn to finish", &h.sink, || {
+        until("the turn to finish", || {
             h.sink
                 .events()
                 .iter()
@@ -1829,14 +1795,14 @@ async function drain() { while (!closed || queue.length) await take(); }
     async fn a_rejected_steer_is_redelivered_as_the_next_turn() {
         let h = start_with(PermissionMode::BypassAll, FAKE_CODEX_STEER_REJECT).await;
         h.tx.send(Outbound::Line("first".into())).expect("send");
-        until("the first turn to be running", &h.sink, || {
+        until("the first turn to be running", || {
             h.sent().iter().any(|m| m["method"] == "turn/start")
         })
         .await;
 
         h.tx.send(Outbound::Line("second".into())).expect("steer");
 
-        until("the answer to both", &h.sink, || {
+        until("the answer to both", || {
             h.sink.events().iter().any(|(_, e)| {
                 matches!(
                     e,
