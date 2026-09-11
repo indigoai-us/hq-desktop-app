@@ -34,6 +34,8 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
 pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
     if !path.exists() {
         return Ok(MenubarPrefs {
+            // Idea Board extraction: local (on-device) until the user opts in.
+            ideas_extraction_mode: None,
             hq_path: None,
             // Cloud Off (V2 US-001) defaults to connected — sync runs.
             cloud_paused: Some(false),
@@ -117,6 +119,8 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         .meeting_detect_notify
         .unwrap_or_else(default_meeting_detect_notify);
     Ok(MenubarPrefs {
+        // Pass through as persisted; absent means local (see ideas::parse_mode).
+        ideas_extraction_mode: prefs.ideas_extraction_mode,
         hq_path: prefs.hq_path,
         cloud_paused: Some(prefs.cloud_paused.unwrap_or(false)),
         // Default ON (see the no-file branch above) — absent key syncs on launch.

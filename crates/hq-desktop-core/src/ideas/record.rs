@@ -97,6 +97,18 @@ pub enum CaptureStatus {
     Plain,
 }
 
+/// Which extractor produced the record's current `extracted` fields.
+///
+/// Absent until an extraction has run. `Model` is only ever written when the
+/// user opted into `ideas.extraction_mode = model` AND the model was strictly
+/// more confident than the local classifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractionSource {
+    Local,
+    Model,
+}
+
 /// Where the capture came from on screen.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Provenance {
@@ -137,6 +149,9 @@ pub struct CaptureRecord {
     pub extracted: Option<serde_json::Value>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Which extractor produced `extracted`; `None` before extraction runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extraction_source: Option<ExtractionSource>,
     pub provenance: Provenance,
     #[serde(default)]
     pub note: Option<String>,
@@ -196,6 +211,7 @@ mod tests {
             ocr_text: Some("hello world".to_string()),
             extracted: Some(serde_json::json!({ "author": "@someone" })),
             tags: vec!["design".to_string(), "ai".to_string()],
+            extraction_source: Some(ExtractionSource::Model),
             provenance: Provenance {
                 app: "Safari".to_string(),
                 window_title: "X".to_string(),
@@ -221,6 +237,7 @@ mod tests {
         assert!(json.contains("\"company_slug\""), "{json}");
         assert!(json.contains("\"cited_count\": 3"), "{json}");
         assert!(json.contains("\"window_title\""), "{json}");
+        assert!(json.contains("\"extraction_source\": \"model\""), "{json}");
         assert!(json.contains("2026-09-10T12:00:00Z"), "{json}");
 
         let back: CaptureRecord = serde_json::from_str(&json).unwrap();
@@ -250,6 +267,7 @@ mod tests {
         assert_eq!(record.extracted, None);
         assert!(record.tags.is_empty());
         assert_eq!(record.cited_count, 0);
+        assert_eq!(record.extraction_source, None);
         assert_eq!(record.provenance.url, None);
         record.validate().unwrap();
     }

@@ -213,6 +213,7 @@ mod tests {
     use super::*;
     fn prefs_with_start(start: Option<bool>) -> MenubarPrefs {
         MenubarPrefs {
+            ideas_extraction_mode: None,
             hq_path: None,
             cloud_paused: None,
             sync_on_launch: None,

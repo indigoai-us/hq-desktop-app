@@ -23,14 +23,23 @@ pub mod record;
 pub mod storage;
 
 pub use extract::{
-    local::classify, sample_palette, status_for, ColorSample, ExtractLine, Extraction,
-    ExtractionInput, LineBox, EXTRACTED_THRESHOLD, LOW_CONFIDENCE_THRESHOLD, MAX_PALETTE, MAX_TAGS,
+    local::classify,
+    model::{
+        merge_verdict, model_extract_url, parse_mode, ExtractionMode, HttpModelExtractor,
+        ModelError, ModelExtraction, ModelExtractor, ModelRequest, TokenProvider,
+        DEFAULT_MODEL_TIMEOUT, EXTRACTION_MODE_SETTING, MODEL_DISCLOSURE, MODEL_EXTRACT_PATH,
+        SCHEMA_HINT,
+    },
+    sample_palette, status_for, ColorSample, ExtractLine, Extraction, ExtractionInput, LineBox,
+    EXTRACTED_THRESHOLD, LOW_CONFIDENCE_THRESHOLD, MAX_PALETTE, MAX_TAGS,
 };
 pub use pipeline::{
-    apply_extraction, apply_ocr_outcome, run_extraction_stage, run_ocr_stage, OcrOutcome,
+    apply_extraction, apply_extraction_with_source, apply_ocr_outcome, run_extraction_stage,
+    run_model_stage, run_ocr_stage, OcrOutcome,
 };
 pub use record::{
-    CaptureKind, CaptureRecord, CaptureStatus, IdeasError, Provenance, MAX_IMAGE_EDGE,
+    CaptureKind, CaptureRecord, CaptureStatus, ExtractionSource, IdeasError, Provenance,
+    MAX_IMAGE_EDGE,
 };
 pub use storage::{
     create_record, downsample, ideas_dir, load_record, move_record, record_dir, save_record,

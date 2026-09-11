@@ -13,6 +13,7 @@
 //!   disagree cap confidence below the assertion bar ([`local::classify`]).
 
 pub mod local;
+pub mod model;
 
 use image::DynamicImage;
 

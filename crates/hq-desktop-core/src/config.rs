@@ -332,6 +332,19 @@ pub struct MenubarPrefs {
     /// `native_notify::should_native_notify`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_notify_only_when_unfocused: Option<bool>,
+    /// Idea Board extraction mode, backing the `ideas.extraction_mode`
+    /// setting (JSON key `ideasExtractionMode`). `"local"` (the default when
+    /// absent or unrecognized) keeps extraction entirely on this device;
+    /// `"model"` opts into sending the capture image to a vision model
+    /// through HQ, at a per-capture cost.
+    ///
+    /// This is a USER PREFERENCE, not a feature flag (policy
+    /// `indigo-a-user-preference-is-not-a-feature-flag`): no rollout gate
+    /// reads it, and it is never flipped on anyone's behalf. Parsed via
+    /// `ideas::parse_mode`, which falls back to local for every value it does
+    /// not recognize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ideas_extraction_mode: Option<String>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under

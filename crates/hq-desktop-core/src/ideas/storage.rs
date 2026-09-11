@@ -145,6 +145,7 @@ pub fn create_record(hq_root: &Path, new: NewCapture) -> Result<CaptureRecord, I
         ocr_text: new.ocr_text,
         extracted: new.extracted,
         tags: new.tags,
+        extraction_source: None,
         provenance: new.provenance,
         note: new.note,
         cited_count: 0,

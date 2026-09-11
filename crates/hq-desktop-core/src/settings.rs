@@ -87,6 +87,7 @@ mod tests {
             native_notify_direct_messages: None,
             native_notify_shares: None,
             native_notify_meetings: None,
+            ideas_extraction_mode: None,
             native_notify_only_when_unfocused: None,
         }
     }
@@ -150,6 +151,7 @@ mod tests {
             ),
             native_notify_shares: Some(prefs.native_notify_shares.unwrap_or(true)),
             native_notify_meetings: Some(prefs.native_notify_meetings.unwrap_or(true)),
+            ideas_extraction_mode: prefs.ideas_extraction_mode,
             native_notify_only_when_unfocused: Some(
                 prefs.native_notify_only_when_unfocused.unwrap_or(true),
             ),
@@ -247,6 +249,7 @@ mod tests {
             native_notify_direct_messages: Some(false),
             native_notify_shares: Some(false),
             native_notify_meetings: Some(true),
+            ideas_extraction_mode: None,
             native_notify_only_when_unfocused: Some(false),
         };
 
@@ -325,6 +328,7 @@ mod tests {
             native_notify_direct_messages: Some(true),
             native_notify_shares: Some(true),
             native_notify_meetings: Some(false),
+            ideas_extraction_mode: None,
             native_notify_only_when_unfocused: Some(true),
         };
 

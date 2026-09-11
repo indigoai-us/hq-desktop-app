@@ -33,10 +33,12 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 
 use hq_desktop_core::ideas::{
-    create_record, CaptureImage, NewCapture, Provenance,
+    create_record, model_extract_url, parse_mode, run_model_stage, CaptureImage, ExtractionMode,
+    HttpModelExtractor, NewCapture, Provenance, TokenProvider, EXTRACTION_MODE_SETTING,
+    MODEL_DISCLOSURE,
 };
 use hq_platform::screenshot::{self, CaptureRegion, FrontmostSnapshot};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
@@ -71,6 +73,15 @@ pub const EVENT_SHOWN: &str = "capture-overlay:shown";
 pub const EVENT_HIDDEN: &str = "capture-overlay:hidden";
 /// App-wide event carrying the stored `CaptureRecord` JSON (US-005 toast).
 pub const EVENT_CAPTURE_COMPLETED: &str = "capture:completed";
+/// App-wide event carrying a *revised* `CaptureRecord` JSON after each
+/// enrichment stage (OCR, local extraction, opt-in model refinement).
+pub const EVENT_CAPTURE_UPDATED: &str = "capture:updated";
+
+/// menubar.json key backing [`EXTRACTION_MODE_SETTING`].
+pub const IDEAS_EXTRACTION_MODE_KEY: &str = "ideasExtractionMode";
+
+/// Analytics mark written when a user opts into model extraction.
+pub const MARK_MODEL_ENABLED: &str = "idea.extraction.model_enabled";
 
 /// Banner contract for the missing-permission prompt. The frontend
 /// (`App.svelte`) routes `payload.kind === "capture"` /
@@ -767,6 +778,7 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
                 }
                 Err(e) => log(LOG_TAG, &format!("capture record serialize FAILED: {e}")),
             }
+            spawn_enrichment(app.clone(), hq_root, record.company_slug.clone(), record.id.clone());
         }
         Err(e) => log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=store detail={e}")),
     }
@@ -808,12 +820,220 @@ pub async fn capture_region_release(app: AppHandle, selection: SelectionRect) ->
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// US-008: opt-in model extraction setting + the post-capture enrichment chain
+// ---------------------------------------------------------------------------
+
+/// What the settings UI needs to render the extraction-mode control.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeasExtractionSettings {
+    /// `"local"` or `"model"`.
+    pub mode: String,
+    /// Plain-language statement of what turning this on does.
+    pub disclosure: String,
+    /// The setting's canonical key.
+    pub setting: String,
+}
+
+impl IdeasExtractionSettings {
+    fn of(mode: ExtractionMode) -> Self {
+        IdeasExtractionSettings {
+            mode: mode.as_str().to_string(),
+            disclosure: MODEL_DISCLOSURE.to_string(),
+            setting: EXTRACTION_MODE_SETTING.to_string(),
+        }
+    }
+}
+
+/// Read the extraction mode out of a menubar.json at `path`.
+///
+/// A missing, unreadable, non-JSON, or unrecognized value is
+/// [`ExtractionMode::Local`] — the private, free default. Opting in is only
+/// ever the result of an explicit `"model"` on disk.
+pub fn read_extraction_mode_from(path: &std::path::Path) -> ExtractionMode {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .and_then(|v| {
+            v.get(IDEAS_EXTRACTION_MODE_KEY)
+                .and_then(|m| m.as_str())
+                .map(parse_mode)
+        })
+        .unwrap_or_default()
+}
+
+/// The extraction mode for this install.
+fn current_extraction_mode() -> ExtractionMode {
+    match crate::util::paths::menubar_json_path() {
+        Ok(path) => read_extraction_mode_from(&path),
+        Err(_) => ExtractionMode::Local,
+    }
+}
+
+/// Does this mode send anything off the device?
+fn should_run_model(mode: ExtractionMode) -> bool {
+    mode == ExtractionMode::Model
+}
+
+/// Current extraction mode plus the disclosure copy the settings UI shows.
+#[tauri::command]
+pub async fn ideas_get_extraction_settings() -> Result<IdeasExtractionSettings, String> {
+    Ok(IdeasExtractionSettings::of(current_extraction_mode()))
+}
+
+/// Persist the extraction mode. Only the two known spellings are accepted —
+/// an unknown value is an error, never a silent opt-in.
+#[tauri::command]
+pub async fn ideas_set_extraction_mode(mode: String) -> Result<IdeasExtractionSettings, String> {
+    let trimmed = mode.trim().to_ascii_lowercase();
+    let parsed = match trimmed.as_str() {
+        "local" => ExtractionMode::Local,
+        "model" => ExtractionMode::Model,
+        other => return Err(format!(
+            "unknown {EXTRACTION_MODE_SETTING} value {other:?} (expected \"local\" or \"model\")"
+        )),
+    };
+    let path = crate::util::paths::menubar_json_path()?;
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(
+            IDEAS_EXTRACTION_MODE_KEY,
+            serde_json::Value::String(parsed.as_str().to_string()),
+        )],
+    )?;
+    if should_run_model(parsed) {
+        log(LOG_TAG, MARK_MODEL_ENABLED);
+    }
+    Ok(IdeasExtractionSettings::of(parsed))
+}
+
+/// Build the authenticated model extractor for this install.
+fn build_model_extractor() -> Result<HttpModelExtractor, String> {
+    let base = crate::commands::sync::resolve_vault_api_url()?;
+    let token: TokenProvider = std::sync::Arc::new(|| {
+        Box::pin(async { crate::commands::cognito::get_valid_access_token().await })
+    });
+    Ok(HttpModelExtractor::new(
+        hq_desktop_core::client_info::build_client(),
+        model_extract_url(&base),
+        token,
+    ))
+}
+
+/// Run the post-capture enrichment chain off the capture thread: OCR, then
+/// local extraction, then (only when opted in) model refinement.
+///
+/// Every stage is best-effort. Failures are logged and nothing is surfaced to
+/// the user — the image is the artifact, the structure is a bonus. Each stage
+/// that produces a revised record emits [`EVENT_CAPTURE_UPDATED`] so a live
+/// toast can refresh in place.
+fn spawn_enrichment(app: AppHandle, hq_root: std::path::PathBuf, company_slug: String, id: String) {
+    tauri::async_runtime::spawn(async move {
+        let emit =
+            |record: &hq_desktop_core::ideas::CaptureRecord| match serde_json::to_value(record) {
+                Ok(json) => {
+                    let _ = app.emit(EVENT_CAPTURE_UPDATED, json);
+                }
+                Err(e) => log(LOG_TAG, &format!("capture update serialize FAILED: {e}")),
+            };
+
+        let lines = match hq_platform::ocr::ocr_only_record(&hq_root, &company_slug, &id).await {
+            Ok((record, lines)) => {
+                emit(&record);
+                lines
+            }
+            Err(e) => {
+                log(LOG_TAG, &format!("ocr stage failed for record {id}: {e}"));
+                Vec::new()
+            }
+        };
+
+        match hq_platform::ocr::extract_record(&hq_root, &company_slug, &id, lines).await {
+            Ok(record) => emit(&record),
+            Err(e) => log(
+                LOG_TAG,
+                &format!("extraction stage failed for record {id}: {e}"),
+            ),
+        }
+
+        let mode = current_extraction_mode();
+        if !should_run_model(mode) {
+            return;
+        }
+        let extractor = match build_model_extractor() {
+            Ok(x) => x,
+            Err(e) => {
+                log(
+                    LOG_TAG,
+                    &format!("model stage unavailable for record {id}: {e}"),
+                );
+                return;
+            }
+        };
+        match run_model_stage(&hq_root, &company_slug, &id, mode, &extractor).await {
+            Ok(record) => emit(&record),
+            Err(e) => log(LOG_TAG, &format!("model stage failed for record {id}: {e}")),
+        }
+    });
+}
+
 #[cfg(test)]
 mod hq_idea_board_capture_tests {
     use super::*;
 
     fn d(x: f64, y: f64, w: f64, h: f64) -> DisplayRect {
         DisplayRect { x, y, w, h, scale: 2.0 }
+    }
+
+    #[test]
+    fn hq_idea_board_extraction_mode_defaults_to_local_off_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("menubar.json");
+        // Missing file.
+        assert_eq!(read_extraction_mode_from(&path), ExtractionMode::Local);
+        // Not JSON.
+        std::fs::write(&path, "not json").unwrap();
+        assert_eq!(read_extraction_mode_from(&path), ExtractionMode::Local);
+        // JSON without the key.
+        std::fs::write(&path, r#"{"hqPath":"/tmp"}"#).unwrap();
+        assert_eq!(read_extraction_mode_from(&path), ExtractionMode::Local);
+        // Unrecognized value.
+        std::fs::write(&path, r#"{"ideasExtractionMode":"bedrock"}"#).unwrap();
+        assert_eq!(read_extraction_mode_from(&path), ExtractionMode::Local);
+        // Explicit local.
+        std::fs::write(&path, r#"{"ideasExtractionMode":"local"}"#).unwrap();
+        assert_eq!(read_extraction_mode_from(&path), ExtractionMode::Local);
+    }
+
+    #[test]
+    fn hq_idea_board_extraction_mode_opts_in_only_on_explicit_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("menubar.json");
+        std::fs::write(&path, r#"{"ideasExtractionMode":"model"}"#).unwrap();
+        assert_eq!(read_extraction_mode_from(&path), ExtractionMode::Model);
+        std::fs::write(&path, r#"{"ideasExtractionMode":" Model "}"#).unwrap();
+        assert_eq!(read_extraction_mode_from(&path), ExtractionMode::Model);
+    }
+
+    #[test]
+    fn hq_idea_board_only_model_mode_leaves_the_device() {
+        assert!(!should_run_model(ExtractionMode::Local));
+        assert!(!should_run_model(ExtractionMode::default()));
+        assert!(should_run_model(ExtractionMode::Model));
+    }
+
+    #[test]
+    fn hq_idea_board_extraction_settings_carry_the_disclosure() {
+        let s = IdeasExtractionSettings::of(ExtractionMode::Local);
+        assert_eq!(s.mode, "local");
+        assert_eq!(s.setting, "ideas.extraction_mode");
+        assert!(s.disclosure.to_lowercase().contains("cost"));
+        assert!(s.disclosure.to_lowercase().contains("leaves this device"));
+        assert_eq!(
+            IdeasExtractionSettings::of(ExtractionMode::Model).mode,
+            "model"
+        );
     }
 
     #[test]

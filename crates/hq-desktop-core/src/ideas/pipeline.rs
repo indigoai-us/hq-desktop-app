@@ -101,7 +101,7 @@ where
 use super::extract::{
     local::classify, sample_palette, status_for, ExtractLine, Extraction, ExtractionInput,
 };
-use super::record::CaptureKind;
+use super::record::{CaptureKind, ExtractionSource};
 
 const EXTRACT_LOG_TAG: &str = "ideas-extract";
 
@@ -115,6 +115,23 @@ pub fn apply_extraction(
     company_slug: &str,
     id: &str,
     extraction: Extraction,
+) -> Result<CaptureRecord, IdeasError> {
+    apply_extraction_with_source(
+        hq_root,
+        company_slug,
+        id,
+        extraction,
+        ExtractionSource::Local,
+    )
+}
+
+/// [`apply_extraction`], recording which extractor produced the verdict.
+pub fn apply_extraction_with_source(
+    hq_root: &Path,
+    company_slug: &str,
+    id: &str,
+    extraction: Extraction,
+    source: ExtractionSource,
 ) -> Result<CaptureRecord, IdeasError> {
     let mut record = load_record(hq_root, company_slug, id)?;
     let confidence = if extraction.confidence.is_nan() {
@@ -140,6 +157,7 @@ pub fn apply_extraction(
         }
     }
     record.status = status;
+    record.extraction_source = Some(source);
     save_record(hq_root, &mut record)?;
     Ok(record)
 }
@@ -193,5 +211,272 @@ pub async fn run_extraction_stage(
             }
             Ok(record)
         }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// US-008: opt-in model extraction stage
+// ----------------------------------------------------------------------------
+
+use super::extract::model::{
+    merge_verdict, ExtractionMode, ModelExtractor, ModelRequest, SCHEMA_HINT,
+};
+
+const MODEL_LOG_TAG: &str = "ideas-model";
+
+/// Opt-in model refinement of the local extraction result.
+///
+/// `mode == Local` (the default) returns the stored record untouched and
+/// **never calls the extractor** — no image leaves the device.
+///
+/// `mode == Model` sends the stored (already downsampled) PNG plus the OCR
+/// text and the local verdict to `extractor`. The result replaces the local
+/// one only when it is strictly more confident ([`merge_verdict`]); otherwise,
+/// and on every failure or timeout, the local result stays exactly as it was.
+/// This is background enrichment, so a failure is `Ok(record)` with a log
+/// line — never an error the user has to see.
+///
+/// Neither the image, the OCR text, nor extracted content is ever logged.
+pub async fn run_model_stage(
+    hq_root: &Path,
+    company_slug: &str,
+    id: &str,
+    mode: ExtractionMode,
+    extractor: &dyn ModelExtractor,
+) -> Result<CaptureRecord, IdeasError> {
+    let record = load_record(hq_root, company_slug, id)?;
+    if mode == ExtractionMode::Local {
+        return Ok(record);
+    }
+
+    let image_path = hq_root.join(&record.image_path);
+    let bytes = match std::fs::read(&image_path) {
+        Ok(b) => b,
+        Err(e) => {
+            logfile::log(
+                MODEL_LOG_TAG,
+                &format!("model extraction skipped for record {id}: image unreadable: {e}"),
+            );
+            return Ok(record);
+        }
+    };
+    let (width, height) = image::load_from_memory(&bytes)
+        .map(|img| {
+            use image::GenericImageView;
+            img.dimensions()
+        })
+        .unwrap_or((0, 0));
+
+    let request = ModelRequest {
+        image_png_base64: {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        },
+        image_width: width,
+        image_height: height,
+        ocr_text: record.ocr_text.clone(),
+        app: record.provenance.app.clone(),
+        window_title: record.provenance.window_title.clone(),
+        url: record.provenance.url.clone(),
+        local_kind: record.kind,
+        local_confidence: record.confidence.unwrap_or(0.0),
+        schema_hint: SCHEMA_HINT.to_string(),
+    };
+
+    let model = match extractor.extract(&request).await {
+        Ok(m) => m,
+        Err(e) => {
+            logfile::log(
+                MODEL_LOG_TAG,
+                &format!("model extraction failed for record {id}: {e}"),
+            );
+            return Ok(record);
+        }
+    };
+
+    let extraction: Extraction = model.into();
+    if !merge_verdict(record.confidence, &extraction) {
+        logfile::log(
+            MODEL_LOG_TAG,
+            &format!("model result below local confidence for record {id}"),
+        );
+        return Ok(record);
+    }
+    apply_extraction_with_source(
+        hq_root,
+        company_slug,
+        id,
+        extraction,
+        ExtractionSource::Model,
+    )
+}
+
+#[cfg(test)]
+mod hq_idea_board_model_stage_tests {
+    use super::*;
+    use crate::ideas::extract::model::{ModelError, ModelExtraction};
+    use crate::ideas::record::{ExtractionSource, Provenance};
+    use crate::ideas::storage::{create_record, CaptureImage, NewCapture};
+    use futures_util::future::BoxFuture;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Stub {
+        result: std::sync::Mutex<Option<Result<ModelExtraction, ModelError>>>,
+        calls: AtomicUsize,
+    }
+
+    impl Stub {
+        fn ok(confidence: f32) -> Self {
+            Stub {
+                result: std::sync::Mutex::new(Some(Ok(ModelExtraction {
+                    kind: CaptureKind::Article,
+                    confidence,
+                    extracted: serde_json::json!({ "title": "Deep Work" }),
+                    tags: vec!["reading".into()],
+                    input_tokens: None,
+                    output_tokens: None,
+                    cost_usd: None,
+                }))),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn failing() -> Self {
+            Stub {
+                result: std::sync::Mutex::new(Some(Err(ModelError::Timeout))),
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ModelExtractor for Stub {
+        fn extract<'a>(
+            &'a self,
+            _req: &'a ModelRequest,
+        ) -> BoxFuture<'a, Result<ModelExtraction, ModelError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let taken = self.result.lock().unwrap().take();
+            Box::pin(async move { taken.unwrap_or(Err(ModelError::Malformed("reused".into()))) })
+        }
+    }
+
+    fn seeded(root: &Path) -> CaptureRecord {
+        std::fs::create_dir_all(root.join("companies/indigo/ideas")).unwrap();
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            8,
+            6,
+            image::Rgba([12, 34, 56, 255]),
+        ));
+        let mut record = create_record(
+            root,
+            NewCapture::pending(
+                "indigo".to_string(),
+                CaptureImage::Decoded(img),
+                Provenance {
+                    app: "Safari".into(),
+                    window_title: "Reader".into(),
+                    url: None,
+                    captured_at: chrono::Utc::now(),
+                    display_id: 1,
+                },
+            ),
+        )
+        .unwrap();
+        record.confidence = Some(0.5);
+        record.kind = CaptureKind::Quote;
+        record.status = CaptureStatus::LowConfidence;
+        record.extracted = Some(serde_json::json!({ "text": "local" }));
+        record.extraction_source = Some(ExtractionSource::Local);
+        save_record(root, &mut record).unwrap();
+        record
+    }
+
+    #[tokio::test]
+    async fn hq_idea_board_model_stage_never_calls_extractor_in_local_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let record = seeded(tmp.path());
+        let stub = Stub::ok(0.99);
+        let out = run_model_stage(
+            tmp.path(),
+            "indigo",
+            &record.id,
+            ExtractionMode::Local,
+            &stub,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stub.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(out, record);
+    }
+
+    #[tokio::test]
+    async fn hq_idea_board_model_stage_replaces_when_more_confident() {
+        let tmp = tempfile::tempdir().unwrap();
+        let record = seeded(tmp.path());
+        let stub = Stub::ok(0.9);
+        let out = run_model_stage(
+            tmp.path(),
+            "indigo",
+            &record.id,
+            ExtractionMode::Model,
+            &stub,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stub.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(out.kind, CaptureKind::Article);
+        assert_eq!(out.confidence, Some(0.9));
+        assert_eq!(out.status, CaptureStatus::Extracted);
+        assert_eq!(out.extraction_source, Some(ExtractionSource::Model));
+        assert_eq!(
+            out.extracted,
+            Some(serde_json::json!({ "title": "Deep Work" }))
+        );
+
+        let reloaded = load_record(tmp.path(), "indigo", &record.id).unwrap();
+        assert_eq!(reloaded.extraction_source, Some(ExtractionSource::Model));
+    }
+
+    #[tokio::test]
+    async fn hq_idea_board_model_stage_keeps_local_when_not_more_confident() {
+        let tmp = tempfile::tempdir().unwrap();
+        let record = seeded(tmp.path());
+        // Exactly equal: strictly-greater means local wins.
+        let stub = Stub::ok(0.5);
+        let out = run_model_stage(
+            tmp.path(),
+            "indigo",
+            &record.id,
+            ExtractionMode::Model,
+            &stub,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, record);
+        assert_eq!(
+            load_record(tmp.path(), "indigo", &record.id).unwrap(),
+            record
+        );
+    }
+
+    #[tokio::test]
+    async fn hq_idea_board_model_stage_failure_leaves_record_intact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let record = seeded(tmp.path());
+        let stub = Stub::failing();
+        let out = run_model_stage(
+            tmp.path(),
+            "indigo",
+            &record.id,
+            ExtractionMode::Model,
+            &stub,
+        )
+        .await
+        .expect("a background enrichment failure is never an error");
+        assert_eq!(out, record);
+        assert_eq!(
+            load_record(tmp.path(), "indigo", &record.id).unwrap(),
+            record
+        );
     }
 }
