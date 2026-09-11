@@ -33,7 +33,6 @@ import {
   FakeSignalingFabric,
   FakeTrack,
 } from "@hq/meet-core/testing";
-import { PINNED_CONTRACT_HASH } from "@hq/platform";
 
 import {
   CALL_DISPOSE_EVENT,
@@ -53,21 +52,6 @@ import {
 
 const SESSION_ID = "cmp-indigo:room-1:call-1:7";
 
-const EVIDENCE = {
-  schema: "hq-meet-staging-proof/v1",
-  story: "US-011",
-  stage: "staging",
-  apiBase: "https://hqapi.example.com",
-  deployedRevision: {
-    serviceCommit: "a".repeat(40),
-    configHash: "b".repeat(64),
-  },
-  contractHash: PINNED_CONTRACT_HASH,
-  runAt: new Date().toISOString(),
-  failures: 0,
-  passed: true,
-};
-
 function target(overrides: Partial<CallWindowTarget> = {}): CallWindowTarget {
   return {
     sessionId: SESSION_ID,
@@ -75,15 +59,7 @@ function target(overrides: Partial<CallWindowTarget> = {}): CallWindowTarget {
     roomId: "room-1",
     callId: "call-1",
     epoch: 7,
-    grant: {
-      grantId: "grant-1",
-      expiresAt: 1_800_000_000_000,
-      renewAfterMs: 30_000,
-      trafficStopMs: 10_000,
-      controlPollMs: 1_000,
-    },
     self: { personUid: "prs-1", deviceId: "dev-1" },
-    evidence: EVIDENCE,
     ...overrides,
   };
 }
@@ -354,7 +330,7 @@ describe("US-016 e2e 2: one authorized target reaches the call window", () => {
   it("refuses a credential-shaped target and never acknowledges ready for it", async () => {
     const poisoned = {
       ...target(),
-      grant: { ...target().grant, token: "hq-pro-bearer" },
+      self: { ...target().self, token: "hq-pro-bearer" },
     };
     expect(isCallWindowTarget(poisoned)).toBe(false);
     expect(hasNoCredentialFields(poisoned)).toBe(false);

@@ -31,7 +31,6 @@ import {
   FakeSignalingFabric,
   FakeTrack,
 } from "@hq/meet-core/testing";
-import { PINNED_CONTRACT_HASH } from "@hq/platform";
 
 import { AUTH_SESSION_EVENT } from "../../src/call/auth";
 import {
@@ -47,19 +46,22 @@ const SESSION_ID = "cmp-indigo:room-1:call-1:7";
 /** A Cognito subject: the adapter's display-only degrade path. Never a grant. */
 const COGNITO_SUBJECT = "6f0a1e2c-1111-4222-8333-444455556666";
 
-const EVIDENCE = {
-  schema: "hq-meet-staging-proof/v1",
-  story: "US-011",
-  stage: "staging",
-  apiBase: "https://hqapi.example.com",
-  deployedRevision: {
-    serviceCommit: "a".repeat(40),
-    configHash: "b".repeat(64),
+/**
+ * US-018: the admit the call window signs for itself. The benches below answer
+ * it so the window can reach a session; every other hq-pro route still refuses.
+ */
+const ADMIT_PATH = "/v1/meet-native/signaling/admit";
+const ADMIT_RESPONSE = {
+  code: "OK",
+  grant: {
+    grantId: "grant-1",
+    role: "participant",
+    rosterRevision: 0,
+    expiresAt: 1_800_000_000_000,
   },
-  contractHash: PINNED_CONTRACT_HASH,
-  runAt: new Date().toISOString(),
-  failures: 0,
-  passed: true,
+  renewAfterMs: 30_000,
+  trafficStopMs: 10_000,
+  controlPollMs: 1_000,
 };
 
 function target(overrides: Partial<CallWindowTarget> = {}): CallWindowTarget {
@@ -69,15 +71,7 @@ function target(overrides: Partial<CallWindowTarget> = {}): CallWindowTarget {
     roomId: "room-1",
     callId: "call-1",
     epoch: 7,
-    grant: {
-      grantId: "grant-1",
-      expiresAt: 1_800_000_000_000,
-      renewAfterMs: 30_000,
-      trafficStopMs: 10_000,
-      controlPollMs: 1_000,
-    },
     self: { personUid: "prs_1", deviceId: "dev-1" },
-    evidence: EVIDENCE,
     ...overrides,
   };
 }
@@ -131,9 +125,16 @@ function bench(
         reason: null,
       };
     }
-    // Every hq-pro round trip refuses politely: this story needs no live
-    // signaling exchange, and a refusal keeps the tests free of network shape.
-    if (command === "hq_pro_fetch") return { status: 503, body: "{}" };
+    if (command === "hq_pro_fetch") {
+      const url = String(((args ?? {}) as { url?: unknown }).url ?? "");
+      // The window admits itself before it can build a session (US-018).
+      if (url === ADMIT_PATH) {
+        return { status: 200, body: JSON.stringify(ADMIT_RESPONSE) };
+      }
+      // Every other hq-pro round trip refuses politely: this story needs no
+      // live signaling exchange, and a refusal keeps it free of network shape.
+      return { status: 503, body: "{}" };
+    }
     return null;
   };
 

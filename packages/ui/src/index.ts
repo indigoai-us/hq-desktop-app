@@ -173,6 +173,9 @@ export * from "./inbox/live-notifications.js";
 export * as common from "./common/index.js";
 export * as settingsArea from "./settings/index.js";
 export * as meetings from "./meetings/index.js";
+
+// Native calling — shared office-hours surface (US-018).
+export * as meet from "./meet/index.js";
 export * as company from "./company/index.js";
 
 // Atlas v0 (work-mesh-live US-016) — company roster × live projects.

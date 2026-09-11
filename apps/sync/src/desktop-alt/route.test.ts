@@ -131,6 +131,7 @@ describe('US-002 V4 desktop routes', () => {
       'knowledge',
       'clients',
       'team',
+      'office',
       'activity',
       'deployments',
       'secrets',
@@ -391,6 +392,7 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
       'knowledge',
       'clients',
       'team',
+      'office',
       'more',
     ]);
     expect(companyPrimarySectionForTab('overview')).toBe('overview');
@@ -404,6 +406,9 @@ describe('DESKTOP-001 secondary sidebar — library / settings only (no company 
     expect(companyTabForPrimarySection('workers')).toBe('workers');
     expect(companyTabForPrimarySection('knowledge')).toBe('knowledge');
     expect(companyTabForPrimarySection('clients')).toBe('clients');
+    // US-018: Office is a company child of its own, not an operations tab.
+    expect(companyPrimarySectionForTab('office')).toBe('office');
+    expect(companyTabForPrimarySection('office')).toBe('office');
   });
 
   it('shows the four library sections — without Marketplace — with the routed tab active', () => {

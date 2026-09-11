@@ -26,6 +26,7 @@ import {
   type KnockAction,
   type KnockCreateInput,
   type OfficeConnectivityInput,
+  type OfficeDiscoverOptions,
   type OfficePreferenceInput,
   type CreateRoomInput,
   type RoomLifecycleAction,
@@ -180,11 +181,15 @@ export function createCallsApi(transport: CallsTransport): CallsApi {
     preflightStatus: () =>
       evidence ? ok(evidence) : blocked<ServiceEvidence>(),
 
-    discoverOffice: (companyUid) =>
+    discoverOffice: (companyUid, options?: OfficeDiscoverOptions) =>
       guardedInvalid(requireId(companyUid, "companyUid"), () =>
         transport<Json>(
           "GET",
-          `${CALLS_PATHS.office}${query({ companyUid })}`,
+          `${CALLS_PATHS.office}${query({
+            companyUid,
+            limit: options?.limit,
+            cursor: options?.cursor,
+          })}`,
         ),
       ),
 

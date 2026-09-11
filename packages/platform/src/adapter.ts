@@ -1110,6 +1110,14 @@ export type CompletionOperation =
   | "upload"
   | "finalize";
 
+/** Paging controls for `discoverOffice`. Both are optional. */
+export interface OfficeDiscoverOptions {
+  /** 1..OFFICE page size (25). Omit for the service default. */
+  limit?: number;
+  /** Opaque continuation token from a previous page's `cursor`. */
+  cursor?: string;
+}
+
 export interface OfficePreferenceInput {
   companyUid: string;
   willingness: string;
@@ -1173,7 +1181,14 @@ export interface CallsApi {
   /** The recorded evidence, or the standard refusal when preflight has not passed. */
   preflightStatus(): AdapterResult<ServiceEvidence>;
 
-  discoverOffice(companyUid: string): AdapterPromise<Json>;
+  /**
+   * One page of the company office directory. `options.cursor` continues a
+   * previous page; `options.limit` is bounded by the service page size.
+   */
+  discoverOffice(
+    companyUid: string,
+    options?: OfficeDiscoverOptions,
+  ): AdapterPromise<Json>;
   setOfficePreference(input: OfficePreferenceInput): AdapterPromise<Json>;
   setOfficeConnectivity(input: OfficeConnectivityInput): AdapterPromise<Json>;
 

@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { PINNED_CONTRACT_HASH, verifyEnvelope } from "@hq/platform";
+import { verifyEnvelope } from "@hq/platform";
 import { FakeConnectionFactory } from "@hq/meet-core/testing";
 
 import { AUTH_SESSION_EVENT } from "./auth";
@@ -21,21 +21,6 @@ import {
 import { createDeviceSigner } from "./signer";
 import type { CallWindowTarget } from "./target";
 
-const EVIDENCE = {
-  schema: "hq-meet-staging-proof/v1",
-  story: "US-011",
-  stage: "staging",
-  apiBase: "https://hqapi.example.com",
-  deployedRevision: {
-    serviceCommit: "a".repeat(40),
-    configHash: "b".repeat(64),
-  },
-  contractHash: PINNED_CONTRACT_HASH,
-  runAt: new Date().toISOString(),
-  failures: 0,
-  passed: true,
-};
-
 const SESSION_ID = "cmp-1:room-1:call-1:7";
 
 function target(overrides: Partial<CallWindowTarget> = {}): CallWindowTarget {
@@ -45,15 +30,7 @@ function target(overrides: Partial<CallWindowTarget> = {}): CallWindowTarget {
     roomId: "room-1",
     callId: "call-1",
     epoch: 7,
-    grant: {
-      grantId: "grant-1",
-      expiresAt: 1_800_000_000_000,
-      renewAfterMs: 30_000,
-      trafficStopMs: 10_000,
-      controlPollMs: 1_000,
-    },
     self: { personUid: "prs_1", deviceId: "dev-1" },
-    evidence: EVIDENCE,
     ...overrides,
   };
 }
@@ -93,9 +70,30 @@ function bench(
         reason: null,
       };
     }
-    // Every hq-pro round trip refuses politely; this story never needs a live
-    // signaling exchange, and a refusal keeps the test free of network shape.
-    if (command === "hq_pro_fetch") return { status: 503, body: "{}" };
+    if (command === "hq_pro_fetch") {
+      const request = (args ?? {}) as { url?: unknown };
+      // US-018: the window admits ITSELF before it can build a session, so the
+      // admit round trip has to succeed even in the benches that are only
+      // about the identity gate. Every OTHER hq-pro round trip still refuses
+      // politely — this story needs no live signaling exchange.
+      if (String(request.url ?? "") === "/v1/meet-native/signaling/admit") {
+        return {
+          status: 200,
+          body: JSON.stringify({
+            code: "OK",
+            grant: {
+              grantId: "grant-1",
+              role: "participant",
+              rosterRevision: 0,
+              expiresAt: Date.now() + 600_000,
+            },
+            trafficStopMs: 10_000,
+            controlPollMs: 1_000,
+          }),
+        };
+      }
+      return { status: 503, body: "{}" };
+    }
     return null;
   };
 
@@ -399,6 +397,8 @@ describe("transcription barrier", () => {
 
 const CONSENT_PATH = "/v1/meet-native/completion/consent";
 const RECONCILE_PATH = "/v1/meet-native/signaling/reconcile";
+/** US-018: the window admits ITSELF here before it can join. */
+const ADMIT_PATH = "/v1/meet-native/signaling/admit";
 
 const PEER = { personUid: "prs_2", deviceId: "dev-2", peerKey: "c".repeat(64) };
 const PEER_ID = `${PEER.personUid} ${PEER.deviceId}`;
@@ -414,6 +414,8 @@ interface ReconcileBody {
 interface LiveBench extends Bench {
   /** Bodies posted to the consent route, newest last. */
   consents: Array<Record<string, unknown>>;
+  /** Bodies posted to the admit route, newest last. */
+  admits: Array<Record<string, unknown>>;
   /** Raw Ed25519 public key of the window's device signer, base64url. */
   publicKey: () => string;
   /** `peerKey` (keyId) of the window's device signer. */
@@ -429,25 +431,20 @@ function liveBench(options: {
     body: Record<string, unknown>,
     index: number,
   ) => Record<string, unknown> | null;
-  grant?: Partial<CallWindowTarget["grant"]>;
+  /** Overrides folded into the top level of the admit response. */
+  grant?: Record<string, unknown>;
+  /** Overrides folded into the admit response's nested `grant` object. */
+  grantOverrides?: Record<string, unknown>;
   getUserMedia?: CallWindowDeps["getUserMedia"];
 }): LiveBench {
   const consents: Array<Record<string, unknown>> = [];
+  const admits: Array<Record<string, unknown>> = [];
   let reconciles = 0;
   let publicKey = "";
   let peerKey = "";
 
   const harness = bench({
-    target: target({
-      grant: {
-        grantId: "grant-1",
-        expiresAt: Date.now() + 600_000,
-        renewAfterMs: 1,
-        trafficStopMs: 10_000,
-        controlPollMs: 5,
-        ...options.grant,
-      },
-    }),
+    target: target(),
     invoke: async (command, args) => {
       if (command !== "hq_pro_fetch") return undefined;
       const request = (args ?? {}) as { url?: unknown; body?: unknown };
@@ -456,6 +453,26 @@ function liveBench(options: {
         string,
         unknown
       >;
+      if (url === ADMIT_PATH) {
+        admits.push(body);
+        return {
+          status: 200,
+          body: JSON.stringify({
+            code: "OK",
+            grant: {
+              grantId: "grant-1",
+              role: "participant",
+              rosterRevision: 0,
+              expiresAt: Date.now() + 600_000,
+              ...options.grantOverrides,
+            },
+            renewAfterMs: 1,
+            trafficStopMs: 10_000,
+            controlPollMs: 5,
+            ...options.grant,
+          }),
+        };
+      }
       if (url === CONSENT_PATH) {
         consents.push(body);
         const value = options.consent?.(body, consents.length - 1) ?? {};
@@ -486,6 +503,7 @@ function liveBench(options: {
   return {
     ...harness,
     consents,
+    admits,
     publicKey: () => publicKey,
     peerKey: () => peerKey,
     reconciles: () => reconciles,
@@ -699,10 +717,13 @@ describe("the content gate survives a recoverable traffic stop", () => {
   });
 
   it("stays closed for good when the grant itself expired", async () => {
-    const expiresAt = Date.now() + 60;
+    // Long enough that content is reliably established first even on a loaded
+    // machine, short enough that the expiry still lands inside `until`'s bound.
+    const expiresAt = Date.now() + 600;
     let expired = false;
     const harness = liveBench({
-      grant: { expiresAt, trafficStopMs: undefined, controlPollMs: 5 },
+      grant: { trafficStopMs: undefined, controlPollMs: 5 },
+      grantOverrides: { expiresAt },
       roster: (_tick, key) =>
         expired
           ? { ...roster(2, key), expiresAt: Date.now() + 600_000 }
@@ -859,6 +880,150 @@ describe("join controls require a resolved identity", () => {
     );
     expect(controls).toContain("view.identityResolved");
     expect(controls).toContain("view.authorityPaused");
+    await handle.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// US-018 — the window admits itself.
+//
+// The opener has no device key, so it cannot mint a grant this window could
+// sign against. The window mints its key, signs its own `admit`, and only then
+// joins with the grant the backend issued against that key.
+// ---------------------------------------------------------------------------
+
+describe("the call window admits itself", () => {
+  it("signs admit with its own device key and joins with the returned grant", async () => {
+    const harness = liveBench({ roster: (_tick, key) => roster(1, key) });
+    const handle = await startCallWindow(harness.deps);
+    await until(() => harness.admits.length > 0, "the admit");
+
+    const posted = harness.admits[0] as Record<string, unknown>;
+    expect(posted).toMatchObject({
+      version: "hq-meet/1",
+      kind: "control",
+      operation: "admit",
+      companyUid: "cmp-1",
+      roomId: "room-1",
+      callId: "call-1",
+      epoch: 7,
+      personUid: "prs_1",
+      deviceId: "dev-1",
+    });
+    // The signer's OWN key pair — peerKey is derived from publicKey, and the
+    // backend records publicKey as the admission proof.
+    expect(posted.peerKey).toBe(harness.peerKey());
+    expect(posted.publicKey).toBe(harness.publicKey());
+    // No opener-supplied grant exists to smuggle in.
+    expect(posted.grantId).toBeUndefined();
+    expect(posted.knockId).toBeUndefined();
+    expect(posted.capabilityId).toBeUndefined();
+    // Throws unless the signature verifies against the window's own key.
+    await expect(
+      verifyEnvelope(posted, harness.publicKey()),
+    ).resolves.toBeUndefined();
+
+    // The grant the session runs on is the one admit returned.
+    await until(
+      () => handle.session?.snapshot().grantId === "grant-1",
+      "the admitted grant",
+    );
+    await handle.leave();
+    await handle.close();
+  });
+
+  it("carries an accepted knock's capability into the admit", async () => {
+    const harness = liveBench({ roster: (_tick, key) => roster(1, key) });
+    const inner = harness.deps.invoke as CallInvoke;
+    harness.deps.invoke = ((command, args) =>
+      command === "calls_take_pending_target"
+        ? Promise.resolve(
+            target({ knock: { knockId: "knk-1", capabilityId: "cap-1" } }),
+          )
+        : inner(command, args)) as CallInvoke;
+    const handle = await startCallWindow(harness.deps);
+    await until(() => harness.admits.length > 0, "the admit");
+    expect(harness.admits[0]).toMatchObject({
+      knockId: "knk-1",
+      capabilityId: "cap-1",
+    });
+    await handle.leave();
+    await handle.close();
+  });
+
+  it("refuses to join when admit is refused, and releases the registry entry", async () => {
+    const harness = bench({
+      invoke: async (command, args) => {
+        if (command !== "hq_pro_fetch") return undefined;
+        const url = String(((args ?? {}) as { url?: unknown }).url ?? "");
+        if (url === "/v1/meet-native/signaling/admit") {
+          return {
+            status: 403,
+            body: JSON.stringify({ code: "COMPANY_ACCESS_DENIED" }),
+          };
+        }
+        return { status: 503, body: "{}" };
+      },
+    });
+    const handle = await startCallWindow(harness.deps);
+    expect(handle.session).toBeNull();
+    expect(handle.state().status).toBe("error");
+    expect(handle.state().code).toBe("COMPANY_ACCESS_DENIED");
+    expect(harness.argsOf("calls_release")).toEqual({
+      sessionId: SESSION_ID,
+      reason: "admit-refused",
+    });
+    await handle.close();
+  });
+
+  it("discards an admit that lands after the account changed", async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reachedAdmit: () => void = () => {};
+    const admitStarted = new Promise<void>((resolve) => {
+      reachedAdmit = resolve;
+    });
+    const harness = bench({
+      invoke: async (command, args) => {
+        if (command !== "hq_pro_fetch") return undefined;
+        const url = String(((args ?? {}) as { url?: unknown }).url ?? "");
+        if (url === "/v1/meet-native/signaling/admit") {
+          reachedAdmit();
+          await gate;
+          return {
+            status: 200,
+            body: JSON.stringify({
+              code: "OK",
+              grant: {
+                grantId: "grant-late",
+                role: "participant",
+                rosterRevision: 0,
+                expiresAt: Date.now() + 600_000,
+              },
+            }),
+          };
+        }
+        return { status: 503, body: "{}" };
+      },
+    });
+    const started = startCallWindow(harness.deps);
+    // The switch lands while the admit is still in the air.
+    await admitStarted;
+    harness.emit(AUTH_SESSION_EVENT, {
+      accountId: "acct-2",
+      generation: 2,
+      status: "active",
+      reason: null,
+    });
+    release!();
+    const handle = await started;
+
+    // The grant belongs to an account that is already gone: no session, and the
+    // window is in its terminal account-changed state.
+    expect(handle.session).toBeNull();
+    expect(handle.state().code).toBe("ACCOUNT_CHANGED");
     await handle.close();
   });
 });

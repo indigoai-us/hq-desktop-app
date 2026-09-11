@@ -21,21 +21,11 @@ fn target(session: &str) -> CallWindowTarget {
         room_id: "room-1".to_string(),
         call_id: "call-1".to_string(),
         epoch: 7,
-        grant: CallGrantTarget {
-            grant_id: "grant-1".to_string(),
-            expires_at: 1_800_000_000_000,
-            renew_after_ms: Some(30_000),
-            traffic_stop_ms: Some(10_000),
-            control_poll_ms: Some(1_000),
-        },
         self_: CallSelfTarget {
             person_uid: "prs-1".to_string(),
             device_id: "dev-1".to_string(),
         },
-        evidence: serde_json::json!({
-            "schema": "hq-meet-staging-proof/v1",
-            "passed": true,
-        }),
+        knock: None,
     }
 }
 
@@ -155,8 +145,9 @@ fn story_no_target_reaching_the_window_ever_carries_credential_material() {
     let serialized = serde_json::to_value(&clean).unwrap();
     assert!(json_has_no_credential_fields(&serialized));
 
-    // Credential-shaped keys are refused wherever they hide — including inside
-    // the caller-supplied evidence receipt.
+    // US-018 left the target with no free-form JSON at all: there is nowhere
+    // for a credential to hide any more. The recursive scan still guards every
+    // serialized target, so it is pinned on the shapes it must refuse.
     for poison in [
         serde_json::json!({ "token": "hq-pro-bearer" }),
         serde_json::json!({ "nested": { "API-Key": "x" } }),
@@ -165,13 +156,21 @@ fn story_no_target_reaching_the_window_ever_carries_credential_material() {
         serde_json::json!({ "Bearer": "x" }),
         serde_json::json!({ "pass-word": "x", "password": "x" }),
     ] {
-        let mut bad = clean.clone();
-        bad.evidence = poison;
         assert!(
-            validate_target(&bad).is_err(),
-            "credential-shaped evidence must be refused"
+            !json_has_no_credential_fields(&poison),
+            "credential-shaped json must be refused"
         );
     }
+    // A knocked target is still just ids — and still credential-free.
+    let mut knocked = clean.clone();
+    knocked.knock = Some(CallKnockTarget {
+        knock_id: "knk-1".to_string(),
+        capability_id: "cap-1".to_string(),
+    });
+    assert!(validate_target(&knocked).is_ok());
+    assert!(json_has_no_credential_fields(
+        &serde_json::to_value(&knocked).unwrap()
+    ));
 
     // And a target can never smuggle a path, query or space into the URL.
     let mutations: [(&str, fn(&mut CallWindowTarget)); 3] = [

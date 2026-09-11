@@ -12,6 +12,7 @@
   import CompanyKnowledgePanel from '../panels/CompanyKnowledgePanel.svelte';
   import CompanyClientsPanel from '../panels/CompanyClientsPanel.svelte';
   import TeamPanel from '../panels/TeamPanel.svelte';
+  import OfficePanel from '../panels/OfficePanel.svelte';
   import {
     DEFAULT_COMPANY_TAB,
     isCompanyOperationsTab,
@@ -325,6 +326,11 @@
           <CompanyClientsPanel slug={company.slug} />
         {:else if tab === 'team'}
           <TeamPanel slug={company.slug} companyUid={company.cloudUid} />
+        {:else if tab === 'office'}
+          <OfficePanel
+            companyUid={company.cloudUid}
+            companyLabel={company.displayName}
+          />
         {:else if isCompanyOperationsTab(tab)}
           <!-- DESKTOP-010: Activity / Deployments / Secrets / Settings under More. -->
           <CompanyOperationsPanel

@@ -8,7 +8,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { createContentDeliveryGate } from "@hq/meet-core";
-import { PINNED_CONTRACT_HASH } from "@hq/platform";
+import { PINNED_CONTRACT_HASH, validateServiceEvidence } from "@hq/platform";
 
 import {
   CALL_DISPOSE_EVENT,
@@ -22,30 +22,9 @@ import {
   type CallWindowDeps,
   type CallWindowHandle,
 } from "./bootstrap";
+import { SERVICE_EVIDENCE } from "./service-evidence";
 import { hasNoCredentialFields, isCallWindowTarget } from "./target";
 import type { CallWindowTarget } from "./target";
-
-const EVIDENCE = {
-  schema: "hq-meet-staging-proof/v1",
-  story: "US-011",
-  stage: "staging",
-  apiBase: "https://hqapi.example.com",
-  deployedRevision: {
-    serviceCommit: "a".repeat(40),
-    configHash: "b".repeat(64),
-  },
-  contractHash: PINNED_CONTRACT_HASH,
-  runAt: new Date().toISOString(),
-  failures: 0,
-  passed: true,
-};
-
-/**
- * Fixed, not `Date.now() + …`: two `target()` calls a millisecond apart used to
- * produce targets that failed `toEqual` against each other, which made every
- * identity assertion here a coin flip. Well inside the 2^53 bound Rust pins.
- */
-const EXPIRES_AT = 1_800_000_000_000;
 
 function target(overrides: Partial<CallWindowTarget> = {}): CallWindowTarget {
   return {
@@ -54,15 +33,7 @@ function target(overrides: Partial<CallWindowTarget> = {}): CallWindowTarget {
     roomId: "room-1",
     callId: "call-1",
     epoch: 7,
-    grant: {
-      grantId: "grant-1",
-      expiresAt: EXPIRES_AT,
-      renewAfterMs: 30_000,
-      trafficStopMs: 10_000,
-      controlPollMs: 1_000,
-    },
     self: { personUid: "prs-1", deviceId: "dev-1" },
-    evidence: EVIDENCE,
     ...overrides,
   };
 }
@@ -438,12 +409,25 @@ describe("startCallWindow", () => {
     );
   });
 
-  it("refuses to run on failing service evidence", async () => {
-    const bench = harness({ pending: target({ evidence: { nope: true } }) });
+  it("preflights with the BUNDLED receipt, not one the opener supplied", async () => {
+    // The bundled US-011 receipt is what unlocks the adapter. It is pinned to
+    // this mirror's contract hash and is refused once it goes stale — a failure
+    // here means the receipt needs re-running, which is exactly the signal.
+    const validated = validateServiceEvidence(SERVICE_EVIDENCE);
+    expect(validated.ok).toBe(true);
+    expect((SERVICE_EVIDENCE as { contractHash: string }).contractHash).toBe(
+      PINNED_CONTRACT_HASH,
+    );
+    expect(hasNoCredentialFields(SERVICE_EVIDENCE)).toBe(true);
+
+    // A target carrying a bogus `evidence` field changes nothing: the window
+    // never reads one off the target any more.
+    const bench = harness({
+      pending: { ...target(), evidence: { nope: true } },
+    });
     const handle = await startCallWindow(bench.deps);
-    expect(handle.session).toBeNull();
-    expect(handle.state().status).toBe("error");
-    expect(handle.state().code).toBe("EVIDENCE_SCHEMA");
+    expect(handle.state().code).not.toBe("EVIDENCE_SCHEMA");
+    await handle.close();
   });
 });
 
@@ -453,7 +437,17 @@ describe("no credential ever reaches this window", () => {
     expect(
       isCallWindowTarget({
         ...target(),
-        grant: { ...target().grant, token: "x" },
+        knock: { knockId: "k-1", capabilityId: "cap-1" },
+      }),
+    ).toBe(true);
+    // A HALF knock is malformed, never "no knock".
+    expect(
+      isCallWindowTarget({ ...target(), knock: { knockId: "k-1" } }),
+    ).toBe(false);
+    expect(
+      isCallWindowTarget({
+        ...target(),
+        self: { ...target().self, token: "x" },
       }),
     ).toBe(false);
     expect(hasNoCredentialFields({ a: { b: { authorization: "x" } } })).toBe(
@@ -477,7 +471,7 @@ describe("no credential ever reaches this window", () => {
     ]) {
       expect(hasNoCredentialFields({ deep: { [banned]: "x" } })).toBe(false);
       expect(
-        isCallWindowTarget(target({ evidence: { [banned]: "x" } })),
+        isCallWindowTarget({ ...target(), extra: { [banned]: "x" } }),
       ).toBe(false);
     }
     for (const allowed of ["sessionId", "session_id", "roomId", "grantId"]) {

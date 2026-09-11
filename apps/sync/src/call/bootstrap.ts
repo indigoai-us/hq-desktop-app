@@ -55,6 +55,7 @@ import {
   type MediaPreferences,
   type PreferenceStorage,
 } from "./permissions";
+import { SERVICE_EVIDENCE } from "./service-evidence";
 import { createDeviceSigner, type DeviceSigner } from "./signer";
 import { isCallWindowTarget, type CallWindowTarget } from "./target";
 
@@ -295,17 +296,90 @@ function waitForWarmTarget(
   });
 }
 
-function grantOf(target: CallWindowTarget): CallGrant {
+/** The backend's admit answer, reduced to what the session and port need. */
+export interface CallAdmission {
+  grant: CallGrant;
+  renewAfterMs?: number;
+  controlPollMs?: number;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function positive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
+
+/**
+ * Read a signaling `admit` response into a `CallGrant`.
+ *
+ * The role comes from the BACKEND, not from the opener: this window is a
+ * participant unless the service says it hosts the room. A response without a
+ * usable grantId/expiresAt is not a weaker admission, it is none at all.
+ */
+export function admissionFromControl(value: unknown): CallAdmission | null {
+  const body = record(value);
+  const grant = record(body?.grant);
+  const grantId = grant && typeof grant.grantId === "string" ? grant.grantId : "";
+  const expiresAt = grant ? positive(grant.expiresAt) : undefined;
+  if (!grantId || expiresAt === undefined) return null;
+  const role =
+    grant?.role === "host" || grant?.role === "cohost"
+      ? grant.role
+      : "participant";
+  const trafficStopMs = positive(body?.trafficStopMs);
+  const renewAfterMs = positive(body?.renewAfterMs);
+  const controlPollMs = positive(body?.controlPollMs);
   return {
-    grantId: target.grant.grantId,
-    // Phase 1 hands every joiner the participant role; host/cohost promotion
-    // arrives with the roster from reconcile, not from the opener.
-    role: "participant",
-    rosterRevision: 0,
-    expiresAt: target.grant.expiresAt,
-    ...(target.grant.trafficStopMs === undefined
-      ? {}
-      : { trafficStopMs: target.grant.trafficStopMs }),
+    grant: {
+      grantId,
+      role,
+      rosterRevision:
+        typeof grant?.rosterRevision === "number" ? grant.rosterRevision : 0,
+      expiresAt,
+      ...(trafficStopMs === undefined ? {} : { trafficStopMs }),
+    },
+    ...(renewAfterMs === undefined ? {} : { renewAfterMs }),
+    ...(controlPollMs === undefined ? {} : { controlPollMs }),
+  };
+}
+
+/**
+ * Build the signed `admit` envelope this window admits itself with.
+ *
+ * `publicKey` is mandatory for admit: the backend records it as the admission
+ * proof and derives every later envelope's verifier from it. The knock ids ride
+ * along only when the target carried an accepted knock — the backend refuses a
+ * half pair, and a private room without one is refused outright.
+ */
+export function admitEnvelope(
+  target: CallWindowTarget,
+  signer: DeviceSigner,
+  requestId: string,
+  sentAt: number,
+): Record<string, unknown> {
+  return {
+    version: CALLS_VERSION,
+    kind: "control",
+    companyUid: target.companyUid,
+    roomId: target.roomId,
+    callId: target.callId,
+    epoch: target.epoch,
+    operation: "admit",
+    personUid: target.self.personUid,
+    deviceId: target.self.deviceId,
+    peerKey: signer.peerKey,
+    publicKey: signer.publicKey,
+    requestId,
+    sentAt,
+    ...(target.knock
+      ? { knockId: target.knock.knockId, capabilityId: target.knock.capabilityId }
+      : {}),
   };
 }
 
@@ -394,7 +468,9 @@ export async function startCallWindow(
     }) as unknown as typeof fetch,
   });
 
-  const preflight = await adapter.calls.preflight(target.evidence);
+  // Service evidence is a property of THIS BUILD, not of the opener: the
+  // bundled US-011 receipt is used identically here and in the main window.
+  const preflight = await adapter.calls.preflight(SERVICE_EVIDENCE);
   if (!preflight.ok) {
     publish({ status: "error", code: preflight.code });
     await releaseOnly(deps, target, "preflight-failed");
@@ -459,8 +535,13 @@ export async function startCallWindow(
    * body is not a weaker acknowledgement, it is not an acknowledgement at all.
    */
   let deviceSigner: DeviceSigner | null = null;
-  /** The grant the envelopes are filed under; renewals move it. */
-  let currentGrantId: string = target.grant.grantId;
+  /**
+   * The grant the envelopes are filed under; renewals move it. Empty until the
+   * window has admitted itself — there is no opener-supplied grant any more.
+   */
+  let currentGrantId = "";
+  /** Monotonic requestId suffix for this window's own control envelopes. */
+  let controlRequests = 0;
   /** In-flight guard + last-sent generation, so one epoch gets ONE ack. */
   let ackInFlight = false;
   let lastAck: string | null = null;
@@ -604,6 +685,42 @@ export async function startCallWindow(
         peerKey: signer.peerKey,
       };
       const clock = { now: () => Date.now() };
+
+      // ---- admit ourselves -------------------------------------------------
+      // The opener cannot mint a grant for a key it does not have. This window
+      // signs its OWN admit with the key it just minted, so the grant the
+      // backend issues is bound to the peer key every later envelope carries.
+      controlRequests += 1;
+      const envelope = admitEnvelope(
+        target!,
+        signer,
+        `admit-${clock.now().toString(36)}-${controlRequests}`,
+        clock.now(),
+      );
+      const signature = await signer.sign(envelope);
+      const admitResult = await adapter.calls.signalingControl("admit", {
+        ...envelope,
+        signature,
+      } as never);
+      // The admit answer is worthless if the account moved while it was in the
+      // air — the same rule the join below applies to its own result.
+      if (!account.isCurrent(generation)) return;
+      if (!admitResult.ok) {
+        publish({
+          status: "error",
+          code: admitResult.code ?? "ADMIT_REFUSED",
+          recoverable: false,
+        });
+        await releaseOnly(deps, target!, "admit-refused");
+        return;
+      }
+      const admission = admissionFromControl(admitResult.value);
+      if (!admission) {
+        publish({ status: "error", code: "ADMIT_REFUSED", recoverable: false });
+        await releaseOnly(deps, target!, "admit-refused");
+        return;
+      }
+      currentGrantId = admission.grant.grantId;
       const timers = {
         setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
         clearTimeout: (handle: unknown) => clearTimeout(handle as never),
@@ -619,12 +736,12 @@ export async function startCallWindow(
             self,
             clock,
             timers,
-            ...(target!.grant.controlPollMs === undefined
+            ...(admission.controlPollMs === undefined
               ? {}
-              : { defaultPollMs: target!.grant.controlPollMs }),
-            ...(target!.grant.renewAfterMs === undefined
+              : { defaultPollMs: admission.controlPollMs }),
+            ...(admission.renewAfterMs === undefined
               ? {}
-              : { defaultRenewAfterMs: target!.grant.renewAfterMs }),
+              : { defaultRenewAfterMs: admission.renewAfterMs }),
           }),
           // Capture is the controller's, and only ever from a join control.
           media: createNoCaptureMediaPort(() => mediaController.tracks()),
@@ -656,7 +773,7 @@ export async function startCallWindow(
       }
 
       try {
-        await live.join(grantOf(target!));
+        await live.join(admission.grant);
       } catch {
         publish({ status: "error", code: "JOIN_FAILED", recoverable: false });
         return;

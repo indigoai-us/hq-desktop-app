@@ -58,16 +58,9 @@ pub const MAX_INTERVAL_MS: u64 = 3_600_000;
 /// Admission grant as handed to the window. Ids and timings only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CallGrantTarget {
-    pub grant_id: String,
-    /// Epoch millis at which the grant stops being valid.
-    pub expires_at: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub renew_after_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub traffic_stop_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub control_poll_ms: Option<u64>,
+pub struct CallKnockTarget {
+    pub knock_id: String,
+    pub capability_id: String,
 }
 
 /// This device's participant identity. No key material: the call window mints
@@ -80,6 +73,11 @@ pub struct CallSelfTarget {
 }
 
 /// Everything the call window is authorized to act on — and nothing else.
+///
+/// US-018 removed the grant and the evidence receipt. The window mints its own
+/// device key and signs its own `admit`, so no grant minted elsewhere could be
+/// bound to the key it signs with; the US-011 receipt is bundled at build time
+/// rather than carried, so a caller cannot decide what counts as verified.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallWindowTarget {
@@ -90,12 +88,13 @@ pub struct CallWindowTarget {
     pub room_id: String,
     pub call_id: String,
     pub epoch: i64,
-    pub grant: CallGrantTarget,
     /// `self` in JSON; `self` is a Rust keyword.
     #[serde(rename = "self")]
     pub self_: CallSelfTarget,
-    /// US-011 service-evidence receipt, passed straight to `calls.preflight`.
-    pub evidence: serde_json::Value,
+    /// An accepted knock's capability, for a private room (US-018). Absent for
+    /// a company-visible room, which needs no capability to admit into.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub knock: Option<CallKnockTarget>,
 }
 
 /// Result of `calls_open_window`.
@@ -144,10 +143,16 @@ pub fn validate_target(target: &CallWindowTarget) -> Result<(), String> {
         ("companyUid", target.company_uid.as_str()),
         ("roomId", target.room_id.as_str()),
         ("callId", target.call_id.as_str()),
-        ("grant.grantId", target.grant.grant_id.as_str()),
         ("self.personUid", target.self_.person_uid.as_str()),
         ("self.deviceId", target.self_.device_id.as_str()),
-    ] {
+    ]
+    .into_iter()
+    .chain(target.knock.iter().flat_map(|knock| {
+        [
+            ("knock.knockId", knock.knock_id.as_str()),
+            ("knock.capabilityId", knock.capability_id.as_str()),
+        ]
+    })) {
         // sessionId is the one composite id: `a:b:c:d`. Every segment still has
         // to be url-safe, so a target can never smuggle a path or a query.
         // `split` always yields at least one part, so an empty value simply
@@ -163,20 +168,6 @@ pub fn validate_target(target: &CallWindowTarget) -> Result<(), String> {
     }
     if target.epoch < 0 || target.epoch > MAX_SAFE_INTEGER {
         return Err("invalid epoch".to_string());
-    }
-    if target.grant.expires_at <= 0 || target.grant.expires_at > MAX_SAFE_INTEGER {
-        return Err("invalid grant.expiresAt".to_string());
-    }
-    for (field, value) in [
-        ("grant.renewAfterMs", target.grant.renew_after_ms),
-        ("grant.trafficStopMs", target.grant.traffic_stop_ms),
-        ("grant.controlPollMs", target.grant.control_poll_ms),
-    ] {
-        if let Some(ms) = value {
-            if ms == 0 || ms > MAX_INTERVAL_MS {
-                return Err(format!("invalid {field}"));
-            }
-        }
     }
     let serialized =
         serde_json::to_value(target).map_err(|error| format!("invalid target: {error}"))?;
@@ -563,18 +554,11 @@ mod tests {
             room_id: "room-1".to_string(),
             call_id: "call-1".to_string(),
             epoch: 7,
-            grant: CallGrantTarget {
-                grant_id: "grant-1".to_string(),
-                expires_at: 1_800_000_000_000,
-                renew_after_ms: Some(30_000),
-                traffic_stop_ms: Some(10_000),
-                control_poll_ms: Some(1_000),
-            },
             self_: CallSelfTarget {
                 person_uid: "prs-1".to_string(),
                 device_id: "dev-1".to_string(),
             },
-            evidence: serde_json::json!({ "schema": "hq-meet-staging-proof/v1" }),
+            knock: None,
         }
     }
 
@@ -690,13 +674,20 @@ mod tests {
     }
 
     #[test]
-    fn credential_shaped_evidence_is_refused() {
-        let mut bad = target("s-1");
-        bad.evidence = serde_json::json!({ "nested": { "runAt": "x" } });
-        assert!(json_has_no_credential_fields(&bad.evidence));
-        bad.evidence = serde_json::json!({ "nested": { "API-Key": "x" } });
-        assert!(!json_has_no_credential_fields(&bad.evidence));
-        assert!(validate_target(&bad).is_err());
+    fn credential_shaped_json_is_refused_at_any_depth() {
+        // US-018 removed the last free-form JSON field from the target, so the
+        // scan can no longer be driven THROUGH a target. It still guards every
+        // serialized target (and any future field), so it is pinned directly.
+        assert!(json_has_no_credential_fields(
+            &serde_json::json!({ "nested": { "runAt": "x" } })
+        ));
+        assert!(!json_has_no_credential_fields(
+            &serde_json::json!({ "nested": { "API-Key": "x" } })
+        ));
+        assert!(!json_has_no_credential_fields(
+            &serde_json::json!({ "list": [{ "authorization": "Bearer x" }] })
+        ));
+        assert!(validate_target(&target("s-1")).is_ok());
     }
 
     #[test]
@@ -711,8 +702,24 @@ mod tests {
         let mut bad = target("s-1");
         bad.epoch = -1;
         assert!(validate_target(&bad).is_err());
-        let mut bad = target("s-1");
-        bad.grant.expires_at = 0;
+        // A knock's ids are validated exactly like every other id.
+        let mut knocked = target("s-1");
+        knocked.knock = Some(CallKnockTarget {
+            knock_id: "knk-1".to_string(),
+            capability_id: "cap-1".to_string(),
+        });
+        assert!(validate_target(&knocked).is_ok());
+        let mut bad = knocked.clone();
+        bad.knock = Some(CallKnockTarget {
+            knock_id: "../escape".to_string(),
+            capability_id: "cap-1".to_string(),
+        });
+        assert!(validate_target(&bad).is_err());
+        let mut bad = knocked;
+        bad.knock = Some(CallKnockTarget {
+            knock_id: "knk-1".to_string(),
+            capability_id: String::new(),
+        });
         assert!(validate_target(&bad).is_err());
     }
 
@@ -743,37 +750,38 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_out_of_range_timestamps_and_intervals() {
+    fn validation_rejects_out_of_range_timestamps() {
         let mut bad = target("s-1");
         bad.epoch = MAX_SAFE_INTEGER + 1;
         assert!(validate_target(&bad).is_err());
         let mut ok = target("s-1");
         ok.epoch = MAX_SAFE_INTEGER;
         assert!(validate_target(&ok).is_ok());
+        let mut negative = target("s-1");
+        negative.epoch = -1;
+        assert!(validate_target(&negative).is_err());
+    }
 
-        let mut bad = target("s-1");
-        bad.grant.expires_at = MAX_SAFE_INTEGER + 1;
-        assert!(validate_target(&bad).is_err());
-
-        for build in [
-            (|t: &mut CallWindowTarget, ms: Option<u64>| t.grant.renew_after_ms = ms)
-                as fn(&mut CallWindowTarget, Option<u64>),
-            |t: &mut CallWindowTarget, ms: Option<u64>| t.grant.traffic_stop_ms = ms,
-            |t: &mut CallWindowTarget, ms: Option<u64>| t.grant.control_poll_ms = ms,
-        ] {
-            let mut zero = target("s-1");
-            build(&mut zero, Some(0));
-            assert!(validate_target(&zero).is_err(), "zero interval must be refused");
-            let mut over = target("s-1");
-            build(&mut over, Some(MAX_INTERVAL_MS + 1));
-            assert!(validate_target(&over).is_err(), "interval past the ceiling");
-            let mut edge = target("s-1");
-            build(&mut edge, Some(MAX_INTERVAL_MS));
-            assert!(validate_target(&edge).is_ok(), "the ceiling itself is valid");
-            let mut absent = target("s-1");
-            build(&mut absent, None);
-            assert!(validate_target(&absent).is_ok(), "absent stays optional");
-        }
+    #[test]
+    fn a_target_carries_no_grant_and_no_evidence() {
+        // US-018: the grant is minted by the window's own admit, and the
+        // service-evidence receipt is bundled in the build. Neither may travel
+        // on a target, so neither can be chosen by whoever opened the window.
+        let serialized = serde_json::to_value(target("s-1")).expect("serializable");
+        let map = serialized.as_object().expect("object");
+        assert!(!map.contains_key("grant"));
+        assert!(!map.contains_key("evidence"));
+        assert_eq!(
+            map.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec![
+                "sessionId",
+                "companyUid",
+                "roomId",
+                "callId",
+                "epoch",
+                "self",
+            ]
+        );
     }
 
     #[test]
@@ -802,9 +810,9 @@ mod tests {
                 "{allowed} is not credential material"
             );
         }
-        let mut bad = target("s-1");
-        bad.evidence = serde_json::json!({ "access_token": "x" });
-        assert!(validate_target(&bad).is_err());
+        assert!(!json_has_no_credential_fields(
+            &serde_json::json!({ "access_token": "x" })
+        ));
     }
 
     #[test]

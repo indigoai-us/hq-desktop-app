@@ -45,7 +45,17 @@ export type V4CompanyPrimaryId =
   | 'knowledge'
   | 'clients'
   | 'team'
+  | 'office'
   | 'more';
+
+/**
+ * Company children that are NOT unconditional. Office is only listed when the
+ * host reports `capabilities.nativeCalls`, so a build (or a browser) with no
+ * native calling never advertises a destination it cannot open.
+ */
+export const V4_CAPABILITY_GATED_PRIMARY_IDS: Readonly<
+  Record<string, 'nativeCalls'>
+> = { office: 'nativeCalls' };
 
 export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
   id: V4CompanyPrimaryId;
@@ -59,8 +69,15 @@ export const V4_COMPANY_PRIMARY_ITEMS: ReadonlyArray<{
   { id: 'knowledge', label: 'Knowledge' },
   { id: 'clients', label: 'Clients' },
   { id: 'team', label: 'Team' },
+  { id: 'office', label: 'Office' },
   { id: 'more', label: 'More' },
 ];
+
+/** Host capabilities that decide which gated company children are listed. */
+export interface V4SidebarCapabilities {
+  /** `PlatformAdapter.capabilities.nativeCalls`. Defaults to false. */
+  nativeCalls?: boolean;
+}
 
 export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
   { id: 'inbox', label: 'Inbox' },
@@ -158,6 +175,7 @@ export function v4CompanyPrimaryForTab(tab: string | undefined | null): V4Compan
     case 'knowledge':
     case 'clients':
     case 'team':
+    case 'office':
       return tab;
     case 'activity':
     case 'deployments':
@@ -255,8 +273,13 @@ export function sortV4CompaniesConnectedFirst(
   workspaces: Workspace[],
   activeSlug?: string | null,
   activePrimary: V4CompanyPrimaryId | null = null,
+  capabilities: V4SidebarCapabilities = {},
 ): V4SidebarCompanyRow[] {
   const seenCompanySlugs = new Set<string>();
+  const primaryItems = V4_COMPANY_PRIMARY_ITEMS.filter((item) => {
+    const gate = V4_CAPABILITY_GATED_PRIMARY_IDS[item.id];
+    return gate === undefined || capabilities[gate] === true;
+  });
 
   // Dedupe by slug (first occurrence wins), capturing the connected flag so the
   // sort below can group without re-reading the source workspace.
@@ -282,7 +305,7 @@ export function sortV4CompaniesConnectedFirst(
         // collapse every company so children never compete with Inbox/etc.
         expanded: active && workspace.membershipStatus !== 'pending',
         children: active && workspace.membershipStatus !== 'pending'
-          ? V4_COMPANY_PRIMARY_ITEMS.map((item) => ({
+          ? primaryItems.map((item) => ({
               id: item.id,
               label: item.label,
               active: activePrimary != null && item.id === activePrimary,
@@ -316,7 +339,11 @@ export function sortV4CompaniesConnectedFirst(
  * row. Company pages highlight the company row (and a primary child when
  * applicable), not a nav item.
  */
-export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4SidebarModel {
+export function getV4SidebarModel(
+  route: V4Route,
+  workspaces: Workspace[],
+  capabilities: V4SidebarCapabilities = {},
+): V4SidebarModel {
   const settingsActive = route.kind === 'settings';
   const companyActive = route.kind === 'company';
   const activePrimary = companyActive ? v4CompanyPrimaryForTab(route.tab) : null;
@@ -325,6 +352,7 @@ export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4Si
     workspaces,
     companyActive ? route.slug : null,
     activePrimary,
+    capabilities,
   );
 
   const companyRowActive = companies.some((row) => row.active);

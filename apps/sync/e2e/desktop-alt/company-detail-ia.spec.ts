@@ -20,6 +20,7 @@ describe('company-detail-desktop-ia: company secondary IA', () => {
       'knowledge',
       'clients',
       'team',
+      'office',
       'activity',
       'deployments',
       'secrets',
