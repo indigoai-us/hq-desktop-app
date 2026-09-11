@@ -150,6 +150,7 @@
   .ideas-search:focus-visible {
     outline: none;
     border-color: var(--border-strong);
+    box-shadow: 0 0 0 2px var(--v4-focus-ring, var(--accent));
   }
 
   .ideas-chips {
@@ -173,6 +174,13 @@
   }
 
   .ideas-chip:hover { opacity: 0.78; }
+
+  .ideas-chip:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--v4-focus-ring, var(--accent));
+  }
+
+  .ideas-chip:active { opacity: 0.62; }
 
   .ideas-chip.active {
     color: var(--accent);
@@ -231,6 +239,15 @@
     border-radius: 4px;
     padding: 4px 9px;
     cursor: pointer;
+    transition: opacity 150ms ease-out;
+  }
+
+  .ideas-retry:hover { opacity: 0.78; }
+  .ideas-retry:active { opacity: 0.62; }
+
+  .ideas-retry:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--v4-focus-ring, var(--accent));
   }
 
   .ideas-empty {
@@ -257,5 +274,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .ideas-chip { transition: none; }
+    .ideas-retry { transition: none; }
   }
 </style>

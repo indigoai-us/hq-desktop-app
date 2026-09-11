@@ -384,6 +384,12 @@
   }
 
   .idea-lowconf-strip button:hover { opacity: 0.78; }
+  .idea-lowconf-strip button:active { opacity: 0.62; }
+
+  .idea-lowconf-strip button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--v4-focus-ring, var(--accent));
+  }
 
   @media (prefers-reduced-motion: reduce) {
     .shimmer { animation: none; }
