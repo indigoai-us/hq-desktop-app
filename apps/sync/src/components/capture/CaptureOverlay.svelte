@@ -3,6 +3,14 @@
   export const EVENT_SHOWN = 'capture-overlay:shown';
   export const EVENT_HIDDEN = 'capture-overlay:hidden';
 
+  /** Normalized selection handed to `capture_region_release` (logical CSS px). */
+  export interface SelectionRect {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }
+
   export interface OverlayDisplay {
     x: number;
     y: number;
@@ -40,6 +48,36 @@
   let visible = $state(false);
   let display = $state<OverlayDisplay | null>(null);
   let pointer = $state<{ x: number; y: number } | null>(null);
+  /** Drag anchor (mousedown point) in overlay-logical px; null when idle. */
+  let anchor = $state<{ x: number; y: number } | null>(null);
+  /** Live drag end point; null until the first mousemove after mousedown. */
+  let dragEnd = $state<{ x: number; y: number } | null>(null);
+
+  /**
+   * The normalized selection in the overlay window's own logical CSS px —
+   * exactly the shape `capture_region_release` expects (negative drags are
+   * normalized here so width/height are always >= 0).
+   */
+  const selection = $derived.by<SelectionRect | null>(() => {
+    if (!anchor) return null;
+    const end = dragEnd ?? anchor;
+    return {
+      x: Math.round(Math.min(anchor.x, end.x)),
+      y: Math.round(Math.min(anchor.y, end.y)),
+      width: Math.round(Math.abs(end.x - anchor.x)),
+      height: Math.round(Math.abs(end.y - anchor.y)),
+    };
+  });
+
+  /** Selection size in the display's physical px (same convention as readout). */
+  const selectionPhysical = $derived.by(() => {
+    if (!selection) return null;
+    const scale = display?.scale ?? window.devicePixelRatio ?? 1;
+    return {
+      w: Math.round(selection.width * scale),
+      h: Math.round(selection.height * scale),
+    };
+  });
 
   /** Cursor position in the display's physical pixel space (for the readout). */
   const readout = $derived.by(() => {
@@ -52,23 +90,57 @@
     return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   }
 
+  function resetDrag() {
+    anchor = null;
+    dragEnd = null;
+  }
+
   function onShown(payload: { display: OverlayDisplay | null }) {
     display = payload?.display ?? null;
     pointer = null;
+    resetDrag();
     visible = true;
   }
 
   function onHidden() {
     visible = false;
     pointer = null;
+    resetDrag();
   }
 
   function onPointerMove(e: MouseEvent) {
     pointer = { x: e.clientX, y: e.clientY };
+    if (anchor) dragEnd = { x: e.clientX, y: e.clientY };
   }
 
   function onPointerLeave() {
     pointer = null;
+  }
+
+  function onPointerDown(e: MouseEvent) {
+    // Right-click (and any non-primary button) is ignored entirely.
+    if (e.button !== 0) return;
+    anchor = { x: e.clientX, y: e.clientY };
+    dragEnd = { x: e.clientX, y: e.clientY };
+  }
+
+  /**
+   * Release: freeze the rect, hide locally so the overlay feels instant, then
+   * hand the selection to Rust. Rust owns the real window hide (reason=release,
+   * or reason=click when it rejects a degenerate rect), so we deliberately do
+   * NOT also call `dismiss_capture_overlay` here. A click with no movement is
+   * still invoked — the backend contract is to let Rust reject width/height < 1.
+   */
+  function onPointerUp(e: MouseEvent) {
+    if (e.button !== 0) return;
+    if (!anchor) return; // mouseup with no active drag: nothing to do.
+    const rect = selection;
+    visible = false;
+    pointer = null;
+    resetDrag();
+    if (rect && hasTauri()) {
+      void invoke('capture_region_release', { selection: rect }).catch(() => {});
+    }
   }
 
   function onKeyDown(e: KeyboardEvent) {
@@ -116,10 +188,59 @@
   data-testid="capture-overlay"
   data-visible={visible ? 'true' : 'false'}
   role="presentation"
+  class:dragging={selection !== null}
   onmousemove={onPointerMove}
   onmouseleave={onPointerLeave}
+  onmousedown={onPointerDown}
+  onmouseup={onPointerUp}
+  oncontextmenu={(e) => e.preventDefault()}
 >
-  {#if pointer}
+  {#if selection}
+    <!-- Four dim panes keep the outside at the exact idle alpha while the
+         selection itself stays perfectly clear. -->
+    <div class="dim" style:left="0" style:top="0" style:right="0" style:height="{selection.y}px"></div>
+    <div
+      class="dim"
+      style:left="0"
+      style:top="{selection.y}px"
+      style:width="{selection.x}px"
+      style:height="{selection.height}px"
+    ></div>
+    <div
+      class="dim"
+      style:left="{selection.x + selection.width}px"
+      style:top="{selection.y}px"
+      style:right="0"
+      style:height="{selection.height}px"
+    ></div>
+    <div
+      class="dim"
+      style:left="0"
+      style:top="{selection.y + selection.height}px"
+      style:right="0"
+      style:bottom="0"
+    ></div>
+    <div
+      class="selection"
+      data-testid="capture-selection"
+      data-w={selectionPhysical?.w ?? 0}
+      data-h={selectionPhysical?.h ?? 0}
+      style:left="{selection.x}px"
+      style:top="{selection.y}px"
+      style:width="{selection.width}px"
+      style:height="{selection.height}px"
+    ></div>
+    {#if selectionPhysical}
+      <div
+        class="dimensions"
+        data-testid="capture-dimensions"
+        style:left="{selection.x + selection.width}px"
+        style:top="{selection.y + selection.height}px"
+      >
+        {selectionPhysical.w} × {selectionPhysical.h}
+      </div>
+    {/if}
+  {:else if pointer}
     <div class="crosshair-v" style:left="{pointer.x}px"></div>
     <div class="crosshair-h" style:top="{pointer.y}px"></div>
     {#if readout}
@@ -133,9 +254,11 @@
       </div>
     {/if}
   {/if}
-  <div class="hint" data-testid="capture-hint">
-    Drag to capture <span class="sep">·</span> Esc to cancel
-  </div>
+  {#if !selection}
+    <div class="hint" data-testid="capture-hint">
+      Drag to capture <span class="sep">·</span> Esc to cancel
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -157,6 +280,45 @@
     /* Pre-rendered: the window is hidden until shown from Rust. No entrance
        transition — the 80ms budget leaves no room for one. */
     opacity: 1;
+  }
+
+  /* While dragging, the base dim is dropped and reproduced by four panes at
+     the identical alpha, leaving the selection itself clear. */
+  .overlay.dragging {
+    background: transparent;
+  }
+
+  .dim {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(0, 0, 0, 0.35);
+  }
+
+  .selection {
+    position: absolute;
+    pointer-events: none;
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    box-sizing: border-box;
+  }
+
+  .dimensions {
+    position: absolute;
+    pointer-events: none;
+    /* Clamp inside the window: the label hangs off the bottom-right corner but
+       is pulled back in when the selection reaches an edge. */
+    transform: translate(-100%, -100%);
+    margin: -6px 0 0 -6px;
+    max-width: 100%;
+    font:
+      500 11px/1 ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.6);
+    padding: 4px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
   }
 
   .crosshair-v,

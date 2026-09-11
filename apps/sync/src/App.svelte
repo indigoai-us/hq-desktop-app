@@ -1175,6 +1175,12 @@
         invoke(command, args),
       );
       return;
+    } else if (kind === 'capture') {
+      // hq-idea-board US-004: the capture chord found Screen Recording missing.
+      if (action === 'open-settings') {
+        await invoke('permissions_open_settings', { permission: 'screen-capture' });
+        return;
+      }
     } else if (kind === 'meeting') {
       const windowId = typeof data?.windowId === 'string' ? data.windowId : '';
       const meetingId = typeof data?.meetingId === 'string' ? data.meetingId : '';

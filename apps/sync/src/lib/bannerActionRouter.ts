@@ -5,7 +5,9 @@ export type NotificationActionKind =
   | 'share'
   | 'update'
   | 'meeting'
-  | 'session';
+  | 'session'
+  // hq-idea-board US-004: Screen Recording permission prompt.
+  | 'capture';
 
 export interface BannerActionEvent {
   requestId: string;

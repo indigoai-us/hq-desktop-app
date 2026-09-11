@@ -133,3 +133,126 @@ describe('CaptureOverlay (hq-idea-board US-003)', () => {
     expect(invokeMock).toHaveBeenCalledWith('dismiss_capture_overlay');
   });
 });
+
+describe('CaptureOverlay drag selection (hq-idea-board US-004)', () => {
+  function showOverlay(target: HTMLElement, scale: number) {
+    const shown = listenMock.mock.calls.find((c) => c[0] === 'capture-overlay:shown')?.[1] as (ev: {
+      payload: unknown;
+    }) => void;
+    shown({ payload: { display: { x: 0, y: 0, width: 2880, height: 1800, scale } } });
+    flushSync();
+    return target.querySelector('[data-testid="capture-overlay"]') as HTMLElement;
+  }
+
+  function mountShown(scale = 1) {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    const target = mountOverlay();
+    const overlay = showOverlay(target, scale);
+    invokeMock.mockClear();
+    return { target, overlay };
+  }
+
+  function drag(overlay: HTMLElement, from: [number, number], to: [number, number]) {
+    overlay.dispatchEvent(
+      new MouseEvent('mousedown', { clientX: from[0], clientY: from[1], button: 0, bubbles: true }),
+    );
+    overlay.dispatchEvent(
+      new MouseEvent('mousemove', { clientX: to[0], clientY: to[1], bubbles: true }),
+    );
+    flushSync();
+  }
+
+  it('hq-idea-board draws the selection and invokes capture_region_release on release', () => {
+    const { target, overlay } = mountShown(1);
+    drag(overlay, [100, 100], [500, 400]);
+
+    const rect = target.querySelector('[data-testid="capture-selection"]') as HTMLElement;
+    expect(rect).not.toBeNull();
+    expect(rect.dataset.w).toBe('400');
+    expect(rect.dataset.h).toBe('300');
+    expect(
+      target.querySelector('[data-testid="capture-dimensions"]')?.textContent?.trim(),
+    ).toBe('400 × 300');
+    // Crosshair/readout give way to the dimension label during the drag.
+    expect(target.querySelector('[data-testid="capture-readout"]')).toBeNull();
+
+    overlay.dispatchEvent(new MouseEvent('mouseup', { clientX: 500, clientY: 400, button: 0, bubbles: true }));
+    flushSync();
+
+    expect(invokeMock).toHaveBeenCalledWith('capture_region_release', {
+      selection: { x: 100, y: 100, width: 400, height: 300 },
+    });
+    expect(invokeMock.mock.calls.some((c) => c[0] === 'dismiss_capture_overlay')).toBe(false);
+    expect(overlay.dataset.visible).toBe('false');
+    expect(target.querySelector('[data-testid="capture-selection"]')).toBeNull();
+  });
+
+  it('hq-idea-board normalizes a reversed drag to the same selection', () => {
+    const { target, overlay } = mountShown(1);
+    drag(overlay, [500, 400], [100, 100]);
+    const rect = target.querySelector('[data-testid="capture-selection"]') as HTMLElement;
+    expect(rect.dataset.w).toBe('400');
+    expect(rect.dataset.h).toBe('300');
+
+    overlay.dispatchEvent(new MouseEvent('mouseup', { clientX: 100, clientY: 100, button: 0, bubbles: true }));
+    flushSync();
+    expect(invokeMock).toHaveBeenCalledWith('capture_region_release', {
+      selection: { x: 100, y: 100, width: 400, height: 300 },
+    });
+  });
+
+  it('hq-idea-board doubles the displayed dimensions on a scale-2 display but invokes logical px', () => {
+    const { target, overlay } = mountShown(2);
+    drag(overlay, [100, 100], [500, 400]);
+    expect(
+      target.querySelector('[data-testid="capture-dimensions"]')?.textContent?.trim(),
+    ).toBe('800 × 600');
+
+    overlay.dispatchEvent(new MouseEvent('mouseup', { clientX: 500, clientY: 400, button: 0, bubbles: true }));
+    flushSync();
+    expect(invokeMock).toHaveBeenCalledWith('capture_region_release', {
+      selection: { x: 100, y: 100, width: 400, height: 300 },
+    });
+  });
+
+  it('hq-idea-board ignores a mouseup with no active drag', () => {
+    const { overlay } = mountShown(1);
+    overlay.dispatchEvent(new MouseEvent('mouseup', { clientX: 10, clientY: 10, button: 0, bubbles: true }));
+    flushSync();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('hq-idea-board invokes anyway for a click with no movement (Rust rejects the empty rect)', () => {
+    const { overlay } = mountShown(1);
+    overlay.dispatchEvent(new MouseEvent('mousedown', { clientX: 42, clientY: 24, button: 0, bubbles: true }));
+    overlay.dispatchEvent(new MouseEvent('mouseup', { clientX: 42, clientY: 24, button: 0, bubbles: true }));
+    flushSync();
+    expect(invokeMock).toHaveBeenCalledWith('capture_region_release', {
+      selection: { x: 42, y: 24, width: 0, height: 0 },
+    });
+  });
+
+  it('hq-idea-board ignores right-click and resets drag state on the hidden event', () => {
+    const { target, overlay } = mountShown(1);
+    overlay.dispatchEvent(new MouseEvent('mousedown', { clientX: 10, clientY: 10, button: 2, bubbles: true }));
+    overlay.dispatchEvent(new MouseEvent('mousemove', { clientX: 80, clientY: 60, bubbles: true }));
+    flushSync();
+    expect(target.querySelector('[data-testid="capture-selection"]')).toBeNull();
+
+    drag(overlay, [10, 10], [80, 60]);
+    expect(target.querySelector('[data-testid="capture-selection"]')).not.toBeNull();
+    const hidden = listenMock.mock.calls.find((c) => c[0] === 'capture-overlay:hidden')?.[1] as (ev: {
+      payload: unknown;
+    }) => void;
+    hidden({ payload: { reason: 'escape' } });
+    flushSync();
+    expect(target.querySelector('[data-testid="capture-selection"]')).toBeNull();
+    expect(overlay.dataset.visible).toBe('false');
+  });
+
+  it('hq-idea-board still hosts no text input while dragging', () => {
+    const { target, overlay } = mountShown(1);
+    drag(overlay, [100, 100], [500, 400]);
+    expect(target.querySelectorAll('input, textarea, [contenteditable]')).toHaveLength(0);
+  });
+});
