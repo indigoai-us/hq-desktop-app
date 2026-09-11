@@ -68,6 +68,21 @@ export function seedFixturePins(): void {
   }
 }
 
+/**
+ * Channel rosters. The people filter composes with the Show view by matching
+ * a channel's members, so a fixture channel needs a roster or the harness
+ * cannot show that behaviour at all. Deterministic rather than random: each
+ * channel takes the first `memberCount` people from the standing roster.
+ */
+const CHANNEL_ROSTER = [
+  { personUid: "person-corey", displayName: "Corey" },
+  { personUid: "person-bryan", displayName: "Bryan" },
+  { personUid: "person-sofia", displayName: "Sofia" },
+  { personUid: "person-marcus", displayName: "Marcus" },
+  { personUid: "person-priya", displayName: "Priya" },
+  { personUid: "person-kayla", displayName: "Kayla" },
+];
+
 const CHANNEL_ROWS: ChannelDirectoryRow[] = [
   // PINNED (pinned via localStorage) — most recent activity.
   row("hq-desktop", "hq-desktop", "project", "Indigo", today(9), 0, 6),
@@ -130,6 +145,10 @@ function row(
     lastActivityAt,
     unreadCount,
     memberCount,
+    members: CHANNEL_ROSTER.slice(
+      0,
+      Math.max(1, Math.min(memberCount, CHANNEL_ROSTER.length)),
+    ),
   };
 }
 

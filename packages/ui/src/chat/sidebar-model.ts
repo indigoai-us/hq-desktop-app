@@ -966,6 +966,12 @@ export function filterByShow(
  * Keep the rows that involve ANY of the given people (the filter panel is a
  * multi-select). A single uid is still accepted for callers that only ever
  * pick one.
+ *
+ * "Involves" is per kind: a DM is with the person; a group or a channel has
+ * them on its roster. Matching channels too is what lets the people filter
+ * COMPOSE with a Show view — "project channels, with Bryan" — instead of the
+ * two collapsing to an empty list. A channel whose roster the directory did
+ * not carry cannot be matched, so it drops out.
  */
 export function filterByPerson(
   rows: ConversationRow[],
@@ -975,13 +981,14 @@ export function filterByPerson(
     typeof personUid === "string" ? [personUid] : (personUid ?? [])
   ).filter((uid) => uid.trim().length > 0);
   if (uids.length === 0) return rows.slice();
-  return rows.filter(
-    (row) =>
-      (row.kind === "dm" && !!row.personUid && uids.includes(row.personUid)) ||
-      (row.kind === "group" &&
-        (row.members ?? []).some(
-          (m) => !!m.personUid && uids.includes(m.personUid),
-        )),
+  const onRoster = (row: ConversationRow): boolean =>
+    (row.members ?? []).some(
+      (member) => !!member.personUid && uids.includes(member.personUid),
+    );
+  return rows.filter((row) =>
+    row.kind === "dm"
+      ? !!row.personUid && uids.includes(row.personUid)
+      : onRoster(row),
   );
 }
 

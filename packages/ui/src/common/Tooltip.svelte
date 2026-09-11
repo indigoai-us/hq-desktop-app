@@ -28,10 +28,10 @@
     /** Hover dwell before showing, in ms. Focus always shows immediately. */
     delay?: number;
     /**
-     * Kept for callers that still pass it; ignored. The bubble is always
-     * centred on its trigger and shifted only as far as the window edge
-     * forces — an alignment chosen up front was wrong as soon as the window
-     * was a different width.
+     * Kept for callers that still pass it; ignored. The bubble centres on its
+     * trigger and only falls back to edge alignment when the window forces it
+     * — an alignment chosen up front was wrong as soon as the window was a
+     * different width.
      */
     align?: "center" | "start" | "end";
     /**
@@ -66,18 +66,40 @@
   /** px to nudge the centred bubble so it stays inside the window. */
   let shift = $state(0);
 
-  /** Keep the tooltip 8px clear of either window edge, centred otherwise. */
+  /**
+   * Centred on the trigger by default. When a centred bubble would run off a
+   * window edge, it does NOT merely slide as far as it has to — it flips to
+   * edge alignment with the TRIGGER (right edge to right edge near the right
+   * of the window, left to left near the left). A bubble nudged just far
+   * enough to fit reads as accidentally off-centre; one aligned to the
+   * button's own edge reads as deliberate. The window margin is still applied
+   * last, as a backstop for a bubble wider than the space that's left.
+   */
   function clampToViewport(): void {
     const el = bubbleEl;
     if (!el || typeof window === "undefined") return;
+    const anchor = el.parentElement;
+    if (!anchor) return;
     shift = 0;
     // Measure with no shift applied, then correct in one step.
     const margin = 8;
     const rect = el.getBoundingClientRect();
-    const overLeft = margin - rect.left;
-    const overRight = rect.right - (window.innerWidth - margin);
-    if (overLeft > 0) shift = overLeft;
-    else if (overRight > 0) shift = -overRight;
+    const trigger = anchor.getBoundingClientRect();
+    const width = rect.width;
+    const viewport = window.innerWidth;
+    const centredLeft = trigger.left + trigger.width / 2 - width / 2;
+
+    let left = centredLeft;
+    if (centredLeft + width > viewport - margin) left = trigger.right - width;
+    else if (centredLeft < margin) left = trigger.left;
+
+    // Backstop: an edge-aligned bubble can still overhang if it is wider than
+    // the room beside its trigger.
+    const maxLeft = viewport - margin - width;
+    if (left > maxLeft) left = maxLeft;
+    if (left < margin) left = margin;
+
+    shift = left - centredLeft;
   }
 
   $effect(() => {

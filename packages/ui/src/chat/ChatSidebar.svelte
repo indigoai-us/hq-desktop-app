@@ -2183,9 +2183,6 @@
               class:active={showFilter === "all"}
               data-testid="chat-filter-all"
               onclick={() => {
-                // People rows are DMs/groups, so person + a Show view compose
-                // to an empty list. Picking a view drops the person selection.
-                personFilters = [];
                 setShowFilter("all");
               }}
             >
@@ -2200,9 +2197,6 @@
               class="chat-filter-row"
               class:active={showFilter === "projects"}
               onclick={() => {
-                // People rows are DMs/groups, so person + a Show view compose
-                // to an empty list. Picking a view drops the person selection.
-                personFilters = [];
                 setShowFilter("projects");
               }}
             >
@@ -2217,9 +2211,6 @@
               class="chat-filter-row"
               class:active={showFilter === "dms"}
               onclick={() => {
-                // People rows are DMs/groups, so person + a Show view compose
-                // to an empty list. Picking a view drops the person selection.
-                personFilters = [];
                 setShowFilter("dms");
               }}
             >
@@ -2289,11 +2280,10 @@
                     aria-checked={selected}
                     data-testid="chat-filter-person"
                     onclick={() => {
-                      const selecting = !selected;
+                      // People compose with the Show view rather than
+                      // overriding it: "project channels, with Bryan" is a
+                      // question the panel should be able to ask.
                       togglePersonFilter(person.personUid);
-                      // A person's rows are DMs/groups — clear any Show filter
-                      // that would strip them (else the combo yields []).
-                      if (selecting) showFilter = "all";
                       // Menu stays open: picking people is a multi-select.
                     }}
                   >

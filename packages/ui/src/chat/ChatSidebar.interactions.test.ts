@@ -237,8 +237,26 @@ describe("ChatSidebar sign out", () => {
 });
 
 describe("ChatSidebar filters", () => {
-  it("selecting a person then a Show filter does not empty the list (stale person filter is cleared)", async () => {
+  it("composes a person with a Show view instead of jumping back to All", async () => {
+    // Two project channels: one Ada is on, one she is not. Picking Ada and
+    // then "Project channels" must answer "project channels, with Ada" —
+    // earlier this reset Show to All the moment a person was picked.
+    const adaRow: ChannelDirectoryRow = {
+      channelId: "chn_ada",
+      type: "project",
+      scope: "project",
+      companyUid: "cmp_1",
+      name: "with-ada",
+      lastActivityAt: now(),
+      members: [{ personUid: "prs_ada", displayName: "Ada Lovelace" }],
+    };
     const api = stubApi({
+      fetchChannelDirectory: async () => ({
+        snapshot: true,
+        cursor: "cur_1",
+        cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        rows: [seedRow, adaRow],
+      }),
       listContacts: async () => ({
         contacts: [
           {
@@ -252,7 +270,7 @@ describe("ChatSidebar filters", () => {
     });
     component = mount(ChatSidebar, {
       target: host,
-      props: { api, seedDirectory: [seedRow] },
+      props: { api, seedDirectory: [seedRow, adaRow] },
     });
 
     await vi.waitFor(() => {
@@ -273,9 +291,8 @@ describe("ChatSidebar filters", () => {
         ),
       ].find((b) => b.textContent?.includes(text));
 
-    // Pick the person (narrows to their DMs), then switch Show → Project
-    // channels. People are a multi-select, so the menu stays open after the
-    // first click — re-opening it here would toggle it shut.
+    // People are a multi-select, so the menu stays open after the first
+    // click — re-opening it here would toggle it shut.
     openFilter();
     await vi.waitFor(() => expect(filterButton("Ada Lovelace")).toBeTruthy());
     filterButton("Ada Lovelace")!.click();
@@ -285,11 +302,15 @@ describe("ChatSidebar filters", () => {
     projectsBtn!.click();
     await tick();
 
-    // With the stale person filter cleared, the project channel is still shown.
-    // (Before the fix, person + "projects" composed to an empty list.)
+    // Show stayed on "Project channels" AND the person still narrows it.
+    expect(
+      host.querySelector('[data-conversation-id="ch:chn_ada"]'),
+      "project channel Ada is on",
+    ).toBeTruthy();
     expect(
       host.querySelector('[data-conversation-id="ch:chn_proj"]'),
-    ).toBeTruthy();
+      "project channel Ada is not on",
+    ).toBeNull();
   });
 });
 
