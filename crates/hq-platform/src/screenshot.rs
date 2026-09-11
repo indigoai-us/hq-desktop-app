@@ -32,6 +32,12 @@
 
 use std::fmt;
 
+/// Accessibility round-trip budget. The system default is 6 seconds, which on
+/// a hung target app would freeze the capture thread; provenance is nice to
+/// have, never worth a stall.
+#[cfg(target_os = "macos")]
+const AX_TIMEOUT_SECONDS: f32 = 0.25;
+
 /// A captured region, tightly packed RGBA8 (`rgba.len() == width*height*4`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct RegionCapture {
@@ -90,6 +96,29 @@ pub struct FrontmostInfo {
     pub app: String,
     pub window_title: String,
     pub url: Option<String>,
+}
+
+/// The *cheap* half of provenance, sampled on the chord path right before the
+/// overlay is shown.
+///
+/// Reading the window title (`CGWindowListCopyWindowInfo` over every on-screen
+/// window) and the document URL (accessibility round-trips into another
+/// process, which block until that process answers) is far too slow for the
+/// 80ms chord->overlay budget and would hang the main thread outright when the
+/// target app is busy. So the show path takes only this snapshot — a couple of
+/// NSWorkspace property reads — and [`resolve_frontmost`] does the expensive
+/// lookups later, on the capture thread, keyed by the saved pid.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FrontmostSnapshot {
+    /// Frontmost process id at snapshot time (0 = unknown).
+    pub pid: i32,
+    /// Localized app name (macOS) / executable stem (Windows).
+    pub app: String,
+    /// Bundle identifier or image path, used for browser detection.
+    pub identifier: String,
+    /// Set when the platform's full read is already cheap (Windows), so
+    /// [`resolve_frontmost`] has nothing left to do.
+    pub resolved: Option<FrontmostInfo>,
 }
 
 /// In-memory byte order of a source pixel buffer.
@@ -240,6 +269,7 @@ mod imp {
             matching_count: *mut u32,
         ) -> i32;
         fn CGMainDisplayID() -> u32;
+        fn CGDisplayBounds(display: u32) -> CGRect;
         fn CGImageGetWidth(image: CGImageRef) -> usize;
         fn CGImageGetHeight(image: CGImageRef) -> usize;
         fn CGImageGetBytesPerRow(image: CGImageRef) -> usize;
@@ -265,6 +295,7 @@ mod imp {
             attribute: CFTypeRef,
             value: *mut CFTypeRef,
         ) -> i32;
+        fn AXUIElementSetMessagingTimeout(element: CFTypeRef, timeout: f32) -> i32;
     }
 
     /// Autoreleased `NSString*` (toll-free bridged to `CFStringRef`).
@@ -367,7 +398,21 @@ mod imp {
                 // display. The overlay must already be hidden in that case.
                 _ => {
                     let display = super::display_id_for_point(region.x, region.y);
-                    CGDisplayCreateImageForRect(display, rect)
+                    // `CGDisplayCreateImageForRect` takes the rect in *display*
+                    // space (origin = that display's top-left), not global
+                    // virtual-desktop space. Subtracting the display's global
+                    // origin is a no-op on the main display and the difference
+                    // between "the right pixels" and "a shot of the wrong part
+                    // of the wrong monitor" on every other one.
+                    let bounds = CGDisplayBounds(display);
+                    let local = CGRect {
+                        origin: CGPoint {
+                            x: rect.origin.x - bounds.origin.x,
+                            y: rect.origin.y - bounds.origin.y,
+                        },
+                        size: rect.size,
+                    };
+                    CGDisplayCreateImageForRect(display, local)
                 }
             }
         };
@@ -447,6 +492,9 @@ mod imp {
             if app.is_null() {
                 return None;
             }
+            // Without this, an unresponsive target app blocks each AX call for
+            // the 6s system default. We would rather have no URL than a stall.
+            AXUIElementSetMessagingTimeout(app, AX_TIMEOUT_SECONDS);
             let mut window: CFTypeRef = std::ptr::null();
             let attr_focused = ns_string("AXFocusedWindow") as CFTypeRef;
             let err = AXUIElementCopyAttributeValue(app, attr_focused, &mut window);
@@ -474,34 +522,54 @@ mod imp {
         }
     }
 
-    pub fn frontmost_window_info() -> FrontmostInfo {
+    /// Cheap: two NSWorkspace property reads, no cross-process traffic.
+    pub fn frontmost_snapshot() -> FrontmostSnapshot {
         use objc2::{class, msg_send, runtime::AnyObject};
         // SAFETY: NSWorkspace is a singleton; all selectors are public AppKit
         // API returning autoreleased objects read within this scope.
         unsafe {
             let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
             if workspace.is_null() {
-                return FrontmostInfo::default();
+                return FrontmostSnapshot::default();
             }
             let app: *mut AnyObject = msg_send![workspace, frontmostApplication];
             if app.is_null() {
-                return FrontmostInfo::default();
+                return FrontmostSnapshot::default();
             }
             let name: *mut AnyObject = msg_send![app, localizedName];
             let bundle: *mut AnyObject = msg_send![app, bundleIdentifier];
             let pid: i32 = msg_send![app, processIdentifier];
-            let app_name = ns_string_to_rust(name);
-            let bundle_id = ns_string_to_rust(bundle);
-            let window_title = window_title_for_pid(pid);
-            let url = if looks_like_browser(&bundle_id) || looks_like_browser(&app_name) {
-                ax_document_url(pid).or_else(|| derive_url_from_title(&window_title))
+            FrontmostSnapshot {
+                pid,
+                app: ns_string_to_rust(name),
+                identifier: ns_string_to_rust(bundle),
+                resolved: None,
+            }
+        }
+    }
+
+    /// Expensive: window-list enumeration + accessibility round-trips. Safe to
+    /// call from any thread (CGWindowList and AXUIElement both are), and meant
+    /// to run on the capture thread after the overlay is already gone.
+    pub fn resolve_frontmost(snap: &FrontmostSnapshot) -> FrontmostInfo {
+        if snap.pid <= 0 {
+            return FrontmostInfo { app: snap.app.clone(), ..Default::default() };
+        }
+        // A pool of our own: this runs on a plain worker thread, which has no
+        // ambient autorelease pool to drain the NSStrings we create below.
+        objc2::rc::autoreleasepool(|_| {
+            let window_title = window_title_for_pid(snap.pid);
+            let url = if looks_like_browser(&snap.identifier) || looks_like_browser(&snap.app) {
+                ax_document_url(snap.pid).or_else(|| derive_url_from_title(&window_title))
             } else {
                 derive_url_from_title(&window_title)
             };
-            FrontmostInfo { app: app_name, window_title, url }
-        }
+            FrontmostInfo { app: snap.app.clone(), window_title, url }
+        })
     }
 }
+
+
 
 // ---------------------------------------------------------------------------
 // Windows (GDI)
@@ -617,7 +685,7 @@ mod imp {
         }
     }
 
-    pub fn frontmost_window_info() -> FrontmostInfo {
+    fn frontmost_window_info_now() -> FrontmostInfo {
         // SAFETY: all calls are read-only Win32 queries; the process handle is
         // closed on every path.
         unsafe {
@@ -663,6 +731,23 @@ mod imp {
             FrontmostInfo { app, window_title, url }
         }
     }
+
+    /// Windows has no accessibility round-trip on this path (the title comes
+    /// straight from `GetWindowTextW`), so the whole read is cheap enough to
+    /// do on the chord path and hand over pre-resolved.
+    pub fn frontmost_snapshot() -> FrontmostSnapshot {
+        let info = frontmost_window_info_now();
+        FrontmostSnapshot {
+            pid: 0,
+            app: info.app.clone(),
+            identifier: info.app.clone(),
+            resolved: Some(info),
+        }
+    }
+
+    pub fn resolve_frontmost(snap: &FrontmostSnapshot) -> FrontmostInfo {
+        snap.resolved.clone().unwrap_or_default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -684,7 +769,11 @@ mod imp {
         0
     }
 
-    pub fn frontmost_window_info() -> FrontmostInfo {
+    pub fn frontmost_snapshot() -> FrontmostSnapshot {
+        FrontmostSnapshot::default()
+    }
+
+    pub fn resolve_frontmost(_snap: &FrontmostSnapshot) -> FrontmostInfo {
         FrontmostInfo::default()
     }
 }
@@ -704,10 +793,25 @@ pub fn capture_region(
     imp::capture_region(region, exclude_window)
 }
 
-/// Provenance for the app that is frontmost **right now**. Call this before
-/// showing the capture overlay.
+/// Cheap frontmost snapshot. Call this on the chord path, **before** showing
+/// the capture overlay (once the overlay is up it is itself frontmost).
+pub fn frontmost_snapshot() -> FrontmostSnapshot {
+    imp::frontmost_snapshot()
+}
+
+/// Finish a [`FrontmostSnapshot`] into full provenance. Call this off the
+/// chord path — it enumerates windows and may talk to another process.
+pub fn resolve_frontmost(snap: &FrontmostSnapshot) -> FrontmostInfo {
+    if let Some(info) = &snap.resolved {
+        return info.clone();
+    }
+    imp::resolve_frontmost(snap)
+}
+
+/// Snapshot + resolve in one call. Convenience for callers with no latency
+/// budget; the capture path splits the two deliberately.
 pub fn frontmost_window_info() -> FrontmostInfo {
-    imp::frontmost_window_info()
+    resolve_frontmost(&frontmost_snapshot())
 }
 
 /// Stable-per-session display identifier for the display containing the point.
@@ -784,6 +888,41 @@ mod hq_idea_board_screenshot_tests {
         }
         assert!(!looks_like_browser("com.apple.TextEdit"));
         assert!(!looks_like_browser("com.figma.Desktop"));
+    }
+
+    /// Review regression: the chord path may only take the *cheap* snapshot.
+    /// A pre-resolved snapshot must short-circuit `resolve_frontmost` without
+    /// any platform call, and a pid-less snapshot must still surface the app
+    /// name rather than falling back to an empty record.
+    #[test]
+    fn hq_idea_board_resolve_frontmost_prefers_a_preresolved_snapshot() {
+        let snap = FrontmostSnapshot {
+            pid: 4242,
+            app: "Arc".into(),
+            identifier: "company.thebrowser.Browser".into(),
+            resolved: Some(FrontmostInfo {
+                app: "Arc".into(),
+                window_title: "Docs — https://example.com/x".into(),
+                url: Some("https://example.com/x".into()),
+            }),
+        };
+        let info = resolve_frontmost(&snap);
+        assert_eq!(info.app, "Arc");
+        assert_eq!(info.url.as_deref(), Some("https://example.com/x"));
+    }
+
+    #[test]
+    fn hq_idea_board_resolve_frontmost_without_a_pid_keeps_the_app_name() {
+        let snap = FrontmostSnapshot {
+            pid: 0,
+            app: "TextEdit".into(),
+            identifier: "com.apple.TextEdit".into(),
+            resolved: None,
+        };
+        let info = resolve_frontmost(&snap);
+        assert_eq!(info.app, "TextEdit");
+        assert!(info.window_title.is_empty());
+        assert_eq!(info.url, None);
     }
 
     #[test]

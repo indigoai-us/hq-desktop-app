@@ -35,7 +35,7 @@ use std::sync::{Mutex, OnceLock};
 use hq_desktop_core::ideas::{
     create_record, CaptureImage, NewCapture, Provenance,
 };
-use hq_platform::screenshot::{self, CaptureRegion, FrontmostInfo};
+use hq_platform::screenshot::{self, CaptureRegion, FrontmostSnapshot};
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
@@ -92,10 +92,17 @@ static OVERLAY_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// back into a global rect.
 static SHOWN_DISPLAY: Mutex<Option<DisplayRect>> = Mutex::new(None);
 
-/// Frontmost-app provenance sampled in `show_overlay` **before** the overlay
-/// appears. Once the overlay is on screen it is itself frontmost, so reading
-/// provenance at capture time would always say "HQ".
-static PENDING_PROVENANCE: Mutex<Option<FrontmostInfo>> = Mutex::new(None);
+/// Frontmost-app *snapshot* taken in `show_overlay` **before** the overlay
+/// appears. Once the overlay is on screen it is itself frontmost, so sampling
+/// at capture time would always say "HQ".
+///
+/// Only the cheap half (pid + app name) is read here; the window title and the
+/// accessibility URL lookup are resolved on the capture thread
+/// (`screenshot::resolve_frontmost`), because they enumerate every on-screen
+/// window and round-trip into another process — work that would blow the 80ms
+/// chord->overlay budget and can block the main thread outright when the
+/// target app is not answering.
+static PENDING_PROVENANCE: Mutex<Option<FrontmostSnapshot>> = Mutex::new(None);
 
 /// The overlay's native window number (macOS `NSWindow.windowNumber`), read on
 /// the main thread at show time. `CGWindowListCreateImage` uses it to capture
@@ -512,9 +519,10 @@ fn show_overlay(app: &AppHandle) {
         log(LOG_TAG, "overlay show: window missing (setup failed?)");
         return;
     };
-    // Provenance must be sampled before the overlay takes the screen.
+    // Provenance must be sampled before the overlay takes the screen. Cheap
+    // half only — see PENDING_PROVENANCE.
     if let Ok(mut slot) = PENDING_PROVENANCE.lock() {
-        *slot = Some(screenshot::frontmost_window_info());
+        *slot = Some(screenshot::frontmost_snapshot());
     }
     OVERLAY_WINDOW_NUMBER.store(overlay_window_number(&window), Ordering::SeqCst);
     if let Some(d) = target_display(app) {
@@ -703,12 +711,14 @@ fn resolve_vault_target(app: &AppHandle) -> Result<(std::path::PathBuf, String),
 /// Background half of the capture: grab pixels, store the record, mark, emit.
 /// Never panics; every failure becomes an `idea.capture.failed` line.
 fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Option<u32>) {
-    let provenance_info = PENDING_PROVENANCE
+    let snapshot = PENDING_PROVENANCE
         .lock()
         .ok()
         .and_then(|mut s| s.take())
         .unwrap_or_default();
 
+    // Pixels first: the release->png_written budget is the one the bench
+    // scores, so nothing slower than the grab may run ahead of it.
     let shot = match screenshot::capture_region(&region, exclude_window) {
         Ok(s) => s,
         Err(e) => {
@@ -716,6 +726,10 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
             return;
         }
     };
+    // Now the slow half of provenance: window-title enumeration and the
+    // accessibility URL round-trip, keyed by the pid saved before the overlay
+    // appeared. Off the chord path and after the overlay is gone.
+    let provenance_info = screenshot::resolve_frontmost(&snapshot);
     let Some(img) = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba) else {
         log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=pixel_buffer_mismatch"));
         return;
