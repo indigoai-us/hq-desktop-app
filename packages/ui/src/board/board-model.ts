@@ -260,7 +260,7 @@ export function hasReviewSignal(
  * Build the card / panel status-line vocabulary string.
  *
  * Exact forms (D-12):
- * - `AGENT RUNNING · 42%` (live session; omit ` · %` when progress unknown)
+ * - `BOT RUNNING · 42%` (live session; omit ` · %` when progress unknown)
  * - `{PERSON} REVIEWING` (reviewer signal, e.g. `MARCUS REVIEWING`)
  * - `DESIGN REVIEW` (review without named person / design flag)
  * - `PR OPEN · CI GREEN` / `PR OPEN · CI RED` / `PR OPEN` (CI unknown)
@@ -284,7 +284,7 @@ export function buildStatusLine(input: {
       Number.isFinite(live.progressPercent)
         ? Math.max(0, Math.min(100, Math.round(live.progressPercent)))
         : null;
-    return progress != null ? `AGENT RUNNING · ${progress}%` : "AGENT RUNNING";
+    return progress != null ? `BOT RUNNING · ${progress}%` : "BOT RUNNING";
   }
 
   const reviewer = signal?.reviewer?.trim();
@@ -313,7 +313,7 @@ function sessionAssigneeLabel(
   const label =
     [session.tool, session.model].filter(Boolean).join(" · ") ||
     session.project ||
-    "Agent";
+    "Bot";
   return label;
 }
 

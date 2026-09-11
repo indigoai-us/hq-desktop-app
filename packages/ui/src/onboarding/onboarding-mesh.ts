@@ -15,7 +15,7 @@ export interface MeshDoctorProgress {
 export const MESH_TITLE = "HQ Work in Real Time";
 
 export const MESH_BODY =
-  "Now all your work syncs between machines, people and agents as it happens. Your team everywhere all at once.";
+  "Now all your work syncs between machines, people and bots as it happens. Your team everywhere all at once.";
 
 export const MESH_BANDS = [
   "Installing daemon.",

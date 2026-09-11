@@ -310,7 +310,7 @@ describe("SetupAgent", () => {
     expect(agent.failure?.kind).toBe("auth");
     const texts = agent.transcript.map((turn) => turn.text);
     expect(texts).not.toContain("Failed to authenticate: OAuth session expired and could not be refreshed");
-    expect(texts[texts.length - 1]).toContain("sign-in for your coding agent has expired");
+    expect(texts[texts.length - 1]).toContain("sign-in for your coding tool has expired");
     expect(providers).toHaveBeenCalledWith(true);
     expect(agent.providersReady).toBe(false);
   });

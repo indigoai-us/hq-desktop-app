@@ -161,7 +161,7 @@ function dmSwitcherSecondary(row: ConversationRow): string | undefined {
     mentionTypeForUid(uid) === "agent" ||
     uid.toLowerCase().startsWith("agent_")
   ) {
-    return "Agent";
+    return "Bot";
   }
   return undefined;
 }

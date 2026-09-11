@@ -141,9 +141,9 @@ describe("agent channel rows", () => {
     members: [{ personUid: "agt_01ATLAS0000", displayName: "Atlas" }],
   });
 
-  it("names the agent and says it is an agent channel", () => {
+  it("names the bot and says it is a bot channel", () => {
     expect(paletteRowLabel(agentChannel, CTX)).toBe("#Atlas");
-    expect(paletteRowDetail(agentChannel, CTX)).toBe("Indigo · agent channel");
+    expect(paletteRowDetail(agentChannel, CTX)).toBe("Indigo · bot channel");
   });
 });
 
@@ -210,13 +210,13 @@ describe("agent DM rows", () => {
 
   it("says agent, not person", () => {
     expect(paletteRowLabel(agent, CTX)).toBe("Atlas");
-    expect(paletteRowDetail(agent, CTX)).toBe("Indigo · agent");
+    expect(paletteRowDetail(agent, CTX)).toBe("Indigo · bot");
   });
 
   it("falls back to a PREFIXED agent uid", () => {
     const bare = row({ ...agent, title: "" });
-    expect(paletteRowLabel(bare, CTX)).toBe("Agent · agt_01ATLA…");
-    expect(paletteRowDetail(bare, CTX)).toBe("Indigo · agent");
+    expect(paletteRowLabel(bare, CTX)).toBe("Bot · agt_01ATLA…");
+    expect(paletteRowDetail(bare, CTX)).toBe("Indigo · bot");
   });
 });
 

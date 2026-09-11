@@ -1,10 +1,14 @@
 // @vitest-environment happy-dom
 
 /**
- * Lifecycle entry points offered by the sidebar: "New company" / "New agent"
+ * Lifecycle entry points offered by the sidebar: "New company" / "New bot"
  * rows in the "+" modal and a "New company" row in the company switcher. The
  * sidebar never runs the server action itself — it calls the host callbacks
  * and either closes (success) or shows the reason inline (blocked).
+ *
+ * Every AI teammate is a bot. One "New bot" row opens the bot step; a
+ * "Runs on" toggle there picks This Mac (local bot) or Cloud (company bot,
+ * today's create-agent team action).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -101,7 +105,7 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-entry-points"]')).toBeNull();
     expect(q('[data-testid="chat-create-new-company"]')).toBeNull();
-    expect(q('[data-testid="chat-create-new-agent"]')).toBeNull();
+    expect(q('[data-testid="chat-create-new-bot"]')).toBeNull();
   });
 
   it("New company calls the host and closes the modal on success", async () => {
@@ -122,16 +126,28 @@ describe("ChatSidebar lifecycle entry points", () => {
     );
   });
 
-  it("New agent with one company goes straight to it", async () => {
+  it("New bot with only Cloud available opens on Cloud and creates in the one company", async () => {
     const oncreateagent = vi.fn(async () => okTarget);
     mountSidebar({ companies: [INDIGO], oncreateagent });
     await settle();
     await openModal();
-    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-agent"]');
+    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
+    expect(row?.textContent).toContain("New bot");
     expect(row?.textContent).toContain("Indigo");
-    expect(row?.getAttribute("aria-haspopup")).toBeNull();
     row!.click();
+    await settle();
+    expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
+    // No local runtime on this host → This Mac is disabled and Cloud is preselected.
+    const local = q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]');
+    const cloud = q<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]');
+    expect(local?.disabled).toBe(true);
+    expect(cloud?.getAttribute("aria-checked")).toBe("true");
+    expect(q('[data-testid="chat-bot-name"]')).toBeNull();
+    const picker = q('[data-testid="chat-create-agent-picker"]');
+    expect(picker?.getAttribute("role")).toBe("listbox");
+    expect(picker?.getAttribute("aria-label")).toBe("Add a bot to which company?");
+    q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo");
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
@@ -163,27 +179,34 @@ describe("ChatSidebar lifecycle entry points", () => {
     mountSidebar({ api, companies: [], oncreateagent, seedDirectory: [directoryRow] });
     await settle();
     await openModal();
-    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-agent"]');
+    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Ramen Bae");
     row!.click();
+    await settle();
+    q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_ramen_bae");
   });
 
-  it("New agent with several companies shows an inline picker, keyboard included", async () => {
+  it("Cloud with several companies shows the company picker, keyboard included, and Create uses the pick", async () => {
     const oncreateagent = vi.fn(async () => okTarget);
-    mountSidebar({ companies: [INDIGO, ACME], oncreateagent });
+    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
+    mountSidebar({ companies: [INDIGO, ACME], oncreateagent, oncreatebot });
     await settle();
     await openModal();
-    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-agent"]');
-    expect(row?.getAttribute("aria-haspopup")).toBe("listbox");
-    expect(row?.getAttribute("aria-expanded")).toBe("false");
-    expect(q('[data-testid="chat-create-agent-picker"]')).toBeNull();
+    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
+    expect(row?.textContent).toContain("Runs on this Mac or in the cloud");
     row!.click();
     await settle();
+    // Both hosts available → This Mac is the default and the picker is hidden.
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(q('[data-testid="chat-create-agent-picker"]')).toBeNull();
+    expect(q('[data-testid="chat-bot-name"]')).toBeTruthy();
+    q<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]')!.click();
+    await settle();
     expect(oncreateagent).not.toHaveBeenCalled();
-    expect(row?.getAttribute("aria-expanded")).toBe("true");
+    expect(q('[data-testid="chat-bot-name"]')).toBeNull();
     const picker = q('[data-testid="chat-create-agent-picker"]');
     expect(picker?.getAttribute("role")).toBe("listbox");
     const options = Array.from(
@@ -193,6 +216,8 @@ describe("ChatSidebar lifecycle entry points", () => {
     );
     expect(options.map((o) => o.dataset.company)).toEqual(["cmp_indigo", "cmp_acme"]);
     expect(options.map((o) => o.textContent?.trim())).toEqual(["I Indigo", "A Acme"]);
+    // First company is preselected.
+    expect(options.map((o) => o.getAttribute("aria-selected"))).toEqual(["true", "false"]);
 
     // Arrow keys move between the company rows.
     options[0]!.focus();
@@ -200,12 +225,17 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(document.activeElement).toBe(options[1]);
 
     options[1]!.click();
+    await settle();
+    expect(oncreateagent).not.toHaveBeenCalled();
+    expect(options.map((o) => o.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+    q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_acme");
+    expect(oncreatebot).not.toHaveBeenCalled();
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
 
-  it("shows a blocked reason inline where the picker was and keeps the modal open", async () => {
+  it("shows a blocked reason inline in the bot step and keeps the modal open", async () => {
     const oncreateagent = vi.fn(
       async (): Promise<EntryPointResult> => ({
         ok: false,
@@ -216,21 +246,20 @@ describe("ChatSidebar lifecycle entry points", () => {
     mountSidebar({ companies: [INDIGO, ACME], oncreateagent });
     await settle();
     await openModal();
-    q<HTMLButtonElement>('[data-testid="chat-create-new-agent"]')!.click();
+    q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
     await settle();
     document
       .querySelector<HTMLButtonElement>('[data-company="cmp_acme"]')!
       .click();
+    await settle();
+    q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_acme");
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
     const error = q('[data-testid="chat-create-entry-error"]');
     expect(error?.getAttribute("role")).toBe("alert");
     expect(error?.textContent).toContain("Only owners can add agents.");
-    // The error sits inside the entry-point group, under the picker.
-    expect(
-      q('[data-testid="chat-create-entry-points"]')?.contains(error!),
-    ).toBe(true);
   });
 
   it("the company switcher ends with a New company row that runs the same flow", async () => {
@@ -296,13 +325,16 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     await settle();
     await openModal();
     const plus = q<HTMLButtonElement>('[data-testid="chat-new-message"]');
-    expect(plus?.getAttribute("aria-label")).toBe("New message, channel, company, agent, or bot");
+    expect(plus?.getAttribute("aria-label")).toBe("New message, channel, company, or bot");
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Runs on this Mac");
     row!.click();
     await settle();
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
+    // Only a local host here → This Mac is checked and Cloud is disabled.
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]')?.disabled).toBe(true);
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
     expect(name.value).toBe("assistant");
     q<HTMLButtonElement>('[data-testid="chat-bot-runtime-grok"]')!.click();

@@ -13,9 +13,9 @@
  * 2. `paletteConversationItems` — human labels. Every row renders a
  *    HUMAN-READABLE primary label (channel display name with `#`, person or
  *    agent display name, project title) and a CONTEXT secondary line (company
- *    name, email, "agent", "project channel"). A raw identifier is never a
+ *    name, email, "bot", "project channel"). A raw identifier is never a
  *    label or a detail on its own: when nothing resolved we fall back to a
- *    PREFIXED id (`Agent · agt_…`) so the row is at least legible about what it
+ *    PREFIXED id (`Bot · agt_…`) so the row is at least legible about what it
  *    is. Raw ids still live on `keywords`, which the palette matches against,
  *    so typing either a name or an id finds the row.
  */
@@ -200,8 +200,8 @@ export function paletteRowLabel(
   const email = (row.email ?? "").trim();
   if (email) return email;
   const uid = (row.personUid ?? "").trim();
-  if (!uid) return isAgentDm(row) ? "Agent" : "Person";
-  return `${isAgentDm(row) ? "Agent" : "Person"} · ${elideId(uid)}`;
+  if (!uid) return isAgentDm(row) ? "Bot" : "Person";
+  return `${isAgentDm(row) ? "Bot" : "Person"} · ${elideId(uid)}`;
 }
 
 /**
@@ -217,7 +217,7 @@ export function paletteRowDetail(
 
   if (row.kind === "channel") {
     let kind = "channel";
-    if (isAgentChannel(row)) kind = "agent channel";
+    if (isAgentChannel(row)) kind = "bot channel";
     else if (isProjectChannel(row)) kind = "project channel";
     else if (row.channelScope === "company") kind = "company channel";
     else if (row.channelScope === "personal") kind = "personal channel";
@@ -232,7 +232,7 @@ export function paletteRowDetail(
 
   // DM: an email is the most useful disambiguator; agents have none.
   const email = (row.email ?? "").trim();
-  const kind = isAgentDm(row) ? "agent" : "person";
+  const kind = isAgentDm(row) ? "bot" : "person";
   const parts = [company, email || null, kind].filter(
     (part): part is string => !!part,
   );

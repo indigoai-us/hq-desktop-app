@@ -135,7 +135,7 @@ const LIMIT_FAILURE = /usage[_ ]limit|rate[_ ]limit|quota|credits|too many reque
  */
 const TRANSIENT_FAILURE = /another [\w ]*process is refreshing|exited mid-refresh|try again in a (?:moment|minute|few seconds)/i;
 /** What the channel says when a transient clash stops the run for good. */
-export const SETUP_TRANSIENT_MESSAGE = "Your coding agent hit a hiccup refreshing its sign-in.";
+export const SETUP_TRANSIENT_MESSAGE = "Your coding tool hit a hiccup refreshing its sign-in.";
 
 /** Classify an error the engine surfaced (an `error` event or the agent's last words before exiting). */
 export function classifySetupFailure(message: string): SetupRunFailure | null {
@@ -149,12 +149,12 @@ export function classifySetupFailure(message: string): SetupRunFailure | null {
 /** Plain copy for the channel when a run stops. */
 export const SETUP_FAILURE_COPY = {
   auth: {
-    title: "Setup paused — your coding agent needs to sign in again.",
-    agent: "I couldn't continue: the sign-in for your coding agent has expired. Once you're signed in again, run setup and I'll pick up where we left off.",
+    title: "Setup paused — your coding tool needs to sign in again.",
+    agent: "I couldn't continue: the sign-in for your coding tool has expired. Once you're signed in again, run setup and I'll pick up where we left off.",
   },
   limit: {
-    title: "Setup paused — that coding agent has hit its usage limit.",
-    agent: "I had to stop: the coding agent I was using has hit its usage limit. Pick another one below, or try again later.",
+    title: "Setup paused — that coding tool has hit its usage limit.",
+    agent: "I had to stop: the coding tool I was using has hit its usage limit. Pick another one below, or try again later.",
   },
   other: {
     title: "Setup stopped before finishing",

@@ -293,7 +293,7 @@ describe("ChannelStatusPopover — prototype agent card", () => {
     await tick();
 
     const card = host.querySelector('[data-testid="status-live-agent"]');
-    expect(card?.textContent).toContain("Agent running");
+    expect(card?.textContent).toContain("Bot running");
     expect(card?.textContent).toContain("US-002 · 62%");
     expect(card?.textContent).toContain("7/12 STORIES");
     expect(
@@ -525,7 +525,7 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
     expect(emails).toContain("marcus@example.com");
   });
 
-  it("emits View agent from the agents roster", async () => {
+  it("emits View bot from the bots roster", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     const opened: Array<{ personUid: string }> = [];
@@ -557,7 +557,7 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
       '[data-testid="status-agent-open"]',
     ) as HTMLButtonElement | null;
     expect(btn).not.toBeNull();
-    expect(btn?.textContent).toContain("View agent");
+    expect(btn?.textContent).toContain("View bot");
     btn!.click();
     await tick();
     expect(opened[0]?.personUid).toBe("agt_desktop");

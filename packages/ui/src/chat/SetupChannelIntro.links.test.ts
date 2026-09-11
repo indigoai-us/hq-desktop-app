@@ -113,7 +113,7 @@ describe("SetupChannelIntro welcome experience", () => {
       expect(host.querySelector(`[data-testid="setup-launch-${key}"]`)?.closest("details")).toBe(advanced);
     }
     expect(host.querySelector('[data-testid="setup-hosted-agent-guidance"]')?.closest("details")).toBe(advanced);
-    expect(host.textContent).toContain("Hosted agents require a paid plan");
+    expect(host.textContent).toContain("Cloud bots require a paid plan");
   });
   it("Run Setup opens the host's Sessions draft without launching an external tool", async () => {
     const openSessions = vi.fn();

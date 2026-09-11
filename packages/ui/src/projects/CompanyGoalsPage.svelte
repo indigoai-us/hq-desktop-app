@@ -379,7 +379,7 @@
     // Missing attribution is omitted instead of repeated as row-level noise.
     if (!raw) return null;
     if (raw.toLowerCase() === "you" || raw.toLowerCase() === "me") return "You";
-    if (raw.toLowerCase() === "agent") return "Agent";
+    if (raw.toLowerCase() === "agent" || raw.toLowerCase() === "bot") return "Bot";
     return raw;
   }
 

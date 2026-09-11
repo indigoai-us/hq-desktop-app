@@ -1,5 +1,5 @@
 /**
- * "New company" / "New agent" entry points.
+ * "New company" / "New bot" entry points.
  *
  * Both reuse the server-stamped lifecycle cards instead of a form of their
  * own: the host runs one card action, the server posts (or resurfaces) the
@@ -145,7 +145,7 @@ export async function runAddAgentEntry(
   if (typeof run !== "function") {
     return {
       ok: false,
-      reason: "Adding agents isn't available in this build",
+      reason: "Adding bots isn't available in this build",
       blocked: false,
     };
   }
@@ -170,7 +170,7 @@ export async function runAddAgentEntry(
     return {
       ok: false,
       reason:
-        trimmed(result.reason) || "You don't have permission to add agents here",
+        trimmed(result.reason) || "You don't have permission to add bots here",
       blocked: true,
     };
   }
@@ -178,7 +178,7 @@ export async function runAddAgentEntry(
   if (!channelId) {
     return {
       ok: false,
-      reason: "The server didn't say where the agent step was posted",
+      reason: "The server didn't say where the bot step was posted",
       blocked: false,
     };
   }

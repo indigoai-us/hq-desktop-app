@@ -150,16 +150,19 @@
   /** Company channel vs project channel; only meaningful inside a company. */
   let channelKind = $state<"channel" | "project">(initialKind);
 
-  // ── lifecycle entry points (New company / New agent) ─────────────────────
+  // ── lifecycle entry points (New company / New bot) ───────────────────────
   const agentTargets = $derived<ScopeCompany[]>(
     (agentCompanies ?? scopeCompanies).filter((c) => c.companyUid.trim()),
   );
+  /** A Cloud bot can be added: the host wired it and there is a company to add it to. */
+  const canCreateCloudBot = $derived(!!oncreateagent && agentTargets.length > 0);
+  /** A Local bot can be created on this Mac. */
+  const canCreateLocalBot = $derived(!!oncreatebot);
   const showEntryPoints = $derived(
-    !!oncreatecompany || (!!oncreateagent && agentTargets.length > 0) || !!oncreatebot,
+    !!oncreatecompany || canCreateCloudBot || canCreateLocalBot,
   );
   let entryBusy = $state<"company" | "agent" | "bot" | null>(null);
   let entryError = $state<string | null>(null);
-  let agentPickerOpen = $state(false);
 
   async function runEntry(
     kind: "company" | "agent" | "bot",
@@ -171,7 +174,6 @@
     try {
       const result = await run();
       if (result.ok) {
-        agentPickerOpen = false;
         onclose();
         return;
       }
@@ -188,23 +190,23 @@
     void runEntry("company", oncreatecompany);
   }
 
-  /** One company: go straight to it. Several: open the inline picker. */
-  function newAgent(): void {
-    if (!oncreateagent) return;
-    if (agentTargets.length === 1) {
-      void runEntry("agent", () => oncreateagent!(agentTargets[0]!.companyUid));
-      return;
-    }
-    entryError = null;
-    agentPickerOpen = !agentPickerOpen;
-  }
-
+  /** Cloud bot: the company's team action posts the create step in its channel. */
   function newAgentFor(companyUid: string): void {
     if (!oncreateagent) return;
     void runEntry("agent", () => oncreateagent!(companyUid));
   }
 
-  // ── New bot (personal local bot) ──────────────────────────────────────────
+  // ── New bot: runs on this Mac (Local) or in the company cloud (Cloud) ─────
+  /**
+   * Where the bot runs. Local is the default when this Mac can host one;
+   * otherwise the step opens on Cloud. Only offered choices are enabled.
+   */
+  let botWhere = $state<"local" | "cloud">("local");
+  /** Cloud target; the first company until the user picks another. */
+  let cloudCompanyUid = $state("");
+  const cloudCompany = $derived(
+    agentTargets.find((c) => c.companyUid === cloudCompanyUid) ?? agentTargets[0] ?? null,
+  );
   let botName = $state("assistant");
   let botRuntime = $state<LocalBotCreateInput["runtime"]>("claude");
   let botAutoApprove = $state(true);
@@ -217,18 +219,34 @@
     return botRuntimeReady[id] !== false;
   }
   const botSubmitDisabled = $derived(
-    entryBusy !== null || !botNameValid || !botRuntimeReadyFor(botRuntime),
+    botWhere === "cloud"
+      ? entryBusy !== null || !canCreateCloudBot || !cloudCompany
+      : entryBusy !== null || !canCreateLocalBot || !botNameValid || !botRuntimeReadyFor(botRuntime),
   );
 
   function newBot(): void {
-    if (!oncreatebot) return;
+    if (!canCreateLocalBot && !canCreateCloudBot) return;
     entryError = null;
-    agentPickerOpen = false;
+    botWhere = canCreateLocalBot ? "local" : "cloud";
     step = "bot";
   }
 
+  function setBotWhere(where: "local" | "cloud"): void {
+    if (entryBusy) return;
+    if (where === "local" && !canCreateLocalBot) return;
+    if (where === "cloud" && !canCreateCloudBot) return;
+    entryError = null;
+    botWhere = where;
+  }
+
+  /** Create: Cloud runs the company team action; Local spawns the bot here. */
   function submitBot(): void {
-    if (!oncreatebot || botSubmitDisabled) return;
+    if (botSubmitDisabled) return;
+    if (botWhere === "cloud") {
+      if (cloudCompany) newAgentFor(cloudCompany.companyUid);
+      return;
+    }
+    if (!oncreatebot) return;
     const model = botModel.trim();
     const worker = botWorker.trim();
     void runEntry("bot", () =>
@@ -456,7 +474,7 @@
             ? "Channels"
             : row.kind === "person"
               ? "People"
-              : "Agents";
+              : "Bots";
         if (label !== heading) {
           items.push({ kind: "heading", label });
           heading = label;
@@ -712,7 +730,7 @@
    * The picker list lives in a nested scroller inside `.create-body`, and at
    * the app's 600px minimum height most of it is below the fold. `nearest`
    * scrolls both ancestors, so the highlighted candidate — including the whole
-   * "Agents" group — is always visible.
+   * "Bots" group — is always visible.
    */
   function scrollPickIntoView(): void {
     scrollOptionIntoView(suggestionsEl, `create-pick-${pickerHighlight}`);
@@ -1111,7 +1129,7 @@
         : "couldn't add them — they're not reachable from here.";
     }
     if (reason === "member-agent-scope") {
-      return "agents can only join channels in a workspace they belong to.";
+      return "bots can only join channels in a workspace they belong to.";
     }
     return "couldn't add them.";
   }
@@ -1526,8 +1544,8 @@
           role="combobox"
           data-testid="chat-create-query"
           use:focusOnMount
-          placeholder="Search people, agents, and channels — or type a new channel name"
-          aria-label="Search people, agents, and channels, or type a new channel name"
+          placeholder="Search people, bots, and channels — or type a new channel name"
+          aria-label="Search people, bots, and channels, or type a new channel name"
           aria-expanded={flatCount > 0}
           aria-controls="create-results"
           aria-autocomplete="list"
@@ -1684,19 +1702,14 @@
               <span class="create-entry-hint">Opens the setup step in #setup</span>
             </button>
           {/if}
-          {#if oncreateagent && agentTargets.length > 0}
+          {#if canCreateLocalBot || canCreateCloudBot}
             <button
               type="button"
               class="create-row create-entry-row"
-              data-testid="chat-create-new-agent"
-              aria-busy={entryBusy === "agent" ? "true" : undefined}
-              aria-haspopup={agentTargets.length > 1 ? "listbox" : undefined}
-              aria-expanded={agentTargets.length > 1 ? agentPickerOpen : undefined}
-              aria-controls={agentTargets.length > 1
-                ? "create-agent-company-picker"
-                : undefined}
+              data-testid="chat-create-new-bot"
+              aria-busy={entryBusy === "bot" || entryBusy === "agent" ? "true" : undefined}
               disabled={entryBusy !== null}
-              onclick={newAgent}
+              onclick={newBot}
             >
               <span class="create-entry-ic" aria-hidden="true">
                 <svg viewBox="0 0 16 16" fill="none">
@@ -1717,71 +1730,15 @@
                   />
                 </svg>
               </span>
-              <span class="create-entry-label">New agent</span>
-              <span class="create-entry-hint">
-                {agentTargets.length === 1
-                  ? `In ${agentTargets[0]?.label}`
-                  : "Pick a company"}
-              </span>
-            </button>
-            {#if agentPickerOpen && agentTargets.length > 1}
-              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-              <div
-                id="create-agent-company-picker"
-                class="create-entry-picker"
-                role="listbox"
-                aria-label="Add an agent to which company?"
-                data-testid="chat-create-agent-picker"
-                onkeydown={onEntryPickerKey}
-              >
-                {#each agentTargets as company (company.companyUid)}
-                  <button
-                    type="button"
-                    class="create-row create-entry-sub"
-                    role="option"
-                    aria-selected="false"
-                    data-testid="chat-create-agent-company"
-                    data-company={company.companyUid}
-                    disabled={entryBusy !== null}
-                    onclick={() => newAgentFor(company.companyUid)}
-                  >
-                    <span class="create-entry-tile" aria-hidden="true">
-                      {company.label.trim().slice(0, 1).toUpperCase()}
-                    </span>
-                    <span class="create-entry-label">{company.label}</span>
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          {/if}
-          {#if oncreatebot}
-            <button
-              type="button"
-              class="create-row create-entry-row"
-              data-testid="chat-create-new-bot"
-              aria-busy={entryBusy === "bot" ? "true" : undefined}
-              disabled={entryBusy !== null}
-              onclick={newBot}
-            >
-              <span class="create-entry-ic" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M3 6.5 5 4h6l2 2.5v5a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 11.5v-5Z"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                    stroke-linejoin="round"
-                  />
-                  <path
-                    d="M6 8.5h.5M9.5 8.5h.5M6.5 11h3"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                    stroke-linecap="round"
-                  />
-                </svg>
-              </span>
               <span class="create-entry-label">New bot</span>
               <span class="create-entry-hint">
-                Runs on this Mac
+                {canCreateLocalBot && canCreateCloudBot
+                  ? "Runs on this Mac or in the cloud"
+                  : canCreateLocalBot
+                    ? "Runs on this Mac"
+                    : agentTargets.length === 1
+                      ? `In ${agentTargets[0]?.label}`
+                      : "Pick a company"}
               </span>
             </button>
           {/if}
@@ -1799,112 +1756,191 @@
     {:else if step === "bot"}
       <div class="create-body" data-testid="chat-create-bot-step">
         <div class="create-field">
-          <span class="create-label" id="create-bot-name-label">Name</span>
-          <input
-            class="create-input"
-            type="text"
-            maxlength="40"
-            data-testid="chat-bot-name"
-            use:focusEndOnMount
-            placeholder="assistant"
-            aria-labelledby="create-bot-name-label"
-            aria-describedby="create-bot-name-help"
-            disabled={entryBusy !== null}
-            bind:value={botName}
-            onkeydown={onFieldKey}
-          />
-        </div>
-        <p class="create-help" id="create-bot-name-help">
-          {botName.trim() && !botNameValid
-            ? "Lowercase letters, digits, and single hyphens."
-            : "How it appears in Messages. Lowercase, dashes only."}
-        </p>
-
-        <div class="create-field">
-          <span class="create-label" id="create-bot-runtime-label">Thinks with</span>
-          <div class="create-kind" role="radiogroup" aria-labelledby="create-bot-runtime-label">
-            {#each LOCAL_BOT_RUNTIMES as rt (rt.id)}
-              <button
-                type="button"
-                role="radio"
-                class="create-kind-option"
-                class:selected={botRuntime === rt.id}
-                aria-checked={botRuntime === rt.id}
-                data-testid={`chat-bot-runtime-${rt.id}`}
-                disabled={entryBusy !== null}
-                onclick={() => (botRuntime = rt.id)}
-              >
-                {rt.label}{botRuntimeReadyFor(rt.id) ? "" : " · not signed in"}
-              </button>
-            {/each}
+          <span class="create-label" id="create-bot-where-label">Runs on</span>
+          <div
+            class="create-kind"
+            role="radiogroup"
+            aria-labelledby="create-bot-where-label"
+            data-testid="chat-bot-where"
+          >
+            <button
+              type="button"
+              role="radio"
+              class="create-kind-option"
+              class:selected={botWhere === "local"}
+              aria-checked={botWhere === "local"}
+              data-testid="chat-bot-where-local"
+              disabled={entryBusy !== null || !canCreateLocalBot}
+              onclick={() => setBotWhere("local")}
+            >
+              This Mac
+            </button>
+            <button
+              type="button"
+              role="radio"
+              class="create-kind-option"
+              class:selected={botWhere === "cloud"}
+              aria-checked={botWhere === "cloud"}
+              data-testid="chat-bot-where-cloud"
+              disabled={entryBusy !== null || !canCreateCloudBot}
+              onclick={() => setBotWhere("cloud")}
+            >
+              Cloud
+            </button>
           </div>
         </div>
         <p class="create-help">
-          {botRuntimeReadyFor(botRuntime)
-            ? "Uses your own login on this Mac — no extra cost."
-            : "Sign in to this tool under Settings → Agents first, or pick another."}
+          {botWhere === "cloud"
+            ? "Always on, hosted by your company. Needs a paid plan."
+            : "Uses your own Claude Code, Codex, or Grok login. Runs while this Mac is on."}
         </p>
 
-        {#if botWorkers && botWorkers.length > 0}
-          <div class="create-field">
-            <span class="create-label" id="create-bot-worker-label">Start from</span>
-            <select
-              class="create-input create-select"
-              data-testid="chat-bot-worker"
-              aria-labelledby="create-bot-worker-label"
-              disabled={entryBusy !== null}
-              value={botWorker}
-              onchange={(event) => (botWorker = (event.currentTarget as HTMLSelectElement).value)}
+        {#if botWhere === "cloud"}
+          <div class="create-field create-field-wrap">
+            <span class="create-label" id="create-bot-company-label">Company</span>
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <div
+              id="create-agent-company-picker"
+              class="create-entry-picker"
+              role="listbox"
+              aria-labelledby="create-bot-company-label"
+              aria-label="Add a bot to which company?"
+              data-testid="chat-create-agent-picker"
+              tabindex="-1"
+              onkeydown={onEntryPickerKey}
             >
-              <option value="">A fresh persona</option>
-              {#each botWorkers as w (w.id)}
-                <option value={w.id}>{w.id}{w.company ? ` · ${w.company}` : ""}</option>
+              {#each agentTargets as company (company.companyUid)}
+                <button
+                  type="button"
+                  class="create-row create-entry-sub"
+                  class:selected={cloudCompany?.companyUid === company.companyUid}
+                  role="option"
+                  aria-selected={cloudCompany?.companyUid === company.companyUid}
+                  data-testid="chat-create-agent-company"
+                  data-company={company.companyUid}
+                  disabled={entryBusy !== null}
+                  onclick={() => (cloudCompanyUid = company.companyUid)}
+                >
+                  <span class="create-entry-tile" aria-hidden="true">
+                    {company.label.trim().slice(0, 1).toUpperCase()}
+                  </span>
+                  <span class="create-entry-label">{company.label}</span>
+                </button>
               {/each}
-            </select>
+            </div>
           </div>
           <p class="create-help">
-            {botWorker
-              ? (botWorkers.find((w) => w.id === botWorker)?.description ?? "Uses that worker's instructions, skills, and company rules.")
-              : "Or turn one of your company workers into a bot."}
+            Opens the bot setup step in that company's channel.
           </p>
+        {:else}
+          <div class="create-field">
+            <span class="create-label" id="create-bot-name-label">Name</span>
+            <input
+              class="create-input"
+              type="text"
+              maxlength="40"
+              data-testid="chat-bot-name"
+              use:focusEndOnMount
+              placeholder="assistant"
+              aria-labelledby="create-bot-name-label"
+              aria-describedby="create-bot-name-help"
+              disabled={entryBusy !== null}
+              bind:value={botName}
+              onkeydown={onFieldKey}
+            />
+          </div>
+          <p class="create-help" id="create-bot-name-help">
+            {botName.trim() && !botNameValid
+              ? "Lowercase letters, digits, and single hyphens."
+              : "How it appears in Messages. Lowercase, dashes only."}
+          </p>
+
+          <div class="create-field">
+            <span class="create-label" id="create-bot-runtime-label">Thinks with</span>
+            <div class="create-kind" role="radiogroup" aria-labelledby="create-bot-runtime-label">
+              {#each LOCAL_BOT_RUNTIMES as rt (rt.id)}
+                <button
+                  type="button"
+                  role="radio"
+                  class="create-kind-option"
+                  class:selected={botRuntime === rt.id}
+                  aria-checked={botRuntime === rt.id}
+                  data-testid={`chat-bot-runtime-${rt.id}`}
+                  disabled={entryBusy !== null}
+                  onclick={() => (botRuntime = rt.id)}
+                >
+                  {rt.label}{botRuntimeReadyFor(rt.id) ? "" : " · not signed in"}
+                </button>
+              {/each}
+            </div>
+          </div>
+          <p class="create-help">
+            {botRuntimeReadyFor(botRuntime)
+              ? "Uses your own login on this Mac — no extra cost."
+              : "Sign in to this tool under Settings → AI tools first, or pick another."}
+          </p>
+
+          {#if botWorkers && botWorkers.length > 0}
+            <div class="create-field">
+              <span class="create-label" id="create-bot-worker-label">Start from</span>
+              <select
+                class="create-input create-select"
+                data-testid="chat-bot-worker"
+                aria-labelledby="create-bot-worker-label"
+                disabled={entryBusy !== null}
+                value={botWorker}
+                onchange={(event) => (botWorker = (event.currentTarget as HTMLSelectElement).value)}
+              >
+                <option value="">A fresh persona</option>
+                {#each botWorkers as w (w.id)}
+                  <option value={w.id}>{w.id}{w.company ? ` · ${w.company}` : ""}</option>
+                {/each}
+              </select>
+            </div>
+            <p class="create-help">
+              {botWorker
+                ? (botWorkers.find((w) => w.id === botWorker)?.description ?? "Uses that worker's instructions, skills, and company rules.")
+                : "Or turn one of your company workers into a bot."}
+            </p>
+          {/if}
+
+          <div class="create-field">
+            <span class="create-label" id="create-bot-approve-label">Permissions</span>
+            <button
+              type="button"
+              role="switch"
+              class="create-kind-option create-switch"
+              class:selected={botAutoApprove}
+              aria-checked={botAutoApprove}
+              aria-labelledby="create-bot-approve-label"
+              data-testid="chat-bot-auto-approve"
+              disabled={entryBusy !== null}
+              onclick={() => (botAutoApprove = !botAutoApprove)}
+            >
+              {botAutoApprove ? "Pre-approve every action" : "Ask before each action"}
+            </button>
+          </div>
+          <p class="create-help">
+            {botAutoApprove
+              ? "It acts with your permissions and never waits on a prompt."
+              : "Gated commands will fail — a bot can't answer approval prompts."}
+          </p>
+
+          <div class="create-field">
+            <span class="create-label" id="create-bot-model-label">Model</span>
+            <input
+              class="create-input"
+              type="text"
+              maxlength="64"
+              data-testid="chat-bot-model"
+              placeholder="Default"
+              aria-labelledby="create-bot-model-label"
+              disabled={entryBusy !== null}
+              bind:value={botModel}
+              onkeydown={onFieldKey}
+            />
+          </div>
         {/if}
-
-        <div class="create-field">
-          <span class="create-label" id="create-bot-approve-label">Permissions</span>
-          <button
-            type="button"
-            role="switch"
-            class="create-kind-option create-switch"
-            class:selected={botAutoApprove}
-            aria-checked={botAutoApprove}
-            aria-labelledby="create-bot-approve-label"
-            data-testid="chat-bot-auto-approve"
-            disabled={entryBusy !== null}
-            onclick={() => (botAutoApprove = !botAutoApprove)}
-          >
-            {botAutoApprove ? "Pre-approve every action" : "Ask before each action"}
-          </button>
-        </div>
-        <p class="create-help">
-          {botAutoApprove
-            ? "It acts with your permissions and never waits on a prompt."
-            : "Gated commands will fail — a bot can't answer approval prompts."}
-        </p>
-
-        <div class="create-field">
-          <span class="create-label" id="create-bot-model-label">Model</span>
-          <input
-            class="create-input"
-            type="text"
-            maxlength="64"
-            data-testid="chat-bot-model"
-            placeholder="Default"
-            aria-labelledby="create-bot-model-label"
-            disabled={entryBusy !== null}
-            bind:value={botModel}
-            onkeydown={onFieldKey}
-          />
-        </div>
       </div>
 
       {#if entryError}
@@ -1920,10 +1956,14 @@
           class="create-submit"
           data-testid="chat-bot-create"
           disabled={botSubmitDisabled}
-          aria-busy={entryBusy === "bot"}
+          aria-busy={entryBusy === "bot" || entryBusy === "agent"}
           onclick={submitBot}
         >
-          {entryBusy === "bot" ? "Creating… (about half a minute)" : "Create bot"}
+          {entryBusy === "bot"
+            ? "Creating… (about half a minute)"
+            : entryBusy === "agent"
+              ? "Opening…"
+              : "Create bot"}
         </button>
       </div>
     {:else if step === "create"}
@@ -2100,7 +2140,7 @@
                       <!-- D10: agent-vs-person is THE distinction, so it gets
                            the legible pill; "external" stays secondary. -->
                       {#if chip.type === "agent"}
-                        <span class="create-tag create-tag-strong">agent</span>
+                        <span class="create-tag create-tag-strong">bot</span>
                       {:else if chip.type === "email"}
                         <span class="create-tag">not on hq</span>
                       {/if}
@@ -2125,7 +2165,7 @@
                     role="combobox"
                     data-testid="chat-channel-participants"
                     placeholder={members.length === 0
-                      ? "Add people, agents, or an email…"
+                      ? "Add people, bots, or an email…"
                       : ""}
                     aria-labelledby="create-with-label"
                     aria-expanded={pickerCandidates.length > 0}
@@ -2162,10 +2202,10 @@
                 {#each pickerCandidates as candidate, i (candidate.key)}
                   {#if i === 0 && candidate.type !== "email"}
                     <div class="create-group" role="presentation">
-                      {candidate.type === "agent" ? "Agents" : "People"}
+                      {candidate.type === "agent" ? "Bots" : "People"}
                     </div>
                   {:else if candidate.type === "agent" && pickerCandidates[i - 1]?.type !== "agent"}
-                    <div class="create-group" role="presentation">Agents</div>
+                    <div class="create-group" role="presentation">Bots</div>
                   {/if}
                   <button
                     type="button"
@@ -2660,6 +2700,18 @@
     min-height: 28px;
     padding-top: 4px;
     padding-bottom: 4px;
+  }
+
+  .create-entry-sub.selected {
+    background: var(--v4-active-row, rgba(127, 127, 127, 0.18));
+    color: var(--text-1, inherit);
+  }
+
+  /* The bot step's company picker sits in the field row, not under an entry row. */
+  .create-field .create-entry-picker {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-left: 0;
   }
 
   .create-entry-tile {

@@ -412,11 +412,9 @@
    */
   let createOpen = $state(false);
   const createButtonLabel = $derived(
-    oncreatebot
-      ? "New message, channel, company, agent, or bot"
-      : oncreatecompany || oncreateagent
-        ? "New message, channel, company, or agent"
-        : "New message or channel",
+    oncreatebot || oncreatecompany || oncreateagent
+      ? "New message, channel, company, or bot"
+      : "New message or channel",
   );
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
@@ -567,10 +565,10 @@
   );
 
   /**
-   * Companies an agent can be added to: the workspace list, plus any company
+   * Companies a Cloud bot can be added to: the workspace list, plus any company
    * the directory already shows a company channel for. A company created a
    * moment ago has its channel before the workspace list refreshes, and the
-   * "New agent" row must not lag behind it.
+   * "New bot" step must not lag behind it.
    */
   const agentCompanies = $derived.by<ScopeCompany[]>(() => {
     const out = new Map<string, ScopeCompany>();

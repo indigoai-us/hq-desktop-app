@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 /**
- * Lifecycle entry points in the shell: the company header "Add agent" ghost
+ * Lifecycle entry points in the shell: the company header "Add bot" ghost
  * button (present only when the Team tab viewer can act), the navigation after
  * `team:spend/add_agent`, and the #setup summary card's primary action landing
  * on the create_company card the server posts.
@@ -171,7 +171,7 @@ function mountApp(adapterValue: PlatformAdapter, initialRow: ConversationRow): v
   });
 }
 
-describe("DesktopApp company header: Add agent", () => {
+describe("DesktopApp company header: Add bot", () => {
   it("shows the 28px ghost button when the Team tab viewer can act and lands on the posted card", async () => {
     const getCompanyTab = vi.fn(async (_uid: string, tab: string) =>
       ok(tab === "team" ? teamTab(true) : { tab, companyUid: "cmp_acme", viewer: viewerOwner, sections: [] }),
@@ -201,8 +201,8 @@ describe("DesktopApp company header: Add agent", () => {
       { timeout: 10_000, interval: 50 },
     );
     const button = host.querySelector<HTMLButtonElement>('[data-testid="company-add-agent"]')!;
-    expect(button.textContent?.trim()).toBe("Add agent");
-    expect(button.getAttribute("aria-label")).toMatch(/^Add an agent to /);
+    expect(button.textContent?.trim()).toBe("Add bot");
+    expect(button.getAttribute("aria-label")).toMatch(/^Add a bot to /);
     expect(button.classList.contains("header-ghost-btn")).toBe(true);
     // Sits in the header row next to the company tabs.
     expect(

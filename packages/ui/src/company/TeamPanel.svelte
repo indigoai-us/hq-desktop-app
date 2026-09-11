@@ -268,7 +268,7 @@
       <span class="team-meta" data-testid="team-scope-meta">
         Last 30 days · {humanCount}
         {humanCount === 1 ? "human" : "humans"} · {agentCount}
-        {agentCount === 1 ? "agent" : "agents"}
+        {agentCount === 1 ? "bot" : "bots"}
       </span>
     </div>
     <div

@@ -1478,7 +1478,7 @@
         <div
           class="agent-menu"
           role="listbox"
-          aria-label="Agent commands"
+          aria-label="Bot commands"
           data-testid="agent-slash-menu"
         >
           <button
@@ -1487,7 +1487,7 @@
             role="option"
             aria-selected="true"
           >
-            <span class="agent-menu-label">Run an agent</span>
+            <span class="agent-menu-label">Run a bot</span>
             <span class="agent-menu-hint">Claude Code handoff</span>
           </button>
         </div>
@@ -1616,8 +1616,8 @@
           <button
             type="button"
             class="dm-tool-btn"
-            aria-label="Run an agent"
-            title="Type / to run an agent"
+            aria-label="Run a bot"
+            title="Type / to run a bot"
             onclick={() => {
               if (!replyText.startsWith("/")) replyText = `/${replyText}`;
               replyInputEl?.focus();

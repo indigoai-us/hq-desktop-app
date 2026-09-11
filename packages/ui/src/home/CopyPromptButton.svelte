@@ -47,8 +47,8 @@
   disabled={copying}
   aria-busy={copying}
   title={copyError ??
-    `Copy a prompt for an HQ agent (Codex or Claude) to resolve this`}
-  aria-label={`${label} for an HQ agent`}
+    `Copy a prompt for an AI tool (Codex or Claude Code) to resolve this`}
+  aria-label={`${label} for an AI tool`}
 >
   {#if copying}
     <span class="button-spinner" aria-hidden="true"></span>

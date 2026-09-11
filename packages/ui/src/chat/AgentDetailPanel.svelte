@@ -289,7 +289,7 @@
   async function pauseAgent(): Promise<void> {
     const res = await adapter.agents.stop(agentUid);
     if (!res.ok) {
-      actionError = res.message ?? "Could not pause the agent.";
+      actionError = res.message ?? "Could not pause the bot.";
       return;
     }
     header = { ...header, status: "IDLE", runtimeStatus: "stopped" };
@@ -298,7 +298,7 @@
   async function removeAgent(): Promise<void> {
     const res = await adapter.agents.deprovision(agentUid);
     if (!res.ok) {
-      actionError = res.message ?? "Could not remove the agent.";
+      actionError = res.message ?? "Could not remove the bot.";
       return;
     }
     onclose?.();
@@ -319,17 +319,17 @@
 <aside
   bind:this={panelEl}
   class="agent-panel"
-  aria-label={`${header.displayName} agent`}
+  aria-label={`${header.displayName} bot`}
   data-testid="agent-detail-panel"
   tabindex="-1"
 >
   <header class="ad-head">
-    <span class="ad-title">Agent</span>
+    <span class="ad-title">Bot</span>
     <button
       type="button"
       class="ad-close"
       data-testid="agent-detail-close"
-      aria-label="Close agent"
+      aria-label="Close bot"
       onclick={() => onclose?.()}
     >
       ×
@@ -465,7 +465,7 @@
     </section>
 
     <section class="ad-section" data-testid="agent-detail-usage">
-      <h3 class="ad-kicker">Agent · 30d usage</h3>
+      <h3 class="ad-kicker">Bot · 30d usage</h3>
       {#if usageState.status === "loading"}
         <p class="ad-muted">Loading usage…</p>
       {:else if usageState.status === "unavailable"}
@@ -625,7 +625,7 @@
 <ConfirmDialog
   open={confirm === "pause-job"}
   title="Pause this job?"
-  message="The schedule stays on the agent but will not fire until it is resumed from the box."
+  message="The schedule stays on the bot but will not fire until it is resumed from the box."
   confirmLabel="Pause job"
   onconfirm={() => {
     const id = pendingJobId;
@@ -641,9 +641,9 @@
 
 <ConfirmDialog
   open={confirm === "pause-agent"}
-  title="Pause this agent?"
-  message="Stops the agent's box. Scheduled jobs will not run while it is stopped."
-  confirmLabel="Pause agent"
+  title="Pause this bot?"
+  message="Stops the bot's box. Scheduled jobs will not run while it is stopped."
+  confirmLabel="Pause bot"
   onconfirm={() => {
     confirm = null;
     void pauseAgent();
@@ -653,8 +653,8 @@
 
 <ConfirmDialog
   open={confirm === "remove-agent"}
-  title="Remove this agent?"
-  message="This deprovisions the agent from the company. This cannot be undone from the desktop."
+  title="Remove this bot?"
+  message="This deprovisions the bot from the company. This cannot be undone from the desktop."
   confirmLabel="Remove"
   danger
   onconfirm={() => {

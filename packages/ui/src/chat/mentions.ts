@@ -98,7 +98,7 @@ export function agentFallbackLabel(uid: string): string {
     .trim()
     .replace(/^agent:/i, "")
     .replace(/^agt_/i, "");
-  return bare ? `Agent ${bare.slice(0, 8)}` : "Agent";
+  return bare ? `Bot ${bare.slice(0, 8)}` : "Bot";
 }
 
 /**
@@ -194,7 +194,7 @@ export function mentionRowPill(target: MentionTarget): string | null {
 
 /** The row's subtitle: what kind of participant it is, or the human's email. */
 export function mentionRowSubtitle(target: MentionTarget): string {
-  if (target.participantType === "agent") return "Agent";
+  if (target.participantType === "agent") return "Bot";
   return target.email?.trim() || "Teammate";
 }
 

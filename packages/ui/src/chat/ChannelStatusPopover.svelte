@@ -150,8 +150,8 @@
   const agentTitle = $derived(
     leadAgent
       ? leadAgent.status === "running" || leadAgent.status === "awaiting_input"
-        ? "Agent running"
-        : "Agent"
+        ? "Bot running"
+        : "Bot"
       : null,
   );
   const agentMeta = $derived.by(() => {
@@ -167,7 +167,7 @@
     `${model.stories.complete}/${model.stories.total} STORIES`,
   );
   /** The bar sits next to the story rollup — it is board completion, not the
-   *  lead agent's in-story percent (that stays on the "Agent running" line). */
+   *  lead bot's in-story percent (that stays on the "Bot running" line). */
   const barPercent = $derived(model.stories.percent);
   const owners = $derived(
     model.members.filter((m) => (m.role ?? "").toLowerCase() === "owner"),
@@ -203,7 +203,7 @@
 >
   <section
     class="p-card"
-    aria-label="Live agents"
+    aria-label="Live bots"
     data-testid="status-live-agent"
   >
     {#if agentTitle}
@@ -472,8 +472,8 @@
   </section>
 
   {#if model.agents.length > 0}
-    <section aria-label="Agents">
-      <div class="p-sec">AGENTS</div>
+    <section aria-label="Bots">
+      <div class="p-sec">BOTS</div>
       {#each model.agents as a (a.personUid)}
         <div class="p-item static member-row" data-testid="status-agent">
           {#if onopenprofile}
@@ -481,7 +481,7 @@
               type="button"
               class="member-open"
               data-testid="status-agent-open"
-              title={`View agent ${a.displayName}`}
+              title={`View bot ${a.displayName}`}
               onclick={() => onopenprofile?.(a)}
             >
               <span class="m-ava ai" aria-hidden="true">
@@ -506,7 +506,7 @@
               </span>
               <span class="m-id">
                 <span class="m-name">{a.displayName}</span>
-                <span class="m-email">View agent</span>
+                <span class="m-email">View bot</span>
               </span>
             </button>
           {:else}

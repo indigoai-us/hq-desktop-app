@@ -140,8 +140,8 @@
   });
 </script>
 
-<div class="connect" class:connect--surface={variant === "surface"} data-testid="setup-connect-step" aria-label="Connect an agent">
-  <p class="lead">{lead ?? "Setup runs through your own coding agent. Connect one to continue — you only need one."}</p>
+<div class="connect" class:connect--surface={variant === "surface"} data-testid="setup-connect-step" aria-label="Connect an AI tool">
+  <p class="lead">{lead ?? "Setup runs through your own coding tool. Connect one to continue — you only need one."}</p>
   {#if detail}
     <p class="detail" data-testid="setup-connect-detail">{detail}</p>
   {/if}

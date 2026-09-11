@@ -252,7 +252,7 @@ describe("channel mentions", () => {
     ]);
     for (const row of rows) {
       expect(row.participantType).toBe("agent");
-      expect(row.displayName.startsWith("Agent ")).toBe(true);
+      expect(row.displayName.startsWith("Bot ")).toBe(true);
     }
   });
 
@@ -451,7 +451,7 @@ describe("applyMentionMarkup markup safety", () => {
       },
     ]);
     expect(agent && mentionRowPill(agent)).toBe("Indigo");
-    expect(agent && mentionRowSubtitle(agent)).toBe("Agent");
+    expect(agent && mentionRowSubtitle(agent)).toBe("Bot");
     expect(human && mentionRowPill(human)).toBe("Indigo");
     expect(human && mentionRowSubtitle(human)).toBe("scouty@getindigo.ai");
   });
@@ -463,7 +463,7 @@ describe("applyMentionMarkup markup safety", () => {
       displayName: "Izzy",
     };
     expect(mentionRowPill(row)).toBeNull();
-    expect(mentionRowSubtitle(row)).toBe("Agent");
+    expect(mentionRowSubtitle(row)).toBe("Bot");
   });
 
   it("shows the company on both same-named agents so they are tellable apart", () => {

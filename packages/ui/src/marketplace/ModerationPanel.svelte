@@ -512,7 +512,7 @@
                       <span
                         class="doc-path-badge"
                         data-testid="moderation-init-prompt-badge"
-                        title="The post-install setup prompt handed to users to paste into an agent"
+                        title="The post-install setup prompt handed to users to paste into an AI tool"
                         >setup prompt</span
                       >
                     {/if}

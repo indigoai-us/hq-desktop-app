@@ -312,7 +312,7 @@
         agentThinking,
         {
           agentUid: uid,
-          agentName: root ? messageAuthor(root) : "Agent",
+          agentName: root ? messageAuthor(root) : "Bot",
         },
         Date.now(),
         // Fast responders (local bots): only a reply newer than their last

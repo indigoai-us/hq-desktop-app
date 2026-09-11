@@ -158,7 +158,7 @@ describe("DesktopApp native setup run wiring", () => {
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBeNull();
   });
 
-  it("the Setup Agent talks in the channel and the composer replies to it", async () => {
+  it("the Setup bot talks in the channel and the composer replies to it", async () => {
     const api = fakeSetupRun();
     await mountApp(api);
     host.querySelector<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
@@ -168,10 +168,10 @@ describe("DesktopApp native setup run wiring", () => {
     const messages = Array.from(host.querySelectorAll('[data-testid="conversation-message"]'));
     const agentMessage = messages.find((el) => el.textContent?.includes("Checking what's already in place"));
     expect(agentMessage).toBeTruthy();
-    expect(agentMessage?.textContent).toContain("Setup Agent");
+    expect(agentMessage?.textContent).toContain("Setup bot");
     expect(agentMessage?.textContent).not.toContain("[hq-setup]");
     // Working shows as the same thinking row any agent gets, not a box.
-    expect(host.querySelector('[data-testid="agent-thinking-row"]')?.textContent).toContain("Setup Agent");
+    expect(host.querySelector('[data-testid="agent-thinking-row"]')?.textContent).toContain("Setup bot");
     expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-question"]')).toBeNull();
 
     // A structured question shows as the prompt under the messages.
@@ -218,7 +218,7 @@ describe("DesktopApp native setup run wiring", () => {
     await settle();
     const messages = Array.from(host.querySelectorAll('[data-testid="conversation-message"]')).map((el) => el.textContent ?? "");
     expect(messages.some((text) => text.includes("Failed to refresh OAuth token"))).toBe(false);
-    expect(messages.some((text) => text.includes("sign-in for your coding agent has expired"))).toBe(true);
+    expect(messages.some((text) => text.includes("sign-in for your coding tool has expired"))).toBe(true);
     const connect = host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-connect-step"]');
     expect(connect).toBeTruthy();
     expect(connect?.classList.contains("connect--surface")).toBe(true);
@@ -317,7 +317,7 @@ describe("DesktopApp native setup run wiring", () => {
     expect(messages.some((text) => text.includes("has hit its usage limit"))).toBe(true);
     const prompt = host.querySelector('[data-testid="setup-agent-prompt"]')!;
     expect(prompt.querySelector('[data-testid="setup-connect-detail"]')?.textContent).toBe(reason);
-    expect(prompt.textContent).toContain("that coding agent has hit its usage limit");
+    expect(prompt.textContent).toContain("that coding tool has hit its usage limit");
     prompt.querySelector<HTMLButtonElement>('[data-testid="setup-connect-claude-run"]')!.click();
     await settle();
     expect(api.start).toHaveBeenLastCalledWith("/setup --guided", "claude");

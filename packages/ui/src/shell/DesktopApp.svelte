@@ -137,6 +137,7 @@
   } from "../chat/session-migrate.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
+  import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
   import { canEditAgentProfile } from "../avatars/can-edit.js";
   import { loadAvatarGallery } from "../avatars/gallery.js";
@@ -990,7 +991,7 @@
       {
         id: "command-go-atlas",
         label: "Atlas",
-        detail: "People and agents on projects, live",
+        detail: "People and bots on projects, live",
         shortcut: "g a",
         action: () => {
           void navigate({ kind: "atlas" });
@@ -1240,7 +1241,7 @@
       : inSetupChannelWithAgent && setupAgent.listening
       ? setupAgent.state?.question?.kind === "choice"
         ? "Type your answer…"
-        : "Reply to Setup Agent…"
+        : "Reply to Setup bot…"
       : isAgentChannel && provisioning.state === "pending"
         ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
         : composerPlaceholderFor(selectedRow, headerTitle),
@@ -1840,6 +1841,16 @@
   // ── Member profile / agent detail (Slack-style right panel) ───────────────
   let openProfileMember = $state<StatusPersonRow | null>(null);
   let openAgentMember = $state<StatusPersonRow | null>(null);
+  /** Local bot behind an open profile / Details surface; routes to LocalBotDetailPanel. */
+  const openLocalBot = $derived.by(() => {
+    const uid = openAgentMember?.personUid;
+    return uid ? (localBots.find((b) => b.agentUid === uid) ?? null) : null;
+  });
+  const agentChannelLocalBot = $derived(
+    agentChannelUid
+      ? (localBots.find((b) => b.agentUid === agentChannelUid) ?? null)
+      : null,
+  );
   let removingMemberUid = $state<string | null>(null);
   /**
    * Owner-only "Delete channel" (members popover → trash). The shell owns the
@@ -2802,7 +2813,7 @@
     if (uid) changeTenantCompany(uid);
   }
 
-  /** Sidebar / header "New agent": Team tab action, then the company channel. */
+  /** Sidebar / header "New bot" (Cloud): Team tab action, then the company channel. */
   async function addAgentEntry(companyUid: string): Promise<EntryPointResult> {
     const result = await runAddAgentEntry(conversationApi, companyUid);
     if (result.ok) navigateToEntryTarget(result.target, companyUid);
@@ -4389,7 +4400,7 @@
             row.id,
             {
               agentUid: row.personUid,
-              agentName: row.title?.trim() || "Agent",
+              agentName: row.title?.trim() || "Bot",
             },
             Date.now(),
             { afterMs: newestMessageAtFrom(liveTimeline, row.personUid) },
@@ -5268,7 +5279,7 @@
                       type="button"
                       class="channel-header-agent"
                       data-testid="channel-header-agent"
-                      aria-label={`View agent ${headerTitle}`}
+                      aria-label={`View bot ${headerTitle}`}
                       onclick={openAgentFromHeader}
                     >
                       <span
@@ -5381,7 +5392,7 @@
               {#if isAgentChannel}
                 <nav
                   class="project-tabs"
-                  aria-label="Agent channel views"
+                  aria-label="Bot channel views"
                   data-testid="agent-channel-tabs"
                 >
                   {#each AGENT_CHANNEL_TABS as t (t.id)}
@@ -5412,12 +5423,12 @@
                     type="button"
                     class="header-ghost-btn"
                     data-testid="company-add-agent"
-                    aria-label={`Add an agent to ${companyHeroTitle}`}
+                    aria-label={`Add a bot to ${companyHeroTitle}`}
                     aria-busy={headerAddAgentBusy ? "true" : undefined}
                     disabled={headerAddAgentBusy}
                     onclick={() => void addAgentFromHeader()}
                   >
-                    Add agent
+                    Add bot
                   </button>
                 {/if}
                 <CompanyTabs
@@ -5630,7 +5641,15 @@
             />
           {/if}
 
-          {#if isAgentChannel && agentSurface === "details" && agentChannelUid}
+          {#if isAgentChannel && agentSurface === "details" && agentChannelLocalBot}
+            <LocalBotDetailPanel
+              bot={agentChannelLocalBot}
+              avatarUrl={avatarByUid[agentChannelLocalBot.agentUid] ?? null}
+              {adapter}
+              onchanged={refreshLocalBots}
+              onclose={() => void leaveCurrentDestination()}
+            />
+          {:else if isAgentChannel && agentSurface === "details" && agentChannelUid}
             <AgentDetailPanel
               agentUid={agentChannelUid}
               displayName={headerTitle}
@@ -5903,6 +5922,23 @@
                     artifact={openArtifactView}
                     onclose={closeArtifact}
                     {onopenurl}
+                  />
+                </div>
+              {:else if openAgentMember && openLocalBot}
+                <div
+                  class="reply-column profile-column"
+                  class:overlay={narrowViewport}
+                  data-testid="local-bot-detail-column"
+                  data-reply-layout={narrowViewport ? "overlay" : "column"}
+                >
+                  <LocalBotDetailPanel
+                    bot={openLocalBot}
+                    avatarUrl={openAgentMember.avatarUrl ??
+                      avatarByUid[openLocalBot.agentUid] ??
+                      null}
+                    {adapter}
+                    onchanged={refreshLocalBots}
+                    onclose={closeAgentDetail}
                   />
                 </div>
               {:else if openAgentMember}
