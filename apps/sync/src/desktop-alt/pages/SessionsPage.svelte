@@ -1,5 +1,5 @@
 <script lang="ts">
-  import ProviderConnect from '../../components/sessions/ProviderConnect.svelte';
+
   /**
    * Sessions — a chat with a Claude Code session running inside the app.
    *
@@ -874,50 +874,20 @@
   const blocker = $derived.by(() => {
     if (preflightLoading || !preflight) return '';
     if (tool === 'codex' && !preflight.codexAvailable) {
-      return 'Codex is not installed. Install it below — HQ sets up the CLI for you.';
-    }
-    if (tool === 'codex' && !preflight.codexLoggedIn) {
-      return 'Codex is not signed in. Connect it below. If the browser does not open, run `codex login` in a terminal.';
+      return 'Codex is not installed. Install it in Settings → Agents.';
     }
     if (tool === 'grok' && !preflight.grokAvailable) {
-      return 'Grok is not installed. Install it below — HQ sets up the CLI for you.';
-    }
-    if (tool === 'grok' && !preflight.grokLoggedIn) {
-      return 'Grok is not signed in. Connect it below. If the browser does not open, run `grok login` in a terminal.';
+      return 'Grok is not installed. Install it in Settings → Agents.';
     }
     if (tool === 'claude' && !preflight.claudeAvailable) {
-      return 'Claude Code is not installed. Install it below — HQ sets up the CLI for you.';
-    }
-    if (tool === 'claude' && !preflight.claudeLoggedIn) {
-      return 'Claude Code is not signed in. Connect it below. If the browser does not open, run `claude login` in a terminal.';
+      return 'Claude Code is not installed. Install it in Settings → Agents.';
     }
     // HQ setup on this machine (`setupNeeded`) is the setup card's job:
     // progress while it runs, Retry when it could not — not a notice here.
     return '';
   });
 
-  const needsProvider = $derived(Boolean(preflight) && (
-    tool === 'claude' ? !preflight?.claudeAvailable || !preflight?.claudeLoggedIn
-    : tool === 'grok' ? !preflight?.grokAvailable || !preflight?.grokLoggedIn
-    : !preflight?.codexAvailable || !preflight?.codexLoggedIn
-  ));
-  function providerConnected(provider: SessionToolId) {
-    if (preflight) preflight = provider === 'claude'
-      ? { ...preflight, claudeAvailable: true, claudeLoggedIn: true }
-      : provider === 'grok'
-        ? { ...preflight, grokAvailable: true, grokLoggedIn: true }
-      : { ...preflight, codexAvailable: true, codexLoggedIn: true };
-    liveSessionStore.invalidatePreflight();
-    chooseTool(provider);
-    catalogRefresh += 1;
-  }
-  const notice = $derived(
-    needsProvider
-      ? ''
-      : blocker ||
-          actionError ||
-          liveSessionStore.error,
-  );
+  const notice = $derived(blocker || actionError || liveSessionStore.error);
   const ended = $derived(phase === 'ended' || transcript.ended);
   const sendDisabled = $derived(!preflight || Boolean(blocker) || setupNeeded || starting || ended);
 
@@ -1562,15 +1532,6 @@
     </p>
   {/if}
 
-  {#if needsProvider && preflight}
-    <div class="provider-connect-scroll">
-      <ProviderConnect selected={tool}
-        claudeAvailable={preflight.claudeAvailable} codexAvailable={preflight.codexAvailable} grokAvailable={preflight.grokAvailable}
-        claudeConnected={preflight.claudeLoggedIn} codexConnected={preflight.codexLoggedIn} grokConnected={preflight.grokLoggedIn}
-        onconnected={providerConnected} onchoose={chooseTool}
-        onrefresh={async () => { liveSessionStore.invalidatePreflight(); preflight = await liveSessionStore.preflight(); }} />
-    </div>
-  {/if}
   <SessionTranscript
     restoreScroll={restoreScroll}
     blocks={transcript.blocks}
@@ -1579,7 +1540,7 @@
     hasEarlier={liveSessionStore.hasEarlier}
     loadingEarlier={liveSessionStore.loadingEarlier}
     onloadearlier={() => liveSessionStore.loadEarlier()}
-    emptyHint={needsProvider ? '' : emptyHint}
+    emptyHint={emptyHint}
     {busyRequestId}
     {artifactActions}
     onallowonce={(requestId) =>
@@ -1713,7 +1674,7 @@
 </div>
 
 <style>
-  .provider-connect-scroll { min-height: 0; overflow-y: auto; flex: 0 1 auto; }
+
   .sessions {
     --session-column-width: 760px;
     --session-gutter: clamp(12px, 2vw, 24px);

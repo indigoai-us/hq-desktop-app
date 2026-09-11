@@ -287,30 +287,18 @@ afterEach(() => {
 });
 
 describe('provider readiness', () => {
-  it('connects the selected provider and preserves the draft through verified sign-in', async () => {
+  it('does not take over the session with a connect-an-agent wall', async () => {
     backend.preflight.codexLoggedIn = false;
     remember(LAST_TOOL_KEY, 'codex');
-    const normalInvoke = invoke.getMockImplementation()!;
-    invoke.mockImplementation((command, args) => command === 'agent_provider_login_start'
-      ? Promise.resolve({ state: 'connected' }) : normalInvoke(command, args));
     render();
     await settle();
+    expect(host.querySelector('[data-testid="provider-connect"]')).toBeNull();
+    expect(host.textContent).not.toContain('Connect an agent to continue');
     const input = must('session-composer-input') as HTMLTextAreaElement;
-    input.value = 'Keep this draft through login';
+    input.value = 'Keep this draft';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
-    const connect = [...host.querySelectorAll('button')].find(button => button.textContent === 'Connect Codex')!;
-    click(connect);
-    await settle();
-    expect(invoke).toHaveBeenCalledWith('agent_provider_login_start', { tool: 'codex' });
-    expect(host.querySelector('[data-testid="provider-connect"]')).toBeNull();
-    expect(input.value).toBe('Keep this draft through login');
     expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
-    click(must('session-composer-send'));
-    await settle();
-    expect(backend.starts).toHaveLength(1);
-    expect(backend.starts[0].tool).toBe('codex');
   });
   it('starts Codex without Claude and updates the blocker on provider switch', async () => {
     backend.preflight.claudeAvailable = false;
@@ -321,7 +309,7 @@ describe('provider readiness', () => {
     expect(host.textContent).not.toContain('Claude Code is not installed');
     chooseTool('Claude');
     await settle();
-    expect(host.textContent).toContain('Install Claude');
+    expect(host.textContent).toContain('Settings → Agents');
     expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
     chooseTool('Codex');
     await settle();
@@ -345,31 +333,22 @@ describe('provider readiness', () => {
     expect(backend.starts[0]).toMatchObject({ tool: 'grok', model: 'grok-4.6' });
   });
 
-  it.each([
-    ['grokAvailable', 'Install Grok'],
-    ['grokLoggedIn', 'Connect Grok'],
-  ] as const)('blocks Grok when %s is false', async (field, message) => {
-    backend.preflight[field] = false;
-    remember(LAST_TOOL_KEY, 'grok');
-    render();
-    await settle();
-    expect(host.textContent).toContain(message);
-    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
-    expect(backend.starts).toHaveLength(0);
-  });
-
-  it.each([
-    ['codexAvailable', 'Install Codex'],
-    ['codexLoggedIn', 'Connect Codex'],
-  ] as const)('blocks Codex when %s is false', async (field, message) => {
-    backend.preflight[field] = false;
-    remember(LAST_TOOL_KEY, 'codex');
-    render();
-    await settle();
-    expect(host.textContent).toContain(message);
-    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
-    expect(backend.starts).toHaveLength(0);
-  });
+  it.each(['grokAvailable', 'codexAvailable', 'claudeAvailable'] as const)(
+    'blocks send when %s is false and points at Settings',
+    async (field) => {
+      backend.preflight[field] = false;
+      remember(
+        LAST_TOOL_KEY,
+        field.startsWith('grok') ? 'grok' : field.startsWith('claude') ? 'claude' : 'codex',
+      );
+      render();
+      await settle();
+      expect(host.querySelector('[data-testid="provider-connect"]')).toBeNull();
+      expect(host.textContent).toContain('Settings → Agents');
+      expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+      expect(backend.starts).toHaveLength(0);
+    },
+  );
 
   it.each([
     ['claudeLoggedIn', 'claude'],
@@ -380,8 +359,7 @@ describe('provider readiness', () => {
     render();
     await settle();
     expect(host.textContent).not.toMatch(RAW_COMMAND);
-    expect(host.querySelector('[data-testid="provider-connect"]')).not.toBeNull();
-    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+    expect(host.querySelector('[data-testid="provider-connect"]')).toBeNull();
   });
 });
 
