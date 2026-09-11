@@ -5206,6 +5206,10 @@ struct FootprintDecisionOutcome {
     /// toward the floor as the measured runaway rate rises, so a fast runaway is
     /// caught mid-tick instead of racing the OS across a fixed 30s gap.
     next_sample_delay_secs: u64,
+    /// Fixed-vocabulary attribution of this decision (HQ-DESKTOP-60): which trigger
+    /// pre-empted, or — on a keep — why the narrowed projection stayed closed. Emitted
+    /// on a pre-empt so each event says on the wire what drove it.
+    arm_reason: hq_desktop_core::daemon::FootprintArmReason,
 }
 
 fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisionOutcome {
@@ -5242,14 +5246,32 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
             prev_comparable_sample_kb,
             sample_gap_secs,
             heap_ceiling_kb,
+            // The largest single tree member gates the projection arm: only a member
+            // that has itself breached its declared old-space ceiling arms it, so a
+            // whole-tree sum is never compared against a single-process cap
+            // (HQ-DESKTOP-60). None on a Single-PID / Windows-job sample keeps it inert.
+            sample.tree_largest_member_kb,
             SUPERVISOR_INTERVAL.as_secs(),
             hq_desktop_core::daemon::WATCHER_FOOTPRINT_MIN_WATCH_SECS,
         );
+    // The prior streak seeds BOTH the decision and its attribution; capture it before
+    // the mutation below so the arm reason is derived from the same input.
+    let prior_streak = st.footprint_over_ceiling_streak;
     let (streak, decision) = hq_desktop_core::daemon::footprint_ceiling_step(
         Some(sample.kb),
         comparable,
         ceiling_kb,
-        st.footprint_over_ceiling_streak,
+        prior_streak,
+        hq_desktop_core::daemon::WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+        projection,
+    );
+    // Same evaluation as the decision (shared inner eval), so the wire attribution can
+    // never disagree with the pre-empt it explains.
+    let arm_reason = hq_desktop_core::daemon::footprint_arm_reason(
+        Some(sample.kb),
+        comparable,
+        ceiling_kb,
+        prior_streak,
         hq_desktop_core::daemon::WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
         projection,
     );
@@ -5260,6 +5282,7 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
         // Report a gap only when there was a usable prior comparable sample.
         sample_gap_secs: prev_comparable_sample_kb.and(sample_gap_secs),
         next_sample_delay_secs,
+        arm_reason,
     }
 }
 
@@ -5281,6 +5304,9 @@ struct SupervisorPreemptEvidence {
     /// Why the memory-class decomposition is or is not present — a fixed-vocabulary
     /// token so an absent report degrades honestly instead of guessing.
     memory_class_source: hq_desktop_core::daemon::WatcherMemoryClassSource,
+    /// Why this pre-empt fired — the absolute trigger, the narrowed projection, or the
+    /// ordinary streak — as a fixed-vocabulary token (HQ-DESKTOP-60).
+    arm_reason: hq_desktop_core::daemon::FootprintArmReason,
 }
 
 /// Hard ceiling on how long a supervisor pre-empt waits for a signal-triggered Node
@@ -5312,7 +5338,7 @@ fn resolve_watcher_memory_class(
 ) {
     use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
     use hq_desktop_core::runner_diagnostic_report::{
-        parse_runner_report_memory_class, RunnerReportMemoryClass,
+        parse_runner_report_memory_class, runner_report_is_complete, RunnerReportMemoryClass,
     };
     // Only a comparable tree sample yields a member PID to signal.
     let Some(pid) = sample.tree_largest_member_pid.filter(|p| *p != 0) else {
@@ -5338,8 +5364,17 @@ fn resolve_watcher_memory_class(
     if !signalled {
         return (RunnerReportMemoryClass::default(), Src::ReportAbsent);
     }
-    // Poll for a FRESH report within the hard-bounded window; never block beyond it.
+    // Poll for a FRESH, COMPLETE report within the hard-bounded window; never block
+    // beyond it. A fresh file that is still mid-write (truncated → not a complete JSON
+    // document) must NOT be recorded as terminally unreadable — that is exactly the
+    // race that emptied the decomposition on 100% of the post-fix events, with most of
+    // the 2s budget still unspent (HQ-DESKTOP-60). Keep polling past a mid-write
+    // capture and end the loop early ONLY on a complete report; if a fresh report was
+    // seen but never completed by the deadline, degrade to the distinct
+    // `ReportIncomplete` token so a write race is told apart from a report that never
+    // arrived (`ReportAbsent`).
     let deadline = Instant::now() + SUPERVISOR_MEMORY_REPORT_WAIT;
+    let mut saw_fresh_incomplete = false;
     while Instant::now() < deadline {
         if let Ok(meta) = std::fs::metadata(&report_path) {
             let modified = meta.modified().ok();
@@ -5349,22 +5384,30 @@ fn resolve_watcher_memory_class(
                 _ => false,
             };
             if is_fresh {
-                return match std::fs::read(&report_path) {
-                    Ok(bytes) => {
+                if let Ok(bytes) = std::fs::read(&report_path) {
+                    if runner_report_is_complete(&bytes) {
                         let mc = parse_runner_report_memory_class(&bytes);
-                        if mc.is_present() {
+                        return if mc.is_present() {
                             (mc, Src::ReportRead)
                         } else {
+                            // A complete report that carried no memory class is honestly
+                            // empty, not a retryable write race.
                             (mc, Src::ReportUnreadable)
-                        }
+                        };
                     }
-                    Err(_) => (RunnerReportMemoryClass::default(), Src::ReportUnreadable),
-                };
+                }
+                // Fresh but not yet a complete document (mid-write, or a transient read
+                // error): remember it and keep polling to the deadline.
+                saw_fresh_incomplete = true;
             }
         }
         thread::sleep(SUPERVISOR_MEMORY_REPORT_POLL);
     }
-    (RunnerReportMemoryClass::default(), Src::ReportAbsent)
+    if saw_fresh_incomplete {
+        (RunnerReportMemoryClass::default(), Src::ReportIncomplete)
+    } else {
+        (RunnerReportMemoryClass::default(), Src::ReportAbsent)
+    }
 }
 
 /// Windows (and any non-signal platform) has no live-signal report path, so the
@@ -5483,6 +5526,14 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
             "watcher_memory_class_source",
             evidence.memory_class_source.as_str().to_string(),
         ),
+        // Why this pre-empt fired (HQ-DESKTOP-60): the absolute trigger, the narrowed
+        // projection, or the ordinary streak — so a false kill would name the exact
+        // arming conjunct on the wire instead of being indistinguishable from a real
+        // runaway.
+        (
+            "watcher_footprint_arm_reason",
+            evidence.arm_reason.as_str().to_string(),
+        ),
     ];
     let extras = [
         ("runner_heap_ceiling_mb", num(u64::from(heap_ceiling.mb))),
@@ -5567,6 +5618,7 @@ fn watch_watcher_footprint_slice(sample_pid: Option<u32>) -> (bool, u64) {
         gap_secs: footprint.sample_gap_secs,
         memory_class,
         memory_class_source,
+        arm_reason: footprint.arm_reason,
     });
     terminate_daemon_generation_once(generation, DaemonFailureCategory::RunnerMemory);
     (true, footprint.next_sample_delay_secs)

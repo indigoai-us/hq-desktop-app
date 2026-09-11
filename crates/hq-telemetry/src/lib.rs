@@ -753,6 +753,22 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             value,
             "under_20mbs" | "20_to_50mbs" | "50_to_120mbs" | "over_120mbs" | "unknown"
         )),
+        // Why the rate-aware projection did or did not arm on the pre-empt sample
+        // (auto-sync watcher footprint growth-rate cluster, HQ-DESKTOP-60): the
+        // absolute trigger, the narrowed projection, the ordinary streak, or — when
+        // the projection stayed closed — which conjunct closed it (mirrors
+        // `FootprintArmReason::as_str`). Fixed vocabulary; an off-vocabulary token
+        // degrades to `[Filtered]`.
+        "watcher_footprint_arm_reason" => Some(matches!(
+            value,
+            "absolute"
+                | "projection_armed"
+                | "ordinary_streak"
+                | "below_final_approach"
+                | "no_member_breach"
+                | "within_horizon"
+                | "inert"
+        )),
         // Live memory-class decomposition read from a signal-triggered Node
         // diagnostic report just before a footprint pre-empt (auto-sync watcher
         // footprint growth-rate cluster, HQ-DESKTOP-60): the JS old-space total/used,
@@ -779,6 +795,7 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             "report_read"
                 | "report_absent"
                 | "report_unreadable"
+                | "report_incomplete"
                 | "report_not_requested"
                 | "report_unsupported_platform"
         )),
@@ -3549,6 +3566,14 @@ mod tests {
             ("watcher_footprint_growth_bucket", "50_to_120mbs"),
             ("watcher_footprint_growth_bucket", "over_120mbs"),
             ("watcher_footprint_growth_bucket", "unknown"),
+            // The arm-reason vocabulary (this reopen, HQ-DESKTOP-60).
+            ("watcher_footprint_arm_reason", "absolute"),
+            ("watcher_footprint_arm_reason", "projection_armed"),
+            ("watcher_footprint_arm_reason", "ordinary_streak"),
+            ("watcher_footprint_arm_reason", "below_final_approach"),
+            ("watcher_footprint_arm_reason", "no_member_breach"),
+            ("watcher_footprint_arm_reason", "within_horizon"),
+            ("watcher_footprint_arm_reason", "inert"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -3570,6 +3595,8 @@ mod tests {
             ("watcher_tree_process_count", "12 processes /Users/Ada"),
             ("watcher_footprint_growth_bucket", "40mbs"),
             ("watcher_footprint_growth_bucket", "50_to_120mbs:/Users/Ada"),
+            ("watcher_footprint_arm_reason", "armed /Users/Ada"),
+            ("watcher_footprint_arm_reason", "projection"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -3602,6 +3629,7 @@ mod tests {
             ("watcher_memory_class_source", "report_read"),
             ("watcher_memory_class_source", "report_absent"),
             ("watcher_memory_class_source", "report_unreadable"),
+            ("watcher_memory_class_source", "report_incomplete"),
             ("watcher_memory_class_source", "report_not_requested"),
             ("watcher_memory_class_source", "report_unsupported_platform"),
         ] {

@@ -740,6 +740,61 @@ pub enum FootprintCeilingDecision {
     Preempt,
 }
 
+/// Fixed-vocabulary attribution of a footprint decision (this reopen,
+/// HQ-DESKTOP-60): which trigger pre-empted, or — when the rate-aware projection
+/// stayed closed — which conjunct of the narrowed arming gate closed it. Emitted on
+/// a supervisor pre-empt so each event says, on the wire, whether the absolute
+/// trigger or the projection drove it, and derived from the SAME evaluation as the
+/// decision so the two can never disagree. Content-safe for a Sentry tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FootprintArmReason {
+    /// The absolute single-sample hard-ceiling trigger fired.
+    Absolute,
+    /// The rate-aware projection armed and projected growth to/past the hard ceiling.
+    ProjectionArmed,
+    /// The ordinary two-sample over-ceiling streak fired.
+    OrdinaryStreak,
+    /// Projection closed: the current sample is below the final-approach band, i.e.
+    /// more than one overshoot budget below the hard ceiling.
+    BelowFinalApproach,
+    /// Projection closed: inside the final-approach band, but no single tree member
+    /// has breached its declared V8 old-space ceiling, so V8's own cap still bounds
+    /// the tree and the whole-tree sum must not be projected away.
+    NoMemberBreach,
+    /// Projection armed and measurable, but the projected growth stays below the hard
+    /// ceiling within the look-ahead horizon.
+    WithinHorizon,
+    /// Projection inert: unmeasurable input — a non-comparable sample, no comparable
+    /// prior, no measured largest member, or a non-positive gap/delta.
+    Inert,
+}
+
+impl FootprintArmReason {
+    /// Every variant, so content-safety tests enumerate the emitter's token set.
+    pub const ALL: [FootprintArmReason; 7] = [
+        Self::Absolute,
+        Self::ProjectionArmed,
+        Self::OrdinaryStreak,
+        Self::BelowFinalApproach,
+        Self::NoMemberBreach,
+        Self::WithinHorizon,
+        Self::Inert,
+    ];
+
+    /// Fixed vocabulary, safe for a Sentry tag.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Absolute => "absolute",
+            Self::ProjectionArmed => "projection_armed",
+            Self::OrdinaryStreak => "ordinary_streak",
+            Self::BelowFinalApproach => "below_final_approach",
+            Self::NoMemberBreach => "no_member_breach",
+            Self::WithinHorizon => "within_horizon",
+            Self::Inert => "inert",
+        }
+    }
+}
+
 /// The PRIOR comparable footprint sample carried into the pure supervisor
 /// decision so the hard-ceiling trigger can PROJECT growth one supervisor
 /// interval ahead instead of assuming a fixed runaway rate. The
@@ -756,38 +811,126 @@ pub enum FootprintCeilingDecision {
 /// `cadence_secs` is the look-ahead horizon — the delay until the NEXT footprint
 /// sample, which under the adaptive sampling cadence is NOT a fixed supervisor
 /// interval (HQ-DESKTOP-60). `heap_ceiling_kb` is the runner's resolved declared V8
-/// old-space ceiling; the projection may fire only once the current comparable
-/// footprint EXCEEDS it (growth proven to be outside V8 old space), and is `0`
-/// whenever that ceiling is unusable, which keeps the projection arm inert.
+/// old-space ceiling gating the projection arm, and is `0` whenever that ceiling is
+/// unusable, which keeps the arm inert. `largest_member_kb` is the RSS of the LARGEST
+/// single tree member, so the arm compares a per-process reading against the
+/// per-process cap (a member that has itself breached its declared old space) instead
+/// of the whole-tree sum against a single-process cap — the category error behind the
+/// r1 false kills (this reopen, HQ-DESKTOP-60); `None` on a Single-PID fallback or
+/// the Windows job path keeps the arm gate-closed, and the absolute hard-ceiling
+/// trigger still covers those samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FootprintProjection {
     pub prev_sample_kb: Option<u64>,
     pub gap_secs: u64,
     pub cadence_secs: u64,
     pub heap_ceiling_kb: u64,
+    pub largest_member_kb: Option<u64>,
+}
+
+/// Inner evaluation shared by [`footprint_ceiling_step`] (the decision) and
+/// [`footprint_arm_reason`] (the wire attribution), so the decision and its reason
+/// derive from ONE evaluation and can never drift. Returns the updated streak, the
+/// decision, and the fixed-vocabulary reason.
+///
+/// A comparable (whole-tree / job) sample at or above the hard safety threshold
+/// pre-empts immediately (the absolute trigger, unchanged). In ADDITION, a rate-aware
+/// projection may pre-empt one interval early — but ONLY through a correctly-scoped
+/// arming gate that replaces the r1 whole-tree heap gate (this reopen,
+/// HQ-DESKTOP-60). The arm requires BOTH:
+///   (a) FINAL-APPROACH BAND — the current comparable footprint is within one
+///       overshoot budget of the hard ceiling (`cur + budget >= hard_ceiling`), the
+///       only band the overshoot budget was derived for; and
+///   (b) PER-PROCESS BREACH — the LARGEST single tree member has itself breached the
+///       runner's declared V8 old-space ceiling, so a whole-tree SUM is never
+///       compared against a single-process cap (the category error behind the r1
+///       false kills: tree 3,623 MB with the largest member 3,570 MB still inside its
+///       own 3,584 MB cap, and tree 4,493 MB below the band).
+/// plus every existing inertness guard (a comparable sample, a usable prior
+/// comparable sample, a strictly positive delta, a positive gap and cadence, and a
+/// usable heap ceiling). The arm is a pure conjunction of ADDITIONAL conditions, so
+/// it can only ever ADVANCE a pre-empt relative to the absolute rule — never add or
+/// delay one — and is inert (byte-identical to the ordinary streak path) on any
+/// unmeasurable input, including a `None` largest member (Single-PID / Windows job).
+///
+/// Otherwise, ONLY a comparable sample at or above the ordinary ceiling advances the
+/// streak; a withheld/shim sample, a missing sample, or one below the ceiling resets
+/// it to zero. Pre-empt the ordinary backstop only once the streak reaches the
+/// required consecutive count — never on a single spike, never on an unsampled or
+/// withheld footprint.
+fn footprint_ceiling_eval(
+    sample_kb: Option<u64>,
+    scope_comparable: bool,
+    ceiling_kb: u64,
+    prior_streak: u32,
+    required_consecutive: u32,
+    projection: FootprintProjection,
+) -> (u32, FootprintCeilingDecision, FootprintArmReason) {
+    let hard_ceiling_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
+    let budget_kb = u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB) * 1024;
+    // Absolute trigger: one comparable sample at or above the hard ceiling.
+    if scope_comparable && matches!(sample_kb, Some(kb) if kb >= hard_ceiling_kb) {
+        return (
+            0,
+            FootprintCeilingDecision::Preempt,
+            FootprintArmReason::Absolute,
+        );
+    }
+    // Rate-aware projection through the narrowed arming gate. `projection_reason`
+    // records why the arm did or did not fire, for the wire attribution.
+    let mut projection_reason = FootprintArmReason::Inert;
+    if scope_comparable {
+        if let (Some(cur), Some(prev)) = (sample_kb, projection.prev_sample_kb) {
+            let heap_ceiling_kb = projection.heap_ceiling_kb;
+            let inputs_measurable = heap_ceiling_kb > 0
+                && projection.gap_secs > 0
+                && projection.cadence_secs > 0
+                && cur > prev;
+            if inputs_measurable {
+                let in_final_approach = cur.saturating_add(budget_kb) >= hard_ceiling_kb;
+                let member_breached = matches!(
+                    projection.largest_member_kb,
+                    Some(largest) if largest > heap_ceiling_kb
+                );
+                if !in_final_approach {
+                    projection_reason = FootprintArmReason::BelowFinalApproach;
+                } else if !member_breached {
+                    projection_reason = FootprintArmReason::NoMemberBreach;
+                } else {
+                    let growth_kb = (cur - prev)
+                        .saturating_mul(projection.cadence_secs)
+                        / projection.gap_secs;
+                    if cur.saturating_add(growth_kb) >= hard_ceiling_kb {
+                        return (
+                            0,
+                            FootprintCeilingDecision::Preempt,
+                            FootprintArmReason::ProjectionArmed,
+                        );
+                    }
+                    projection_reason = FootprintArmReason::WithinHorizon;
+                }
+            }
+        }
+    }
+    let over = scope_comparable && matches!(sample_kb, Some(kb) if kb >= ceiling_kb);
+    if !over {
+        return (0, FootprintCeilingDecision::KeepRunning, projection_reason);
+    }
+    let streak = prior_streak.saturating_add(1);
+    if required_consecutive > 0 && streak >= required_consecutive {
+        (
+            streak,
+            FootprintCeilingDecision::Preempt,
+            FootprintArmReason::OrdinaryStreak,
+        )
+    } else {
+        (streak, FootprintCeilingDecision::KeepRunning, projection_reason)
+    }
 }
 
 /// Pure supervisor decision: given a fresh scoped footprint sample, the running
-/// over-ceiling streak, and the prior comparable sample, return the UPDATED
-/// streak and whether to pre-empt.
-///
-/// A comparable (whole-tree / job) sample at or above the hard safety threshold
-/// pre-empts immediately (today's absolute trigger, unchanged). In ADDITION, when
-/// a measurable positive growth rate — derived from the prior comparable sample
-/// and its age — would carry the comparable footprint to or past the hard ceiling
-/// within the look-ahead horizon, pre-empt now rather than waiting for the raw
-/// sample to cross it. That projection may only ever ADVANCE a pre-empt, never
-/// delay or suppress one: it requires a comparable current sample already ABOVE the
-/// runner's declared heap ceiling (`projection.heap_ceiling_kb`), a usable prior
-/// comparable sample, a strictly positive delta, and a positive gap and cadence,
-/// and falls back to exactly the behaviour below on any unmeasurable input or while
-/// the footprint is still within the declared V8 old-space budget.
-///
-/// Otherwise, ONLY a comparable sample at or above the ordinary ceiling advances
-/// the streak; a withheld/shim sample, a missing sample, or one below the ceiling
-/// resets it to zero. Pre-empt the ordinary backstop only once the streak reaches
-/// the required consecutive count — never on a single spike, never on an unsampled
-/// or withheld footprint.
+/// over-ceiling streak, and the prior comparable sample, return the UPDATED streak
+/// and whether to pre-empt. See [`footprint_ceiling_eval`] for the full contract.
 pub fn footprint_ceiling_step(
     sample_kb: Option<u64>,
     scope_comparable: bool,
@@ -796,71 +939,61 @@ pub fn footprint_ceiling_step(
     required_consecutive: u32,
     projection: FootprintProjection,
 ) -> (u32, FootprintCeilingDecision) {
-    let hard_ceiling_kb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB) * 1024;
-    // Absolute trigger: one comparable sample at or above the hard ceiling.
-    if scope_comparable && matches!(sample_kb, Some(kb) if kb >= hard_ceiling_kb) {
-        return (0, FootprintCeilingDecision::Preempt);
-    }
-    // Rate-aware projection: pre-empt one interval early when the measured growth
-    // would reach the hard ceiling. Narrowed by a heap-ceiling gate (this reopen,
-    // HQ-DESKTOP-60): it may fire ONLY once the current comparable footprint already
-    // EXCEEDS the runner's declared V8 old-space ceiling, i.e. once the tree proves
-    // the growth is not bounded by `--max-old-space-size`. A cold ramp still inside
-    // the declared heap budget is bounded by V8's own cap and must never be
-    // projected away — that was the false kill (2,776 MB against a 3,584 MB cap with
-    // zero non-heap excess). The gate can only ever REMOVE a projection pre-empt
-    // relative to today's absolute rule, never add or delay one. Guarded so it never
-    // fires on unmeasurable data, and inert (byte-identical to the pre-projection
-    // behaviour) whenever the heap ceiling, the prior sample, the gap, or the cadence
-    // is unusable.
-    if scope_comparable {
-        if let (Some(cur), Some(prev)) = (sample_kb, projection.prev_sample_kb) {
-            let heap_ceiling_kb = projection.heap_ceiling_kb;
-            if heap_ceiling_kb > 0
-                && cur > heap_ceiling_kb
-                && projection.gap_secs > 0
-                && projection.cadence_secs > 0
-                && cur > prev
-            {
-                let growth_kb = (cur - prev)
-                    .saturating_mul(projection.cadence_secs)
-                    / projection.gap_secs;
-                if cur.saturating_add(growth_kb) >= hard_ceiling_kb {
-                    return (0, FootprintCeilingDecision::Preempt);
-                }
-            }
-        }
-    }
-    let over = scope_comparable && matches!(sample_kb, Some(kb) if kb >= ceiling_kb);
-    if !over {
-        return (0, FootprintCeilingDecision::KeepRunning);
-    }
-    let streak = prior_streak.saturating_add(1);
-    let decision = if required_consecutive > 0 && streak >= required_consecutive {
-        FootprintCeilingDecision::Preempt
-    } else {
-        FootprintCeilingDecision::KeepRunning
-    };
+    let (streak, decision, _reason) = footprint_ceiling_eval(
+        sample_kb,
+        scope_comparable,
+        ceiling_kb,
+        prior_streak,
+        required_consecutive,
+        projection,
+    );
     (streak, decision)
+}
+
+/// The fixed-vocabulary attribution for the SAME inputs [`footprint_ceiling_step`]
+/// decides on, so a supervisor pre-empt can name on the wire why it fired (the
+/// absolute trigger, the narrowed projection, or the ordinary streak) or — on a keep
+/// — why the projection stayed closed. Shares one evaluation with the decision, so
+/// the two can never disagree.
+pub fn footprint_arm_reason(
+    sample_kb: Option<u64>,
+    scope_comparable: bool,
+    ceiling_kb: u64,
+    prior_streak: u32,
+    required_consecutive: u32,
+    projection: FootprintProjection,
+) -> FootprintArmReason {
+    footprint_ceiling_eval(
+        sample_kb,
+        scope_comparable,
+        ceiling_kb,
+        prior_streak,
+        required_consecutive,
+        projection,
+    )
+    .2
 }
 
 /// Pure: how long to wait before the NEXT whole-tree footprint sample, given the
 /// current sample, whether it is a comparable (Tree/job) reading, and the growth
 /// rate measured since the prior comparable sample (this reopen, HQ-DESKTOP-60).
 ///
-/// Returns `base_secs` when growth is absent or slow — an idle or gently-growing
-/// runner keeps the existing one-sample-per-tick cost. Shortens toward `min_secs`
-/// as the measured rate rises, so the worst-case growth per gap stays within
-/// [`WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB`] (`delay = budget / rate`, clamped to
-/// `[min_secs, base_secs]`). Returns `min_secs` while the generation has NO measured
-/// rate yet (`None` — one comparable sample, no prior), so a cold ramp is MEASURED
-/// across a short gap rather than ASSUMED across a full tick: the shipped 250 MB/s
-/// runaway began inside the first 30s gap after a benign 448 MB sample. A
-/// non-comparable current sample (a shim/withheld reading) has no tree to project
-/// over and keeps the base cadence. As a final-approach guard, a comparable sample
-/// already within one overshoot budget of the hard ceiling always samples at the
-/// floor, so a momentarily slow reading cannot open a long gap right before the
-/// ceiling. Saturating and panic-free for extreme rates.
+/// Shortens toward `min_secs` as the measured rate rises, so the worst-case growth
+/// per gap stays within [`WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB`] (`delay = budget /
+/// rate`, clamped to `[min_secs, base_secs]`). Returns `min_secs` while the
+/// generation has NO measured rate yet (`None` — one comparable sample, no prior), so
+/// a cold ramp is MEASURED across a short gap rather than ASSUMED across a full tick:
+/// the shipped 250 MB/s runaway began inside the first 30s gap after a benign 448 MB
+/// sample. A non-comparable current sample (a shim/withheld reading) has no tree to
+/// project over and keeps the base cadence. As a final-approach guard, a comparable
+/// sample already within one overshoot budget of the hard ceiling always samples at
+/// the floor. Finally, EVERY returned delay for a comparable sample is capped by the
+/// time the WORST OBSERVED runaway rate ([`WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC`])
+/// would take to carry this sample to the hard ceiling less the overshoot budget, so
+/// a flat reading that suddenly runs away is still resampled before it can cross —
+/// closing the flat->runaway direction the prior fix left open (from a flat 448 MB
+/// this yields ~16s rather than the full 30s base). Saturating and panic-free for
+/// extreme rates.
 pub fn next_footprint_sample_delay_secs(
     sample_kb: u64,
     scope_comparable: bool,
@@ -881,14 +1014,37 @@ pub fn next_footprint_sample_delay_secs(
     if sample_kb.saturating_add(budget_kb) >= hard_ceiling_kb {
         return min;
     }
-    match measured_rate_kb_per_sec {
+    // The delay the last MEASURED rate justifies: base while flat/absent, shortening
+    // toward the floor as the rate rises so no more than one overshoot budget is added
+    // before the next sample.
+    let rate_delay = match measured_rate_kb_per_sec {
         // No measured rate yet: sample soon so the ramp is measured, not assumed.
         None => min,
         // Flat or shrinking: the ordinary cadence and its single-sample cost.
         Some(0) => base,
         // Time (secs) to consume the overshoot budget at the measured rate, clamped.
         Some(rate) => (budget_kb / rate).clamp(min, base),
-    }
+    };
+    // Worst-case cap (this reopen, HQ-DESKTOP-60): bound EVERY delay — including a flat
+    // or as-yet-unmeasured reading — by the time the WORST OBSERVED runaway rate would
+    // take to carry THIS sample to the hard ceiling less the overshoot budget, so a
+    // runner that is flat now but suddenly runs away is still resampled before it can
+    // cross. This closes the flat->runaway direction the prior fix left open: a flat
+    // 448 MB reading returned the full 30s base, and 250 MB/s over 30s reached 7,949 MB
+    // — 2,049 MB ABOVE the OS-kill floor (2026-09-06T14:05:14Z). Reuses the already
+    // derived worst-observed rate; introduces no new safety constant. Saturating.
+    let worst_rate_kb_per_sec =
+        u64::from(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC) * 1024;
+    let worst_case_cap = if worst_rate_kb_per_sec > 0 {
+        (hard_ceiling_kb
+            .saturating_sub(budget_kb)
+            .saturating_sub(sample_kb)
+            / worst_rate_kb_per_sec)
+            .clamp(min, base)
+    } else {
+        base
+    };
+    rate_delay.min(worst_case_cap).max(min)
 }
 
 /// Pure: assemble the [`FootprintProjection`] for THIS sample and the delay until
@@ -901,14 +1057,19 @@ pub fn next_footprint_sample_delay_secs(
 /// `prev_comparable_sample_kb` is `None` when there is no usable prior comparable
 /// sample; `prev_sample_age_secs` is that sample's age. When either is missing the
 /// gap is 0, the projection arm stays inert, and the next delay is the minimum
-/// (measure the ramp rather than assume it). `heap_ceiling_kb` gates the projection
-/// arm (see [`footprint_ceiling_step`]). Pure and saturating.
+/// (measure the ramp rather than assume it). `heap_ceiling_kb` and
+/// `largest_member_kb` gate the projection arm (see [`footprint_ceiling_step`]): the
+/// arm fires only once the largest single tree member has breached the declared
+/// old-space ceiling, so `largest_member_kb` is carried into the projection verbatim
+/// (a `None` largest member — Single-PID fallback / Windows job — keeps the arm
+/// gate-closed). Pure and saturating.
 pub fn footprint_projection_and_next_delay(
     cur_sample_kb: u64,
     scope_comparable: bool,
     prev_comparable_sample_kb: Option<u64>,
     prev_sample_age_secs: Option<u64>,
     heap_ceiling_kb: u64,
+    largest_member_kb: Option<u64>,
     base_secs: u64,
     min_secs: u64,
 ) -> (FootprintProjection, u64) {
@@ -936,6 +1097,7 @@ pub fn footprint_projection_and_next_delay(
         gap_secs,
         cadence_secs: next_delay,
         heap_ceiling_kb,
+        largest_member_kb,
     };
     (projection, next_delay)
 }
@@ -962,12 +1124,18 @@ pub fn footprint_growth_bucket_mb_per_sec(rate_mb_per_sec: u64) -> &'static str 
 /// empty channel is itself a finding rather than silence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatcherMemoryClassSource {
-    /// A signal-triggered report was read and carried at least one memory field.
+    /// A signal-triggered report was read complete and carried at least one memory
+    /// field.
     ReportRead,
-    /// A report was armed but none was readable within the bounded wait.
+    /// A report was armed but no fresh report appeared within the bounded wait.
     ReportAbsent,
-    /// A report file was present but oversized/truncated/non-JSON/schema-drifted.
+    /// A COMPLETE report was present but carried no memory class (oversized, valid
+    /// JSON with no `javascriptHeap` section, or schema-drifted).
     ReportUnreadable,
+    /// A fresh report appeared but was still mid-write (never a complete document)
+    /// when the bounded wait expired — distinct from `ReportAbsent` so a write race
+    /// is told apart from a report that never arrived (this reopen, HQ-DESKTOP-60).
+    ReportIncomplete,
     /// No report was requested for this generation (no report directory).
     ReportNotRequested,
     /// The platform has no live-signal report path (Windows).
@@ -976,10 +1144,11 @@ pub enum WatcherMemoryClassSource {
 
 impl WatcherMemoryClassSource {
     /// Every variant, so content-safety tests enumerate the emitter's own token set.
-    pub const ALL: [WatcherMemoryClassSource; 5] = [
+    pub const ALL: [WatcherMemoryClassSource; 6] = [
         Self::ReportRead,
         Self::ReportAbsent,
         Self::ReportUnreadable,
+        Self::ReportIncomplete,
         Self::ReportNotRequested,
         Self::ReportUnsupportedPlatform,
     ];
@@ -990,6 +1159,7 @@ impl WatcherMemoryClassSource {
             Self::ReportRead => "report_read",
             Self::ReportAbsent => "report_absent",
             Self::ReportUnreadable => "report_unreadable",
+            Self::ReportIncomplete => "report_incomplete",
             Self::ReportNotRequested => "report_not_requested",
             Self::ReportUnsupportedPlatform => "report_unsupported_platform",
         }
@@ -2504,11 +2674,15 @@ mod tests {
         // pre-empt now, one full interval before the raw sample would cross.
         let cur = mb(5000);
         assert!(cur < hard_kb, "current sample is below the absolute hard ceiling");
+        // A single runaway process, so the largest member equals the tree total and has
+        // itself breached the 3,584 MB declared cap — the per-process arming gate is
+        // open — and 5,000 + 500 >= 5,120 puts it inside the final-approach band.
         let projection = FootprintProjection {
             prev_sample_kb: Some(mb(4000)),
             gap_secs: 30,
             cadence_secs: 30,
             heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)),
+            largest_member_kb: Some(cur),
         };
         assert_eq!(
             footprint_ceiling_step(
@@ -2547,7 +2721,7 @@ mod tests {
                 ceiling_kb,
                 0,
                 base,
-                FootprintProjection { prev_sample_kb: Some(mb(1)), gap_secs: 0, cadence_secs: 30, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)) },
+                FootprintProjection { prev_sample_kb: Some(mb(1)), gap_secs: 0, cadence_secs: 30, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)), largest_member_kb: Some(mb(5000)) },
             ),
             (0, FootprintCeilingDecision::KeepRunning)
         );
@@ -2559,7 +2733,7 @@ mod tests {
                 ceiling_kb,
                 0,
                 base,
-                FootprintProjection { prev_sample_kb: Some(cur), gap_secs: 30, cadence_secs: 30, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)) },
+                FootprintProjection { prev_sample_kb: Some(cur), gap_secs: 30, cadence_secs: 30, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)), largest_member_kb: Some(mb(5000)) },
             ),
             (0, FootprintCeilingDecision::KeepRunning)
         );
@@ -2571,7 +2745,7 @@ mod tests {
                 ceiling_kb,
                 0,
                 base,
-                FootprintProjection { prev_sample_kb: Some(mb(1)), gap_secs: 30, cadence_secs: 30, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)) },
+                FootprintProjection { prev_sample_kb: Some(mb(1)), gap_secs: 30, cadence_secs: 30, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)), largest_member_kb: Some(mb(5000)) },
             ),
             (0, FootprintCeilingDecision::KeepRunning)
         );
@@ -2584,7 +2758,7 @@ mod tests {
                 ceiling_kb,
                 0,
                 base,
-                FootprintProjection { prev_sample_kb: Some(mb(4000)), gap_secs: 30, cadence_secs: 30, heap_ceiling_kb: 0 },
+                FootprintProjection { prev_sample_kb: Some(mb(4000)), gap_secs: 30, cadence_secs: 30, heap_ceiling_kb: 0, largest_member_kb: Some(mb(5000)) },
             ),
             (0, FootprintCeilingDecision::KeepRunning)
         );
@@ -2614,7 +2788,7 @@ mod tests {
                 ceiling_kb,
                 streak,
                 base,
-                FootprintProjection { prev_sample_kb: Some(mb(prev)), gap_secs: cadence, cadence_secs: cadence, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)) },
+                FootprintProjection { prev_sample_kb: Some(mb(prev)), gap_secs: cadence, cadence_secs: cadence, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)), largest_member_kb: Some(mb(cur)) },
             );
             assert_eq!(
                 decision,
@@ -2630,7 +2804,7 @@ mod tests {
             ceiling_kb,
             0,
             base,
-            FootprintProjection { prev_sample_kb: Some(mb(4800)), gap_secs: cadence, cadence_secs: cadence, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)) },
+            FootprintProjection { prev_sample_kb: Some(mb(4800)), gap_secs: cadence, cadence_secs: cadence, heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)), largest_member_kb: Some(mb(4000)) },
         );
         assert_eq!(decision, FootprintCeilingDecision::KeepRunning);
     }
@@ -2652,7 +2826,7 @@ mod tests {
                 ceiling_kb,
                 0,
                 base,
-                FootprintProjection { prev_sample_kb: Some(0), gap_secs: 1, cadence_secs: 30, heap_ceiling_kb: mb_kb(RUNNER_HEAP_CEILING_DEFAULT_MB) },
+                FootprintProjection { prev_sample_kb: Some(0), gap_secs: 1, cadence_secs: 30, heap_ceiling_kb: mb_kb(RUNNER_HEAP_CEILING_DEFAULT_MB), largest_member_kb: Some(u64::MAX) },
             ),
             (0, FootprintCeilingDecision::Preempt)
         );
@@ -2666,7 +2840,7 @@ mod tests {
                 ceiling_kb,
                 0,
                 base,
-                FootprintProjection { prev_sample_kb: Some(0), gap_secs: 1, cadence_secs: u64::MAX, heap_ceiling_kb: mb_kb(RUNNER_HEAP_CEILING_DEFAULT_MB) },
+                FootprintProjection { prev_sample_kb: Some(0), gap_secs: 1, cadence_secs: u64::MAX, heap_ceiling_kb: mb_kb(RUNNER_HEAP_CEILING_DEFAULT_MB), largest_member_kb: Some(hard_minus_one) },
             ),
             (0, FootprintCeilingDecision::Preempt)
         );
@@ -2679,7 +2853,7 @@ mod tests {
                 ceiling_kb,
                 0,
                 base,
-                FootprintProjection { prev_sample_kb: Some(0), gap_secs: u64::MAX, cadence_secs: 30, heap_ceiling_kb: mb_kb(RUNNER_HEAP_CEILING_DEFAULT_MB) },
+                FootprintProjection { prev_sample_kb: Some(0), gap_secs: u64::MAX, cadence_secs: 30, heap_ceiling_kb: mb_kb(RUNNER_HEAP_CEILING_DEFAULT_MB), largest_member_kb: Some(hard_minus_one) },
             ),
             (0, FootprintCeilingDecision::KeepRunning)
         );
@@ -2692,8 +2866,10 @@ mod tests {
         // 30s gap (82.9 MB/s) while STILL 808 MB below its declared 3,584 MB V8
         // old-space ceiling, with zero non-heap excess. On the pre-gate projection the
         // linear extrapolation was 2,776 + 82.9*30 = 5,264 >= 5,120 and killed a
-        // healthy first sync. The heap-ceiling gate blocks the projection while the
-        // footprint is inside the declared V8 budget, so the ramp KEEPS RUNNING.
+        // healthy first sync. The narrowed arming gate closes on BOTH conjuncts here:
+        // 2,776 + 500 = 3,276 is below the 5,120 MB final-approach band, and the
+        // largest member (2,776 MB) is still inside its own 3,584 MB cap. The ramp
+        // KEEPS RUNNING.
         let ordinary_ceiling_kb =
             u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
         let mb = |m: u64| m * 1024;
@@ -2708,6 +2884,7 @@ mod tests {
                 gap_secs: 30,
                 cadence_secs: 30,
                 heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)),
+                largest_member_kb: Some(mb(2776)),
             },
         );
         assert_eq!(
@@ -2716,15 +2893,34 @@ mod tests {
             "a cold ramp still inside the declared V8 heap budget must never be projected away"
         );
         assert_eq!(streak, 0, "a below-ordinary-ceiling sample must not advance the streak");
+        // And the reason is content-safe and names the closing conjunct.
+        assert_eq!(
+            footprint_arm_reason(
+                Some(mb(2776)),
+                true,
+                ordinary_ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                FootprintProjection {
+                    prev_sample_kb: Some(mb(288)),
+                    gap_secs: 30,
+                    cadence_secs: 30,
+                    heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)),
+                    largest_member_kb: Some(mb(2776)),
+                },
+            ),
+            FootprintArmReason::BelowFinalApproach
+        );
     }
 
     #[test]
     fn test_footprint_projection_still_preempts_once_the_ramp_crosses_the_heap_ceiling() {
         // The gate NARROWS the projection, it does not disable it: the same
-        // accelerating ramp, sampled once it has crossed the declared 3,584 MB heap
-        // ceiling, must still pre-empt one interval early. 3,700 -> 4,700 MB across a
-        // matched 30s gap projects 4,700 + 1,000 = 5,700 >= 5,120, and 4,700 > 3,584
-        // so the gate is open.
+        // accelerating ramp, sampled once it is inside the final-approach band with a
+        // member that has breached its own cap, must still pre-empt one interval early.
+        // 3,700 -> 4,700 MB across a matched 30s gap projects 4,700 + 1,000 = 5,700 >=
+        // 5,120; 4,700 + 500 >= 5,120 puts it in the band; and the largest member
+        // (4,700 MB) exceeds its 3,584 MB cap, so both arming conjuncts are open.
         let ordinary_ceiling_kb =
             u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
         let mb = |m: u64| m * 1024;
@@ -2739,6 +2935,7 @@ mod tests {
                 gap_secs: 30,
                 cadence_secs: 30,
                 heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)),
+                largest_member_kb: Some(mb(4700)),
             },
         );
         assert_eq!(
@@ -2760,11 +2957,14 @@ mod tests {
         // No measured rate yet (fresh generation) -> sample at the floor so the ramp
         // is MEASURED, not assumed across a full tick.
         assert_eq!(next_footprint_sample_delay_secs(low, true, None, base, min), min);
-        // Flat/shrinking growth -> the ordinary cadence and its one-sample cost.
-        assert_eq!(next_footprint_sample_delay_secs(low, true, Some(0), base, min), base);
-        // A slow rate projects a long delay -> clamps to base.
-        assert_eq!(next_footprint_sample_delay_secs(low, true, Some(kbps(1)), base, min), base);
-        // The two OBSERVED rates: 500 MB overshoot budget / rate.
+        // Flat/shrinking growth -> the worst-case cap binds even with no measured rate:
+        // at 1,000 MB a 250 MB/s runaway reaches 5,120-500 in (5120-500-1000)/250 = 14s,
+        // so the flat reading is resampled at 14s, not the full 30s base — this closes
+        // the flat->runaway direction the prior fix left open (HQ-DESKTOP-60).
+        assert_eq!(next_footprint_sample_delay_secs(low, true, Some(0), base, min), 14);
+        // A slow rate would project a long delay, but the same worst-case cap binds.
+        assert_eq!(next_footprint_sample_delay_secs(low, true, Some(kbps(1)), base, min), 14);
+        // The two OBSERVED rates: 500 MB overshoot budget / rate (both under the cap).
         assert_eq!(next_footprint_sample_delay_secs(low, true, Some(kbps(250)), base, min), 2);
         assert_eq!(next_footprint_sample_delay_secs(low, true, Some(kbps(82)), base, min), 6);
         // An extreme rate clamps to the floor, never below and never a panic.
@@ -2790,14 +2990,16 @@ mod tests {
         let heap_kb = mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB));
 
         // A fresh generation (no prior comparable sample) measures the ramp at the
-        // floor and leaves the projection arm inert (prev None, gap 0).
+        // floor and leaves the projection arm inert (prev None, gap 0). The largest
+        // member is carried through verbatim (None here — nothing to gate on).
         let (proj, delay) =
-            footprint_projection_and_next_delay(mb(448), true, None, None, heap_kb, base, min);
+            footprint_projection_and_next_delay(mb(448), true, None, None, heap_kb, None, base, min);
         assert_eq!(delay, min);
         assert_eq!(proj.prev_sample_kb, None);
         assert_eq!(proj.gap_secs, 0);
         assert_eq!(proj.cadence_secs, delay, "the horizon must equal the next-sample delay");
         assert_eq!(proj.heap_ceiling_kb, heap_kb);
+        assert_eq!(proj.largest_member_kb, None);
 
         // A measured 250 MB/s runaway sets BOTH the delay and the projection horizon to
         // 2s — the projection extrapolates exactly the gap it will cover, never a fixed
@@ -2808,6 +3010,7 @@ mod tests {
             Some(mb(3250)),
             Some(3),
             heap_kb,
+            Some(mb(3900)),
             base,
             min,
         );
@@ -2816,6 +3019,357 @@ mod tests {
         assert_eq!(proj.cadence_secs, delay);
         assert_eq!(proj.gap_secs, 3);
         assert_eq!(proj.prev_sample_kb, Some(mb(3250)));
+        // The largest member is threaded verbatim into the projection so the arm can
+        // compare a per-process reading against the per-process cap.
+        assert_eq!(proj.largest_member_kb, Some(mb(3900)));
+    }
+
+    // ── Post-fix false-kill replays + narrowed arming gate (this reopen,
+    // HQ-DESKTOP-60). Both post-fix events are replayed VERBATIM from their shipped
+    // Sentry extras. On base 43806a52 footprint_ceiling_step returns Preempt for both
+    // (r1's whole-tree heap gate `cur > 3,584` plus the 2s-cadence projection
+    // overshoots 5,120); on the candidate the narrowed arming gate closes and both KEEP
+    // RUNNING, while the genuine runaway still pre-empts on the untouched absolute rule.
+
+    /// Replay projection for an evented pre-empt: the shipped prior sample, a 2s gap and
+    /// matched 2s horizon, the declared default heap ceiling, and the shipped largest
+    /// member.
+    fn replay_projection(prev_mb: u64, largest_mb: u64) -> FootprintProjection {
+        let mb = |m: u64| m * 1024;
+        FootprintProjection {
+            prev_sample_kb: Some(mb(prev_mb)),
+            gap_secs: 2,
+            cadence_secs: 2,
+            heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)),
+            largest_member_kb: Some(mb(largest_mb)),
+        }
+    }
+
+    #[test]
+    fn test_footprint_reopen_event_10b7c3e0_keeps_running_below_band() {
+        // 2026-09-08T21:57:02Z v0.10.219: tree 3,623 MB, prev 1,338 MB, gap 2s, largest
+        // member 3,570 MB (BELOW its own 3,584 MB cap). 3,623 + 500 = 4,123 < 5,120, so
+        // the sample is below the final-approach band and the arm stays closed.
+        let mb = |m: u64| m * 1024;
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let projection = replay_projection(1338, 3570);
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(mb(3623)),
+                true,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            ),
+            (0, FootprintCeilingDecision::KeepRunning),
+            "tree 3,623 MB with the largest member still inside its cap must keep running"
+        );
+        assert_eq!(
+            footprint_arm_reason(
+                Some(mb(3623)),
+                true,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            ),
+            FootprintArmReason::BelowFinalApproach
+        );
+    }
+
+    #[test]
+    fn test_footprint_reopen_event_23daf463_keeps_running_below_band() {
+        // 2026-09-08T04:11:48Z v0.10.217: tree 4,493 MB, prev 3,621 MB, gap 2s, largest
+        // member 4,409 MB. The largest member HAS breached its cap, but 4,493 + 500 =
+        // 4,993 < 5,120 leaves the sample below the final-approach band, so the arm stays
+        // closed on the band conjunct.
+        let mb = |m: u64| m * 1024;
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let projection = replay_projection(3621, 4409);
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(mb(4493)),
+                true,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            ),
+            (0, FootprintCeilingDecision::KeepRunning),
+            "tree 4,493 MB below the final-approach band must keep running"
+        );
+        assert_eq!(
+            footprint_arm_reason(
+                Some(mb(4493)),
+                true,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            ),
+            FootprintArmReason::BelowFinalApproach
+        );
+    }
+
+    #[test]
+    fn test_footprint_reopen_cold_ramps_keep_running() {
+        // The three pre-fix cold ramps (2,776 / 3,080 / 3,337 MB) all sit below the
+        // final-approach band AND inside the declared heap budget, so the arm stays
+        // closed — r1's genuine win is preserved.
+        let mb = |m: u64| m * 1024;
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        for cur in [2776u64, 3080, 3337] {
+            let projection = replay_projection(cur.saturating_sub(500), cur);
+            assert_eq!(
+                footprint_ceiling_step(
+                    Some(mb(cur)),
+                    true,
+                    ceiling_kb,
+                    0,
+                    WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                    projection,
+                )
+                .1,
+                FootprintCeilingDecision::KeepRunning,
+                "cold ramp {cur} MB must keep running"
+            );
+        }
+    }
+
+    #[test]
+    fn test_footprint_reopen_runaway_still_preempts_on_the_absolute_rule() {
+        // The genuine runaway (7,949 MB, 2026-09-06T14:05:14Z) is at/above the 5,120 MB
+        // hard ceiling, so the UNTOUCHED absolute trigger pre-empts it regardless of the
+        // narrowed arm — the safety direction is unchanged.
+        let mb = |m: u64| m * 1024;
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let projection = replay_projection(448, 7949);
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(mb(7949)),
+                true,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            ),
+            (0, FootprintCeilingDecision::Preempt),
+        );
+        assert_eq!(
+            footprint_arm_reason(
+                Some(mb(7949)),
+                true,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            ),
+            FootprintArmReason::Absolute
+        );
+    }
+
+    #[test]
+    fn test_footprint_projection_scope_pin_multi_member_never_arms() {
+        // The per-process scope pin: a whole-tree sum that crosses the declared cap only
+        // because it SUMS multiple members — each still inside its own 3,584 MB budget —
+        // must never arm the projection, even inside the final-approach band. This is the
+        // exact category error the r1 gate made (tree sum vs a single-process cap).
+        let mb = |m: u64| m * 1024;
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        // cur 4,700 MB is inside the band and the growth would reach the ceiling, but the
+        // largest single member is only 3,000 MB — inside its own cap.
+        let projection = FootprintProjection {
+            prev_sample_kb: Some(mb(3700)),
+            gap_secs: 2,
+            cadence_secs: 2,
+            heap_ceiling_kb: mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB)),
+            largest_member_kb: Some(mb(3000)),
+        };
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(mb(4700)),
+                true,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            )
+            .1,
+            FootprintCeilingDecision::KeepRunning,
+            "a multi-member tree with every member inside its cap must not arm the projection"
+        );
+        assert_eq!(
+            footprint_arm_reason(
+                Some(mb(4700)),
+                true,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            ),
+            FootprintArmReason::NoMemberBreach
+        );
+        // A None largest member (Single-PID fallback / Windows job) also keeps the arm
+        // closed — the absolute trigger still covers those samples.
+        let withheld = FootprintProjection {
+            largest_member_kb: None,
+            ..projection
+        };
+        assert_eq!(
+            footprint_ceiling_step(
+                Some(mb(4700)),
+                true,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                withheld,
+            )
+            .1,
+            FootprintCeilingDecision::KeepRunning,
+            "a withheld largest member must keep the projection inert"
+        );
+    }
+
+    #[test]
+    fn test_next_footprint_sample_delay_caps_a_flat_reading_below_the_ceiling() {
+        // The flat->runaway direction (this reopen, HQ-DESKTOP-60): a flat 448 MB reading
+        // returned the full 30s base on the prior fix, and 250 MB/s over 30s reached
+        // 7,949 MB. The worst-case cap now bounds it to (5,120 - 500 - 448)/250 = 16s, so
+        // a 250 MB/s runaway from 448 MB is next sampled at ~448 + 250*16 = 4,448 MB.
+        let mb = |m: u64| m * 1024;
+        let base = 30u64;
+        let min = WATCHER_FOOTPRINT_MIN_WATCH_SECS;
+        assert_eq!(next_footprint_sample_delay_secs(mb(448), true, Some(0), base, min), 16);
+        // A fresh (unmeasured) flat 448 MB reading is capped too, not left at 30s.
+        assert!(next_footprint_sample_delay_secs(mb(448), true, None, base, min) <= 16);
+        // (5,120 - 500)/250 = 18 for a zero sample; saturating and clamped for extremes.
+        assert_eq!(next_footprint_sample_delay_secs(0, true, Some(0), base, min), 18);
+        assert!(next_footprint_sample_delay_secs(mb(10_000), true, Some(0), base, min) >= min);
+        // The worst-case reach from a flat reading stays within one overshoot budget of
+        // the hard ceiling at the WORST OBSERVED rate.
+        let hard_mb = u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB);
+        let budget_mb = u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB);
+        let worst = u64::from(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC);
+        for cur_mb in [0u64, 448, 1000, 2000, 4000, 4600] {
+            let delay = next_footprint_sample_delay_secs(mb(cur_mb), true, Some(0), base, min);
+            assert!(
+                cur_mb + worst * delay <= hard_mb + budget_mb,
+                "flat {cur_mb} MB resampled at {delay}s must stay within one overshoot budget of the ceiling"
+            );
+        }
+    }
+
+    #[test]
+    fn test_footprint_safety_thresholds_are_frozen_and_beat_the_os_kill_floor() {
+        // The six frozen thresholds do not move in this reopen.
+        assert_eq!(WATCHER_FOOTPRINT_HARD_CEILING_MB, 5120);
+        assert_eq!(WATCHER_FOOTPRINT_CEILING_MB, 4608);
+        assert_eq!(WATCHER_FOOTPRINT_CEILING_CONSECUTIVE, 2);
+        assert_eq!(WATCHER_FOOTPRINT_HEADROOM_MB, 2048);
+        assert_eq!(RUNNER_HEAP_CEILING_DEFAULT_MB, 3584);
+        assert_eq!(OBSERVED_OS_KILL_FLOOR_MB, 5900);
+        // The maximum armed delay times the worst observed rate lands the pre-empt below
+        // the OS-kill floor: even a flat sample anywhere below the band is resampled soon
+        // enough that a 250 MB/s runaway cannot cross the ceiling by more than one budget.
+        let base = 30u64;
+        let min = WATCHER_FOOTPRINT_MIN_WATCH_SECS;
+        let mb = |m: u64| m * 1024;
+        let worst = u64::from(WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC);
+        for cur_mb in [0u64, 1000, 2000, 3000, 4000, 4619] {
+            let delay = next_footprint_sample_delay_secs(mb(cur_mb), true, Some(0), base, min);
+            assert!(
+                cur_mb + worst * delay
+                    <= u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
+                        + u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB),
+            );
+        }
+        assert!(
+            u64::from(WATCHER_FOOTPRINT_HARD_CEILING_MB)
+                + u64::from(WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB)
+                < u64::from(OBSERVED_OS_KILL_FLOOR_MB),
+        );
+    }
+
+    #[test]
+    fn test_footprint_arm_reason_is_fixed_content_safe_vocabulary() {
+        for reason in FootprintArmReason::ALL {
+            let token = reason.as_str();
+            assert!(!token.is_empty());
+            assert!(token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        }
+        assert_eq!(FootprintArmReason::Absolute.as_str(), "absolute");
+        assert_eq!(FootprintArmReason::ProjectionArmed.as_str(), "projection_armed");
+        assert_eq!(FootprintArmReason::OrdinaryStreak.as_str(), "ordinary_streak");
+        assert_eq!(
+            FootprintArmReason::BelowFinalApproach.as_str(),
+            "below_final_approach"
+        );
+        assert_eq!(FootprintArmReason::NoMemberBreach.as_str(), "no_member_breach");
+        assert_eq!(FootprintArmReason::WithinHorizon.as_str(), "within_horizon");
+        assert_eq!(FootprintArmReason::Inert.as_str(), "inert");
+    }
+
+    #[test]
+    fn test_footprint_arm_reason_agrees_with_the_decision() {
+        // The reason is derived from the SAME evaluation as the decision (shared inner
+        // eval), so a Preempt must always carry a preempting reason and a KeepRunning a
+        // non-preempting one, across a representative grid. Guards against drift.
+        let mb = |m: u64| m * 1024;
+        let ceiling_kb =
+            u64::from(effective_watcher_footprint_ceiling_mb(RUNNER_HEAP_CEILING_DEFAULT_MB)) * 1024;
+        let heap = mb(u64::from(RUNNER_HEAP_CEILING_DEFAULT_MB));
+        // (cur, prev, largest, comparable, gap, cadence)
+        let cases = [
+            (7949u64, 448u64, 7949u64, true, 2u64, 2u64),
+            (3623, 1338, 3570, true, 2, 2),
+            (4493, 3621, 4409, true, 2, 2),
+            (4700, 3700, 4700, true, 2, 2),
+            (4700, 3700, 3000, true, 2, 2),
+            (2776, 288, 2776, true, 30, 30),
+            (5000, 4000, 5000, false, 30, 30),
+        ];
+        for (cur, prev, largest, comparable, gap, cadence) in cases {
+            let projection = FootprintProjection {
+                prev_sample_kb: Some(mb(prev)),
+                gap_secs: gap,
+                cadence_secs: cadence,
+                heap_ceiling_kb: heap,
+                largest_member_kb: Some(mb(largest)),
+            };
+            let (_, decision) = footprint_ceiling_step(
+                Some(mb(cur)),
+                comparable,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            );
+            let reason = footprint_arm_reason(
+                Some(mb(cur)),
+                comparable,
+                ceiling_kb,
+                0,
+                WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
+                projection,
+            );
+            let preempting = matches!(
+                reason,
+                FootprintArmReason::Absolute
+                    | FootprintArmReason::ProjectionArmed
+                    | FootprintArmReason::OrdinaryStreak
+            );
+            assert_eq!(
+                preempting,
+                decision == FootprintCeilingDecision::Preempt,
+                "reason {reason:?} must agree with decision {decision:?} for cur={cur}"
+            );
+        }
     }
 
     #[test]
@@ -2878,6 +3432,10 @@ mod tests {
         assert_eq!(
             WatcherMemoryClassSource::ReportUnreadable.as_str(),
             "report_unreadable"
+        );
+        assert_eq!(
+            WatcherMemoryClassSource::ReportIncomplete.as_str(),
+            "report_incomplete"
         );
         assert_eq!(
             WatcherMemoryClassSource::ReportNotRequested.as_str(),
