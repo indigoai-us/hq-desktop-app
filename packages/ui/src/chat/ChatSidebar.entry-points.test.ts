@@ -292,7 +292,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
 
   it("opens the bot step and submits name, runtime, and pre-approval to the host", async () => {
     const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
-    mountSidebar({ companies: [INDIGO], oncreatebot, botCount: 1 });
+    mountSidebar({ companies: [INDIGO], oncreatebot });
     await settle();
     await openModal();
     const plus = q<HTMLButtonElement>('[data-testid="chat-new-message"]');
@@ -326,14 +326,15 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
   });
 
-  it("blocks a bad name and disables the row at the cap", async () => {
+  it("blocks a bad name and never caps the bot count", async () => {
     const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "x" }));
-    mountSidebar({ companies: [INDIGO], oncreatebot, botCount: 3 });
+    // No per-person limit: the row stays enabled no matter how many bots exist.
+    mountSidebar({ companies: [INDIGO], oncreatebot });
     await settle();
     await openModal();
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!;
-    expect(row.disabled).toBe(true);
-    expect(row.textContent).toContain("Limit of 3 reached");
+    expect(row.disabled).toBe(false);
+    expect(row.textContent).not.toContain("Limit");
     await unmount(component!);
     component = null;
     mountSidebar({ companies: [INDIGO], oncreatebot, botRuntimeReady: { claude: false, codex: true, grok: true } });

@@ -5159,7 +5159,6 @@
           oncreateagent={canRunEntryPoints ? addAgentEntry : null}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
-          botCount={localBots.length}
           botWorkers={localBotWorkers}
           {localBots}
           onrows={(rows) => {

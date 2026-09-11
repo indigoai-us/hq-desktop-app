@@ -20,9 +20,6 @@ export const LOCAL_BOT_RUNTIMES: ReadonlyArray<{ id: LocalBotRow["runtime"]; lab
   { id: "grok", label: "Grok" },
 ];
 
-/** Cap for this version (mirrors the server-side cap in hq-pro-agents). */
-export const MAX_LOCAL_BOTS = 3;
-
 /** Same rule as the CLI's validateBotName and the Tauri command's validate_name. */
 export function isValidLocalBotName(name: string): boolean {
   return /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(name) && !name.includes("--");

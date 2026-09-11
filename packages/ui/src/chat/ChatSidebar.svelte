@@ -196,7 +196,6 @@
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
     oncreatebot?: ((input: LocalBotCreateInput) => Promise<LocalBotEntryResult>) | null;
     botRuntimeReady?: Record<string, boolean> | null;
-    botCount?: number;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /**
      * The user's own local bots. GET /v1/notify/contacts never lists them, so
@@ -272,7 +271,6 @@
     oncreateagent = null,
     oncreatebot = null,
     botRuntimeReady = null,
-    botCount = 0,
     botWorkers = null,
     localBots = null,
     onrows,
@@ -2684,7 +2682,6 @@
       {agentCompanies}
       {oncreatebot}
       {botRuntimeReady}
-      {botCount}
       {botWorkers}
       initialKind={createKind}
     />

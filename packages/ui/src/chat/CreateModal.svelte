@@ -19,7 +19,6 @@
   import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
   import {
     LOCAL_BOT_RUNTIMES,
-    MAX_LOCAL_BOTS,
     isValidLocalBotName,
     type LocalBotEntryResult,
   } from "./local-bots.js";
@@ -117,8 +116,6 @@
     oncreatebot?: ((input: LocalBotCreateInput) => Promise<LocalBotEntryResult>) | null;
     /** `{ claude: true, codex: false, … }` — which runtimes are signed in here. */
     botRuntimeReady?: Record<string, boolean> | null;
-    /** How many bots the user already has (the row disables at the cap). */
-    botCount?: number;
     /** Company/core workers a bot can be created from (empty → plain bot only). */
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /**
@@ -146,7 +143,6 @@
     agentCompanies = null,
     oncreatebot = null,
     botRuntimeReady = null,
-    botCount = 0,
     botWorkers = null,
     initialKind = "channel",
   }: Props = $props();
@@ -216,17 +212,16 @@
   let botWorker = $state("");
   const botNameNormalized = $derived(botName.trim().toLowerCase());
   const botNameValid = $derived(isValidLocalBotName(botNameNormalized));
-  const botAtCap = $derived(botCount >= MAX_LOCAL_BOTS);
   function botRuntimeReadyFor(id: string): boolean {
     if (!botRuntimeReady) return true;
     return botRuntimeReady[id] !== false;
   }
   const botSubmitDisabled = $derived(
-    entryBusy !== null || !botNameValid || botAtCap || !botRuntimeReadyFor(botRuntime),
+    entryBusy !== null || !botNameValid || !botRuntimeReadyFor(botRuntime),
   );
 
   function newBot(): void {
-    if (!oncreatebot || botAtCap) return;
+    if (!oncreatebot) return;
     entryError = null;
     agentPickerOpen = false;
     step = "bot";
@@ -1765,7 +1760,7 @@
               class="create-row create-entry-row"
               data-testid="chat-create-new-bot"
               aria-busy={entryBusy === "bot" ? "true" : undefined}
-              disabled={entryBusy !== null || botAtCap}
+              disabled={entryBusy !== null}
               onclick={newBot}
             >
               <span class="create-entry-ic" aria-hidden="true">
@@ -1786,7 +1781,7 @@
               </span>
               <span class="create-entry-label">New bot</span>
               <span class="create-entry-hint">
-                {botAtCap ? `Limit of ${MAX_LOCAL_BOTS} reached` : "Runs on this Mac"}
+                Runs on this Mac
               </span>
             </button>
           {/if}
@@ -1919,20 +1914,13 @@
       {/if}
 
       <div class="create-footer">
-        {#if botAtCap}
-          <span class="create-hint create-hint-block" id="create-bot-submit-reason"
-            >You have {MAX_LOCAL_BOTS} bots, the most this version allows.</span
-          >
-        {:else}
-          <span class="create-hint" aria-hidden="true">⌘↵ TO CREATE</span>
-        {/if}
+        <span class="create-hint" aria-hidden="true">⌘↵ TO CREATE</span>
         <button
           type="button"
           class="create-submit"
           data-testid="chat-bot-create"
           disabled={botSubmitDisabled}
           aria-busy={entryBusy === "bot"}
-          aria-describedby={botAtCap ? "create-bot-submit-reason" : undefined}
           onclick={submitBot}
         >
           {entryBusy === "bot" ? "Creating… (about half a minute)" : "Create bot"}

@@ -10,7 +10,7 @@
    */
   import { onDestroy, onMount } from "svelte";
   import type { LocalBotRow, PlatformAdapter } from "@hq/platform";
-  import { LOCAL_BOT_RUNTIMES, MAX_LOCAL_BOTS, isValidLocalBotName } from "../chat/local-bots.js";
+  import { LOCAL_BOT_RUNTIMES, isValidLocalBotName } from "../chat/local-bots.js";
   import "./settings-chrome.css";
 
   interface Props {
@@ -21,7 +21,6 @@
   type Runtime = LocalBotRow["runtime"];
   const RUNTIMES = LOCAL_BOT_RUNTIMES;
   const POLL_MS = 30_000;
-  const MAX_BOTS = MAX_LOCAL_BOTS;
 
   let bots = $state<LocalBotRow[]>([]);
   let loading = $state(true);
@@ -218,11 +217,7 @@
       <div class="bot-main">
         <strong>New bot</strong>
         <small>
-          {#if bots.length >= MAX_BOTS}
-            You have {MAX_BOTS} bots, the most this version allows. Remove one to create another.
-          {:else}
-            Pick a name and which signed-in tool it should think with.
-          {/if}
+          Pick a name and which signed-in tool it should think with.
         </small>
       </div>
       <div class="create-controls">
@@ -231,12 +226,12 @@
           placeholder="assistant"
           aria-label="Bot name"
           bind:value={newName}
-          disabled={Boolean(busy) || bots.length >= MAX_BOTS}
+          disabled={Boolean(busy)}
           onkeydown={(e) => {
             if (e.key === "Enter") void create();
           }}
         />
-        <select aria-label="Runtime" bind:value={newRuntime} disabled={Boolean(busy) || bots.length >= MAX_BOTS}>
+        <select aria-label="Runtime" bind:value={newRuntime} disabled={Boolean(busy)}>
           {#each RUNTIMES as r (r.id)}
             <option value={r.id}>{r.label}{runtimeReady(r.id) ? "" : " (not signed in)"}</option>
           {/each}
@@ -244,7 +239,7 @@
         <button
           type="button"
           data-testid="settings-bots-create-button"
-          disabled={Boolean(busy) || bots.length >= MAX_BOTS || !newName.trim()}
+          disabled={Boolean(busy) || !newName.trim()}
           onclick={() => void create()}
         >
           {busy === "__create__" ? "Creating…" : "Create"}
