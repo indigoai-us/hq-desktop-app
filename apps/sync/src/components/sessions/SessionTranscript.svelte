@@ -75,6 +75,7 @@
     reauthTool?: string | null;
     reauthPending?: boolean;
     reauthMessage?: string;
+    reauthRecovery?: 'idle' | 'checking' | 'needed' | 'recovered';
     restoreScroll?: NavigationScrollState | null;
   }
 
@@ -97,6 +98,7 @@
     reauthTool = 'claude',
     reauthPending = false,
     reauthMessage = '',
+    reauthRecovery = 'idle',
     restoreScroll = null,
   }: Props = $props();
 
@@ -332,12 +334,16 @@
             onsubmit={onanswerquestion}
           />
         {:else if block.type === 'error' && block.action === 'reauth'}
-          <ProviderReauthCard
-            tool={reauthTool}
-            pending={reauthPending}
-            message={reauthMessage}
-            onsignin={() => onreauth?.()}
-          />
+          {#if reauthRecovery === 'checking'}
+            <p class="thinking" data-testid="session-auth-check" role="status">Checking sign-in…</p>
+          {:else if reauthRecovery !== 'recovered'}
+            <ProviderReauthCard
+              tool={reauthTool}
+              pending={reauthPending}
+              message={reauthMessage}
+              onsignin={() => onreauth?.()}
+            />
+          {/if}
         {:else if block.type === 'error'}
           <p
             class="inline-error"

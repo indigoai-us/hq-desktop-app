@@ -50,10 +50,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { WEB_PATHS, skillMetadataFromShelf, type ShelfSkillMetadata } from '@hq/platform';
 import { safeUnlisten } from '../../lib/listener-registry';
-import type {
-  ImageAttachment,
-  SessionCommand,
-  SessionEvent,
+import {
+  contentToText,
+  type ImageAttachment,
+  type SessionCommand,
+  type SessionEvent,
 } from '../../components/sessions/session-events';
 import {
   emptyTranscript,
@@ -445,7 +446,7 @@ function applyEvent(
       event.status !== 'success' &&
       isAuthFailureText(event.error))
   ) {
-    noteStaleLogin(sessionId);
+    void recoverProviderAuth(sessionId);
   }
   revision += 1;
 }
@@ -1217,14 +1218,80 @@ function applyStaleLogin(preflight: Preflight): Preflight {
   };
 }
 
-function noteStaleLogin(sessionId: string): void {
+export type AuthRecovery = 'idle' | 'checking' | 'needed' | 'recovered';
+const authRecoveryById: Record<string, AuthRecovery> = {};
+const authRetried = new Set<string>();
+
+function toolForSession(sessionId: string): SessionTool {
   const started = entries[sessionId]?.events.find((event) => event.kind === 'started');
-  const tool =
-    started && started.kind === 'started' && (started.tool === 'codex' || started.tool === 'grok')
-      ? started.tool
-      : 'claude';
-  staleLogin.add(tool);
+  if (started?.kind === 'started' && (started.tool === 'codex' || started.tool === 'grok')) {
+    return started.tool;
+  }
+  return 'claude';
+}
+
+function noteStaleLogin(sessionId: string): void {
+  staleLogin.add(toolForSession(sessionId));
   preflightCache = null;
+}
+
+function lastUserText(sessionId: string): string {
+  const events = entries[sessionId]?.events ?? [];
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event.kind === 'userMessage') return contentToText(event.text);
+  }
+  return '';
+}
+
+function loggedInOn(preflight: Preflight, tool: SessionTool): boolean {
+  if (tool === 'codex') return preflight.codexLoggedIn;
+  if (tool === 'grok') return preflight.grokLoggedIn;
+  return preflight.claudeLoggedIn;
+}
+
+/** Probe CLI auth status; retry the last turn if it looks signed in. Browser login only if that fails. */
+async function recoverProviderAuth(sessionId: string): Promise<void> {
+  const current = authRecoveryById[sessionId] ?? 'idle';
+  if (current === 'checking') return;
+  if (current === 'needed') return;
+  authRecoveryById[sessionId] = 'checking';
+  revision += 1;
+  const tool = toolForSession(sessionId);
+  preflightCache = null;
+  let loggedIn = false;
+  try {
+    loggedIn = loggedInOn(await preflight(), tool);
+  } catch {
+    loggedIn = false;
+  }
+  if (loggedIn && !authRetried.has(sessionId)) {
+    authRetried.add(sessionId);
+    const text = lastUserText(sessionId);
+    const entry = entries[sessionId];
+    if (text && entry) {
+      const after = entry.events.length;
+      try {
+        await invoke('agent_session_send', {
+          sessionId,
+          text,
+          images: [],
+          overrides: null,
+        });
+        const done = await waitForTurnDone(sessionId, after, 120_000);
+        if (done.status === 'success') {
+          authRecoveryById[sessionId] = 'recovered';
+          revision += 1;
+          return;
+        }
+      } catch {
+        /* still need the browser */
+      }
+    }
+  }
+  authRecoveryById[sessionId] = 'needed';
+  noteStaleLogin(sessionId);
+  revision += 1;
 }
 const CATALOG_TTL_MS = 5 * 60_000;
 let catalogCache = new Map<SessionTool, { at: number; promise: Promise<CommandCatalog> }>();
@@ -1555,6 +1622,12 @@ export const liveSessionStore = {
     return userTurnsById[entry.sessionId] ?? [];
   },
   /** The latest "this session is blocked on you" notice, or null. */
+  get authRecovery(): AuthRecovery {
+    const id = activeId;
+    if (!id) return 'idle';
+    void revision;
+    return authRecoveryById[id] ?? 'idle';
+  },
   get needsYou(): NeedsYouNotice | null {
     return needsYou;
   },

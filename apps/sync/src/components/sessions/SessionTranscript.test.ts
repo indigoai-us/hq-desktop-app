@@ -37,6 +37,31 @@ describe('session transcript reauth card', () => {
       'Sign in',
     );
   });
+
+  it('hides the sign-in card while HQ checks auth status', () => {
+    component = mount(SessionTranscript, {
+      target: document.body,
+      props: {
+        blocks: [
+          {
+            type: 'error',
+            id: 'e1',
+            text: 'This session needs you to sign in again on this Mac.',
+            tone: 'warn',
+            code: 'authentication_failed',
+            action: 'reauth',
+            at: null,
+          },
+        ],
+        reauthRecovery: 'checking',
+      },
+    });
+    flushSync();
+    expect(document.querySelector('[data-testid="session-auth-check"]')?.textContent).toContain(
+      'Checking sign-in',
+    );
+    expect(document.querySelector('[data-testid="session-reauth-card"]')).toBeNull();
+  });
 });
 
 describe('session transcript rich content', () => {

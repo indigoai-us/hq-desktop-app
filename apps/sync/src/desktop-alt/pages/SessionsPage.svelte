@@ -1600,6 +1600,7 @@
     reauthTool={liveSessionStore.summary?.tool ?? tool}
     reauthPending={reauthPending}
     reauthMessage={reauthMessage}
+    reauthRecovery={liveSessionStore.authRecovery}
     onreauth={() => void handleReauth()}
   />
 
