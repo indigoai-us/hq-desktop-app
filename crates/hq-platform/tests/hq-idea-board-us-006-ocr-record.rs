@@ -53,3 +53,39 @@ async fn hq_idea_board_ocr_record_fills_text_and_marks_the_capture_plain() {
     assert_eq!(reloaded.status, CaptureStatus::Plain);
     assert!(reloaded.ocr_text.is_some());
 }
+
+/// e2eTest 2: "Given an unreadable image, when OCR runs, then status is
+/// plain, ocr_text is null, and the record still exists."
+///
+/// Storage decodes the PNG on `create_record`, so to get an unreadable image
+/// on disk we overwrite `image.png` with garbage bytes *after* the record is
+/// created, then run the real macOS backend through `ocr_record`.
+#[tokio::test]
+async fn hq_idea_board_us_006_ocr_record_unreadable_image_keeps_record_plain_no_text() {
+    let root = tempfile::tempdir().unwrap();
+    let png = std::fs::read(fixture()).unwrap();
+    let record = create_record(
+        root.path(),
+        NewCapture::pending("indigo", CaptureImage::Png(png), provenance()),
+    )
+    .unwrap();
+    assert_eq!(record.status, CaptureStatus::Pending);
+
+    let image_path = root.path().join(&record.image_path);
+    std::fs::write(&image_path, b"not a png, just garbage bytes").unwrap();
+
+    let updated = ocr_record(root.path(), "indigo", &record.id)
+        .await
+        .expect("ocr_record must degrade gracefully, never fail the capture");
+
+    assert_eq!(updated.status, CaptureStatus::Plain);
+    assert_eq!(updated.ocr_text, None);
+
+    let record_json = root.path().join(&record.image_path).with_file_name("record.json");
+    assert!(record_json.is_file(), "record.json must still exist");
+    assert!(image_path.is_file(), "image.png must still exist");
+
+    let reloaded = load_record(root.path(), "indigo", &record.id).unwrap();
+    assert_eq!(reloaded.status, CaptureStatus::Plain);
+    assert_eq!(reloaded.ocr_text, None);
+}
