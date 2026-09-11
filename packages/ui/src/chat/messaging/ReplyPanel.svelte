@@ -269,6 +269,14 @@
   let attachError = $state<string | null>(null);
   let pasteCounter = 0;
   let composerEl = $state<HTMLTextAreaElement | null>(null);
+  /** Composer emoji picker — the main chat's composer has one; this had none. */
+  let composerEmojiOpen = $state(false);
+
+  function insertComposerEmoji(emoji: string): void {
+    draft = `${draft}${emoji}`;
+    composerEmojiOpen = false;
+    composerEl?.focus();
+  }
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
   // Thread-local thinking rows — the panel owns its send + reply merge, so
@@ -1162,6 +1170,9 @@
         onpaste={onComposerPaste}
       ></textarea>
       <div class="reply-composer-footer">
+        <!-- Same tool group as the main chat composer (`.dm-reply-tools`), so
+             the paperclip lands on the same left edge in both. -->
+        <div class="reply-tools">
         {#if onuploadfiles}
           <label
             class="reply-attach"
@@ -1184,6 +1195,27 @@
             <Paperclip size={15} aria-hidden="true" />
           </label>
         {/if}
+          <div class="reply-tool-emoji-wrap">
+            <button
+              type="button"
+              class="reply-attach"
+              onclick={() => (composerEmojiOpen = !composerEmojiOpen)}
+              aria-label="Insert emoji"
+              title="Insert emoji"
+              aria-expanded={composerEmojiOpen}
+              aria-haspopup="menu"
+              data-testid="reply-panel-emoji"
+            >
+              <Smiley size={15} aria-hidden="true" />
+            </button>
+            {#if composerEmojiOpen}
+              <EmojiPicker
+                onpick={insertComposerEmoji}
+                onclose={() => (composerEmojiOpen = false)}
+              />
+            {/if}
+          </div>
+        </div>
         <button
           type="button"
           class="reply-send"
@@ -1635,12 +1667,29 @@
     cursor: pointer;
   }
 
-  .reply-attach {
+  /* `.dm-reply-tools` in the main chat: the -6px inset pulls the 26px hit
+     area back so the ICON, not its padding, lines up with the text above. */
+  .reply-tools {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: -6px;
     margin-right: auto;
+  }
+
+  .reply-tool-emoji-wrap {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .reply-attach {
+    appearance: none;
+    border: 0;
+    background: transparent;
     display: grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     border-radius: 6px;
     color: var(--t3, rgba(255, 255, 255, 0.4));
     cursor: pointer;

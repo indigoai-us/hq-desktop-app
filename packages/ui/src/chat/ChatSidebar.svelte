@@ -132,6 +132,7 @@
   import "./tokens.css";
   import "./chat-tokens.css";
   import Caret from "../common/Caret.svelte";
+  import CaretUpDown from "phosphor-svelte/lib/CaretUpDown";
   import CaretRight from "phosphor-svelte/lib/CaretRight";
   import Chat from "phosphor-svelte/lib/Chat";
   import ChatCircle from "phosphor-svelte/lib/ChatCircle";
@@ -2394,7 +2395,11 @@
       <span class="chat-user-copy">
         <span class="chat-user-name">{firstName}</span>
       </span>
-      <Caret tone="var(--t3)" size="10px" />
+      <!-- Up-down caret: this opens a menu that can appear above or below the
+           row, and it is a switcher, not a disclosure. -->
+      <span class="chat-user-caret" data-testid="caret" aria-hidden="true">
+        <CaretUpDown size={12} />
+      </span>
     </button>
     {#if footerMenuOpen}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -3824,6 +3829,13 @@
     background: var(--line2);
     color: var(--t1);
     font: 600 10px var(--font-ui);
+  }
+
+  .chat-user-caret {
+    display: inline-flex;
+    align-items: center;
+    color: var(--t3);
+    line-height: 0;
   }
 
   .chat-user-copy {
