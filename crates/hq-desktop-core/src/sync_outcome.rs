@@ -1194,30 +1194,49 @@ fn message_contains_errno_token(haystack_lower: &str, errno: &str) -> bool {
     message_contains_bounded_token(haystack_lower, errno, |byte| byte.is_ascii_alphanumeric())
 }
 
-/// The identity/authorization markers the breadcrumb-facing class keys on. Adding
-/// `oauth` keeps a genuine OAuth line classified `Auth` even though bounded
-/// matching (correctly) refuses to see `auth` inside `oauth`.
-const AUTH_MARKERS: [&str; 6] = [
-    "auth",
+/// Auth/identity vocabulary matched as a plain substring. Each token is specific
+/// enough that it never occurs incidentally inside an unrelated path segment or
+/// identifier: `authentic`/`authoriz`/`authoris` are absent from `authors`, and
+/// `oauth`/`cognito`/`forbidden`/`auth-error` carry no path-segment collision. A
+/// substring match therefore keeps genuine `authentication`/`authorization` prose
+/// AND the runner's `auth-error` protocol discriminator
+/// (`{"type":"auth-error",…}`, the record `runner_stderr_needs_reauth` acts on)
+/// classified as identity failures — the full-word forms bounded matching would
+/// otherwise drop.
+const AUTH_MARKER_SUBSTRINGS: [&str; 7] = [
     "oauth",
-    "unauthorized",
-    "forbidden",
     "cognito",
-    "token",
+    "forbidden",
+    "authentic",
+    "authoriz",
+    "authoris",
+    "auth-error",
 ];
 
-/// True when `haystack_lower` carries one of [`AUTH_MARKERS`] as a standalone
-/// token. The boundary is IDENTIFIER-AWARE: alphanumerics AND the connectors that
-/// join path segments and package / identifier names (`- _ . / \ @`) all count as
-/// "inside a token", so a marker only classifies `Auth` when it stands as its own
-/// word (delimited by whitespace, prose punctuation such as `:`, or the string
-/// edge) — never as a fragment inside a path segment (`.../authors/...`), a
-/// package name (`@aws-sdk/token-providers`), or a JSON key (`tokenCount`). An
-/// unbounded `msg.contains(marker)` was the HQ-DESKTOP-67 miscue: 96 path-led
-/// stderr lines rendered the breadcrumb `identity` on an in-word match. This
-/// mirrors [`message_contains_errno_token`]'s fix for `eexist` inside `preexisting`.
+/// The short auth markers that DO occur incidentally inside ordinary path segments
+/// and identifiers (`auth` in `authors/`, `token` in `token-providers` or
+/// `tokenCount`). These match only as bounded tokens: alphanumerics AND the
+/// connectors that join path segments and package / identifier names
+/// (`- _ . / \ @`) all count as "inside a token", so a marker buried in a path
+/// segment, a package name, or a camelCase key is refused, while a marker that
+/// stands as its own word (delimited by whitespace, prose punctuation, or the
+/// string edge) still classifies `Auth`. An unbounded `contains` over these two
+/// was the HQ-DESKTOP-67 miscue: 96 path-led stderr lines rendered the breadcrumb
+/// `identity` on an in-word match. This mirrors [`message_contains_errno_token`]'s
+/// fix for `eexist` inside `preexisting`.
+const AUTH_MARKER_BOUNDED: [&str; 2] = ["auth", "token"];
+
+/// True when `haystack_lower` carries a genuine identity/authorization signal: an
+/// unambiguous [`AUTH_MARKER_SUBSTRINGS`] token anywhere, or a short
+/// [`AUTH_MARKER_BOUNDED`] marker standing as its own token.
 fn message_contains_auth_marker(haystack_lower: &str) -> bool {
-    AUTH_MARKERS.iter().any(|marker| {
+    if AUTH_MARKER_SUBSTRINGS
+        .iter()
+        .any(|marker| haystack_lower.contains(marker))
+    {
+        return true;
+    }
+    AUTH_MARKER_BOUNDED.iter().any(|marker| {
         message_contains_bounded_token(haystack_lower, marker, |byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b'\\' | b'@')
         })
@@ -4377,6 +4396,24 @@ mod tests {
                 .breadcrumb_token(),
             "identity"
         );
+
+        // Full-word and protocol auth forms that a bounded `auth`/`token` match alone
+        // would drop still classify AUTH: the `auth-error` protocol discriminator that
+        // runner_stderr_needs_reauth acts on, and `authentication`/`authorization`
+        // prose, are recognized by the unambiguous auth vocabulary — while
+        // `authors`/`token-providers`/`tokenCount` (checked above) stay OTHER.
+        for line in [
+            r#"{"type":"auth-error","message":"Sign in again"}"#,
+            "authentication failed",
+            "authorization denied for the company prefix",
+            "reauthentication required",
+        ] {
+            assert_eq!(
+                classify_runner_error_class(line),
+                RunnerErrorClass::Auth,
+                "genuine auth form must classify AUTH: {line:?}"
+            );
+        }
 
         // The shared bounded-token refactor preserves the errno boundary exactly:
         // a real errno rendering still classifies, `eexist` inside `preexisting` does
