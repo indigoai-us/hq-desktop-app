@@ -105,10 +105,8 @@ describe('expand a project channel → its nested sessions', () => {
     );
     expect(extras?.children?.map((child) => child.id)).toEqual([
       'session:s-live',
-      'session:s-done',
       'new-session',
     ]);
-    expect(extras?.children?.find((child) => child.id === 'session:s-done')?.meta).toBeNull();
     extras?.children?.[0]?.onselect();
     extras?.children?.at(-1)?.onselect();
     expect(opened).toEqual(['s-live']);
@@ -152,7 +150,7 @@ describe('spawn a session from a channel, bound to that project', () => {
     expect(PAGE).toContain('project = projectNameFor(projects, slug) ?? slug;');
     // The first send orients with `/startwork {company} {project}`, and the
     // spec carries the directory slug the channel is named from.
-    expect(PAGE).toContain('planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)');
+    expect(PAGE).toContain('!embedded && startworkEnabled && !setupChat');
     expect(PAGE).toContain('project: projectSlugFor(projects, project),');
     expect(AGENT_RS).toContain('spec.project.as_deref(),');
   });

@@ -1005,6 +1005,7 @@ pub async fn agent_session_end(session_id: String) -> Result<(), String> {
     let mut guard = state.lock().await;
     guard.close_channel(&session_id);
     guard.registry.remove(&session_id);
+    crate::commands::session_project_links::invalidate_links_cache();
     log(LOG_TAG, &format!("session={session_id} ended"));
     Ok(())
 }

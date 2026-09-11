@@ -205,11 +205,9 @@ export function linkForProject(links: ProjectLink[], project: string | null): Pr
 
 /** Live first is the Rust ordering; this only counts. */
 export function sessionsBadge(link: ProjectLink): string | null {
-  const count = link.sessions.length;
-  if (count === 0) return null;
   const live = link.sessions.filter((session) => session.phase !== 'ended').length;
   if (live > 0) return `${live} live`;
-  return String(count);
+  return null;
 }
 
 const SESSION_PHASE_LABEL: Record<string, string> = {
@@ -298,8 +296,9 @@ export function rowExtrasFor(
   const link = linkForRow(row, links);
   if (!link) return null;
   const badge = sessionsBadge(link);
+  const liveSessions = link.sessions.filter((session) => session.phase !== 'ended');
   const children: ConversationRowChild[] = [
-    ...link.sessions.map((session) => ({
+    ...liveSessions.map((session) => ({
       id: `session:${session.sessionId}`,
       label: sessionLabel(session),
       selected: session.sessionId === selectedSessionId,
@@ -329,7 +328,7 @@ export function rowExtrasFor(
     childrenLabel: `Sessions for ${link.projectName}`,
     // Keep populated associations visible, but do not turn every project in a
     // large company into an always-open one-row "New session" tree.
-    childrenExpandedByDefault: link.sessions.length > 0,
+    childrenExpandedByDefault: liveSessions.length > 0,
     ...(onvisibility ? { onChildrenVisibilityChange: (visible: boolean) => onvisibility(link, visible) } : {}),
   };
 }

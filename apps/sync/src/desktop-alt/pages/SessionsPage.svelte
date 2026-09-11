@@ -975,6 +975,12 @@
     actionError = '';
     try {
       await liveSessionStore.end();
+      window.dispatchEvent(
+        new CustomEvent('hq-channel-session-status', {
+          detail: { sessionId, status: 'finished' },
+        }),
+      );
+      await projectLinksStore.refresh();
     } catch (err) {
       actionError = err instanceof Error ? err.message : String(err);
     }
