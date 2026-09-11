@@ -119,6 +119,15 @@
   const cardTitle = $derived(
     card ? (card.note ?? card.title ?? "").trim() : "",
   );
+
+  const cardFinished = $derived(
+    Boolean(
+      card &&
+        /^(finished|idle|completed|done)$/i.test((card.status ?? "").trim()),
+    ),
+  );
+
+  const cardVerb = $derived(cardFinished ? "finished a session" : "started a session");
 </script>
 
 {#if card}
@@ -133,38 +142,50 @@
     <button
       type="button"
       class="sys-line work-mesh-row work-mesh-card"
+      class:finished={cardFinished}
       data-testid="work-mesh-card-open"
+      data-status={card.status ?? ""}
       disabled={!canOpen}
       onclick={() => {
         if (card.sessionId) onopensession?.(card.sessionId);
       }}
     >
       <span class="sys-icon" aria-hidden="true">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle
-            cx="8"
-            cy="8"
-            r="5.5"
-            stroke="currentColor"
-            stroke-width="1.3"
-          />
-          <path
-            d="M8 4.75v3.5l2.25 1.35"
-            stroke="currentColor"
-            stroke-width="1.3"
-            stroke-linecap="round"
-          />
-        </svg>
+        {#if cardFinished}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M3 8.5 6.5 12 13 4.5"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        {:else}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle
+              cx="8"
+              cy="8"
+              r="5.5"
+              stroke="currentColor"
+              stroke-width="1.3"
+            />
+            <path
+              d="M8 4.75v3.5l2.25 1.35"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+            />
+          </svg>
+        {/if}
       </span>
-      <span class="sys-summary" title={[cardActor, ...cardMeta].filter(Boolean).join(" · ")}>
+      <span class="sys-summary" title={[cardActor, cardVerb, cardTitle].filter(Boolean).join(" · ")}>
         <span class="sys-who">{cardActor}</span>
         {#if cardIsAgent}
           <span class="agent-mark" aria-label="agent" title="Agent">✦</span>
         {/if}
-        {#each cardMeta as part, i (part + String(i))}
-          <span class="sys-sep"> · </span><span class="sys-meta">{part}</span>
-        {/each}
-        {#if cardTitle && cardMeta.length === 0}
+        <span class="sys-sep"> </span><span class="sys-meta">{cardVerb}</span>
+        {#if cardTitle}
           <span class="sys-sep"> — </span><span class="sys-meta">{cardTitle}</span>
         {/if}
       </span>

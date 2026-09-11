@@ -1328,7 +1328,27 @@
     const handle = window.setInterval(() => {
       agentThinking = tick(agentThinking, Date.now());
     }, AGENT_THINKING_TICK_MS);
-    return () => clearInterval(handle);
+    const onSessionStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; status?: string }>)
+        .detail;
+      const sessionId = detail?.sessionId?.trim();
+      const status = detail?.status?.trim();
+      if (!sessionId || !status) return;
+      const thread =
+        sessionThreadsById[sessionId] ??
+        Object.values(sessionThreadsById).find((row) => row.liveSessionId === sessionId);
+      upsertLocalWorkSession({
+        sessionId,
+        title: thread?.title ?? "Session",
+        status,
+        actorName: thread?.actorName ?? self?.displayName?.trim() ?? "You",
+      });
+    };
+    window.addEventListener("hq-channel-session-status", onSessionStatus);
+    return () => {
+      clearInterval(handle);
+      window.removeEventListener("hq-channel-session-status", onSessionStatus);
+    };
   });
 
   /** Clear thinking rows when those agents appear in a freshly fetched page
@@ -3115,7 +3135,11 @@
     openAgentMember = null;
     openArtifactView = null;
     openSessionThread = thread;
-    sessionThreadsById = { ...sessionThreadsById, [thread.id]: thread };
+    sessionThreadsById = {
+      ...sessionThreadsById,
+      [thread.id]: thread,
+      ...(thread.liveSessionId ? { [thread.liveSessionId]: thread } : {}),
+    };
     if (tab !== "chat") tab = "chat";
   }
 
@@ -3123,8 +3147,47 @@
     const current = sessionThreadsById[id];
     if (!current) return;
     const next = { ...current, ...patch };
-    sessionThreadsById = { ...sessionThreadsById, [id]: next };
-    if (openSessionThread?.id === id) openSessionThread = next;
+    const byId: Record<string, SessionThread> = { ...sessionThreadsById, [id]: next };
+    if (next.liveSessionId) byId[next.liveSessionId] = next;
+    sessionThreadsById = byId;
+    if (openSessionThread?.id === id || openSessionThread?.liveSessionId === id) {
+      openSessionThread = next;
+    }
+  }
+
+  function upsertLocalWorkSession(input: {
+    sessionId: string;
+    title: string;
+    status: string;
+    actorName: string;
+    harness?: string;
+  }): void {
+    const eventId = `local-session-${input.sessionId}`;
+    const wire: ConversationMessageWire = {
+      eventId,
+      createdAt: new Date().toISOString(),
+      messageKind: "system",
+      fromDisplayName: input.actorName,
+      fromPersonUid: self?.uid ?? null,
+      body: "",
+      systemEvent: {
+        v: 1,
+        type: "work_session",
+        title: input.title,
+        note: input.title,
+        status: input.status,
+        harness: input.harness ?? "hq-desktop",
+        actorType: "human",
+        displayName: input.actorName,
+        sessionId: input.sessionId,
+      },
+    };
+    const index = localSessionWires.findIndex((row) => row.eventId === eventId);
+    if (index < 0) {
+      localSessionWires = [...localSessionWires, wire];
+      return;
+    }
+    localSessionWires = localSessionWires.map((row, i) => (i === index ? { ...wire, createdAt: row.createdAt } : row));
   }
 
   async function ensureChannelSessionTask(thread: SessionThread): Promise<{
@@ -3192,6 +3255,12 @@
         liveSessionId: started.sessionId,
         status: "running",
       });
+      upsertLocalWorkSession({
+        sessionId: started.sessionId,
+        title: thread.title,
+        status: "started",
+        actorName: thread.actorName,
+      });
     } catch (err) {
       patchSessionThread(thread.id, {
         status: "idle",
@@ -3234,36 +3303,18 @@
       actorKind: "human",
       actorName: self?.displayName?.trim() || "You",
     });
-    const wire: ConversationMessageWire = {
-      eventId: `local-session-${thread.id}`,
-      createdAt: thread.startedAt,
-      messageKind: "system",
-      fromDisplayName: thread.actorName,
-      fromPersonUid: self?.uid ?? null,
-      body: "",
-      systemEvent: {
-        v: 1,
-        type: "work_session",
-        title: thread.title,
-        note: thread.title,
-        status: "started",
-        harness: "hq-desktop",
-        actorType: thread.actorKind,
-        displayName: thread.actorName,
-        sessionId: thread.id,
-        turnCount: 0,
-      },
-    };
-    localSessionWires = [...localSessionWires, wire];
     revealSessionThread(thread);
     void bindLiveSession(thread);
   }
 
   function openSessionFromCard(sessionId: string): void {
-    const known = sessionThreadsById[sessionId];
+    const id = sessionId.trim();
+    if (!id) return;
+    const known =
+      sessionThreadsById[id] ??
+      Object.values(sessionThreadsById).find((row) => row.liveSessionId === id);
     if (known) {
       revealSessionThread(known);
-      if (!known.liveSessionId) void bindLiveSession(known);
       return;
     }
     const row = selectedRow;
@@ -3276,9 +3327,11 @@
       actorKind: "human",
       actorName: self?.displayName?.trim() || "You",
     });
-    thread.id = sessionId;
+    thread.id = id;
+    thread.liveSessionId = id;
+    thread.status = "running";
+    sessionThreadsById = { ...sessionThreadsById, [id]: thread };
     revealSessionThread(thread);
-    void bindLiveSession(thread);
   }
 
   function openReply(rootEventId: string): void {
