@@ -67,16 +67,48 @@ fn validate_worker(worker: &str) -> Result<String, String> {
     }
 }
 
+/// Bot intro handed to `hq bot create --intro`: the first message the bot
+/// sends when it comes online. Free text, but bounded and free of control
+/// characters so it can never smuggle a newline-delimited flag or terminal
+/// escape into the CLI's argv or the bot's config.
+const INTRO_MAX_CHARS: usize = 500;
+
+fn validate_intro(intro: &str) -> Result<String, String> {
+    let trimmed = intro.trim();
+    if trimmed.is_empty() {
+        return Err("The intro is empty.".to_string());
+    }
+    if trimmed.chars().count() > INTRO_MAX_CHARS {
+        return Err(format!("Keep the intro under {INTRO_MAX_CHARS} characters."));
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("The intro can't contain control characters.".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Memory location for `hq bot create --memory`: HQ-synced or this Mac only.
+fn validate_memory(memory: &str) -> Result<&'static str, String> {
+    match memory.trim() {
+        "synced" => Ok("synced"),
+        "local" => Ok("local"),
+        other => Err(format!("Unknown memory location \"{other}\"; expected synced or local.")),
+    }
+}
+
 /// argv for `hq bot create` (without the trailing `--json`, which
 /// `run_hq_bot` appends). Pure so the flag mapping is unit-testable — the
 /// JS side sends camelCase (`autoApprove`) and Tauri maps it to
 /// `auto_approve`; a mismatch would silently drop the setting.
+#[allow(clippy::too_many_arguments)]
 fn create_args(
     name: &str,
     runtime: &str,
     model: Option<&str>,
     auto_approve: Option<bool>,
     worker: Option<&str>,
+    intro: Option<&str>,
+    memory: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let name = validate_name(name)?;
     let runtime = validate_runtime(runtime)?;
@@ -91,6 +123,14 @@ fn create_args(
     if let Some(worker) = worker.map(str::trim).filter(|w| !w.is_empty()) {
         args.push("--worker".to_string());
         args.push(validate_worker(worker)?);
+    }
+    if let Some(intro) = intro.map(str::trim).filter(|i| !i.is_empty()) {
+        args.push("--intro".to_string());
+        args.push(validate_intro(intro)?);
+    }
+    if let Some(memory) = memory.map(str::trim).filter(|m| !m.is_empty()) {
+        args.push("--memory".to_string());
+        args.push(validate_memory(memory)?.to_string());
     }
     Ok(args)
 }
@@ -175,8 +215,9 @@ pub async fn local_bots_list() -> Result<Value, String> {
 }
 
 /// `hq bot create <name> --runtime <runtime> [--model m] [--no-auto-approve]
-/// [--worker id] --json`: provisions the identity, scaffolds (or binds) the
-/// worker folder, installs the launchd agent, and starts the bot.
+/// [--worker id] [--intro text] [--memory synced|local] --json`: provisions
+/// the identity, scaffolds (or binds) the worker folder, installs the launchd
+/// agent, and starts the bot.
 #[tauri::command]
 pub async fn local_bots_create(
     name: String,
@@ -184,13 +225,24 @@ pub async fn local_bots_create(
     model: Option<String>,
     auto_approve: Option<bool>,
     worker: Option<String>,
+    intro: Option<String>,
+    memory: Option<String>,
 ) -> Result<Value, String> {
-    let args = create_args(&name, &runtime, model.as_deref(), auto_approve, worker.as_deref())?;
+    let args = create_args(
+        &name,
+        &runtime,
+        model.as_deref(),
+        auto_approve,
+        worker.as_deref(),
+        intro.as_deref(),
+        memory.as_deref(),
+    )?;
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     run_hq_bot(&argv, Duration::from_secs(150)).await
 }
 
-/// `hq bot workers --json` → `{ workers: [{ id, path, company?, description? }] }`:
+/// `hq bot workers --json` → `{ workers: [{ id, path, company?, description?,
+/// summary?, skillCount?, name?, source? }] }`:
 /// company/core workers a bot can be created from.
 #[tauri::command]
 pub async fn local_bots_workers() -> Result<Value, String> {
@@ -233,21 +285,42 @@ mod tests {
     #[test]
     fn create_args_map_every_setting_to_a_cli_flag() {
         assert_eq!(
-            create_args("scout", "claude", None, None, None).unwrap(),
+            create_args("scout", "claude", None, None, None, None, None).unwrap(),
             vec!["create", "scout", "--runtime", "claude"]
         );
         assert_eq!(
-            create_args("scout", "grok", Some("grok-4.5"), Some(true), Some("")).unwrap(),
+            create_args("scout", "grok", Some("grok-4.5"), Some(true), Some(""), Some(""), Some("")).unwrap(),
             vec!["create", "scout", "--runtime", "grok", "--model", "grok-4.5"]
         );
         assert_eq!(
-            create_args("iris", "claude", None, Some(false), Some("iris-cx")).unwrap(),
+            create_args("iris", "claude", None, Some(false), Some("iris-cx"), None, None).unwrap(),
             vec!["create", "iris", "--runtime", "claude", "--no-auto-approve", "--worker", "iris-cx"]
         );
-        assert!(create_args("scout", "claude", Some("--dangerously"), None, None).is_err());
-        assert!(create_args("scout", "claude", None, None, Some("../x")).is_err());
-        assert!(create_args("scout", "claude", None, None, Some("Iris")).is_err());
-        assert!(create_args("Scout", "claude", None, None, None).is_err());
+        assert!(create_args("scout", "claude", Some("--dangerously"), None, None, None, None).is_err());
+        assert!(create_args("scout", "claude", None, None, Some("../x"), None, None).is_err());
+        assert!(create_args("scout", "claude", None, None, Some("Iris"), None, None).is_err());
+        assert!(create_args("Scout", "claude", None, None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn create_args_pass_intro_and_memory() {
+        assert_eq!(
+            create_args("scout", "claude", None, None, None, Some(" Hi, I'm Scout. "), Some("local")).unwrap(),
+            vec!["create", "scout", "--runtime", "claude", "--intro", "Hi, I'm Scout.", "--memory", "local"]
+        );
+        assert_eq!(
+            create_args("scout", "claude", None, None, None, None, Some("synced")).unwrap(),
+            vec!["create", "scout", "--runtime", "claude", "--memory", "synced"]
+        );
+        // Intro: bounded, no control characters (newlines included).
+        let long = "x".repeat(INTRO_MAX_CHARS + 1);
+        assert!(create_args("scout", "claude", None, None, None, Some(&long), None).is_err());
+        assert!(create_args("scout", "claude", None, None, None, Some("hi\nthere"), None).is_err());
+        assert!(create_args("scout", "claude", None, None, None, Some("hi\u{1b}[31m"), None).is_err());
+        assert_eq!(validate_intro(&"y".repeat(INTRO_MAX_CHARS)).unwrap().len(), INTRO_MAX_CHARS);
+        // Memory is a closed enum.
+        assert!(create_args("scout", "claude", None, None, None, None, Some("cloud")).is_err());
+        assert!(validate_memory("LOCAL").is_err());
     }
 
     #[test]

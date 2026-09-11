@@ -1050,6 +1050,14 @@ export interface LocalBotWorkerOption {
   company?: string;
   description?: string;
   type?: string;
+  /** Human name from worker.yaml; falls back to a title-cased id. */
+  name?: string;
+  /** Curated one-liner from worker.yaml `summary:`; else the first sentence of `description`. */
+  summary?: string;
+  /** Number of skills the worker ships. */
+  skillCount?: number;
+  /** Whether the worker is an HQ core template or a company one. */
+  source?: "core" | "company";
 }
 
 /** Input to `LocalBotsApi.create` — mirrors `hq bot create` flags. */
@@ -1062,6 +1070,10 @@ export interface LocalBotCreateInput {
   autoApprove?: boolean;
   /** Create the bot from this worker id instead of a fresh persona. */
   worker?: string;
+  /** Optional first message the bot sends when it comes online (≤ 500 chars). */
+  intro?: string;
+  /** Where the bot's memory lives: HQ-synced (default) or this Mac only. */
+  memory?: "synced" | "local";
 }
 
 /**

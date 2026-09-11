@@ -16,10 +16,14 @@
    * Nothing here talks to hq-pro directly and no credential is ever shown.
    */
   import { onDestroy, onMount } from "svelte";
-  import type { LocalBotRow, PlatformAdapter } from "@hq/platform";
+  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption, PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import BotKindChip from "../chat/BotKindChip.svelte";
-  import { LOCAL_BOT_RUNTIMES, isValidLocalBotName } from "../chat/local-bots.js";
+  import { LOCAL_BOT_RUNTIMES } from "../chat/local-bots.js";
+  import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
+  import "../chat/tokens.css";
+  import "../chat/chat-tokens.css";
   import {
     cloudBotInitial,
     cloudBotStatusLabel,
@@ -48,9 +52,12 @@
   let busy = $state<string | null>(null);
   let line = $state("");
   let lineIsError = $state(false);
-  let newName = $state("assistant");
-  let newRuntime = $state<Runtime>("claude");
   let flags = $state<Record<string, boolean> | null>(null);
+  /** The New bot flow, hosted in a lightweight dialog over the pane. */
+  let createOpen = $state(false);
+  let createBusy = $state<"bot" | null>(null);
+  let createError = $state<string | null>(null);
+  let workers = $state<LocalBotWorkerOption[] | null>(null);
   let confirmRemove = $state<string | null>(null);
   let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -89,7 +96,28 @@
     const h = Math.round(m / 60);
     return h < 48 ? `Checked in ${h}h ago` : `Checked in ${Math.round(h / 24)}d ago`;
   }
-  const validBotName = isValidLocalBotName;
+  /** `{ claude: true, … }` for the flow's Home step. */
+  const runtimeReadyById = $derived.by<Record<string, boolean> | null>(() => {
+    if (!flags) return null;
+    const out: Record<string, boolean> = {};
+    for (const r of RUNTIMES) out[r.id] = runtimeReady(r.id);
+    return out;
+  });
+  const botSignIn = $derived.by<RuntimeSignInApi | null>(() => {
+    const sessions = adapter?.sessions;
+    if (!sessions?.loginStart || !sessions.loginStatus) return null;
+    const toState = (result: { ok: true; value: unknown } | { ok: false; message?: string }): RuntimeSignInState => {
+      if (!result.ok) return { state: "error", message: result.message || "Could not reach the sign-in." };
+      const rec = (result.value ?? {}) as { state?: string; message?: string };
+      const state = rec.state === "waiting" || rec.state === "connected" || rec.state === "error" ? rec.state : "disconnected";
+      return { state, message: rec.message };
+    };
+    return {
+      loginStart: async (runtime) => toState(await sessions.loginStart!(runtime)),
+      loginStatus: async (runtime) => toState(await sessions.loginStatus!(runtime)),
+      loginCancel: sessions.loginCancel ? async (runtime) => toState(await sessions.loginCancel!(runtime)) : undefined,
+    };
+  });
 
   async function load(quiet = false): Promise<void> {
     const api = adapter?.bots;
@@ -130,28 +158,40 @@
     confirmRemove = null;
   }
 
-  async function create(): Promise<void> {
+  async function openCreate(): Promise<void> {
+    if (!adapter?.bots) return;
+    createError = null;
+    createOpen = true;
+    const list = adapter.bots.workers;
+    if (list && workers === null) {
+      const result = await list();
+      workers = result.ok ? (result.value.workers ?? []) : [];
+    }
+  }
+
+  function closeCreate(): void {
+    if (createBusy) return;
+    createOpen = false;
+    createError = null;
+  }
+
+  /** The flow hands us the CLI input; the same `hq bot create` the sidebar runs. */
+  async function create(input: LocalBotCreateInput, _extras: CreateBotExtras): Promise<void> {
     const api = adapter?.bots;
-    const name = newName.trim().toLowerCase();
-    if (!api || busy) return;
-    if (!validBotName(name)) {
-      line = "Use lowercase letters, digits, and single hyphens for the bot name.";
-      lineIsError = true;
+    if (!api || createBusy) return;
+    createBusy = "bot";
+    createError = null;
+    const result = await api.create(input);
+    if (!result.ok) {
+      createError = result.message || `Could not create ${input.name}.`;
+      createBusy = null;
       return;
     }
-    busy = "__create__";
-    line = `Creating ${name} — this takes about half a minute…`;
+    createBusy = null;
+    createOpen = false;
+    line = `${input.name} is set up. It will send you a hello in Messages once it comes online.`;
     lineIsError = false;
-    const result = await api.create({ name, runtime: newRuntime });
-    if (!result.ok) {
-      line = result.message || `Could not create ${name}.`;
-      lineIsError = true;
-    } else {
-      line = `${name} is set up. It will send you a hello in Messages once it comes online.`;
-      newName = "";
-      await load(true);
-    }
-    busy = null;
+    await load(true);
   }
 
   async function loadPreflight(): Promise<void> {
@@ -319,40 +359,18 @@
       <div class="settings-card create" data-testid="settings-bots-create">
         <div class="bot-main">
           <strong>New bot</strong>
-          <small>
-            Pick a name and which signed-in tool it should think with.
-          </small>
+          <small>Blank, from a template, or a copy of a bot you have — thinking with a tool signed in on this Mac.</small>
         </div>
         <div class="create-controls">
-          <input
-            type="text"
-            placeholder="assistant"
-            aria-label="Bot name"
-            bind:value={newName}
-            disabled={Boolean(busy)}
-            onkeydown={(e) => {
-              if (e.key === "Enter") void create();
-            }}
-          />
-          <select aria-label="Runtime" bind:value={newRuntime} disabled={Boolean(busy)}>
-            {#each RUNTIMES as r (r.id)}
-              <option value={r.id}>{r.label}{runtimeReady(r.id) ? "" : " (not signed in)"}</option>
-            {/each}
-          </select>
           <button
             type="button"
             data-testid="settings-bots-create-button"
-            disabled={Boolean(busy) || !newName.trim()}
-            onclick={() => void create()}
+            disabled={Boolean(busy) || createOpen}
+            onclick={() => void openCreate()}
           >
-            {busy === "__create__" ? "Creating…" : "Create"}
+            New bot
           </button>
         </div>
-        {#if !runtimeReady(newRuntime)}
-          <small class="muted">
-            {runtimeLabel(newRuntime)} is not signed in on this Mac yet — sign in under AI tools first, or pick another.
-          </small>
-        {/if}
       </div>
       {#if line}
         <p class="status" class:error={lineIsError} aria-live="polite" data-testid="settings-bots-status">{line}</p>
@@ -450,7 +468,83 @@
   </div>
 </section>
 
+{#if createOpen}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="create-overlay"
+    data-testid="settings-bots-create-dialog"
+    onkeydown={(event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        closeCreate();
+      }
+    }}
+  >
+    <div class="create-card" role="dialog" aria-modal="true" aria-label="New bot" tabindex="-1">
+      <div class="create-card-head">
+        <span class="create-card-title">New bot</span>
+        <button type="button" class="quiet create-close" aria-label="Close" disabled={Boolean(createBusy)} onclick={closeCreate}>×</button>
+      </div>
+      <CreateBotFlow
+        botRuntimeReady={runtimeReadyById}
+        botWorkers={workers}
+        cloneCandidates={[
+          ...bots.map((b) => ({ uid: b.agentUid, displayName: b.name, kind: "local" as const })),
+          ...cloudBots.map((b) => ({ uid: b.uid, displayName: b.displayName, kind: "cloud" as const })),
+        ]}
+        existingNames={bots.map((b) => b.name)}
+        agentTargets={[]}
+        oncreate={create}
+        onback={closeCreate}
+        entryBusy={createBusy}
+        entryError={createError}
+        signInApi={botSignIn}
+        onsignedin={() => loadPreflight()}
+      />
+    </div>
+  </div>
+{/if}
+
 <style>
+  .create-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.45);
+  }
+  .create-card {
+    display: flex;
+    flex-direction: column;
+    width: min(880px, 100%);
+    max-height: min(88vh, 720px);
+    overflow: hidden;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 14px;
+    background: var(--v4-surface-solid, #fff);
+    box-shadow: var(--v4-shadow-window, var(--panel-shadow));
+    outline: none;
+  }
+  .create-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--v4-hairline);
+  }
+  .create-card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--t1);
+  }
+  .create-close {
+    font-size: 16px;
+    line-height: 1;
+    padding: 2px 8px;
+  }
   .bots-pane { display: grid; gap: 16px; }
   .group { display: grid; gap: 10px; }
   .group-head { display: flex; align-items: center; gap: 8px; }

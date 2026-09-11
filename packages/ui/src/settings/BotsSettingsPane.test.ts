@@ -142,7 +142,7 @@ describe("Settings → Bots (Work shell)", () => {
       join(import.meta.dirname, "BotsSettingsPane.svelte"),
       "utf8",
     );
-    for (const call of ["api.list()", "api.create({ name, runtime: newRuntime })", "api[verb](name)"]) {
+    for (const call of ["api.list()", "api.create(input)", "api[verb](name)"]) {
       expect(pane).toContain(call);
     }
     expect(pane).not.toContain("@tauri-apps");

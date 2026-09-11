@@ -41,6 +41,10 @@
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
   import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
   import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
+  import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import type { BotRuntime, CloneCandidate } from "./create-bot/create-bot-model.js";
+  import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
+  import type { AvatarPack } from "../avatars/types.js";
   import { botKindFor } from "./bot-kind.js";
   import BotKindChip from "./BotKindChip.svelte";
   import {
@@ -196,9 +200,18 @@
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
     oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
-    oncreatebot?: ((input: LocalBotCreateInput) => Promise<LocalBotEntryResult>) | null;
+    oncreatebot?:
+      | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
+      | null;
     botRuntimeReady?: Record<string, boolean> | null;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
+    /** New bot flow extras (see CreateModal): clone sources, taken names, sign-in, avatars. */
+    cloneCandidates?: readonly CloneCandidate[] | null;
+    existingBotNames?: readonly string[] | null;
+    botSignIn?: RuntimeSignInApi | null;
+    onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
+    avatarPacks?: AvatarPack[] | null;
+    loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /**
      * The user's own local bots. GET /v1/notify/contacts never lists them, so
      * they are merged into the contacts the "+" modal searches and invites
@@ -274,6 +287,12 @@
     oncreatebot = null,
     botRuntimeReady = null,
     botWorkers = null,
+    cloneCandidates = null,
+    existingBotNames = null,
+    botSignIn = null,
+    onbotsignedin = null,
+    avatarPacks = null,
+    loadAvatarPacks = null,
     localBots = null,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -2683,6 +2702,12 @@
       {oncreatebot}
       {botRuntimeReady}
       {botWorkers}
+      {cloneCandidates}
+      {existingBotNames}
+      {botSignIn}
+      {onbotsignedin}
+      {avatarPacks}
+      {loadAvatarPacks}
       initialKind={createKind}
     />
   {/if}

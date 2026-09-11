@@ -24,6 +24,14 @@
     saving?: boolean;
     error?: string | null;
     onsave?: (selection: AvatarSelection) => void | Promise<void>;
+    /**
+     * Live selection changes (create-bot flow: the pick is saved after the
+     * bot exists, so the picker reports instead of saving). Receives the
+     * resolved tile src alongside the selection for previews.
+     */
+    onchange?: (selection: AvatarSelection, src: string | null) => void;
+    /** Hide the Save button (the host owns the commit). */
+    hideSave?: boolean;
   }
 
   let {
@@ -34,6 +42,8 @@
     saving = false,
     error = null,
     onsave,
+    onchange,
+    hideSave = false,
   }: Props = $props();
 
   let query = $state("");
@@ -103,12 +113,14 @@
 
   function selectGenerated(): void {
     selection = { kind: "generated" };
+    onchange?.(selection, null);
   }
 
   function selectRow(row: FlatPickerRow): void {
     selection = { kind: "item", packId: row.packId, itemId: row.itemId };
     const index = rows.findIndex((entry) => entry.key === row.key);
     if (index >= 0) cursor = index;
+    onchange?.(selection, row.item.fullUrl ?? row.src ?? null);
   }
 
   function onGridKeydown(event: KeyboardEvent): void {
@@ -257,15 +269,17 @@
     <p class="err" role="alert" data-testid="avatar-pack-error">{error}</p>
   {/if}
 
-  <button
-    type="button"
-    class="save"
-    data-testid="avatar-pack-save"
-    disabled={saving || loading}
-    onclick={() => void save()}
-  >
-    {saving ? "Saving…" : "Save"}
-  </button>
+  {#if !hideSave}
+    <button
+      type="button"
+      class="save"
+      data-testid="avatar-pack-save"
+      disabled={saving || loading}
+      onclick={() => void save()}
+    >
+      {saving ? "Saving…" : "Save"}
+    </button>
+  {/if}
 </div>
 
 <style>

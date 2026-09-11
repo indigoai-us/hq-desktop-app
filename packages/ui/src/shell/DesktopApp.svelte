@@ -251,7 +251,11 @@
     localBotPresence,
     type LocalBotEntryResult,
   } from "../chat/local-bots.js";
-  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
+  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption, SessionProviderId } from "@hq/platform";
+  import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
+  import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import type { CloneCandidate } from "../chat/create-bot/create-bot-model.js";
+  import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
     ChatSidebarApi,
     ChatWakeBus,
@@ -832,10 +836,35 @@
    * Sidebar "+" → New bot. The CLI provisions the identity, scaffolds the
    * worker (or binds a company worker), installs the launch agent and starts
    * the bot; we then open its DM. The intro DM may not have landed yet, so a
-   * synthetic row makes the thread openable immediately and the offline
-   * notice covers "starting up".
+   * synthetic row makes the thread openable immediately and a progress card
+   * (Creating → Installing → Online) covers "starting up" until presence
+   * reports online or the bot's first message lands.
    */
-  async function createBotEntry(input: LocalBotCreateInput): Promise<LocalBotEntryResult> {
+  interface BotProgressEntry {
+    name: string;
+    state: BotProgressState;
+    reason: string | null;
+    /** The draft that made it, so Retry can re-run the same create. */
+    input: LocalBotCreateInput;
+    extras: CreateBotExtras;
+    startedAt: number;
+    retrying: boolean;
+  }
+  /** Seconds a fresh bot may take to come online before the card calls it failed. */
+  const BOT_PROGRESS_TIMEOUT_MS = 180_000;
+  let botProgressByUid = $state<Record<string, BotProgressEntry>>({});
+  function setBotProgress(uid: string, patch: Partial<BotProgressEntry>): void {
+    const current = botProgressByUid[uid];
+    if (!current) return;
+    botProgressByUid = { ...botProgressByUid, [uid]: { ...current, ...patch } };
+  }
+  function clearBotProgress(uid: string): void {
+    if (!botProgressByUid[uid]) return;
+    const next = { ...botProgressByUid };
+    delete next[uid];
+    botProgressByUid = next;
+  }
+  async function createBotEntry(input: LocalBotCreateInput, extras: CreateBotExtras = {}): Promise<LocalBotEntryResult> {
     const api = adapter.bots;
     if (!api) return { ok: false, reason: "Bots are only available in the HQ desktop app." };
     const result = await api.create(input);
@@ -844,6 +873,11 @@
     const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
     await refreshLocalBots();
     if (!agentUid) return { ok: true, agentUid: "", name: input.name };
+    // Identity exists (the CLI returned a uid); the launch agent is installing.
+    botProgressByUid = {
+      ...botProgressByUid,
+      [agentUid]: { name: input.name, state: "installing", reason: null, input, extras, startedAt: Date.now(), retrying: false },
+    };
     const existing = railRows.find((r) => r.kind === "dm" && r.personUid === agentUid);
     const row: ConversationRow = existing ?? {
       id: `dm:${agentUid}`,
@@ -856,7 +890,117 @@
       personUid: agentUid,
     };
     handleSelect(row);
+    if (extras.avatar) void saveNewBotAvatar(agentUid, extras.avatar);
     return { ok: true, agentUid, name: input.name };
+  }
+  /** Best effort: the avatar picked in the flow, saved once the bot has a uid. */
+  async function saveNewBotAvatar(agentUid: string, selection: AvatarSelection): Promise<void> {
+    try {
+      const packs = loadedAvatarPacks ?? (await loadAvatarGallery(adapter.identity)).packs;
+      loadedAvatarPacks = packs;
+      const saved = await saveAgentAvatar(agentUid, selection, {
+        packs,
+        fetchBytes: (url) => fetchBytesWith(fetch, url),
+        prepareAvatar: async (bytes) => avatarBase64FromFile(new Blob([bytes as BlobPart])),
+        updateAgentProfile: (uid, input) => adapter.identity.updateAgentProfile(uid, input),
+        selectAgentAvatar: (uid, input) => adapter.identity.selectAgentAvatar(uid, input),
+      });
+      avatarOverridesByUid = { ...avatarOverridesByUid, [agentUid]: saved.previewDataUrl };
+    } catch {
+      /* the bot exists; the avatar can be set from its profile later */
+    }
+  }
+  /** Retry from the progress card: start the bot if it exists, else re-run the same create. */
+  async function retryBotProgress(uid: string): Promise<void> {
+    const entry = botProgressByUid[uid];
+    const api = adapter.bots;
+    if (!entry || !api || entry.retrying) return;
+    setBotProgress(uid, { retrying: true, reason: null });
+    const bot = localBots.find((b) => b.agentUid === uid);
+    if (bot) {
+      const result = await api.start(bot.name);
+      if (!result.ok) {
+        setBotProgress(uid, { retrying: false, state: "failed", reason: result.message || `Could not start ${bot.name}.` });
+        return;
+      }
+      setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
+      await refreshLocalBots();
+      return;
+    }
+    clearBotProgress(uid);
+    const created = await createBotEntry(entry.input, entry.extras);
+    if (!created.ok) {
+      botProgressByUid = { ...botProgressByUid, [uid]: { ...entry, retrying: false, state: "failed", reason: created.reason } };
+    }
+  }
+  // Presence drives the card: online → tick then remove; a failed process →
+  // reason + Retry; too long without a heartbeat → failed as well.
+  $effect(() => {
+    const entries = Object.entries(botProgressByUid);
+    if (entries.length === 0) return;
+    const now = Date.now();
+    for (const [uid, entry] of entries) {
+      if (entry.state === "online" || entry.state === "failed") continue;
+      const bot = localBots.find((b) => b.agentUid === uid);
+      if (bot?.online === true) {
+        setBotProgress(uid, { state: "online" });
+        window.setTimeout(() => clearBotProgress(uid), 1500);
+      } else if (bot?.state === "failed") {
+        setBotProgress(uid, { state: "failed", reason: localBotOfflineNotice(bot) });
+      } else if (now - entry.startedAt > BOT_PROGRESS_TIMEOUT_MS) {
+        setBotProgress(uid, { state: "failed", reason: `${entry.name} did not come online. Check that its tool is signed in, then retry.` });
+      }
+    }
+  });
+  // The bot's first message replaces the card.
+  $effect(() => {
+    const uid = selectedRow?.kind === "dm" ? (selectedRow.personUid ?? "").trim() : "";
+    if (!uid || !botProgressByUid[uid]) return;
+    if (timeline.some((m) => m.fromPersonUid === uid)) clearBotProgress(uid);
+  });
+  const selectedBotProgress = $derived(
+    selectedRow?.kind === "dm" && selectedRow.personUid ? (botProgressByUid[selectedRow.personUid] ?? null) : null,
+  );
+  /** Bots the new-bot flow can clone: Cloud bots the rail knows, plus this Mac's own. */
+  const cloneCandidates = $derived.by<CloneCandidate[]>(() => {
+    const out: CloneCandidate[] = [];
+    const seen = new Set<string>();
+    for (const bot of localBots) {
+      const uid = bot.agentUid.trim();
+      if (!uid || seen.has(uid)) continue;
+      seen.add(uid);
+      out.push({ uid, displayName: bot.name, avatarUrl: avatarByUid[uid] ?? null, kind: "local" });
+    }
+    for (const row of railRows) {
+      const uid = (row.personUid ?? "").trim();
+      if (row.kind !== "dm" || !uid || seen.has(uid) || !isAgentUid(uid)) continue;
+      seen.add(uid);
+      out.push({ uid, displayName: row.title, avatarUrl: avatarByUid[uid] ?? null, kind: "cloud" });
+    }
+    return out;
+  });
+  const existingBotNames = $derived(localBots.map((b) => b.name));
+  /** Inline runtime sign-in for the flow's Home step (browser login + status poll). */
+  const botSignIn = $derived.by<RuntimeSignInApi | null>(() => {
+    const sessions = adapter.sessions;
+    if (!sessions?.loginStart || !sessions.loginStatus) return null;
+    const toState = (result: { ok: true; value: unknown } | { ok: false; message?: string }): RuntimeSignInState => {
+      if (!result.ok) return { state: "error", message: result.message || "Could not reach the sign-in." };
+      const rec = (result.value ?? {}) as { state?: string; message?: string };
+      const state = rec.state === "waiting" || rec.state === "connected" || rec.state === "error" ? rec.state : "disconnected";
+      return { state, message: rec.message };
+    };
+    return {
+      loginStart: async (runtime) => toState(await sessions.loginStart!(runtime as SessionProviderId)),
+      loginStatus: async (runtime) => toState(await sessions.loginStatus!(runtime as SessionProviderId)),
+      loginCancel: sessions.loginCancel
+        ? async (runtime) => toState(await sessions.loginCancel!(runtime as SessionProviderId))
+        : undefined,
+    };
+  });
+  async function onBotRuntimeSignedIn(): Promise<void> {
+    localBotRuntimeReady = null;
+    await loadLocalBotRuntimeReady();
   }
   const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
   const selectedLocalBotOffline = $derived(
@@ -5173,6 +5317,11 @@
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
           botWorkers={localBotWorkers}
+          {cloneCandidates}
+          {existingBotNames}
+          {botSignIn}
+          onbotsignedin={onBotRuntimeSignedIn}
+          loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
           {localBots}
           onrows={(rows) => {
             railRows = rows;
@@ -5842,6 +5991,18 @@
                 {#snippet companyHeader()}
                   <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
                 {/snippet}
+                {#snippet botProgressHeader()}
+                  {#if selectedBotProgress && selectedRow?.personUid}
+                    {@const uid = selectedRow.personUid}
+                    <BotProgressCard
+                      name={selectedBotProgress.name}
+                      state={selectedBotProgress.state}
+                      reason={selectedBotProgress.reason}
+                      retrying={selectedBotProgress.retrying}
+                      onretry={() => void retryBotProgress(uid)}
+                    />
+                  {/if}
+                {/snippet}
                 {#snippet localBotHeader()}
                   {#if selectedLocalBot && selectedLocalBotOffline}
                     <div class="local-bot-notice" data-testid="local-bot-offline-notice" role="status">
@@ -5912,9 +6073,11 @@
                     ? setupHeader
                     : isCompanyChannel
                       ? companyHeader
-                      : selectedLocalBot && selectedLocalBotOffline
-                        ? localBotHeader
-                        : undefined}
+                      : selectedBotProgress
+                        ? botProgressHeader
+                        : selectedLocalBot && selectedLocalBotOffline
+                          ? localBotHeader
+                          : undefined}
                   belowMessages={agentThinkingBelow}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
