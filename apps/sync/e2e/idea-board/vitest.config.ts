@@ -1,3 +1,4 @@
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { configDefaults, defineConfig } from 'vitest/config';
 
 // Idea-board E2E suite: exercises the capture-latency benchmark harness
@@ -6,6 +7,9 @@ import { configDefaults, defineConfig } from 'vitest/config';
 // exit non-zero when over budget. Later capture-path stories (US-003+) add
 // live specs that drive the real app; they share this config.
 export default defineConfig({
+  // US-009 mounts the real board components under happy-dom, so this project
+  // needs the Svelte compiler even though most specs here are plain Node.
+  plugins: [svelte({ hot: false })],
   test: {
     environment: 'node',
     globals: true,
