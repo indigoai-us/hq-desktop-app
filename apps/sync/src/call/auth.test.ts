@@ -200,7 +200,7 @@ describe("account binding", () => {
       envelope({ generation: 5 }),
       envelope({ generation: 4, status: "credentials_absent" }),
       envelope({ generation: 4, accountId: "acct-2" }),
-      envelope({ generation: 4, status: "refresh_temporarily_unavailable" }),
+      envelope({ generation: 4, status: "credentials_invalid" }),
     ]) {
       const binding = createAccountBinding({
         generation: 4,
@@ -214,6 +214,62 @@ describe("account binding", () => {
       expect(binding.invalidated).toBe(true);
       expect(binding.isCurrent(4)).toBe(false);
       expect(seen).toHaveLength(1);
+    }
+  });
+
+  it("pauses authority — never invalidates — on a temporarily unavailable refresh", () => {
+    // A refresh the host could not complete is a connectivity fact, not an
+    // account fact. Ending the call there would drop a working conversation
+    // because a laptop changed networks; instead nothing NEW is authorized and
+    // established media runs to its own grant's traffic stop.
+    const binding = createAccountBinding({
+      generation: 4,
+      accountId: "acct-1",
+      personUid: "prs_1",
+      companyUid: "cmp-1",
+    });
+    const seen: boolean[] = [];
+    binding.onAuthorityChange((paused) => seen.push(paused));
+    binding.onInvalidate(() => {
+      throw new Error("a temporary refresh failure must not invalidate");
+    });
+
+    expect(
+      binding.accept(
+        envelope({ generation: 4, status: "refresh_temporarily_unavailable" }),
+      ),
+    ).toBe(false);
+    expect(binding.invalidated).toBe(false);
+    expect(binding.isCurrent(4)).toBe(true);
+    expect(binding.authorityPaused).toBe(true);
+    expect(seen).toEqual([true]);
+
+    // A later `active` for the same account lifts the pause.
+    expect(binding.accept(envelope({ generation: 4 }))).toBe(false);
+    expect(binding.authorityPaused).toBe(false);
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("still invalidates immediately on absent credentials and account switch", () => {
+    for (const next of [
+      envelope({ generation: 4, status: "credentials_absent" }),
+      envelope({ generation: 4, accountId: "acct-2" }),
+      envelope({ generation: 5 }),
+    ]) {
+      const binding = createAccountBinding({
+        generation: 4,
+        accountId: "acct-1",
+        personUid: "prs_1",
+        companyUid: "cmp-1",
+      });
+      // Even from a paused state, a real account change is still terminal.
+      binding.accept(
+        envelope({ generation: 4, status: "refresh_temporarily_unavailable" }),
+      );
+      expect(binding.authorityPaused).toBe(true);
+      expect(binding.accept(next)).toBe(true);
+      expect(binding.invalidated).toBe(true);
+      expect(binding.authorityPaused).toBe(false);
     }
   });
 

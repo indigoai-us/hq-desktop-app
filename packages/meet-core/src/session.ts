@@ -66,6 +66,13 @@ export interface CallSnapshot {
   grantId: string | null;
   grantExpiresAt: number | null;
   trafficStopped: boolean;
+  /**
+   * Every participant the authoritative roster admits, including self —
+   * key-free (`personUid`/`deviceId` only). This is the membership downstream
+   * gates must reason about: `peers` is only who we currently hold a transport
+   * to, which lags admission and omits anyone we have not connected to yet.
+   */
+  admitted: Array<{ personUid: string; deviceId: string }>;
   peers: PeerSnapshot[];
   errors: CallError[];
   diagnostics: CallDiagnostics;
@@ -543,6 +550,19 @@ class Session implements CallSession {
       grantId: this.grant?.grantId ?? null,
       grantExpiresAt: this.grantExpiresAt,
       trafficStopped: this.trafficStopped,
+      admitted: [...this.admitted.values()]
+        .map(({ personUid, deviceId }) => ({ personUid, deviceId }))
+        .sort((a, b) =>
+          a.personUid === b.personUid
+            ? a.deviceId < b.deviceId
+              ? -1
+              : a.deviceId > b.deviceId
+                ? 1
+                : 0
+            : a.personUid < b.personUid
+              ? -1
+              : 1,
+        ),
       peers: [...this.transports.values()]
         .map((transport) => transport.snapshot())
         .sort((a, b) => (a.peerId < b.peerId ? -1 : a.peerId > b.peerId ? 1 : 0)),

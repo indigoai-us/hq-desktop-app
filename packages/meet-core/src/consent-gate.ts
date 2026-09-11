@@ -56,6 +56,8 @@ export interface ConsentGateSnapshot {
   consentEpoch: number;
   /** True when an acknowledgement could not be delivered or accepted. */
   acknowledgementUnavailable: boolean;
+  /** Processor the currently held proof was formed for, or null when none. */
+  processorId: string | null;
   /** Person uids of the current roster that have not acknowledged yet. */
   awaiting: string[];
 }
@@ -138,6 +140,7 @@ export function createConsentGate(options: ConsentGateOptions): ConsentGate {
       rosterRevision,
       consentEpoch: proof?.consentEpoch ?? 0,
       acknowledgementUnavailable: unavailable,
+      processorId: proof?.processorId ?? null,
       awaiting: awaiting(),
     };
   }
@@ -161,8 +164,19 @@ export function createConsentGate(options: ConsentGateOptions): ConsentGate {
       if (!next) {
         // Turning the control off is a withdrawal: recognition stops now, and
         // turning it back on requires a fresh, re-acknowledged epoch.
+        //
+        // The proof is PAUSED, never dropped. Dropping it would lose the epoch
+        // the withdrawal has to be filed against — the backend only accepts an
+        // `acknowledged: false` control for the epoch that is currently head,
+        // and a gate that forgot its epoch would propose epoch 1 forever while
+        // the real proof stayed open and ready for everyone else. Keeping the
+        // paused proof also makes the later re-enable propose head + 1, which
+        // is exactly what `CompletionConsentService` demands of a new epoch.
+        // It is cleared only when `applyProof` supersedes it.
         pause();
-        proof = null;
+        if (proof && proof.pausedAt === null) {
+          proof = { ...proof, pausedAt: options.clock.now() };
+        }
         unavailable = false;
       } else {
         pause();
@@ -256,14 +270,24 @@ export interface ConsentAckFields {
 export function consentAckFields(
   gate: ConsentGate,
   acknowledged: boolean,
-  processorId: string | null = null,
+  processorId?: string | null,
 ): ConsentAckFields {
   const snapshot = gate.snapshot();
   return {
     kind: "consentControl",
-    consentEpoch: gate.nextConsentEpoch(),
+    // A withdrawal is filed against the epoch that is actually open: the
+    // backend pauses the *current* proof, and an `acknowledged: false` naming
+    // a not-yet-existent head + 1 is refused as `STALE_EPOCH`. Only a positive
+    // acknowledgement opens (or re-uses) an epoch.
+    consentEpoch:
+      !acknowledged && snapshot.consentEpoch >= 1
+        ? snapshot.consentEpoch
+        : gate.nextConsentEpoch(),
     rosterRevision: snapshot.rosterRevision,
-    processorId,
+    // Defaults to the processor the held proof was formed for: a proof opened
+    // for `processor` must not be amended by a control claiming no processor —
+    // the backend compares `old.processorId !== input.processorId` and refuses.
+    processorId: processorId === undefined ? snapshot.processorId : processorId,
     acknowledged,
   };
 }

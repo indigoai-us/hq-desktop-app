@@ -31,7 +31,11 @@ import {
   type PeerConnectionLike,
   type TrackLike,
 } from "@hq/meet-core";
-import { createSyncPlatformAdapter, type IdentityApi } from "@hq/platform";
+import {
+  CALLS_VERSION,
+  createSyncPlatformAdapter,
+  type IdentityApi,
+} from "@hq/platform";
 
 import {
   AUTH_SESSION_EVENT,
@@ -89,6 +93,18 @@ export interface CallViewState {
   transcription: ConsentStatus;
   /** True when a consent acknowledgement could not be delivered. */
   consentUnavailable: boolean;
+  /**
+   * True once the canonical `prs_…` identity behind this window is proved.
+   * The join controls are inert until it is: `connecting` is reached before
+   * the identity gate answers, so status alone would enable the microphone
+   * for a window that has not yet proved whose account it is.
+   */
+  identityResolved: boolean;
+  /**
+   * True while the host cannot refresh credentials. Nothing NEW is authorized
+   * (join, grant, consent ack); established media runs to its grant's expiry.
+   */
+  authorityPaused: boolean;
 }
 
 export interface CallWindowDeps {
@@ -155,6 +171,22 @@ export const CALL_DISPOSE_EVENT = "calls:dispose";
 const DEFAULT_TARGET_WAIT_MS = 5_000;
 
 /**
+ * Refusals a renewal can never fix. A traffic stop carrying one of these is
+ * the end of the call, not a network hiccup, so its content close is
+ * permanent. `GRANT_EXPIRED` is deliberately NOT here: `CallSession` records
+ * it on every traffic stop, including the control-quiet one that a later
+ * reconcile recovers from. Expiry is decided from `grantExpiresAt` instead.
+ */
+const UNRENEWABLE_CALL_CODES = new Set([
+  "CALL_SEALED",
+  "COMPANY_ACCESS_DENIED",
+  "IDENTITY_MISMATCH",
+  "STALE_EPOCH",
+  "UNSUPPORTED_VERSION",
+  "INVALID_SIGNATURE",
+]);
+
+/**
  * The view's starting state: connecting, nothing captured, transcription off.
  * Exported so the window's rune store and the tests share one shape.
  */
@@ -172,6 +204,8 @@ export function initialCallViewState(): CallViewState {
     preferences: { microphone: false, camera: false },
     transcription: "off",
     consentUnavailable: false,
+    identityResolved: false,
+    authorityPaused: false,
   };
 }
 
@@ -305,12 +339,34 @@ export async function startCallWindow(
   deps: CallWindowDeps,
 ): Promise<CallWindowHandle> {
   const listeners: Array<() => void> = [];
-  const content = createContentDeliveryGate();
-  if (deps.onContentClose) {
-    content.onClose((event) =>
-      deps.onContentClose?.({ peerId: event.peerId, reason: event.reason }),
-    );
+
+  /**
+   * The content gate is re-creatable on purpose.
+   *
+   * `ContentDeliveryGate` is a one-way latch by design — a peer closed on an
+   * authoritative event is never re-admitted, because a rejoin is a new device
+   * key. That is right for removal and for a dead grant, and wrong for the
+   * control-quiet traffic stop, which is a *recoverable* condition: control
+   * went silent, the session dropped its transports, and a later reconcile
+   * rebuilds them. Blanking the window permanently there would leave a call
+   * that is demonstrably alive showing nothing forever. So a recoverable stop
+   * closes the current gate (renderers drop their elements synchronously, as
+   * they must) and recovery installs a FRESH gate rather than re-opening the
+   * latched one.
+   */
+  let content = wireContentGate(createContentDeliveryGate());
+  function wireContentGate(gate: ContentDeliveryGate): ContentDeliveryGate {
+    if (deps.onContentClose) {
+      gate.onClose((event) =>
+        deps.onContentClose?.({ peerId: event.peerId, reason: event.reason }),
+      );
+    }
+    return gate;
   }
+  /** True while content is closed by a condition a later snapshot can undo. */
+  let contentPaused = false;
+  /** True once content is closed for good: no snapshot may re-open it. */
+  let contentTerminated = false;
 
   let state: CallViewState = initialCallViewState();
   const publish = (next: Partial<CallViewState>): void => {
@@ -396,6 +452,20 @@ export async function startCallWindow(
   let joining = false;
   /** Peers admitted by the last authoritative snapshot, for removal diffing. */
   let currentPeers: string[] = [];
+  /**
+   * The device signer, hoisted out of `join` so the consent path can reach it.
+   * A consent acknowledgement is a signed `consentControl` envelope by its own
+   * bearer — the backend derives the actor from the signature, so an unsigned
+   * body is not a weaker acknowledgement, it is not an acknowledgement at all.
+   */
+  let deviceSigner: DeviceSigner | null = null;
+  /** The grant the envelopes are filed under; renewals move it. */
+  let currentGrantId: string = target.grant.grantId;
+  /** In-flight guard + last-sent generation, so one epoch gets ONE ack. */
+  let ackInFlight = false;
+  let lastAck: string | null = null;
+  /** Last `selfNotAdmitted` count seen, so a new one is an edge not a level. */
+  let selfNotAdmittedSeen = 0;
 
   // Arm the account listener BEFORE the first identity request so a switch
   // during that request is already known when the answer lands.
@@ -408,6 +478,9 @@ export async function startCallWindow(
   account.onInvalidate(() => {
     void invalidate();
   });
+  listeners.push(
+    account.onAuthorityChange((paused) => publish({ authorityPaused: paused })),
+  );
 
   /**
    * The account changed. Everything the old account had goes away NOW, in an
@@ -506,6 +579,7 @@ export async function startCallWindow(
     if (joining || finished || session) return;
     joining = true;
     try {
+      if (account.authorityPaused) return;
       let signer: DeviceSigner;
       try {
         signer = await (deps.createSigner ?? createDeviceSigner)();
@@ -516,6 +590,7 @@ export async function startCallWindow(
       }
       // A key minted for an account that is already gone must never be used.
       if (!account.isCurrent(generation)) return;
+      deviceSigner = signer;
 
       const binding = {
         companyUid: target!.companyUid,
@@ -602,6 +677,56 @@ export async function startCallWindow(
    * acted on, so media/data close and the transcription barrier move together.
    */
   function onSnapshot(snapshot: CallSnapshot): void {
+    if (snapshot.grantId) currentGrantId = snapshot.grantId;
+
+    // ---- our OWN admission ------------------------------------------------
+    // The roster is authoritative about us too. If it no longer lists this
+    // device, our admission was revoked (or expired): we hold no right to
+    // deliver or capture anything, and the session has already dropped every
+    // transport. Close call-wide and stop local capture — a revoked
+    // participant whose camera stayed on is the whole failure this gate exists
+    // to prevent.
+    const notAdmitted = snapshot.diagnostics.selfNotAdmitted ?? 0;
+    const selfId = `${snapshot.self.personUid} ${snapshot.self.deviceId}`;
+    const rosterKnowsSelf =
+      snapshot.rosterRevision < 1 ||
+      snapshot.admitted.some(
+        (entry) => `${entry.personUid} ${entry.deviceId}` === selfId,
+      );
+    if (notAdmitted > selfNotAdmittedSeen || !rosterKnowsSelf) {
+      selfNotAdmittedSeen = notAdmitted;
+      if (!contentTerminated) {
+        contentTerminated = true;
+        contentPaused = false;
+        content.closeAll("not-admitted");
+      }
+      mediaController.stopAll("not-admitted");
+      currentPeers = [];
+      consent.setEnabled(false);
+      publish({
+        status: "error",
+        code: "ADMISSION_REVOKED",
+        recoverable: false,
+        peerCount: 0,
+      });
+      return;
+    }
+
+    // ---- recovery ---------------------------------------------------------
+    // Control is talking again and membership has been rebuilt: install a
+    // fresh gate so the recovered peers render. `contentTerminated` is never
+    // undone — an expired grant and a revoked admission stay closed.
+    if (
+      contentPaused &&
+      !contentTerminated &&
+      !snapshot.trafficStopped &&
+      snapshot.peers.length > 0
+    ) {
+      contentPaused = false;
+      currentPeers = [];
+      content = wireContentGate(createContentDeliveryGate());
+    }
+
     const peerIds = snapshot.peers.map((peer) => peer.peerId);
     const present = new Set(peerIds);
     // Peer removal is authoritative: close the departed peer's delivery now.
@@ -610,14 +735,37 @@ export async function startCallWindow(
     }
     currentPeers = peerIds;
     content.admit(peerIds);
-    if (snapshot.trafficStopped) content.closeAll("traffic-stopped");
 
+    // ---- traffic stop -----------------------------------------------------
+    if (snapshot.trafficStopped && content.open()) {
+      // Two very different conditions arrive as one flag. An expired or
+      // terminally refused grant cannot be renewed, so its close is permanent.
+      // A control-quiet stop is the watchdog firing while the grant is still
+      // valid — recoverable, and a later reconcile brings the call back.
+      const expired =
+        snapshot.grantExpiresAt !== null &&
+        snapshot.grantExpiresAt <= Date.now();
+      const terminal = snapshot.errors.some((error) =>
+        UNRENEWABLE_CALL_CODES.has(error.code),
+      );
+      content.closeAll("traffic-stopped");
+      if (expired || terminal) contentTerminated = true;
+      else contentPaused = true;
+    }
+
+    // The consent barrier follows the ADMITTED roster, not the transports we
+    // happen to hold: a participant who is admitted but not yet connected is
+    // still someone whose audio must not be recognized without their consent.
+    const admittedPersons =
+      snapshot.admitted.length > 0
+        ? [...new Set(snapshot.admitted.map((entry) => entry.personUid))]
+        : [
+            snapshot.self.personUid,
+            ...snapshot.peers.map((peer) => peer.personUid),
+          ];
     consent.observeRoster({
       rosterRevision: snapshot.rosterRevision,
-      participants: [
-        snapshot.self.personUid,
-        ...snapshot.peers.map((peer) => peer.personUid),
-      ],
+      participants: admittedPersons,
     });
 
     publish({
@@ -633,29 +781,91 @@ export async function startCallWindow(
     });
     // A newly admitted participant needs a fresh acknowledgement before
     // transcription can resume; pausing already happened in `observeRoster`.
+    //
+    // Snapshots arrive on every reconcile, so this condition holds for as long
+    // as we are waiting on somebody ELSE to acknowledge — which would post an
+    // ack per poll. One acknowledgement per (epoch, roster) generation is all
+    // the backend can use; the rest is write amplification against a
+    // rate-limited control plane. The memo is set before the send, so a second
+    // snapshot arriving mid-flight finds it already claimed.
     if (consent.snapshot().enabled && !consent.recognitionAllowed()) {
-      void sendConsentAck(true);
+      const barrier = consent.snapshot();
+      const memo = `${consent.nextConsentEpoch()}:${barrier.rosterRevision}`;
+      if (!ackInFlight && lastAck !== memo) {
+        ackInFlight = true;
+        lastAck = memo;
+        void sendConsentAck(true).finally(() => {
+          ackInFlight = false;
+        });
+      }
     }
   }
 
-  /** Send this actor's own signed consent acknowledgement (or withdrawal). */
+  /**
+   * Send this actor's own SIGNED consent acknowledgement (or withdrawal).
+   *
+   * `CompletionConsentService` derives the acknowledging person from the
+   * envelope's signature over a live admission — not from any field in the
+   * body. So the envelope has to be the full backend `consentInput` shape,
+   * signed with the same device key `createHqSignalingPort` signs control
+   * envelopes with; a body without `personUid`/`deviceId`/`peerKey`/`grantId`/
+   * `sentAt`/`signature` is refused, and one that a *different* key signed
+   * would be an acknowledgement on someone else's behalf.
+   */
   async function sendConsentAck(acknowledged: boolean): Promise<void> {
     if (finished || !account.isCurrent(generation)) return;
-    const fields = consentAckFields(consent, acknowledged);
-    if (fields.rosterRevision < 1) {
+    if (account.authorityPaused) {
+      // No new authority while the host cannot prove the account: an
+      // acknowledgement is exactly that.
+      consent.noteAcknowledgementUnavailable();
+      return;
+    }
+    const signer = deviceSigner;
+    if (!signer) {
+      // No device key means no way to speak for this actor at all.
+      consent.noteAcknowledgementUnavailable();
+      return;
+    }
+    const fields = consentAckFields(
+      consent,
+      acknowledged,
+      // Explicit: this window runs no processor of its own (US-024+), so it
+      // files against whichever processor the open proof was formed for.
+      consent.snapshot().processorId,
+    );
+    if (fields.rosterRevision < 1 || fields.consentEpoch < 1) {
       // No roster yet: there is nothing to consent over, and the backend
       // refuses revision 0. Stay paused and visible.
       consent.noteAcknowledgementUnavailable();
       return;
     }
+    const envelope: Record<string, unknown> = {
+      version: CALLS_VERSION,
+      kind: "consentControl",
+      companyUid: target!.companyUid,
+      roomId: target!.roomId,
+      callId: target!.callId,
+      epoch: target!.epoch,
+      personUid: target!.self.personUid,
+      deviceId: target!.self.deviceId,
+      peerKey: signer.peerKey,
+      grantId: currentGrantId,
+      sentAt: Date.now(),
+      consentEpoch: fields.consentEpoch,
+      rosterRevision: fields.rosterRevision,
+      processorId: fields.processorId,
+      acknowledged: fields.acknowledged,
+    };
+    let signature: string;
+    try {
+      signature = await signer.sign(envelope);
+    } catch {
+      consent.noteAcknowledgementUnavailable();
+      return;
+    }
+    if (finished || !account.isCurrent(generation)) return;
     const result = await adapter.calls
-      .completionConsent({
-        companyUid: target!.companyUid,
-        roomId: target!.roomId,
-        callId: target!.callId,
-        epoch: target!.epoch,
-        ...fields,
-      })
+      .completionConsent({ ...envelope, signature })
       .catch(() => ({ ok: false as const }));
     if (!account.isCurrent(generation)) return;
     if (!result.ok) {
@@ -708,7 +918,11 @@ export async function startCallWindow(
       generation,
       binding: account,
     });
-    if (resolved.ok) return true;
+    if (resolved.ok) {
+      publish({ identityResolved: true });
+      return true;
+    }
+    publish({ identityResolved: false });
     const code: CallIdentityCode = resolved.code;
     publish({
       status: resolved.recoverable ? "identity" : "error",
@@ -734,7 +948,11 @@ export async function startCallWindow(
     media: mediaController,
     account,
     consent,
-    content,
+    // A getter: a recoverable traffic stop installs a fresh gate, and every
+    // holder must see the live one rather than the closed one it started with.
+    get content(): ContentDeliveryGate {
+      return content;
+    },
     state: () => state,
 
     async retryIdentity(): Promise<void> {

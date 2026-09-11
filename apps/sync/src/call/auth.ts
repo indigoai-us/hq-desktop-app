@@ -23,6 +23,13 @@
  *     disposed, local tracks stop, and the registry entry is released with
  *     `account-changed`.
  *
+ *     One status is deliberately NOT invalidation:
+ *     `refresh_temporarily_unavailable`. It reports that the host could not
+ *     refresh right now, which is a network fact rather than an account fact.
+ *     It pauses authority instead — no new join, grant or consent
+ *     acknowledgement — and lets already-flowing media run to its own grant's
+ *     expiry, where the traffic stop ends it on the backend's clock.
+ *
  * Company isolation is structural rather than checked here: the call window
  * holds its own `companyUid` from the target and subscribes to nothing
  * company-scoped, so navigating the main window to another company cannot
@@ -111,6 +118,21 @@ export interface AccountBinding {
   readonly companyUid: string;
   /** False as soon as the account changed; asynchronous work must bail. */
   isCurrent(generation: number): boolean;
+  /**
+   * True while the host cannot currently refresh the account's credentials.
+   *
+   * This is NOT invalidation. A refresh that is temporarily unavailable (the
+   * device is offline, the token endpoint is throttled) says nothing about
+   * whether the account is still ours — so tearing the call down would end a
+   * working conversation over a transient network fault. Instead no NEW
+   * authority is taken while it holds: no join, no grant use, no consent
+   * acknowledgement. Media that is already flowing runs to its own grant's
+   * expiry, where `CallSession`'s traffic stop ends it on the clock the
+   * backend issued rather than on a guess.
+   */
+  readonly authorityPaused: boolean;
+  /** Fires on every authority pause/resume transition. */
+  onAuthorityChange(listener: (paused: boolean) => void): () => void;
   /** True once invalidated. Latches — it never goes back to false. */
   readonly invalidated: boolean;
   /** Feed an `auth:session-changed` envelope. Returns true if it invalidated. */
@@ -130,11 +152,21 @@ export function createAccountBinding(
   options: AccountBindingOptions,
 ): AccountBinding {
   const listeners = new Set<(change: AccountBindingChange) => void>();
+  const authorityListeners = new Set<(paused: boolean) => void>();
   let invalidated = false;
+  let authorityPaused = false;
+
+  function setAuthorityPaused(next: boolean): void {
+    if (authorityPaused === next) return;
+    authorityPaused = next;
+    for (const listener of [...authorityListeners]) listener(next);
+  }
 
   function invalidate(change: AccountBindingChange): void {
     if (invalidated) return;
     invalidated = true;
+    authorityPaused = false;
+    authorityListeners.clear();
     for (const listener of [...listeners]) listener(change);
     listeners.clear();
   }
@@ -147,6 +179,14 @@ export function createAccountBinding(
     isCurrent: (generation) => !invalidated && generation === options.generation,
     get invalidated(): boolean {
       return invalidated;
+    },
+    get authorityPaused(): boolean {
+      return authorityPaused;
+    },
+
+    onAuthorityChange(listener): () => void {
+      authorityListeners.add(listener);
+      return () => authorityListeners.delete(listener);
     },
 
     accept(envelope: AuthSessionEnvelope): boolean {
@@ -162,13 +202,20 @@ export function createAccountBinding(
         envelope.status === "active" &&
         sameAccount
       ) {
+        setAuthorityPaused(false);
+        return false;
+      }
+      if (envelope.status === "refresh_temporarily_unavailable" && sameAccount) {
+        // A refresh the host could not complete is a connectivity fact, not an
+        // account fact. Killing the call here would drop a working conversation
+        // the moment a laptop changed networks. Authority pauses instead: no
+        // new join, grant or consent acknowledgement is taken, the shell warns,
+        // and media already flowing ends at its own grant's traffic stop.
+        setAuthorityPaused(true);
         return false;
       }
       // Everything else — a generation bump, a sign-out, an invalidated
-      // credential, a different account id — ends this call's authority. A
-      // merely unavailable refresh is included on purpose: the window cannot
-      // prove the account is still ours, and a call must not outlive that
-      // proof.
+      // credential, a different account id — ends this call's authority now.
       invalidate({
         generation: envelope.generation,
         status: envelope.status,

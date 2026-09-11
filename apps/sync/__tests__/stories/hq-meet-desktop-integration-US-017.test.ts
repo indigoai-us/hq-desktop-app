@@ -735,12 +735,15 @@ describe("US-017 e2e 5: the consent-roster barrier tracks audio admission", () =
     consent.applyProof(readyProof());
     expect(consent.recognitionAllowed()).toBe(false);
 
-    // Turning the control off is a withdrawal too, and clears the proof.
+    // Turning the control off is a withdrawal too. It PAUSES the proof rather
+    // than forgetting it: the withdrawal has to name the epoch that is open,
+    // and the re-enable has to propose the next one.
     consent.setEnabled(false);
     expect(consent.snapshot().status).toBe("off");
+    expect(consent.snapshot().consentEpoch).toBe(1);
     consent.setEnabled(true);
     expect(consent.recognitionAllowed()).toBe(false);
-    expect(consent.snapshot().consentEpoch).toBe(0);
+    expect(consent.nextConsentEpoch()).toBe(2);
   });
 
   it("ignores delayed and reordered control events rather than applying them", () => {

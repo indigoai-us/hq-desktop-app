@@ -8,14 +8,17 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { PINNED_CONTRACT_HASH } from "@hq/platform";
+import { PINNED_CONTRACT_HASH, verifyEnvelope } from "@hq/platform";
+import { FakeConnectionFactory } from "@hq/meet-core/testing";
 
 import { AUTH_SESSION_EVENT } from "./auth";
 import {
+  initialCallViewState,
   startCallWindow,
   type CallInvoke,
   type CallWindowDeps,
 } from "./bootstrap";
+import { createDeviceSigner } from "./signer";
 import type { CallWindowTarget } from "./target";
 
 const EVIDENCE = {
@@ -380,6 +383,482 @@ describe("transcription barrier", () => {
 
     await handle.setTranscription(false);
     expect(handle.state().transcription).toBe("off");
+    await handle.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes: a LIVE bench.
+//
+// The benches above refuse every hq-pro round trip, which is enough to pin the
+// identity gate but says nothing about what the window does once a roster, a
+// consent proof and a traffic stop actually arrive. This bench answers
+// `hq_pro_fetch` per path, so the real `createHqSignalingPort` polls a real
+// reconcile and `startCallWindow` folds real snapshots.
+// ---------------------------------------------------------------------------
+
+const CONSENT_PATH = "/v1/meet-native/completion/consent";
+const RECONCILE_PATH = "/v1/meet-native/signaling/reconcile";
+
+const PEER = { personUid: "prs_2", deviceId: "dev-2", peerKey: "c".repeat(64) };
+const PEER_ID = `${PEER.personUid} ${PEER.deviceId}`;
+
+interface ReconcileBody {
+  rosterRevision: number;
+  peers: Array<{ personUid: string; deviceId: string; peerKey: string }>;
+  expiresAt?: number;
+  trafficStopMs?: number;
+  controlPollMs?: number;
+}
+
+interface LiveBench extends Bench {
+  /** Bodies posted to the consent route, newest last. */
+  consents: Array<Record<string, unknown>>;
+  /** Raw Ed25519 public key of the window's device signer, base64url. */
+  publicKey: () => string;
+  /** `peerKey` (keyId) of the window's device signer. */
+  peerKey: () => string;
+  reconciles: () => number;
+}
+
+function liveBench(options: {
+  /** Reconcile body per tick, or null to refuse (control goes quiet). */
+  roster: (tick: number, selfPeerKey: string) => ReconcileBody | null;
+  /** Consent response value, given the posted body. Null refuses. */
+  consent?: (
+    body: Record<string, unknown>,
+    index: number,
+  ) => Record<string, unknown> | null;
+  grant?: Partial<CallWindowTarget["grant"]>;
+  getUserMedia?: CallWindowDeps["getUserMedia"];
+}): LiveBench {
+  const consents: Array<Record<string, unknown>> = [];
+  let reconciles = 0;
+  let publicKey = "";
+  let peerKey = "";
+
+  const harness = bench({
+    target: target({
+      grant: {
+        grantId: "grant-1",
+        expiresAt: Date.now() + 600_000,
+        renewAfterMs: 1,
+        trafficStopMs: 10_000,
+        controlPollMs: 5,
+        ...options.grant,
+      },
+    }),
+    invoke: async (command, args) => {
+      if (command !== "hq_pro_fetch") return undefined;
+      const request = (args ?? {}) as { url?: unknown; body?: unknown };
+      const url = String(request.url ?? "");
+      const body = JSON.parse(String(request.body ?? "{}")) as Record<
+        string,
+        unknown
+      >;
+      if (url === CONSENT_PATH) {
+        consents.push(body);
+        const value = options.consent?.(body, consents.length - 1) ?? {};
+        if (value === null) return { status: 503, body: "{}" };
+        return { status: 200, body: JSON.stringify(value) };
+      }
+      if (url === RECONCILE_PATH) {
+        reconciles += 1;
+        const next = options.roster(reconciles, peerKey);
+        if (!next) return { status: 503, body: "{}" };
+        return { status: 200, body: JSON.stringify({ code: "OK", ...next }) };
+      }
+      // Signals and everything else succeed quietly: this bench is about the
+      // control plane, not about media negotiation.
+      return { status: 200, body: JSON.stringify({ code: "OK" }) };
+    },
+  });
+
+  harness.deps.createSigner = (async () => {
+    const signer = await createDeviceSigner();
+    publicKey = signer.publicKey;
+    peerKey = signer.peerKey;
+    return signer;
+  }) as never;
+  harness.deps.connections = new FakeConnectionFactory();
+  if (options.getUserMedia) harness.deps.getUserMedia = options.getUserMedia;
+
+  return {
+    ...harness,
+    consents,
+    publicKey: () => publicKey,
+    peerKey: () => peerKey,
+    reconciles: () => reconciles,
+  };
+}
+
+/** Poll until `predicate` holds, or fail after `timeoutMs`. */
+async function until(
+  predicate: () => boolean,
+  label: string,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+const BACKEND_CONSENT_FIELDS = [
+  "acknowledged",
+  "callId",
+  "companyUid",
+  "consentEpoch",
+  "deviceId",
+  "epoch",
+  "grantId",
+  "kind",
+  "personUid",
+  "peerKey",
+  "processorId",
+  "roomId",
+  "rosterRevision",
+  "sentAt",
+  "signature",
+  "version",
+].sort();
+
+function roster(revision: number, selfPeerKey: string): ReconcileBody {
+  return {
+    rosterRevision: revision,
+    peers: [
+      { personUid: "prs_1", deviceId: "dev-1", peerKey: selfPeerKey },
+      PEER,
+    ],
+    expiresAt: Date.now() + 600_000,
+  };
+}
+
+describe("consent acknowledgements are signed backend envelopes", () => {
+  it("posts exactly the backend consentControl field set, signed by the device key", async () => {
+    const harness = liveBench({ roster: (_tick, key) => roster(1, key) });
+    const handle = await startCallWindow(harness.deps);
+    await until(
+      () => handle.state().peerCount > 0 || harness.reconciles() > 0,
+      "the first roster",
+    );
+
+    await handle.setTranscription(true);
+    expect(harness.consents).toHaveLength(1);
+    const posted = harness.consents[0] as Record<string, unknown>;
+
+    // Exactly the fields `consentInput` accepts — it is a zod strictObject, so
+    // a missing field and an extra field are both outright refusals.
+    expect(Object.keys(posted).sort()).toEqual(BACKEND_CONSENT_FIELDS);
+    expect(posted).toMatchObject({
+      version: "hq-meet/1",
+      kind: "consentControl",
+      companyUid: "cmp-1",
+      roomId: "room-1",
+      callId: "call-1",
+      epoch: 7,
+      personUid: "prs_1",
+      deviceId: "dev-1",
+      peerKey: harness.peerKey(),
+      grantId: "grant-1",
+      consentEpoch: 1,
+      rosterRevision: 1,
+      processorId: null,
+      acknowledged: true,
+    });
+    expect(typeof posted.sentAt).toBe("number");
+
+    // The signature is the whole point: the backend derives the acknowledging
+    // actor from it, never from `personUid` in the body.
+    await expect(
+      verifyEnvelope(posted, harness.publicKey()),
+    ).resolves.toBeUndefined();
+
+    // ...and it is a signature over THIS envelope, not a constant.
+    await expect(
+      verifyEnvelope({ ...posted, acknowledged: false }, harness.publicKey()),
+    ).rejects.toThrow();
+    await handle.leave();
+    await handle.close();
+  });
+
+  it("withdraws at the open epoch, carrying that proof's processor", async () => {
+    const harness = liveBench({
+      roster: (_tick, key) => roster(1, key),
+      consent: (body) => ({
+        revision: 1,
+        consentEpoch: body.consentEpoch,
+        rosterRevision: 1,
+        processorId: "processor",
+        participants: ["prs_1", "prs_2"],
+        acknowledged: ["prs_1"],
+        readyAt: null,
+        pausedAt: null,
+      }),
+    });
+    const handle = await startCallWindow(harness.deps);
+    await until(() => harness.reconciles() > 0, "the first roster");
+    await handle.setTranscription(true);
+    expect(harness.consents[0]).toMatchObject({
+      consentEpoch: 1,
+      processorId: null,
+    });
+
+    await handle.setTranscription(false);
+    const withdrawal = harness.consents.at(-1) as Record<string, unknown>;
+    // Epoch 1, not 2: the backend pauses the proof that is open, and refuses a
+    // withdrawal naming an epoch that does not exist yet.
+    expect(withdrawal.consentEpoch).toBe(1);
+    expect(withdrawal.acknowledged).toBe(false);
+    // The proof was opened for "processor"; an amendment claiming no processor
+    // is refused as `STALE_EPOCH`.
+    expect(withdrawal.processorId).toBe("processor");
+    await expect(
+      verifyEnvelope(withdrawal, harness.publicKey()),
+    ).resolves.toBeUndefined();
+
+    // Re-enabling must open the NEXT epoch, never reuse the paused one.
+    await handle.setTranscription(true);
+    expect(harness.consents.at(-1)).toMatchObject({
+      consentEpoch: 2,
+      acknowledged: true,
+    });
+    await handle.leave();
+    await handle.close();
+  });
+
+  it("sends at most one acknowledgement per epoch and roster generation", async () => {
+    const harness = liveBench({
+      roster: (_tick, key) => roster(1, key),
+      consent: (body) => ({
+        revision: 1,
+        consentEpoch: body.consentEpoch,
+        rosterRevision: 1,
+        processorId: null,
+        // The other participant has not acknowledged, so the barrier stays
+        // paused and the auto-ack condition holds on EVERY later snapshot.
+        participants: ["prs_1", "prs_2"],
+        acknowledged: ["prs_1"],
+        readyAt: null,
+        pausedAt: null,
+      }),
+    });
+    const handle = await startCallWindow(harness.deps);
+    await until(() => harness.reconciles() > 0, "the first roster");
+    await handle.setTranscription(true);
+    expect(handle.consent?.recognitionAllowed()).toBe(false);
+
+    const before = harness.reconciles();
+    await until(
+      () => harness.reconciles() > before + 12,
+      "a dozen more snapshots",
+    );
+    // One explicit acknowledgement, and at most one automatic re-send for the
+    // epoch/roster generation — not one per poll against a rate-limited plane.
+    expect(harness.consents.length).toBeLessThanOrEqual(2);
+    expect(handle.state().transcription).toBe("paused");
+    await handle.leave();
+    await handle.close();
+  });
+});
+
+describe("the content gate survives a recoverable traffic stop", () => {
+  it("re-opens when control comes back and membership is rebuilt", async () => {
+    let quiet = false;
+    const harness = liveBench({
+      grant: { trafficStopMs: 30, controlPollMs: 5 },
+      roster: (_tick, key) =>
+        quiet ? null : { ...roster(1, key), trafficStopMs: 30 },
+    });
+    const handle = await startCallWindow(harness.deps);
+    await until(
+      () => handle.content.allows(PEER_ID),
+      "the peer to be admitted for content",
+    );
+
+    // Control goes quiet: the watchdog stops traffic while the grant is still
+    // perfectly valid.
+    quiet = true;
+    await until(
+      () => handle.session?.snapshot().trafficStopped === true,
+      "the traffic stop",
+    );
+    expect(handle.content.open()).toBe(false);
+
+    // Control returns and the roster is rebuilt. This is a live call: it must
+    // render again rather than stay permanently blank.
+    quiet = false;
+    await until(
+      () => handle.content.open() && handle.content.allows(PEER_ID),
+      "content delivery to re-open",
+    );
+    await handle.leave();
+    await handle.close();
+  });
+
+  it("stays closed for good when the grant itself expired", async () => {
+    const expiresAt = Date.now() + 60;
+    let expired = false;
+    const harness = liveBench({
+      grant: { expiresAt, trafficStopMs: undefined, controlPollMs: 5 },
+      roster: (_tick, key) =>
+        expired
+          ? { ...roster(2, key), expiresAt: Date.now() + 600_000 }
+          : { ...roster(1, key), expiresAt },
+    });
+    const handle = await startCallWindow(harness.deps);
+    await until(() => handle.content.allows(PEER_ID), "the peer's content");
+
+    await until(
+      () => handle.session?.snapshot().trafficStopped === true,
+      "the grant to expire",
+    );
+    expect(handle.content.open()).toBe(false);
+
+    // Even a healthy reconcile carrying a brand new expiry must not resurrect
+    // content that an expired grant closed — a renewal is a new grant, and a
+    // new grant is a new gate.
+    expired = true;
+    const before = harness.reconciles();
+    await until(
+      () => harness.reconciles() > before + 6,
+      "several healthy reconciles",
+    );
+    expect(handle.content.open()).toBe(false);
+    await handle.leave();
+    await handle.close();
+  });
+});
+
+describe("our own admission is authoritative too", () => {
+  it("closes content and stops capture when the roster drops this device", async () => {
+    const stop = vi.fn();
+    let revoked = false;
+    const harness = liveBench({
+      roster: (_tick, key) =>
+        revoked
+          ? { rosterRevision: 2, peers: [PEER], expiresAt: Date.now() + 600_000 }
+          : roster(1, key),
+      getUserMedia: (async () => ({
+        getTracks: () => [{ id: "audio-1", kind: "audio", stop }],
+      })) as never,
+    });
+    const handle = await startCallWindow(harness.deps);
+    await handle.setDevice("microphone", true);
+    await until(() => handle.content.allows(PEER_ID), "the peer's content");
+    expect(handle.media?.tracks()).toHaveLength(1);
+
+    revoked = true;
+    await until(() => !handle.content.open(), "the call-wide content close");
+    // A revoked participant whose camera stayed on is exactly the failure the
+    // gate exists to prevent.
+    expect(stop).toHaveBeenCalled();
+    expect(handle.media?.tracks()).toEqual([]);
+    expect(handle.state().code).toBe("ADMISSION_REVOKED");
+    await handle.leave();
+    await handle.close();
+  });
+});
+
+describe("the consent roster is the admitted roster", () => {
+  it("counts an admitted participant we hold no transport to", async () => {
+    const harness = liveBench({
+      roster: (_tick, key) => ({
+        rosterRevision: 1,
+        peers: [
+          { personUid: "prs_1", deviceId: "dev-1", peerKey: key },
+          PEER,
+          { personUid: "prs_3", deviceId: "dev-3", peerKey: "e".repeat(64) },
+        ],
+        expiresAt: Date.now() + 600_000,
+      }),
+    });
+    const handle = await startCallWindow(harness.deps);
+    await until(
+      () => (handle.consent?.snapshot().awaiting.length ?? 0) > 0,
+      "the consent roster",
+    );
+    // Everyone the roster ADMITS is someone whose audio must not be recognized
+    // without their consent — including anyone we have not connected to yet.
+    expect(handle.consent?.snapshot().awaiting).toEqual([
+      "prs_1",
+      "prs_2",
+      "prs_3",
+    ]);
+    await handle.leave();
+    await handle.close();
+  });
+});
+
+describe("authority pauses rather than ending the call", () => {
+  it("blocks new consent acknowledgements while a refresh is unavailable", async () => {
+    const harness = liveBench({ roster: (_tick, key) => roster(1, key) });
+    const handle = await startCallWindow(harness.deps);
+    await until(() => harness.reconciles() > 0, "the first roster");
+
+    harness.emit(AUTH_SESSION_EVENT, {
+      accountId: "acct-1",
+      generation: 1,
+      status: "refresh_temporarily_unavailable",
+      reason: "offline",
+    });
+    // The call is NOT over: media already flowing runs to its grant's expiry.
+    expect(handle.account?.invalidated).toBe(false);
+    expect(handle.state().authorityPaused).toBe(true);
+    expect(handle.state().code).not.toBe("ACCOUNT_CHANGED");
+
+    await handle.setTranscription(true);
+    expect(harness.consents).toHaveLength(0);
+    expect(handle.state().consentUnavailable).toBe(true);
+
+    harness.emit(AUTH_SESSION_EVENT, {
+      accountId: "acct-1",
+      generation: 1,
+      status: "active",
+      reason: null,
+    });
+    expect(handle.state().authorityPaused).toBe(false);
+    await handle.setTranscription(false);
+    await handle.setTranscription(true);
+    expect(harness.consents.length).toBeGreaterThan(0);
+    await handle.leave();
+    await handle.close();
+  });
+});
+
+describe("join controls require a resolved identity", () => {
+  it("reports identity as unresolved until the gate answers, and gates the shell on it", async () => {
+    const fs = await import("node:fs/promises");
+    // `connecting` is published BEFORE the identity gate runs, so a shell that
+    // enabled its controls on status alone would hand the microphone to a
+    // window that has not proved whose account it is.
+    expect(initialCallViewState().identityResolved).toBe(false);
+
+    let personUid = "6f0a1e2c-1111-4222-8333-444455556666";
+    const harness = bench();
+    harness.deps.identity = {
+      whoami: (async () => ({ ok: true as const, value: { personUid } })) as never,
+    };
+    const handle = await startCallWindow(harness.deps);
+    expect(handle.state().status).toBe("identity");
+    expect(handle.state().identityResolved).toBe(false);
+
+    personUid = "prs_1";
+    await handle.retryIdentity();
+    expect(handle.state().identityResolved).toBe(true);
+
+    const shell = await fs.readFile(
+      new URL("./CallShell.svelte", import.meta.url),
+      "utf8",
+    );
+    const controls = shell.slice(
+      shell.indexOf("const controlsEnabled"),
+      shell.indexOf("const denial"),
+    );
+    expect(controls).toContain("view.identityResolved");
+    expect(controls).toContain("view.authorityPaused");
     await handle.close();
   });
 });

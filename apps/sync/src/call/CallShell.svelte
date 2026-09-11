@@ -19,8 +19,20 @@
   const remoteTracks = $derived(callView.remoteTracks);
   const mic = $derived(view.media.microphone);
   const cam = $derived(view.media.camera);
-  /** Controls stay inert until this window proved whose account it is. */
-  const controlsEnabled = $derived(view.status === 'joined' || view.status === 'connecting');
+  /**
+   * Controls stay inert until this window proved whose account it is.
+   *
+   * `connecting` is reached BEFORE the identity gate answers, so status alone
+   * would hand the microphone to a window that has not yet resolved a
+   * canonical `prs_…`. `identityResolved` is the proof; authority being paused
+   * (the host cannot refresh credentials) also holds them shut, because a
+   * capture started there could not be authorized.
+   */
+  const controlsEnabled = $derived(
+    view.identityResolved &&
+      !view.authorityPaused &&
+      (view.status === 'joined' || view.status === 'connecting'),
+  );
   const denial = $derived(
     mic.recovery && (mic.status === 'denied' || mic.status === 'error')
       ? { kind: 'Microphone', recovery: mic.recovery, device: 'microphone' as const }
@@ -112,6 +124,14 @@
     <div class="notice" data-testid="call-identity-error" role="alert">
       <span>Confirm your account to join this call.</span>
       <button type="button" data-testid="call-identity-retry" onclick={retryIdentity}>Retry</button>
+    </div>
+  {/if}
+
+  {#if view.authorityPaused}
+    <div class="notice" data-testid="call-authority-paused" role="status">
+      <span
+        >Reconnecting to your account. The call continues; new actions are paused.</span
+      >
     </div>
   {/if}
 

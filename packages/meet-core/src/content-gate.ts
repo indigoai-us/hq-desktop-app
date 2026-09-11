@@ -21,6 +21,8 @@ export type ContentCloseReason =
   | "peer-removed"
   | "traffic-stopped"
   | "account-changed"
+  /** Our OWN admission is gone: the roster no longer lists this device. */
+  | "not-admitted"
   | "left";
 
 export interface ContentGateEvent {

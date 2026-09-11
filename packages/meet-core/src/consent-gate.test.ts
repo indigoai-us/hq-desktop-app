@@ -144,14 +144,67 @@ describe("consent gate", () => {
     expect(created.recognitionAllowed()).toBe(false);
   });
 
-  it("turning the control off drops the proof entirely", () => {
+  it("turning the control off pauses the proof and keeps its epoch", () => {
+    // Previously this dropped the proof. That lost the epoch the withdrawal
+    // has to be filed against: the backend pauses the CURRENT proof and
+    // refuses a control naming an epoch that is not head, so a forgotten epoch
+    // meant a withdrawal that could never land while the proof stayed ready
+    // for everyone else.
     const created = gate();
     created.applyProof(proof());
     created.setEnabled(false);
     expect(created.snapshot().status).toBe("off");
+    // The withdrawal goes out for epoch 1 (the one that is open), not epoch 2.
+    expect(consentAckFields(created, false)).toEqual({
+      kind: "consentControl",
+      consentEpoch: 1,
+      rosterRevision: 1,
+      processorId: null,
+      acknowledged: false,
+    });
     created.setEnabled(true);
     expect(created.recognitionAllowed()).toBe(false);
-    expect(created.nextConsentEpoch()).toBe(1);
+    // A paused proof is never reusable: re-enabling must open head + 1.
+    expect(created.nextConsentEpoch()).toBe(2);
+    expect(consentAckFields(created, true).consentEpoch).toBe(2);
+  });
+
+  it("withdraws at the epoch that is open, at any epoch height", () => {
+    const created = gate();
+    created.applyProof(proof());
+    created.observeRoster({
+      rosterRevision: 2,
+      participants: ["prs_a", "prs_b"],
+    });
+    created.applyProof(
+      proof({ revision: 1, consentEpoch: 5, rosterRevision: 2 }),
+    );
+    created.setEnabled(false);
+    expect(consentAckFields(created, false).consentEpoch).toBe(5);
+    created.setEnabled(true);
+    expect(consentAckFields(created, true).consentEpoch).toBe(6);
+  });
+
+  it("a newer proof supersedes the paused one", () => {
+    const created = gate();
+    created.applyProof(proof());
+    created.setEnabled(false);
+    created.setEnabled(true);
+    created.applyProof(proof({ consentEpoch: 2, revision: 1 }));
+    expect(created.snapshot().consentEpoch).toBe(2);
+    expect(created.recognitionAllowed()).toBe(true);
+  });
+
+  it("defaults an ack's processorId to the proof it is amending", () => {
+    const created = gate();
+    created.applyProof(proof({ processorId: "processor" }));
+    expect(created.snapshot().processorId).toBe("processor");
+    // The backend refuses an amendment whose processorId differs from the
+    // stored proof's, so defaulting to null here would wedge the epoch.
+    expect(consentAckFields(created, true).processorId).toBe("processor");
+    expect(consentAckFields(created, false).processorId).toBe("processor");
+    // An explicit null is still an explicit null.
+    expect(consentAckFields(created, true, null).processorId).toBeNull();
   });
 
   it("builds an ack envelope body for the epoch that must be opened", () => {

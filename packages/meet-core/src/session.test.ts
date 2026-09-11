@@ -377,6 +377,25 @@ describe("snapshots", () => {
     expect(session.snapshot().peers[0]?.peerId).toBe("prs_bob dev_b");
   });
 
+  it("carry the admitted roster, key-free, not only the peers we hold", async () => {
+    const { session, scheduler, fabric } = fixture();
+    await session.join(grantFor(1, scheduler.now() + 60_000));
+    fabric.admit(alice, bob);
+    await flush();
+
+    // Downstream gates (content delivery, the consent barrier) must reason
+    // about who is ADMITTED. `peers` is only who we currently hold a transport
+    // to, which lags admission — consenting over that set would recognize the
+    // audio of someone who has not yet connected and never acknowledged.
+    expect(session.snapshot().admitted).toEqual([
+      { personUid: alice.personUid, deviceId: alice.deviceId },
+      { personUid: bob.personUid, deviceId: bob.deviceId },
+    ]);
+    expect(JSON.stringify(session.snapshot().admitted)).not.toContain(
+      bob.peerKey,
+    );
+  });
+
   it("reports transport tuning that matches the ported prototype cap", () => {
     expect(TRANSPORT_TUNING.maxIceRestarts).toBe(5);
     expect(TRANSPORT_TUNING.restartBackoffMaxMs).toBe(15_000);
