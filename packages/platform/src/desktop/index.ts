@@ -52,6 +52,15 @@ export function createDesktopAdapter(
     capabilities: TAURI_CAPABILITIES,
     isAvailable: (cap: Capability): boolean => TAURI_CAPABILITIES[cap],
 
+    /**
+     * Native calling → tauri. The composite's cloud groups go through the web
+     * adapter, but `web.calls` is a deliberate refusal (browser host), and the
+     * TauriPlatformAdapter reaches hq-pro through the native authenticated
+     * seam — so the desktop host keeps a working calls group, consistent with
+     * TAURI_CAPABILITIES.nativeCalls === true.
+     */
+    calls: tauri.calls,
+
     // Cloud-backed groups → hq-pro REST (identical surface to web).
     identity: web.identity,
     messaging: web.messaging,

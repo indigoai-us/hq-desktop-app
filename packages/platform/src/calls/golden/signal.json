@@ -1,0 +1,1 @@
+{"callId":"call_a","companyUid":"company_a","deviceId":"device_a","epoch":1,"grantId":"grant_a","kind":"signal","payload":"v=0\r\n","peerKey":"74b7e740f8e4c053b259277db8a59ac617f56eec849b2f5bc36c2d32af70a425","personUid":"alice","roomId":"room_a","rosterRevision":1,"sentAt":0,"sequence":0,"targetDeviceId":"device_b","targetPersonUid":"bob","type":"offer","version":"hq-meet/1"}

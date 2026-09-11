@@ -1,0 +1,1 @@
+{"callId":"call_a","companyUid":"company_a","consentEpoch":1,"epoch":1,"kind":"consent","participants":[{"acknowledged":true,"deviceId":"device_a","personUid":"alice"}],"processorId":null,"roomId":"room_a","rosterRevision":1,"version":"hq-meet/1"}

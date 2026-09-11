@@ -51,6 +51,16 @@ export interface Capabilities {
    * fabric-genesis sidecars. Desktop only — browsers cannot see ~/.hq.
    */
   localWorkMeshCache: boolean;
+  /**
+   * Native calling over the hq-pro "hq-meet/1" contract (US-014). True on the
+   * Tauri hosts, which reach hq-pro through the native authenticated seam;
+   * false on web, where the shared shell must render the unsupported state
+   * rather than any working native control.
+   *
+   * The flag says the host *could* place calls. An individual adapter still
+   * refuses every call until its own service-evidence preflight passes.
+   */
+  nativeCalls: boolean;
 }
 
 export type Capability = keyof Capabilities;
@@ -70,6 +80,8 @@ export const WEB_CAPABILITIES: Readonly<Capabilities> = Object.freeze({
   // Web runs in a browser tab — no OS window controls over the app chrome.
   hasWindowControls: false,
   localWorkMeshCache: false,
+  // Browsers have no native calling host; the calls group is explicit about it.
+  nativeCalls: false,
 });
 
 export const TAURI_CAPABILITIES: Readonly<Capabilities> = Object.freeze({
@@ -86,6 +98,7 @@ export const TAURI_CAPABILITIES: Readonly<Capabilities> = Object.freeze({
   // Desktop is a native window with OS-drawn traffic lights / caption buttons.
   hasWindowControls: true,
   localWorkMeshCache: true,
+  nativeCalls: true,
 });
 
 /**
@@ -119,6 +132,8 @@ const MOBILE_CAPABILITIES: Readonly<Capabilities> = Object.freeze({
   trayAndWindow: false,
   hasWindowControls: false,
   localWorkMeshCache: false,
+  // Mobile hq-meet clients are out of scope for US-014.
+  nativeCalls: false,
 });
 
 export const IOS_CAPABILITIES = MOBILE_CAPABILITIES;

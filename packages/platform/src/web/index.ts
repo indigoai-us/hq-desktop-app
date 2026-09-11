@@ -26,6 +26,7 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { WEB_CAPABILITIES, type Capability } from "../capabilities.js";
+import { createUnsupportedCallsApi } from "../calls/api.js";
 import {
   parseShelfViewer,
   parseSkillPath,
@@ -511,6 +512,14 @@ export class WebPlatformAdapter implements PlatformAdapter {
   }
 
   // -- Cloud-available groups ----------------------------------------------
+
+  /**
+   * Native calling is a desktop-host capability (US-014). The browser build
+   * says so explicitly on every method — code "CALLS_UNSUPPORTED_HOST" — so
+   * the shared shell renders the unsupported state instead of exposing a
+   * control that appears to work.
+   */
+  readonly calls: PlatformAdapter["calls"] = createUnsupportedCallsApi();
 
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.get(WEB_PATHS.whoami),

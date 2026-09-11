@@ -1,0 +1,1 @@
+{"callId":"call_a","companyUid":"company_a","deviceId":"device_a","epoch":1,"expiresAt":60000,"grantId":"grant_a","issuedAt":0,"kind":"grant","peerKey":"74b7e740f8e4c053b259277db8a59ac617f56eec849b2f5bc36c2d32af70a425","personUid":"alice","role":"host","roomId":"room_a","rosterRevision":1,"version":"hq-meet/1"}

@@ -23,6 +23,10 @@
  */
 
 import type { Capabilities, Capability } from "./capabilities.js";
+import type {
+  EvidenceOptions,
+  ServiceEvidence,
+} from "./calls/evidence.js";
 
 export type AdapterResult<T> = { ok: true; value: T } | AdapterFailure;
 
@@ -1086,6 +1090,131 @@ export interface WorkMeshApi {
 }
 
 // ---------------------------------------------------------------------------
+// Calls (native Meet, contract "hq-meet/1") — US-014
+// ---------------------------------------------------------------------------
+
+/** Room lifecycle POSTs under /v1/meet-native/rooms/{roomId}/{action}. */
+export type RoomLifecycleAction = "renew" | "leave" | "end" | "start";
+
+/** Knock responses under /v1/meet-native/knocks/{knockId}/{action}. */
+export type KnockAction = "accept" | "decline" | "defer" | "cancel";
+
+/** Signed control operations under /v1/meet-native/signaling/{operation}. */
+export type SignalingOperation = "admit" | "renew" | "reconcile" | "revoke";
+
+/** Signed completion operations under /v1/meet-native/completion/{operation}. */
+export type CompletionOperation =
+  | "create"
+  | "claim"
+  | "status"
+  | "upload"
+  | "finalize";
+
+export interface OfficePreferenceInput {
+  companyUid: string;
+  willingness: string;
+  ttlMs?: number;
+}
+
+export interface OfficeConnectivityInput {
+  companyUid: string;
+  connectivity: string;
+  ttlMs?: number;
+}
+
+export interface CreateRoomInput {
+  companyUid: string;
+  visibility: "company" | "private";
+  /** Defaults to [] — the service rejects more than 7. */
+  cohosts?: string[];
+}
+
+export interface KnockCreateInput {
+  companyUid: string;
+  roomId: string;
+  callId: string;
+  epoch: number;
+  target: string;
+  note: string;
+  idempotencyKey: string;
+}
+
+/** POST /v1/meet-native/signaling/send — a signed signal envelope. */
+export interface SendSignalRequest {
+  signal: Json;
+  signature: string;
+}
+
+/**
+ * Native calling (hq-pro "hq-meet/1").
+ *
+ * Two invariants the type cannot express but every implementation honours:
+ *
+ *  1. `preflight()` must record a passing US-011 service evidence receipt on
+ *     this adapter instance before any other method does anything. Until then
+ *     they all resolve `unavailable` with code "CALLS_PREFLIGHT_REQUIRED".
+ *  2. Hosts without native calling (browsers) implement the whole group as
+ *     `unavailable` with code "CALLS_UNSUPPORTED_HOST" — never a stub `ok()`.
+ *
+ * Request bodies carry `version: "hq-meet/1"`; failures preserve the backend
+ * error `code` (COMPANY_ACCESS_DENIED, STALE_EPOCH, CALL_SEALED, ...).
+ */
+export interface CallsApi {
+  /** The contract version this adapter speaks. */
+  readonly contractVersion: "hq-meet/1";
+  /**
+   * Validate a US-011 service evidence receipt and, on success, unlock this
+   * adapter instance. A failing receipt clears any previous pass.
+   */
+  preflight(
+    evidence: unknown,
+    options?: EvidenceOptions,
+  ): AdapterPromise<ServiceEvidence>;
+  /** The recorded evidence, or the standard refusal when preflight has not passed. */
+  preflightStatus(): AdapterResult<ServiceEvidence>;
+
+  discoverOffice(companyUid: string): AdapterPromise<Json>;
+  setOfficePreference(input: OfficePreferenceInput): AdapterPromise<Json>;
+  setOfficeConnectivity(input: OfficeConnectivityInput): AdapterPromise<Json>;
+
+  createRoom(input: CreateRoomInput): AdapterPromise<Json>;
+  getRoom(roomId: string, companyUid: string): AdapterPromise<Json>;
+  /** Body is an `admission` envelope. */
+  joinRoom(roomId: string, admission: Json): AdapterPromise<Json>;
+  roomLifecycle(
+    roomId: string,
+    action: RoomLifecycleAction,
+    body: Json,
+  ): AdapterPromise<Json>;
+
+  createKnock(input: KnockCreateInput): AdapterPromise<Json>;
+  listKnocks(companyUid: string, limit?: number): AdapterPromise<Json>;
+  getKnock(knockId: string, companyUid: string): AdapterPromise<Json>;
+  respondToKnock(
+    knockId: string,
+    action: KnockAction,
+    companyUid: string,
+  ): AdapterPromise<Json>;
+
+  /** Body is a signed `control` envelope. */
+  signalingControl(
+    operation: SignalingOperation,
+    control: Json,
+  ): AdapterPromise<Json>;
+  sendSignal(request: SendSignalRequest): AdapterPromise<Json>;
+  /** Body is a signed `iceConfig` envelope. Credentials never enter logs. */
+  iceConfig(request: Json): AdapterPromise<Json>;
+
+  /** Body is a signed `consentControl` envelope. */
+  completionConsent(control: Json): AdapterPromise<Json>;
+  /** Body is a signed `completionControl` envelope. */
+  completion(
+    operation: CompletionOperation,
+    control: Json,
+  ): AdapterPromise<Json>;
+}
+
+// ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
 
@@ -1117,4 +1246,6 @@ export interface PlatformAdapter {
   readonly sessions: SessionsApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
+  /** Native calling (US-014). Unsupported hosts implement it as refusals. */
+  readonly calls: CallsApi;
 }

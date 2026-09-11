@@ -1,0 +1,27 @@
+{
+  "serviceRepo": "indigoai-us/hq-pro",
+  "serviceCommit": "848a966101536036cab01efec69b3439735b5ec6",
+  "sourcePath": "test/meetings/native/fixtures",
+  "contractHash": "6480e4a0c45e1dc40903152357c5f58ee06c36b1b6c31a62afdd7b2745740e76",
+  "files": {
+    "admission.json": "d26f8b9bb13202f5b320ed2f3f4ad5ff65d133b69bf87403303b9a3fab95de98",
+    "chunk-bytes.json": "6f99db6fb918ec2e90c46421651020b8a752a8679d627248f7fa8d14ea26a813",
+    "chunk.json": "04bebf85c6dc1ab59881b385c1ec4d891bd5d22e755d17b84b94ae89a2c5814c",
+    "chunkReceipt.json": "d089e75d00effd66a17300dbcccf5cb902431f2602c99d9d41933cb851460e6c",
+    "completion.json": "6b9ddb17195d6f101c6571a1041abd829ef6912e028f9021797f6dba6e8e9ad3",
+    "completionManifest.json": "a0d0b953258b203ffdc03bdf365f652c6b2e8499c0a873cf11a89572f254f8c9",
+    "consent.json": "cb474695fb02f47bab7eb2ffca1c577c5eaf393cff95a1b7a9737aaaf50104f1",
+    "correction.json": "f20f609a2dc515dd726b1f36f0b265e276304cdae0a9bdddcabd051ee451a9e8",
+    "crypto-vectors.json": "51d9237d854f56309b670e031e27f61cc2f969a1bc860d047aa073a50ae8eade",
+    "finalizationReceipt.json": "ff6f64ab6515bb92a96f12e2396d134e525fb22db872b420e5884248d5d9c694",
+    "grant.json": "abdb38810b472260be9485ed7de27f403d37cd5f2cdacfdab35db5406084f2db",
+    "identities.json": "3f0bc67ec7acf0fc6260a0450652989c54b637a6e3b1001e469ec6e72307cd96",
+    "knock.json": "8e5215c3233ad78f13af98c244ca8f6451ebc251355c020be697268ad588a603",
+    "manifest.json": "fb7569c60c4c6e8a5a9a2c77879a6d49130271d965052c949a0eab76ceeba778",
+    "receipt.json": "60dce5cc75581bab9657aba615706a9c16ff4f542bb53deaaacd013b517ca079",
+    "room.json": "6a90f501548fa427106c940e4c0f163a318fade71a4c3a736e98e1b8d9d56255",
+    "segment.json": "77e08ceb134baa1e4dd6ff91e861cc6e8d7d4efabc7b63afc71a61f789bf42c0",
+    "signal.json": "4a1456af32f03b9154822195abd41c7ebc3c7e89be83bc3adfd718e13779caa7",
+    "uploadCapability.json": "9a6552e2fc12fed9c17d68958497469d8d8faec329d90aa27a6a8ce81789f82b"
+  }
+}
