@@ -113,7 +113,8 @@
     type SessionSpec,
     type TurnOverrides,
   } from '../lib/live-session-store.svelte';
-  import type { AgentSession } from '../lib/sessions';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import { claudeCodeSessionUrl, type AgentSession } from '../lib/sessions';
   import { encodeHistorySessionParam, encodeLiveSessionParam } from './sessions-route-param';
   import { sessionsStore } from '../lib/sessions-store.svelte';
   import ProjectCreatedCard from '../../components/sessions/ProjectCreatedCard.svelte';
@@ -1310,6 +1311,19 @@
   async function handleOpenHistory(session: AgentSession) {
     if (starting) return false;
     actionError = '';
+    // A Remote Control session is driven from claude.ai, and its transcript
+    // lives on the machine running it (usually the outpost). Open it there
+    // instead of hydrating a transcript this machine does not have.
+    const remoteUrl = claudeCodeSessionUrl(session);
+    if (remoteUrl) {
+      try {
+        await openExternal(remoteUrl);
+        return true;
+      } catch (err) {
+        actionError = err instanceof Error ? err.message : String(err);
+        return false;
+      }
+    }
     try {
       // Selecting history is navigation, not execution. Hydrate the provider
       // transcript now and create a live resume process only on the first new
