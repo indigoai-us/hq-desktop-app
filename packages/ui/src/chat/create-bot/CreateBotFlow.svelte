@@ -210,7 +210,10 @@
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       event.preventDefault();
       event.stopPropagation();
-      if (createOk) void submit();
+      // `submit` is the gate: it creates only when every walked step is valid,
+      // and otherwise moves the user to the step that still needs them rather
+      // than swallowing the keystroke.
+      if (!busy) void submit();
       return;
     }
     if (event.key === "Enter" && !isLast && advanceOk) {
