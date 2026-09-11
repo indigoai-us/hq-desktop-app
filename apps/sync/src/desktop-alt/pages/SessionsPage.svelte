@@ -178,6 +178,9 @@
   let preflight = $state<Preflight | null>(null);
   let preflightLoading = $state(false);
   let actionError = $state('');
+  let reauthPending = $state(false);
+  let reauthMessage = $state('');
+  let reauthPoll: ReturnType<typeof setTimeout> | undefined;
   let sessionUnavailable = $state(false);
   let starting = $state(false);
   let busyRequestId = $state<string | null>(null);
@@ -1007,8 +1010,47 @@
     }
   }
 
+  async function handleReauth() {
+    if (reauthPending) return;
+    const next = liveSessionStore.summary?.tool ?? tool;
+    reauthPending = true;
+    reauthMessage = 'Opening sign-in…';
+    try {
+      const started = await liveSessionStore.providerLoginStart(next, { force: true });
+      reauthMessage = started.message ?? 'Finish signing in in your browser.';
+      if (started.state === 'connected') {
+        reauthPending = false;
+        reauthMessage = 'Signed in.';
+        return;
+      }
+      if (started.state === 'error') {
+        reauthPending = false;
+        reauthMessage = started.message ?? 'Sign-in did not complete. Try again.';
+        return;
+      }
+      const poll = async () => {
+        const status = await liveSessionStore.providerLoginStatus(next);
+        reauthMessage = status.message ?? reauthMessage;
+        if (status.state === 'waiting') {
+          reauthPoll = setTimeout(() => void poll(), 1500);
+          return;
+        }
+        reauthPending = false;
+        reauthMessage =
+          status.state === 'connected'
+            ? 'Signed in. Send again to continue.'
+            : (status.message ?? 'Sign-in did not complete. Try again.');
+      };
+      reauthPoll = setTimeout(() => void poll(), 1500);
+    } catch (err) {
+      reauthPending = false;
+      reauthMessage = err instanceof Error ? err.message : 'Could not start sign-in.';
+    }
+  }
+
   onDestroy(() => {
     if (menuResultTimer !== null) clearTimeout(menuResultTimer);
+    if (reauthPoll) clearTimeout(reauthPoll);
   });
 
   let pageEl = $state<HTMLDivElement | null>(null);
@@ -1556,10 +1598,9 @@
       void decide(requestId, () => liveSessionStore.answerQuestion(requestId, answers))}
     onchoosemodel={() => composer?.openModelMenu()}
     reauthTool={liveSessionStore.summary?.tool ?? tool}
-    onreauth={() => {
-      const next = liveSessionStore.summary?.tool ?? tool;
-      void liveSessionStore.providerLoginStart(next);
-    }}
+    reauthPending={reauthPending}
+    reauthMessage={reauthMessage}
+    onreauth={() => void handleReauth()}
   />
 
   {#if checkpointDue}

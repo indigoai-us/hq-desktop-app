@@ -1672,8 +1672,11 @@ export const liveSessionStore = {
   shareToChannel,
   preflight,
   repairHqSetup,
-  providerLoginStart: async (tool: SessionTool) => {
-    const result = await invoke<ProviderLoginState>('agent_provider_login_start', { tool });
+  providerLoginStart: async (tool: SessionTool, opts?: { force?: boolean }) => {
+    const result = await invoke<ProviderLoginState>('agent_provider_login_start', {
+      tool,
+      ...(opts?.force ? { force: true } : {}),
+    });
     if (result.state === 'connected') {
       staleLogin.delete(tool);
       preflightCache = null;

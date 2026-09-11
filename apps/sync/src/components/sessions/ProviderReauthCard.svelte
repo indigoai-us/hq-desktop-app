@@ -4,10 +4,12 @@
    */
   interface Props {
     tool?: string | null;
+    pending?: boolean;
+    message?: string;
     onsignin?: () => void;
   }
 
-  let { tool = 'claude', onsignin }: Props = $props();
+  let { tool = 'claude', pending = false, message = '', onsignin }: Props = $props();
 
   const name = $derived(
     tool === 'codex' ? 'Codex' : tool === 'grok' ? 'Grok' : 'Claude',
@@ -26,19 +28,20 @@
   </span>
   <span class="copy">
     <span class="title">Sign in to {name}</span>
-    <span class="summary">This session needs a fresh sign-in on this Mac. Other {name} apps can stay signed in.</span>
+    <span class="summary">{message.trim() || `This session needs a fresh sign-in on this Mac. Other ${name} apps can stay signed in.`}</span>
     <span class="meta">{name.toUpperCase()} · SIGN IN</span>
   </span>
   <button
     type="button"
     class="signin"
     data-testid="session-reauth"
+    disabled={pending}
     onclick={(event) => {
       event.stopPropagation();
       onsignin?.();
     }}
   >
-    Sign in
+    {pending ? 'Signing in…' : 'Sign in'}
   </button>
 </div>
 
@@ -140,7 +143,12 @@
     cursor: pointer;
   }
 
-  .signin:hover {
+  .signin:hover:not(:disabled) {
     background: var(--v4-active-row, rgba(255, 255, 255, 0.12));
+  }
+
+  .signin:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 </style>

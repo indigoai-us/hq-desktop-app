@@ -73,6 +73,8 @@
     onchoosemodel?: () => void;
     onreauth?: () => void;
     reauthTool?: string | null;
+    reauthPending?: boolean;
+    reauthMessage?: string;
     restoreScroll?: NavigationScrollState | null;
   }
 
@@ -93,6 +95,8 @@
     onchoosemodel,
     onreauth,
     reauthTool = 'claude',
+    reauthPending = false,
+    reauthMessage = '',
     restoreScroll = null,
   }: Props = $props();
 
@@ -328,7 +332,12 @@
             onsubmit={onanswerquestion}
           />
         {:else if block.type === 'error' && block.action === 'reauth'}
-          <ProviderReauthCard tool={reauthTool} onsignin={() => onreauth?.()} />
+          <ProviderReauthCard
+            tool={reauthTool}
+            pending={reauthPending}
+            message={reauthMessage}
+            onsignin={() => onreauth?.()}
+          />
         {:else if block.type === 'error'}
           <p
             class="inline-error"

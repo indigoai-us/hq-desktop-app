@@ -171,25 +171,34 @@ async fn run_login(
     status: Arc<SyncMutex<LoginState>>,
     mut cancel: oneshot::Receiver<()>,
     deadline: Duration,
+    force: bool,
 ) {
     let args: &[&str] = match tool {
         SessionTool::Claude => &["auth", "login"],
         SessionTool::Codex => &["login"],
         SessionTool::Grok => &["login"],
     };
-    let mut command = match command(&program, args).await {
-        Ok(command) => command,
+    if cancel.try_recv().is_ok() {
+        *status.lock().unwrap() = state("disconnected", Some("Sign-in cancelled."));
+        return;
+    }
+    if force && tool == SessionTool::Claude {
+        if let Ok(mut logout) = command(&program, &["auth", "logout"]).await {
+            if let Ok(mut child) = logout.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+                let _ = tokio::time::timeout(Duration::from_secs(8), child.wait()).await;
+                let _ = child.kill().await;
+            }
+        }
+    }
+    let mut login = match command(&program, args).await {
+        Ok(login) => login,
         Err(()) => {
             *status.lock().unwrap() =
                 state("error", Some("Provider lookup timed out. Please retry."));
             return;
         }
     };
-    if cancel.try_recv().is_ok() {
-        *status.lock().unwrap() = state("disconnected", Some("Sign-in cancelled."));
-        return;
-    }
-    let Ok(mut child) = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
+    let Ok(mut child) = login.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
         *status.lock().unwrap() = state(
             "error",
             Some("Could not start sign-in. Check that the provider is installed and retry."),
@@ -212,6 +221,7 @@ async fn start_with(
     tool: SessionTool,
     program: String,
     deadline: Duration,
+    force: bool,
 ) -> LoginState {
     // Serialize start/probe/cancel so repeated clicks can never create two browser flows.
     let mut attempts = attempts.lock().await;
@@ -221,7 +231,7 @@ async fn start_with(
         }
     }
     match probe(tool, &program).await {
-        Ok(true) => {
+        Ok(true) if !force => {
             attempts.remove(key(tool));
             return state("connected", None);
         }
@@ -231,14 +241,21 @@ async fn start_with(
                 Some("Could not check sign-in. Check that the provider is installed and retry."),
             )
         }
-        Ok(false) => {}
+        Ok(_) => {}
     }
     let status = Arc::new(SyncMutex::new(state(
         "waiting",
         Some("Complete sign-in in your browser."),
     )));
     let (cancel, receiver) = oneshot::channel();
-    let task = tokio::spawn(run_login(tool, program, status.clone(), receiver, deadline));
+    let task = tokio::spawn(run_login(
+        tool,
+        program,
+        status.clone(),
+        receiver,
+        deadline,
+        force,
+    ));
     let result = status.lock().unwrap().clone();
     attempts.insert(
         key(tool),
@@ -251,8 +268,18 @@ async fn start_with(
     result
 }
 #[tauri::command]
-pub async fn agent_provider_login_start(tool: SessionTool) -> Result<LoginState, String> {
-    Ok(start_with(attempts(), tool, program(tool).await?, LOGIN_TIMEOUT).await)
+pub async fn agent_provider_login_start(
+    tool: SessionTool,
+    force: Option<bool>,
+) -> Result<LoginState, String> {
+    Ok(start_with(
+        attempts(),
+        tool,
+        program(tool).await?,
+        LOGIN_TIMEOUT,
+        force.unwrap_or(false),
+    )
+    .await)
 }
 #[tauri::command]
 pub async fn agent_provider_login_status(tool: SessionTool) -> Result<LoginState, String> {
@@ -307,7 +334,7 @@ mod tests {
             SessionTool::Codex => "printf 'Not logged in\\n' >&2; exit 1",
             SessionTool::Grok => "printf 'Not logged in. Run `grok login`.\\n' >&2; exit 1",
         };
-        std::fs::write(&path, format!("#!/bin/sh\ncd '{}'\ncase \"$*\" in\n'auth status --json'|'login status'|'models')\nif [ -f connected ]; then {signed_in}; else {signed_out}; fi;;\n'auth login'|'login')\nprintf 'login\\n' >> calls\n{login};;\n*) exit 9;;\nesac\n", dir.path().display())).unwrap();
+        std::fs::write(&path, format!("#!/bin/sh\ncd '{}'\ncase \"$*\" in\n'auth status --json'|'login status'|'models')\nif [ -f connected ]; then {signed_in}; else {signed_out}; fi;;\n'auth logout')\nrm -f connected;;\n'auth login'|'login')\nprintf 'login\\n' >> calls\n{login};;\n*) exit 9;;\nesac\n", dir.path().display())).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         (dir, path.to_string_lossy().into_owned())
     }
@@ -339,7 +366,7 @@ mod tests {
             let attempts = Attempts::default();
             assert!(!probe(tool, &program).await.unwrap());
             assert_eq!(
-                start_with(&attempts, tool, program.clone(), LOGIN_TIMEOUT)
+                start_with(&attempts, tool, program.clone(), LOGIN_TIMEOUT, false)
                     .await
                     .state,
                 "waiting"
@@ -357,7 +384,8 @@ mod tests {
                 &Attempts::default(),
                 SessionTool::Claude,
                 program,
-                LOGIN_TIMEOUT
+                LOGIN_TIMEOUT,
+                false,
             )
             .await
             .state,
@@ -370,6 +398,29 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn force_reauth_replaces_a_stale_login() {
+        let (dir, program) = fake(SessionTool::Claude, "touch connected; exit 0");
+        std::fs::write(dir.path().join("connected"), "stale").unwrap();
+        let attempts = Attempts::default();
+        assert_eq!(
+            start_with(
+                &attempts,
+                SessionTool::Claude,
+                program,
+                LOGIN_TIMEOUT,
+                true,
+            )
+            .await
+            .state,
+            "waiting"
+        );
+        assert_eq!(finished(&attempts, SessionTool::Claude).await.state, "connected");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("calls")).unwrap(),
+            "login\n"
+        );
+    }
+    #[tokio::test]
     async fn repeated_clicks_are_single_flight_and_cancel_reaps_child() {
         let (dir, program) = fake(SessionTool::Codex, "echo $$ > pid; sleep 60");
         let attempts = Attempts::default();
@@ -378,9 +429,10 @@ mod tests {
             SessionTool::Codex,
             program.clone(),
             LOGIN_TIMEOUT,
+            false,
         )
         .await;
-        start_with(&attempts, SessionTool::Codex, program, LOGIN_TIMEOUT).await;
+        start_with(&attempts, SessionTool::Codex, program, LOGIN_TIMEOUT, false).await;
         for _ in 0..100 {
             if dir.path().join("pid").exists() {
                 break;
@@ -411,6 +463,7 @@ mod tests {
             SessionTool::Codex,
             program.clone(),
             Duration::from_millis(40),
+            false,
         )
         .await;
         assert_eq!(
@@ -422,7 +475,8 @@ mod tests {
                 &attempts,
                 SessionTool::Codex,
                 program,
-                Duration::from_millis(40)
+                Duration::from_millis(40),
+                false,
             )
             .await
             .state,
@@ -441,7 +495,7 @@ mod tests {
             "echo 'secret-token-private-url' >&2; exit 1",
         );
         let attempts = Attempts::default();
-        start_with(&attempts, SessionTool::Claude, program, LOGIN_TIMEOUT).await;
+        start_with(&attempts, SessionTool::Claude, program, LOGIN_TIMEOUT, false).await;
         let reply = finished(&attempts, SessionTool::Claude).await;
         assert_eq!(reply.state, "error");
         assert!(!serde_json::to_string(&reply)
@@ -452,7 +506,7 @@ mod tests {
     async fn successful_exit_without_real_auth_is_not_connected() {
         let (_dir, program) = fake(SessionTool::Claude, "exit 0");
         let attempts = Attempts::default();
-        start_with(&attempts, SessionTool::Claude, program, LOGIN_TIMEOUT).await;
+        start_with(&attempts, SessionTool::Claude, program, LOGIN_TIMEOUT, false).await;
         assert_eq!(
             finished(&attempts, SessionTool::Claude).await.state,
             "error"
@@ -471,6 +525,7 @@ mod tests {
             status.clone(),
             receiver,
             LOGIN_TIMEOUT,
+            false,
         )
         .await;
         assert_eq!(status.lock().unwrap().state, "disconnected");
@@ -490,6 +545,7 @@ mod tests {
             SessionTool::Codex,
             program,
             LOGIN_TIMEOUT,
+            false,
         )
         .await;
         assert_eq!(result.state, "error");
