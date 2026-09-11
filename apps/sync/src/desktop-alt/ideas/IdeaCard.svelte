@@ -17,9 +17,11 @@
     onaccept?: (record: IdeaCapture) => void;
     /** "Just an image": demote to a plain image card. */
     ondismiss?: (record: IdeaCapture) => void;
+    /** Open the card detail pane (US-010). */
+    onopen?: (record: IdeaCapture) => void;
   }
 
-  const { record, thumbnail = null, onaccept, ondismiss }: Props = $props();
+  const { record, thumbnail = null, onaccept, ondismiss, onopen }: Props = $props();
 
   const kind = $derived<Exclude<IdeaKind, 'unknown'>>(cardKind(record));
   const status = $derived<IdeaStatus>(record.status);
@@ -55,12 +57,14 @@
   });
 </script>
 
+<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
 <article
   class="idea-card"
   data-id={record.id}
   data-kind={kind}
   data-status={status}
   data-testid="idea-card"
+  onclick={() => onopen?.(record)}
 >
   <span class="idea-rule" aria-hidden="true"></span>
   <span class="ctype">{kindLabel(kind)}</span>
@@ -145,10 +149,24 @@
   {#if status === 'low_confidence'}
     <div class="idea-lowconf-strip" data-testid="idea-lowconf-strip">
       <span class="lowconf-q">Looks like {claimedPhrase}?</span>
-      <button type="button" class="idea-lowconf-accept" onclick={() => onaccept?.(record)}>
+      <button
+        type="button"
+        class="idea-lowconf-accept"
+        onclick={(e) => {
+          e.stopPropagation();
+          onaccept?.(record);
+        }}
+      >
         Yes
       </button>
-      <button type="button" class="idea-lowconf-dismiss" onclick={() => ondismiss?.(record)}>
+      <button
+        type="button"
+        class="idea-lowconf-dismiss"
+        onclick={(e) => {
+          e.stopPropagation();
+          ondismiss?.(record);
+        }}
+      >
         Just an image
       </button>
     </div>

@@ -34,7 +34,7 @@ export interface IdeaCapture {
   ocr_text: string | null;
   extracted: Record<string, unknown> | null;
   tags: string[];
-  extraction_source?: 'local' | 'model';
+  extraction_source?: 'local' | 'model' | 'user';
   provenance: IdeaProvenance;
   note: string | null;
   cited_count: number;
@@ -92,6 +92,16 @@ class IdeaCapturesStore {
     this.records = next.sort(byNewest);
   }
 
+  /** Drop a record that was moved or deleted. */
+  remove(id: string): void {
+    this.records = this.records.filter((row) => row.id !== id);
+    if (this.thumbnails[id] !== undefined) {
+      const next = { ...this.thumbnails };
+      delete next[id];
+      this.thumbnails = next;
+    }
+  }
+
   /** Subscribe to the capture pipeline's live record events. */
   async subscribeToUpdates(): Promise<void> {
     const handle = (event: { payload: unknown }) => {
@@ -99,7 +109,11 @@ class IdeaCapturesStore {
     };
     const completed = await listen('capture:completed', handle);
     const updated = await listen('capture:updated', handle);
-    this.unlisteners.push(completed, updated);
+    const removed = await listen('capture:removed', (event: { payload: unknown }) => {
+      const payload = event.payload as { id?: unknown } | null;
+      if (payload && typeof payload.id === 'string') this.remove(payload.id);
+    });
+    this.unlisteners.push(completed, updated, removed);
   }
 
   unsubscribe(): void {
@@ -113,6 +127,37 @@ class IdeaCapturesStore {
   async setKind(id: string, kind: IdeaKind, status: IdeaStatus): Promise<void> {
     const updated = await invoke('ideas_set_kind', { id, kind, status });
     if (isCapture(updated)) this.upsert(updated);
+  }
+
+  /** Authoritative kind correction from the card detail (confidence 1.0, source user). */
+  async correctKind(id: string, kind: IdeaKind): Promise<void> {
+    const updated = await invoke('ideas_correct_kind', { id, kind });
+    if (isCapture(updated)) this.upsert(updated);
+  }
+
+  async setNote(id: string, note: string): Promise<void> {
+    const updated = await invoke('ideas_set_note', { id, note });
+    if (isCapture(updated)) this.upsert(updated);
+  }
+
+  async setTags(id: string, tags: string[]): Promise<void> {
+    const updated = await invoke('ideas_set_tags', { id, tags });
+    if (isCapture(updated)) this.upsert(updated);
+  }
+
+  async moveCapture(id: string, toCompany: string): Promise<void> {
+    await invoke('ideas_move_capture', { id, toCompany });
+    this.remove(id);
+  }
+
+  async deleteCapture(id: string): Promise<void> {
+    await invoke('ideas_delete_capture', { id });
+    this.remove(id);
+  }
+
+  async listCompanies(): Promise<string[]> {
+    const result = await invoke('ideas_list_companies');
+    return Array.isArray(result) ? result.filter((s): s is string => typeof s === 'string') : [];
   }
 
   /**

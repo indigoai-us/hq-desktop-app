@@ -115,7 +115,11 @@ describe('US-009 idea captures store', () => {
     });
     const store = createIdeaCapturesStore();
     await store.subscribeToUpdates();
-    expect(listen.mock.calls.map((c) => c[0])).toEqual(['capture:completed', 'capture:updated']);
+    expect(listen.mock.calls.map((c) => c[0])).toEqual([
+      'capture:completed',
+      'capture:updated',
+      'capture:removed',
+    ]);
 
     handlers[0]({ payload: record({ id: 'fresh' }) });
     handlers[1]({ payload: 'not a record' });

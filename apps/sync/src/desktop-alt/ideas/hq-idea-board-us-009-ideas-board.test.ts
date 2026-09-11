@@ -186,7 +186,7 @@ describe('US-009 IdeasBoard', () => {
     );
     const el = await render();
     expect(el.querySelectorAll('.ideas-masonry .idea-card')).toHaveLength(2);
-    expect(listeners.length).toBe(2);
+    expect(listeners.length).toBe(3);
 
     // A brand-new capture appears.
     listeners[0]({

@@ -6,6 +6,7 @@
    */
   import { onMount } from 'svelte';
   import IdeaCard from './IdeaCard.svelte';
+  import IdeaDetail from './IdeaDetail.svelte';
   import {
     buildSearchIndex,
     cardKind,
@@ -26,6 +27,8 @@
 
   let query = $state('');
   let chip = $state<IdeaChip>('all');
+  let openId = $state<string | null>(null);
+  let companies = $state<string[]>([]);
 
   const index = $derived(buildSearchIndex(store.records));
   const visible = $derived(searchCaptures(index, query, chip));
@@ -36,9 +39,15 @@
       ? '⌥⇧C'
       : 'Alt+Shift+C';
 
+  const openRecord = $derived(openId ? visible.find((r) => r.id === openId) ?? store.records.find((r) => r.id === openId) : undefined);
+  const openIndex = $derived(openRecord ? visible.findIndex((r) => r.id === openRecord.id) : -1);
+
   onMount(() => {
     void store.load();
     void store.subscribeToUpdates();
+    void store.listCompanies().then((list) => {
+      companies = list;
+    });
     return () => store.unsubscribe();
   });
 
@@ -56,6 +65,20 @@
 
   function dismiss(record: IdeaCapture): void {
     void store.setKind(record.id, 'image', 'plain');
+  }
+
+  function openDetail(record: IdeaCapture): void {
+    openId = record.id;
+  }
+
+  function closeDetail(): void {
+    openId = null;
+  }
+
+  function stepDetail(delta: number): void {
+    if (visible.length === 0) return;
+    const next = openIndex < 0 ? 0 : (openIndex + delta + visible.length) % visible.length;
+    openId = visible[next]?.id ?? null;
   }
 </script>
 
@@ -109,6 +132,7 @@
             thumbnail={store.thumbnails[record.id] ?? null}
             onaccept={accept}
             ondismiss={dismiss}
+            onopen={openDetail}
           />
         {/each}
       </div>
@@ -116,6 +140,17 @@
     {#if visible.length === 0}
       <p class="ideas-noresults" data-testid="ideas-noresults">Nothing matches that yet.</p>
     {/if}
+  {/if}
+  {#if openRecord}
+    <IdeaDetail
+      record={openRecord}
+      imageSrc={store.thumbnails[openRecord.id] ?? null}
+      {companies}
+      {store}
+      onclose={closeDetail}
+      onprev={() => stepDetail(-1)}
+      onnext={() => stepDetail(1)}
+    />
   {/if}
 </section>
 
