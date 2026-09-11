@@ -28,10 +28,15 @@
 //! non-focusable, so the webview itself never receives key events), and
 //! unregistering it on hide so other apps get Escape back.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 
+use hq_desktop_core::ideas::{
+    create_record, CaptureImage, NewCapture, Provenance,
+};
+use hq_platform::screenshot::{self, CaptureRegion, FrontmostInfo};
+use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
@@ -45,6 +50,17 @@ pub const MARK_CHORD: &str = "idea.capture.chord";
 pub const MARK_OVERLAY_VISIBLE: &str = "idea.capture.overlay_visible";
 /// Mark: the overlay was hidden without a capture (`reason=escape|chord|command`).
 pub const MARK_OVERLAY_HIDDEN: &str = "idea.capture.overlay_hidden";
+/// Mark: the drag was released (written before any main-thread hop). Paired
+/// with [`MARK_PNG_WRITTEN`] by the bench to score the release->PNG budget.
+pub const MARK_RELEASE: &str = "idea.capture.release";
+/// Mark: `create_record` wrote `image.png` (` path=<abs path>`).
+pub const MARK_PNG_WRITTEN: &str = "idea.capture.png_written";
+/// Mark: a release carried a degenerate rect (`reason=empty`) — a click, not a drag.
+pub const MARK_RELEASE_REJECTED: &str = "idea.capture.release_rejected";
+/// Mark: the capture could not be stored (` reason=...`).
+pub const MARK_CAPTURE_FAILED: &str = "idea.capture.failed";
+/// Mark: Screen Recording permission is missing, so no overlay was shown.
+pub const MARK_PERMISSION_DENIED: &str = "idea.capture.permission_denied";
 
 /// Window label — kept in sync with the `main.ts` router branch and
 /// `capabilities/capture-overlay.json`.
@@ -53,6 +69,16 @@ pub const WINDOW_LABEL: &str = "capture-overlay";
 /// Frontend events.
 pub const EVENT_SHOWN: &str = "capture-overlay:shown";
 pub const EVENT_HIDDEN: &str = "capture-overlay:hidden";
+/// App-wide event carrying the stored `CaptureRecord` JSON (US-005 toast).
+pub const EVENT_CAPTURE_COMPLETED: &str = "capture:completed";
+
+/// Banner contract for the missing-permission prompt. The frontend
+/// (`App.svelte`) routes `payload.kind === "capture"` /
+/// `action_id === "open-settings"` to
+/// `invoke('permissions_open_settings', { permission: 'screen-capture' })`.
+pub const BANNER_KIND: &str = "capture";
+/// Action id on both the chip and the body click of that banner.
+pub const BANNER_ACTION_OPEN_SETTINGS: &str = "open-settings";
 
 /// Human label for the chord, used in log lines.
 pub const CHORD_LABEL: &str = "Opt+Shift+C";
@@ -60,6 +86,22 @@ pub const CHORD_LABEL: &str = "Opt+Shift+C";
 /// Tracks visibility without a window round-trip so the chord toggle and the
 /// Escape shortcut agree even while a show/hide is in flight.
 static OVERLAY_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+/// The `DisplayRect` the overlay was last shown on. The frontend hands us a
+/// selection in *overlay-window* coordinates; this is the origin that turns it
+/// back into a global rect.
+static SHOWN_DISPLAY: Mutex<Option<DisplayRect>> = Mutex::new(None);
+
+/// Frontmost-app provenance sampled in `show_overlay` **before** the overlay
+/// appears. Once the overlay is on screen it is itself frontmost, so reading
+/// provenance at capture time would always say "HQ".
+static PENDING_PROVENANCE: Mutex<Option<FrontmostInfo>> = Mutex::new(None);
+
+/// The overlay's native window number (macOS `NSWindow.windowNumber`), read on
+/// the main thread at show time. `CGWindowListCreateImage` uses it to capture
+/// everything *below* the overlay, so the dimmed sheet is excluded without
+/// waiting for the hide to land. 0 = unknown (fall back to a display grab).
+static OVERLAY_WINDOW_NUMBER: AtomicU32 = AtomicU32::new(0);
 
 /// The capture chord: ⌥⇧C.
 pub fn capture_shortcut() -> Shortcut {
@@ -136,6 +178,83 @@ pub fn cursor_to_logical(raw: (f64, f64), primary_scale: f64) -> (f64, f64) {
         1.0
     };
     (raw.0 / divisor, raw.1 / divisor)
+}
+
+/// A selection rectangle in the overlay window's own logical coordinate
+/// space (origin = overlay top-left), already normalized by the frontend so
+/// `width`/`height` are non-negative.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Turn an overlay-local selection into a global capture rect, clamped to the
+/// display the overlay covers.
+///
+/// Returns `None` for a degenerate rect — a click with no drag, which the
+/// frontend treats as "cancel", not "capture a 0x0 image".
+pub fn selection_to_global(display: &DisplayRect, sel: &SelectionRect) -> Option<CaptureRegion> {
+    let left = (display.x + sel.x).max(display.x);
+    let top = (display.y + sel.y).max(display.y);
+    let right = (display.x + sel.x + sel.width).min(display.x + display.w);
+    let bottom = (display.y + sel.y + sel.height).min(display.y + display.h);
+    let w = right - left;
+    let h = bottom - top;
+    if w < 1.0 || h < 1.0 {
+        return None;
+    }
+    Some(CaptureRegion { x: left, y: top, w, h })
+}
+
+/// Should the overlay be shown, given the Screen Recording preflight and a
+/// one-shot request?
+///
+/// Pure so the (untestable-in-CI) TCC behaviour stays out of the decision:
+/// preflight true -> show without prompting; preflight false -> prompt once,
+/// and only show if the prompt actually granted. `request` is never called
+/// when preflight already passed.
+pub fn permission_gate(preflight: bool, request: impl FnOnce() -> bool) -> bool {
+    if preflight {
+        return true;
+    }
+    request()
+}
+
+/// Platform wiring for [`permission_gate`]. Non-macOS has no Screen Recording
+/// TCC gate, so `screen_capture_preflight` returns true there and no prompt is
+/// ever shown.
+fn screen_capture_allowed() -> bool {
+    permission_gate(
+        hq_platform::permissions::screen_capture_preflight(),
+        hq_platform::permissions::request_screen_capture_access,
+    )
+}
+
+/// One-line prompt shown when Screen Recording is still denied after the
+/// system request. Spawned (not awaited) so the chord path never blocks.
+fn prompt_for_screen_recording(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let payload = crate::commands::banner::BannerPayload {
+            kind: BANNER_KIND.to_string(),
+            title: "Screen Recording".to_string(),
+            body: "HQ needs Screen Recording permission to capture ideas. Open System \
+Settings › Privacy & Security › Screen Recording and enable HQ."
+                .to_string(),
+            icon_text: Some("●".to_string()),
+            action_label: Some("Open Settings".to_string()),
+            action_id: Some(BANNER_ACTION_OPEN_SETTINGS.to_string()),
+            click_action_id: BANNER_ACTION_OPEN_SETTINGS.to_string(),
+            data: serde_json::json!({ "permission": "screen-capture" }),
+        };
+        if let Err(e) = crate::commands::banner::show_banner(app, payload).await {
+            log(LOG_TAG, &format!("permission banner FAILED: {e}"));
+        }
+    });
 }
 
 fn monitor_rect(m: &tauri::Monitor) -> DisplayRect {
@@ -269,6 +388,13 @@ pub fn on_capture_chord(app: &AppHandle) {
         // skew the chord->overlay interval.
         OverlayAction::Hide => log(LOG_TAG, &format!("{MARK_CHORD} action=hide")),
     }
+    // Permission gate runs *before* the show hop: an overlay the user can
+    // drag on but that can never produce an image is worse than no overlay.
+    if action == OverlayAction::Show && !screen_capture_allowed() {
+        log(LOG_TAG, MARK_PERMISSION_DENIED);
+        prompt_for_screen_recording(app);
+        return;
+    }
     let app_main = app.clone();
     let _ = app.run_on_main_thread(move || match action {
         OverlayAction::Show => show_overlay(&app_main),
@@ -386,8 +512,16 @@ fn show_overlay(app: &AppHandle) {
         log(LOG_TAG, "overlay show: window missing (setup failed?)");
         return;
     };
+    // Provenance must be sampled before the overlay takes the screen.
+    if let Ok(mut slot) = PENDING_PROVENANCE.lock() {
+        *slot = Some(screenshot::frontmost_window_info());
+    }
+    OVERLAY_WINDOW_NUMBER.store(overlay_window_number(&window), Ordering::SeqCst);
     if let Some(d) = target_display(app) {
         cover_display(&window, &d);
+        if let Ok(mut slot) = SHOWN_DISPLAY.lock() {
+            *slot = Some(d);
+        }
         let _ = app.emit_to(
             WINDOW_LABEL,
             EVENT_SHOWN,
@@ -443,6 +577,142 @@ pub async fn dismiss_capture_overlay(app: AppHandle) -> Result<(), String> {
     let app_main = app.clone();
     app.run_on_main_thread(move || hide_overlay(&app_main, "command"))
         .map_err(|e| e.to_string())
+}
+
+/// MAIN THREAD ONLY. The overlay's native window number, or 0 when it can't
+/// be determined (non-macOS, or a handle we can't reach).
+#[allow(unused_variables)]
+fn overlay_window_number(window: &tauri::WebviewWindow) -> u32 {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::{msg_send, runtime::AnyObject};
+        if let Ok(ns_win) = window.ns_window() {
+            if !ns_win.is_null() {
+                // SAFETY: called on the main thread with a live NSWindow;
+                // `windowNumber` is a public AppKit accessor returning NSInteger.
+                let number: i64 = unsafe { msg_send![ns_win as *mut AnyObject, windowNumber] };
+                if number > 0 {
+                    return number as u32;
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Resolve `(hq_root, company_slug)` the same way `commands::config::get_config`
+/// does: menubar override wins, then `config.json`'s `hqFolderPath`.
+fn resolve_vault_target() -> Result<(std::path::PathBuf, String), String> {
+    let menubar_path = hq_desktop_core::paths::menubar_json_path()?;
+    let menubar_override = if menubar_path.exists() {
+        std::fs::read_to_string(&menubar_path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<hq_desktop_core::config::MenubarPrefs>(&c).ok())
+            .and_then(|p| p.hq_path)
+    } else {
+        None
+    };
+    let config = hq_desktop_core::config::read_hq_config_lenient()?
+        .ok_or_else(|| "unconfigured".to_string())?;
+    let hq_root = hq_desktop_core::paths::resolve_hq_folder(
+        config.hq_folder_path.as_deref(),
+        menubar_override.as_deref(),
+    );
+    Ok((hq_root, config.company_slug))
+}
+
+/// Background half of the capture: grab pixels, store the record, mark, emit.
+/// Never panics; every failure becomes an `idea.capture.failed` line.
+fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Option<u32>) {
+    let provenance_info = PENDING_PROVENANCE
+        .lock()
+        .ok()
+        .and_then(|mut s| s.take())
+        .unwrap_or_default();
+
+    let shot = match screenshot::capture_region(&region, exclude_window) {
+        Ok(s) => s,
+        Err(e) => {
+            log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason={e}"));
+            return;
+        }
+    };
+    let Some(img) = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba) else {
+        log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=pixel_buffer_mismatch"));
+        return;
+    };
+    let (hq_root, company_slug) = match resolve_vault_target() {
+        Ok(v) => v,
+        Err(e) => {
+            log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=unconfigured detail={e}"));
+            return;
+        }
+    };
+    let provenance = Provenance {
+        app: provenance_info.app,
+        window_title: provenance_info.window_title,
+        url: provenance_info.url,
+        captured_at: chrono::Utc::now(),
+        display_id: screenshot::display_id_for_point(region.x, region.y),
+    };
+    let new = NewCapture::pending(
+        company_slug,
+        CaptureImage::Decoded(image::DynamicImage::ImageRgba8(img)),
+        provenance,
+    );
+    match create_record(&hq_root, new) {
+        Ok(record) => {
+            let path = hq_root.join(&record.image_path);
+            log(
+                LOG_TAG,
+                &format!("{MARK_PNG_WRITTEN} path={}", path.to_string_lossy()),
+            );
+            // US-006 extraction hook: after png_written, never before.
+            match serde_json::to_value(&record) {
+                Ok(json) => {
+                    let _ = app.emit(EVENT_CAPTURE_COMPLETED, json);
+                }
+                Err(e) => log(LOG_TAG, &format!("capture record serialize FAILED: {e}")),
+            }
+        }
+        Err(e) => log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=store detail={e}")),
+    }
+}
+
+/// Drag released: capture exactly the selected region.
+///
+/// `selection` is in the overlay window's logical coordinate space (top-left
+/// origin), already normalized by the frontend. The overlay is hidden
+/// immediately and the pixel grab + PNG encode run off the main thread, so the
+/// user's screen is clear before any encoding starts.
+#[tauri::command]
+pub async fn capture_region_release(app: AppHandle, selection: SelectionRect) -> Result<(), String> {
+    // Bare mark, first statement: the bench pairs this with png_written.
+    log(LOG_TAG, MARK_RELEASE);
+
+    let display = SHOWN_DISPLAY
+        .lock()
+        .ok()
+        .and_then(|d| *d)
+        .ok_or_else(|| "no display recorded for the overlay".to_string())?;
+    let Some(region) = selection_to_global(&display, &selection) else {
+        log(LOG_TAG, &format!("{MARK_RELEASE_REJECTED} reason=empty"));
+        let app_main = app.clone();
+        let _ = app.run_on_main_thread(move || hide_overlay(&app_main, "click"));
+        return Err("empty selection".to_string());
+    };
+    let exclude = match OVERLAY_WINDOW_NUMBER.load(Ordering::SeqCst) {
+        0 => None,
+        n => Some(n),
+    };
+
+    let app_main = app.clone();
+    app.run_on_main_thread(move || hide_overlay(&app_main, "release"))
+        .map_err(|e| e.to_string())?;
+
+    let app_bg = app.clone();
+    std::thread::spawn(move || capture_and_store(&app_bg, region, exclude));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -519,6 +789,8 @@ mod hq_idea_board_capture_tests {
             src.contains(&format!("overlay: '{MARK_OVERLAY_VISIBLE}'")),
             "overlay mark drifted"
         );
+        assert!(src.contains(&format!("release: '{MARK_RELEASE}'")), "release mark drifted");
+        assert!(src.contains(&format!("png: '{MARK_PNG_WRITTEN}'")), "png mark drifted");
         assert_eq!(LOG_TAG, "idea", "bench documents [idea]-tagged lines");
     }
 
@@ -534,12 +806,69 @@ mod hq_idea_board_capture_tests {
         assert_eq!(cursor_to_logical((10.0, 10.0), 0.0), (10.0, 10.0));
     }
 
+    #[test]
+    fn hq_idea_board_permission_gate_truth_table() {
+        // Preflight granted: never prompt.
+        assert!(permission_gate(true, || panic!("must not request when preflighted")));
+        // Not granted, user grants at the prompt.
+        assert!(permission_gate(false, || true));
+        // Not granted and the prompt did not grant.
+        assert!(!permission_gate(false, || false));
+    }
+
+    fn sel(x: f64, y: f64, w: f64, h: f64) -> SelectionRect {
+        SelectionRect { x, y, width: w, height: h }
+    }
+
+    #[test]
+    fn hq_idea_board_selection_maps_to_global_coordinates() {
+        let display = DisplayRect { x: -2560.0, y: 100.0, w: 2560.0, h: 1440.0, scale: 2.0 };
+        let r = selection_to_global(&display, &sel(10.0, 20.0, 100.0, 50.0)).expect("region");
+        assert_eq!((r.x, r.y, r.w, r.h), (-2550.0, 120.0, 100.0, 50.0));
+    }
+
+    #[test]
+    fn hq_idea_board_selection_is_clamped_to_the_display() {
+        let display = DisplayRect { x: 0.0, y: 0.0, w: 800.0, h: 600.0, scale: 1.0 };
+        // Overhangs the right/bottom edges.
+        let r = selection_to_global(&display, &sel(700.0, 500.0, 400.0, 400.0)).expect("region");
+        assert_eq!((r.x, r.y, r.w, r.h), (700.0, 500.0, 100.0, 100.0));
+        // Negative origin (drag started off-window) clamps to the display.
+        let r = selection_to_global(&display, &sel(-50.0, -50.0, 100.0, 100.0)).expect("region");
+        assert_eq!((r.x, r.y, r.w, r.h), (0.0, 0.0, 50.0, 50.0));
+    }
+
+    #[test]
+    fn hq_idea_board_empty_selection_is_rejected_not_captured() {
+        let display = DisplayRect { x: 0.0, y: 0.0, w: 800.0, h: 600.0, scale: 1.0 };
+        // A plain click.
+        assert!(selection_to_global(&display, &sel(100.0, 100.0, 0.0, 0.0)).is_none());
+        // A sub-pixel twitch.
+        assert!(selection_to_global(&display, &sel(100.0, 100.0, 0.6, 40.0)).is_none());
+        // Entirely off the display.
+        assert!(selection_to_global(&display, &sel(900.0, 100.0, 50.0, 50.0)).is_none());
+    }
+
     /// Escape/second-chord marks must not be mistaken for the visible mark by
     /// the bench's prefix matcher (`msg === name || msg.startsWith(name + ' ')`).
     #[test]
     fn hidden_mark_is_not_a_prefix_of_visible_mark() {
         assert!(!MARK_OVERLAY_HIDDEN.starts_with(&format!("{MARK_OVERLAY_VISIBLE} ")));
         assert_ne!(MARK_OVERLAY_HIDDEN, MARK_OVERLAY_VISIBLE);
+    }
+
+    /// The bench prefix-matches (`msg === name || msg.startsWith(name + ' ')`),
+    /// so no other mark may be `release`/`png` with a suffix.
+    #[test]
+    fn hq_idea_board_failure_marks_are_not_prefixes_of_release_or_png_marks() {
+        for other in [MARK_RELEASE_REJECTED, MARK_CAPTURE_FAILED, MARK_PERMISSION_DENIED] {
+            for scored in [MARK_RELEASE, MARK_PNG_WRITTEN] {
+                assert_ne!(other, scored);
+                assert!(!other.starts_with(&format!("{scored} ")), "{other} shadows {scored}");
+            }
+        }
+        // ...and release is not itself a space-prefix of release_rejected.
+        assert!(!MARK_RELEASE_REJECTED.starts_with(&format!("{MARK_RELEASE} ")));
     }
 
     /// Ordering guard (review critical): a stale "bind" applied after the

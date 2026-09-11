@@ -952,6 +952,7 @@ fn main() {
             commands::widget::hide_widget_stack,
             commands::capture::capture_overlay_ready,
             commands::capture::dismiss_capture_overlay,
+            commands::capture::capture_region_release,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,
