@@ -1074,8 +1074,18 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             "report_read"
                 | "report_absent"
                 | "report_unreadable"
+                | "report_never_completed"
                 | "report_not_requested"
                 | "report_unsupported_platform"
+        )),
+        // Why the rate-aware footprint projection did or did not ARM on the pre-empt
+        // sample (this reopen, HQ-DESKTOP-60), mirroring
+        // `WatcherProjectionArmReason::as_str`: the final-approach band and per-process
+        // breach that re-scoped the r1 gate are self-describing on the wire. Fixed
+        // vocabulary; an off-vocabulary token degrades to `[Filtered]`.
+        "watcher_projection_arm_reason" => Some(matches!(
+            value,
+            "inert" | "below_final_approach_band" | "no_per_process_breach" | "armed"
         )),
         // The runner package version comes from a local package manifest, not
         // runner stderr. Accept only bounded plain SemVer (including its optional
@@ -3961,6 +3971,11 @@ mod tests {
             ("watcher_footprint_growth_bucket", "50_to_120mbs"),
             ("watcher_footprint_growth_bucket", "over_120mbs"),
             ("watcher_footprint_growth_bucket", "unknown"),
+            // The projection arm-reason token (HQ-DESKTOP-60): fixed vocabulary.
+            ("watcher_projection_arm_reason", "inert"),
+            ("watcher_projection_arm_reason", "below_final_approach_band"),
+            ("watcher_projection_arm_reason", "no_per_process_breach"),
+            ("watcher_projection_arm_reason", "armed"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -3982,6 +3997,8 @@ mod tests {
             ("watcher_tree_process_count", "12 processes /Users/Ada"),
             ("watcher_footprint_growth_bucket", "40mbs"),
             ("watcher_footprint_growth_bucket", "50_to_120mbs:/Users/Ada"),
+            ("watcher_projection_arm_reason", "armed /Users/Ada"),
+            ("watcher_projection_arm_reason", "sort_of_armed"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -4014,6 +4031,7 @@ mod tests {
             ("watcher_memory_class_source", "report_read"),
             ("watcher_memory_class_source", "report_absent"),
             ("watcher_memory_class_source", "report_unreadable"),
+            ("watcher_memory_class_source", "report_never_completed"),
             ("watcher_memory_class_source", "report_not_requested"),
             ("watcher_memory_class_source", "report_unsupported_platform"),
         ] {
