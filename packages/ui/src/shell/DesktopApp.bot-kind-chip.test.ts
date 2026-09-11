@@ -144,7 +144,7 @@ describe("DesktopApp conversation header kind chip", () => {
   it("shows 'Local · Claude Code' for one of the user's local bots", async () => {
     await mountOpen(LOCAL_UID, "scout", [scout]);
     await vi.waitFor(() => {
-      expect(headerChip()?.textContent?.trim()).toBe("Local · Claude Code");
+      expect(headerChip()?.getAttribute("aria-label")).toBe("Local · Claude Code");
     });
     expect(headerChip()?.dataset.kind).toBe("local");
   });
@@ -152,7 +152,7 @@ describe("DesktopApp conversation header kind chip", () => {
   it("shows 'Cloud' for a company-hosted bot", async () => {
     await mountOpen(CLOUD_UID, "Izzy", [scout]);
     await vi.waitFor(() => expect(headerChip()).not.toBeNull());
-    expect(headerChip()?.textContent?.trim()).toBe("Cloud");
+    expect(headerChip()?.getAttribute("aria-label")).toBe("Cloud");
     expect(headerChip()?.dataset.kind).toBe("cloud");
   });
 

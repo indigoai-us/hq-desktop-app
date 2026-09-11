@@ -246,7 +246,7 @@
   <div class="group" data-testid="settings-bots-local">
     <div class="group-head">
       <h3 class="group-title">Local</h3>
-      <BotKindChip kind="local" />
+      <BotKindChip kind="local" variant="label" />
     </div>
     {#if !adapter?.bots}
       <div class="settings-card">
@@ -278,7 +278,7 @@
               <strong>
                 <span class="dot" class:online={bot.online === true} aria-hidden="true"></span>
                 {bot.name}
-                <BotKindChip kind="local" runtime={bot.runtime} />
+                <BotKindChip kind="local" runtime={bot.runtime} variant="label" />
               </strong>
               <small>
                 {runtimeLabel(bot.runtime)}{bot.model ? ` · ${bot.model}` : ""} · {presenceLabel(bot)} · {heartbeatLabel(bot)}
@@ -364,7 +364,7 @@
   <div class="group" data-testid="settings-bots-cloud">
     <div class="group-head">
       <h3 class="group-title">Cloud</h3>
-      <BotKindChip kind="cloud" />
+      <BotKindChip kind="cloud" variant="label" />
     </div>
     {#if cloudError}
       <p class="bots-error" data-testid="settings-bots-cloud-error">
@@ -386,7 +386,7 @@
             <strong>
               <span class="initial" aria-hidden="true">{cloudBotInitial(bot.displayName)}</span>
               {bot.displayName}
-              <BotKindChip kind="cloud" />
+              <BotKindChip kind="cloud" variant="label" />
             </strong>
             <small>
               {#if bot.companyLabel}{bot.companyLabel} · {/if}{pausedCloud.has(bot.uid)

@@ -359,7 +359,7 @@
           kind={botKindFor(header.uid, localBots) ?? "cloud"}
           runtime={localBots?.find((b) => b.agentUid === header.uid)?.runtime ?? null}
           size="md"
-        />
+         variant="label" />
       </div>
     </div>
 

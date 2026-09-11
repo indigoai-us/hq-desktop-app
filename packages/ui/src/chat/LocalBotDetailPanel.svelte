@@ -120,7 +120,7 @@
       <div class="ad-identity-copy">
         <h2 class="ad-name" data-testid="local-bot-detail-name">
           {bot.name}
-          <BotKindChip kind="local" runtime={bot.runtime} size="md" />
+          <BotKindChip kind="local" runtime={bot.runtime} size="md" variant="label" />
         </h2>
         <p class="ad-status" data-testid="local-bot-detail-presence" data-presence={presence}>
           {presenceLine}

@@ -108,9 +108,9 @@ describe("ChatSidebar Cloud / Local kind chip", () => {
       expect(chipFor(LOCAL_UID)).not.toBeNull();
       expect(chipFor(CLOUD_UID)).not.toBeNull();
     });
-    expect(chipFor(LOCAL_UID)?.textContent?.trim()).toBe("Local · Claude Code");
+    expect(chipFor(LOCAL_UID)?.getAttribute("aria-label")).toBe("Local · Claude Code");
     expect(chipFor(LOCAL_UID)?.dataset.kind).toBe("local");
-    expect(chipFor(CLOUD_UID)?.textContent?.trim()).toBe("Cloud");
+    expect(chipFor(CLOUD_UID)?.getAttribute("aria-label")).toBe("Cloud");
     expect(chipFor(CLOUD_UID)?.dataset.kind).toBe("cloud");
     expect(host.querySelector(`[data-conversation-id="dm:${HUMAN_UID}"]`)).not.toBeNull();
     expect(chipFor(HUMAN_UID)).toBeNull();
@@ -127,6 +127,6 @@ describe("ChatSidebar Cloud / Local kind chip", () => {
       },
     });
     await vi.waitFor(() => expect(chipFor(LOCAL_UID)).not.toBeNull());
-    expect(chipFor(LOCAL_UID)?.textContent?.trim()).toBe("Cloud");
+    expect(chipFor(LOCAL_UID)?.getAttribute("aria-label")).toBe("Cloud");
   });
 });
