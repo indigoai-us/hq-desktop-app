@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 
 /**
- * local-bots: the sidebar "+" → New bot path. The host creates the bot through
- * the desktop adapter's `bots` group and opens its DM even before the intro
- * message has landed (synthetic row), so the user is never left staring at
- * the modal.
+ * local-bots: the sidebar "+" → New bot path, driven through the three-step
+ * flow (kind → home → details). The host creates the bot through the desktop
+ * adapter's `bots` group and opens its DM even before the intro message has
+ * landed (synthetic row), so the user is never left staring at the modal.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -40,7 +40,18 @@ function adapter(bots: Partial<NonNullable<PlatformAdapter["bots"]>>): PlatformA
       start: async () => ok({}),
       stop: async () => ok({}),
       remove: async () => ok({}),
-      workers: async () => ok({ workers: [{ id: "iris-cx", path: "companies/indigo/workers/iris-cx", company: "indigo" }] }),
+      workers: async () =>
+        ok({
+          workers: [
+            {
+              id: "iris-cx",
+              path: "companies/indigo/workers/iris-cx",
+              company: "indigo",
+              summary: "Answers customer questions.",
+              skillCount: 3,
+            },
+          ],
+        }),
       ...bots,
     },
   } as unknown as PlatformAdapter;
@@ -67,73 +78,97 @@ function q<T extends Element = HTMLElement>(sel: string): T | null {
   return document.querySelector<T>(sel);
 }
 
+function click(sel: string): void {
+  const el = q<HTMLButtonElement>(sel);
+  if (!el) throw new Error(`missing ${sel}`);
+  el.click();
+}
+
+function mountApp(adapterForTest: PlatformAdapter): void {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  component = mount(DesktopApp, {
+    target: host,
+    props: {
+      adapter: adapterForTest,
+      sidebarApi: createFixtureChatSidebarApi(),
+      notificationsApi: createEmptyNotificationsApi(),
+      self: { uid: "prs_test", displayName: "Test", email: "test@example.com" },
+      coreFixtures: false,
+    },
+  });
+}
+
+/** "+" → New bot → the flow's kind step. */
+async function openBotFlow(): Promise<void> {
+  await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy());
+  await settle();
+  host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
+  await vi.waitFor(() => expect(q('[data-testid="chat-create-new-bot"]')).toBeTruthy());
+  click('[data-testid="chat-create-new-bot"]');
+  await settle();
+  expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+}
+
 describe("DesktopApp sidebar '+' → New bot", () => {
   it("creates through adapter.bots, opens the new bot's DM, and offers workers + signed-in runtimes", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "assistant", agentUid: "agt_new" }));
-    host = document.createElement("div");
-    document.body.appendChild(host);
-    component = mount(DesktopApp, {
-      target: host,
-      props: {
-        adapter: adapter({ create }),
-        sidebarApi: createFixtureChatSidebarApi(),
-        notificationsApi: createEmptyNotificationsApi(),
-        self: { uid: "prs_test", displayName: "Test", email: "test@example.com" },
-        coreFixtures: false,
-      },
-    });
-    await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy());
+    mountApp(adapter({ create }));
+    await openBotFlow();
+
+    // The worker library came from adapter.bots.workers, with its summary and skill count.
+    click('[data-testid="create-bot-kind-template"]');
+    await vi.waitFor(() => expect(q('[data-testid="create-bot-template-card"]')).toBeTruthy());
+    const card = q<HTMLButtonElement>('[data-testid="create-bot-template-card"]')!;
+    expect(card.dataset.template).toBe("iris-cx");
+    expect(card.textContent).toContain("Answers customer questions.");
+    expect(card.textContent).toContain("3 skills");
+    // Blank is all this test needs; go back to it and move on.
+    click('[data-testid="create-bot-kind-blank"]');
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="chat-create-new-bot"]')).toBeTruthy());
-    q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+
+    click('[data-testid="create-bot-next"]');
     await settle();
-    expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
-    // Runtime readiness came from preflight; workers from adapter.bots.workers.
-    await vi.waitFor(() => expect(q('[data-testid="chat-bot-runtime-codex"]')?.textContent).toContain("not signed in"));
-    await vi.waitFor(() => expect(q<HTMLSelectElement>('[data-testid="chat-bot-worker"]')).toBeTruthy());
-    const worker = q<HTMLSelectElement>('[data-testid="chat-bot-worker"]')!;
-    const option = Array.from(worker.options).find((o) => o.value === "iris-cx")!;
-    expect(option).toBeTruthy();
-    worker.selectedIndex = option.index;
-    option.selected = true;
-    worker.dispatchEvent(new Event("input", { bubbles: true }));
-    worker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(q('[data-testid="create-bot-home-step"]')).toBeTruthy();
+    // Runtime readiness came from preflight: Claude is signed in, Codex is not.
+    expect(q('[data-testid="chat-bot-runtime-codex"]')?.textContent).toContain("not signed in");
+    expect(q('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
+
+    click('[data-testid="create-bot-next"]');
     await settle();
-    expect(worker.value).toBe("iris-cx");
-    q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
+    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    name.value = "scout";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    click('[data-testid="chat-bot-create"]');
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
-    expect(create).toHaveBeenCalledWith({ name: "assistant", runtime: "claude", autoApprove: true, worker: "iris-cx" });
+    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true });
     await vi.waitFor(() => expect(q('[data-testid="chat-create-modal"]')).toBeNull());
     // The new bot's DM is the selected conversation.
     await vi.waitFor(() =>
-      expect(host.querySelector('[data-conversation-id="dm:agt_new"][aria-current], [data-conversation-id="dm:agt_new"].selected, [data-testid="conversation-title"]')?.textContent ?? host.textContent).toContain("assistant"),
+      expect(
+        host.querySelector('[data-conversation-id="dm:agt_new"][aria-current], [data-conversation-id="dm:agt_new"].selected, [data-testid="conversation-title"]')?.textContent ??
+          host.textContent,
+      ).toContain("scout"),
     );
   });
 
   it("surfaces the CLI's reason and keeps the modal open when creation fails", async () => {
     const create = vi.fn(async () => ({ ok: false as const, reason: "unavailable" as const, message: "You already have 3 local bots." }));
-    host = document.createElement("div");
-    document.body.appendChild(host);
-    component = mount(DesktopApp, {
-      target: host,
-      props: {
-        adapter: adapter({ create }),
-        sidebarApi: createFixtureChatSidebarApi(),
-        notificationsApi: createEmptyNotificationsApi(),
-        self: { uid: "prs_test", displayName: "Test", email: "test@example.com" },
-        coreFixtures: false,
-      },
-    });
-    await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy());
+    mountApp(adapter({ create }));
+    await openBotFlow();
+
+    click('[data-testid="create-bot-next"]');
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="chat-create-new-bot"]')).toBeTruthy());
-    q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+    click('[data-testid="create-bot-next"]');
     await settle();
-    q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
+    click('[data-testid="chat-bot-create"]');
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(q('[data-testid="chat-create-entry-error"]')?.textContent).toContain("already have 3"));
+    // The flow stays put so the user can fix the draft and retry.
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
   });
 });
