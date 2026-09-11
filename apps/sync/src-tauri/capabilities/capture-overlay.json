@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "capture-overlay",
+  "description": "Capability set for the pre-rendered, non-activating idea-board capture overlay window (hq-idea-board US-003). Receives capture-overlay:shown / capture-overlay:hidden via core:event; invokes the app commands capture_overlay_ready and dismiss_capture_overlay (custom commands need no per-command tokens). The window never calls core window commands itself — show/hide/position are driven from Rust on chord press and Escape.",
+  "windows": ["capture-overlay"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}

@@ -1,0 +1,88 @@
+2026-09-10T20:35:37.716Z [idea] overlay setup: pre-rendered hidden window 1728x1117 @ (0, 0) scale=2
+2026-09-10T20:35:53.616Z [idea] idea.capture.chord
+2026-09-10T20:35:53.622Z [idea] idea.capture.overlay_visible
+2026-09-10T20:35:54.125Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:35:54.665Z [idea] idea.capture.chord
+2026-09-10T20:35:54.666Z [idea] idea.capture.overlay_visible
+2026-09-10T20:35:55.197Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:35:55.707Z [idea] idea.capture.chord
+2026-09-10T20:35:55.708Z [idea] idea.capture.overlay_visible
+2026-09-10T20:35:56.212Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:35:56.715Z [idea] idea.capture.chord
+2026-09-10T20:35:56.716Z [idea] idea.capture.overlay_visible
+2026-09-10T20:35:57.222Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:35:57.749Z [idea] idea.capture.chord
+2026-09-10T20:35:57.749Z [idea] idea.capture.overlay_visible
+2026-09-10T20:35:58.257Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:35:58.774Z [idea] idea.capture.chord
+2026-09-10T20:35:58.774Z [idea] idea.capture.overlay_visible
+2026-09-10T20:35:59.288Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:35:59.807Z [idea] idea.capture.chord
+2026-09-10T20:35:59.808Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:00.307Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:00.824Z [idea] idea.capture.chord
+2026-09-10T20:36:00.824Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:01.332Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:01.857Z [idea] idea.capture.chord
+2026-09-10T20:36:01.858Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:02.363Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:02.874Z [idea] idea.capture.chord
+2026-09-10T20:36:02.874Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:03.381Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:03.899Z [idea] idea.capture.chord
+2026-09-10T20:36:03.899Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:04.405Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:04.915Z [idea] idea.capture.chord
+2026-09-10T20:36:04.916Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:05.430Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:05.940Z [idea] idea.capture.chord
+2026-09-10T20:36:05.941Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:06.450Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:06.957Z [idea] idea.capture.chord
+2026-09-10T20:36:06.958Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:07.449Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:08.040Z [idea] idea.capture.chord
+2026-09-10T20:36:08.041Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:08.555Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:09.057Z [idea] idea.capture.chord
+2026-09-10T20:36:09.058Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:09.583Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:10.107Z [idea] idea.capture.chord
+2026-09-10T20:36:10.108Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:10.605Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:11.140Z [idea] idea.capture.chord
+2026-09-10T20:36:11.141Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:11.647Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:12.149Z [idea] idea.capture.chord
+2026-09-10T20:36:12.149Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:12.657Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:13.165Z [idea] idea.capture.chord
+2026-09-10T20:36:13.166Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:13.679Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:14.174Z [idea] idea.capture.chord
+2026-09-10T20:36:14.174Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:14.689Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:15.199Z [idea] idea.capture.chord
+2026-09-10T20:36:15.199Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:15.717Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:16.232Z [idea] idea.capture.chord
+2026-09-10T20:36:16.233Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:16.733Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:17.240Z [idea] idea.capture.chord
+2026-09-10T20:36:17.241Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:17.742Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:18.249Z [idea] idea.capture.chord
+2026-09-10T20:36:18.249Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:18.755Z [idea] idea.capture.overlay_hidden reason=escape
+2026-09-10T20:36:20.265Z [idea] idea.capture.chord
+2026-09-10T20:36:20.266Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:20.774Z [idea] idea.capture.chord action=hide
+2026-09-10T20:36:20.774Z [idea] idea.capture.overlay_hidden reason=chord
+2026-09-10T20:36:21.282Z [idea] idea.capture.chord
+2026-09-10T20:36:21.282Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:21.790Z [idea] idea.capture.chord action=hide
+2026-09-10T20:36:21.791Z [idea] idea.capture.overlay_hidden reason=chord
+2026-09-10T20:36:22.290Z [idea] idea.capture.chord
+2026-09-10T20:36:22.291Z [idea] idea.capture.overlay_visible
+2026-09-10T20:36:22.799Z [idea] idea.capture.chord action=hide
+2026-09-10T20:36:22.799Z [idea] idea.capture.overlay_hidden reason=chord

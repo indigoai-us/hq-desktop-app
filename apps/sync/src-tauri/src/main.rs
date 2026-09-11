@@ -104,7 +104,13 @@ const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::Sen
 fn register_global_shortcuts(app: &tauri::AppHandle) {
     use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
-    for (label, code) in [("Opt+Shift+H", Code::KeyH), ("Opt+Shift+O", Code::KeyO)] {
+    // Opt+Shift+C (US-003) — idea-board capture chord. Log-and-continue when
+    // another app already holds it, same as the other two.
+    for (label, code) in [
+        ("Opt+Shift+H", Code::KeyH),
+        ("Opt+Shift+O", Code::KeyO),
+        (commands::capture::CHORD_LABEL, Code::KeyC),
+    ] {
         let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), code);
         if let Err(error) = app.global_shortcut().register(shortcut) {
             util::logfile::log(
@@ -167,6 +173,10 @@ fn setup_startup_surfaces(
     // configured display). Gated by widgetEnabled in menubar.json
     // (default on). Non-activating, appearance-reactive.
     commands::widget::setup_widget_window(app);
+
+    // US-003: pre-render the hidden idea-board capture overlay so the chord
+    // only has to show it (80ms chord->overlay budget).
+    commands::capture::setup_capture_overlay_window(app);
 
     // macOS: the menu-bar item lives in a separate native helper process
     // (tao parks an in-process status item off-screen on Tahoe).
@@ -321,6 +331,9 @@ fn main() {
     // calls agree on the exact key combos.
     let show_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyH);
     let desktop_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyO);
+    // Opt+Shift+C — idea-board capture chord (US-003); Escape is a transient
+    // binding the overlay registers only while it is visible.
+    let capture_shortcut = commands::capture::capture_shortcut();
 
     // The `main` popover is created from `tauri.conf.json`, so its WebView2
     // browser arguments have to be folded into the config before the app is
@@ -402,7 +415,15 @@ fn main() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {
+                    if shortcut == &capture_shortcut && event.state() == ShortcutState::Pressed {
+                        // US-003: mark the chord first, then toggle the
+                        // pre-rendered overlay on the main thread.
+                        commands::capture::on_capture_chord(app);
+                    } else if event.state() == ShortcutState::Pressed
+                        && commands::capture::is_overlay_escape(shortcut)
+                    {
+                        commands::capture::on_escape(app);
+                    } else if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {
                         // Toggle the popover: hides it if already up, else shows
                         // it (and hides the desktop window — one at a time).
                         // Window ops (incl. the is_visible toggle query) must run
@@ -929,6 +950,8 @@ fn main() {
             commands::widget::list_displays,
             commands::widget::apply_widget_settings,
             commands::widget::hide_widget_stack,
+            commands::capture::capture_overlay_ready,
+            commands::capture::dismiss_capture_overlay,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,

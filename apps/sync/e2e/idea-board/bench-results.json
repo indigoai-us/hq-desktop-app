@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-09-10T20:16:09.837Z",
+  "generatedAt": "2026-09-10T20:37:22.803Z",
   "source": "log-file",
-  "logPath": "~/.hq/logs/hq-sync.log",
+  "logPath": "e2e/idea-board/fixtures/hq-idea-board-us-003-chord-overlay-live-macos.txt",
   "platform": "darwin",
   "requestedCycles": null,
   "budgets": {
@@ -9,13 +9,13 @@
     "releaseToPng": 120
   },
   "chordToOverlay": {
-    "samples": 0,
-    "p50": null,
-    "p95": null,
-    "min": null,
-    "max": null,
+    "samples": 28,
+    "p50": 1,
+    "p95": 1,
+    "min": 0,
+    "max": 6,
     "budgetMs": 80,
-    "withinBudget": false
+    "withinBudget": true
   },
   "releaseToPng": {
     "samples": 0,

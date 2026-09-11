@@ -10,6 +10,7 @@ import MeetingPermissionsWindow from './components/MeetingPermissionsWindow.svel
 import DmDetail from './components/DmDetail.svelte';
 import BannerNotification from './components/BannerNotification.svelte';
 import Widget from './components/Widget.svelte';
+import CaptureOverlay from './components/capture/CaptureOverlay.svelte';
 import GlobalErrorBoundary from './components/GlobalErrorBoundary.svelte';
 import { mount } from 'svelte';
 import { invoke } from '@tauri-apps/api/core';
@@ -65,6 +66,8 @@ if (windowLabel === 'meetings-window') {
   Component = BannerNotification as unknown as typeof App;
 } else if (windowLabel === 'widget') {
   Component = Widget as unknown as typeof App;
+} else if (windowLabel === 'capture-overlay') {
+  Component = CaptureOverlay as unknown as typeof App;
 } else {
   Component = App;
 }

@@ -8,6 +8,7 @@ pub mod app;
 pub mod auth;
 pub mod autostart;
 pub mod banner;
+pub mod capture;
 pub mod checksums;
 pub mod client_diagnostics;
 pub mod client_health;
