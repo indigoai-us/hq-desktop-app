@@ -870,7 +870,7 @@ mod tests {
         DoneStatus, PermissionDecision, PermissionMode, SessionEvent, SessionPhase, SessionTool,
     };
     use serde_json::json;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, watch};
 
     #[test]
     fn launch_uses_no_leader_acp_stdio() {
@@ -890,17 +890,24 @@ mod tests {
         events: std::sync::Mutex<Vec<(u64, SessionEvent)>>,
         phases: std::sync::Mutex<Vec<PhaseChange>>,
         needs: std::sync::Mutex<Vec<NeedsYou>>,
+        updates: watch::Sender<()>,
         started_at: std::time::Instant,
     }
 
     impl RecordingSink {
         fn new(started_at: std::time::Instant) -> Self {
+            let (updates, _) = watch::channel(());
             Self {
                 events: Default::default(),
                 phases: Default::default(),
                 needs: Default::default(),
+                updates,
                 started_at,
             }
+        }
+
+        fn updates(&self) -> watch::Receiver<()> {
+            self.updates.subscribe()
         }
 
         fn events(&self) -> Vec<(u64, SessionEvent)> {
@@ -920,6 +927,7 @@ mod tests {
             event: &SessionEvent,
         ) {
             self.events.lock().unwrap().push((seq, event.clone()));
+            self.updates.send_replace(());
             if matches!(event, SessionEvent::Started { .. }) {
                 eprintln!(
                     "[agent-session-test-latency] provider=grok event=started elapsed_ms={}",
@@ -929,9 +937,11 @@ mod tests {
         }
         fn emit_phase(&self, _session_id: &str, change: PhaseChange) {
             self.phases.lock().unwrap().push(change);
+            self.updates.send_replace(());
         }
         fn emit_needs_you(&self, _session_id: &str, needs: &NeedsYou) {
             self.needs.lock().unwrap().push(needs.clone());
+            self.updates.send_replace(());
         }
     }
 
@@ -1037,14 +1047,26 @@ async function drain() { while (!closed || queue.length) await take(); }
         }
     }
 
-    async fn until(label: &str, mut predicate: impl FnMut() -> bool) {
-        for _ in 0..400 {
-            if predicate() {
-                return;
+    const EVENT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    async fn until(label: &str, sink: &RecordingSink, mut predicate: impl FnMut() -> bool) {
+        let mut updates = sink.updates();
+        if tokio::time::timeout(EVENT_WAIT_TIMEOUT, async {
+            loop {
+                if predicate() {
+                    return;
+                }
+                updates
+                    .changed()
+                    .await
+                    .expect("recording sink lives through the wait");
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+        })
+        .await
+        .is_err()
+        {
+            panic!("timed out waiting for {label}");
         }
-        panic!("timed out waiting for {label}");
     }
 
     async fn start_with(script: &str) -> Harness {
@@ -1091,7 +1113,10 @@ async function drain() { while (!closed || queue.length) await take(); }
     #[tokio::test]
     async fn a_prompted_session_parks_a_grok_permission_and_resumes_when_accepted() {
         let h = start_with(FAKE_GROK).await;
-        until("the handshake event", || !h.sink.events().is_empty()).await;
+        until("the handshake event", &h.sink, || {
+            !h.sink.events().is_empty()
+        })
+        .await;
         assert!(
             matches!(&h.sink.events()[0].1, SessionEvent::Started { session_id, tool, model, .. }
                 if session_id == "gk-1"
@@ -1103,7 +1128,10 @@ async function drain() { while (!closed || queue.length) await take(); }
 
         h.tx.send(Outbound::Line("hello grok".into()))
             .expect("send turn");
-        until("the permission request", || !h.sink.needs().is_empty()).await;
+        until("the permission request", &h.sink, || {
+            !h.sink.needs().is_empty()
+        })
+        .await;
 
         let events = h.sink.events();
         assert!(
@@ -1122,7 +1150,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         })
         .expect("reply");
 
-        until("turn done", || {
+        until("turn done", &h.sink, || {
             h.sink.events().iter().any(|(_, e)| {
                 matches!(e, SessionEvent::TurnDone { status: DoneStatus::Success, .. })
             })

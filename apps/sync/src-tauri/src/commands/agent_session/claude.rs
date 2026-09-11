@@ -794,7 +794,7 @@ mod tests {
     use hq_desktop_core::agent_session::types::{
         DoneStatus, PermissionMode, SessionPhase, SessionTool,
     };
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, watch};
 
     /// A sink that records everything, so a test can assert on the exact
     /// stream the frontend would receive.
@@ -802,17 +802,24 @@ mod tests {
         events: std::sync::Mutex<Vec<(u64, u64, SessionEvent)>>,
         phases: std::sync::Mutex<Vec<PhaseChange>>,
         needs: std::sync::Mutex<Vec<NeedsYou>>,
+        updates: watch::Sender<()>,
         started_at: std::time::Instant,
     }
 
     impl RecordingSink {
         fn new(started_at: std::time::Instant) -> Self {
+            let (updates, _) = watch::channel(());
             Self {
                 events: Default::default(),
                 phases: Default::default(),
                 needs: Default::default(),
+                updates,
                 started_at,
             }
+        }
+
+        fn updates(&self) -> watch::Receiver<()> {
+            self.updates.subscribe()
         }
 
         /// `(seq, receivedAtMs, event)` in emission order.
@@ -839,6 +846,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((seq, received_at_ms, event.clone()));
+            self.updates.send_replace(());
             if matches!(event, SessionEvent::Started { .. }) {
                 eprintln!(
                     "[agent-session-test-latency] provider=claude event=started elapsed_ms={}",
@@ -848,9 +856,11 @@ mod tests {
         }
         fn emit_phase(&self, _session_id: &str, change: PhaseChange) {
             self.phases.lock().unwrap().push(change);
+            self.updates.send_replace(());
         }
         fn emit_needs_you(&self, _session_id: &str, needs: &NeedsYou) {
             self.needs.lock().unwrap().push(needs.clone());
+            self.updates.send_replace(());
         }
     }
 
@@ -1029,23 +1039,38 @@ async function drain() { while (!closed || queue.length) await take(); }
         }
     }
 
-    /// Poll until `predicate` holds, or fail. Bounded so a regression is a
-    /// failing test rather than a hanging suite.
-    async fn until(label: &str, mut predicate: impl FnMut() -> bool) {
-        for _ in 0..200 {
-            if predicate() {
-                return;
+    /// Wait for a recorded update until `predicate` holds. The watchdog still
+    /// makes a missing event a named failure instead of a hanging suite.
+    const EVENT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    async fn until(label: &str, sink: &RecordingSink, mut predicate: impl FnMut() -> bool) {
+        let mut updates = sink.updates();
+        if tokio::time::timeout(EVENT_WAIT_TIMEOUT, async {
+            loop {
+                if predicate() {
+                    return;
+                }
+                updates
+                    .changed()
+                    .await
+                    .expect("recording sink lives through the wait");
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+        })
+        .await
+        .is_err()
+        {
+            panic!("timed out waiting for {label}");
         }
-        panic!("timed out waiting for {label}");
     }
 
     #[tokio::test]
     async fn a_prompted_session_parks_a_permission_request_and_resumes_when_allowed() {
         let h = start(PermissionMode::Prompt).await;
 
-        until("the permission request", || !h.sink.needs().is_empty()).await;
+        until("the permission request", &h.sink, || {
+            !h.sink.needs().is_empty()
+        })
+        .await;
 
         // Started → Idle, and the transcript so far.
         let events = h.sink.events();
@@ -1105,7 +1130,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         }
 
         // The tool result and a successful turn follow.
-        until("the turn to finish", || {
+        until("the turn to finish", &h.sink, || {
             h.sink
                 .events()
                 .iter()
@@ -1174,7 +1199,7 @@ async function drain() { while (!closed || queue.length) await take(); }
     #[tokio::test]
     async fn claude_init_persists_the_native_resume_id_in_app_metadata() {
         let h = start(PermissionMode::Prompt).await;
-        until("the started event", || {
+        until("the started event", &h.sink, || {
             h.sink
                 .events()
                 .iter()
@@ -1207,7 +1232,7 @@ async function drain() { while (!closed || queue.length) await take(); }
 
         // The fake is blocked reading stdin until we send, so the assistant
         // cannot get ahead of the turn it is answering.
-        until("the handshake", || {
+        until("the handshake", &h.sink, || {
             h.sink
                 .events()
                 .iter()
@@ -1229,7 +1254,7 @@ async function drain() { while (!closed || queue.length) await take(); }
             .expect("queued");
         }
 
-        until("the turn to finish", || {
+        until("the turn to finish", &h.sink, || {
             h.sink
                 .events()
                 .iter()
@@ -1325,7 +1350,7 @@ async function drain() { while (!closed || queue.length) await take(); }
     async fn bypass_mode_auto_allows_and_never_surfaces_a_permission_request() {
         let h = start(PermissionMode::BypassAll).await;
 
-        until("the turn to finish", || {
+        until("the turn to finish", &h.sink, || {
             h.sink
                 .events()
                 .iter()
@@ -1397,7 +1422,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         let h = start_with(PermissionMode::BypassAll, FAKE_CLAUDE_INTERRUPT).await;
 
         // Wait until the turn is genuinely streaming before stopping it.
-        until("the stream to start", || {
+        until("the stream to start", &h.sink, || {
             h.sink
                 .events()
                 .iter()
@@ -1408,7 +1433,7 @@ async function drain() { while (!closed || queue.length) await take(); }
         // Exactly what `agent_session_interrupt` posts.
         h.tx.send(Outbound::Interrupt).expect("send interrupt");
 
-        until("the turn to finish", || {
+        until("the turn to finish", &h.sink, || {
             h.sink
                 .events()
                 .iter()
