@@ -284,6 +284,17 @@ fn main() {
         commands::process::run_sync_cancel_probe_main();
     }
 
+    // US-011 local IPC/CLI bridge: `--ideas-mark-cited <id>` lets an HQ skill
+    // record a citation without the GUI. Not feature-gated — HQ skills call it
+    // in shipped builds. As above, the dispatch's process exit lives in
+    // `commands::capture` so the only exit in this file stays the Windows
+    // session-end fast path pinned by `scripts/native-seam-wiring.test.ts`.
+    if let Some(id) =
+        commands::capture::ideas_mark_cited_id_from_argv(&std::env::args().collect::<Vec<_>>())
+    {
+        commands::capture::run_ideas_mark_cited_cli_main(&id);
+    }
+
     // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
     // build-time values (DSN/version/environment, emitted by build.rs) are read
     // here in the binary and passed in, so the crate carries no build-env coupling.
@@ -955,6 +966,7 @@ fn main() {
             commands::capture::capture_region_release,
             commands::capture::ideas_get_extraction_settings,
             commands::capture::ideas_set_extraction_mode,
+            commands::capture::ideas_mark_cited,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,

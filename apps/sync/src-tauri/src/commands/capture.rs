@@ -33,9 +33,9 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 
 use hq_desktop_core::ideas::{
-    create_record, model_extract_url, parse_mode, run_model_stage, CaptureImage, ExtractionMode,
-    HttpModelExtractor, NewCapture, Provenance, TokenProvider, EXTRACTION_MODE_SETTING,
-    MODEL_DISCLOSURE,
+    create_record, mark_cited, model_extract_url, parse_mode, reindex_after_write, run_model_stage,
+    CaptureImage, ExtractionMode, HttpModelExtractor, IdeasError, NewCapture, Provenance, QmdCli,
+    TokenProvider, EXTRACTION_MODE_SETTING, MODEL_DISCLOSURE,
 };
 use hq_platform::screenshot::{self, CaptureRegion, FrontmostSnapshot};
 use serde::{Deserialize, Serialize};
@@ -676,6 +676,20 @@ pub fn pick_company_slug(
 /// is resolved by `pick_company_slug`, so menubar-only installs with no
 /// `config.json` still file captures against the active/manifest company.
 fn resolve_vault_target(app: &AppHandle) -> Result<(std::path::PathBuf, String), String> {
+    let active = app
+        .try_state::<crate::commands::desktop_alt::DesktopSessionScope>()
+        .and_then(|s| s.active_company_slug());
+    resolve_vault_target_with_active(active)
+}
+
+/// The AppHandle-free core of [`resolve_vault_target`].
+///
+/// Split out so the CLI bridge (which runs before Tauri is initialized and has
+/// no AppHandle at all) resolves the vault exactly the way the GUI does,
+/// passing `active = None` because there is no desktop session.
+pub fn resolve_vault_target_with_active(
+    active: Option<String>,
+) -> Result<(std::path::PathBuf, String), String> {
     let menubar_path = hq_desktop_core::paths::menubar_json_path()?;
     let menubar_override = if menubar_path.exists() {
         std::fs::read_to_string(&menubar_path)
@@ -693,9 +707,6 @@ fn resolve_vault_target(app: &AppHandle) -> Result<(std::path::PathBuf, String),
         menubar_override.as_deref(),
     );
 
-    let active = app
-        .try_state::<crate::commands::desktop_alt::DesktopSessionScope>()
-        .and_then(|s| s.active_company_slug());
     let config_slug = config.as_ref().map(|c| c.company_slug.clone());
     let manifest_slugs = read_manifest_slugs(&hq_root);
     let companies_dir = hq_root.join("companies");
@@ -975,7 +986,136 @@ fn spawn_enrichment(app: AppHandle, hq_root: std::path::PathBuf, company_slug: S
             Ok(record) => emit(&record),
             Err(e) => log(LOG_TAG, &format!("model stage failed for record {id}: {e}")),
         }
+        spawn_reindex(id);
     });
+}
+
+/// Best-effort qmd refresh after the enrichment chain has settled, so the new
+/// `capture.md` becomes searchable.
+///
+/// Never runs on the capture thread and never blocks the async runtime:
+/// `qmd update` is a synchronous subprocess, so it goes to `spawn_blocking`.
+/// A missing `qmd` is a no-op, not an error — indexing is a bonus, the record
+/// is the artifact.
+fn spawn_reindex(id: String) {
+    let Some(indexer) = QmdCli::detect() else {
+        return;
+    };
+    tauri::async_runtime::spawn_blocking(move || reindex_after_write(&indexer, &id));
+}
+
+// ---------------------------------------------------------------------------
+// US-011: citation counter (Tauri command + local CLI bridge for HQ skills)
+// ---------------------------------------------------------------------------
+
+/// Result of a successful citation: enough for the caller to know *which*
+/// company's record moved, since an agent cites by id alone.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeasCitation {
+    pub id: String,
+    pub company_slug: String,
+    pub cited_count: u32,
+}
+
+/// Increment a capture's citation count, searching across companies by id.
+///
+/// HQ skills cite a capture by id without knowing which company it was filed
+/// under, so a `NotFound` in `preferred_slug` falls back to scanning the
+/// manifest's companies. The scan only ever *reads* `record.json` paths under
+/// `companies/{slug}/ideas/{id}/`; the write still goes through the core,
+/// which screens both components, so nothing can be written outside that
+/// directory.
+pub fn mark_cited_in_vault(
+    hq_root: &std::path::Path,
+    preferred_slug: &str,
+    id: &str,
+) -> Result<IdeasCitation, String> {
+    let citation = |record: hq_desktop_core::ideas::CaptureRecord| IdeasCitation {
+        id: record.id,
+        company_slug: record.company_slug,
+        cited_count: record.cited_count,
+    };
+
+    match mark_cited(hq_root, preferred_slug, id) {
+        Ok(record) => return Ok(citation(record)),
+        // Anything other than "this company doesn't have it" is a real error —
+        // an invalid id must not silently trigger a cross-company scan.
+        Err(IdeasError::NotFound { .. }) => {}
+        Err(e) => return Err(e.to_string()),
+    }
+
+    for slug in read_manifest_slugs(hq_root) {
+        if slug == preferred_slug {
+            continue;
+        }
+        match mark_cited(hq_root, &slug, id) {
+            Ok(record) => return Ok(citation(record)),
+            Err(IdeasError::NotFound { .. }) => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err(format!("capture {id} not found in any company"))
+}
+
+/// Record that an agent cited a capture. Bumps `cited_count` in both
+/// `record.json` and `capture.md`.
+#[tauri::command]
+pub async fn ideas_mark_cited(app: AppHandle, id: String) -> Result<IdeasCitation, String> {
+    let (hq_root, slug) = resolve_vault_target(&app)?;
+    mark_cited_in_vault(&hq_root, &slug, &id)
+}
+
+/// The CLI flag HQ skills use to cite a capture without the GUI.
+pub const IDEAS_MARK_CITED_FLAG: &str = "--ideas-mark-cited";
+
+/// Pull the capture id out of `--ideas-mark-cited <id>` or
+/// `--ideas-mark-cited=<id>`, or `None` when this argv is not a citation run.
+///
+/// An empty value (`--ideas-mark-cited=`) is not a citation request — it would
+/// otherwise become an id of `""` and fail deep inside the core.
+pub fn ideas_mark_cited_id_from_argv<S: AsRef<str>>(argv: &[S]) -> Option<String> {
+    let mut iter = argv.iter().map(|a| a.as_ref());
+    while let Some(arg) = iter.next() {
+        if let Some(value) = arg.strip_prefix(&format!("{IDEAS_MARK_CITED_FLAG}=")) {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+            return None;
+        }
+        if arg == IDEAS_MARK_CITED_FLAG {
+            return iter.next().filter(|v| !v.is_empty()).map(|v| v.to_string());
+        }
+    }
+    None
+}
+
+/// Run the citation as a one-shot CLI and exit. Never returns.
+///
+/// The process exit lives here rather than in `main.rs` because
+/// `scripts/native-seam-wiring.test.ts` pins the set of `process::exit` calls
+/// in `main.rs`; `main.rs` only performs the dispatch.
+pub fn run_ideas_mark_cited_cli_main(id: &str) -> ! {
+    use std::io::Write as _;
+    let result = resolve_vault_target_with_active(None)
+        .and_then(|(hq_root, slug)| mark_cited_in_vault(&hq_root, &slug, id))
+        .and_then(|citation| {
+            serde_json::to_string(&citation).map_err(|e| format!("serialize failed: {e}"))
+        });
+    match result {
+        Ok(line) => {
+            println!("{line}");
+            // `process::exit` skips end-of-run flushing and the caller parses
+            // this single line off stdout.
+            let _ = std::io::stdout().flush();
+            std::process::exit(0);
+        }
+        Err(error) => {
+            eprintln!("ideas-mark-cited failed: {error}");
+            let _ = std::io::stderr().flush();
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -984,6 +1124,79 @@ mod hq_idea_board_capture_tests {
 
     fn d(x: f64, y: f64, w: f64, h: f64) -> DisplayRect {
         DisplayRect { x, y, w, h, scale: 2.0 }
+    }
+
+    #[test]
+    fn hq_idea_board_mark_cited_flag_is_parsed_in_both_spellings() {
+        assert_eq!(
+            ideas_mark_cited_id_from_argv(&["hq-sync", "--ideas-mark-cited", "01JABC"]),
+            Some("01JABC".to_string())
+        );
+        assert_eq!(
+            ideas_mark_cited_id_from_argv(&["hq-sync", "--ideas-mark-cited=01JABC"]),
+            Some("01JABC".to_string())
+        );
+        // Unrelated argv is left alone.
+        assert_eq!(
+            ideas_mark_cited_id_from_argv(&["hq-sync", "--sync-cancel-probe"]),
+            None
+        );
+        assert_eq!(ideas_mark_cited_id_from_argv::<&str>(&[]), None);
+        // A flag with no value is not a citation request.
+        assert_eq!(
+            ideas_mark_cited_id_from_argv(&["hq-sync", "--ideas-mark-cited"]),
+            None
+        );
+        assert_eq!(
+            ideas_mark_cited_id_from_argv(&["hq-sync", "--ideas-mark-cited="]),
+            None
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_mark_cited_falls_back_across_manifest_companies() {
+        use hq_desktop_core::ideas::{
+            create_record, load_record, CaptureImage, NewCapture,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        std::fs::create_dir_all(hq_root.join("companies/alpha")).unwrap();
+        std::fs::create_dir_all(hq_root.join("companies/beta")).unwrap();
+        std::fs::write(
+            hq_root.join("companies/manifest.yaml"),
+            "companies:\n  alpha:\n    name: Alpha\n  beta:\n    name: Beta\n",
+        )
+        .unwrap();
+
+        let provenance = Provenance {
+            app: "Safari".to_string(),
+            window_title: "X".to_string(),
+            url: None,
+            captured_at: chrono::Utc::now(),
+            display_id: 1,
+        };
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8));
+        // The record lives in beta, but the caller prefers alpha.
+        let record = create_record(
+            hq_root,
+            NewCapture::pending("beta", CaptureImage::Decoded(image), provenance),
+        )
+        .unwrap();
+
+        let citation = mark_cited_in_vault(hq_root, "alpha", &record.id).unwrap();
+        assert_eq!(citation.company_slug, "beta");
+        assert_eq!(citation.cited_count, 1);
+        assert_eq!(citation.id, record.id);
+        assert_eq!(
+            load_record(hq_root, "beta", &record.id).unwrap().cited_count,
+            1
+        );
+
+        // An id nobody has is an error, not a silent success.
+        assert!(mark_cited_in_vault(hq_root, "alpha", "01JMISSING").is_err());
+        // An id that cannot be a path component is rejected outright.
+        assert!(mark_cited_in_vault(hq_root, "alpha", "../../etc").is_err());
     }
 
     #[test]

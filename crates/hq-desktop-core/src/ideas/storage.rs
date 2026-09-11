@@ -5,7 +5,13 @@
 //! ```text
 //! {hq_root}/companies/{slug}/ideas/{id}/record.json
 //! {hq_root}/companies/{slug}/ideas/{id}/image.png
+//! {hq_root}/companies/{slug}/ideas/{id}/capture.md
 //! ```
+//!
+//! `capture.md` is the qmd-indexable sidecar (see [`super::sidecar`]). It is
+//! written by the same private helper that writes `record.json`, so create /
+//! save / move all keep the two in sync by construction — there is no code
+//! path that persists a record without refreshing its sidecar.
 //!
 //! Writes are atomic: content goes to a `.tmp` sibling in the same directory
 //! and is then renamed over the target, matching `config.rs` / `journal.rs`.
@@ -248,14 +254,40 @@ pub fn move_record(
     Ok(record)
 }
 
-// ── internals ──────────────────────────────────────────────────────────────────
-
-fn write_record_json(dir: &Path, record: &CaptureRecord) -> Result<(), IdeasError> {
-    let bytes = serde_json::to_vec_pretty(record)?;
-    atomic_write(&dir.join("record.json"), &bytes)
+/// Record that an agent cited this capture: `cited_count += 1`.
+///
+/// Saturating rather than wrapping — a counter that rolls over to 0 would read
+/// as "never cited", which is worse than a stuck maximum.
+///
+/// The write goes through [`save_record`], so `record.json` and `capture.md`
+/// both carry the new count and stay inside
+/// `companies/{company_slug}/ideas/{id}/`.
+pub fn mark_cited(
+    hq_root: &Path,
+    company_slug: &str,
+    id: &str,
+) -> Result<CaptureRecord, IdeasError> {
+    let mut record = load_record(hq_root, company_slug, id)?;
+    record.cited_count = record.cited_count.saturating_add(1);
+    save_record(hq_root, &mut record)?;
+    Ok(record)
 }
 
-fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), IdeasError> {
+// ── internals ──────────────────────────────────────────────────────────────────
+
+/// Write `record.json` **and** refresh the `capture.md` sidecar.
+///
+/// Every persistence path (`create_record`, `save_record`, `move_record`)
+/// funnels through here, which is what guarantees the sidecar can never drift
+/// from the record. `record.json` is written first: it is the source of truth,
+/// and a sidecar failure must not leave the record unwritten.
+fn write_record_json(dir: &Path, record: &CaptureRecord) -> Result<(), IdeasError> {
+    let bytes = serde_json::to_vec_pretty(record)?;
+    atomic_write(&dir.join("record.json"), &bytes)?;
+    super::sidecar::write_sidecar(dir, record)
+}
+
+pub(super) fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), IdeasError> {
     let name = target
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -513,6 +545,129 @@ mod tests {
         let dir = record_dir(root.path(), "a", &record.id);
         assert!(dir.join("record.json").is_file());
         assert!(dir.join("image.png").is_file());
+    }
+
+    #[test]
+    fn hq_idea_board_create_record_writes_a_sidecar_without_the_image() {
+        let root = tempfile::tempdir().unwrap();
+        let mut new = NewCapture::pending(
+            "indigo",
+            CaptureImage::Decoded(gradient(800, 600)),
+            provenance(),
+        );
+        new.ocr_text = Some("zebra quartz manifold".to_string());
+        new.extracted = Some(serde_json::json!({ "title": "A thought" }));
+        let record = create_record(root.path(), new).unwrap();
+
+        let dir = record_dir(root.path(), "indigo", &record.id);
+        let sidecar = dir.join(super::super::sidecar::SIDECAR_FILE);
+        assert!(sidecar.is_file(), "capture.md should sit beside record.json");
+
+        let bytes = fs::read(&sidecar).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains("zebra quartz manifold"), "{text}");
+        assert!(text.contains("- **title**: A thought"), "{text}");
+        assert!(text.contains(&record.id), "{text}");
+
+        // The image binary must never leak into the indexed sidecar.
+        assert!(
+            !bytes.windows(4).any(|w| w == b"\x89PNG"),
+            "sidecar contains a PNG signature"
+        );
+        let image_b64_prefix = "iVBORw0KGgo"; // base64 of the PNG signature
+        assert!(!text.contains(image_b64_prefix), "{text}");
+        assert!(
+            bytes.len() < 64 * 1024,
+            "sidecar should stay small, got {} bytes",
+            bytes.len()
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_save_record_refreshes_the_sidecar_body() {
+        use super::super::sidecar::{parse_sidecar_frontmatter, SIDECAR_FILE};
+        let root = tempfile::tempdir().unwrap();
+        let mut record = create_record(
+            root.path(),
+            NewCapture::pending("indigo", CaptureImage::Decoded(gradient(64, 64)), provenance()),
+        )
+        .unwrap();
+        let sidecar = record_dir(root.path(), "indigo", &record.id).join(SIDECAR_FILE);
+        assert!(!fs::read_to_string(&sidecar).unwrap().contains("## Extracted"));
+
+        record.status = CaptureStatus::Extracted;
+        record.confidence = Some(0.9);
+        record.ocr_text = Some("later ocr text".to_string());
+        record.extracted = Some(serde_json::json!({ "title": "after extraction" }));
+        save_record(root.path(), &mut record).unwrap();
+
+        let text = fs::read_to_string(&sidecar).unwrap();
+        assert!(text.contains("- **title**: after extraction"), "{text}");
+        assert!(text.contains("later ocr text"), "{text}");
+        let fm = parse_sidecar_frontmatter(&text).unwrap();
+        assert_eq!(fm.status, CaptureStatus::Extracted);
+        assert_eq!(fm.confidence, Some(0.9));
+    }
+
+    #[test]
+    fn hq_idea_board_move_record_moves_the_sidecar_and_rewrites_company() {
+        use super::super::sidecar::{parse_sidecar_frontmatter, SIDECAR_FILE};
+        let root = tempfile::tempdir().unwrap();
+        let record = create_record(
+            root.path(),
+            NewCapture::pending("a", CaptureImage::Decoded(gradient(64, 64)), provenance()),
+        )
+        .unwrap();
+
+        move_record(root.path(), &record.id, "a", "b").unwrap();
+
+        assert!(!record_dir(root.path(), "a", &record.id).exists());
+        let sidecar = record_dir(root.path(), "b", &record.id).join(SIDECAR_FILE);
+        let fm = parse_sidecar_frontmatter(&fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(fm.company, "b");
+        assert_eq!(
+            fm.image_path,
+            format!("companies/b/ideas/{}/image.png", record.id)
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_mark_cited_increments_record_and_sidecar() {
+        use super::super::sidecar::{parse_sidecar_frontmatter, SIDECAR_FILE};
+        let root = tempfile::tempdir().unwrap();
+        let record = create_record(
+            root.path(),
+            NewCapture::pending("indigo", CaptureImage::Decoded(gradient(64, 64)), provenance()),
+        )
+        .unwrap();
+        assert_eq!(record.cited_count, 0);
+
+        assert_eq!(mark_cited(root.path(), "indigo", &record.id).unwrap().cited_count, 1);
+        let second = mark_cited(root.path(), "indigo", &record.id).unwrap();
+        assert_eq!(second.cited_count, 2);
+
+        assert_eq!(
+            load_record(root.path(), "indigo", &record.id).unwrap().cited_count,
+            2
+        );
+        let text =
+            fs::read_to_string(record_dir(root.path(), "indigo", &record.id).join(SIDECAR_FILE))
+                .unwrap();
+        assert_eq!(parse_sidecar_frontmatter(&text).unwrap().cited_count, 2);
+        assert!(text.contains("Cited 2× by agents"), "{text}");
+    }
+
+    #[test]
+    fn hq_idea_board_mark_cited_rejects_traversal_and_missing_records() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            mark_cited(root.path(), "indigo", "../../etc"),
+            Err(IdeasError::Invalid(_))
+        ));
+        assert!(matches!(
+            mark_cited(root.path(), "indigo", "01JMISSING"),
+            Err(IdeasError::NotFound { .. })
+        ));
     }
 
     #[test]

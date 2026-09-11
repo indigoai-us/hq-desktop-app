@@ -20,6 +20,13 @@ pub enum IdeasError {
     },
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    /// Frontmatter (de)serialization for the `capture.md` sidecar.
+    #[error("yaml error: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+    /// The search index could not be refreshed. Always best-effort at the
+    /// call site — a capture is never lost because indexing failed.
+    #[error("index error: {0}")]
+    Index(String),
     #[error("image error: {0}")]
     Image(String),
     #[error("invalid record: {0}")]

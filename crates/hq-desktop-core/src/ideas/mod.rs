@@ -7,7 +7,14 @@
 //! ```text
 //! {hq_root}/companies/{company_slug}/ideas/{id}/record.json
 //! {hq_root}/companies/{company_slug}/ideas/{id}/image.png
+//! {hq_root}/companies/{company_slug}/ideas/{id}/capture.md
 //! ```
+//!
+//! `capture.md` (US-011) is the markdown sidecar that makes a capture
+//! retrievable through the company's existing qmd collection — frontmatter
+//! carrying provenance and lifecycle, body carrying the extracted fields and
+//! OCR text. It is written by the same code path as `record.json`, so it never
+//! drifts.
 //!
 //! Both files sit inside the existing vault sync scope (`companies/…`), so a
 //! capture syncs with the rest of the company without extra plumbing.
@@ -20,6 +27,7 @@
 pub mod extract;
 pub mod pipeline;
 pub mod record;
+pub mod sidecar;
 pub mod storage;
 
 pub use extract::{
@@ -41,7 +49,11 @@ pub use record::{
     CaptureKind, CaptureRecord, CaptureStatus, ExtractionSource, IdeasError, Provenance,
     MAX_IMAGE_EDGE,
 };
+pub use sidecar::{
+    parse_sidecar_frontmatter, reindex_after_write, render_sidecar, sidecar_path, write_sidecar,
+    QmdCli, QmdIndexer, SidecarFrontmatter, INDEX_LOG_TAG, SIDECAR_FILE,
+};
 pub use storage::{
-    create_record, downsample, ideas_dir, load_record, move_record, record_dir, save_record,
-    CaptureImage, NewCapture,
+    create_record, downsample, ideas_dir, load_record, mark_cited, move_record, record_dir,
+    save_record, CaptureImage, NewCapture,
 };
