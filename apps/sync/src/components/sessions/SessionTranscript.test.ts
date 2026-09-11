@@ -10,6 +10,35 @@ import SessionTranscript from './SessionTranscript.svelte';
 let component: ReturnType<typeof mount> | undefined;
 afterEach(() => { if (component) unmount(component); document.body.innerHTML = ''; });
 
+describe('session transcript reauth card', () => {
+  it('renders a sign-in card instead of a red error for authentication_failed', () => {
+    component = mount(SessionTranscript, {
+      target: document.body,
+      props: {
+        blocks: [
+          {
+            type: 'error',
+            id: 'e1',
+            text: 'This session needs you to sign in again on this Mac.',
+            tone: 'warn',
+            code: 'authentication_failed',
+            action: 'reauth',
+            at: null,
+          },
+        ],
+        onreauth: () => {},
+        reauthTool: 'claude',
+      },
+    });
+    flushSync();
+    expect(document.querySelector('[data-testid="session-reauth-card"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="session-inline-error"]')).toBeNull();
+    expect(document.querySelector('[data-testid="session-reauth"]')?.textContent).toContain(
+      'Sign in',
+    );
+  });
+});
+
 describe('session transcript rich content', () => {
   it('renders protocol question replies as readable question and answer pairs', () => {
     const text = '<send_user_message_question_reply>' + JSON.stringify([

@@ -31,6 +31,7 @@
   import { readQuestionReplies } from './question-replies';
   import PermissionCard from './PermissionCard.svelte';
   import QuestionCard from './QuestionCard.svelte';
+  import ProviderReauthCard from './ProviderReauthCard.svelte';
   import ToolGroupRow from './ToolGroupRow.svelte';
   import type { ArtifactActions } from './session-artifacts';
   import type { ChatBlock } from './transcript-adapter';
@@ -71,6 +72,7 @@
      */
     onchoosemodel?: () => void;
     onreauth?: () => void;
+    reauthTool?: string | null;
     restoreScroll?: NavigationScrollState | null;
   }
 
@@ -90,6 +92,7 @@
     onanswerquestion,
     onchoosemodel,
     onreauth,
+    reauthTool = 'claude',
     restoreScroll = null,
   }: Props = $props();
 
@@ -324,6 +327,8 @@
             busy={busyRequestId === block.requestId}
             onsubmit={onanswerquestion}
           />
+        {:else if block.type === 'error' && block.action === 'reauth'}
+          <ProviderReauthCard tool={reauthTool} onsignin={() => onreauth?.()} />
         {:else if block.type === 'error'}
           <p
             class="inline-error"
@@ -346,18 +351,6 @@
                 }}
               >
                 Choose a model
-              </button>
-            {:else if block.action === 'reauth' && onreauth}
-              <button
-                type="button"
-                class="inline-fix"
-                data-testid="session-reauth"
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onreauth?.();
-                }}
-              >
-                Sign in again
               </button>
             {/if}
           </p>

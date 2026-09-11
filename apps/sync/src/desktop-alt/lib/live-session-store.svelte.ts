@@ -45,6 +45,7 @@ import { missingInheritedPrefix, type SessionContext } from './session-context';
  * window) and writes those errors to the console once per session, not once
  * per render.
  */
+import { isAuthFailureText } from '../../components/sessions/transcript-adapter';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { WEB_PATHS, skillMetadataFromShelf, type ShelfSkillMetadata } from '@hq/platform';
@@ -437,6 +438,15 @@ function applyEvent(
   entry.nextSeq = seq + 1;
   adoptBackendTurns(sessionId, [event]);
   resolveTurnWaiters(sessionId);
+  if (
+    (event.kind === 'error' &&
+      (event.code === 'authentication_failed' || isAuthFailureText(event.message))) ||
+    (event.kind === 'turnDone' &&
+      event.status !== 'success' &&
+      isAuthFailureText(event.error))
+  ) {
+    noteStaleLogin(sessionId);
+  }
   revision += 1;
 }
 
@@ -1194,6 +1204,28 @@ export interface ProviderLoginState {
   message?: string;
 }
 let preflightCache: { at: number; promise: Promise<Preflight> } | null = null;
+/** CLI `auth status` can stay true after a 401; treat those tools as signed out until login. */
+const staleLogin = new Set<SessionTool>();
+
+function applyStaleLogin(preflight: Preflight): Preflight {
+  if (staleLogin.size === 0) return preflight;
+  return {
+    ...preflight,
+    claudeLoggedIn: staleLogin.has('claude') ? false : preflight.claudeLoggedIn,
+    codexLoggedIn: staleLogin.has('codex') ? false : preflight.codexLoggedIn,
+    grokLoggedIn: staleLogin.has('grok') ? false : preflight.grokLoggedIn,
+  };
+}
+
+function noteStaleLogin(sessionId: string): void {
+  const started = entries[sessionId]?.events.find((event) => event.kind === 'started');
+  const tool =
+    started && started.kind === 'started' && (started.tool === 'codex' || started.tool === 'grok')
+      ? started.tool
+      : 'claude';
+  staleLogin.add(tool);
+  preflightCache = null;
+}
 const CATALOG_TTL_MS = 5 * 60_000;
 let catalogCache = new Map<SessionTool, { at: number; promise: Promise<CommandCatalog> }>();
 
@@ -1203,7 +1235,7 @@ async function preflight(): Promise<Preflight> {
   if (preflightCache && now - preflightCache.at < PREFLIGHT_TTL_MS) {
     return preflightCache.promise;
   }
-  const promise = invoke<Preflight>('agent_session_preflight');
+  const promise = invoke<Preflight>('agent_session_preflight').then(applyStaleLogin);
   preflightCache = { at: now, promise };
   // A failed probe must not poison the cache for the next attempt.
   promise.catch(() => {
@@ -1640,8 +1672,22 @@ export const liveSessionStore = {
   shareToChannel,
   preflight,
   repairHqSetup,
-  providerLoginStart: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_start', { tool }),
-  providerLoginStatus: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_status', { tool }),
+  providerLoginStart: async (tool: SessionTool) => {
+    const result = await invoke<ProviderLoginState>('agent_provider_login_start', { tool });
+    if (result.state === 'connected') {
+      staleLogin.delete(tool);
+      preflightCache = null;
+    }
+    return result;
+  },
+  providerLoginStatus: async (tool: SessionTool) => {
+    const result = await invoke<ProviderLoginState>('agent_provider_login_status', { tool });
+    if (result.state === 'connected') {
+      staleLogin.delete(tool);
+      preflightCache = null;
+    }
+    return result;
+  },
   providerLoginCancel: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_cancel', { tool }),
   invalidatePreflight: () => { preflightCache = null; },
   /** Install a sessions CLI in-app (npm, Node first if needed). Streams `install:progress`. */

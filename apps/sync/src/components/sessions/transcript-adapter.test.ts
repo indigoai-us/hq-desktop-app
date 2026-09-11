@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FOLD_ERRORS_BLOCK_ID,
+  AUTHENTICATION_FAILED_CODE,
+  AUTHENTICATION_FAILED_TEXT,
   MODEL_NOT_FOUND_CODE,
   MODEL_NOT_FOUND_TEXT,
   SESSION_AGENT_UID,
@@ -1078,7 +1080,32 @@ describe('foldSessionEvents — model_not_found is ONE recoverable line', () => 
       },
     ]);
     expect(errors(blocks)[0]?.action).toBe('reauth');
-    expect(errors(blocks)[0]?.code).toBe('authentication_failed');
+    expect(errors(blocks)[0]?.code).toBe(AUTHENTICATION_FAILED_CODE);
+    expect(errors(blocks)[0]?.text).toBe(AUTHENTICATION_FAILED_TEXT);
+  });
+
+  it('folds the 401 prose, error event, and turnDone into one sign-in card', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'userMessage', text: 'hello', imageCount: 0 },
+      {
+        kind: 'assistantMessage',
+        text: 'Failed to authenticate. API Error: 401 OAuth access token has been revoked.',
+      },
+      {
+        kind: 'error',
+        message: 'Authentication failed — sign in to Claude again.',
+        code: AUTHENTICATION_FAILED_CODE,
+      },
+      {
+        kind: 'turnDone',
+        status: 'error',
+        error: 'Failed to authenticate. API Error: 401 OAuth access token has been revoked.',
+      },
+    ]);
+    expect(types(blocks)).toEqual(['userBubble', 'error']);
+    expect(errors(blocks)).toHaveLength(1);
+    expect(errors(blocks)[0]?.action).toBe('reauth');
+    expect(proseText(blocks)).toEqual([]);
   });
 
   it('withdraws the narration even when only the streamed deltas arrived', () => {
