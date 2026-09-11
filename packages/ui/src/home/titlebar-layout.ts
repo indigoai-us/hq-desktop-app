@@ -33,6 +33,16 @@ export const TITLEBAR_TRAFFIC_LIGHT_X_PX = 20;
 export const MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX = 14;
 
 /**
+ * AppKit `NSWindowButton` frame `origin.y` inside the title-bar container,
+ * measured from the container's BOTTOM edge (AppKit is bottom-left origin).
+ * tao resizes the container but never touches this origin, so it is the
+ * offset that turns the `y` inset into a visual centre. Measured on macOS
+ * with the desktop-alt style mask (`.titled | .closable | .miniaturizable |
+ * .resizable | .fullSizeContentView`, transparent titlebar, hidden title).
+ */
+export const MACOS_TRAFFIC_LIGHT_ORIGIN_Y_PX = 9;
+
+/**
  * Windows caption buttons live in the native decorated title bar, so HQ
  * chrome only needs a tight leading gutter (existing V4TitleBar value).
  */
@@ -64,17 +74,26 @@ export function titlebarContentCenterPx(
 /**
  * Tauri 2 / wry `trafficLightPosition.y`.
  *
- * wry sizes the overlay title-bar container to `buttonHeight + y` and leaves
- * each button's AppKit `origin.y` alone. With `titleBarStyle: Overlay` and
- * `hiddenTitle: true`, that leftover origin is half the button, so `y` is
- * the visual centre of the lights. Setting it to the titlebar content
- * centre therefore middle-aligns them with the wordmark and date. If the
- * titlebar height changes, this value follows it.
+ * tao sizes the overlay title-bar container to `buttonHeight + y`, pins it
+ * to the window top, and leaves each button's AppKit `origin.y` alone. The
+ * button therefore ends up at
+ *
+ *   centreFromWindowTop = (buttonHeight + y) - originY - buttonHeight / 2
+ *                       = y - (originY - buttonHeight / 2)
+ *
+ * and `originY` is 9 against a 14pt button, so a raw `y` lands the lights
+ * 2px ABOVE where it reads. Add that back so `y` really is the visual
+ * centre and the lights share the wordmark / date centre line. If the
+ * titlebar height changes, this follows it.
  */
 export function trafficLightYPx(
   titleBarHeightPx: number = TITLEBAR_HEIGHT_PX,
 ): number {
-  return titlebarContentCenterPx(titleBarHeightPx);
+  return (
+    titlebarContentCenterPx(titleBarHeightPx) +
+    MACOS_TRAFFIC_LIGHT_ORIGIN_Y_PX -
+    MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX / 2
+  );
 }
 
 export function trafficLightPosition(

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX,
+  MACOS_TRAFFIC_LIGHT_ORIGIN_Y_PX,
   TITLEBAR_HEIGHT_CSS_VAR,
   TITLEBAR_HEIGHT_PX,
   TITLEBAR_LEADING_INSET_CSS_VAR,
@@ -18,14 +19,26 @@ describe("titlebar layout — traffic-light centre line", () => {
   it("places the traffic-light centre on the titlebar content centre", () => {
     expect(TITLEBAR_HEIGHT_PX).toBe(48);
     expect(titlebarContentCenterPx()).toBe(24);
-    expect(trafficLightYPx()).toBe(24);
-    expect(trafficLightPosition()).toEqual({ x: 20, y: 24 });
+    // tao leaves the button origin at 9 inside a container it sizes to
+    // `14 + y`, so the lights land 2px above a raw `y`. The inset adds it
+    // back: 26 puts the visual centre on 24.
+    expect(trafficLightYPx()).toBe(26);
+    expect(trafficLightPosition()).toEqual({ x: 20, y: 26 });
   });
 
   it("follows the titlebar height so a taller bar keeps the lights centred", () => {
-    expect(trafficLightYPx(56)).toBe(28);
-    expect(trafficLightYPx(40)).toBe(20);
-    expect(titlebarContentCenterPx(56)).toBe(trafficLightYPx(56));
+    expect(trafficLightYPx(56)).toBe(30);
+    expect(trafficLightYPx(40)).toBe(22);
+    expect(titlebarContentCenterPx(56)).toBe(trafficLightYPx(56) - 2);
+  });
+
+  it("keeps the AppKit button origin the only source of the 2px offset", () => {
+    expect(MACOS_TRAFFIC_LIGHT_ORIGIN_Y_PX).toBe(9);
+    expect(
+      trafficLightYPx() - titlebarContentCenterPx(),
+    ).toBe(
+      MACOS_TRAFFIC_LIGHT_ORIGIN_Y_PX - MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX / 2,
+    );
   });
 
   it("keeps the macOS gutter and leading inset that the titlebar CSS reserves", () => {

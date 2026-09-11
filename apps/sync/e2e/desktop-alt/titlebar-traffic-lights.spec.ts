@@ -54,7 +54,11 @@ describe('desktop-alt overlay traffic lights share the titlebar centre line', ()
   const gutter = tsNumberConst('TITLEBAR_TRAFFIC_LIGHT_GUTTER_PX');
   const trafficX = tsNumberConst('TITLEBAR_TRAFFIC_LIGHT_X_PX');
   const buttonHeight = tsNumberConst('MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX');
-  const trafficY = titleBarHeight / 2;
+  const buttonOriginY = tsNumberConst('MACOS_TRAFFIC_LIGHT_ORIGIN_Y_PX');
+  // tao sizes the titlebar container to `buttonHeight + y` and never moves
+  // the button's own origin, so the visual centre lands at
+  // `y - (originY - buttonHeight / 2)`. The inset compensates.
+  const trafficY = titleBarHeight / 2 + buttonOriginY - buttonHeight / 2;
 
   it('keeps one titlebar height across CSS, TS, and Rust', () => {
     const tokens = readRepoFile('../../packages/ui/src/home/tokens.css');
@@ -82,14 +86,18 @@ describe('desktop-alt overlay traffic lights share the titlebar centre line', ()
   });
 
   it('computes trafficLightPosition.y as the titlebar content centre', () => {
-    expect(trafficY).toBe(24);
+    expect(trafficY).toBe(26);
+    expect(titleBarHeight / 2).toBe(24);
     expect(trafficX).toBe(20);
     expect(buttonHeight).toBe(14);
+    expect(buttonOriginY).toBe(9);
     expect(rustF64Const('TITLEBAR_TRAFFIC_LIGHT_X_PX')).toBe(trafficX);
     expect(rustF64Const('MACOS_TRAFFIC_LIGHT_BUTTON_HEIGHT_PX')).toBe(buttonHeight);
-    expect(tsLayout).toContain('titleBarHeightPx / 2');
+    expect(rustF64Const('MACOS_TRAFFIC_LIGHT_ORIGIN_Y_PX')).toBe(buttonOriginY);
+    expect(tsLayout).toContain('titlebarContentCenterPx(titleBarHeightPx) +');
+    expect(tsLayout).toContain('MACOS_TRAFFIC_LIGHT_ORIGIN_Y_PX');
     expect(rustLayout).toContain('fn traffic_light_y_px');
-    expect(rustLayout).toContain('titlebar_height / 2.0');
+    expect(rustLayout).toContain('titlebar_content_center_px(titlebar_height) + MACOS_TRAFFIC_LIGHT_ORIGIN_Y_PX');
   });
 
   it('declares the same offset on the lazily built window and in tauri.conf.json', () => {
