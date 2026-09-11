@@ -143,3 +143,53 @@ describe("ChatSidebar unified search", () => {
     expect(document.querySelector('[data-testid="chat-history-view"]')).toBeNull();
   });
 });
+
+describe("ChatSidebar search dismissal", () => {
+  // Opening a message hit left the dialog sitting over the conversation it
+  // had just jumped to.
+  it("closes the dialog when a message hit is opened", async () => {
+    const searchMessages = vi.fn(async (_args: { q: string }) => ({
+      results: [
+        {
+          messageId: "evt_1",
+          scope: "channel" as const,
+          channelId: "chn_proj",
+          companyUid: "cmp_1",
+          body: "the launch checklist is in the doc",
+          createdAt: now(),
+        },
+      ],
+    }));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: stubApi({ searchMessages }), seedDirectory: [seedRow] },
+    });
+
+    await vi.waitFor(() => {
+      expect(q('[data-testid="chat-search"]')).toBeTruthy();
+    });
+    q<HTMLButtonElement>('[data-testid="chat-search"]')!.click();
+    await settle();
+    type(q<HTMLInputElement>(".chat-switcher-input")!, "launch");
+
+    const hit = await vi.waitFor(
+      () => {
+        const el = document.querySelector<HTMLButtonElement>(
+          '[data-testid="chat-search-hit"]',
+        );
+        expect(el).toBeTruthy();
+        return el!;
+      },
+      { timeout: 3000 },
+    );
+
+    hit.click();
+    await settle();
+
+    expect(
+      document.querySelector('[data-testid="chat-search-overlay"]'),
+    ).toBeNull();
+  });
+});

@@ -1877,6 +1877,11 @@
 
   function openSearchHit(hit: MessageSearchHit) {
     const row = resolveSearchHitRow(hit, allRows);
+    // Closed without `closeSearch()`: that hands focus back to the search
+    // button, and the point of this click is to land on the message. Leave
+    // focus wherever opening the conversation puts it.
+    searchOpen = false;
+    searchQuery = "";
     void openRow(row, {
       messageId: hit.messageId,
       createdAt: hit.createdAt,
