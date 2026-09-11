@@ -109,6 +109,22 @@ export interface IceCandidateLike {
 export interface TrackLike {
   readonly id: string;
   readonly kind: string;
+  /**
+   * Live-ness, as the remote side actually reports it.
+   *
+   * A remote peer that mutes does NOT remove its transceiver — the track stays
+   * attached and goes `muted`, so a snapshot that only counted `ontrack` events
+   * would keep claiming the peer is sending audio forever. These three are the
+   * spec's own signals (`MediaStreamTrack.muted` / `onmute` / `onunmute`) plus
+   * `readyState` for the ended case; all optional, because a host that does not
+   * model them simply degrades to "whatever arrived is live".
+   */
+  readonly muted?: boolean;
+  /** "live" | "ended" when the host models it. */
+  readonly readyState?: string;
+  onmute?: (() => void) | null;
+  onunmute?: (() => void) | null;
+  onended?: (() => void) | null;
   stop(): void;
 }
 

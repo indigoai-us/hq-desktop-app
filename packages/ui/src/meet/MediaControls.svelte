@@ -72,6 +72,9 @@
   let selectedPeerId = $state<string>("");
   /** Which destructive action is awaiting confirmation. */
   let confirming = $state<"end" | "remove" | null>(null);
+  /** The control that opened the confirm, so focus can go back where it was. */
+  let confirmTrigger: HTMLButtonElement | null = null;
+  let cancelButton = $state<HTMLButtonElement | null>(null);
 
   const moderator = $derived(canModerate(role));
   const microphones = $derived(
@@ -120,6 +123,37 @@
     };
   });
 
+  /**
+   * Open a confirm, remembering the button that opened it. Focus goes to
+   * Cancel (the safe choice), and comes back to this button on close, so a
+   * keyboard user is never dropped at the top of the document.
+   */
+  function openConfirm(action: "end" | "remove", event: Event): void {
+    confirmTrigger = event.currentTarget as HTMLButtonElement;
+    confirming = action;
+  }
+
+  function closeConfirm(): void {
+    if (confirming === null) return;
+    confirming = null;
+    const trigger = confirmTrigger;
+    confirmTrigger = null;
+    trigger?.focus();
+  }
+
+  $effect(() => {
+    if (confirming !== null) cancelButton?.focus();
+  });
+
+  /**
+   * The person being removed left, or was removed by another host, while the
+   * confirm was open. Accepting now would act on nobody (or worse, on whoever
+   * the select slid to), so the confirm closes itself.
+   */
+  $effect(() => {
+    if (confirming === "remove" && !selectedPeer) closeConfirm();
+  });
+
   function pick(kind: "microphone" | "camera", event: Event): void {
     const value = (event.currentTarget as HTMLSelectElement).value;
     if (!value) return;
@@ -127,13 +161,27 @@
   }
 </script>
 
+<!--
+  Escape cancels the confirm wherever focus is. The confirm is deliberately not
+  modal (see `aria-modal="false"` below), so this is a convenience, not the only
+  way out — Cancel is focused the moment it opens.
+-->
+<svelte:window
+  onkeydown={(event: KeyboardEvent) => {
+    if (event.key === "Escape" && confirming !== null) {
+      event.preventDefault();
+      closeConfirm();
+    }
+  }}
+/>
+
 <div class="bar" data-testid="media-controls">
   <div class="group">
     <button
       type="button"
       class="control"
       data-testid="control-microphone"
-      aria-pressed={!micMuted}
+      aria-pressed={micMuted}
       disabled={inert}
       onclick={() => ontogglemicrophone?.(micMuted)}
     >
@@ -161,7 +209,7 @@
       type="button"
       class="control"
       data-testid="control-camera"
-      aria-pressed={!cameraOff}
+      aria-pressed={cameraOff}
       disabled={inert}
       onclick={() => ontogglecamera?.(cameraOff)}
     >
@@ -225,9 +273,7 @@
         class="control danger"
         data-testid="moderation-remove"
         disabled={inert || !selectedPeer}
-        onclick={() => {
-          confirming = "remove";
-        }}
+        onclick={(event) => openConfirm("remove", event)}
       >
         Remove
       </button>
@@ -236,9 +282,7 @@
         class="control danger"
         data-testid="moderation-end"
         disabled={inert}
-        onclick={() => {
-          confirming = "end";
-        }}
+        onclick={(event) => openConfirm("end", event)}
       >
         End room
       </button>
@@ -262,6 +306,12 @@
     happens and to whom; "End room" is called out as affecting everyone, which
     is the distinction between leaving and ending.
   -->
+  <!--
+    `aria-modal="false"` is the truth, not a shortcut: this is an inline strip
+    under the bar, the rest of the call stays operable behind it, and nothing
+    is made inert. Claiming modality we do not enforce would tell a screen
+    reader the rest of the page is unavailable when it is not.
+  -->
   <div
     class="confirm"
     role="alertdialog"
@@ -282,9 +332,8 @@
       type="button"
       class="control"
       data-testid="moderation-confirm-cancel"
-      onclick={() => {
-        confirming = null;
-      }}
+      bind:this={cancelButton}
+      onclick={closeConfirm}
     >
       Cancel
     </button>
@@ -292,11 +341,13 @@
       type="button"
       class="control danger"
       data-testid="moderation-confirm-accept"
+      disabled={confirming === "remove" && !selectedPeer}
       onclick={() => {
         const action = confirming;
-        confirming = null;
+        const peer = selectedPeer;
+        closeConfirm();
         if (action === "end") void onendroom?.();
-        else if (selectedPeer) void onremovepeer?.(selectedPeer);
+        else if (peer) void onremovepeer?.(peer);
       }}
     >
       {confirming === "end" ? "End room" : "Remove"}

@@ -119,7 +119,13 @@ export class PeerTransport {
   private pc: PeerConnectionLike | null = null;
   private timers: RecoveryTimers = {};
   private pendingCandidates: IceCandidateLike[] = [];
-  private remoteTrackKinds = new Set<string>();
+  /**
+   * Remote tracks this connection received, kept as OBJECTS rather than as a
+   * set of kind strings: a kind is only in the snapshot while its track is
+   * actually live, and that is a property of the track, not of the fact that an
+   * `ontrack` once fired. See `liveRemoteKinds`.
+   */
+  private remoteTracks = new Set<TrackLike>();
   private makingOffer = false;
   private ignoreOffer = false;
   private restartAttempts = 0;
@@ -145,7 +151,7 @@ export class PeerTransport {
       status: this.status,
       polite: this.polite,
       restartAttempts: this.restartAttempts,
-      remoteTrackKinds: [...this.remoteTrackKinds].sort(),
+      remoteTrackKinds: this.liveRemoteKinds(),
       localTrackKinds: (this.pc?.getSenders() ?? [])
         .map((sender) => sender.track?.kind)
         .filter((kind): kind is string => typeof kind === "string")
@@ -220,7 +226,30 @@ export class PeerTransport {
       }
       pc.addTrack(track);
     }
+    // Opened here rather than in `create()` so the data channel and the first
+    // local tracks ride ONE negotiation. `negotiationneeded` coalesces within
+    // a turn, so the extra round the old ordering paid for is gone; the
+    // symmetric polite-side rule is unchanged.
+    this.openControlChannel(pc);
     this.deps.onChange();
+  }
+
+  /**
+   * The polite side opens `hq-meet-control`, exactly once per connection.
+   * Idempotent: a second call while a channel is bound is a no-op.
+   */
+  private openControlChannel(pc: PeerConnectionLike): void {
+    if (!this.polite || this.control) return;
+    if (typeof pc.createDataChannel !== "function") return;
+    try {
+      this.bindControl(
+        pc.createDataChannel(MODERATION_CHANNEL_LABEL, { ordered: true }),
+      );
+    } catch {
+      // A host without data channels simply carries no moderation. The UI
+      // says the request could not be delivered rather than pretending.
+      this.deps.count("controlChannelUnavailable");
+    }
   }
 
   /**
@@ -362,13 +391,41 @@ export class PeerTransport {
     this.pc?.close();
     this.pc = null;
     this.pendingCandidates = [];
-    this.remoteTrackKinds.clear();
+    this.clearRemoteTracks();
     this.control?.close();
     this.control = null;
     this.status = "failed";
   }
 
   // ---- internals ----
+
+  /**
+   * The kinds this peer is sending RIGHT NOW.
+   *
+   * A track that went `muted` (the remote user pressed mute) or `ended` is not
+   * a kind they are sending, so it drops out of the snapshot and
+   * `deriveCallView` renders the tile as muted. Hosts that do not model
+   * `muted`/`readyState` leave both undefined, and every received track counts.
+   */
+  private liveRemoteKinds(): string[] {
+    const kinds = new Set<string>();
+    for (const track of this.remoteTracks) {
+      if (track.muted === true) continue;
+      if (track.readyState === "ended") continue;
+      kinds.add(track.kind);
+    }
+    return [...kinds].sort();
+  }
+
+  /** Forget the remote tracks, releasing the listeners we installed on them. */
+  private clearRemoteTracks(): void {
+    for (const track of this.remoteTracks) {
+      track.onmute = null;
+      track.onunmute = null;
+      track.onended = null;
+    }
+    this.remoteTracks.clear();
+  }
 
   private create(): void {
     this.clearTimers();
@@ -379,7 +436,7 @@ export class PeerTransport {
     this.candidatesSent = 0;
     this.makingOffer = false;
     this.ignoreOffer = false;
-    this.remoteTrackKinds.clear();
+    this.clearRemoteTracks();
     this.control?.close();
     this.control = null;
 
@@ -394,27 +451,32 @@ export class PeerTransport {
 
     // Exactly ONE side opens `hq-meet-control`, chosen by the same symmetric
     // polite/impolite rule negotiation uses, so the two peers never race two
-    // channels with the same label. The other side adopts it.
+    // channels with the same label. The other side adopts it. The polite side
+    // opens it from `attachLocalTracks` (see `openControlChannel`), not here,
+    // so the channel joins the SAME negotiation as the first local tracks
+    // instead of costing an extra offer/answer round of its own.
     pc.ondatachannel = (event) => {
       if (this.closed || this.pc !== pc) return;
       this.bindControl(event.channel);
     };
-    if (this.polite && typeof pc.createDataChannel === "function") {
-      try {
-        this.bindControl(
-          pc.createDataChannel(MODERATION_CHANNEL_LABEL, { ordered: true }),
-        );
-      } catch {
-        // A host without data channels simply carries no moderation. The UI
-        // says the request could not be delivered rather than pretending.
-        this.deps.count("controlChannelUnavailable");
-      }
-    }
-
     pc.ontrack = (event) => {
       if (this.closed || this.pc !== pc) return;
-      this.remoteTrackKinds.add(event.track.kind);
-      this.deps.onRemoteTrack(this.remote, event.track);
+      const track = event.track;
+      this.remoteTracks.add(track);
+      // A remote mute keeps the transceiver and flips the track to `muted`, so
+      // the ONLY way `remoteTrackKinds` can stay honest is to follow these.
+      // Without them "they have an audio track" is a claim about the past.
+      const changed = () => {
+        if (this.closed || this.pc !== pc) return;
+        this.deps.onChange();
+      };
+      track.onmute = changed;
+      track.onunmute = changed;
+      track.onended = () => {
+        this.remoteTracks.delete(track);
+        changed();
+      };
+      this.deps.onRemoteTrack(this.remote, track);
       this.deps.onChange();
     };
 

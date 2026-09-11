@@ -3,16 +3,24 @@
    * The call window's shell (US-016/017/020).
    *
    * It owns the window chrome, the identity/permission notices and the media
-   * elements; the gallery and the control bar are the SHARED design-system
+   * ROUTING; the gallery and the control bar are the SHARED design-system
    * components (`meet.CallView` / `meet.MediaControls`), so the call looks and
    * behaves like the rest of HQ and stays testable without a webview.
+   *
+   * There is exactly ONE control surface: `MediaControls`, inside the gallery.
+   * The footer below it is the transcription consent + status strip and holds
+   * no microphone, camera or leave control — two places to mute is two places
+   * to disagree about whether you are muted.
    *
    * The microphone and camera buttons are still the ONLY path to
    * `getUserMedia`: mounting, receiving a knock, restoring a remembered
    * preference or picking a device in a picker never reaches capture.
    */
+  import { untrack } from 'svelte';
+
   import { CallView, type CallTile } from '@hq/ui';
 
+  import { SELF_TILE, applyStream, setTileTracks } from './media-sinks';
   import { callView } from './view.svelte';
 
   let leaving = $state(false);
@@ -135,31 +143,57 @@
   }
 
   /**
-   * Render a tile's media. The shell keeps the two legacy elements (`.remote`,
-   * `audio`) that `main.ts` attaches streams to, so this hook only has to name
-   * the element for the self tile's local preview.
+   * The REAL media sink. `CallView` hands us one `<video>` per tile and this is
+   * where it is pointed at that tile's stream — there is no hidden element
+   * anywhere else holding the media.
+   *
+   * Elements are kept in a registry (not just wired once) because tracks arrive
+   * LATE: a peer whose camera comes on mid-call, or whose first track lands
+   * after their roster entry did, must light up the tile that is already on
+   * screen. The `$effect` below re-applies on every change to the stream map.
    */
+  const sinks = new Map<HTMLMediaElement, string>();
+
   function attach(element: HTMLVideoElement, tile: CallTile): () => void {
     element.dataset.tileId = tile.id;
     if (tile.self) element.classList.add('local-preview');
+    sinks.set(element, tile.id);
+    applyStream(element, tile.id);
     return () => {
+      sinks.delete(element);
+      // Teardown releases the media: an element that keeps a srcObject after
+      // its tile is gone is a peer still being rendered off-screen.
+      element.srcObject = null;
       delete element.dataset.tileId;
     };
   }
+
+  $effect(() => {
+    // Read the map so this re-runs whenever a track lands or is dropped.
+    void callView.streams;
+    for (const [element, tileId] of sinks) applyStream(element, tileId);
+  });
+
+  /**
+   * Our own tile shows the media CONTROLLER's local tracks, never a peer
+   * connection's. It re-runs when a device goes live or off, so stopping the
+   * camera empties the preview instead of freezing the last frame.
+   */
+  $effect(() => {
+    void mic.active;
+    void cam.active;
+    const tracks = (callView.handle?.media?.tracks() ?? []) as MediaStreamTrack[];
+    // `untrack`: publishing a stream WRITES the same map this effect would
+    // otherwise read through, and an effect that reads and writes one piece of
+    // state never settles.
+    untrack(() => setTileTracks(SELF_TILE, tracks));
+  });
 </script>
 
 <div class="call">
   <header class="titlebar" data-tauri-drag-region>
     <span class="title" data-tauri-drag-region>HQ Call</span>
   </header>
-
-  <div class="hidden-media">
-    <!-- svelte-ignore a11y_media_has_caption -->
-    <video class="remote" data-testid="remote-video" autoplay playsinline></video>
-    <!-- svelte-ignore a11y_media_has_caption -->
-    <video class="local" data-testid="local-video" autoplay playsinline muted></video>
-    <audio data-testid="remote-audio" autoplay></audio>
-  </div>
 
   {#if view.status === 'identity' && view.recoverable}
     <div class="notice" data-testid="call-identity-error" role="alert">
@@ -223,25 +257,15 @@
     />
   </main>
 
+  <!--
+    The transcription consent + status strip. Microphone, camera and leave live
+    in `MediaControls` above and NOWHERE else: a second set of toggles is a
+    second source of truth about whether you are being recorded.
+
+    `aria-pressed` follows the same convention as MediaControls — it reflects
+    the state the label names, here "transcription is allowed".
+  -->
   <footer class="bar">
-    <button
-      type="button"
-      class="control"
-      data-testid="toggle-microphone"
-      aria-pressed={mic.active}
-      disabled={!controlsEnabled || busy !== null}
-      onclick={() => toggleDevice('microphone', !mic.active)}
-      >{mic.active ? 'Mute' : 'Unmute'}</button
-    >
-    <button
-      type="button"
-      class="control"
-      data-testid="toggle-camera"
-      aria-pressed={cam.active}
-      disabled={!controlsEnabled || busy !== null}
-      onclick={() => toggleDevice('camera', !cam.active)}
-      >{cam.active ? 'Stop video' : 'Start video'}</button
-    >
     <button
       type="button"
       class="control"
@@ -253,13 +277,6 @@
     <span class="transcription" data-testid="transcription-state">{transcriptionLabel}</span>
     <p class="status" data-testid="call-status" aria-live="polite">{statusLabel}</p>
     <span class="tracks" data-testid="remote-track-count">{remoteTracks.length}</span>
-    <button
-      type="button"
-      class="leave"
-      data-testid="leave-call"
-      disabled={leaving || view.status === 'left' || view.status === 'error'}
-      onclick={leave}>Leave</button
-    >
   </footer>
 </div>
 
@@ -284,19 +301,6 @@
     font-size: 12px;
     letter-spacing: 0.06em;
     opacity: 0.7;
-  }
-  /*
-    The stream sinks `main.ts` attaches to. They stay in the document (the
-    attach path addresses them by selector) but out of the layout: the gallery
-    is what the user sees.
-  */
-  .hidden-media {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    opacity: 0;
-    pointer-events: none;
   }
   .stage {
     flex: 1 1 auto;
@@ -356,18 +360,5 @@
   .transcription {
     font-size: 11px;
     opacity: 0.6;
-  }
-  .leave {
-    border: 0;
-    border-radius: 6px;
-    padding: 6px 14px;
-    font-size: 13px;
-    background: #c0362c;
-    color: #fff;
-    cursor: pointer;
-  }
-  .leave:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
 </style>

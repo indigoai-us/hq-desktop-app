@@ -264,12 +264,16 @@ describe("media controls", () => {
       cameraOff: false,
       ontogglemicrophone: (next: boolean) => toggled.push(next),
     });
+    // ONE convention across the app: aria-pressed is the MUTED/CAMERA-OFF
+    // state, so it agrees with the label rather than contradicting it. Pressed
+    // + "Unmute" reads as "mute is engaged"; the old `!micMuted` said pressed
+    // while the label said Unmute.
     const mic = testid(root, "control-microphone");
-    expect(mic?.getAttribute("aria-pressed")).toBe("false");
+    expect(mic?.getAttribute("aria-pressed")).toBe("true");
     expect(mic?.textContent?.trim()).toBe("Unmute");
-    expect(testid(root, "control-camera")?.getAttribute("aria-pressed")).toBe(
-      "true",
-    );
+    const camera = testid(root, "control-camera");
+    expect(camera?.getAttribute("aria-pressed")).toBe("false");
+    expect(camera?.textContent?.trim()).toBe("Stop video");
     mic?.click();
     flushSync();
     expect(toggled).toEqual([true]);

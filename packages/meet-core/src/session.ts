@@ -162,7 +162,15 @@ export interface CallSession {
   setLocalTrackEnabled(kind: string, enabled: boolean): void;
   /** Kinds currently muted. */
   mutedKinds(): string[];
-  /** Swap the local track for one kind (device change). Preserves mute. */
+  /**
+   * Swap the local track for one kind (a device change). Preserves mute.
+   *
+   * `null` is NOT "remove this kind": it CLEARS the session's override and
+   * hands the kind back to whatever `MediaPort.localTracks()` reports, which is
+   * the host's own controller. Stopping a kind is `setLocalTrackEnabled(kind,
+   * false)` — that is the mute intent, it is what the transport's attach seam
+   * enforces, and it is the only thing a later republish cannot undo.
+   */
   replaceLocalTrack(kind: string, track: TrackLike | null): void;
   /**
    * Send a moderation REQUEST to one admitted peer over `hq-meet-control`.
@@ -364,6 +372,8 @@ class Session implements CallSession {
       this.count("trackKindMismatch");
       return;
     }
+    // null clears the override, restoring the MediaPort's own track for this
+    // kind. It does not remove the kind — see the interface doc.
     if (track === null) this.overrides.delete(kind);
     else this.overrides.set(kind, track);
     // The mute intent is NOT cleared by a device change: swapping microphones

@@ -101,14 +101,36 @@ export class FakeScheduler implements Clock, Timers {
 
 export class FakeTrack implements TrackLike {
   stopped = false;
+  /** Mirrors `MediaStreamTrack.muted`: the SOURCE stopped producing media. */
+  muted = false;
+  readyState = "live";
+  onmute: (() => void) | null = null;
+  onunmute: (() => void) | null = null;
+  onended: (() => void) | null = null;
 
   constructor(
     readonly id: string,
     readonly kind: string,
   ) {}
 
+  /**
+   * Test driver: the remote peer muted (or unmuted) this track. Fires the same
+   * event the browser does, which is what the transport listens to — a remote
+   * mute must not be simulated by removing the track, because the real API
+   * keeps the transceiver.
+   */
+  setMuted(muted: boolean): void {
+    if (this.muted === muted) return;
+    this.muted = muted;
+    if (muted) this.onmute?.();
+    else this.onunmute?.();
+  }
+
   stop(): void {
     this.stopped = true;
+    if (this.readyState === "ended") return;
+    this.readyState = "ended";
+    this.onended?.();
   }
 }
 

@@ -1370,7 +1370,11 @@ export async function startCallWindow(
         personUid: target!.self.personUid,
         deviceId: target!.self.deviceId,
         peerKey: signer.peerKey,
-        grantId: currentGrantId,
+        // `grantId` is OPTIONAL on the backend's Control body. Sending an
+        // empty string is not "no grant", it is a grant id that cannot match,
+        // and it is what the signature covers — so omit the field entirely
+        // until a grant exists rather than signing a lie about it.
+        ...(currentGrantId ? { grantId: currentGrantId } : {}),
         targetPersonUid: personUid,
         requestId: `revoke-${Date.now().toString(36)}-${controlRequests}`,
         sentAt: Date.now(),

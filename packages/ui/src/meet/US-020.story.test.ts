@@ -256,12 +256,14 @@ describe("US-020 e2e 1: eight people, a churning roster, and a cap that holds", 
     }
 
     // Toggle state is exposed to assistive tech, not carried by colour.
-    expect(
-      testid(root, "control-microphone")?.getAttribute("aria-pressed"),
-    ).toBe("true");
-    expect(testid(root, "control-camera")?.getAttribute("aria-pressed")).toBe(
-      "true",
-    );
+    // aria-pressed is the MUTED / CAMERA-OFF state and agrees with the label:
+    // this self is live on both, so neither toggle is pressed.
+    const mic = testid(root, "control-microphone");
+    expect(mic?.getAttribute("aria-pressed")).toBe("false");
+    expect(mic?.textContent?.trim()).toBe("Mute");
+    const camera = testid(root, "control-camera");
+    expect(camera?.getAttribute("aria-pressed")).toBe("false");
+    expect(camera?.textContent?.trim()).toBe("Stop video");
     // Roster and connection changes announce politely, never assertively.
     const announcement = testid(root, "call-announcement");
     expect(announcement?.getAttribute("aria-live")).toBe("polite");

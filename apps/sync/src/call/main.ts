@@ -18,6 +18,12 @@ import { safeUnlisten } from '../lib/listener-registry';
 import { handleCloseRequested, startCallWindow, type CallWindowHandle } from './bootstrap';
 import { windowPreferenceStorage } from './permissions';
 import { browserMediaDevices, createAnalyserSpeakingPort } from './speaking';
+import {
+  addTileTrack,
+  clearRemoteTiles,
+  clearTile,
+  removeTileTrack,
+} from './media-sinks';
 import { callView } from './view.svelte';
 import type { TrackLike } from '@hq/meet-core';
 
@@ -56,7 +62,12 @@ const started = startCallWindow({
     const owned = peerTracks.get(peerId) ?? new Set<string>();
     owned.add(track.id);
     peerTracks.set(peerId, owned);
-    attachRemote(track);
+    // `peerId` IS the gallery tile id (`personUid deviceId`), so the track goes
+    // straight to that peer's tile. Audio rides the same stream as the video:
+    // a remote tile's `<video>` is not muted, and a media element keeps playing
+    // audio while its box is visually hidden, so a camera-off peer is still
+    // heard.
+    attachRemote(peerId, track);
   },
   // A peer removed from the authoritative roster, or a traffic stop, closes
   // content delivery. Drop the rendered media immediately rather than waiting
@@ -103,37 +114,29 @@ void getCurrentWindow().onCloseRequested(async (event) => {
 });
 
 /**
- * Attach a remote track for rendering. Ended tracks are pruned from both the
- * element's stream and the view model, so renegotiation and reconnect replace
- * tracks rather than piling stale ones up across session generations.
+ * Attach a remote track to its peer's gallery tile.
+ *
+ * There is no hidden sink any more: the tile's own `<video>` is the element the
+ * stream lands on, so what the engine delivers and what the user sees are the
+ * same thing. Ended tracks are pruned from the stream and from the view model,
+ * so renegotiation and reconnect replace tracks rather than piling stale ones
+ * up across session generations.
  */
-function attachRemote(track: TrackLike): void {
+function attachRemote(peerId: string, track: TrackLike): void {
   const media = track as unknown as MediaStreamTrack;
-  const selector = media.kind === 'audio' ? 'audio' : 'video.remote';
-  const element = document.querySelector<HTMLMediaElement>(selector);
-  if (!element) return;
-  const existing = element.srcObject as MediaStream | null;
-  const stream = existing ?? new MediaStream();
-  for (const stale of stream.getTracks()) {
-    if (stale.readyState === 'ended') stream.removeTrack(stale);
-  }
-  stream.addTrack(media);
-  element.srcObject = stream;
+  addTileTrack(peerId, media);
   media.addEventListener('ended', () => {
-    stream.removeTrack(media);
+    // The stream drops it on the next publish (`addTileTrack` prunes ended
+    // tracks); the view model must not keep counting it either.
+    removeTileTrack(peerId, media);
     callView.remoteTracks = callView.remoteTracks.filter((entry) => entry !== track);
+    peerTracks.get(peerId)?.delete(media.id);
   });
 }
 
 /** Drop every rendered remote track. Used when the whole call closes. */
 function detachAllRemote(): void {
-  for (const selector of ['audio', 'video.remote'] as const) {
-    const element = document.querySelector<HTMLMediaElement>(selector);
-    const stream = element?.srcObject as MediaStream | null;
-    if (!element || !stream) continue;
-    for (const track of stream.getTracks()) stream.removeTrack(track);
-    element.srcObject = null;
-  }
+  clearRemoteTiles();
   callView.remoteTracks = [];
   peerTracks.clear();
 }
@@ -147,14 +150,7 @@ function detachRemoteForPeer(peerId: string): void {
   const owned = peerTracks.get(peerId);
   if (!owned) return;
   peerTracks.delete(peerId);
-  for (const selector of ['audio', 'video.remote'] as const) {
-    const element = document.querySelector<HTMLMediaElement>(selector);
-    const stream = element?.srcObject as MediaStream | null;
-    if (!stream) continue;
-    for (const track of stream.getTracks()) {
-      if (owned.has(track.id)) stream.removeTrack(track);
-    }
-  }
+  clearTile(peerId);
   callView.remoteTracks = callView.remoteTracks.filter(
     (entry) => !owned.has(entry.id),
   );

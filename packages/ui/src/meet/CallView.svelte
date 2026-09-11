@@ -331,8 +331,14 @@
     object-fit: cover;
     background: #000;
   }
+  /*
+    A camera-off tile HIDES its video, it does not remove it: the element is
+    still the sink for that peer's audio, and `display: none` would take it out
+    of the box model for no benefit. `visibility: hidden` keeps the element
+    (and its audio) while the "Camera off" placeholder shows through.
+  */
   .video.hidden {
-    display: none;
+    visibility: hidden;
   }
   .placeholder {
     position: absolute;

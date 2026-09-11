@@ -167,6 +167,68 @@ describe("mute never sends", () => {
 
 const TRANSPORT_RESTART_MS = 20_000;
 
+describe("replaceLocalTrack(kind, null)", () => {
+  it("restores the MediaPort's track rather than removing the kind", async () => {
+    const fx = await joined();
+    fx.session.replaceLocalTrack("audio", new FakeTrack("mic-2", "audio"));
+    await flush();
+    const sentAudioIds = () =>
+      fx.connections.created
+        .flatMap((pc) => pc.getSenders())
+        .filter((sender) => sender.track?.kind === "audio")
+        .map((sender) => sender.track?.id);
+    expect(sentAudioIds()).toContain("mic-2");
+
+    // null is "forget my override", NOT "stop sending audio": the port's own
+    // track comes back. Stopping a kind is setLocalTrackEnabled(kind, false).
+    fx.session.replaceLocalTrack("audio", null);
+    await flush();
+    expect(sentAudioIds()).toContain("mic-1");
+    expect(sentKinds(fx.connections)).toContain("audio");
+
+    fx.session.setLocalTrackEnabled("audio", false);
+    await flush();
+    expect(sentKinds(fx.connections)).toEqual(["video"]);
+  });
+});
+
+describe("a remote mute is visible", () => {
+  it("drops the kind from the snapshot on mute and returns it on unmute", async () => {
+    const fx = await joined();
+    const pc = fx.connections.last;
+    const remoteMic = new FakeTrack("bob-mic", "audio");
+    pc.emitRemoteTrack(remoteMic);
+    pc.emitRemoteTrack(new FakeTrack("bob-cam", "video"));
+
+    const kinds = () =>
+      fx.session.snapshot().peers.find((peer) => peer.peerId === "prs_bob dev_b")
+        ?.remoteTrackKinds ?? [];
+    expect(kinds()).toEqual(["audio", "video"]);
+
+    // The real API keeps the transceiver and flips `muted`. A snapshot built
+    // from `ontrack` alone would keep claiming bob is sending audio forever.
+    remoteMic.setMuted(true);
+    expect(kinds()).toEqual(["video"]);
+
+    remoteMic.setMuted(false);
+    expect(kinds()).toEqual(["audio", "video"]);
+  });
+
+  it("drops a kind whose track ended", async () => {
+    const fx = await joined();
+    const pc = fx.connections.last;
+    const remoteCam = new FakeTrack("bob-cam", "video");
+    pc.emitRemoteTrack(new FakeTrack("bob-mic", "audio"));
+    pc.emitRemoteTrack(remoteCam);
+
+    remoteCam.stop();
+    expect(
+      fx.session.snapshot().peers.find((peer) => peer.peerId === "prs_bob dev_b")
+        ?.remoteTrackKinds,
+    ).toEqual(["audio"]);
+  });
+});
+
 describe("moderation control channel", () => {
   it("opens exactly one hq-meet-control channel on the polite side", async () => {
     const fx = await joined();
