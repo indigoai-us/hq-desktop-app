@@ -367,6 +367,7 @@ mod tests {
             started_at: "2026-06-15T18:00:00Z".to_string(),
             last_activity_at: "2026-06-15T18:43:20Z".to_string(),
             source: "outpost-heartbeat".to_string(),
+            remote_control_session_id: None,
         }
     }
 
@@ -675,5 +676,86 @@ mod tests {
         assert!(card.up);
         assert_eq!(card.runtime, "codex");
         assert!(card.relay_connected);
+    }
+
+    // ── session title + Remote Control link (hq-cloud ≥ 6.16.38) ────────────
+    //
+    // The box now publishes `title` (the session's Claude custom-title, scrubbed
+    // on the box) and `remoteControlSessionId` (the `cse_…` pairing id of a
+    // Remote Control session, which the frontend turns into a claude.ai/code
+    // link). Both are `string | null` on the wire, and a box that predates them
+    // omits both keys — every one of those shapes must parse, or a box upgrade
+    // would cost the whole heartbeat the way the nullable fields once did.
+
+    const RC_ID: &str = "cse_01Ws49UWqv58e8poUSC6E4tu";
+
+    fn rc_payload(title: serde_json::Value, rc: Option<serde_json::Value>) -> Vec<u8> {
+        let mut v = serde_json::json!([{
+            "id": "rc-1",
+            "tool": "claude",
+            "origin": "local",
+            "title": title,
+            "cwd": "/home/ec2-user/hq",
+            "project": "hq",
+            "company": null,
+            "model": "claude-opus-5",
+            "status": "running",
+            "startedAt": null,
+            "lastActivityAt": "2026-09-11T14:00:00Z",
+            "source": "/home/ec2-user/.claude/projects/-home-ec2-user-hq/rc-1.jsonl"
+        }]);
+        if let Some(rc) = rc {
+            v[0]["remoteControlSessionId"] = rc;
+        }
+        serde_json::to_vec(&v).unwrap()
+    }
+
+    #[test]
+    fn parse_heartbeat_reads_title_and_remote_control_session_id() {
+        let bytes = rc_payload(
+            serde_json::json!("open PRs"),
+            Some(serde_json::json!(RC_ID)),
+        );
+        let sessions = parse_heartbeat(&bytes).expect("titled Remote Control session parses");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title, "open PRs");
+        assert_eq!(
+            sessions[0].remote_control_session_id.as_deref(),
+            Some(RC_ID)
+        );
+        assert_eq!(sessions[0].origin, AgentOrigin::Outpost);
+    }
+
+    #[test]
+    fn parse_heartbeat_accepts_null_title_and_remote_control_session_id() {
+        let bytes = rc_payload(serde_json::Value::Null, Some(serde_json::Value::Null));
+        let sessions = parse_heartbeat(&bytes).expect("null title and link parse");
+        assert_eq!(sessions[0].title, "");
+        assert_eq!(sessions[0].remote_control_session_id, None);
+    }
+
+    #[test]
+    fn parse_heartbeat_accepts_a_box_that_predates_remote_control_links() {
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&rc_payload(serde_json::Value::Null, None)).unwrap();
+        v[0].as_object_mut().unwrap().remove("title");
+        let bytes = serde_json::to_vec(&v).unwrap();
+        let sessions = parse_heartbeat(&bytes).expect("a pre-6.16.38 heartbeat parses");
+        assert_eq!(sessions[0].title, "");
+        assert_eq!(sessions[0].remote_control_session_id, None);
+    }
+
+    #[test]
+    fn remote_control_session_id_reaches_the_frontend_camel_cased() {
+        let mut with_link = outpost_session("rc-1");
+        with_link.remote_control_session_id = Some(RC_ID.to_string());
+        let json = serde_json::to_value(&with_link).unwrap();
+        assert_eq!(json["remoteControlSessionId"], RC_ID);
+        assert!(json.get("remote_control_session_id").is_none());
+
+        // No link → no key, matching the frontend's optional
+        // `remoteControlSessionId?: string`.
+        let json = serde_json::to_value(outpost_session("plain")).unwrap();
+        assert!(json.get("remoteControlSessionId").is_none());
     }
 }

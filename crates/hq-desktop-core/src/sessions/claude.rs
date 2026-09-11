@@ -443,6 +443,7 @@ fn read_one_transcript(
         started_at,
         last_activity_at,
         source: SOURCE_TAG.to_string(),
+        remote_control_session_id: None,
     })
 }
 
