@@ -3,6 +3,7 @@ import type { LocalBotRow } from "@hq/platform";
 import {
   isValidLocalBotName,
   lastHeartbeatLabel,
+  localBotsAsContacts,
   localBotForRow,
   localBotOfflineNotice,
   localBotPresence,
@@ -60,5 +61,15 @@ describe("isValidLocalBotName", () => {
     expect(isValidLocalBotName("a--b")).toBe(false);
     expect(isValidLocalBotName("")).toBe(false);
     expect(isValidLocalBotName("a".repeat(41))).toBe(false);
+  });
+});
+
+describe("localBotsAsContacts", () => {
+  it("appends the user's bots as DM contacts without duplicating roster rows", () => {
+    const roster = [{ personUid: "prs_a", displayName: "A" }, { personUid: "agt_01LOCAL", displayName: "already" }];
+    const out = localBotsAsContacts(roster, [bot(), bot({ name: "iris", agentUid: "agt_02" })]);
+    expect(out.map((c) => c.personUid)).toEqual(["prs_a", "agt_01LOCAL", "agt_02"]);
+    expect(out[2]).toEqual({ personUid: "agt_02", displayName: "iris", companyUid: null });
+    expect(localBotsAsContacts(roster, null)).toEqual(roster);
   });
 });

@@ -39,8 +39,8 @@
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
-  import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
-  import type { LocalBotEntryResult } from "./local-bots.js";
+  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
+  import { localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
   import {
     shouldArmDirectorySafety,
     shouldBumpDmUnread,
@@ -198,6 +198,12 @@
     botRuntimeReady?: Record<string, boolean> | null;
     botCount?: number;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
+    /**
+     * The user's own local bots. GET /v1/notify/contacts never lists them, so
+     * they are merged into the contacts the "+" modal searches and invites
+     * from — otherwise a bot could not be added to a channel or group chat.
+     */
+    localBots?: readonly LocalBotRow[] | null;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
@@ -268,6 +274,7 @@
     botRuntimeReady = null,
     botCount = 0,
     botWorkers = null,
+    localBots = null,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     welcomeFirst = false,
@@ -653,8 +660,9 @@
 
   // Full people directory (contacts WITHOUT a conversation included) — used
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
+  // The user's own local bots ride along so they can be found and invited.
   const directoryRows = $derived(
-    normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots), {
       pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
@@ -2659,7 +2667,7 @@
     <CreateModal
       {api}
       rows={[...directoryRows, ...browseRows]}
-      {contacts}
+      contacts={localBotsAsContacts(contacts, localBots)}
       {scopeCompanies}
       createCompanies={createScopeCompanies}
       activeScope={scope}

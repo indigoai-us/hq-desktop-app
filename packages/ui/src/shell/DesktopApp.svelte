@@ -4037,6 +4037,11 @@
             displayName,
           })),
         ),
+        // The user's own local bots: never on the contacts roster, but
+        // @mentionable anywhere the user can add them.
+        mentionTargetsFromContacts(
+          localBots.map((bot) => ({ personUid: bot.agentUid, displayName: bot.name })),
+        ),
       ).map((target) => {
         if (!target.companyUid || target.companyName) return target;
         const name = companyDisplayName(target.companyUid, companyNames);
@@ -5143,6 +5148,7 @@
           botRuntimeReady={localBotRuntimeReady}
           botCount={localBots.length}
           botWorkers={localBotWorkers}
+          {localBots}
           onrows={(rows) => {
             railRows = rows;
             directorySettled = true;

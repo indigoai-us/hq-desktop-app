@@ -355,3 +355,19 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(oncreatebot).not.toHaveBeenCalled();
   });
 });
+
+describe("ChatSidebar offers the user's local bots in the '+' modal", () => {
+  it("finds a local bot by name even though the contacts roster omits it", async () => {
+    mountSidebar({
+      companies: [INDIGO],
+      localBots: [{ name: "scout", agentUid: "agt_01SCOUT", ownerUid: "prs_me", runtime: "claude", state: "running", pid: 1, processAlive: true, online: true, lastHeartbeatAt: null, daemonInstalled: true, daemonLoaded: true, dir: "/tmp/scout" }],
+    });
+    await settle();
+    await openModal();
+    const query = q<HTMLInputElement>('[data-testid="chat-create-query"]')!;
+    query.value = "scout";
+    query.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(30);
+    await vi.waitFor(() => expect(q('[data-testid="chat-create-modal"]')?.textContent).toContain("scout"));
+  });
+});

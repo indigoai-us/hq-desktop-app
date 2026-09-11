@@ -32,6 +32,26 @@ export function localBotRuntimeLabel(id: string): string {
   return LOCAL_BOT_RUNTIMES.find((r) => r.id === id)?.label ?? id;
 }
 
+/**
+ * Contacts plus the user's own local bots (as DM contacts), skipping any bot
+ * the server roster already listed. Bots carry no company.
+ */
+export function localBotsAsContacts<T extends { personUid: string }>(
+  contacts: readonly T[],
+  bots: readonly LocalBotRow[] | null | undefined,
+): Array<T | { personUid: string; displayName: string; companyUid: null }> {
+  if (!bots || bots.length === 0) return [...contacts];
+  const seen = new Set(contacts.map((c) => c.personUid.trim()));
+  const extra: Array<{ personUid: string; displayName: string; companyUid: null }> = [];
+  for (const bot of bots) {
+    const uid = bot.agentUid.trim();
+    if (!uid || seen.has(uid)) continue;
+    seen.add(uid);
+    extra.push({ personUid: uid, displayName: bot.name, companyUid: null });
+  }
+  return [...contacts, ...extra];
+}
+
 /** Result of the sidebar "New bot" entry point (see CreateModal). */
 export type LocalBotEntryResult = { ok: true; agentUid: string; name: string } | { ok: false; reason: string };
 
