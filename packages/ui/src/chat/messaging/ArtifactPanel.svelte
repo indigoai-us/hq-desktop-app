@@ -309,10 +309,16 @@
   }
 
   /* Reading measure. Long single-line content wraps; the pane never scrolls
-     horizontally. */
+     horizontally.
+
+     13px is the chat body's size, not a reading size of its own. The pane
+     opens beside the message the artifact came from, so 14px made the same
+     words look bigger on one side of the divider than the other — it read as
+     a different document rather than the rest of that one. The extra leading
+     is what carries the longer read. */
   .artifact-panel-content {
     max-width: 70ch;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.6;
     color: var(--t1, rgba(255, 255, 255, 0.92));
     word-break: break-word;
