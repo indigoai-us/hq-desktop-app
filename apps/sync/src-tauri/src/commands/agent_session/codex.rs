@@ -1346,6 +1346,24 @@ async function drain() { while (!closed || queue.length) await take(); }
         }
     }
 
+    /// The fake's reply log is outside `RecordingSink`, so this one test has
+    /// no event to subscribe to before it sends its next input.
+    async fn until_sent(label: &str, mut predicate: impl FnMut() -> bool) {
+        if tokio::time::timeout(EVENT_WAIT_TIMEOUT, async {
+            loop {
+                if predicate() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .is_err()
+        {
+            panic!("timed out waiting for {label}");
+        }
+    }
+
     #[tokio::test]
     async fn a_prompted_session_parks_a_codex_approval_and_resumes_when_accepted() {
         let h = start_with(PermissionMode::Prompt, FAKE_CODEX).await;
@@ -1829,7 +1847,7 @@ async function drain() { while (!closed || queue.length) await take(); }
     async fn a_rejected_steer_is_redelivered_as_the_next_turn() {
         let h = start_with(PermissionMode::BypassAll, FAKE_CODEX_STEER_REJECT).await;
         h.tx.send(Outbound::Line("first".into())).expect("send");
-        until("the first turn to be running", &h.sink, || {
+        until_sent("the first turn to be running", || {
             h.sent().iter().any(|m| m["method"] == "turn/start")
         })
         .await;
