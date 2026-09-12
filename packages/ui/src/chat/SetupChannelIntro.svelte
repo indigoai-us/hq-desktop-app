@@ -57,6 +57,7 @@
   import SetupButton from "./SetupButton.svelte";
   import { SETUP_RUN_STEPS } from "./setup-run";
   import type { SetupAgent } from "./setup-agent.svelte";
+  import { SETUP_BOT_COPY, setupBotActionLabel, type SetupBotLauncher } from "./setup-bot";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
 
@@ -117,6 +118,14 @@
      * stepper. Without it, Run Setup opens the host's Sessions draft.
      */
     agent?: SetupAgent | null;
+    /**
+     * SETUP AS A BOT (bots v2, step 3). With a launcher, Run Setup creates a
+     * Local bot named `setup` from the core template and opens its DM instead
+     * of starting the scripted run; the bot's own welcome message is its first
+     * turn. The scripted run stays as the fallback when creating the bot
+     * fails, so nobody is ever stuck on this screen.
+     */
+    setupBot?: SetupBotLauncher | null;
     /** "Show details": open the underlying session on the Sessions page. */
     onopensessiondetails?: (sessionId: string) => void;
     /**
@@ -138,6 +147,7 @@
     onsetupstarted,
     agent = null,
     onopensessiondetails,
+    setupBot = null,
   }: Props = $props();
 
   const rosterCompanies = $derived(setupCompanies(companies));
@@ -204,6 +214,53 @@
    * prefilled; hosts without in-app Sessions fall back to Claude Code.
    */
   function runSetup(): void {
+    if (setupBot && !scriptedFallback) {
+      void runSetupBot();
+      return;
+    }
+    if (agent?.api) {
+      void startAgent();
+      return;
+    }
+    openSessionsForSetup();
+  }
+
+  /** Creating the setup bot, or opening the one that is already here. */
+  let botBusy = $state(false);
+  let botError = $state<string | null>(null);
+  /** The bot could not be made: the scripted run takes over from the next click. */
+  let scriptedFallback = $state(false);
+
+  const runLabel = $derived(
+    setupBot && !scriptedFallback ? setupBotActionLabel(setupBot) : SETUP_RUN_LABEL,
+  );
+  /** Hero body in bot mode — setup is a conversation now, not a wizard. */
+  const heroBody = $derived(
+    setupBot && !scriptedFallback && !rosterLoading
+      ? setupBot.existing
+        ? SETUP_BOT_COPY.bodyExisting
+        : SETUP_BOT_COPY.body
+      : hero.body,
+  );
+
+  async function runSetupBot(): Promise<void> {
+    if (!setupBot || botBusy) return;
+    botBusy = true;
+    botError = null;
+    try {
+      const result = await setupBot.start();
+      if (!result.ok) botError = result.reason;
+    } catch (err) {
+      botError = err instanceof Error ? err.message : String(err);
+    } finally {
+      botBusy = false;
+    }
+  }
+
+  /** "Use the step-by-step setup instead": the old scripted run, right now. */
+  function useScriptedSetup(): void {
+    scriptedFallback = true;
+    botError = null;
     if (agent?.api) {
       void startAgent();
       return;
@@ -321,13 +378,13 @@
           aria-live="polite"
           data-testid="setup-roster-loading"
         >
-          {hero.body}
+          {heroBody}
         </p>
       {:else}
-        <p class="hero-body">{hero.body}</p>
+        <p class="hero-body">{heroBody}</p>
       {/if}
-      {#if agent?.api}
-        <!-- What Run Setup will do, visible before the first click. -->
+      {#if agent?.api || setupBot}
+        <!-- What Run Setup will do (the setup bot walks the same ground). -->
         <ol class="steps-preview" aria-label="Setup steps" data-testid="setup-steps-preview">
           {#each SETUP_RUN_STEPS as step, index (step.id)}
             <li class="steps-preview-step">
@@ -360,13 +417,35 @@
         <SetupButton
           variant="primary"
           data-testid="setup-run"
-          disabled={Boolean(agent?.busy) || (!agent?.api && !onopensessions && (!canLaunch || launching !== null))}
-          aria-busy={Boolean(agent?.busy) || (!onopensessions && launching === "claude")}
+          disabled={botBusy ||
+            Boolean(agent?.busy) ||
+            (!setupBot && !agent?.api && !onopensessions && (!canLaunch || launching !== null))}
+          aria-busy={botBusy || Boolean(agent?.busy) || (!onopensessions && launching === "claude")}
           onclick={runSetup}
         >
-          {agent?.busy ? "Starting…" : SETUP_RUN_LABEL}
+          {botBusy || agent?.busy ? SETUP_BOT_COPY.starting : runLabel}
         </SetupButton>
       </div>
+      {#if botError}
+        <!-- The bot could not be created: say why, offer another go, and
+             keep the old scripted run one click away. -->
+        <div class="bot-failure" data-testid="setup-bot-failure">
+          <p class="launch-error" role="alert" data-testid="setup-bot-error">{botError}</p>
+          <div class="hero-actions" role="group" aria-label="Setup bot recovery">
+            <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
+              {SETUP_BOT_COPY.retry}
+            </SetupButton>
+            <SetupButton
+              variant="quiet"
+              data-testid="setup-bot-fallback"
+              disabled={Boolean(agent?.busy)}
+              onclick={useScriptedSetup}
+            >
+              {SETUP_BOT_COPY.fallback}
+            </SetupButton>
+          </div>
+        </div>
+      {/if}
       {/if}
       {#if !onopensessions && launchErrors.claude}
         <p class="launch-error" role="alert">{launchErrors.claude}</p>
@@ -728,6 +807,12 @@
 
   .company-actions {
     margin-top: var(--space-3, 12px);
+  }
+
+  .bot-failure {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
 
   .launch-error {

@@ -115,6 +115,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyPendingConversation: "push",
   changeTenantCompany: "push",
   openCompanyFromSetup: "push",
+  // #welcome / Home setup card → the setup bot's DM (handleSelect).
+  openSetupBotDm: "push",
   applyChannelWake: "none",
   openAttachmentTray: "none",
   openChannelFile: "none",

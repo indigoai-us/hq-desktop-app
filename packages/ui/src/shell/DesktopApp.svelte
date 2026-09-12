@@ -66,6 +66,19 @@
     withoutSeededCreateCompanyCards,
   } from "../chat/setup-channel.js";
   import {
+    findSetupBot,
+    firstSignedInRuntime,
+    SETUP_BOT_INTRO,
+    SETUP_BOT_MODE,
+    SETUP_BOT_NAME,
+    SETUP_BOT_NO_RUNTIME,
+    SETUP_BOT_UNAVAILABLE,
+    SETUP_BOT_WORKER,
+    type SetupBotLauncher,
+    type SetupBotRef,
+    type SetupBotStart,
+  } from "../chat/setup-bot.js";
+  import {
     findLifecycleCardElement,
     runAddAgentEntry,
     runCreateCompanyEntry,
@@ -909,6 +922,69 @@
     } catch {
       /* the bot exists; the avatar can be set from its profile later */
     }
+  }
+  /**
+   * SETUP AS A LOCAL BOT (bots v2, step 3). Run Setup no longer starts a
+   * scripted `/setup` session: it creates a Local bot named `setup` from the
+   * core template and opens its DM, so onboarding is a normal conversation
+   * with a bot that stays afterwards. Copy, names and the launcher contract
+   * live in `chat/setup-bot.ts`; everything here reuses `createBotEntry` (and
+   * therefore the progress card, the synthetic DM row and presence polling).
+   */
+  const existingSetupBot = $derived(findSetupBot(localBots));
+  const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
+  const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
+    adapter.bots && SETUP_BOT_MODE
+      ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, start: startSetupBot }
+      : null,
+  );
+  /** Open a setup bot's DM; setup counts as run from that moment. */
+  function openSetupBotDm(bot: SetupBotRef): void {
+    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${bot.agentUid}`,
+        kind: "dm",
+        title: bot.name,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: bot.agentUid,
+      },
+    );
+    recordWelcomeSetupRun();
+  }
+  /**
+   * Create the setup bot (or open the one that already exists). Never creates
+   * a second one: the list is re-read first, because another window — or an
+   * earlier run on this Mac — may already have made it.
+   */
+  async function startSetupBot(): Promise<SetupBotStart> {
+    if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
+    await refreshLocalBots();
+    const existing = findSetupBot(localBots);
+    if (existing) {
+      openSetupBotDm(existing);
+      return { ok: true, existing: true };
+    }
+    // Re-read sign-in state: the Connect step signs in through the setup run's
+    // own API, so a readiness answer cached at boot can be a click out of date.
+    localBotRuntimeReady = null;
+    await loadLocalBotRuntimeReady();
+    const runtime = firstSignedInRuntime(localBotRuntimeReady);
+    if (!runtime) return { ok: false, reason: SETUP_BOT_NO_RUNTIME };
+    // `intro` is sent by the runtime on start, so the first message is
+    // instant instead of a ~30 s wait for a model turn.
+    const created = await createBotEntry({
+      name: SETUP_BOT_NAME,
+      worker: SETUP_BOT_WORKER,
+      runtime,
+      intro: SETUP_BOT_INTRO,
+    });
+    if (!created.ok) return { ok: false, reason: created.reason };
+    recordWelcomeSetupRun();
+    return { ok: true, existing: false };
   }
   /** Retry from the progress card: start the bot if it exists, else re-run the same create. */
   async function retryBotProgress(uid: string): Promise<void> {
@@ -5990,6 +6066,7 @@
                     {onretryroster}
                     onsetupstarted={recordWelcomeSetupRun}
                     agent={setupAgent}
+                    setupBot={setupBotLauncher}
                     onopensessiondetails={extraPages?.sessions
                       ? (sessionId) => openExtraPage("sessions", sessionId)
                       : undefined}
