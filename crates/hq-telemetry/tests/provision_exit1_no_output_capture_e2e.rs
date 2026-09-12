@@ -243,6 +243,14 @@ fn an_npm_eacces_exit1_still_reports_as_local_env() {
     );
 }
 
+/// Exit 2 still reports as `validation` (unchanged), and — as of HQ-DESKTOP-6A —
+/// now also carries a closed-vocabulary `validation_kind` and a collapsing
+/// fingerprint. With no CLI message on either stream the subclass is
+/// `unclassified`, which is deliberately kept at Error level so a genuine CLI
+/// validation regression stays visible. Asserted explicitly (not loosened) so
+/// this control fails on the pre-fix base and passes on the candidate. The
+/// setup-incomplete subclasses (manifest-missing et al.) are proven Warning-
+/// level in `provision_exit2_validation_setup_capture_e2e.rs`.
 #[test]
 fn exit2_still_reports_as_validation() {
     let mut err = None;
@@ -257,8 +265,14 @@ fn exit2_still_reports_as_validation() {
             None,
         ));
     });
-    assert!(matches!(err, Some(Err(CliProvisionError::Validation(_)))));
-    assert_eq!(events[0].tags["provision_kind"], "validation");
+    assert!(matches!(err, Some(Err(CliProvisionError::Validation { .. }))));
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.tags["provision_kind"], "validation");
+    assert_eq!(event.tags["validation_kind"], "unclassified");
+    assert_eq!(event.level, sentry::Level::Error);
+    let fingerprint: Vec<&str> = event.fingerprint.iter().map(|c| c.as_ref()).collect();
+    assert_eq!(fingerprint, ["provision-cli", "validation", "unclassified"]);
 }
 
 #[test]
