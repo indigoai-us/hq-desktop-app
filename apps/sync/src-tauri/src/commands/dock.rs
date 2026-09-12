@@ -293,6 +293,10 @@ mod tests {
     fn prefs_with_dock(dock_icon: Option<bool>) -> MenubarPrefs {
         MenubarPrefs {
             ideas_extraction_mode: None,
+            ideas_sync_enabled: None,
+            ideas_default_company: None,
+            ideas_image_max_edge: None,
+            ideas_capture_chord: None,
             hq_path: None,
             cloud_paused: None,
             sync_on_launch: None,

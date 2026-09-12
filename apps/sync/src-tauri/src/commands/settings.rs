@@ -36,6 +36,14 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         return Ok(MenubarPrefs {
             // Idea Board extraction: local (on-device) until the user opts in.
             ideas_extraction_mode: None,
+            // Ideas user preferences: all absent on a fresh install so the
+            // resolvers in `ideas::settings` supply the documented defaults
+            // (sync on, active company, 2000 px, ⌥⇧C) without an unrelated
+            // settings save manufacturing a choice the user never made.
+            ideas_sync_enabled: None,
+            ideas_default_company: None,
+            ideas_image_max_edge: None,
+            ideas_capture_chord: None,
             hq_path: None,
             // Cloud Off (V2 US-001) defaults to connected — sync runs.
             cloud_paused: Some(false),
@@ -121,6 +129,11 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
     Ok(MenubarPrefs {
         // Pass through as persisted; absent means local (see ideas::parse_mode).
         ideas_extraction_mode: prefs.ideas_extraction_mode,
+        // Pass-through; absent means the `ideas::settings` default applies.
+        ideas_sync_enabled: prefs.ideas_sync_enabled,
+        ideas_default_company: prefs.ideas_default_company,
+        ideas_image_max_edge: prefs.ideas_image_max_edge,
+        ideas_capture_chord: prefs.ideas_capture_chord,
         hq_path: prefs.hq_path,
         cloud_paused: Some(prefs.cloud_paused.unwrap_or(false)),
         // Default ON (see the no-file branch above) — absent key syncs on launch.
@@ -311,6 +324,79 @@ mod tests {
         assert!(raw.contains("co_isolated"));
 
         std::fs::remove_dir_all(config).expect("remove isolated config");
+    }
+
+    /// US-012: the four Ideas preference keys must survive a save → read
+    /// round-trip, must NOT be manufactured by an unrelated save, and must not
+    /// wipe an unknown key some other writer put on disk.
+    #[test]
+    fn hq_idea_board_us_012_ideas_prefs_round_trip_without_wiping_unknown_keys() {
+        let unique = format!(
+            "hq-settings-ideas-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let config = std::env::temp_dir().join(unique);
+        let path = config.join("menubar.json");
+
+        // Fresh install: every Ideas key is absent, so the resolvers own the
+        // defaults and no choice is manufactured on the user's behalf.
+        let fresh = get_settings_at(&path).expect("fresh defaults");
+        assert_eq!(fresh.ideas_extraction_mode, None);
+        assert_eq!(fresh.ideas_sync_enabled, None);
+        assert_eq!(fresh.ideas_default_company, None);
+        assert_eq!(fresh.ideas_image_max_edge, None);
+        assert_eq!(fresh.ideas_capture_chord, None);
+
+        // An unrelated save must not invent Ideas preferences.
+        let mut unrelated = fresh;
+        unrelated.auto_update = Some(false);
+        save_settings_at(&path, &unrelated).expect("save unrelated toggle");
+        let raw = std::fs::read_to_string(&path).expect("persisted menubar.json");
+        for key in [
+            "ideasExtractionMode",
+            "ideasSyncEnabled",
+            "ideasDefaultCompany",
+            "ideasImageMaxEdge",
+            "ideasCaptureChord",
+        ] {
+            assert!(!raw.contains(key), "unrelated save leaked {key}: {raw}");
+        }
+
+        // Plant an unknown top-level key the typed struct does not model.
+        let mut disk: serde_json::Value =
+            serde_json::from_str(&raw).expect("parse persisted menubar.json");
+        disk.as_object_mut()
+            .expect("object")
+            .insert("someFutureKey".into(), serde_json::json!("keep-me"));
+        std::fs::write(&path, serde_json::to_string_pretty(&disk).unwrap())
+            .expect("plant unknown key");
+
+        // Explicit Ideas choices round-trip verbatim.
+        let mut chosen = get_settings_at(&path).expect("reload before choices");
+        chosen.ideas_extraction_mode = Some("model".to_string());
+        chosen.ideas_sync_enabled = Some(false);
+        chosen.ideas_default_company = Some("liverecover".to_string());
+        chosen.ideas_image_max_edge = Some(4000);
+        chosen.ideas_capture_chord = Some("Ctrl+Alt+KeyS".to_string());
+        save_settings_at(&path, &chosen).expect("save ideas choices");
+
+        let back = get_settings_at(&path).expect("reload ideas choices");
+        assert_eq!(back.ideas_extraction_mode.as_deref(), Some("model"));
+        assert_eq!(back.ideas_sync_enabled, Some(false));
+        assert_eq!(back.ideas_default_company.as_deref(), Some("liverecover"));
+        assert_eq!(back.ideas_image_max_edge, Some(4000));
+        assert_eq!(back.ideas_capture_chord.as_deref(), Some("Ctrl+Alt+KeyS"));
+
+        // The unknown key survived the typed round-trip.
+        let after = std::fs::read_to_string(&path).expect("persisted after choices");
+        assert!(after.contains("someFutureKey"), "{after}");
+        assert!(after.contains("keep-me"), "{after}");
+
+        std::fs::remove_dir_all(config).expect("remove ideas config");
     }
 
     /// The notification surface must stay tri-state across the whole

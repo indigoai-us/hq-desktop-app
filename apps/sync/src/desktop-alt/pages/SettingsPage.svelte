@@ -38,6 +38,7 @@
     resolveUseSystemBanners,
   } from '../../lib/notificationSurface';
   import WidgetSettings from '../../components/WidgetSettings.svelte';
+  import IdeasSettings from '../../components/IdeasSettings.svelte';
   import AgentProvidersSettings from '../components/AgentProvidersSettings.svelte';
   import '../v4/tokens.css';
 
@@ -1957,6 +1958,15 @@
       <h2>Notifications widget</h2>
       <div class="settings-card">
         <WidgetSettings showLoadError={false} />
+      </div>
+    </section>
+
+    <section id="ideas" class="settings-section">
+      <h2>Ideas</h2>
+      <div class="settings-card">
+        <!-- Owns its own load-failure banner: this page never invokes
+             ideas_get_settings, so it has nothing to surface on its behalf. -->
+        <IdeasSettings />
       </div>
     </section>
 

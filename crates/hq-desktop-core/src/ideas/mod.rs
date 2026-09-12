@@ -27,6 +27,7 @@
 pub mod extract;
 pub mod pipeline;
 pub mod record;
+pub mod settings;
 pub mod sidecar;
 pub mod storage;
 
@@ -52,6 +53,11 @@ pub use record::{
 pub use sidecar::{
     parse_sidecar_frontmatter, reindex_after_write, render_sidecar, sidecar_path, write_sidecar,
     QmdCli, QmdIndexer, SidecarFrontmatter, INDEX_LOG_TAG, SIDECAR_FILE,
+};
+pub use settings::{
+    chord_display, format_chord, ideas_root, is_local_only_root, parse_chord, resolve_capture_chord,
+    resolve_company, resolve_image_max_edge, sync_enabled, ChordSpec, DEFAULT_CAPTURE_CHORD,
+    DEFAULT_IMAGE_MAX_EDGE, IMAGE_MAX_EDGE_CHOICES, LOCAL_ONLY_DIR, LOCAL_ONLY_PARENT_DIR,
 };
 pub use storage::{
     create_record, delete_record, downsample, ideas_dir, load_record, mark_cited, move_record,

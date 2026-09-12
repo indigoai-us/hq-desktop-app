@@ -102,16 +102,29 @@ const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::Sen
 };
 
 fn register_global_shortcuts(app: &tauri::AppHandle) {
-    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
-    // Opt+Shift+C (US-003) — idea-board capture chord. Log-and-continue when
-    // another app already holds it, same as the other two.
-    for (label, code) in [
-        ("Opt+Shift+H", Code::KeyH),
-        ("Opt+Shift+O", Code::KeyO),
-        (commands::capture::CHORD_LABEL, Code::KeyC),
-    ] {
-        let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), code);
+    // The idea-board capture chord is rebindable (US-012): whatever
+    // `ideas_settings` resolved from menubar.json is what gets registered,
+    // defaulting to Opt+Shift+C. Log-and-continue when another app already
+    // holds it, same as the other two — this is the register-and-log path the
+    // Settings rebind reuses.
+    let capture = commands::ideas_settings::active_capture_shortcut();
+    // HQ's own two chords come from `ideas_settings::RESERVED_CHORDS` — the
+    // same list the rebind command refuses — so the guard can never drift out
+    // of step with what is actually registered here.
+    let mut entries: Vec<(String, Shortcut)> = vec![
+        (
+            "Opt+Shift+H".to_string(),
+            commands::ideas_settings::popover_shortcut(),
+        ),
+        (
+            "Opt+Shift+O".to_string(),
+            commands::ideas_settings::desktop_window_shortcut(),
+        ),
+    ];
+    entries.push((commands::capture::CHORD_LABEL.to_string(), capture));
+    for (label, shortcut) in entries {
         if let Err(error) = app.global_shortcut().register(shortcut) {
             util::logfile::log(
                 "ui",
@@ -186,6 +199,9 @@ fn setup_startup_surfaces(
     #[cfg(target_os = "macos")]
     tray_helper::spawn_and_poll(app);
 
+    // Seed the active capture chord from prefs BEFORE registering, so a
+    // rebound chord (US-012) is the one the OS actually gets.
+    commands::ideas_settings::init_active_chord_from_prefs();
     register_global_shortcuts(app);
     Ok(())
 }
@@ -337,17 +353,19 @@ fn main() {
         })
     });
 
-    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+    use tauri_plugin_global_shortcut::ShortcutState;
 
     // Opt+Shift+H — global hotkey to summon the popover from anywhere.
     // Opt+Shift+O — global hotkey to reveal the larger desktop window.
     // Defined up front so the plugin builder and the setup-time `register`
     // calls agree on the exact key combos.
-    let show_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyH);
-    let desktop_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyO);
-    // Opt+Shift+C — idea-board capture chord (US-003); Escape is a transient
-    // binding the overlay registers only while it is visible.
-    let capture_shortcut = commands::capture::capture_shortcut();
+    // Same single source as register_global_shortcuts + the rebind guard.
+    let show_shortcut = commands::ideas_settings::popover_shortcut();
+    let desktop_shortcut = commands::ideas_settings::desktop_window_shortcut();
+    // The idea-board capture chord (US-003) is rebindable (US-012), so the
+    // handler asks `ideas_settings::is_capture_chord` rather than comparing
+    // against a value captured at build time. Escape stays a transient binding
+    // the overlay registers only while it is visible.
 
     // The `main` popover is created from `tauri.conf.json`, so its WebView2
     // browser arguments have to be folded into the config before the app is
@@ -429,7 +447,9 @@ fn main() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if shortcut == &capture_shortcut && event.state() == ShortcutState::Pressed {
+                    if commands::ideas_settings::is_capture_chord(shortcut)
+                        && event.state() == ShortcutState::Pressed
+                    {
                         // US-003: mark the chord first, then toggle the
                         // pre-rendered overlay on the main thread.
                         commands::capture::on_capture_chord(app);
@@ -978,6 +998,8 @@ fn main() {
             commands::capture::ideas_move_capture,
             commands::capture::ideas_delete_capture,
             commands::capture::ideas_list_companies,
+            commands::ideas_settings::ideas_get_settings,
+            commands::ideas_settings::ideas_set_capture_chord,
             commands::capture::capture_toast_ready,
             commands::capture::dismiss_capture_toast,
             commands::capture::set_capture_toast_focusable,

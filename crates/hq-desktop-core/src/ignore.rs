@@ -4,6 +4,23 @@
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::path::{Path, PathBuf};
 
+/// Root-relative parent of the Idea Board local-only capture root.
+pub const LOCAL_ONLY_PARENT_DIR: &str = "workspace";
+
+/// Leaf of the Idea Board local-only capture root. Captures written with Sync
+/// OFF are to live at `{hq_root}/workspace/ideas-local/{company}/…` and MUST
+/// never reach the vault — that is the whole content of the "off" promise.
+/// (The capture write path does not resolve that root yet; see
+/// `crate::ideas::settings::ideas_root`. This exclusion is in place ahead of
+/// it, so the promise holds the moment the pipeline adopts it.) The literal
+/// pattern below is the enforcement; `crate::ideas::settings` builds the path
+/// from these same two constants (it re-exports the leaf as `LOCAL_ONLY_DIR`).
+/// Two tests pin it: `local_only_ideas_pattern_matches_the_shared_constants`
+/// here ties the `DEFAULT_IGNORES` literal to these constants, and
+/// `crate::ideas::settings`'s `local_only_root_is_outside_the_company_vault`
+/// ties the built path to them — so the two can never drift apart.
+pub const LOCAL_ONLY_IDEAS_DIR: &str = "ideas-local";
+
 pub const DEFAULT_IGNORES: &[&str] = &[
     // VCS + OS
     ".git/",
@@ -17,6 +34,18 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     // alongside in hq_core_drift::excluded_scope_paths().
     ".claude/worktrees/",
     ".claude/worktrees",
+    // Idea Board local-only captures (US-012). When a user turns capture Sync
+    // OFF, screenshots are to be written to `/workspace/ideas-local/` instead
+    // of the company vault (the write path has not adopted that root yet). Nothing else keeps them out of the bucket — the HQ root
+    // .gitignore is deliberately not consulted by sync (see `for_hq_root`), and
+    // its `workspace/` entries are narrow and unrelated. Without these two
+    // lines the "off" switch uploads anyway. Root-anchored (an ordinary
+    // `workspace/ideas-local/` elsewhere in the tree is not this root), with
+    // and without the trailing slash, matching the `.claude/worktrees/`
+    // precedent above. Keep in step with `LOCAL_ONLY_PARENT_DIR` /
+    // `LOCAL_ONLY_IDEAS_DIR`.
+    "/workspace/ideas-local/",
+    "/workspace/ideas-local",
     // Node / JS
     // `.pnpm-store/` is pnpm's content-addressed cache — tens of thousands of
     // hard-linked blobs that regenerate on `pnpm install`. It MUST be excluded
@@ -298,6 +327,24 @@ mod tests {
         assert!(filter.should_sync(&root.join("data/repos.yaml")));
         assert!(filter.should_sync(&root.join("settings/preferences.json")));
         assert!(filter.should_sync(&root.join("workers/notes.md")));
+    }
+
+    #[test]
+    fn local_only_ideas_pattern_matches_the_shared_constants() {
+        // The DEFAULT_IGNORES entry is a string literal (a const slice cannot
+        // call format!), so pin it to the constants `ideas::settings` builds
+        // the real path from. If either constant is renamed, this fails rather
+        // than silently un-protecting the local-only root.
+        let expected = format!("/{LOCAL_ONLY_PARENT_DIR}/{LOCAL_ONLY_IDEAS_DIR}/");
+        assert!(
+            DEFAULT_IGNORES.contains(&expected.as_str()),
+            "DEFAULT_IGNORES must carry {expected}"
+        );
+        let bare = expected.trim_end_matches('/').to_string();
+        assert!(
+            DEFAULT_IGNORES.contains(&bare.as_str()),
+            "DEFAULT_IGNORES must carry {bare}"
+        );
     }
 
     #[test]

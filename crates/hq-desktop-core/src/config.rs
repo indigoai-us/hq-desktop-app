@@ -345,6 +345,58 @@ pub struct MenubarPrefs {
     /// not recognize.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ideas_extraction_mode: Option<String>,
+    /// Idea Board vault sync (JSON key `ideasSyncEnabled`). True (**the
+    /// default when absent**) means captures belong in the company vault
+    /// (`companies/{slug}/ideas`); false means they belong under a local-only
+    /// root that the vault sync scope excludes.
+    ///
+    /// **NOT YET IN EFFECT ON THE WRITE PATH.** Today this preference is
+    /// stored, read back, and rendered — `ideas::settings::ideas_root` will
+    /// resolve the local-only root from it, and `crate::ignore` already
+    /// excludes that root from sync — but the capture write path still
+    /// resolves every capture through `ideas::storage::ideas_dir` (the vault)
+    /// without consulting it. Until the pipeline adopts `ideas_root`, setting
+    /// this to false records the choice and changes where captures are written
+    /// not at all. Every doc comment and every line of user-facing copy about
+    /// this flag must stay in the conditional tense until that lands.
+    ///
+    /// This is a USER PREFERENCE, not a feature flag (policy
+    /// `indigo-a-user-preference-is-not-a-feature-flag`), exactly like
+    /// [`MenubarPrefs::ideas_extraction_mode`]: no rollout gate reads it and
+    /// nothing flips it on anyone's behalf. Resolved by
+    /// `ideas::settings::sync_enabled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ideas_sync_enabled: Option<bool>,
+    /// Company slug a capture is filed to when nothing else indicates one
+    /// (JSON key `ideasDefaultCompany`). Absent, empty, or whitespace →
+    /// follow the active HQ company. Resolved by
+    /// `ideas::settings::resolve_company`.
+    ///
+    /// A USER PREFERENCE, not a feature flag — see
+    /// [`MenubarPrefs::ideas_extraction_mode`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ideas_default_company: Option<String>,
+    /// Maximum image edge, in pixels, captures are downsampled to on write
+    /// (JSON key `ideasImageMaxEdge`). Absent or unrecognized → 2000
+    /// (`ideas::settings::DEFAULT_IMAGE_MAX_EDGE`); only the three offered
+    /// choices (1200 / 2000 / 4000) are honored. Retention is
+    /// downsample-on-write only — nothing is ever auto-deleted, and no
+    /// auto-delete preference exists.
+    ///
+    /// A USER PREFERENCE, not a feature flag — see
+    /// [`MenubarPrefs::ideas_extraction_mode`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ideas_image_max_edge: Option<u32>,
+    /// Global capture chord in canonical `Alt+Shift+KeyC` form (JSON key
+    /// `ideasCaptureChord`). Absent or unparseable → the default ⌥⇧C
+    /// (`ideas::settings::DEFAULT_CAPTURE_CHORD`). Rebinding re-registers the
+    /// shortcut immediately and reports inline when the chord is unavailable;
+    /// registration at launch logs and continues on conflict.
+    ///
+    /// A USER PREFERENCE, not a feature flag — see
+    /// [`MenubarPrefs::ideas_extraction_mode`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ideas_capture_chord: Option<String>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
