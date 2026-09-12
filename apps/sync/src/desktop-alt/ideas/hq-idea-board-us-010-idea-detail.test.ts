@@ -47,6 +47,13 @@ function record(over: Partial<IdeaCapture> & { id: string } = { id: 'cap-1' }): 
   };
 }
 
+async function settle(): Promise<void> {
+  for (let i = 0; i < 6; i += 1) {
+    await Promise.resolve();
+    await tick();
+  }
+}
+
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -57,7 +64,7 @@ async function render(over: Partial<IdeaCapture> = {}, extras: Record<string, un
   component = mount(IdeaDetail, {
     target: host,
     props: {
-      record: record(over as Partial<IdeaCapture> & { id: string }),
+      record: record({ id: 'cap-1', ...over } as Partial<IdeaCapture> & { id: string }),
       imageSrc: 'data:image/png;base64,AAAA',
       companies: ['indigo', 'acme'],
       store,
@@ -117,7 +124,7 @@ describe('US-010 IdeaDetail', () => {
     select.dispatchEvent(new Event('change', { bubbles: true }));
     await tick();
     await Promise.resolve();
-    expect(invoke.mock.calls.some(([cmd]) => cmd === 'ideas_correct_kind')).toBe(true);
+    expect(invoke).toHaveBeenCalledWith('ideas_correct_kind', { id: 'cap-1', kind: 'article' });
   });
 
   it('deletes only after a single confirmation and then the record is gone', async () => {
@@ -136,7 +143,7 @@ describe('US-010 IdeaDetail', () => {
     (el.querySelector('[data-testid="idea-detail-delete-yes"]') as HTMLButtonElement).click();
     await tick();
     await Promise.resolve();
-    expect(invoke.mock.calls.some(([cmd]) => cmd === 'ideas_delete_capture')).toBe(true);
+    expect(invoke).toHaveBeenCalledWith('ideas_delete_capture', { id: 'cap-1' });
     expect(store.records).toHaveLength(0);
   });
 
@@ -155,7 +162,107 @@ describe('US-010 IdeaDetail', () => {
     const onclose = vi.fn();
     await render({}, { onclose });
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    await tick();
+    await settle();
     expect(onclose).toHaveBeenCalled();
+  });
+
+  it('flushes an unsaved note before closing on Escape', async () => {
+    // Persistence is onblur-only and Escape never fires blur, so closing has
+    // to flush the draft itself or the edit is silently lost.
+    const store = createIdeaCapturesStore();
+    const onclose = vi.fn();
+    invoke.mockResolvedValue(undefined);
+    const el = await render({}, { store, onclose });
+
+    const note = el.querySelector('[data-testid="idea-detail-note"]') as HTMLTextAreaElement;
+    note.value = 'typed but never blurred';
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await settle();
+
+    expect(invoke).toHaveBeenCalledWith('ideas_set_note', {
+      id: 'cap-1',
+      note: 'typed but never blurred',
+    });
+    expect(onclose).toHaveBeenCalled();
+  });
+
+  it('persists edited tags on blur', async () => {
+    const store = createIdeaCapturesStore();
+    invoke.mockResolvedValue(undefined);
+    const el = await render({}, { store });
+
+    const tags = el.querySelector('[data-testid="idea-detail-tags"]') as HTMLInputElement;
+    tags.value = 'alpha, beta ,  gamma';
+    tags.dispatchEvent(new Event('input', { bubbles: true }));
+    tags.dispatchEvent(new Event('blur', { bubbles: true }));
+    await settle();
+
+    // Trimmed, empties dropped.
+    expect(invoke).toHaveBeenCalledWith('ideas_set_tags', {
+      id: 'cap-1',
+      tags: ['alpha', 'beta', 'gamma'],
+    });
+  });
+
+  it('does not re-issue a tag write when the value is unchanged', async () => {
+    const store = createIdeaCapturesStore();
+    invoke.mockResolvedValue(undefined);
+    const el = await render({}, { store });
+    const tags = el.querySelector('[data-testid="idea-detail-tags"]') as HTMLInputElement;
+    tags.dispatchEvent(new Event('blur', { bubbles: true }));
+    await settle();
+    expect(invoke).not.toHaveBeenCalledWith('ideas_set_tags', expect.anything());
+  });
+
+  it('clears a previous write error once a later write succeeds', async () => {
+    const store = createIdeaCapturesStore();
+    invoke.mockRejectedValueOnce(new Error('transient vault lock'));
+    const el = await render({}, { store });
+
+    const select = el.querySelector('[data-testid="idea-detail-kind"]') as HTMLSelectElement;
+    select.value = 'article';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    expect(el.querySelector('[data-testid="idea-detail-error"]')).not.toBeNull();
+
+    invoke.mockResolvedValue(undefined);
+    select.value = 'quote';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    expect(el.querySelector('[data-testid="idea-detail-error"]')).toBeNull();
+  });
+
+  it('surfaces a failed write instead of swallowing it', async () => {
+    const store = createIdeaCapturesStore();
+    invoke.mockRejectedValue(new Error('vault is read-only'));
+    const el = await render({}, { store });
+
+    const select = el.querySelector('[data-testid="idea-detail-kind"]') as HTMLSelectElement;
+    select.value = 'article';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    const err = el.querySelector('[data-testid="idea-detail-error"]');
+    expect(err?.textContent).toContain('vault is read-only');
+  });
+
+  it('keeps the pane open when a delete fails', async () => {
+    const store = createIdeaCapturesStore();
+    const onclose = vi.fn();
+    invoke.mockRejectedValue(new Error('record not found'));
+    const el = await render({}, { store, onclose });
+
+    (el.querySelector('[data-testid="idea-detail-delete"]') as HTMLButtonElement).click();
+    await settle();
+    (el.querySelector('[data-testid="idea-detail-delete-yes"]') as HTMLButtonElement).click();
+    await settle();
+
+    expect(onclose).not.toHaveBeenCalled();
+    expect(el.querySelector('[data-testid="idea-detail-error"]')?.textContent).toContain(
+      'record not found',
+    );
   });
 });

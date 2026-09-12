@@ -57,14 +57,21 @@
   });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-<article
+<div
   class="idea-card"
   data-id={record.id}
   data-kind={kind}
   data-status={status}
   data-testid="idea-card"
+  role="button"
+  tabindex="0"
   onclick={() => onopen?.(record)}
+  onkeydown={(e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onopen?.(record);
+    }
+  }}
 >
   <span class="idea-rule" aria-hidden="true"></span>
   <span class="ctype">{kindLabel(kind)}</span>
@@ -171,7 +178,7 @@
       </button>
     </div>
   {/if}
-</article>
+</div>
 
 <style>
   /* Kind rule colours. The storyboard's cyan / warm pink / indigo have no

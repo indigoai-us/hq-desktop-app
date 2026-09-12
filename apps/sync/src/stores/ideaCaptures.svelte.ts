@@ -63,6 +63,8 @@ class IdeaCapturesStore {
   records = $state<IdeaCapture[]>([]);
   state = $state<IdeaBoardState>('idle');
   error = $state<string | null>(null);
+  /** Last detail-pane write failure. Separate from `error`, which blanks the board. */
+  writeError = $state<string | null>(null);
   /** id -> data URL; `null` means "fetched and unusable", so we never refetch. */
   thumbnails = $state<Record<string, string | null>>({});
 
@@ -129,35 +131,65 @@ class IdeaCapturesStore {
     if (isCapture(updated)) this.upsert(updated);
   }
 
+  /**
+   * Run a detail-pane write, recording any failure on `writeError` instead of
+   * letting it become an unhandled rejection. Returns whether it succeeded, so
+   * a destructive caller can avoid acting as if the record were gone.
+   */
+  private async write(run: () => Promise<void>): Promise<boolean> {
+    this.writeError = null;
+    try {
+      await run();
+      return true;
+    } catch (err) {
+      this.writeError = err instanceof Error ? err.message : String(err);
+      return false;
+    }
+  }
+
   /** Authoritative kind correction from the card detail (confidence 1.0, source user). */
-  async correctKind(id: string, kind: IdeaKind): Promise<void> {
-    const updated = await invoke('ideas_correct_kind', { id, kind });
-    if (isCapture(updated)) this.upsert(updated);
+  async correctKind(id: string, kind: IdeaKind): Promise<boolean> {
+    return this.write(async () => {
+      const updated = await invoke('ideas_correct_kind', { id, kind });
+      if (isCapture(updated)) this.upsert(updated);
+    });
   }
 
-  async setNote(id: string, note: string): Promise<void> {
-    const updated = await invoke('ideas_set_note', { id, note });
-    if (isCapture(updated)) this.upsert(updated);
+  async setNote(id: string, note: string): Promise<boolean> {
+    return this.write(async () => {
+      const updated = await invoke('ideas_set_note', { id, note });
+      if (isCapture(updated)) this.upsert(updated);
+    });
   }
 
-  async setTags(id: string, tags: string[]): Promise<void> {
-    const updated = await invoke('ideas_set_tags', { id, tags });
-    if (isCapture(updated)) this.upsert(updated);
+  async setTags(id: string, tags: string[]): Promise<boolean> {
+    return this.write(async () => {
+      const updated = await invoke('ideas_set_tags', { id, tags });
+      if (isCapture(updated)) this.upsert(updated);
+    });
   }
 
-  async moveCapture(id: string, toCompany: string): Promise<void> {
-    await invoke('ideas_move_capture', { id, toCompany });
-    this.remove(id);
+  async moveCapture(id: string, toCompany: string): Promise<boolean> {
+    return this.write(async () => {
+      await invoke('ideas_move_capture', { id, toCompany });
+      this.remove(id);
+    });
   }
 
-  async deleteCapture(id: string): Promise<void> {
-    await invoke('ideas_delete_capture', { id });
-    this.remove(id);
+  async deleteCapture(id: string): Promise<boolean> {
+    return this.write(async () => {
+      await invoke('ideas_delete_capture', { id });
+      this.remove(id);
+    });
   }
 
   async listCompanies(): Promise<string[]> {
-    const result = await invoke('ideas_list_companies');
-    return Array.isArray(result) ? result.filter((s): s is string => typeof s === 'string') : [];
+    try {
+      const result = await invoke('ideas_list_companies');
+      return Array.isArray(result) ? result.filter((s): s is string => typeof s === 'string') : [];
+    } catch {
+      return [];
+    }
   }
 
   /**

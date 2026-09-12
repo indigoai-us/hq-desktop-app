@@ -4,7 +4,7 @@
    * corrections that keep a wrong guess from becoming distrust.
    */
   import { onMount } from 'svelte';
-  import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import { openBrowserUrl } from '../external-open';
   import { citedLabel } from '../../lib/ideas-cited-label';
   import type { IdeaCapture, IdeaKind } from '../../stores/ideaCaptures';
   import { createIdeaCapturesStore } from '../../stores/ideaCaptures';
@@ -47,7 +47,11 @@
   let confirmDelete = $state(false);
   let ocrOpen = $state(false);
 
+  let hydratedId = $state('');
+
   $effect(() => {
+    if (record.id === hydratedId) return;
+    hydratedId = record.id;
     noteDraft = record.note ?? '';
     tagsDraft = (record.tags ?? []).join(', ');
     confirmDelete = false;
@@ -88,27 +92,33 @@
 
   async function reassign(to: string): Promise<void> {
     if (!store || !to) return;
-    await store.moveCapture(record.id, to);
-    onclose?.();
+    if (await store.moveCapture(record.id, to)) onclose?.();
   }
 
   async function confirmAndDelete(): Promise<void> {
     if (!store) return;
-    await store.deleteCapture(record.id);
-    onclose?.();
+    if (await store.deleteCapture(record.id)) onclose?.();
+    else confirmDelete = false;
   }
 
-  async function openProvenanceUrl(event: MouseEvent, url: string): Promise<void> {
+  async function openProvenanceUrl(event: Event, url: string): Promise<void> {
     event.preventDefault();
     event.stopPropagation();
-    const opener = openUrl ?? openExternal;
+    const opener = openUrl ?? openBrowserUrl;
     await opener(url);
+  }
+
+  /** Flush blur-only drafts, then close. Escape never fires blur. */
+  async function closeWithSave(): Promise<void> {
+    await persistNote();
+    await persistTags();
+    onclose?.();
   }
 
   function onKey(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
       event.preventDefault();
-      onclose?.();
+      void closeWithSave();
       return;
     }
     const target = event.target as HTMLElement | null;
@@ -138,7 +148,7 @@
   aria-modal="true"
   aria-label="Capture detail"
 >
-  <button type="button" class="idea-detail-close" data-testid="idea-detail-close" onclick={() => onclose?.()}>
+  <button type="button" class="idea-detail-close" data-testid="idea-detail-close" onclick={() => void closeWithSave()}>
     Close
   </button>
 
@@ -202,11 +212,13 @@
     {#if record.provenance.url}
       <dt>URL</dt>
       <dd>
-        <a
-          href={record.provenance.url}
+        <button
+          type="button"
+          class="idea-detail-url"
           data-testid="idea-detail-url"
           onclick={(e) => void openProvenanceUrl(e, record.provenance.url ?? '')}
-        >{record.provenance.url}</a>
+          onauxclick={(e) => void openProvenanceUrl(e, record.provenance.url ?? '')}
+        >{record.provenance.url}</button>
       </dd>
     {/if}
   </dl>
@@ -249,6 +261,12 @@
     </label>
   {/if}
 
+  {#if store?.writeError}
+    <p class="idea-detail-error" data-testid="idea-detail-error" role="alert">
+      That didn't save: {store.writeError}
+    </p>
+  {/if}
+
   {#if confirmDelete}
     <div class="idea-detail-confirm" data-testid="idea-detail-confirm">
       <p>Delete this capture?</p>
@@ -272,6 +290,24 @@
 </div>
 
 <style>
+  .idea-detail-error {
+    margin: 8px 0;
+    font-size: 12px;
+    color: var(--danger, #c45);
+  }
+
+  .idea-detail-url {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    color: var(--accent, inherit);
+    cursor: pointer;
+    text-decoration: underline;
+    word-break: break-all;
+  }
+
   .idea-detail {
     position: fixed;
     inset: 0 auto 0 0;
@@ -374,9 +410,6 @@
     font-size: 11px;
   }
 
-  a {
-    color: var(--accent);
-  }
 
   .idea-detail-delete,
   .idea-detail-confirm button {
