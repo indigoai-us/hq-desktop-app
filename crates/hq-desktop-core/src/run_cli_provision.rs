@@ -571,7 +571,13 @@ fn classify_setup_validation_failure(output_tail: &[String]) -> &'static str {
         return "company-dir-missing";
     }
     // The manifest file exists but can't be parsed / lacks the top-level map.
-    if blob.contains("malformed") || blob.contains("missing top-level") {
+    // Require manifest-specific context so a generic "malformed" in some other
+    // diagnostic (e.g. "slug is malformed") is NOT mis-subclassed here and
+    // wrongly downgraded to Warning — it must fall through to `unclassified`
+    // and stay at Error.
+    if (blob.contains("manifest") && blob.contains("malformed"))
+        || blob.contains("missing top-level")
+    {
         return "manifest-malformed";
     }
     // The resolved HQ root has no manifest at all — the reported 6A/6B shape.
@@ -1607,6 +1613,12 @@ mod tests {
             classify_setup_validation_failure(&[
                 "[hq cloud provision] slug must match ^[a-z][a-z0-9-]*$".to_string(),
             ]),
+            "unclassified"
+        );
+        // A generic "malformed" without manifest context must NOT be downgraded
+        // as manifest-malformed — it stays unclassified/Error (Codex P2).
+        assert_eq!(
+            classify_setup_validation_failure(&["[hq cloud provision] slug is malformed".to_string()]),
             "unclassified"
         );
     }
