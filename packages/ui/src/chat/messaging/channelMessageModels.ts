@@ -218,6 +218,8 @@ export interface WorkSessionCardModel {
   /** Display name when the envelope carried one; otherwise null (resolve via roster). */
   principalDisplay: string | null;
   note: string | null;
+  /** Local / spike: open this session in the side pane. */
+  sessionId: string | null;
 }
 
 export type SystemEventModel =
@@ -585,9 +587,17 @@ export function parseSystemEvent(raw: unknown): SystemEventModel | null {
     const actorType = normalizeActorType(
       raw.actorType ?? principal?.kind ?? (actorUid?.startsWith("agt_") ? "agent" : "human"),
     );
+    const sessionId = asOptionalString(raw.sessionId);
+    const spawnTask = (() => {
+      const rawId = sessionId ?? "";
+      if (!rawId.startsWith("ws_spawn_") || !rawId.includes("|")) return null;
+      return rawId.split("|")[2]?.trim() || null;
+    })();
+    const taskId = asOptionalString(raw.taskId) ?? spawnTask;
     const cardTitle =
       note ??
       title ??
+      taskId ??
       (status ? `Work session · ${status}` : null) ??
       DEFAULT_TITLES.work_session;
     return {
@@ -598,13 +608,14 @@ export function parseSystemEvent(raw: unknown): SystemEventModel | null {
       actorUid,
       actorType,
       harness: asOptionalString(raw.harness),
-      taskId: asOptionalString(raw.taskId),
+      taskId,
       turnCount: asOptionalInt(raw.turnCount),
       lastTurnAt: asOptionalString(raw.lastTurnAt),
       status,
       principalDisplay:
         asOptionalString(raw.displayName) ?? principal?.display ?? null,
       note,
+      sessionId,
     };
   }
 

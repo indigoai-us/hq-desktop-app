@@ -105,6 +105,7 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   handleTeamAction: "push",
   handleCardAction: "push",
   openReply: "push",
+  openSessionFromCard: "none",
   openArtifact: "none",
   closeArtifact: "none",
   closeReply: "replace",

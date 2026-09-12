@@ -97,23 +97,33 @@ export type ToolCategory = (typeof TOOL_CATEGORIES)[number];
 export function toolCategory(toolName: string): ToolCategory {
   switch (toolName) {
     case 'Bash':
+    case 'bash':
     case 'BashOutput':
     case 'KillShell':
+    case 'run_terminal_command':
       return 'command';
     case 'Edit':
     case 'MultiEdit':
     case 'Write':
     case 'NotebookEdit':
+    case 'write':
+    case 'search_replace':
       return 'edit';
     case 'Read':
+    case 'read_file':
       return 'read';
     case 'Grep':
     case 'Glob':
     case 'WebSearch':
+    case 'grep':
+    case 'web_search':
       return 'search';
     case 'WebFetch':
+    case 'web_fetch':
+    case 'open_page':
       return 'fetch';
     case 'TodoWrite':
+    case 'todo_write':
       return 'todo';
     default:
       return 'other';
@@ -282,7 +292,7 @@ export type ChatBlock =
        * `model_not_found` case: the pill holds a model this CLI does not have,
        * and the fix is one click away rather than a sentence away.
        */
-      action?: 'chooseModel';
+      action?: 'chooseModel' | 'reauth';
       at: number | null;
     }
   | { type: 'divider'; id: string; label: string; at: number | null };
@@ -293,9 +303,12 @@ export type ChatBlock =
 
 /** The Claude CLI's code for a model it cannot run. */
 export const MODEL_NOT_FOUND_CODE = 'model_not_found';
+export const AUTHENTICATION_FAILED_CODE = 'authentication_failed';
 
 /** The one line the transcript says about it. */
 export const MODEL_NOT_FOUND_TEXT = "The selected model isn't available.";
+export const AUTHENTICATION_FAILED_TEXT =
+  'This session needs you to sign in again on this Mac.';
 
 /**
  * The CLI ALSO narrates a `model_not_found` as assistant prose — "There's an
@@ -307,6 +320,13 @@ export const MODEL_NOT_FOUND_TEXT = "The selected model isn't available.";
 export function isModelNotFoundText(text: string | null | undefined): boolean {
   if (!text) return false;
   return /issue with the selected model/i.test(text) || /\bmodel_not_found\b/i.test(text);
+}
+
+export function isAuthFailureText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return /authenticate|oauth access token has been revoked|authentication_failed|sign in to claude/i.test(
+    text,
+  );
 }
 
 /** Two error sentences are the same news when they differ only in dressing. */
@@ -677,11 +697,13 @@ export function foldSessionEvents(
   let turnErrors = new Set<string>();
   /** The turn's one `model_not_found` line, once it exists. */
   let turnModelError: Extract<ChatBlock, { type: 'error' }> | null = null;
+  let turnAuthError: Extract<ChatBlock, { type: 'error' }> | null = null;
 
   /** A user turn starts a new turn: its errors are its own. */
   function resetTurnErrors(): void {
     turnErrors = new Set<string>();
     turnModelError = null;
+    turnAuthError = null;
   }
 
   /**
@@ -722,11 +744,48 @@ export function foldSessionEvents(
     // The rendered line carries the code; a later `turnDone` repeats only the
     // sentence, so the sentence is what is remembered.
     const text = code ? `${message} (${code})` : message;
+    if (code === AUTHENTICATION_FAILED_CODE || isAuthFailureText(message)) {
+      authFailedLine(index, at);
+      return true;
+    }
     push(
       code === undefined
         ? { type: 'error', id: `${tone === 'warn' ? 'rate' : 'error'}-${index}`, tone, text, at }
-        : { type: 'error', id: `error-${index}`, tone, text, code, at },
+        : {
+            type: 'error',
+            id: `error-${index}`,
+            tone,
+            text,
+            code,
+            at,
+          },
     );
+    return true;
+  }
+
+  function authFailedLine(index: number, at: number | null): void {
+    if (turnAuthError) return;
+    const block: Extract<ChatBlock, { type: 'error' }> = {
+      type: 'error',
+      id: `error-${index}`,
+      tone: 'warn',
+      text: AUTHENTICATION_FAILED_TEXT,
+      code: AUTHENTICATION_FAILED_CODE,
+      action: 'reauth',
+      at,
+    };
+    turnAuthError = block;
+    turnErrors.add(normalizeErrorText(AUTHENTICATION_FAILED_TEXT));
+    push(block);
+  }
+
+  function absorbAuthError(text: string, index: number, at: number | null): boolean {
+    if (!isAuthFailureText(text)) return false;
+    if (openProse) {
+      retired.add(openProse.id);
+      openProse = null;
+    }
+    authFailedLine(index, at);
     return true;
   }
 
@@ -777,6 +836,18 @@ export function foldSessionEvents(
 
   function closeGroup(): void {
     openGroup = null;
+  }
+
+  /**
+   * A finished turn (or a hard session end) is the last word on open tools.
+   * Grok often never sends a matching toolResult after prompt_complete; leave
+   * those calls `running` and the folded row spins after Idle — and expanding
+   * it remounts live artifact stats for every still-open write.
+   */
+  function settleOpenCalls(): void {
+    for (const call of callsById.values()) {
+      if (call.status === 'running') call.status = 'ok';
+    }
   }
 
   function closeProse(): void {
@@ -906,12 +977,14 @@ export function foldSessionEvents(
         closeGroup();
         // A turn that already failed on its model has nothing to say: the
         // CLI's narration of that failure is the error line, not a paragraph.
-        if (turnModelError) break;
+        if (turnModelError || turnAuthError) break;
         if (openProse) {
           openProse.text += text;
           absorbModelError(openProse.text, index, at);
+          absorbAuthError(openProse.text, index, at);
         } else {
           if (absorbModelError(text, index, at)) break;
+          if (absorbAuthError(text, index, at)) break;
           const prose: Extract<ChatBlock, { type: 'assistantProse' }> = {
             type: 'assistantProse',
             id: `say-${index}`,
@@ -933,8 +1006,9 @@ export function foldSessionEvents(
         }
         retireThought();
         closeGroup();
-        if (turnModelError) break;
+        if (turnModelError || turnAuthError) break;
         if (absorbModelError(text, index, at)) break;
+        if (absorbAuthError(text, index, at)) break;
         if (openProse) {
           // The finalized text is authoritative — the deltas were a preview of
           // exactly this string, so it replaces rather than appends.
@@ -977,6 +1051,17 @@ export function foldSessionEvents(
         // A call with no id still gets a row; a call with no name is "Tool".
         const id = contentToText(event.id) || `call-${index}`;
         const name = contentToText(event.name) || 'Tool';
+        const existing = callsById.get(id);
+        if (existing) {
+          // Grok (and other ACP hosts) re-announce the same toolCallId on
+          // tool_call_update. A second row would stay `running` forever after
+          // the result lands on the first object — spinner never stops, and
+          // expanding duplicates the list enough to take the webview down.
+          if (name && name !== 'Tool') existing.name = name;
+          const detail = describeToolInput(event.input);
+          if (detail) existing.detail = detail;
+          break;
+        }
         const call: ToolCallSummary = {
           id,
           name,
@@ -1117,6 +1202,7 @@ export function foldSessionEvents(
       case 'turnDone': {
         retireThought();
         closeProse();
+        settleOpenCalls();
         closeGroup();
         // The turn a `/handoff` started has ended: written on success, and
         // simply over (the error row below says why) on anything else.
@@ -1135,9 +1221,12 @@ export function foldSessionEvents(
           const error = contentToText(event.error);
           const already =
             (error !== '' && turnErrors.has(normalizeErrorText(error))) ||
-            (turnModelError !== null && isModelNotFoundText(error));
+            (turnModelError !== null && isModelNotFoundText(error)) ||
+            (turnAuthError !== null && isAuthFailureText(error));
           if (error && isModelNotFoundText(error)) {
             modelNotFoundLine(index, at);
+          } else if (error && isAuthFailureText(error)) {
+            authFailedLine(index, at);
           } else if (!already) {
             push({
               type: 'error',
@@ -1154,11 +1243,16 @@ export function foldSessionEvents(
       case 'error': {
         retireThought();
         closeProse();
+        settleOpenCalls();
         closeGroup();
         const message = contentToText(event.message);
         const code = typeof event.code === 'string' ? event.code : undefined;
         if (code === MODEL_NOT_FOUND_CODE || isModelNotFoundText(message)) {
           modelNotFoundLine(index, at);
+          break;
+        }
+        if (code === AUTHENTICATION_FAILED_CODE || isAuthFailureText(message)) {
+          authFailedLine(index, at);
           break;
         }
         errorLine(index, at, message, 'error', code);
@@ -1168,6 +1262,7 @@ export function foldSessionEvents(
       case 'exited': {
         retireThought();
         closeProse();
+        settleOpenCalls();
         closeGroup();
         ended = true;
         push({ type: 'divider', id: `exited-${index}`, label: 'Session ended', at });

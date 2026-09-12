@@ -501,6 +501,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: PermissionMode::Prompt,
+            hidden: false,
         };
         test_registry()
             .lock()

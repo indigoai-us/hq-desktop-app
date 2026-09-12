@@ -54,6 +54,10 @@
     setupSessionParam,
   } from './pages/sessions-route-param';
   import { liveSessionStore } from './lib/live-session-store.svelte';
+  import LiveChannelSessionPane from './components/LiveChannelSessionPane.svelte';
+  import type { SessionThread } from '@hq/ui';
+  import { readRememberedTool } from '../components/sessions/session-models';
+  import { planFirstSend } from '../components/sessions/startwork';
   import { configureSessionStarterCache } from '../components/sessions/session-starter';
   import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
   import { SETUP_PROMPT } from './lib/setup-launch';
@@ -928,8 +932,48 @@
         <span>{signOutError}</span>
       </div>
     {/if}
+    {#snippet channelSessionBody(thread: SessionThread)}
+      <LiveChannelSessionPane
+        {thread}
+        starting={thread.status === 'starting' && !thread.liveSessionId}
+        startError={thread.startError ?? null}
+      />
+    {/snippet}
     {#key authGeneration}
       <WorkShell
+        {channelSessionBody}
+        onstartlivesession={async (input) => {
+          // Channel Session is a normal chat in the thread column — do not
+          // wrap the first turn in /startwork (that skill interviews, then
+          // sits, which looks like "working then stopped").
+          const first = planFirstSend(
+            input.contextPrompt,
+            { company: input.companySlug, project: input.projectId },
+            false,
+          )[0]!;
+          const sessionId = await liveSessionStore.startAndSend(
+            {
+              sessionId: '',
+              title: input.thread.title,
+              tool: readRememberedTool(),
+              cwd: '',
+              company: input.companySlug,
+              project: input.projectId,
+              model: null,
+              effort: null,
+              resume: null,
+              permissionMode: 'prompt',
+              hidden: false,
+              ...(input.channelId ? { projectChannelId: input.channelId } : {}),
+            },
+            first.text,
+            [],
+            first.label
+              ? { hidden: false, contextLabel: first.label, displayText: first.displayText }
+              : {},
+          );
+          return { sessionId };
+        }}
         data={{ user: capabilities.hostIdentity }}
         runtimeKind={capabilities.runtimeKind}
         fetch={capabilities.fetch}
@@ -952,7 +996,6 @@
         {extraPages}
         {rowExtras}
         rowExtrasLoading={(companies === null && !workspaceError) || projectLinksStore.loading}
-        rowExtrasError={Boolean(workspaceError) || projectLinksStore.initialError}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');

@@ -10,6 +10,60 @@ import SessionTranscript from './SessionTranscript.svelte';
 let component: ReturnType<typeof mount> | undefined;
 afterEach(() => { if (component) unmount(component); document.body.innerHTML = ''; });
 
+describe('session transcript reauth card', () => {
+  it('renders a sign-in card instead of a red error for authentication_failed', () => {
+    component = mount(SessionTranscript, {
+      target: document.body,
+      props: {
+        blocks: [
+          {
+            type: 'error',
+            id: 'e1',
+            text: 'This session needs you to sign in again on this Mac.',
+            tone: 'warn',
+            code: 'authentication_failed',
+            action: 'reauth',
+            at: null,
+          },
+        ],
+        onreauth: () => {},
+        reauthTool: 'claude',
+      },
+    });
+    flushSync();
+    expect(document.querySelector('[data-testid="session-reauth-card"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="session-inline-error"]')).toBeNull();
+    expect(document.querySelector('[data-testid="session-reauth"]')?.textContent).toContain(
+      'Sign in',
+    );
+  });
+
+  it('hides the sign-in card while HQ checks auth status', () => {
+    component = mount(SessionTranscript, {
+      target: document.body,
+      props: {
+        blocks: [
+          {
+            type: 'error',
+            id: 'e1',
+            text: 'This session needs you to sign in again on this Mac.',
+            tone: 'warn',
+            code: 'authentication_failed',
+            action: 'reauth',
+            at: null,
+          },
+        ],
+        reauthRecovery: 'checking',
+      },
+    });
+    flushSync();
+    expect(document.querySelector('[data-testid="session-auth-check"]')?.textContent).toContain(
+      'Checking sign-in',
+    );
+    expect(document.querySelector('[data-testid="session-reauth-card"]')).toBeNull();
+  });
+});
+
 describe('session transcript rich content', () => {
   it('renders protocol question replies as readable question and answer pairs', () => {
     const text = '<send_user_message_question_reply>' + JSON.stringify([
@@ -37,6 +91,25 @@ describe('session transcript rich content', () => {
     expect(bubble.querySelector('a')?.getAttribute('href')).toBe('https://example.com/report');
     expect(bubble.textContent).toContain('Help me debug this');
     expect(bubble.textContent).not.toContain('[Read report]');
+  });
+
+  it('renders GFM tables as real tables, not display:block pipes', () => {
+    const table = [
+      '| ID | Title | Status |',
+      '| --- | --- | --- |',
+      '| US-001 | Nested restore | done |',
+      '| US-007 | Accept the matrix | in_progress |',
+    ].join('\n');
+    component = mount(SessionTranscript, { target: document.body, props: { blocks: [
+      { type: 'assistantProse', id: 'a1', at: null, text: table, streaming: false },
+    ] } });
+    flushSync();
+    const prose = document.querySelector('[data-testid="session-assistant-prose"]')!;
+    expect(prose.querySelector('.markdown-table-scroll')).not.toBeNull();
+    expect(prose.querySelectorAll('th')).toHaveLength(3);
+    expect(prose.querySelectorAll('td')).toHaveLength(6);
+    expect(prose.textContent).toContain('US-007');
+    expect(prose.textContent).not.toContain('| US-007 |');
   });
 
   it('preserves the entire long code line and sanitizes user HTML', () => {

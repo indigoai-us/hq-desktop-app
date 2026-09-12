@@ -1,5 +1,5 @@
 <script lang="ts">
-  import ProviderConnect from '../../components/sessions/ProviderConnect.svelte';
+
   /**
    * Sessions — a chat with a Claude Code session running inside the app.
    *
@@ -156,6 +156,8 @@
     /** Unique unsent-draft identity for composer persistence. */
     draftKey?: string | null;
     restoreScroll?: import('@hq/ui').NavigationScrollState | null;
+    /** Thread-column embed: fill the pane, skip /startwork on first send. */
+    embedded?: boolean;
   }
 
   let {
@@ -171,11 +173,15 @@
     restorePath,
     draftKey = null,
     restoreScroll = null,
+    embedded = false,
   }: Props = $props();
 
   let preflight = $state<Preflight | null>(null);
   let preflightLoading = $state(false);
   let actionError = $state('');
+  let reauthPending = $state(false);
+  let reauthMessage = $state('');
+  let reauthPoll: ReturnType<typeof setTimeout> | undefined;
   let sessionUnavailable = $state(false);
   let starting = $state(false);
   let busyRequestId = $state<string | null>(null);
@@ -248,7 +254,11 @@
 
   // --- company / project start-work -----------------------------------------
   /** The company pill's second level: a project NAME, or null for company mode. */
-  let project = $state<string | null>(null);
+  // A project-channel "New session" is already bound. Seed the pill from the
+  // route so the first send cannot race the projects-list effect and pick up
+  // a remembered last project instead.
+  const routeBoundProject = Boolean(!sessionId && initialCompany && initialProject);
+  let project = $state<string | null>(routeBoundProject ? initialProject : null);
   let projects = $state<ProjectEntry[]>([]);
   let projectsLoading = $state(false);
   let projectsError = $state('');
@@ -278,6 +288,10 @@
   });
   $effect(() => {
     const slug = routeProjectPending;
+    // Wait until this company's list has finished loading. Applying while
+    // `projectsCompany` is set but `projectsLoading` is still false (the
+    // gap before the fetch flag flips) consumes the pending slug, after which
+    // the last-project restore can wipe it.
     if (!slug || projectsLoading || projectsCompany !== company) return;
     routeProjectPending = null;
     // A project-channel route is authoritative even when its older PRD falls
@@ -390,24 +404,25 @@
 
   // Open the routed session. Background buffers stay resident while this view
   // unmounts so Back can restore without tearing the agent down.
+  // A blank `new?…` route must still detach the *view* — otherwise the
+  // leftover active transcript paints into a composer that already says
+  // "New session".
   $effect(() => {
     const next = sessionId ?? null;
-    if (next === routedId) {
-      // Mounting straight onto a fresh chat: still let go of whatever
-      // session another surface left active.
-      // (untracked: the store's active id must not re-run this effect.)
-      if (next === null) untrack(() => liveSessionStore.deselect());
-      return;
-    }
-    routedId = next;
-    openedId = next;
-    sessionUnavailable = false;
-    // A fresh chat shows no session — not one another surface left active.
-    if (!next) {
-      untrack(() => liveSessionStore.deselect());
-      return;
-    }
-    void restoreRoutedSession(next);
+    untrack(() => {
+      if (!next) {
+        routedId = null;
+        openedId = null;
+        sessionUnavailable = false;
+        liveSessionStore.activate(null);
+        return;
+      }
+      if (next === routedId) return;
+      routedId = next;
+      openedId = next;
+      sessionUnavailable = false;
+      void restoreRoutedSession(next);
+    });
   });
 
   $effect(() => {
@@ -662,7 +677,7 @@
     projectsCompany = wanted;
     projects = [];
     projectsError = '';
-    project = readLastProject(wanted);
+    if (!routeBoundProject) project = readLastProject(wanted);
     if (!wanted) return;
     projectsLoading = true;
     void liveSessionStore
@@ -670,6 +685,10 @@
       .then((rows) => {
         if (projectsCompany !== wanted) return;
         projects = rows;
+        if (routeBoundProject && initialProject) {
+          project = projectNameFor(rows, initialProject) ?? initialProject;
+          return;
+        }
         // A remembered project that no longer exists falls back to "No project".
         if (project && !rows.some((row) => row.name === project)) project = null;
       })
@@ -856,50 +875,20 @@
   const blocker = $derived.by(() => {
     if (preflightLoading || !preflight) return '';
     if (tool === 'codex' && !preflight.codexAvailable) {
-      return 'Codex is not installed. Install it below — HQ sets up the CLI for you.';
-    }
-    if (tool === 'codex' && !preflight.codexLoggedIn) {
-      return 'Codex is not signed in. Connect it below. If the browser does not open, run `codex login` in a terminal.';
+      return 'Codex is not installed. Install it in Settings → Agents.';
     }
     if (tool === 'grok' && !preflight.grokAvailable) {
-      return 'Grok is not installed. Install it below — HQ sets up the CLI for you.';
-    }
-    if (tool === 'grok' && !preflight.grokLoggedIn) {
-      return 'Grok is not signed in. Connect it below. If the browser does not open, run `grok login` in a terminal.';
+      return 'Grok is not installed. Install it in Settings → Agents.';
     }
     if (tool === 'claude' && !preflight.claudeAvailable) {
-      return 'Claude Code is not installed. Install it below — HQ sets up the CLI for you.';
-    }
-    if (tool === 'claude' && !preflight.claudeLoggedIn) {
-      return 'Claude Code is not signed in. Connect it below. If the browser does not open, run `claude login` in a terminal.';
+      return 'Claude Code is not installed. Install it in Settings → Agents.';
     }
     // HQ setup on this machine (`setupNeeded`) is the setup card's job:
     // progress while it runs, Retry when it could not — not a notice here.
     return '';
   });
 
-  const needsProvider = $derived(Boolean(preflight) && (
-    tool === 'claude' ? !preflight?.claudeAvailable || !preflight?.claudeLoggedIn
-    : tool === 'grok' ? !preflight?.grokAvailable || !preflight?.grokLoggedIn
-    : !preflight?.codexAvailable || !preflight?.codexLoggedIn
-  ));
-  function providerConnected(provider: SessionToolId) {
-    if (preflight) preflight = provider === 'claude'
-      ? { ...preflight, claudeAvailable: true, claudeLoggedIn: true }
-      : provider === 'grok'
-        ? { ...preflight, grokAvailable: true, grokLoggedIn: true }
-      : { ...preflight, codexAvailable: true, codexLoggedIn: true };
-    liveSessionStore.invalidatePreflight();
-    chooseTool(provider);
-    catalogRefresh += 1;
-  }
-  const notice = $derived(
-    needsProvider
-      ? ''
-      : blocker ||
-          actionError ||
-          liveSessionStore.error,
-  );
+  const notice = $derived(blocker || actionError || liveSessionStore.error);
   const ended = $derived(phase === 'ended' || transcript.ended);
   const sendDisabled = $derived(!preflight || Boolean(blocker) || setupNeeded || starting || ended);
 
@@ -987,13 +976,58 @@
     actionError = '';
     try {
       await liveSessionStore.end();
+      window.dispatchEvent(
+        new CustomEvent('hq-channel-session-status', {
+          detail: { sessionId, status: 'finished' },
+        }),
+      );
+      await projectLinksStore.refresh();
     } catch (err) {
       actionError = err instanceof Error ? err.message : String(err);
     }
   }
 
+  async function handleReauth() {
+    if (reauthPending) return;
+    const next = liveSessionStore.summary?.tool ?? tool;
+    reauthPending = true;
+    reauthMessage = 'Opening sign-in…';
+    try {
+      const started = await liveSessionStore.providerLoginStart(next, { force: true });
+      reauthMessage = started.message ?? 'Finish signing in in your browser.';
+      if (started.state === 'connected') {
+        reauthPending = false;
+        reauthMessage = 'Signed in.';
+        return;
+      }
+      if (started.state === 'error') {
+        reauthPending = false;
+        reauthMessage = started.message ?? 'Sign-in did not complete. Try again.';
+        return;
+      }
+      const poll = async () => {
+        const status = await liveSessionStore.providerLoginStatus(next);
+        reauthMessage = status.message ?? reauthMessage;
+        if (status.state === 'waiting') {
+          reauthPoll = setTimeout(() => void poll(), 1500);
+          return;
+        }
+        reauthPending = false;
+        reauthMessage =
+          status.state === 'connected'
+            ? 'Signed in. Send again to continue.'
+            : (status.message ?? 'Sign-in did not complete. Try again.');
+      };
+      reauthPoll = setTimeout(() => void poll(), 1500);
+    } catch (err) {
+      reauthPending = false;
+      reauthMessage = err instanceof Error ? err.message : 'Could not start sign-in.';
+    }
+  }
+
   onDestroy(() => {
     if (menuResultTimer !== null) clearTimeout(menuResultTimer);
+    if (reauthPoll) clearTimeout(reauthPoll);
   });
 
   let pageEl = $state<HTMLDivElement | null>(null);
@@ -1180,16 +1214,25 @@
   const artifactActions = tauriArtifactActions((path) => void handleSend(deployCommandFor(path), []));
 
   /** What the mirrored bubble says rode along — the tags, never the block. */
-  function contextTurnMeta(context: LoadedAttachment[]): UserTurnMeta {
-    if (context.length === 0) return {};
+  function contextTurnMeta(
+    context: LoadedAttachment[],
+    images: ComposerImage[] = [],
+  ): UserTurnMeta {
     const root = preflight?.hqRoot ?? '';
-    return {
-      attachments: context.map(({ kind, title, path }) => ({
+    const attachments = [
+      ...images.map((image) => ({
+        kind: 'image' as const,
+        title: image.name,
+        path: `pasted/${image.name}`,
+      })),
+      ...context.map(({ kind, title, path }) => ({
         kind,
         title,
         path: hqRelativePath(path, root),
       })),
-    };
+    ];
+    if (attachments.length === 0) return {};
+    return { attachments };
   }
 
   /**
@@ -1213,7 +1256,7 @@
     mentionStatus = null;
     const attachments = images.map(({ mediaType, base64 }) => ({ mediaType, base64 }));
     const wire = composeWithContext(text, context, preflight?.hqRoot ?? '');
-    const meta = contextTurnMeta(context);
+    const meta = contextTurnMeta(context, images);
 
     if (sessionId && !newSessionPending && liveSessionStore.isHistorical) {
       starting = true;
@@ -1255,7 +1298,11 @@
       // Orientation, selected skill and natural-language prompt are one
       // atomic first message. The transcript splits context from the visible
       // prompt only as presentation; the CLI receives one send.
-      const first = planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)[0]!;
+      const first = planFirstSend(
+        wire,
+        { company, project },
+        !embedded && startworkEnabled && !setupChat,
+      )[0]!;
       const firstMeta: UserTurnMeta = first.label
         ? { ...meta, hidden: false, contextLabel: first.label, displayText: first.displayText }
         : meta;
@@ -1436,7 +1483,7 @@
 
 <svelte:window onkeydown={onPageKeydown} />
 
-<div class="sessions" data-testid="sessions-page" bind:this={pageEl}>
+<div class="sessions" class:embedded data-testid="sessions-page" bind:this={pageEl}>
   {#if sessionUnavailable}
     <div
       class="session-note"
@@ -1505,15 +1552,6 @@
     </p>
   {/if}
 
-  {#if needsProvider && preflight}
-    <div class="provider-connect-scroll">
-      <ProviderConnect selected={tool}
-        claudeAvailable={preflight.claudeAvailable} codexAvailable={preflight.codexAvailable} grokAvailable={preflight.grokAvailable}
-        claudeConnected={preflight.claudeLoggedIn} codexConnected={preflight.codexLoggedIn} grokConnected={preflight.grokLoggedIn}
-        onconnected={providerConnected} onchoose={chooseTool}
-        onrefresh={async () => { liveSessionStore.invalidatePreflight(); preflight = await liveSessionStore.preflight(); }} />
-    </div>
-  {/if}
   <SessionTranscript
     restoreScroll={restoreScroll}
     blocks={transcript.blocks}
@@ -1522,7 +1560,7 @@
     hasEarlier={liveSessionStore.hasEarlier}
     loadingEarlier={liveSessionStore.loadingEarlier}
     onloadearlier={() => liveSessionStore.loadEarlier()}
-    emptyHint={needsProvider ? '' : emptyHint}
+    emptyHint={emptyHint}
     {busyRequestId}
     {artifactActions}
     onallowonce={(requestId) =>
@@ -1540,6 +1578,11 @@
     onanswerquestion={(requestId, answers) =>
       void decide(requestId, () => liveSessionStore.answerQuestion(requestId, answers))}
     onchoosemodel={() => composer?.openModelMenu()}
+    reauthTool={liveSessionStore.summary?.tool ?? tool}
+    reauthPending={reauthPending}
+    reauthMessage={reauthMessage}
+    reauthRecovery={liveSessionStore.authRecovery}
+    onreauth={() => void handleReauth()}
   />
 
   {#if checkpointDue}
@@ -1651,7 +1694,7 @@
 </div>
 
 <style>
-  .provider-connect-scroll { min-height: 0; overflow-y: auto; flex: 0 1 auto; }
+
   .sessions {
     --session-column-width: 760px;
     --session-gutter: clamp(12px, 2vw, 24px);
@@ -1664,6 +1707,14 @@
     min-width: 0;
     height: 100%;
     font-family: var(--font-sans);
+  }
+
+  .sessions.embedded {
+    --session-column-width: 100%;
+    --session-gutter: 12px;
+    background: var(--v4-reading-surface, var(--v4-ground, #161618));
+    min-width: 0;
+    overflow: hidden;
   }
 
   .composer-dock {

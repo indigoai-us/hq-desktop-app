@@ -1110,6 +1110,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
       { ...story, companyUid: companyUid.trim() },
     ),
+    putProjectView: (projectId, companyUid, view) => this.request(
+      "PUT",
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}`,
+      { ...(view as object), companyUid: companyUid.trim() },
+    ),
     readLocalSnapshot: async () => DESKTOP_ONLY,
     getProjectView: (projectId, companyUid) => {
       const id = projectId.trim();

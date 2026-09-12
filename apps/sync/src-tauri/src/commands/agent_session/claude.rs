@@ -689,6 +689,7 @@ pub async fn probe_command_catalog(cwd: PathBuf) -> Result<CommandCatalog, Strin
         effort: None,
         resume: None,
         permission_mode: hq_desktop_core::agent_session::types::PermissionMode::Prompt,
+        hidden: false,
     };
     // Same resolution as a real session: PATH first, then the Claude Desktop
     // bundled CLI. A PATH-only lookup fails on a Mac that only has the app.
@@ -851,6 +852,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: mode,
+            hidden: false,
         }
     }
 

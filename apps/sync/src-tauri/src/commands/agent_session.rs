@@ -638,10 +638,12 @@ pub async fn agent_session_start(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     state.lock().await.set_channel(&session_id, tx);
 
-    if let Err(error) = super::project_session_sharing::prepare(&app, &spec, project_channel_id.as_deref()).await {
-        use tauri::Emitter;
-        // Sharing is independent of running the owner's local conversation.
-        let _ = app.emit("project-session:sharing-status", serde_json::json!({ "sessionId": session_id, "error": error }));
+    if !spec.hidden {
+        if let Err(error) = super::project_session_sharing::prepare(&app, &spec, project_channel_id.as_deref()).await {
+            use tauri::Emitter;
+            // Sharing is independent of running the owner's local conversation.
+            let _ = app.emit("project-session:sharing-status", serde_json::json!({ "sessionId": session_id, "error": error }));
+        }
     }
 
     let sink: Arc<dyn SessionEventSink> = Arc::new(claude::AppSink(app));
@@ -653,6 +655,8 @@ pub async fn agent_session_start(
         Spawned::Codex(_, handshake) => Some(handshake.thread_id.clone()),
         Spawned::Grok(_, handshake) => Some(handshake.session_id.clone()),
     };
+    // Hidden jobs stay out of the Sessions list via registry snapshot, but
+    // they still need meta so the native CLI id is on disk if the child dies.
     if let Err(e) = write_session_meta(
         &hq_root,
         &session_id,
@@ -1042,6 +1046,7 @@ pub async fn agent_session_end(session_id: String) -> Result<(), String> {
     let mut guard = state.lock().await;
     guard.close_channel(&session_id);
     guard.registry.remove(&session_id);
+    crate::commands::session_project_links::invalidate_links_cache();
     log(LOG_TAG, &format!("session={session_id} ended"));
     Ok(())
 }
@@ -1585,6 +1590,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: PermissionMode::Prompt,
+            hidden: false,
         };
         registry
             .insert(LiveSession::new(spec, "2026-09-02T00:00:00Z".into()))
@@ -1805,6 +1811,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: PermissionMode::Prompt,
+            hidden: false,
         };
         state()
             .lock()

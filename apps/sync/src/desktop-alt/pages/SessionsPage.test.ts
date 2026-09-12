@@ -42,6 +42,7 @@ import type { SessionEvent } from '../../components/sessions/session-events';
 import type { AgentSession } from '../lib/sessions';
 import { stopSessionsStore } from '../lib/sessions-store.svelte';
 import {
+  LAST_COMPANY_KEY,
   LAST_EFFORT_KEY,
   LAST_MODEL_KEY,
   LAST_TOOL_KEY,
@@ -50,6 +51,7 @@ import {
   readRemembered,
   remember,
 } from '../../components/sessions/session-models';
+import { rememberLastProject } from '../../components/sessions/startwork';
 import {
   MODEL_NOT_FOUND_CODE,
   MODEL_NOT_FOUND_TEXT,
@@ -132,6 +134,7 @@ interface Backend {
     history: never[];
     outpost: null;
   }>> | null;
+  projects: { name: string; path: string; description: string; branchName: null; storyCounts: { total: number; done: number }; updatedAt: null; owner: null; lastActivityAt: null; status: 'active' }[];
 }
 
 let backend: Backend;
@@ -143,6 +146,7 @@ function mockBackend() {
     starts: [], sends: [], list: [], replay: [], observed: [], claudeCatalog: null,
     providerCatalog: null,
     historyPage: { events: [], before: null },
+    projects: [],
   };
   invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
     switch (command) {
@@ -180,6 +184,7 @@ function mockBackend() {
       case 'hq_skill_catalog':
         return Promise.resolve({ workers: [], skills: [] });
       case 'hq_company_projects':
+        return Promise.resolve(backend.projects);
       case 'session_mention_candidates':
         return Promise.resolve([]);
       default:
@@ -282,30 +287,18 @@ afterEach(() => {
 });
 
 describe('provider readiness', () => {
-  it('connects the selected provider and preserves the draft through verified sign-in', async () => {
+  it('does not take over the session with a connect-an-agent wall', async () => {
     backend.preflight.codexLoggedIn = false;
     remember(LAST_TOOL_KEY, 'codex');
-    const normalInvoke = invoke.getMockImplementation()!;
-    invoke.mockImplementation((command, args) => command === 'agent_provider_login_start'
-      ? Promise.resolve({ state: 'connected' }) : normalInvoke(command, args));
     render();
     await settle();
+    expect(host.querySelector('[data-testid="provider-connect"]')).toBeNull();
+    expect(host.textContent).not.toContain('Connect an agent to continue');
     const input = must('session-composer-input') as HTMLTextAreaElement;
-    input.value = 'Keep this draft through login';
+    input.value = 'Keep this draft';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
-    const connect = [...host.querySelectorAll('button')].find(button => button.textContent === 'Connect Codex')!;
-    click(connect);
-    await settle();
-    expect(invoke).toHaveBeenCalledWith('agent_provider_login_start', { tool: 'codex' });
-    expect(host.querySelector('[data-testid="provider-connect"]')).toBeNull();
-    expect(input.value).toBe('Keep this draft through login');
     expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(false);
-    click(must('session-composer-send'));
-    await settle();
-    expect(backend.starts).toHaveLength(1);
-    expect(backend.starts[0].tool).toBe('codex');
   });
   it('starts Codex without Claude and updates the blocker on provider switch', async () => {
     backend.preflight.claudeAvailable = false;
@@ -316,7 +309,7 @@ describe('provider readiness', () => {
     expect(host.textContent).not.toContain('Claude Code is not installed');
     chooseTool('Claude');
     await settle();
-    expect(host.textContent).toContain('Install Claude');
+    expect(host.textContent).toContain('Settings → Agents');
     expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
     chooseTool('Codex');
     await settle();
@@ -340,31 +333,22 @@ describe('provider readiness', () => {
     expect(backend.starts[0]).toMatchObject({ tool: 'grok', model: 'grok-4.6' });
   });
 
-  it.each([
-    ['grokAvailable', 'Install Grok'],
-    ['grokLoggedIn', 'Connect Grok'],
-  ] as const)('blocks Grok when %s is false', async (field, message) => {
-    backend.preflight[field] = false;
-    remember(LAST_TOOL_KEY, 'grok');
-    render();
-    await settle();
-    expect(host.textContent).toContain(message);
-    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
-    expect(backend.starts).toHaveLength(0);
-  });
-
-  it.each([
-    ['codexAvailable', 'Install Codex'],
-    ['codexLoggedIn', 'Connect Codex'],
-  ] as const)('blocks Codex when %s is false', async (field, message) => {
-    backend.preflight[field] = false;
-    remember(LAST_TOOL_KEY, 'codex');
-    render();
-    await settle();
-    expect(host.textContent).toContain(message);
-    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
-    expect(backend.starts).toHaveLength(0);
-  });
+  it.each(['grokAvailable', 'codexAvailable', 'claudeAvailable'] as const)(
+    'blocks send when %s is false and points at Settings',
+    async (field) => {
+      backend.preflight[field] = false;
+      remember(
+        LAST_TOOL_KEY,
+        field.startsWith('grok') ? 'grok' : field.startsWith('claude') ? 'claude' : 'codex',
+      );
+      render();
+      await settle();
+      expect(host.querySelector('[data-testid="provider-connect"]')).toBeNull();
+      expect(host.textContent).toContain('Settings → Agents');
+      expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+      expect(backend.starts).toHaveLength(0);
+    },
+  );
 
   it.each([
     ['claudeLoggedIn', 'claude'],
@@ -375,8 +359,7 @@ describe('provider readiness', () => {
     render();
     await settle();
     expect(host.textContent).not.toMatch(RAW_COMMAND);
-    expect(host.querySelector('[data-testid="provider-connect"]')).not.toBeNull();
-    expect((must('session-composer-send') as HTMLButtonElement).disabled).toBe(true);
+    expect(host.querySelector('[data-testid="provider-connect"]')).toBeNull();
   });
 });
 
@@ -804,6 +787,69 @@ describe('first-message orientation', () => {
       sessionId: 'sess-1',
       text: '/startwork indigo hq-agent-workspace\n\nhi',
     });
+  });
+
+  it('keeps the clicked project when a different lastProject is in the picker feed', async () => {
+    remember(LAST_TOOL_KEY, 'codex');
+    remember(LAST_COMPANY_KEY, 'indigo');
+    rememberLastProject('indigo', 'hq-desktop-back-forward-nav');
+    backend.projects = [
+      {
+        name: 'hq-desktop-back-forward-nav',
+        path: '/hq/companies/indigo/projects/hq-desktop-back-forward-nav',
+        description: '',
+        branchName: null,
+        storyCounts: { total: 1, done: 0 },
+        updatedAt: null,
+        owner: null,
+        lastActivityAt: null,
+        status: 'active',
+      },
+    ];
+    render({
+      initialCompany: 'indigo',
+      initialProject: 'hq-desktop-sessions-testing',
+      initialChannelId: 'chn_sessions',
+    });
+    await settle();
+
+    send('pick the next issue');
+
+    await vi.waitFor(() => expect(backend.sends).toHaveLength(1));
+    expect(backend.starts[0]).toMatchObject({
+      company: 'indigo',
+      project: 'hq-desktop-sessions-testing',
+      projectChannelId: 'chn_sessions',
+    });
+    expect(backend.sends[0]).toMatchObject({
+      text: '/startwork indigo hq-desktop-sessions-testing\n\npick the next issue',
+    });
+  });
+});
+
+describe('new session from another project', () => {
+  it('clears the previous transcript when the route remounts as a blank new chat', async () => {
+    backend.list = [{
+      sessionId: 'live-fast', tool: 'codex', company: 'indigo', title: 'Speed check',
+      phase: 'idle', startedAt: '2026-09-04T21:55:44Z',
+      model: 'gpt-5.6-sol', requestedModel: 'gpt-5.6-sol',
+      permissionMode: 'prompt', pendingCount: 0,
+      effort: null, cwd: '/hq', lastActivityAt: '2026-09-04T21:55:44Z', lastSeq: 0,
+    }];
+    backend.replay = [{ kind: 'assistantMessage', text: 'Startup verified.' }];
+    render({ sessionId: 'live-fast' });
+    await vi.waitFor(() => expect(host.textContent).toContain('Startup verified.'));
+
+    unmount(component!);
+    component = null;
+    render({ initialCompany: 'indigo', initialProject: 'hq-desktop-sessions-testing' });
+    await settle();
+
+    expect(text('sessions-strip-title')).toBe('New session');
+    expect(host.textContent).not.toContain('Startup verified.');
+    expect(at('session-orientation-preview')?.textContent).toContain('/startwork indigo');
+    expect(liveSessionStore.isOpen('live-fast')).toBe(true);
+    expect(liveSessionStore.activeSessionId).toBeNull();
   });
 });
 

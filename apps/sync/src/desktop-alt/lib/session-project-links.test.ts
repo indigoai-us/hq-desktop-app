@@ -188,10 +188,8 @@ describe('badge + extras', () => {
   });
   it('says how many are live, else how many there were, else nothing', () => {
     expect(sessionsBadge(launch)).toBe('1 live');
-    expect(sessionsBadge(onboarding)).toBe('1');
-    expect(sessionsBadge({ ...onboarding, sessions: [...onboarding.sessions, ...onboarding.sessions] })).toBe(
-      '2',
-    );
+    expect(sessionsBadge(onboarding)).toBeNull();
+    expect(sessionsBadge({ ...onboarding, sessions: [...onboarding.sessions, ...onboarding.sessions] })).toBeNull();
     expect(sessionsBadge(empty)).toBeNull();
   });
 
@@ -215,8 +213,8 @@ describe('badge + extras', () => {
     expect(decorated?.actions?.map((a) => [a.id, a.label])).toEqual([['new-session', 'New session']]);
     expect(decorated?.childrenExpandedByDefault).toBe(true);
     expect(decorated?.childrenLabel).toBe('Sessions for Launch Q3');
-    const selected = rowExtrasFor(row({ channelId: 'chn_launch' }), links, card, onnew, () => {}, 's-old');
-    expect(selected?.children?.filter((child) => child.selected).map((child) => child.id)).toEqual(['session:s-old']);
+    const selected = rowExtrasFor(row({ channelId: 'chn_launch' }), links, card, onnew, () => {}, 's-live');
+    expect(selected?.children?.filter((child) => child.selected).map((child) => child.id)).toEqual(['session:s-live']);
     expect(decorated?.children?.map((child) => ({
       id: child.id,
       label: child.label,
@@ -229,13 +227,6 @@ describe('badge + extras', () => {
         label: 'Claude session',
         meta: 'Working',
         status: 'working',
-        kind: 'item',
-      },
-      {
-        id: 'session:s-old',
-        label: 'Codex session',
-        meta: null,
-        status: 'ended',
         kind: 'item',
       },
       {

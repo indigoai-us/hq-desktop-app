@@ -42,10 +42,12 @@
    * under their draft.
    *
    * `+` opens `ContextAttachMenu`: an image, a meeting, a signal, a vault
-   * file or a pasted path. Each pick is a chip on the same row the mentions
+   * file or a pasted path. Pasting an image or file into the composer stages
+   * it the same way. Each pick is a chip on the same row the mentions
    * use; its text is read the moment it lands so the running size under the
    * chips is honest, and every loaded chip rides the send as a context block
-   * the page appends after the words.
+   * the page appends after the words. Unsupported or oversized pastes set an
+   * error and leave the draft alone.
    *
    * The company pill has a second level: pick a company, then a project (or
    * "No project"), and the page orients the first send with `/startwork`. The
@@ -67,6 +69,15 @@
     type ContextLoaders,
     type LoadedAttachment,
   } from './context-attachments';
+  import {
+    PASTE_ACCEPT,
+    binaryFilePlaceholder,
+    filesFromDataTransfer,
+    isTextFile,
+    namePastedFile,
+    pastedFilePath,
+    validatePastedFile,
+  } from './composer-paste';
   import {
     addMention,
     applyMention,
@@ -398,7 +409,10 @@
   );
   const canSend = $derived(
     !disabled && !contextLoading &&
-      (commandToken?.route.kind === 'skill' || draft.trim().length > 0),
+      (commandToken?.route.kind === 'skill' ||
+        draft.trim().length > 0 ||
+        attached.length > 0 ||
+        loadedContext.length > 0),
   );
 
   onMount(() => {
@@ -603,9 +617,13 @@
   }
 
   function submit() {
-    const prompt = draft.trim();
-    if (disabled || contextLoading || (!commandToken && !prompt)) return;
+    let prompt = draft.trim();
+    const hasAttachments = attached.length > 0 || loadedContext.length > 0;
+    if (disabled || contextLoading || (!commandToken && !prompt && !hasAttachments)) return;
     if (commandToken?.route.kind === 'worker' && !prompt) return;
+    if (!prompt && hasAttachments) {
+      prompt = attached.length > 0 ? 'See the attached image(s).' : 'See the attached file(s).';
+    }
     const text = commandToken ? serializeComposerRoute(commandToken.route, prompt) : prompt;
     const attachments: LoadedAttachment[] = loadedContext.map((chip) => ({
       kind: chip.kind,
@@ -666,52 +684,99 @@
   }
 
   /** Images ride the turn as raw base64 — the backend adds no data-URL prefix. */
-  const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+  let pasteSeq = 0;
 
-  function readImage(file: File): Promise<ComposerImage> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
-      reader.onload = () => {
-        const result = typeof reader.result === 'string' ? reader.result : '';
-        const comma = result.indexOf(',');
-        if (comma === -1) {
-          reject(new Error(`Could not read ${file.name}`));
-          return;
+  async function readImage(file: File): Promise<ComposerImage> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return {
+      mediaType: file.type || 'image/png',
+      base64: btoa(binary),
+      name: file.name,
+    };
+  }
+
+  async function attachIncomingFiles(files: File[]) {
+    if (files.length === 0) return;
+    const draftBefore = draft;
+    attachError = '';
+    const nextImages: ComposerImage[] = [];
+    for (const raw of files) {
+      pasteSeq += 1;
+      const file = namePastedFile(raw, pasteSeq);
+      const decision = validatePastedFile(file);
+      if (!decision.ok) {
+        attachError = decision.error;
+        continue;
+      }
+      if (decision.kind === 'image') {
+        try {
+          nextImages.push(await readImage(file));
+        } catch (err) {
+          attachError = err instanceof Error ? err.message : String(err);
         }
-        resolve({
-          mediaType: file.type || 'image/png',
-          base64: result.slice(comma + 1),
-          name: file.name,
-        });
-      };
-      reader.readAsDataURL(file);
-    });
+        continue;
+      }
+      try {
+        const text = isTextFile(file) ? await file.text() : binaryFilePlaceholder(file);
+        const truncated = text.length > ATTACHMENT_CHARS;
+        const body = truncated ? text.slice(0, ATTACHMENT_CHARS) : text;
+        const attachment: ContextChip = {
+          kind: 'file',
+          title: file.name,
+          path: pastedFilePath(file.name),
+          text: body,
+          truncated,
+          loading: false,
+        };
+        if (exceedsContextBudget(loadedContext, body)) {
+          attachError = `${file.name} would push the context past the 24k-character budget.`;
+          continue;
+        }
+        const next = addAttachment(contextChips, attachment);
+        if (next.error) {
+          attachError = next.error;
+          continue;
+        }
+        if (next.list.length === contextChips.length) continue;
+        contextChips = next.list;
+      } catch (err) {
+        attachError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (nextImages.length > 0) attached = [...attached, ...nextImages];
+    if (draft !== draftBefore) draft = draftBefore;
   }
 
   async function onFiles(event: Event) {
     const input = event.currentTarget as HTMLInputElement;
     const files = [...(input.files ?? [])];
     input.value = '';
+    await attachIncomingFiles(files);
+  }
+
+  function onComposerPaste(event: ClipboardEvent) {
+    const files = filesFromDataTransfer(event.clipboardData);
     if (files.length === 0) return;
-    attachError = '';
-    const next: ComposerImage[] = [];
-    for (const file of files) {
-      if (!file.type.startsWith('image/')) {
-        attachError = 'Only images can be attached.';
-        continue;
-      }
-      if (file.size > MAX_IMAGE_BYTES) {
-        attachError = `${file.name} is too large (max 4 MB).`;
-        continue;
-      }
-      try {
-        next.push(await readImage(file));
-      } catch (err) {
-        attachError = err instanceof Error ? err.message : String(err);
-      }
-    }
-    if (next.length > 0) attached = [...attached, ...next];
+    event.preventDefault();
+    event.stopPropagation();
+    void attachIncomingFiles(files);
+  }
+
+  function onComposerDrop(event: DragEvent) {
+    const files = filesFromDataTransfer(event.dataTransfer);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void attachIncomingFiles(files);
+  }
+
+  function onComposerDragOver(event: DragEvent) {
+    if (filesFromDataTransfer(event.dataTransfer).length === 0) return;
+    event.preventDefault();
   }
 
   function removeImage(name: string) {
@@ -726,7 +791,15 @@
 
 <svelte:window onclick={closeMenus} onkeydown={onWindowKeydown} />
 
-<div class="composer" data-testid="session-composer">
+<div
+  class="composer"
+  data-testid="session-composer"
+  role="group"
+  aria-label="Session composer"
+  onpaste={onComposerPaste}
+  ondrop={onComposerDrop}
+  ondragover={onComposerDragOver}
+>
   {#if notice}
     <p class="composer-notice" role="alert" data-testid="session-composer-notice">{notice}</p>
   {/if}
@@ -968,7 +1041,7 @@
           bind:this={fileInput}
           class="file-input"
           type="file"
-          accept="image/*"
+          accept={PASTE_ACCEPT}
           multiple
           data-testid="session-composer-file"
           onchange={onFiles}

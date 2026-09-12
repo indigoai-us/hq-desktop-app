@@ -15,7 +15,7 @@
 import { contentToText } from './session-events';
 
 /** Where a chip came from — the `source` attribute on the wire. */
-export type ContextSource = 'meeting' | 'signal' | 'vault' | 'path';
+export type ContextSource = 'meeting' | 'signal' | 'vault' | 'path' | 'file' | 'image';
 
 /** A pick from the `+` menu, before its text is read. */
 export interface ContextAttachment {
@@ -97,6 +97,8 @@ const SOURCE_LABEL: Record<ContextSource, string> = {
   signal: 'Signal',
   vault: 'File',
   path: 'Path',
+  file: 'File',
+  image: 'Image',
 };
 
 export function sourceLabel(kind: ContextSource): string {
@@ -278,7 +280,7 @@ function readAttributes(raw: string): Record<string, string> {
   return out;
 }
 
-const SOURCES = new Set<string>(['meeting', 'signal', 'vault', 'path']);
+const SOURCES = new Set<string>(['meeting', 'signal', 'vault', 'path', 'file', 'image']);
 
 /**
  * Take the context blocks OUT of a recorded turn: the words the user typed,

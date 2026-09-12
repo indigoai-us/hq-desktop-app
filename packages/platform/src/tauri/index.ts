@@ -675,6 +675,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
       { ...story, companyUid: companyUid.trim() },
     ),
+    putProjectView: (projectId, companyUid, view) => this.hqProJson("PUT",
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}`,
+      { ...(view as object), companyUid: companyUid.trim() },
+    ),
     readLocalSnapshot: () => this.call("read_work_mesh_snapshot"),
     getProjectView: (projectId, companyUid) =>
       companyUid?.trim()

@@ -33,6 +33,7 @@ function card(
     status: "active",
     principalDisplay: "Ada Lovelace",
     note: null,
+    sessionId: null,
     ...over,
   };
 }
@@ -62,10 +63,8 @@ describe("WorkMeshActivityRow — work_session card", () => {
     expect(row?.getAttribute("data-actor-type")).toBe("human");
     const text = row?.textContent ?? "";
     expect(text).toContain("Ada Lovelace");
-    expect(text).toContain("claude-code");
-    expect(text).toContain("US-015");
-    expect(text).toContain("12 turns");
-    expect(text).toContain("last activity 42m ago");
+    expect(text).toContain("started a session");
+    expect(text).toContain("Work session");
     expect(root.querySelector(".agent-mark")).toBeNull();
   });
 
@@ -91,10 +90,7 @@ describe("WorkMeshActivityRow — work_session card", () => {
     expect(root.querySelector(".agent-mark")).not.toBeNull();
     const text = row?.textContent ?? "";
     expect(text).toContain("Parker");
-    expect(text).toContain("codex");
-    expect(text).toContain("US-006");
-    expect(text).toContain("1 turn");
-    expect(text).toContain("last activity just now");
+    expect(text).toContain("started a session");
   });
 
   it("renders an empty-ish card without crashing when fields are sparse", async () => {
@@ -118,7 +114,58 @@ describe("WorkMeshActivityRow — work_session card", () => {
     const row = root.querySelector('[data-testid="work-mesh-card"]');
     expect(row).not.toBeNull();
     expect(row?.textContent).toContain("A teammate");
-    expect(row?.textContent).not.toContain("last activity");
-    expect(row?.textContent).not.toContain("turns");
+    expect(row?.textContent).toContain("started a session");
+  });
+
+  it("opens the existing session id and shows finished copy", async () => {
+    const onopensession = vi.fn();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(WorkMeshActivityRow, {
+      target: host,
+      props: {
+        card: card({
+          sessionId: "sess-1",
+          status: "finished",
+          title: "Use last provider",
+          note: "Use last provider",
+        }),
+        onopensession,
+      },
+    });
+    await tick();
+    const text = host.textContent ?? "";
+    expect(text).toContain("finished a session");
+    expect(text).toContain("Use last provider");
+    const button = host.querySelector(
+      '[data-testid="work-mesh-card-open"]',
+    ) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    button.click();
+    expect(onopensession).toHaveBeenCalledWith("sess-1");
+  });
+
+  it("does not treat a mesh spawn id as an openable desktop session", async () => {
+    const onopensession = vi.fn();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(WorkMeshActivityRow, {
+      target: host,
+      props: {
+        card: card({
+          sessionId:
+            "ws_spawn_cmp_01KQ2RYAHXHDPCTY9GPQPTH3DG|hq-desktop-sessions-testing|US-001",
+          title: "US-001",
+        }),
+        onopensession,
+      },
+    });
+    await tick();
+    const button = host.querySelector(
+      '[data-testid="work-mesh-card-open"]',
+    ) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    button.click();
+    expect(onopensession).not.toHaveBeenCalled();
   });
 });

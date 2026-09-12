@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FOLD_ERRORS_BLOCK_ID,
+  AUTHENTICATION_FAILED_CODE,
+  AUTHENTICATION_FAILED_TEXT,
   MODEL_NOT_FOUND_CODE,
   MODEL_NOT_FOUND_TEXT,
   SESSION_AGENT_UID,
@@ -368,6 +370,29 @@ describe('foldSessionEvents — tool groups', () => {
     ]);
     expect(groups(closed.blocks)[0]!.running).toBe(false);
     expect(groups(closed.blocks)[0]!.calls[0]!.status).toBe('ok');
+  });
+
+  it('does not duplicate a toolCall that is re-announced under the same id', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'toolCall', id: 'a', name: 'bash', input: { command: 'ls' } },
+      { kind: 'toolCall', id: 'a', name: 'bash', input: { command: 'ls' } },
+      { kind: 'toolResult', id: 'a', isError: false, content: 'ok' },
+    ]);
+    expect(groups(blocks)[0]!.calls).toHaveLength(1);
+    expect(groups(blocks)[0]!.running).toBe(false);
+    expect(groups(blocks)[0]!.calls[0]!.status).toBe('ok');
+  });
+
+  it('settles leftover running calls when the turn ends without results', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'toolCall', id: 'a', name: 'read_file', input: { target_file: '/x.ts' } },
+      { kind: 'toolCall', id: 'b', name: 'grep', input: { pattern: 'foo' } },
+      { kind: 'turnDone', status: 'success' },
+    ]);
+    const group = groups(blocks)[0]!;
+    expect(group.running).toBe(false);
+    expect(group.calls.map((c) => c.status)).toEqual(['ok', 'ok']);
+    expect(group.summary).toBe('Read 1 file · searched 1 time');
   });
 
   it('marks a failed result and names the failure on the summary', () => {
@@ -1043,6 +1068,44 @@ describe('foldSessionEvents — model_not_found is ONE recoverable line', () => 
   it('offers "Choose a model" on that line', () => {
     const { blocks } = foldSessionEvents(failedTurn);
     expect(errors(blocks)[0]?.action).toBe('chooseModel');
+  });
+
+  it('offers sign-in again on an authentication_failed error', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'userMessage', text: 'hello', imageCount: 0 },
+      {
+        kind: 'error',
+        message: 'Authentication failed — sign in to Claude again.',
+        code: 'authentication_failed',
+      },
+    ]);
+    expect(errors(blocks)[0]?.action).toBe('reauth');
+    expect(errors(blocks)[0]?.code).toBe(AUTHENTICATION_FAILED_CODE);
+    expect(errors(blocks)[0]?.text).toBe(AUTHENTICATION_FAILED_TEXT);
+  });
+
+  it('folds the 401 prose, error event, and turnDone into one sign-in card', () => {
+    const { blocks } = foldSessionEvents([
+      { kind: 'userMessage', text: 'hello', imageCount: 0 },
+      {
+        kind: 'assistantMessage',
+        text: 'Failed to authenticate. API Error: 401 OAuth access token has been revoked.',
+      },
+      {
+        kind: 'error',
+        message: 'Authentication failed — sign in to Claude again.',
+        code: AUTHENTICATION_FAILED_CODE,
+      },
+      {
+        kind: 'turnDone',
+        status: 'error',
+        error: 'Failed to authenticate. API Error: 401 OAuth access token has been revoked.',
+      },
+    ]);
+    expect(types(blocks)).toEqual(['userBubble', 'error']);
+    expect(errors(blocks)).toHaveLength(1);
+    expect(errors(blocks)[0]?.action).toBe('reauth');
+    expect(proseText(blocks)).toEqual([]);
   });
 
   it('withdraws the narration even when only the streamed deltas arrived', () => {
