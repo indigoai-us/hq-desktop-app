@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "capture-toast",
+  "description": "Capability set for the capture-toast window (hq-idea-board US-005: capture toast with undo, note, reassign, open). Receives capture-toast:show via core:event. Invokes capture_toast_ready (ready handshake — delivers/shows any pending capture), dismiss_capture_toast (hide, never close), set_capture_toast_focusable (toggle focusable + focus so pressing N or clicking the note field can type — the window is built non-activating), ideas_delete_capture (undo), ideas_set_note (note), ideas_move_capture (reassign company), ideas_list_companies (reassign picker), ideas_open_board (open the desktop workspace on this idea), and get_authorized_file_preview (thumbnail).",
+  "windows": ["capture-toast"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-size",
+    "core:webview:allow-set-webview-zoom"
+  ]
+}

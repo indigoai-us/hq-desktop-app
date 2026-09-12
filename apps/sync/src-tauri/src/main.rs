@@ -178,6 +178,9 @@ fn setup_startup_surfaces(
     // only has to show it (80ms chord->overlay budget).
     commands::capture::setup_capture_overlay_window(app);
 
+    // US-005: pre-render the hidden capture-toast window the same way.
+    commands::capture::setup_capture_toast_window(app);
+
     // macOS: the menu-bar item lives in a separate native helper process
     // (tao parks an in-process status item off-screen on Tahoe).
     #[cfg(target_os = "macos")]
@@ -975,6 +978,10 @@ fn main() {
             commands::capture::ideas_move_capture,
             commands::capture::ideas_delete_capture,
             commands::capture::ideas_list_companies,
+            commands::capture::capture_toast_ready,
+            commands::capture::dismiss_capture_toast,
+            commands::capture::set_capture_toast_focusable,
+            commands::capture::ideas_open_board,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,

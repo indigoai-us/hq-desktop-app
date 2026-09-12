@@ -399,6 +399,150 @@ pub fn setup_capture_overlay_window(app: &AppHandle) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// US-005: capture toast (undo / note / reassign / open)
+// ---------------------------------------------------------------------------
+
+/// Window label — kept in sync with `main.ts`'s router branch and
+/// `capabilities/capture-toast.json`.
+pub const TOAST_WINDOW_LABEL: &str = "capture-toast";
+
+/// Event carrying the captured `CaptureRecord` JSON (same shape as
+/// `capture:completed`), delivered to the toast window specifically.
+pub const EVENT_TOAST_SHOW: &str = "capture-toast:show";
+
+/// Toast window dimensions and screen margin (logical points).
+const TOAST_W: f64 = 360.0;
+const TOAST_H: f64 = 168.0;
+const TOAST_MARGIN: f64 = 16.0;
+
+/// Mark: the toast window `show()` returned Ok.
+pub const MARK_TOAST_SHOWN: &str = "idea.capture.toast_shown";
+
+/// The most recently captured record, held until the toast webview's ready
+/// handshake (`capture_toast_ready`) can deliver it — mirrors
+/// `PENDING_PROVENANCE`'s pattern, since `show_capture_toast` can run before
+/// the webview has mounted its listeners.
+static PENDING_TOAST: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+
+/// Build the hidden capture-toast window at app start (idempotent). Mirrors
+/// `setup_capture_overlay_window`: pre-rendered so `show_capture_toast` only
+/// has to position + show it, never construct it, on the capture path.
+///
+/// Built **non-activating** (`.focusable(false)`) per repo policy
+/// `hq-desktop-app-nonactivating-window-toggle-focusable-for-input` — the
+/// toast only becomes focusable (so its note field can type) via
+/// `set_capture_toast_focusable`, when the user presses N or clicks in.
+pub fn setup_capture_toast_window(app: &AppHandle) {
+    if app.get_webview_window(TOAST_WINDOW_LABEL).is_some() {
+        log(LOG_TAG, "toast setup: window already exists");
+        return;
+    }
+
+    let build = WebviewWindowBuilder::new(
+        app,
+        TOAST_WINDOW_LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("HQ Capture Toast")
+    .inner_size(TOAST_W, TOAST_H)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .focusable(false)
+    .visible_on_all_workspaces(true)
+    .visible(false)
+    .build();
+
+    let window = match build {
+        Ok(w) => w,
+        Err(e) => {
+            log(LOG_TAG, &format!("toast setup: WebviewWindowBuilder FAILED: {e}"));
+            return;
+        }
+    };
+
+    // Clear WKWebView's underPageBackgroundColor so the transparent page does
+    // not sit on a system-gray sheet (same idiom as the overlay/widget/banner).
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window.with_webview(|webview| {
+            use objc2::{class, msg_send, runtime::AnyObject};
+            // SAFETY: with_webview runs on the main thread; `inner()` is the
+            // live WKWebView; selectors are public AppKit/WebKit.
+            unsafe {
+                let wk = webview.inner() as *mut AnyObject;
+                let clear: *mut AnyObject = msg_send![class!(NSColor), clearColor];
+                let _: () = msg_send![wk, setUnderPageBackgroundColor: clear];
+            }
+        });
+    }
+
+    log(
+        LOG_TAG,
+        &format!("toast setup: pre-rendered hidden window {TOAST_W}x{TOAST_H}"),
+    );
+}
+
+/// Bottom-right anchored logical origin for a `w`x`h` window on `display`,
+/// inset by `margin` on both edges. Pure so it is unit-testable without a
+/// live window; `show_capture_toast` is the only caller.
+pub fn toast_position(display: &DisplayRect, w: f64, h: f64, margin: f64) -> (f64, f64) {
+    (
+        display.x + display.w - w - margin,
+        display.y + display.h - h - margin,
+    )
+}
+
+/// Stash `record` and show the toast anchored bottom-right on the display the
+/// overlay was last shown on (falling back to the primary monitor). Runs on
+/// the main thread because window positioning/show is main-thread-only.
+fn show_capture_toast(app: &AppHandle, record: &CaptureRecord) {
+    let value = match serde_json::to_value(record) {
+        Ok(v) => v,
+        Err(e) => {
+            log(LOG_TAG, &format!("toast record serialize FAILED: {e}"));
+            return;
+        }
+    };
+    if let Ok(mut slot) = PENDING_TOAST.lock() {
+        *slot = Some(value.clone());
+    }
+
+    let app_main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(window) = app_main.get_webview_window(TOAST_WINDOW_LABEL) else {
+            return;
+        };
+        let display = SHOWN_DISPLAY
+            .lock()
+            .ok()
+            .and_then(|d| *d)
+            .or_else(|| app_main.primary_monitor().ok().flatten().map(|m| monitor_rect(&m)))
+            .unwrap_or(DisplayRect { x: 0.0, y: 0.0, w: 1440.0, h: 900.0, scale: 1.0 });
+        let (x, y) = toast_position(&display, TOAST_W, TOAST_H, TOAST_MARGIN);
+
+        #[cfg(target_os = "macos")]
+        {
+            let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+        }
+
+        match window.show() {
+            Ok(()) => log(LOG_TAG, MARK_TOAST_SHOWN),
+            Err(e) => log(LOG_TAG, &format!("toast show FAILED: {e}")),
+        }
+        let _ = app_main.emit_to(TOAST_WINDOW_LABEL, EVENT_TOAST_SHOW, value.clone());
+    });
+}
+
 /// Chord handler entry point. Writes the chord mark *before* marshalling to
 /// the main thread so the bench measures the full user-perceived interval.
 /// Safe to call from the global-shortcut callback thread.
@@ -605,6 +749,90 @@ pub async fn dismiss_capture_overlay(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Toast webview handshake: if a capture is waiting, deliver it and show the
+/// window. Idempotent — a capture already shown is simply re-delivered.
+#[tauri::command]
+pub fn capture_toast_ready(app: AppHandle) -> Result<(), String> {
+    log(LOG_TAG, "toast webview ready");
+    let pending = PENDING_TOAST.lock().ok().and_then(|s| s.clone());
+    let Some(record) = pending else {
+        return Ok(());
+    };
+    app.emit_to(TOAST_WINDOW_LABEL, EVENT_TOAST_SHOW, record)
+        .map_err(|e| e.to_string())?;
+    if let Some(window) = app.get_webview_window(TOAST_WINDOW_LABEL) {
+        window.show().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Frontend-initiated dismiss: hide (never close) and reset focusable so the
+/// next show starts non-activating again.
+#[tauri::command]
+pub async fn dismiss_capture_toast(app: AppHandle) -> Result<(), String> {
+    // Drop the pending record too: a webview reload after a dismiss (or after
+    // an undo deleted the record) must not resurface a stale toast through the
+    // `capture_toast_ready` handshake.
+    if let Ok(mut slot) = PENDING_TOAST.lock() {
+        *slot = None;
+    }
+    let app_main = app.clone();
+    app.run_on_main_thread(move || {
+        let Some(window) = app_main.get_webview_window(TOAST_WINDOW_LABEL) else {
+            return;
+        };
+        let _ = window.hide();
+        if let Err(e) = window.set_focusable(false) {
+            log(LOG_TAG, &format!("dismiss_capture_toast: set_focusable failed: {e}"));
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Toggle the toast's focusable state so its note field can take keyboard
+/// input. Per policy `hq-desktop-app-nonactivating-window-toggle-focusable-
+/// for-input` the toast is built non-activating and only becomes focusable
+/// when the user presses N or clicks into it (mirrors
+/// `widget::set_widget_focusable`).
+#[tauri::command]
+pub async fn set_capture_toast_focusable(app: AppHandle, focusable: bool) -> Result<(), String> {
+    let app_main = app.clone();
+    app.run_on_main_thread(move || {
+        let Some(window) = app_main.get_webview_window(TOAST_WINDOW_LABEL) else {
+            return;
+        };
+        match window.set_focusable(focusable) {
+            Ok(()) => {
+                log(
+                    LOG_TAG,
+                    &format!("set_capture_toast_focusable: focusable={focusable}"),
+                );
+                if focusable {
+                    if let Err(e) = window.set_focus() {
+                        log(
+                            LOG_TAG,
+                            &format!("set_capture_toast_focusable: set_focus failed: {e}"),
+                        );
+                    }
+                }
+            }
+            Err(e) => log(
+                LOG_TAG,
+                &format!("set_capture_toast_focusable: set_focusable failed: {e}"),
+            ),
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Focus/open the desktop workspace window on the captured idea's board
+/// route.
+#[tauri::command]
+pub async fn ideas_open_board(app: AppHandle, id: String) -> Result<(), String> {
+    crate::commands::desktop_alt::open_desktop_alt_window_inner(app, Some(&format!("ideas:{id}")))
+        .await
+}
+
 /// MAIN THREAD ONLY. The overlay's native window number, or 0 when it can't
 /// be determined (non-macOS, or a handle we can't reach).
 #[allow(unused_variables)]
@@ -799,6 +1027,7 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
                 }
                 Err(e) => log(LOG_TAG, &format!("capture record serialize FAILED: {e}")),
             }
+            show_capture_toast(app, &record);
             spawn_provenance(
                 app.clone(),
                 hq_root,
@@ -1616,6 +1845,119 @@ mod hq_idea_board_capture_tests {
 
     fn d(x: f64, y: f64, w: f64, h: f64) -> DisplayRect {
         DisplayRect { x, y, w, h, scale: 2.0 }
+    }
+
+    // ── US-005: capture toast ────────────────────────────────────────────
+
+    #[test]
+    fn hq_idea_board_toast_position_anchors_bottom_right() {
+        let display = d(0.0, 0.0, 1440.0, 900.0);
+        let (x, y) = toast_position(&display, 360.0, 168.0, 16.0);
+        assert_eq!((x, y), (1440.0 - 360.0 - 16.0, 900.0 - 168.0 - 16.0));
+    }
+
+    #[test]
+    fn hq_idea_board_toast_position_anchors_bottom_right_on_negative_origin_display() {
+        // A non-primary display left of the primary has a negative x origin.
+        let display = d(-2560.0, -200.0, 2560.0, 1440.0);
+        let (x, y) = toast_position(&display, 360.0, 168.0, 16.0);
+        assert_eq!(x, -2560.0 + 2560.0 - 360.0 - 16.0);
+        assert_eq!(y, -200.0 + 1440.0 - 168.0 - 16.0);
+        // Anchored inside the display, not the virtual desktop origin.
+        assert!(x > display.x && x + 360.0 <= display.x + display.w);
+        assert!(y > display.y && y + 168.0 <= display.y + display.h);
+    }
+
+    #[test]
+    fn hq_idea_board_toast_window_is_built_non_activating() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+
+        // Built non-activating.
+        let setup_body = fn_body(&src, "fn setup_capture_toast_window(");
+        assert!(
+            setup_body.contains(".focusable(false)"),
+            "capture-toast window must be built non-activating"
+        );
+        // The builder never flips it back on inside setup.
+        assert!(!setup_body.contains("set_focusable"));
+
+        // set_capture_toast_focusable is the only *runtime* toggle: it is the
+        // sole function body in the file whose text contains a
+        // `.set_focusable(` call driven by a parameter (not a literal).
+        let toggle_body = fn_body(&src, "fn set_capture_toast_focusable(");
+        assert!(
+            toggle_body.contains("set_focusable(focusable)"),
+            "set_capture_toast_focusable must toggle via its `focusable` param"
+        );
+        // Count only non-test source lines (the assertion text itself contains
+        // the literal), so the check is not self-referential.
+        let toggle_sites = src
+            .lines()
+            .filter(|l| l.trim_start().starts_with("window.set_focusable(focusable)")
+                || l.trim_start().starts_with("match window.set_focusable(focusable)"))
+            .count();
+        assert_eq!(
+            toggle_sites, 1,
+            "exactly one parameterized set_focusable toggle site (set_capture_toast_focusable)"
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_toast_label_matches_capability_file() {
+        let cap_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/capabilities/capture-toast.json"
+        );
+        let cap = std::fs::read_to_string(cap_path).expect("capture-toast.json is readable");
+        let parsed: serde_json::Value = serde_json::from_str(&cap).expect("valid json");
+        assert_eq!(
+            parsed["identifier"].as_str(),
+            Some("capture-toast"),
+            "capability identifier drifted from TOAST_WINDOW_LABEL"
+        );
+        let windows = parsed["windows"]
+            .as_array()
+            .expect("windows array present");
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].as_str(), Some(TOAST_WINDOW_LABEL));
+        assert_eq!(parsed["identifier"].as_str(), Some(TOAST_WINDOW_LABEL));
+    }
+
+    #[test]
+    fn hq_idea_board_show_capture_toast_runs_after_completed_emit_before_provenance() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+
+        let body = fn_body(&src, "fn capture_and_store(");
+        let png_mark = body
+            .find("MARK_PNG_WRITTEN")
+            .expect("capture_and_store logs the png_written mark");
+        let completed_emit = body
+            .find("EVENT_CAPTURE_COMPLETED")
+            .expect("capture_and_store emits capture:completed");
+        let toast_call = body
+            .find("show_capture_toast(app, &record)")
+            .expect("capture_and_store calls show_capture_toast");
+        let provenance_call = body
+            .find("spawn_provenance(")
+            .expect("capture_and_store hands off to the deferred provenance stage");
+
+        assert!(png_mark < completed_emit, "png mark must precede the completed emit");
+        assert!(
+            completed_emit < toast_call,
+            "show_capture_toast must run after the capture:completed emit"
+        );
+        assert!(
+            toast_call < provenance_call,
+            "show_capture_toast must run before spawn_provenance"
+        );
     }
 
     #[test]
