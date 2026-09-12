@@ -297,7 +297,11 @@
     installPath ? friendlyPath(installPath, homeDirFromDefaultHqPath(installPath)) : '~/hq',
   );
   const directoryButtonLabel = $derived(directoryBusy ? 'Checking…' : 'Choose…');
-  const topHeight = $derived(currentStep >= TRUST_STEP_INDEX ? '240px' : '200px');
+  // The consent step carries the most copy: a shorter picture keeps the whole
+  // choice on screen without scrolling (measured at the 780×620 window).
+  const topHeight = $derived(
+    currentStep >= TRUST_STEP_INDEX ? '240px' : currentStep === CONSENT_STEP_INDEX ? '130px' : '200px',
+  );
   const settledCount = $derived(
     stages.filter((stage) => stage.status === 'ok' || stage.status === 'failed')
       .length,
@@ -2007,9 +2011,8 @@
         >
           <h2 class="h" id="onboarding-title-consent">Help improve HQ?</h2>
           <p class="body">
-            You choose whether HQ collects anonymous usage data. Nothing is decided
-            for you — pick an option to continue. You can change this later in
-            Settings, and either choice sets up HQ the same way.
+            Pick whether HQ collects anonymous usage data. Either choice sets up HQ
+            the same way, and you can change it later in Settings.
           </p>
           <div class="consent-facts">
             <p class="consent-facts-line">
@@ -2619,7 +2622,8 @@
   .consent-error.offline { border-color:var(--c-field-border); background:var(--c-field-bg); }
   .consent-error-text { margin:0; font-size:12.5px; line-height:17px; color:var(--c-text); }
 
-  .consent-options { margin:14px 0 0; padding:0; border:0; display:flex; flex-direction:column; gap:8px; }
+  /* Side by side so the whole choice fits the card without scrolling. */
+  .consent-options { margin:14px 0 0; padding:0; border:0; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
   .consent-option { display:flex; align-items:flex-start; gap:10px; padding:11px 13px; border:1px solid var(--c-field-border); border-radius:10px; cursor:pointer; transition:border-color .12s, background-color .12s; }
   .consent-option.selected { border-color:var(--check-bg); background:color-mix(in srgb, var(--check-bg) 8%, transparent); }
   .consent-option input { margin-top:2px; width:16px; height:16px; flex-shrink:0; accent-color:var(--check-bg); cursor:pointer; }
