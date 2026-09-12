@@ -33,14 +33,6 @@ export {
 } from "./parse.js";
 
 export {
-  CHANNEL_SESSION_ORIGIN_PREFIX,
-  channelSessionOriginKey,
-  channelSessionStoryDraft,
-  findDuplicateChannelSessionStory,
-  nextUsStoryId,
-} from "./channel-session-task.js";
-
-export {
   MESH_STORY_STAGES,
   boardActivityFromLive,
   normalizeStoryStage,

@@ -2,10 +2,6 @@
   import {
     parseMeshProjectView,
     projectViewToBoard,
-    channelSessionOriginKey,
-    channelSessionStoryDraft,
-    findDuplicateChannelSessionStory,
-    nextUsStoryId,
   } from "@hq/core";
   /**
    * DesktopApp — the windowed V2 shell (design source: hq-sync desktop-alt +
@@ -3056,39 +3052,19 @@
     );
   }
 
-  async function ensureChannelSessionTask(thread: SessionThread): Promise<{
-    taskId: string;
-    created: boolean;
-  }> {
-    const row = selectedRow;
-    const companyUid = row?.companyUid?.trim();
-    const projectId = row ? projectIdForRow(row) : null;
-    const create = adapter.workMesh.createProjectStory;
-    if (!row || !companyUid || !projectId || !create) {
-      throw new Error("Project unavailable");
+  function liveThreadMatching(match: (thread: SessionThread) => boolean): SessionThread | null {
+    const seen = new Set<string>();
+    for (const thread of Object.values(sessionThreadsById)) {
+      if (seen.has(thread.id)) continue;
+      seen.add(thread.id);
+      if (
+        (thread.status === "starting" || thread.status === "running") &&
+        match(thread)
+      ) {
+        return thread;
+      }
     }
-    const originKey = channelSessionOriginKey(thread.origin);
-    const view = parseMeshProjectView(
-      unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)),
-    );
-    const stories = view?.stories ?? [];
-    const existing = findDuplicateChannelSessionStory(
-      stories,
-      originKey,
-      thread.title,
-    );
-    if (existing) return { taskId: existing.id, created: false };
-    const id = nextUsStoryId(stories);
-    const draft = channelSessionStoryDraft({
-      originKey,
-      title: thread.title,
-      excerpt:
-        thread.origin.kind === "message" ? thread.origin.excerpt : thread.title,
-    });
-    unwrapAdapter(
-      await create(projectId, companyUid, { id, ...draft }),
-    );
-    return { taskId: id, created: true };
+    return null;
   }
 
   async function bindLiveSession(thread: SessionThread): Promise<void> {
@@ -3100,20 +3076,15 @@
       (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyUid)
         ?.slug ?? "";
     try {
-      const task = await ensureChannelSessionTask(thread);
-      patchSessionThread(thread.id, {
-        taskId: task.taskId,
-        taskCreated: task.created,
-      });
       if (!onstartlivesession || !projectId || !companySlug) {
         patchSessionThread(thread.id, { status: "idle" });
         return;
       }
       const started = await onstartlivesession({
-        thread: { ...thread, taskId: task.taskId, taskCreated: task.created },
+        thread,
         companySlug,
         projectId,
-        taskId: task.taskId,
+        taskId: thread.taskId ?? "",
         contextPrompt: contextPromptForThread(thread),
         channelId: row?.channelId ?? null,
       });
@@ -3139,6 +3110,13 @@
   function startSessionFromMessage(eventId: string): void {
     const row = selectedRow;
     if (!row) return;
+    const existing = liveThreadMatching(
+      (thread) => thread.origin.kind === "message" && thread.origin.eventId === eventId,
+    );
+    if (existing) {
+      revealSessionThread(existing);
+      return;
+    }
     const msg = timelineWithActivity.find((m) => m.eventId === eventId);
     const thread = createSessionThread({
       origin: {
@@ -3160,6 +3138,13 @@
   function startSessionFromChannel(): void {
     const row = selectedRow;
     if (!row?.channelId) return;
+    const existing = liveThreadMatching(
+      (thread) => thread.origin.kind === "channel" && thread.origin.channelId === row.channelId,
+    );
+    if (existing) {
+      revealSessionThread(existing);
+      return;
+    }
     const thread = createSessionThread({
       origin: {
         kind: "channel",
