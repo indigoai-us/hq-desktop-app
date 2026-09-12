@@ -23,6 +23,16 @@
   import { SELF_TILE, applyStream, setTileTracks } from './media-sinks';
   import { callView } from './view.svelte';
 
+  /**
+   * Closes the call window once the leave has been asked for.
+   *
+   * Leaving a call and closing its window are one user action, not two: the
+   * window has no content after the session ends, and `MediaControls` goes
+   * inert the moment `leaving` latches, so a window left open here offers no
+   * control that still works — including Leave itself.
+   */
+  let { onclose }: { onclose?: () => void } = $props();
+
   let leaving = $state(false);
   let busy = $state<'microphone' | 'camera' | 'transcription' | null>(null);
 
@@ -104,7 +114,12 @@
   async function leave() {
     if (leaving) return;
     leaving = true;
-    await callView.handle?.leave('leave-button');
+    try {
+      await callView.handle?.leave('leave-button');
+    } catch {
+      // The window closes either way. A leave that throws must not strand it.
+    }
+    onclose?.();
   }
 
   /** The explicit join control. Nothing else in this window may capture. */

@@ -263,6 +263,46 @@ describe("handleCloseRequested", () => {
     expect(bench.invoked).toEqual([]);
   });
 
+  /**
+   * Regression: the Leave button left the session, then the OS close button
+   * awaited `leave` a second time on an already-terminal session. That await
+   * never settled, and because the close was already `preventDefault`ed the
+   * window could never be shut — no Leave (inert), no red button, no quit.
+   */
+  it("destroys the window even when leave never settles", async () => {
+    const bench = closeBench({});
+    const handle = {
+      ...fakeHandle(bench.order),
+      leave: () => new Promise<void>(() => {}),
+    } as CallWindowHandle;
+    bench.land(handle);
+    await handleCloseRequested({
+      ...bench.deps,
+      handle: () => handle,
+      teardownMs: 10,
+    });
+    expect(bench.order).toEqual(["preventDefault", "close", "destroy"]);
+  });
+
+  it("destroys the window even when close never settles", async () => {
+    const bench = closeBench({});
+    const handle = {
+      ...fakeHandle(bench.order),
+      close: () => new Promise<void>(() => {}),
+    } as CallWindowHandle;
+    bench.land(handle);
+    await handleCloseRequested({
+      ...bench.deps,
+      handle: () => handle,
+      teardownMs: 10,
+    });
+    expect(bench.order).toEqual([
+      "preventDefault",
+      "leave:window-close",
+      "destroy",
+    ]);
+  });
+
   it("closing before ready waits for the bootstrap and then leaves normally", async () => {
     const order: string[] = [];
     let land: (handle: CallWindowHandle) => void = () => {};

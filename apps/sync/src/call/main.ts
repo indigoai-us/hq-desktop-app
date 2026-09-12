@@ -36,7 +36,15 @@ let handle: CallWindowHandle | null = null;
 /** Track ids rendered for each peer, so a removal drops exactly that peer. */
 const peerTracks = new Map<string, Set<string>>();
 
-mount(CallShell, { target });
+/**
+ * Leaving closes the window through the SAME door as the OS close button:
+ * `close()` raises `onCloseRequested`, so teardown (leave, release, destroy)
+ * has exactly one implementation and cannot drift between the two paths.
+ */
+mount(CallShell, {
+  target,
+  props: { onclose: () => void getCurrentWindow().close() },
+});
 
 const started = startCallWindow({
   invoke: (command, args) => invoke(command, args),

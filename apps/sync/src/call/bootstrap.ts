@@ -1467,6 +1467,17 @@ export function moderationOutcome(
 /** How long a close waits for an in-flight bootstrap to hand back a handle. */
 export const CLOSE_BOOTSTRAP_WAIT_MS = 1_000;
 
+/**
+ * How long a close waits for `leave` / `close` on the handle.
+ *
+ * The close is already `preventDefault`ed by the time these run, so an await
+ * that never settles does not merely delay the teardown — it strands the
+ * window open with no way to shut it. A session that already left (the Leave
+ * button, a moderator ending the room) is exactly that case. Every teardown
+ * step is therefore bounded, and `destroy` runs regardless.
+ */
+export const CLOSE_TEARDOWN_WAIT_MS = 2_000;
+
 export interface CloseRequestedDeps {
   /** The live handle, or null while `startCallWindow` is still in flight. */
   handle: () => CallWindowHandle | null;
@@ -1479,6 +1490,8 @@ export interface CloseRequestedDeps {
   preventDefault: () => void;
   destroy: () => Promise<void>;
   waitMs?: number;
+  /** Bound on each teardown step. Defaults to `CLOSE_TEARDOWN_WAIT_MS`. */
+  teardownMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
 }
@@ -1517,11 +1530,33 @@ export async function handleCloseRequested(
   }
 
   const handle = deps.handle();
-  try {
-    await handle?.leave("window-close");
-  } catch {
-    // The window is going away regardless; a failed leave must never wedge it.
-  }
+  const setTimer =
+    deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const clearTimer =
+    deps.clearTimer ?? ((handle: unknown) => clearTimeout(handle as never));
+  const teardownMs = deps.teardownMs ?? CLOSE_TEARDOWN_WAIT_MS;
+
+  /**
+   * Run one teardown step with a hard ceiling. A rejection is swallowed (the
+   * window is going away regardless) and so is a promise that never settles —
+   * the latter is what used to strand the window open forever.
+   */
+  const bounded = async (step: () => Promise<unknown> | undefined) => {
+    let timer: unknown;
+    const ceiling = new Promise<void>((resolve) => {
+      timer = setTimer(() => resolve(), teardownMs);
+    });
+    try {
+      await Promise.race([
+        Promise.resolve(step()).catch(() => undefined),
+        ceiling,
+      ]);
+    } finally {
+      clearTimer(timer);
+    }
+  };
+
+  await bounded(() => handle?.leave("window-close"));
 
   // Belt and braces: if the bootstrap never landed, `leave` never ran, so the
   // registry entry Rust armed for this session is still there. Release it by id
@@ -1537,11 +1572,7 @@ export async function handleCloseRequested(
       .catch(() => {});
   }
 
-  try {
-    await handle?.close();
-  } catch {
-    // Same: listener teardown must not block the destroy.
-  }
+  await bounded(() => handle?.close());
   await deps.destroy();
 }
 
