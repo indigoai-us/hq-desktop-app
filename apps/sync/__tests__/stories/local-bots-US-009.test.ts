@@ -95,7 +95,14 @@ describe('US-009: bot presence in the DM list and thread', () => {
     const sync = source('..', '..', 'packages', 'platform', 'src', 'tauri', 'sync-adapter.ts');
     expect(source('src/desktop-alt/HqWorkWorkShell.svelte')).toContain('createSyncPlatformAdapter');
     expect(sync).toContain("list: () => call('local_bots_list')");
-    expect(sync).toContain("create: (input) => call('local_bots_create', { name: input.name, runtime: input.runtime })");
+    expect(sync).toContain("call('local_bots_create'");
+    // Every create setting has to be forwarded: pinning the old two-field
+    // one-liner here is what let `intro` and `memory` go missing unnoticed
+    // (live 2026-09-12). The behavioural cover is
+    // packages/platform/src/tauri/sync-adapter-bots.test.ts.
+    for (const field of ['name', 'runtime', 'model', 'autoApprove', 'worker', 'intro', 'memory']) {
+      expect(sync).toContain(`${field}: input.${field}`);
+    }
     expect(sync).toContain("remove: (name) => call('local_bots_remove', { name })");
   });
 

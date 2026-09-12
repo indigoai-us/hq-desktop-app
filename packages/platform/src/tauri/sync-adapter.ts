@@ -1074,15 +1074,20 @@ export function createSyncPlatformAdapter(
     // behind the host's launch boundary (src-tauri/src/commands/bots.rs).
     bots: {
       list: () => call('local_bots_list'),
+      // Every field of LocalBotCreateInput has to reach the Rust command:
+      // dropping one here silently loses it (live 2026-09-12, `intro` never
+      // arrived, so the new bot greeted the owner with the generic hello).
       create: (input) =>
-      call('local_bots_create', {
-        name: input.name,
-        runtime: input.runtime,
-        model: input.model ?? null,
-        autoApprove: input.autoApprove ?? null,
-        worker: input.worker ?? null,
-      }),
-    workers: () => call('local_bots_workers'),
+        call('local_bots_create', {
+          name: input.name,
+          runtime: input.runtime,
+          model: input.model ?? null,
+          autoApprove: input.autoApprove ?? null,
+          worker: input.worker ?? null,
+          intro: input.intro ?? null,
+          memory: input.memory ?? null,
+        }),
+      workers: () => call('local_bots_workers'),
       start: (name) => call('local_bots_start', { name }),
       stop: (name) => call('local_bots_stop', { name }),
       remove: (name) => call('local_bots_remove', { name }),
