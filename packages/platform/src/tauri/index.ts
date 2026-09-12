@@ -23,6 +23,7 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
+import { localBotSettingsArgs } from "./local-bot-settings.js";
 import {
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -676,6 +677,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     start: (name) => this.call("local_bots_start", { name }),
     stop: (name) => this.call("local_bots_stop", { name }),
     remove: (name) => this.call("local_bots_remove", { name }),
+    configure: (name, settings) => this.call("local_bots_configure", localBotSettingsArgs(name, settings)),
   };
 
   readonly settings: PlatformAdapter["settings"] = {

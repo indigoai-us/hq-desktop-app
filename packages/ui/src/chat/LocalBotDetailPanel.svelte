@@ -19,6 +19,13 @@
     localBotPresence,
     localBotRuntimeLabel,
   } from "./local-bots.js";
+  import {
+    DEFAULT_LOCAL_BOT_EFFORT,
+    LOCAL_BOT_SETTINGS,
+    effortLabel,
+    modelChoicesFor,
+    thinksWithLine,
+  } from "./local-bot-settings.js";
   import "./tokens.css";
   import "./chat-tokens.css";
 
@@ -38,6 +45,47 @@
   let confirmRemove = $state(false);
   let copied = $state(false);
   let panelEl = $state<HTMLElement | null>(null);
+
+  // What the bot thinks with. Drafts follow the bot until the person edits
+  // them; Save applies from the bot's next message (no restart).
+  const savedModel = $derived(bot.model?.trim() ?? "");
+  const savedEffort = $derived(bot.effort?.trim() || DEFAULT_LOCAL_BOT_EFFORT);
+  let draftModel = $state<string | null>(null);
+  let draftEffort = $state<string | null>(null);
+  let savingSettings = $state(false);
+  let settingsNote = $state<string | null>(null);
+  const modelValue = $derived(draftModel ?? savedModel);
+  const effortValue = $derived(draftEffort ?? savedEffort);
+  const settingsDirty = $derived(modelValue !== savedModel || effortValue !== savedEffort);
+  const modelChoices = $derived(modelChoicesFor(bot));
+  const effortChoices = $derived(LOCAL_BOT_SETTINGS[bot.runtime].efforts);
+
+  async function saveSettings(): Promise<void> {
+    const api = adapter.bots;
+    if (!api?.configure || savingSettings || !settingsDirty) return;
+    savingSettings = true;
+    settingsNote = null;
+    actionError = null;
+    try {
+      const result = await api.configure(bot.name, {
+        ...(modelValue !== savedModel ? { model: modelValue || null } : {}),
+        // Picking the default level resets it, so a later change of default applies.
+        ...(effortValue !== savedEffort ? { effort: effortValue === DEFAULT_LOCAL_BOT_EFFORT ? null : effortValue } : {}),
+      });
+      if (!result.ok) {
+        actionError = result.message || `Could not change what ${bot.name} thinks with.`;
+        return;
+      }
+      await onchanged?.();
+      draftModel = null;
+      draftEffort = null;
+      settingsNote = "Saved. Applies from its next message.";
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : `Could not change what ${bot.name} thinks with.`;
+    } finally {
+      savingSettings = false;
+    }
+  }
 
   const presence = $derived(
     localBotPresence([bot], { kind: "dm", personUid: bot.agentUid }) ?? "offline",
@@ -139,12 +187,10 @@
         <dt>Runs with</dt>
         <dd data-testid="local-bot-detail-runtime">{localBotRuntimeLabel(bot.runtime)}</dd>
       </div>
-      {#if bot.model}
-        <div>
-          <dt>Model</dt>
-          <dd data-testid="local-bot-detail-model">{bot.model}</dd>
-        </div>
-      {/if}
+      <div>
+        <dt>Thinks with</dt>
+        <dd data-testid="local-bot-detail-model">{thinksWithLine({ runtime: bot.runtime, model: bot.model, effort: savedEffort })}</dd>
+      </div>
       {#if startedFrom}
         <div>
           <dt>Started from</dt>
@@ -177,6 +223,58 @@
         </dd>
       </div>
     </dl>
+
+    {#if adapter.bots?.configure}
+      <section class="ad-section" data-testid="local-bot-detail-settings">
+        <h3 class="ad-kicker">Model and thinking</h3>
+        <label class="ad-field">
+          <span>Model</span>
+          <select
+            data-testid="local-bot-detail-model-select"
+            value={modelValue}
+            disabled={savingSettings}
+            onchange={(event) => {
+              draftModel = (event.currentTarget as HTMLSelectElement).value;
+              settingsNote = null;
+            }}
+          >
+            {#each modelChoices as choice (choice.value)}
+              <option value={choice.value}>{choice.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="ad-field">
+          <span>Thinking</span>
+          <select
+            data-testid="local-bot-detail-effort-select"
+            value={effortValue}
+            disabled={savingSettings}
+            onchange={(event) => {
+              draftEffort = (event.currentTarget as HTMLSelectElement).value;
+              settingsNote = null;
+            }}
+          >
+            {#each effortChoices as level (level)}
+              <option value={level}>{effortLabel(level)}</option>
+            {/each}
+          </select>
+        </label>
+        <div class="ad-danger-row">
+          <button
+            type="button"
+            class="ad-btn"
+            data-testid="local-bot-detail-settings-save"
+            disabled={!settingsDirty || savingSettings}
+            onclick={() => void saveSettings()}
+          >
+            {savingSettings ? "Saving…" : "Save"}
+          </button>
+          {#if settingsNote}
+            <span class="ad-muted" role="status" data-testid="local-bot-detail-settings-note">{settingsNote}</span>
+          {/if}
+        </div>
+      </section>
+    {/if}
 
     <section class="ad-section" data-testid="local-bot-detail-actions">
       <h3 class="ad-kicker">Manage</h3>
@@ -435,6 +533,32 @@
   .ad-text-btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .ad-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--t2);
+    font-size: 12px;
+  }
+
+  .ad-field select {
+    min-width: 0;
+    max-width: 60%;
+    padding: 4px 6px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: 12px;
+  }
+
+  .ad-field select:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 2px;
   }
 
   .ad-danger-row {

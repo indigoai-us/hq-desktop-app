@@ -1026,7 +1026,12 @@ export interface LocalBotRow {
   agentUid: string;
   ownerUid: string;
   runtime: "claude" | "codex" | "grok";
+  /** Model override; absent = the runtime CLI's own default for the owner's account. */
   model?: string;
+  /** Thinking level the bot runs with (`hq bot list` reports the effective value). */
+  effort?: string;
+  /** True when no thinking level was picked, so `effort` is the default. */
+  effortIsDefault?: boolean;
   /** Local process state: running | stopped | failed. */
   state: string;
   pid: number | null;
@@ -1095,6 +1100,18 @@ export interface LocalBotsApi {
   start(name: string): AdapterPromise<Json>;
   stop(name: string): AdapterPromise<Json>;
   remove(name: string): AdapterPromise<Json>;
+  /**
+   * Change what a bot thinks with (`hq bot set`), from its next message.
+   * A field left out is unchanged; `null` resets it to the default.
+   * Optional for older hosts.
+   */
+  configure?(name: string, settings: LocalBotSettingsInput): AdapterPromise<Json>;
+}
+
+/** Input to `LocalBotsApi.configure`. */
+export interface LocalBotSettingsInput {
+  model?: string | null;
+  effort?: string | null;
 }
 
 /** Local per-platform settings. */

@@ -293,9 +293,64 @@ pub async fn local_bots_remove(name: String) -> Result<Value, String> {
     run_hq_bot(&["rm", &name, "--yes"], Duration::from_secs(120)).await
 }
 
+/// `hq bot set` argv for a settings change. `None` leaves a setting alone;
+/// an empty string or "default" resets it. Values are passed as argv (never a
+/// shell) and the CLI validates them per runtime; this only bounds the shape.
+fn configure_args(name: &str, model: Option<&str>, effort: Option<&str>) -> Result<Vec<String>, String> {
+    let mut args = vec!["set".to_string(), name.to_string()];
+    let clean = |label: &str, value: &str| -> Result<String, String> {
+        let v = value.trim();
+        if v.is_empty() {
+            return Ok("default".to_string());
+        }
+        let ok = v.len() <= 100
+            && v.chars().next().map(|c| c.is_ascii_alphanumeric()).unwrap_or(false)
+            && v.chars().all(|c| c.is_ascii_alphanumeric() || "._-:/[]".contains(c));
+        if ok {
+            Ok(v.to_string())
+        } else {
+            Err(format!("{label} \"{}\" is not valid.", v.chars().take(40).collect::<String>()))
+        }
+    };
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(clean("Model", model)?);
+    }
+    if let Some(effort) = effort {
+        args.push("--effort".to_string());
+        args.push(clean("Thinking level", effort)?);
+    }
+    if args.len() == 2 {
+        return Err("Nothing to change.".to_string());
+    }
+    Ok(args)
+}
+
+/// Change the model and thinking level a bot uses (from its next message).
+#[tauri::command]
+pub async fn local_bots_configure(name: String, model: Option<String>, effort: Option<String>) -> Result<Value, String> {
+    let name = validate_name(&name)?;
+    let args = configure_args(&name, model.as_deref(), effort.as_deref())?;
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_hq_bot(&argv, Duration::from_secs(30)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configure_args_set_reset_and_reject() {
+        assert_eq!(
+            configure_args("scout", Some("opus[1m]"), Some("high")).unwrap(),
+            vec!["set", "scout", "--model", "opus[1m]", "--effort", "high"]
+        );
+        assert_eq!(configure_args("scout", Some(""), None).unwrap(), vec!["set", "scout", "--model", "default"]);
+        assert_eq!(configure_args("scout", None, Some("default")).unwrap(), vec!["set", "scout", "--effort", "default"]);
+        assert!(configure_args("scout", Some("gpt 5; rm -rf /"), None).is_err());
+        assert!(configure_args("scout", Some("-rf"), None).is_err());
+        assert!(configure_args("scout", None, None).is_err());
+    }
 
     #[test]
     fn names_are_slugs() {

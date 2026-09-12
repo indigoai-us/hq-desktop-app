@@ -153,3 +153,30 @@ describe('tauri adapter local bots create', () => {
     expect(Object.keys(tauri.calls[0]!.args!).sort()).toEqual(Object.keys(sync.calls[0]!.args!).sort());
   });
 });
+
+describe('local bots configure (model and thinking level)', () => {
+  function tauriWithRecorder() {
+    const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { ok: true };
+      },
+    });
+    return { adapter, calls };
+  }
+
+  it('both adapters call local_bots_configure: a set value passes, null resets to the default, omitted stays unchanged', async () => {
+    for (const make of [adapterWithRecorder, tauriWithRecorder]) {
+      const { adapter, calls } = make();
+      await adapter.bots!.configure!('iris', { model: ' sonnet ', effort: 'high' });
+      await adapter.bots!.configure!('iris', { model: null });
+      await adapter.bots!.configure!('iris', { effort: null });
+      expect(calls).toEqual([
+        { cmd: 'local_bots_configure', args: { name: 'iris', model: 'sonnet', effort: 'high' } },
+        { cmd: 'local_bots_configure', args: { name: 'iris', model: '', effort: null } },
+        { cmd: 'local_bots_configure', args: { name: 'iris', model: null, effort: '' } },
+      ]);
+    }
+  });
+});

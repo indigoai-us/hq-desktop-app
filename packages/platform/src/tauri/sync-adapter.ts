@@ -32,6 +32,7 @@ import {
   createHqProFlagFetch,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
+import { localBotSettingsArgs } from './local-bot-settings.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -1092,6 +1093,7 @@ export function createSyncPlatformAdapter(
       start: (name) => call('local_bots_start', { name }),
       stop: (name) => call('local_bots_stop', { name }),
       remove: (name) => call('local_bots_remove', { name }),
+      configure: (name, settings) => call('local_bots_configure', localBotSettingsArgs(name, settings)),
     },
 
     settings: {

@@ -87,7 +87,7 @@ describe("LocalBotDetailPanel", () => {
     expect(presence?.textContent).toContain("checked in 12s ago");
     expect(q('[data-testid="local-bot-detail-notice"]')).toBeNull();
     expect(q('[data-testid="local-bot-detail-runtime"]')?.textContent).toBe("Claude Code");
-    expect(q('[data-testid="local-bot-detail-model"]')?.textContent).toBe("opus");
+    expect(q('[data-testid="local-bot-detail-model"]')?.textContent).toBe("Opus · thinking Medium");
     expect(q('[data-testid="local-bot-detail-worker"]')?.textContent).toBe("iris-cx · indigo");
     expect(q('[data-testid="local-bot-detail-memory"]')?.textContent).toBe(
       "personal/workers/assistant/memory",
@@ -179,5 +179,83 @@ describe("LocalBotDetailPanel", () => {
     expect(q('[data-testid="local-bot-detail-stop"]')).toBeNull();
     expect(q('[data-testid="local-bot-detail-remove"]')).toBeNull();
     expect(q('[data-testid="local-bot-detail-actions"]')?.textContent).toContain("HQ desktop app");
+  });
+});
+
+describe("LocalBotDetailPanel — model and thinking", () => {
+  it("shows what the bot thinks with, defaulting to the tool's model at medium", async () => {
+    mountPanel({ bot: bot({ model: undefined, effort: "medium", effortIsDefault: true }), bots: botsApi({ configure: vi.fn(async () => ok({})) }) });
+    await tick();
+    expect(host.querySelector('[data-testid="local-bot-detail-model"]')?.textContent).toBe("Claude Code's default · thinking Medium");
+    const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
+    const effort = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-effort-select"]')!;
+    expect(model.value).toBe("");
+    expect(Array.from(model.options).map((o) => o.textContent)).toEqual(["Claude Code's default", "Opus", "Sonnet", "Haiku"]);
+    expect(effort.value).toBe("medium");
+    expect(Array.from(effort.options).map((o) => o.value)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(Array.from(effort.options).find((o) => o.value === "medium")?.textContent).toBe("Medium (default)");
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="local-bot-detail-settings-save"]')!.disabled).toBe(true);
+  });
+
+  it("offers each runtime's own thinking levels and keeps a custom model it already uses", async () => {
+    mountPanel({ bot: bot({ runtime: "grok", model: "grok-beta-x", effort: "high" }), bots: botsApi({ configure: vi.fn(async () => ok({})) }) });
+    await tick();
+    const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
+    expect(model.value).toBe("grok-beta-x");
+    expect(Array.from(host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-effort-select"]')!.options).map((o) => o.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+  });
+
+  it("Save sends only what changed; picking the default level or model resets it; then refreshes", async () => {
+    const configure = vi.fn(async () => ok({}));
+    const onchanged = vi.fn();
+    mountPanel({ bot: bot({ model: "opus", effort: "high" }), bots: botsApi({ configure }), onchanged });
+    await tick();
+    const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
+    const effort = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-effort-select"]')!;
+    const save = host.querySelector<HTMLButtonElement>('[data-testid="local-bot-detail-settings-save"]')!;
+
+    effort.value = "max";
+    effort.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+    expect(save.disabled).toBe(false);
+    save.click();
+    await vi.waitFor(() => expect(configure).toHaveBeenCalledTimes(1));
+    expect(configure).toHaveBeenLastCalledWith("assistant", { effort: "max" });
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="local-bot-detail-settings-note"]')?.textContent).toContain("next message"));
+    expect(onchanged).toHaveBeenCalled();
+
+    model.value = "";
+    model.dispatchEvent(new Event("change", { bubbles: true }));
+    effort.value = "medium";
+    effort.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+    save.click();
+    await vi.waitFor(() => expect(configure).toHaveBeenCalledTimes(2));
+    expect(configure).toHaveBeenLastCalledWith("assistant", { model: null, effort: null });
+  });
+
+  it("a failed save says why and keeps the choice", async () => {
+    const configure = vi.fn(async () => failure("unavailable", "--effort for claude must be one of low, medium"));
+    mountPanel({ bot: bot({ effort: "medium" }), bots: botsApi({ configure }) });
+    await tick();
+    const effort = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-effort-select"]')!;
+    effort.value = "high";
+    effort.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+    host.querySelector<HTMLButtonElement>('[data-testid="local-bot-detail-settings-save"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="local-bot-detail-error"]')?.textContent).toContain("must be one of"));
+    expect(effort.value).toBe("high");
+  });
+
+  it("hosts without configure show the line but no controls", async () => {
+    mountPanel({ bot: bot({ effort: "high" }), bots: botsApi() });
+    await tick();
+    expect(host.querySelector('[data-testid="local-bot-detail-model"]')?.textContent).toBe("Opus · thinking High");
+    expect(host.querySelector('[data-testid="local-bot-detail-settings"]')).toBeNull();
   });
 });
