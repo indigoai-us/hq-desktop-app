@@ -755,10 +755,6 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
             return;
         }
     };
-    // Now the slow half of provenance: window-title enumeration and the
-    // accessibility URL round-trip, keyed by the pid saved before the overlay
-    // appeared. Off the chord path and after the overlay is gone.
-    let provenance_info = screenshot::resolve_frontmost(&snapshot);
     let Some(img) = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba) else {
         log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=pixel_buffer_mismatch"));
         return;
@@ -770,10 +766,17 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
             return;
         }
     };
+    // Only the *cheap* half of provenance goes on the critical path. The
+    // expensive half (`screenshot::resolve_frontmost`: a CGWindowList
+    // enumeration plus accessibility round-trips into the captured app) blocks
+    // until that app answers, bounded only by the AX messaging timeout — which
+    // is larger than the whole release->png_written budget, and is exactly the
+    // tail that showed up as a p50=37ms / p95=261ms split in US-004's bench.
+    // It now runs in [`spawn_provenance`], after the PNG is on disk.
     let provenance = Provenance {
-        app: provenance_info.app,
-        window_title: provenance_info.window_title,
-        url: provenance_info.url,
+        app: snapshot.app.clone(),
+        window_title: String::new(),
+        url: None,
         captured_at: chrono::Utc::now(),
         display_id: screenshot::display_id_for_point(region.x, region.y),
     };
@@ -796,7 +799,13 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
                 }
                 Err(e) => log(LOG_TAG, &format!("capture record serialize FAILED: {e}")),
             }
-            spawn_enrichment(app.clone(), hq_root, record.company_slug.clone(), record.id.clone());
+            spawn_provenance(
+                app.clone(),
+                hq_root,
+                record.company_slug.clone(),
+                record.id.clone(),
+                snapshot,
+            );
         }
         Err(e) => log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=store detail={e}")),
     }
@@ -937,6 +946,60 @@ fn build_model_extractor() -> Result<HttpModelExtractor, String> {
         model_extract_url(&base),
         token,
     ))
+}
+
+/// Resolve the slow half of provenance (window title + document URL) *after*
+/// the PNG is on disk, patch it into the stored record, then hand off to the
+/// enrichment chain.
+///
+/// This is deliberately off the release->png_written critical path:
+/// `resolve_frontmost` talks to the captured application over the
+/// accessibility API and blocks until it answers or the AX messaging timeout
+/// fires, which alone exceeds the 120ms capture budget.
+///
+/// Runs the enrichment chain itself (rather than racing it) so the two never
+/// write `record.json` concurrently.
+fn spawn_provenance(
+    app: AppHandle,
+    hq_root: std::path::PathBuf,
+    company_slug: String,
+    id: String,
+    snapshot: screenshot::FrontmostSnapshot,
+) {
+    std::thread::spawn(move || {
+        let info = screenshot::resolve_frontmost(&snapshot);
+        if !info.window_title.is_empty() || info.url.is_some() {
+            match load_record(&hq_root, &company_slug, &id) {
+                Ok(mut record) => {
+                    record.provenance.window_title = info.window_title;
+                    record.provenance.url = info.url;
+                    if !info.app.is_empty() {
+                        record.provenance.app = info.app;
+                    }
+                    match save_record(&hq_root, &mut record) {
+                        Ok(()) => match serde_json::to_value(&record) {
+                            Ok(json) => {
+                                let _ = app.emit(EVENT_CAPTURE_UPDATED, json);
+                            }
+                            Err(e) => log(
+                                LOG_TAG,
+                                &format!("capture provenance serialize FAILED: {e}"),
+                            ),
+                        },
+                        Err(e) => log(
+                            LOG_TAG,
+                            &format!("provenance stage failed for record {id}: {e}"),
+                        ),
+                    }
+                }
+                Err(e) => log(
+                    LOG_TAG,
+                    &format!("provenance stage could not load record {id}: {e}"),
+                ),
+            }
+        }
+        spawn_enrichment(app, hq_root, company_slug, id);
+    });
 }
 
 /// Run the post-capture enrichment chain off the capture thread: OCR, then
@@ -1747,6 +1810,67 @@ mod hq_idea_board_capture_tests {
         assert!(src.contains(&format!("release: '{MARK_RELEASE}'")), "release mark drifted");
         assert!(src.contains(&format!("png: '{MARK_PNG_WRITTEN}'")), "png mark drifted");
         assert_eq!(LOG_TAG, "idea", "bench documents [idea]-tagged lines");
+    }
+
+    /// US-004 tail-latency regression guard.
+    ///
+    /// `screenshot::resolve_frontmost` blocks on accessibility round-trips into
+    /// the captured application (bounded only by the AX messaging timeout,
+    /// which is larger than the whole 120ms release->png_written budget). It
+    /// therefore must not run between the release mark and the PNG-written
+    /// mark: `capture_and_store` may only reach it *after* it has logged
+    /// `MARK_PNG_WRITTEN`, and it belongs to the deferred `spawn_provenance`
+    /// stage. A GUI-free source check, because the only other way to catch the
+    /// regression is a live driven capture against a slow frontmost app.
+    #[test]
+    fn hq_idea_board_provenance_resolution_is_off_the_release_to_png_path() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+
+        let body = fn_body(&src, "fn capture_and_store(");
+        let png_mark = body
+            .find("MARK_PNG_WRITTEN")
+            .expect("capture_and_store logs the png_written mark");
+        match body.find("resolve_frontmost") {
+            None => {}
+            Some(at) => assert!(
+                at > png_mark,
+                "resolve_frontmost is back on the release->png critical path in capture_and_store"
+            ),
+        }
+
+        let deferred = fn_body(&src, "fn spawn_provenance(");
+        assert!(
+            deferred.contains("resolve_frontmost"),
+            "the deferred provenance stage must be the one that resolves frontmost"
+        );
+        assert!(
+            deferred.contains("std::thread::spawn"),
+            "the deferred provenance stage must not run inline on the capture thread"
+        );
+        // The heavy enrichment chain likewise stays behind the PNG mark.
+        let enrich = body
+            .find("spawn_provenance(")
+            .expect("capture_and_store hands off to the deferred stage");
+        assert!(enrich > png_mark, "enrichment handoff moved ahead of png_written");
+    }
+
+    /// Code text of `name`'s body, from its signature to the first column-0
+    /// `}` that closes it, with comment lines stripped — the test reasons
+    /// about what executes, not about what the comments mention.
+    fn fn_body(src: &str, name: &str) -> String {
+        let start = src.find(name).unwrap_or_else(|| panic!("{name} exists"));
+        let end = src[start..]
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{name} is terminated"));
+        src[start..start + end]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]

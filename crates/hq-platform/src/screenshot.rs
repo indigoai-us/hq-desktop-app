@@ -38,6 +38,13 @@ use std::fmt;
 #[cfg(target_os = "macos")]
 const AX_TIMEOUT_SECONDS: f32 = 0.25;
 
+/// US-004's release->png_written budget, in milliseconds. Mirrored here purely
+/// so [`AX_TIMEOUT_SECONDS`] can be checked against it: a provenance lookup
+/// that can block for longer than the whole capture budget must never sit on
+/// the capture critical path (see `capture::spawn_provenance`).
+#[cfg(target_os = "macos")]
+pub const RELEASE_TO_PNG_BUDGET_MS: f32 = 120.0;
+
 /// A captured region, tightly packed RGBA8 (`rgba.len() == width*height*4`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct RegionCapture {
@@ -858,6 +865,22 @@ mod hq_idea_board_screenshot_tests {
         assert!(unpack_rows(&[0u8; 16], 0, 2, 8, PixelOrder::Bgra).is_none());
         // Stride smaller than a row is nonsense and must not be read.
         assert!(unpack_rows(&[0u8; 32], 4, 2, 8, PixelOrder::Bgra).is_none());
+    }
+
+    /// US-004: the accessibility round-trip alone can outlast the entire
+    /// release->png_written budget, which is why provenance resolution is
+    /// deferred past the PNG write rather than tuned down. If someone ever
+    /// makes the AX timeout small enough to sit on the critical path, this
+    /// test's rationale (and the deferral) should be revisited deliberately.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hq_idea_board_ax_timeout_exceeds_the_capture_budget() {
+        assert!(
+            AX_TIMEOUT_SECONDS * 1000.0 > RELEASE_TO_PNG_BUDGET_MS,
+            "AX timeout {}ms no longer exceeds the {}ms capture budget",
+            AX_TIMEOUT_SECONDS * 1000.0,
+            RELEASE_TO_PNG_BUDGET_MS
+        );
     }
 
     #[test]
