@@ -174,9 +174,33 @@ pub struct CaptureRecord {
 }
 
 impl CaptureRecord {
-    /// The HQ-root-relative path of this record's image.
+    /// The HQ-root-relative path of this record's image in the **synced**
+    /// vault layout. Equivalent to
+    /// `relative_image_path_for(company_slug, id, false)` minus the validation.
     pub fn relative_image_path(company_slug: &str, id: &str) -> String {
         format!("companies/{company_slug}/ideas/{id}/image.png")
+    }
+
+    /// The HQ-root-relative image path for the layout `local_only` selects.
+    ///
+    /// Derived from [`crate::ideas::settings::ideas_root_relative`] rather than
+    /// re-spelling the layout, so a record's stored `image_path` always names
+    /// the directory [`crate::ideas::storage::create_record`] actually wrote
+    /// to. That matters for the local-only posture specifically: an
+    /// `image_path` that still said `companies/…` while the bytes sat under
+    /// `workspace/ideas-local/…` would make the board's "local only" badge — a
+    /// privacy claim — key off a lie.
+    ///
+    /// Fallible for the same reason: `company_slug` is screened before it is
+    /// joined.
+    pub fn relative_image_path_for(
+        company_slug: &str,
+        id: &str,
+        local_only: bool,
+    ) -> Result<String, IdeasError> {
+        validate_path_component("id", id)?;
+        let root = crate::ideas::settings::ideas_root_relative(company_slug, !local_only)?;
+        Ok(format!("{root}/{id}/image.png"))
     }
 
     /// Validate the invariants that are not encoded in the type system.

@@ -191,18 +191,16 @@ describe('sync', () => {
     expect(note).not.toBeNull();
     expect(note?.textContent).toContain('/tmp/HQ/workspace/ideas-local/indigo');
     expect(note?.textContent).toContain('outside the company vault');
-    expect(testid(root, 'ideas-sync-chip')?.textContent?.trim()).toBe('Local only · pending');
+    expect(testid(root, 'ideas-sync-chip')?.textContent?.trim()).toBe('Local only');
   });
 
-  it('never claims captures already stay local — the deferral is stated inline', async () => {
-    // REGRESSION GUARD for the one blocking review finding. NO write path
-    // consults `ideasSyncEnabled`: `capture.rs` and `ideas/storage.rs` both
-    // resolve through `ideas_dir` (the vault), and `ideas_root(.., sync)` has
-    // only the read-only settings caller. So a present-tense "captures stay on
-    // this machine" here tells the user their captures are not leaving the
-    // machine while they are still written to the vault and uploaded on the
-    // next sync. If someone re-enables that tense before the write path lands,
-    // this test fails.
+  it('claims privacy for NEW captures only, never retroactively', async () => {
+    // REGRESSION GUARD, retargeted. `capture.rs` now builds its write target
+    // from `ideas_root(hq_root, company, sync_enabled)`, so with sync off a new
+    // capture really is written outside the vault sync scope — present tense is
+    // earned. What is still FALSE is any claim covering captures already taken:
+    // nothing moves them, so they remain in the vault and keep syncing. The row
+    // has to say that, or the user reads "local only" as retroactive.
     routeInvoke({
       syncEnabled: false,
       localOnly: true,
@@ -212,22 +210,24 @@ describe('sync', () => {
 
     const note = testid(root, 'ideas-local-only-note');
     expect(note).not.toBeNull();
-    const text = note?.textContent ?? '';
+    // Markup line wrapping is not meaning: collapse runs of whitespace so the
+    // assertions below are about the sentence, not the column width.
+    const text = (note?.textContent ?? '').replace(/\s+/g, ' ').trim();
 
-    // The deferral is stated, in the row, in plain words.
-    expect(text).toContain('Not in effect yet');
-    expect(text).toContain('still go to your company vault');
-    expect(text).toContain('still');
-    // And it is visually flagged, not buried mid-sentence.
-    expect(testid(root, 'ideas-local-only-pending')).not.toBeNull();
+    // What is true, stated in plain words and scoped to new captures.
+    expect(text).toContain('New captures are saved to');
+    expect(text).toContain('/tmp/HQ/workspace/ideas-local/indigo');
+    expect(text).toContain('not synced to your team');
+    // ...and the limit of the promise is stated in the same breath.
+    expect(text).toContain('still in the vault and still sync');
 
-    // None of the present-tense promises may come back.
-    for (const lie of [
+    // None of the unqualified promises may appear.
+    for (const overclaim of [
       'Captures stay on this machine',
-      'they do not sync to your team',
-      'so they do not sync',
+      'Your captures are not synced',
+      'nothing syncs to your team',
     ]) {
-      expect(text, `the sync-off note must not claim: ${lie}`).not.toContain(lie);
+      expect(text, `the sync-off note must not claim: ${overclaim}`).not.toContain(overclaim);
     }
   });
 });

@@ -251,53 +251,66 @@ pub fn resolve_capture_chord(raw: Option<&str>) -> ChordSpec {
         })
 }
 
-/// Where captures for `company` WOULD live under `sync_enabled`.
+/// The HQ-root-**relative** capture root for `company` under `sync_enabled`.
+///
+/// Synced → `companies/{company}/ideas`. Local-only →
+/// `workspace/ideas-local/{company}`, which `crate::ignore` excludes from
+/// vault sync.
+///
+/// This is the single place the two layouts are spelled out. Both
+/// [`ideas_root`] (absolute) and
+/// [`crate::ideas::record::CaptureRecord::relative_image_path_for`] (stored in
+/// the record) derive from it, so a record's `image_path` and the directory it
+/// was written to can never describe different roots.
+///
+/// Fallible because `company` becomes a path segment: this is a public entry
+/// point that joins, and this module's contract (see `storage.rs`) is that
+/// every such entry point screens its components *before* the join. Both
+/// branches validate — the local-only branch just as much as the synced one,
+/// since a traversing slug there escapes the HQ root AND makes
+/// [`is_local_only_root`] report `false`, silently dropping the badge that
+/// tells the user their captures are staying put.
+pub fn ideas_root_relative(company: &str, sync_enabled: bool) -> Result<String, IdeasError> {
+    // Whitespace-only is not a separator or a traversal, so the shared
+    // validator lets it through — but as a directory name it is invisible and
+    // unreachable, and nothing upstream should ever produce one. Reject it
+    // here rather than loosening the shared validator that storage relies on.
+    if company.trim().is_empty() {
+        return Err(IdeasError::Invalid("company must not be empty".to_string()));
+    }
+    validate_path_component("company", company)?;
+    Ok(if sync_enabled {
+        format!("companies/{company}/ideas")
+    } else {
+        format!("{LOCAL_ONLY_PARENT_DIR}/{LOCAL_ONLY_DIR}/{company}")
+    })
+}
+
+/// Where captures for `company` live under `sync_enabled`.
 ///
 /// Synced → `{hq_root}/companies/{company}/ideas`, byte-identical to
 /// [`crate::ideas::storage::ideas_dir`]. Local-only →
 /// `{hq_root}/workspace/ideas-local/{company}`, which `crate::ignore` excludes
 /// from vault sync.
 ///
-/// **This function does not yet decide where anything is written.** The
-/// capture write path still calls [`crate::ideas::storage::ideas_dir`]
-/// directly, so with sync off a capture is still written to the vault and
-/// still uploaded; the only caller today is the settings panel, which shows
-/// the user the root this *will* resolve to once the pipeline adopts it.
-/// Describe it in the conditional tense until that changes.
+/// This *does* decide where captures are written: the capture write path
+/// resolves the user's sync preference through
+/// [`crate::ideas::storage::create_record`], which builds its target from this
+/// function. With sync off a capture is written under the local-only root and
+/// is never uploaded.
 ///
-/// Fallible because this is a public entry point that joins `company` into a
-/// path, and this module's contract (see `storage.rs`) is that every such
-/// entry point screens its components *before* the join. Both branches
-/// validate — the local-only branch just as much as the synced one, since a
-/// traversing slug there escapes the HQ root AND makes
-/// [`is_local_only_root`] report `false`, silently dropping the badge that
-/// tells the user their captures are staying put.
+/// Fallible for the reason given on [`ideas_root_relative`], which it delegates
+/// its validation to.
 pub fn ideas_root(hq_root: &Path, company: &str, sync_enabled: bool) -> Result<PathBuf, IdeasError> {
-    // Whitespace-only is not a separator or a traversal, so the shared
-    // validator lets it through — but as a directory name it is invisible and
-    // unreachable, and nothing upstream should ever produce one. Reject it
-    // here rather than loosening the shared validator that storage relies on.
-    if company.trim().is_empty() {
-        return Err(IdeasError::Invalid(
-            "company must not be empty".to_string(),
-        ));
-    }
-    validate_path_component("company", company)?;
-    Ok(if sync_enabled {
-        crate::ideas::storage::ideas_dir(hq_root, company)
-    } else {
-        hq_root
-            .join(LOCAL_ONLY_PARENT_DIR)
-            .join(LOCAL_ONLY_DIR)
-            .join(company)
-    })
+    Ok(hq_root.join(ideas_root_relative(company, sync_enabled)?))
 }
 
 /// True when `path` sits under the local-only root — the board header badge
 /// and the "local only" note key off this rather than re-deriving the layout.
 ///
-/// Same caveat as [`ideas_root`]: no capture is written under that root yet,
-/// so this reports where a path *is*, not a promise that captures went there.
+/// Reports where a path *is*. With sync off the capture write path now writes
+/// under that root, so for a stored `image_path` this is also a true statement
+/// that the capture never entered the vault sync scope.
 pub fn is_local_only_root(path: &Path) -> bool {
     // Normalize first: a `..` segment or a symlinked HQ root would otherwise
     // let a path that does NOT resolve into the local-only tree still show the

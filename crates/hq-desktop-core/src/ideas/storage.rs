@@ -30,6 +30,7 @@ use super::record::{
     validate_path_component, CaptureKind, CaptureRecord, CaptureStatus, IdeasError, Provenance,
     MAX_IMAGE_EDGE,
 };
+use super::settings;
 
 /// Reject a string that must not escape or redirect a vault path when joined
 /// into one (empty, `.`, `..`, anything with a separator or NUL).
@@ -60,6 +61,67 @@ pub fn record_dir(hq_root: &Path, company_slug: &str, id: &str) -> PathBuf {
     ideas_dir(hq_root, company_slug).join(id)
 }
 
+/// `{ideas_root}/{id}` for the layout `local_only` selects — the synced vault
+/// directory, or the sync-excluded local-only one.
+///
+/// Validating (unlike [`record_dir`]) because it routes through
+/// [`settings::ideas_root`], which screens `company_slug` before joining it.
+pub fn record_dir_for(
+    hq_root: &Path,
+    company_slug: &str,
+    id: &str,
+    local_only: bool,
+) -> Result<PathBuf, IdeasError> {
+    validate_component(id)?;
+    Ok(settings::ideas_root(hq_root, company_slug, !local_only)?.join(id))
+}
+
+/// Where record `id` actually lives right now: the synced directory when that
+/// exists, otherwise the local-only one when that exists.
+///
+/// Every *revise* path (`load`, `save`, `delete`, `move`, `mark_cited`) routes
+/// through here so it follows a record to wherever it was written. Without it,
+/// `save_record` on a capture taken while sync was off would re-create it under
+/// `companies/…` — copying a capture the user asked to keep off the vault INTO
+/// the vault on the next note edit. That is the failure this function exists to
+/// prevent, and `hq_idea_board_saving_a_local_only_record_never_lands_in_the_vault`
+/// holds it.
+///
+/// Falls back to the synced directory when neither exists, so a genuine
+/// `NotFound` still names the conventional location.
+///
+/// [`existing_record_dir_or_vault`] is the infallible flavour for pure path
+/// builders like [`super::sidecar::sidecar_path`], which have no error channel;
+/// an unscreenable component there degrades to the vault spelling, which the
+/// fallible I/O entry points then reject anyway.
+pub(super) fn existing_record_dir_or_vault(hq_root: &Path, company_slug: &str, id: &str) -> PathBuf {
+    existing_record_dir(hq_root, company_slug, id)
+        .unwrap_or_else(|_| record_dir(hq_root, company_slug, id))
+}
+
+fn existing_record_dir(hq_root: &Path, company_slug: &str, id: &str) -> Result<PathBuf, IdeasError> {
+    let synced = record_dir_for(hq_root, company_slug, id, false)?;
+    let local = record_dir_for(hq_root, company_slug, id, true)?;
+    // Resolve on `record.json`, not on the directory: an empty or half-torn-down
+    // directory in the synced root would otherwise shadow a perfectly good
+    // record with the same id in the local-only root, in both passes of the
+    // board's two-root scan.
+    if synced.join("record.json").is_file() {
+        return Ok(synced);
+    }
+    if local.join("record.json").is_file() {
+        return Ok(local);
+    }
+    // No readable record either side. Name whichever directory exists, so
+    // `delete_record` can still clear a half-written one; synced wins the tie
+    // and is also the fallback when neither exists, keeping `NotFound` on the
+    // conventional location.
+    if local.is_dir() && !synced.is_dir() {
+        return Ok(local);
+    }
+    Ok(synced)
+}
+
 /// The image a caller hands to [`create_record`]. Either raw encoded bytes
 /// (PNG — whatever the screen capture produced) or an already-decoded image.
 pub enum CaptureImage {
@@ -82,6 +144,12 @@ pub struct NewCapture {
     pub extracted: Option<serde_json::Value>,
     pub tags: Vec<String>,
     pub note: Option<String>,
+    /// Longest stored edge, in pixels. `None` uses [`MAX_IMAGE_EDGE`]; a value
+    /// outside [`settings::IMAGE_MAX_EDGE_CHOICES`] is ignored the same way,
+    /// so a hand-edited 12000 on disk cannot become a vault-filling policy.
+    pub image_max_edge: Option<u32>,
+    /// Write outside the vault sync scope (the user's "Sync: off" posture).
+    pub local_only: bool,
 }
 
 impl NewCapture {
@@ -98,7 +166,23 @@ impl NewCapture {
             extracted: None,
             tags: Vec::new(),
             note: None,
+            image_max_edge: None,
+            local_only: false,
         }
+    }
+
+    /// Apply the user's Retention choice. Off-menu values fall back to the
+    /// default in [`settings::resolve_image_max_edge`].
+    pub fn with_image_max_edge(mut self, max_edge: Option<u32>) -> Self {
+        self.image_max_edge = max_edge;
+        self
+    }
+
+    /// Apply the user's Sync choice. `true` = keep this capture out of the
+    /// vault sync scope.
+    pub fn with_local_only(mut self, local_only: bool) -> Self {
+        self.local_only = local_only;
+        self
     }
 }
 
@@ -108,21 +192,34 @@ impl NewCapture {
 /// image per hotkey press, so quality wins; if the capture path ever needs to
 /// be faster (US-003/US-004 latency work), this is the knob to turn.
 pub fn downsample(image: DynamicImage) -> DynamicImage {
+    downsample_to(image, MAX_IMAGE_EDGE)
+}
+
+/// Downsample so the longest edge is at most `max_edge`. Never upscales.
+///
+/// Same filter and aspect-ratio contract as [`downsample`]; the bound is the
+/// user's Retention choice rather than the compiled-in default. `max_edge` of 0
+/// would ask `resize` for a degenerate box, so it is treated as "unset" and
+/// falls back to [`MAX_IMAGE_EDGE`].
+pub fn downsample_to(image: DynamicImage, max_edge: u32) -> DynamicImage {
+    let bound = if max_edge == 0 { MAX_IMAGE_EDGE } else { max_edge };
     let (w, h) = (image.width(), image.height());
-    if w.max(h) <= MAX_IMAGE_EDGE {
+    if w.max(h) <= bound {
         return image;
     }
     // `resize` preserves aspect ratio and fits inside the bounding box, so the
-    // longest edge lands exactly on MAX_IMAGE_EDGE.
-    image.resize(
-        MAX_IMAGE_EDGE,
-        MAX_IMAGE_EDGE,
-        image::imageops::FilterType::Lanczos3,
-    )
+    // longest edge lands exactly on `bound`.
+    image.resize(bound, bound, image::imageops::FilterType::Lanczos3)
 }
 
 /// Create a record: downsample + PNG-encode the image, then atomically write
 /// `image.png` and `record.json` under the company's ideas directory.
+///
+/// Both user preferences from US-012 are honored here and nowhere else on the
+/// write path: `new.image_max_edge` bounds the stored image, and
+/// `new.local_only` selects the sync-excluded root. The atomic-write /
+/// no-partial-record guarantee from US-002 is unchanged — the target directory
+/// moves, the teardown-on-failure does not.
 pub fn create_record(hq_root: &Path, new: NewCapture) -> Result<CaptureRecord, IdeasError> {
     validate_component(&new.company_slug)?;
     let decoded = match new.image {
@@ -130,7 +227,7 @@ pub fn create_record(hq_root: &Path, new: NewCapture) -> Result<CaptureRecord, I
         CaptureImage::Png(bytes) => image::load_from_memory_with_format(&bytes, ImageFormat::Png)
             .map_err(|e| IdeasError::Image(e.to_string()))?,
     };
-    let bounded = downsample(decoded);
+    let bounded = downsample_to(decoded, settings::resolve_image_max_edge(new.image_max_edge));
 
     let mut png = Vec::new();
     bounded
@@ -142,7 +239,7 @@ pub fn create_record(hq_root: &Path, new: NewCapture) -> Result<CaptureRecord, I
     let id = Ulid::new().to_string();
     let now: DateTime<Utc> = Utc::now();
     let record = CaptureRecord {
-        image_path: CaptureRecord::relative_image_path(&new.company_slug, &id),
+        image_path: CaptureRecord::relative_image_path_for(&new.company_slug, &id, new.local_only)?,
         id: id.clone(),
         company_slug: new.company_slug.clone(),
         kind: new.kind,
@@ -160,7 +257,10 @@ pub fn create_record(hq_root: &Path, new: NewCapture) -> Result<CaptureRecord, I
     };
     record.validate()?;
 
-    let dir = record_dir(hq_root, &new.company_slug, &id);
+    // `record_dir_for` re-screens the slug through `settings::ideas_root`, so a
+    // configured root is validated rather than blindly joined — the same
+    // hardening `relative_image_path_for` just applied to the stored path.
+    let dir = record_dir_for(hq_root, &new.company_slug, &id, new.local_only)?;
     fs::create_dir_all(&dir).map_err(|e| IdeasError::io(&dir, e))?;
     // If either write fails the record is half-formed, so tear the whole
     // directory down rather than leave an image with no record.json (which a
@@ -177,7 +277,7 @@ pub fn create_record(hq_root: &Path, new: NewCapture) -> Result<CaptureRecord, I
 pub fn load_record(hq_root: &Path, company_slug: &str, id: &str) -> Result<CaptureRecord, IdeasError> {
     validate_component(company_slug)?;
     validate_component(id)?;
-    let path = record_dir(hq_root, company_slug, id).join("record.json");
+    let path = existing_record_dir(hq_root, company_slug, id)?.join("record.json");
     let raw = match fs::read(&path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -197,7 +297,7 @@ pub fn save_record(hq_root: &Path, record: &mut CaptureRecord) -> Result<(), Ide
     // `validate` screens id + company_slug as path components too.
     record.validate()?;
     record.updated_at = Utc::now();
-    let dir = record_dir(hq_root, &record.company_slug, &record.id);
+    let dir = existing_record_dir(hq_root, &record.company_slug, &record.id)?;
     fs::create_dir_all(&dir).map_err(|e| IdeasError::io(&dir, e))?;
     write_record_json(&dir, record)
 }
@@ -215,6 +315,9 @@ pub fn save_record(hq_root: &Path, record: &mut CaptureRecord) -> Result<(), Ide
 /// **authoritative-by-path** — a reader that disagrees with the on-disk
 /// `company_slug` should trust the directory the record was found in, and
 /// re-running `move_record` for the same target repairs the JSON.
+///
+/// Sync posture is carried across, not re-decided: a local-only record lands
+/// under the destination company's local-only root.
 pub fn move_record(
     hq_root: &Path,
     id: &str,
@@ -224,31 +327,36 @@ pub fn move_record(
     validate_component(id)?;
     validate_component(from_company)?;
     validate_component(to_company)?;
-    let src = record_dir(hq_root, from_company, id);
+    let src = existing_record_dir(hq_root, from_company, id)?;
     if !src.is_dir() {
         return Err(IdeasError::NotFound {
             id: id.to_string(),
             company_slug: from_company.to_string(),
         });
     }
+    // Reassigning a capture between companies must not change whether it syncs.
+    // A local-only capture dragged to another company stays local-only; moving
+    // it into `companies/…` would publish, to a second company's vault, a
+    // capture the user asked to keep on this machine.
+    let local_only = settings::is_local_only_root(&src);
     // Must precede the `dest.exists()` check: for a same-company move src and
     // dest are the same directory, which would otherwise report
     // DestinationExists for what is really a no-op.
     if from_company == to_company {
         return load_record(hq_root, from_company, id);
     }
-    let dest = record_dir(hq_root, to_company, id);
+    let dest = record_dir_for(hq_root, to_company, id, local_only)?;
     if dest.exists() {
         return Err(IdeasError::DestinationExists(dest.display().to_string()));
     }
 
-    let dest_parent = ideas_dir(hq_root, to_company);
+    let dest_parent = settings::ideas_root(hq_root, to_company, !local_only)?;
     fs::create_dir_all(&dest_parent).map_err(|e| IdeasError::io(&dest_parent, e))?;
     fs::rename(&src, &dest).map_err(|e| IdeasError::io(&src, e))?;
 
     let mut record = load_record(hq_root, to_company, id)?;
     record.company_slug = to_company.to_string();
-    record.image_path = CaptureRecord::relative_image_path(to_company, id);
+    record.image_path = CaptureRecord::relative_image_path_for(to_company, id, local_only)?;
     record.updated_at = Utc::now();
     write_record_json(&dest, &record)?;
     Ok(record)
@@ -265,7 +373,7 @@ pub fn move_record(
 pub fn delete_record(hq_root: &Path, company_slug: &str, id: &str) -> Result<(), IdeasError> {
     validate_component(company_slug)?;
     validate_component(id)?;
-    let dir = record_dir(hq_root, company_slug, id);
+    let dir = existing_record_dir(hq_root, company_slug, id)?;
     if !dir.is_dir() {
         return Err(IdeasError::NotFound {
             id: id.to_string(),
@@ -281,8 +389,8 @@ pub fn delete_record(hq_root: &Path, company_slug: &str, id: &str) -> Result<(),
 /// as "never cited", which is worse than a stuck maximum.
 ///
 /// The write goes through [`save_record`], so `record.json` and `capture.md`
-/// both carry the new count and stay inside
-/// `companies/{company_slug}/ideas/{id}/`.
+/// both carry the new count and stay in whichever root the record was written
+/// to — the vault one, or the local-only one when the user had sync off.
 pub fn mark_cited(
     hq_root: &Path,
     company_slug: &str,

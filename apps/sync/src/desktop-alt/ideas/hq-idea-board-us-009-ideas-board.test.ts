@@ -84,6 +84,13 @@ beforeEach(() => {
     listeners.push(handler);
     return () => {};
   });
+  // The board also asks for its settings on mount (US-012 badge). Answer it
+  // with a real settings shape, not `[]`: a truthy non-settings payload is
+  // exactly the malformed input the badge has to refuse, and a mock that feeds
+  // one everywhere would hide that. Badge behaviour has its own suite.
+  invoke.mockImplementation(async (cmd: string) =>
+    cmd === 'ideas_get_settings' ? { syncEnabled: true, capturesRoot: '' } : [],
+  );
 });
 
 afterEach(async () => {

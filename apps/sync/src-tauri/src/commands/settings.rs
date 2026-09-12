@@ -259,6 +259,10 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
 pub async fn save_settings(prefs: MenubarPrefs) -> Result<(), String> {
     let path = paths::menubar_json_path()?;
     save_settings_at(&path, &prefs)?;
+    // US-012 wiring: Ideas capture preferences are cached for the latency-
+    // critical capture path, so a save has to publish them. This is the write
+    // side of that cache — the capture path only ever reads atomics.
+    crate::commands::capture::refresh_ideas_capture_prefs();
     // Client health (US-002): cloudPaused / realtimeSync / instantSync live in
     // these prefs — report the new pause state immediately.
     crate::commands::client_health::notify_client_health_state_changed();

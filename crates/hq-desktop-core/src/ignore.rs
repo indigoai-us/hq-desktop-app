@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 pub const LOCAL_ONLY_PARENT_DIR: &str = "workspace";
 
 /// Leaf of the Idea Board local-only capture root. Captures written with Sync
-/// OFF are to live at `{hq_root}/workspace/ideas-local/{company}/…` and MUST
-/// never reach the vault — that is the whole content of the "off" promise.
-/// (The capture write path does not resolve that root yet; see
-/// `crate::ideas::settings::ideas_root`. This exclusion is in place ahead of
-/// it, so the promise holds the moment the pipeline adopts it.) The literal
+/// OFF live at `{hq_root}/workspace/ideas-local/{company}/…` and MUST never
+/// reach the vault — that is the whole content of the "off" promise.
+/// (`crate::ideas::storage::create_record` resolves that root through
+/// `crate::ideas::settings::ideas_root`, so the exclusion below is what makes
+/// the promise real rather than decorative.) The literal
 /// pattern below is the enforcement; `crate::ideas::settings` builds the path
 /// from these same two constants (it re-exports the leaf as `LOCAL_ONLY_DIR`).
 /// Two tests pin it: `local_only_ideas_pattern_matches_the_shared_constants`
@@ -35,8 +35,8 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     ".claude/worktrees/",
     ".claude/worktrees",
     // Idea Board local-only captures (US-012). When a user turns capture Sync
-    // OFF, screenshots are to be written to `/workspace/ideas-local/` instead
-    // of the company vault (the write path has not adopted that root yet). Nothing else keeps them out of the bucket — the HQ root
+    // OFF, screenshots are written to `/workspace/ideas-local/` instead of the
+    // company vault. Nothing else keeps them out of the bucket — the HQ root
     // .gitignore is deliberately not consulted by sync (see `for_hq_root`), and
     // its `workspace/` entries are narrow and unrelated. Without these two
     // lines the "off" switch uploads anyway. Root-anchored (an ordinary

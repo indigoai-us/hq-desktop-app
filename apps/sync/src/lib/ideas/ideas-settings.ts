@@ -25,10 +25,12 @@ export interface IdeasSettingsState {
   modelDisclosure: string;
   localOnly: boolean;
   /**
-   * Where captures would be written under the current sync preference — the
+   * Where new captures are written under the current sync preference — the
    * SYNCED vault path when sync is on, the local-only root when it is off.
-   * Not a statement about where anything has actually been written: the
-   * capture write path does not consult the sync preference yet.
+   *
+   * A statement about NEW captures only. Flipping the preference does not move
+   * anything already on disk, so captures taken under the previous setting stay
+   * where they were written.
    */
   capturesRoot: string;
 }
@@ -127,25 +129,35 @@ export interface LocalOnlyBadge {
 /**
  * Board-header badge descriptor for the "sync off" posture (AC3).
  *
- * Returned as data rather than markup so the board header — owned elsewhere —
- * can render it in its own idiom. `null` means captures are syncing and no
- * badge belongs on the header.
+ * Returned as data rather than markup so the board header can render it in its
+ * own idiom. `null` means captures are syncing and no badge belongs on the
+ * header.
  *
- * The wording is deliberately NOT a present-tense privacy promise. The sync
- * preference is stored and read back, but the capture write path still resolves
- * every capture through the vault, so a badge reading "captures stay on this
- * machine" would be false. Keep it conditional until the pipeline adopts
- * `ideas::settings::ideas_root`.
+ * The wording is now present tense, and only as far as the code goes. The
+ * capture write path resolves its root from this preference
+ * (`ideas::settings::ideas_root`), so "new captures are not synced" is true.
+ * What is NOT claimed: that turning sync off retroactively protects anything.
+ * Captures taken while sync was on are still in the company vault and still
+ * sync, and the title says so — a badge that implied otherwise would be a
+ * privacy promise the code does not keep.
+ *
+ * FAILS CLOSED. The gate is `syncEnabled === false`, not `!syncEnabled`: a
+ * truthy-but-malformed payload (an array, an error envelope, an older host
+ * that never sent the field) leaves `syncEnabled` undefined, and `!undefined`
+ * would render "not synced to your team" over captures that are, in fact,
+ * being written to the vault and synced. Showing no badge when the posture is
+ * unknown is the only safe direction — it understates, never overstates.
  */
 export function localOnlyBadge(
   state: Pick<IdeasSettingsState, 'syncEnabled' | 'capturesRoot'> | null | undefined,
 ): LocalOnlyBadge | null {
-  if (!state || state.syncEnabled) return null;
-  const where = state.capturesRoot ? ` They will go to ${state.capturesRoot}.` : '';
+  if (!state || typeof state !== 'object') return null;
+  if (state.syncEnabled !== false) return null;
+  const where = state.capturesRoot ? ` ${state.capturesRoot}` : ' a folder on this machine';
   return {
-    label: 'local only — not in effect yet',
+    label: 'local only',
     title:
-      'You have asked for captures to be kept off the company vault. That preference is saved, but capture does not use it yet, so captures still go to the vault and still sync to your team.' +
-      where,
+      `New captures are saved to${where}, outside the company vault, and are not synced to your team.` +
+      ' Captures taken before you turned sync off are still in the vault and still sync.',
   };
 }

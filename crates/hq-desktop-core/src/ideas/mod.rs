@@ -17,7 +17,11 @@
 //! drifts.
 //!
 //! Both files sit inside the existing vault sync scope (`companies/…`), so a
-//! capture syncs with the rest of the company without extra plumbing.
+//! capture syncs with the rest of the company without extra plumbing — unless
+//! the user turned Sync off for the Idea Board (US-012), in which case the same
+//! three files are written under `{hq_root}/workspace/ideas-local/{company}/{id}/`,
+//! which `crate::ignore` excludes from vault sync. [`settings::ideas_root`]
+//! picks between the two layouts and is the only place either is spelled out.
 //!
 //! Design deltas honored here (see `companies/indigo/projects/hq-idea-board/
 //! design/design.md`): confidence + status are first-class fields; company
@@ -55,12 +59,12 @@ pub use sidecar::{
     QmdCli, QmdIndexer, SidecarFrontmatter, INDEX_LOG_TAG, SIDECAR_FILE,
 };
 pub use settings::{
-    chord_display, format_chord, ideas_root, is_local_only_root, parse_chord, resolve_capture_chord,
+    chord_display, format_chord, ideas_root, ideas_root_relative, is_local_only_root, parse_chord,
+    resolve_capture_chord,
     resolve_company, resolve_image_max_edge, sync_enabled, ChordSpec, DEFAULT_CAPTURE_CHORD,
     DEFAULT_IMAGE_MAX_EDGE, IMAGE_MAX_EDGE_CHOICES, LOCAL_ONLY_DIR, LOCAL_ONLY_PARENT_DIR,
 };
 pub use storage::{
-    create_record, delete_record, downsample, ideas_dir, load_record, mark_cited, move_record,
-    record_dir,
-    save_record, CaptureImage, NewCapture,
+    create_record, delete_record, downsample, downsample_to, ideas_dir, load_record, mark_cited,
+    move_record, record_dir, record_dir_for, save_record, CaptureImage, NewCapture,
 };

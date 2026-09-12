@@ -347,6 +347,11 @@ pub async fn ideas_get_settings(app: AppHandle) -> Result<IdeasSettingsState, St
     let (hq_root, active_slug) =
         crate::commands::capture::resolve_vault_target_with_active(active)?;
 
+    // Opening the panel is also a cheap moment to re-publish the capture-path
+    // cache, so an out-of-band menubar.json edit cannot leave the panel and the
+    // capture path disagreeing about where captures go.
+    crate::commands::capture::refresh_ideas_capture_prefs();
+
     // Read leniently: a missing or malformed menubar.json means "no stored
     // preference", which resolves to the documented defaults, not an error.
     build_settings_state(read_prefs().as_ref(), &hq_root, &active_slug)

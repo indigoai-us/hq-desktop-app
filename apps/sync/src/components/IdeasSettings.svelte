@@ -60,7 +60,14 @@
 
   const saving = $derived(pendingSetting !== null);
   const extractionMode = $derived<IdeasExtractionMode>(settings?.extractionMode ?? 'local');
-  const syncEnabled = $derived(settings?.syncEnabled ?? true);
+  /**
+   * Fails CLOSED, and with the SAME predicate `localOnlyBadge` uses
+   * (`=== false`), so the panel and the board header can never disagree about
+   * the posture. Anything other than an explicit `false` — absent, null, a
+   * malformed payload — reads as "syncing", which understates privacy rather
+   * than promising it.
+   */
+  const syncEnabled = $derived(settings?.syncEnabled !== false);
   const imageMaxEdge = $derived(settings?.imageMaxEdge ?? 2000);
   const edgeChoices = $derived(settings?.imageMaxEdgeChoices?.length ? settings.imageMaxEdgeChoices : [1200, 2000, 4000]);
   const activeCompany = $derived(settings?.activeCompany ?? '');
@@ -332,7 +339,7 @@
         </span>
       </div>
       <span class="setting-chip" data-testid="ideas-sync-chip">
-        {syncEnabled ? 'Vault · synced' : 'Local only · pending'}
+        {syncEnabled ? 'Vault · synced' : 'Local only'}
       </span>
     </div>
     <div class="segmented" role="radiogroup" aria-label="Sync">
@@ -363,18 +370,18 @@
       {/if}
     </div>
     {#if !syncEnabled}
-      <!-- This note must NOT promise captures are already staying local. The
-           preference is stored and read back, but the capture write path still
-           writes every capture to the company vault, so present-tense copy here
-           would be a false privacy promise. Keep it conditional — and keep the
-           "not in effect yet" flag above it — until the pipeline resolves its
-           root from this setting. The panel test pins this wording. -->
-      <p class="note pending-note" data-testid="ideas-local-only-note">
-        <strong class="pending-flag" data-testid="ideas-local-only-pending">Not in effect yet</strong>
-        Your choice is saved. Once capture starts using it, new captures will go
-        to{settings?.capturesRoot ? ` ${settings.capturesRoot}` : ' a folder on this machine'},
-        outside the company vault. Until then captures still go to your company vault and still
-        sync to your team.
+      <!-- Present tense, and only as far as the code goes. The capture write
+           path resolves its root from this preference, so "new captures are
+           saved outside the vault" is true. What must NOT be claimed is that
+           turning sync off protects captures taken while it was on — those are
+           already in the vault and still sync, so the note says so. The panel
+           test pins this wording. -->
+      <p class="note" data-testid="ideas-local-only-note">
+        New captures are saved to{settings?.capturesRoot
+          ? ` ${settings.capturesRoot}`
+          : ' a folder on this machine'}, outside the company vault, and are not synced to your
+        team. Captures you already took while sync was on are still in the vault and still sync —
+        turning this off does not move them.
       </p>
     {/if}
   </div>
@@ -634,20 +641,6 @@
     border: 1px solid light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1));
     border-radius: var(--radius-field, 6px);
     cursor: pointer;
-  }
-
-  .pending-note {
-    border-left: 3px solid light-dark(#8a5200, #f0b429);
-  }
-
-  .pending-flag {
-    display: inline-block;
-    margin-right: 0.375rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    font-size: 0.625rem;
-    color: light-dark(#8a5200, #f0b429);
   }
 
   .warn-line {

@@ -257,11 +257,11 @@ describe('US-012 (b) — rebinding to a chord another app holds', () => {
   });
 });
 
-describe('US-012 — the sync row states its deferral instead of promising privacy', () => {
-  it('does not claim captures already stay local', async () => {
-    // Not an assertion about deferred behaviour — an assertion that the panel
-    // does not assert deferred behaviour. `ideasSyncEnabled` has no consumer
-    // on the write path, so present-tense copy here would be false.
+describe('US-012 — the sync row scopes its privacy claim to new captures', () => {
+  it('states what sync-off does, and what it does not do retroactively', async () => {
+    // The write path consumes `ideasSyncEnabled` now, so present tense is
+    // earned for new captures. The retroactive claim is still false — nothing
+    // moves captures already in the vault — so the row must say both halves.
     routeInvoke({
       syncEnabled: false,
       localOnly: true,
@@ -271,8 +271,9 @@ describe('US-012 — the sync row states its deferral instead of promising priva
 
     const note = testid(root, 'ideas-local-only-note');
     expect(note).not.toBeNull();
-    expect(testid(root, 'ideas-local-only-pending')?.textContent).toContain('Not in effect yet');
-    expect(note?.textContent).toContain('still go to your company vault');
+    expect(note?.textContent).toContain('New captures are saved to');
+    expect(note?.textContent).toContain('outside the company vault');
+    expect(note?.textContent).toContain('still in the vault and still sync');
     expect(note?.textContent).not.toContain('Captures stay on this machine');
   });
 });

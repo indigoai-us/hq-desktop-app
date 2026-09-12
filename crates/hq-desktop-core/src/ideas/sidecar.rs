@@ -39,12 +39,17 @@ pub const SIDECAR_FILE: &str = "capture.md";
 /// Log tag for indexing lines. Never carries record text — ids only.
 pub const INDEX_LOG_TAG: &str = "ideas.index";
 
-/// `{hq_root}/companies/{slug}/ideas/{id}/capture.md`
+/// The sidecar for record `id`, in whichever root that record actually lives
+/// in — the vault one, or the local-only one when it was captured with sync
+/// off (US-012).
 ///
-/// Pure path construction; callers that touch the filesystem go through
-/// [`super::storage`], which screens the components first.
+/// Resolved rather than assumed: returning the vault spelling unconditionally
+/// would name a file that does not exist for every local-only record, and the
+/// first caller to write through it would drop a capture's OCR text into the
+/// synced tree. Falls back to the vault layout when neither directory exists,
+/// so a fresh path still reads as the conventional one.
 pub fn sidecar_path(hq_root: &Path, company_slug: &str, id: &str) -> PathBuf {
-    record_dir(hq_root, company_slug, id).join(SIDECAR_FILE)
+    super::storage::existing_record_dir_or_vault(hq_root, company_slug, id).join(SIDECAR_FILE)
 }
 
 /// The YAML frontmatter block of a sidecar.

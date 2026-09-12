@@ -174,6 +174,13 @@ fn setup_startup_surfaces(
     app: &tauri::AppHandle,
     first_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // US-012 wiring, FIRST and before any `?`: prime the capture-preference
+    // cache so the release->png_written path never reads menubar.json. It has
+    // to precede every fallible call in this function — the cache defaults to
+    // "sync on", so a bailout before priming would quietly write a user's
+    // captures into the vault after they asked for local-only. Infallible by
+    // construction: a missing or malformed menubar.json resolves to defaults.
+    commands::capture::refresh_ideas_capture_prefs();
     tray::setup_tray(app)?;
     crate::recovery::on_startup(app);
 

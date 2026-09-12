@@ -350,15 +350,22 @@ pub struct MenubarPrefs {
     /// (`companies/{slug}/ideas`); false means they belong under a local-only
     /// root that the vault sync scope excludes.
     ///
-    /// **NOT YET IN EFFECT ON THE WRITE PATH.** Today this preference is
-    /// stored, read back, and rendered — `ideas::settings::ideas_root` will
-    /// resolve the local-only root from it, and `crate::ignore` already
-    /// excludes that root from sync — but the capture write path still
-    /// resolves every capture through `ideas::storage::ideas_dir` (the vault)
-    /// without consulting it. Until the pipeline adopts `ideas_root`, setting
-    /// this to false records the choice and changes where captures are written
-    /// not at all. Every doc comment and every line of user-facing copy about
-    /// this flag must stay in the conditional tense until that lands.
+    /// **IN EFFECT ON THE WRITE PATH** (US-012 wiring). `ideas::storage::
+    /// create_record` builds its target from `ideas::settings::ideas_root`, so
+    /// with this false a new capture is written under
+    /// `workspace/ideas-local/{slug}/` — which `crate::ignore` excludes from
+    /// vault sync — and every revise path (`save_record`, `move_record`,
+    /// `delete_record`) follows the record there rather than republishing it.
+    ///
+    /// Scope of the guarantee, and the limit user-facing copy must respect:
+    /// this governs captures written from now on. Flipping it moves NOTHING
+    /// already on disk, so captures taken while it was true remain in the vault
+    /// and keep syncing. Present-tense copy is correct only when it is scoped
+    /// to new captures.
+    ///
+    /// The desktop read gate (`crate::scope_gate`) treats the local-only root
+    /// as company-scoped, so leaving the vault tree does not leave the
+    /// cross-company isolation rule.
     ///
     /// This is a USER PREFERENCE, not a feature flag (policy
     /// `indigo-a-user-preference-is-not-a-feature-flag`), exactly like

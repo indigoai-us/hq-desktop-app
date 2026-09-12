@@ -153,43 +153,68 @@ describe('local-only badge (the board-header seam)', () => {
     expect(localOnlyBadge(state({ syncEnabled: true }))).toBeNull();
   });
 
-  it('describes the badge and where captures will go when sync is off', () => {
+  it('names the badge and the root new captures are written to when sync is off', () => {
     const badge = localOnlyBadge(
       state({ syncEnabled: false, capturesRoot: '/tmp/HQ/workspace/ideas-local/indigo' }),
     );
-    expect(badge?.label).toBe('local only — not in effect yet');
+    expect(badge?.label).toBe('local only');
     expect(badge?.title).toContain('/tmp/HQ/workspace/ideas-local/indigo');
+    expect(badge?.title).toContain('not synced to your team');
   });
 
-  it('never claims captures already stay off the vault', () => {
-    // REGRESSION GUARD. The sync preference is stored and read back, but the
-    // capture write path still resolves every capture through the company
-    // vault, so a present-tense badge here would be a false privacy promise.
-    // If someone re-enables the present tense before the write path lands,
-    // this fails.
+  it('claims privacy only for NEW captures, never retroactively', () => {
+    // REGRESSION GUARD, the mirror of the one this replaced. The capture write
+    // path now resolves its root from `ideasSyncEnabled`, so present tense is
+    // earned for captures taken from here on. What is still FALSE — and what
+    // this test forbids — is any unqualified claim that the user's captures are
+    // off the vault: the ones taken while sync was on are still there and still
+    // sync, because nothing moves them.
     const badge = localOnlyBadge(
       state({ syncEnabled: false, capturesRoot: '/tmp/HQ/workspace/ideas-local/indigo' }),
     );
     const text = `${badge?.label} ${badge?.title}`;
-    expect(text).toContain('not in effect yet');
-    expect(text).toContain('still go to the vault');
-    for (const lie of [
-      'Captures are not syncing',
-      'They stay in',
-      'stay on this machine',
-      'do not sync',
+    expect(text).toContain('New captures');
+    expect(text).toContain('still in the vault and still sync');
+    for (const overclaim of [
+      'Your captures stay on this machine',
+      'Captures are not synced to your team.',
+      'Nothing is in the vault',
+      'no longer sync',
     ]) {
-      expect(text).not.toContain(lie);
+      expect(text, `the badge must not claim: ${overclaim}`).not.toContain(overclaim);
     }
+  });
+
+  it('fails CLOSED on a malformed payload rather than claiming privacy', () => {
+    // REGRESSION GUARD (review critical). `!state.syncEnabled` would render the
+    // badge for any payload where the field is merely absent — an array, an
+    // error envelope, an older host — and the badge asserts "not synced to your
+    // team". Over captures that ARE syncing, that is a false privacy promise.
+    // Unknown posture must show nothing.
+    for (const malformed of [
+      [],
+      {},
+      { capturesRoot: '/tmp/HQ/workspace/ideas-local/indigo' },
+      { syncEnabled: undefined },
+      { syncEnabled: null },
+      { syncEnabled: 0 },
+      { syncEnabled: '' },
+    ]) {
+      expect(
+        localOnlyBadge(malformed as never),
+        `a payload without an explicit syncEnabled:false must not claim local-only: ${JSON.stringify(malformed)}`,
+      ).toBeNull();
+    }
+    // ...and a truthy non-boolean must not suppress a real badge by accident:
+    // only an explicit false turns it on.
+    expect(localOnlyBadge({ syncEnabled: false, capturesRoot: '' })).not.toBeNull();
   });
 
   it('still renders a badge when the root is unknown, and tolerates no state', () => {
     const badge = localOnlyBadge(state({ syncEnabled: false, capturesRoot: '' }));
-    expect(badge?.label).toBe('local only — not in effect yet');
-    expect(badge?.title).toContain('still go to the vault');
+    expect(badge?.label).toBe('local only');
+    expect(badge?.title).toContain('a folder on this machine');
     expect(badge?.title).not.toContain('undefined');
-    // No root to name, so the title must not trail an empty sentence.
-    expect(badge?.title).not.toContain('will go to');
     expect(localOnlyBadge(null)).toBeNull();
     expect(localOnlyBadge(undefined)).toBeNull();
   });

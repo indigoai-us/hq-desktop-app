@@ -33,11 +33,14 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 
 use hq_desktop_core::ideas::{
-    create_record, delete_record, ideas_dir, load_record, mark_cited, model_extract_url,
+    create_record, delete_record, ideas_root, load_record, mark_cited, model_extract_url,
     move_record, parse_mode, reindex_after_write, run_model_stage, save_record, CaptureImage,
     CaptureKind, CaptureRecord, CaptureStatus, ExtractionMode, ExtractionSource,
     HttpModelExtractor, IdeasError, NewCapture, Provenance, QmdCli, TokenProvider,
     EXTRACTION_MODE_SETTING, MODEL_DISCLOSURE,
+};
+use hq_desktop_core::ideas::{
+    resolve_image_max_edge, sync_enabled, DEFAULT_IMAGE_MAX_EDGE,
 };
 use hq_platform::screenshot::{self, CaptureRegion, FrontmostSnapshot};
 use serde::{Deserialize, Serialize};
@@ -65,6 +68,56 @@ pub const MARK_RELEASE_REJECTED: &str = "idea.capture.release_rejected";
 pub const MARK_CAPTURE_FAILED: &str = "idea.capture.failed";
 /// Mark: Screen Recording permission is missing, so no overlay was shown.
 pub const MARK_PERMISSION_DENIED: &str = "idea.capture.permission_denied";
+
+// ---------------------------------------------------------------------------
+// US-012 wiring: the two capture preferences, resolved OFF the hot path
+// ---------------------------------------------------------------------------
+
+/// Cached `ideasImageMaxEdge`, already screened by `resolve_image_max_edge`.
+static IDEAS_IMAGE_MAX_EDGE: AtomicU32 = AtomicU32::new(DEFAULT_IMAGE_MAX_EDGE);
+/// Cached `!ideasSyncEnabled` — true means "write outside the vault sync scope".
+static IDEAS_LOCAL_ONLY: AtomicBool = AtomicBool::new(false);
+
+/// Re-read the Ideas capture preferences from `menubar.json` into the cache.
+///
+/// **Never call this from `capture_and_store`.** Commit a0ab3044 took
+/// provenance resolution off the release->png_written path to hold a p95 of
+/// 120ms; a `menubar.json` read per capture would put a synchronous disk hit
+/// straight back into that window. Instead this runs at the three moments the
+/// answer can actually change — app start, a settings save, and a settings
+/// panel open — and `capture_and_store` reads two atomics.
+///
+/// Atomics, not a `Mutex`/`RwLock`, on purpose: a lock is contendable, and the
+/// contending writer here is a disk-reading settings save. `Relaxed` is
+/// sufficient — the two values are independent scalars, nothing else is
+/// published alongside them, and a capture racing a save legitimately gets
+/// either the old or the new preference.
+///
+/// Guarded by `hq_idea_board_settings_resolution_is_off_the_release_to_png_path`.
+pub fn refresh_ideas_capture_prefs() {
+    let prefs = hq_desktop_core::paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|c| serde_json::from_str::<hq_desktop_core::config::MenubarPrefs>(&c).ok());
+    let max_edge = resolve_image_max_edge(prefs.as_ref().and_then(|p| p.ideas_image_max_edge));
+    let local_only = !sync_enabled(prefs.as_ref().and_then(|p| p.ideas_sync_enabled));
+    IDEAS_IMAGE_MAX_EDGE.store(max_edge, Ordering::Relaxed);
+    IDEAS_LOCAL_ONLY.store(local_only, Ordering::Relaxed);
+    log(
+        LOG_TAG,
+        &format!("idea.capture.prefs image_max_edge={max_edge} local_only={local_only}"),
+    );
+}
+
+/// `(image_max_edge, local_only)` from the cache. Two relaxed atomic loads and
+/// no I/O — safe to call between the release and png_written marks.
+pub fn ideas_capture_prefs() -> (u32, bool) {
+    (
+        IDEAS_IMAGE_MAX_EDGE.load(Ordering::Relaxed),
+        IDEAS_LOCAL_ONLY.load(Ordering::Relaxed),
+    )
+}
 
 /// Window label — kept in sync with the `main.ts` router branch and
 /// `capabilities/capture-overlay.json`.
@@ -1008,11 +1061,17 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
         captured_at: chrono::Utc::now(),
         display_id: screenshot::display_id_for_point(region.x, region.y),
     };
+    // Two relaxed atomic loads off the cache primed by
+    // `refresh_ideas_capture_prefs` — no menubar.json read, no lock, nothing
+    // that can block between MARK_RELEASE and MARK_PNG_WRITTEN.
+    let (image_max_edge, local_only) = ideas_capture_prefs();
     let new = NewCapture::pending(
         company_slug,
         CaptureImage::Decoded(image::DynamicImage::ImageRgba8(img)),
         provenance,
-    );
+    )
+    .with_image_max_edge(Some(image_max_edge))
+    .with_local_only(local_only);
     match create_record(&hq_root, new) {
         Ok(record) => {
             let path = hq_root.join(&record.image_path);
@@ -1433,28 +1492,44 @@ pub fn run_ideas_mark_cited_cli_main(id: &str) -> ! {
 /// Deliberately lenient: a single unreadable or malformed `record.json` must
 /// not blank the whole board, so bad entries are logged and skipped. A missing
 /// ideas directory is an empty board, not an error.
+///
+/// **Both roots are scanned** (US-012 wiring): the synced vault root and the
+/// local-only root. The sync preference decides where new captures are
+/// *written*, never what the board can *see* — a user who turns sync off must
+/// not watch their existing captures vanish, and one who turns it back on must
+/// not lose the ones taken while it was off. Ids are deduped with the synced
+/// copy winning, matching `storage::existing_record_dir`'s resolution order.
 pub fn list_captures_in_vault(
     hq_root: &std::path::Path,
     slug: &str,
 ) -> Result<Vec<CaptureRecord>, String> {
-    let dir = ideas_dir(hq_root, slug);
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("could not read {}: {e}", dir.display())),
-    };
-
     let mut records: Vec<CaptureRecord> = Vec::new();
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let Some(id) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for synced in [true, false] {
+        let dir = ideas_root(hq_root, slug, synced).map_err(|e| e.to_string())?;
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("could not read {}: {e}", dir.display())),
         };
-        match load_record(hq_root, slug, &id) {
-            Ok(record) => records.push(record),
-            Err(e) => log(LOG_TAG, &format!("skipping unreadable capture {id}: {e}")),
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            // Dedupe on the *loaded* record, not on the directory entry: a
+            // malformed directory in one root must not consume the id and
+            // suppress a readable record for it in the other.
+            match load_record(hq_root, slug, &id) {
+                Ok(record) => {
+                    if seen.insert(id) {
+                        records.push(record);
+                    }
+                }
+                Err(e) => log(LOG_TAG, &format!("skipping unreadable capture {id}: {e}")),
+            }
         }
     }
     // Newest first; `created_at` ties break on the ULID id, which is itself
@@ -1792,10 +1867,14 @@ mod hq_idea_board_capture_tests {
         }
 
         // A malformed record and a stray file must not blank the board.
-        let junk_dir = ideas_dir(hq_root, "alpha").join("01JJUNK0000000000000000000");
+        let junk_dir = ideas_root(hq_root, "alpha", true).unwrap().join("01JJUNK0000000000000000000");
         std::fs::create_dir_all(&junk_dir).unwrap();
         std::fs::write(junk_dir.join("record.json"), b"{ not json").unwrap();
-        std::fs::write(ideas_dir(hq_root, "alpha").join("README.txt"), b"hi").unwrap();
+        std::fs::write(
+            ideas_root(hq_root, "alpha", true).unwrap().join("README.txt"),
+            b"hi",
+        )
+        .unwrap();
 
         let listed = list_captures_in_vault(hq_root, "alpha").unwrap();
         assert_eq!(listed.len(), 3);
@@ -2200,6 +2279,79 @@ mod hq_idea_board_capture_tests {
         assert!(enrich > png_mark, "enrichment handoff moved ahead of png_written");
     }
 
+    /// US-012 wiring, same guard shape as the provenance one above.
+    ///
+    /// Resolving the user's Ideas preferences means reading `menubar.json`.
+    /// That is a synchronous disk hit, and the release->png_written budget is
+    /// p95 <= 120ms — the same budget commit a0ab3044 protected by moving
+    /// provenance off this path. So `capture_and_store` must take the
+    /// preferences from the cached atomics (`ideas_capture_prefs`) and must
+    /// never reach the reader (`refresh_ideas_capture_prefs`) or the config
+    /// file itself. A source check for the same reason the provenance guard is
+    /// one: the alternative is noticing it in a benchmark after the fact.
+    #[test]
+    fn hq_idea_board_settings_resolution_is_off_the_release_to_png_path() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+
+        let body = fn_body(&src, "fn capture_and_store(");
+        let png_mark = body
+            .find("MARK_PNG_WRITTEN")
+            .expect("capture_and_store logs the png_written mark");
+
+        // The settings the write path applies come from the cache, before the
+        // PNG mark — reading them must cost two atomic loads, nothing more.
+        let from_cache = body
+            .find("ideas_capture_prefs()")
+            .expect("capture_and_store must read the cached Ideas preferences");
+        assert!(
+            from_cache < png_mark,
+            "the cached preference read must happen before png_written, not after"
+        );
+
+        // None of these may appear anywhere in `capture_and_store`: each one is
+        // a synchronous read of the settings file on the critical path.
+        for banned in [
+            "refresh_ideas_capture_prefs",
+            "menubar_json_path",
+            "MenubarPrefs",
+            "ideas_get_settings",
+            "build_settings_state",
+            // The settings-file readers sitting next to those in
+            // `ideas_settings.rs` / `settings.rs`. Without these, a
+            // `let p = ideas_settings::read_prefs();` on the hot path would
+            // reintroduce the disk hit and still pass this guard.
+            "read_prefs",
+            "get_settings_at",
+            "read_hq_config_lenient",
+            "read_to_string",
+        ] {
+            assert!(
+                !body.contains(banned),
+                "{banned} is back on the release->png critical path in capture_and_store"
+            );
+        }
+
+        // ...and the reader really is the thing that touches the config file,
+        // so the assertions above are about a real cost rather than a name.
+        let refresh = fn_body(&src, "pub fn refresh_ideas_capture_prefs()");
+        assert!(
+            refresh.contains("menubar_json_path") && refresh.contains("read_to_string"),
+            "refresh_ideas_capture_prefs must be the one that reads menubar.json"
+        );
+        // The accessor stays I/O-free and lock-free.
+        let accessor = fn_body(&src, "pub fn ideas_capture_prefs()");
+        for banned in ["read_to_string", "menubar_json_path", ".lock()"] {
+            assert!(
+                !accessor.contains(banned),
+                "ideas_capture_prefs must stay lock-free and I/O-free, found {banned}"
+            );
+        }
+    }
+
     /// Code text of `name`'s body, from its signature to the first column-0
     /// `}` that closes it, with comment lines stripped — the test reasons
     /// about what executes, not about what the comments mention.
@@ -2553,5 +2705,145 @@ mod hq_idea_board_capture_tests {
         assert_eq!(list_captures_in_vault(hq_root, "alpha").unwrap().len(), 0);
 
         assert!(delete_capture_in_vault(hq_root, "alpha", &seeded.id).is_err());
+    }
+
+    // ── US-012 wiring: settings honored by the capture write path ──────────
+
+    fn hq_idea_board_seed_with(
+        hq_root: &std::path::Path,
+        slug: &str,
+        edge: u32,
+        max_edge: u32,
+        local_only: bool,
+    ) -> CaptureRecord {
+        let provenance = Provenance {
+            app: "Safari".to_string(),
+            window_title: String::new(),
+            url: None,
+            captured_at: chrono::Utc::now(),
+            display_id: 1,
+        };
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(edge, edge / 2));
+        create_record(
+            hq_root,
+            NewCapture::pending(slug, CaptureImage::Decoded(image), provenance)
+                .with_image_max_edge(Some(max_edge))
+                .with_local_only(local_only),
+        )
+        .unwrap()
+    }
+
+    /// The board must show captures from BOTH roots: flipping the sync
+    /// preference decides where the next capture is written, never which of the
+    /// user's existing captures they can still see.
+    #[test]
+    fn hq_idea_board_list_captures_spans_synced_and_local_only_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        let synced = hq_idea_board_seed_with(hq_root, "alpha", 40, 2000, false);
+        let local = hq_idea_board_seed_with(hq_root, "alpha", 40, 2000, true);
+
+        let listed = list_captures_in_vault(hq_root, "alpha").unwrap();
+        let ids: Vec<&str> = listed.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(listed.len(), 2, "both roots must be listed, got {ids:?}");
+        assert!(ids.contains(&synced.id.as_str()));
+        assert!(ids.contains(&local.id.as_str()));
+
+        // ...and the local-only one really is outside the vault sync scope.
+        assert!(local.image_path.starts_with("workspace/ideas-local/alpha/"));
+        assert!(hq_root.join(&local.image_path).is_file());
+        assert!(!hq_desktop_core::ideas::record_dir(hq_root, "alpha", &local.id).exists());
+    }
+
+    /// Editing a local-only capture must not copy it into the vault. This is
+    /// the privacy regression the two-root resolution exists to prevent.
+    #[test]
+    fn hq_idea_board_editing_a_local_only_capture_never_lands_it_in_the_vault() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        let local = hq_idea_board_seed_with(hq_root, "alpha", 40, 2000, true);
+
+        set_note_in_vault(hq_root, "alpha", &local.id, "still private").unwrap();
+
+        assert!(
+            !hq_desktop_core::ideas::record_dir(hq_root, "alpha", &local.id).exists(),
+            "a note edit republished a local-only capture into the company vault"
+        );
+        let reloaded = load_record(hq_root, "alpha", &local.id).unwrap();
+        assert_eq!(reloaded.note.as_deref(), Some("still private"));
+        assert!(reloaded.image_path.starts_with("workspace/ideas-local/alpha/"));
+    }
+
+    /// Reassigning a local-only capture to another company keeps it local-only
+    /// — moving it would publish it to a second company's vault.
+    #[test]
+    fn hq_idea_board_moving_a_local_only_capture_keeps_it_out_of_the_vault() {
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        hq_idea_board_write_manifest(hq_root, &["alpha", "beta"]);
+        std::fs::create_dir_all(hq_root.join("companies").join("beta")).unwrap();
+        let local = hq_idea_board_seed_with(hq_root, "alpha", 40, 2000, true);
+
+        let moved = move_capture_in_vault(hq_root, "alpha", &local.id, "beta").unwrap();
+        assert_eq!(moved.company_slug, "beta");
+        assert_eq!(
+            moved.image_path,
+            format!("workspace/ideas-local/beta/{}/image.png", local.id)
+        );
+        assert!(hq_root.join(&moved.image_path).is_file());
+        assert!(!hq_desktop_core::ideas::record_dir(hq_root, "beta", &local.id).exists());
+        assert_eq!(list_captures_in_vault(hq_root, "beta").unwrap().len(), 1);
+        assert_eq!(list_captures_in_vault(hq_root, "alpha").unwrap().len(), 0);
+    }
+
+    /// The cache defaults match the documented settings defaults, so an install
+    /// that has never opened the panel captures at 2000px into the vault...
+    #[test]
+    fn hq_idea_board_capture_prefs_default_to_2000px_and_synced() {
+        assert_eq!(ideas_capture_prefs(), (DEFAULT_IMAGE_MAX_EDGE, false));
+        assert_eq!(DEFAULT_IMAGE_MAX_EDGE, 2000);
+    }
+
+    /// ...and the cache is what the write path actually applies. The test above
+    /// only pins the static initializers, so it would still pass if
+    /// `capture_and_store` stopped consulting the cache altogether. This one
+    /// pins the wiring: whatever `ideas_capture_prefs` reports is what reaches
+    /// `NewCapture`, and what reaches `NewCapture` is what lands on disk.
+    #[test]
+    fn hq_idea_board_cached_prefs_are_the_ones_the_write_path_applies() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+        let body = fn_body(&src, "fn capture_and_store(");
+
+        // The destructured pair is handed straight to the two builders.
+        assert!(
+            body.contains("let (image_max_edge, local_only) = ideas_capture_prefs();"),
+            "capture_and_store must destructure the cached preferences"
+        );
+        assert!(
+            body.contains(".with_image_max_edge(Some(image_max_edge))"),
+            "the cached max edge must reach NewCapture"
+        );
+        assert!(
+            body.contains(".with_local_only(local_only)"),
+            "the cached sync posture must reach NewCapture"
+        );
+        // No hardcoded bound may sneak back alongside it.
+        assert!(
+            !body.contains("MAX_IMAGE_EDGE)") && !body.contains("with_image_max_edge(None)"),
+            "capture_and_store must not fall back to a compiled-in bound"
+        );
+
+        // And the builders really do drive storage: a NewCapture carrying the
+        // non-default choices writes where and at the size it was told.
+        let root = tempfile::tempdir().unwrap();
+        let hq_root = root.path();
+        let record = hq_idea_board_seed_with(hq_root, "alpha", 3000, 1200, true);
+        let stored = image::open(hq_root.join(&record.image_path)).unwrap();
+        assert_eq!(stored.width().max(stored.height()), 1200);
+        assert!(record.image_path.starts_with("workspace/ideas-local/alpha/"));
     }
 }

@@ -15,6 +15,12 @@
     type IdeaChip,
   } from './ideaSearch';
   import { createIdeaCapturesStore, type IdeaCapture } from '../../stores/ideaCaptures';
+  import {
+    loadIdeasSettings,
+    localOnlyBadge,
+    type IdeasSettingsState,
+    type LocalOnlyBadge,
+  } from '../../lib/ideas/ideas-settings';
 
   interface Props {
     /** Active company slug — the board is always company-scoped. */
@@ -29,6 +35,15 @@
   let chip = $state<IdeaChip>('all');
   let openId = $state<string | null>(null);
   let companies = $state<string[]>([]);
+  /**
+   * US-012 AC3: the persistent "local only" badge. `null` whenever captures are
+   * syncing, or whenever the settings read failed — a board that cannot confirm
+   * the posture must not assert one, and silently omitting the badge is the
+   * safe direction (it never claims privacy the code has not delivered).
+   */
+  let ideasSettings = $state<IdeasSettingsState | null>(null);
+
+  const localOnly = $derived<LocalOnlyBadge | null>(localOnlyBadge(ideasSettings));
 
   const index = $derived(buildSearchIndex(store.records));
   const visible = $derived(searchCaptures(index, query, chip));
@@ -48,6 +63,16 @@
     void store.listCompanies().then((list) => {
       companies = list;
     });
+    // `await` inside a try, not `.then`: a host that does not implement
+    // `ideas_get_settings` can return undefined rather than a promise, and a
+    // board that throws on a *badge* lookup would take the whole grid down.
+    void (async () => {
+      try {
+        ideasSettings = (await loadIdeasSettings()) ?? null;
+      } catch {
+        ideasSettings = null;
+      }
+    })();
     return () => store.unsubscribe();
   });
 
@@ -106,6 +131,15 @@
         </button>
       {/each}
     </div>
+    {#if localOnly}
+      <span
+        class="ideas-local-only"
+        data-testid="ideas-board-local-only"
+        title={localOnly.title}
+      >
+        {localOnly.label}
+      </span>
+    {/if}
   </div>
 
   {#if store.state === 'loading' || store.state === 'idle'}
@@ -174,6 +208,21 @@
     gap: 10px;
     flex-wrap: wrap;
     margin-bottom: 14px;
+  }
+
+  .ideas-local-only {
+    flex: 0 0 auto;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    cursor: help;
+    color: light-dark(#8a5200, #f0b429);
+    border: 1px solid light-dark(rgba(138, 82, 0, 0.35), rgba(240, 180, 41, 0.35));
+    background: light-dark(rgba(240, 180, 41, 0.12), rgba(240, 180, 41, 0.14));
   }
 
   .ideas-search {
