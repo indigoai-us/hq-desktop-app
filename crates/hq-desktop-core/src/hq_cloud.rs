@@ -590,7 +590,20 @@
 /// A desktop holding a cached 6.16.35 satisfies `~6.16.35` forever and would
 /// retain the pre-streaming runner without the HQSNAP4 reader; changing this
 /// requested spec is what moves npm's cache key and delivers both guarantees.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.36";
+///
+/// `~6.16.36` -> `~6.16.38`: floors the runner at the releases that remove
+/// the full area-journal clone on pull (hq-cloud#538), reduce resident memory
+/// while building manifests (hq-cloud#539), remove the Vitest reporter RPC
+/// timeout, stream large HQSNAP4 table assertions (hq-cloud#540/#541), and
+/// add the session-host surface (hq-cloud#537). These are runner-internal
+/// memory, test, and command-surface changes rather than a new desktop-visible
+/// capability contract, so they deliberately add no `*_MIN_HQ_CLOUD` floor
+/// constant.
+///
+/// A desktop holding a cached 6.16.36 satisfies `~6.16.36` forever and would
+/// retain the older runner; changing this requested spec is what moves npm's
+/// cache key and delivers these releases.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.38";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -718,7 +731,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.36");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.38");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

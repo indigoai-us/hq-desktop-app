@@ -174,7 +174,22 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// length` — rather than a named runner-error identity; if surfaced, they use
 /// the existing generic `error` event type. No new vocabulary arm is needed,
 /// but the source-version marker moves with the verified runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.36";
+///
+/// The `~6.16.36` -> `~6.16.38` bump (area-journal clone removal,
+/// manifest-build memory reduction, reporter upgrade, HQSNAP4 assertion
+/// streaming, and session-host modules, hq-cloud#537/#538/#539/#540/#541) was
+/// re-derived from both hq-cloud trees. The literal `this.name` set remains
+/// 53 and the three `readonly name` identities remain, so the raw source total
+/// remains 56 with no identity-set diff. `HQ_CLOUD_IDENTITIES` remains 52: it
+/// covers the `this.name` identities that can reach the desktop runner-error
+/// event surface, excluding the already-accounted-for
+/// `PushScopeForbiddenError`, which `PushEventEmitter` catches and reports via
+/// `onError` rather than serializing as an error identity. The new
+/// `session-host-*` modules add only plain `Error` throws, no named class or
+/// cause. `src/bin/sync-runner-events.ts` `ERROR_TYPES` also remains (`error`,
+/// `auth-error`). No new vocabulary arm is needed, but the source-version
+/// marker moves with the verified runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.38";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -3152,10 +3167,13 @@ mod tests {
 
     // ── Completed vocabulary + residual signature (this reopen) ────────────────
 
-    /// The COMPLETE hq-cloud `this.name` identity set at
-    /// `CAUSE_VOCABULARY_SOURCE_VERSION`, derived mechanically from
-    /// `git grep -hoE 'this\.name = "[A-Za-z0-9]+"'` over the pinned hq-cloud
-    /// source. Re-derive when the pin bumps — the
+    /// The COMPLETE hq-cloud `this.name` identity set that can reach the
+    /// desktop runner-error event surface at `CAUSE_VOCABULARY_SOURCE_VERSION`.
+    /// It is derived mechanically from the literal `this.name` assignments in
+    /// the pinned hq-cloud source, then excludes `PushScopeForbiddenError`:
+    /// that internal error is caught by
+    /// `PushEventEmitter` and reaches `onError` without being serialized as an
+    /// error identity. Re-derive when the pin bumps — the
     /// `cause_vocabulary_source_version_is_pinned_to_the_runner` guard fails the
     /// build if the pin moves without this list (and the vocabulary) refreshed.
     const HQ_CLOUD_IDENTITIES: &[&str] = &[
@@ -3215,11 +3233,12 @@ mod tests {
 
     #[test]
     fn every_hq_cloud_identity_maps_to_a_distinct_named_cause() {
-        // Completeness over the FULL derived identity set (not a sample): every
-        // hq-cloud this.name must classify as a specific, non-residual cause, and
-        // the 52 identities must map to 52 DISTINCT tokens — the exact property
-        // the prior 16-name sample violated, collapsing every out-of-sample
-        // company fault to the flat residual and reopening this lane. The set
+        // Completeness over the FULL event-surface identity set (not a sample):
+        // every hq-cloud this.name that can reach the runner error event must
+        // classify as a specific, non-residual cause, and the 52 identities
+        // must map to 52 DISTINCT tokens — the exact property the prior 16-name
+        // sample violated, collapsing every out-of-sample company fault to the
+        // flat residual and reopening this lane. The set
         // grew from 45 to 46 when the runner pin moved to ~6.15.79 (added
         // ChildProcessSyncWorkerError), from 46 to 50 at ~6.16.0 (added
         // RealtimeUnavailableError, WindowsRenameBlockedError, and the two

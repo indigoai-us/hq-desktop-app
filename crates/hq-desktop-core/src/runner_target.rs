@@ -888,6 +888,10 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.36"),
             "787177c427ceedf8",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.38"),
+            "eccfcfc8a1b089f8",
+        );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
@@ -947,6 +951,15 @@ mod tests {
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.35"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.36"),
+        );
+        // The area-journal, manifest-memory, reporter, HQSNAP4, and
+        // session-host bump (hq-cloud#537/#538/#539/#540/#541): 6.16.38
+        // SATISFIES `~6.16.36`, so a desktop that already resolved 6.16.36
+        // would retain its cached runner on semver admission alone. Moving the
+        // requested spec is what delivers the new runner.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.36"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.38"),
         );
     }
 
