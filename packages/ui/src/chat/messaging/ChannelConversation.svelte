@@ -226,6 +226,11 @@
     /** US-011: lock the composer while an agent box is still provisioning. */
     composerLocked?: boolean;
     /**
+     * Render only `header`: no messages, no empty label, no composer. For a
+     * pane that is just its header (#welcome in setup-bot mode).
+     */
+    headerOnly?: boolean;
+    /**
      * History restore (US-006). When set, land on this identity/offset instead
      * of pinning to the newest message, and do not follow live arrivals.
      */
@@ -271,6 +276,7 @@
     draftKey = null,
     draftStorage = null,
     composerLocked = false,
+    headerOnly = false,
     restoreScroll = null,
     localBots = null,
   }: Props = $props();
@@ -1097,6 +1103,9 @@
         data-testid="conversation-thread"
       >
         {#if header}{@render header()}{/if}
+        {#if headerOnly}
+          <!-- header-only pane: nothing below the header -->
+        {:else}
         {#if timeline.length === 0 && !loading}
           <div
             class="dm-thread-empty"
@@ -1455,6 +1464,7 @@
           {/if}
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}
+        {/if}
       </div>
       {#if !stickToBottom && (landAt !== "top" || hasUnseenBelow)}
         <button
@@ -1470,6 +1480,7 @@
     </div>
   </div>
 
+  {#if !headerOnly}
   <div class="dm-reply" class:is-locked={composerLocked}>
     <div class="dm-reply-composer">
       {#if showMentionPicker}
@@ -1660,6 +1671,7 @@
       </button>
     </div>
   </div>
+  {/if}
   {#if trayOpen && !onopenattachment}
     <AttachmentTray
       {previewCache}

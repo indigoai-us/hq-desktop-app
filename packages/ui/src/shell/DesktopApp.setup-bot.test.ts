@@ -203,6 +203,20 @@ describe("#welcome Run Setup creates the setup bot", () => {
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
   });
 
+  it("#welcome is just the banner: the setup button and the Learn HQ resources, no messages, no composer", async () => {
+    await mountWelcome(adapter(), fakeSetupRun());
+
+    expect(q('[data-testid="setup-hero"]')).toBeTruthy();
+    expect(q('[data-testid="setup-run"]')?.textContent).toContain(SETUP_BOT_COPY.run);
+    // Resources sit in the banner, not behind a disclosure.
+    expect(q('[data-testid="setup-resources"] a[data-testid^="setup-resource-"]')).toBeTruthy();
+    expect(q('[data-testid="setup-advanced"]')).toBeNull();
+    expect(q('[data-testid="setup-steps-preview"]')).toBeNull();
+    // Nothing below the banner.
+    expect(q('[data-testid="conversation-composer"]')).toBeNull();
+    expect(q('[data-testid="conversation-empty"]')).toBeNull();
+  });
+
   it("shows the bot thinking while it works on its first step, and clears it when that answer lands", async () => {
     const dm: Array<Record<string, unknown>> = [];
     const wakes = createChatWakeBus();

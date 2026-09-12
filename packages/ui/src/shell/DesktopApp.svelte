@@ -1397,6 +1397,11 @@
     onfinished: recordWelcomeSetupRun,
   });
   $effect(() => () => setupAgent.dispose());
+  /** In setup-bot mode #welcome is just its banner (resources + the setup
+   *  button); the scripted fallback run still needs its transcript. */
+  const welcomeIsBannerOnly = $derived(
+    Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupBotLauncher && !setupAgent.active),
+  );
   const inSetupChannelWithAgent = $derived(
     Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupAgent.active),
   );
@@ -6179,6 +6184,7 @@
                   loading={(timelineHydrating || projectActivityLoading) &&
                     timelineWithActivity.length === 0}
                   landAt={isSetupChannel(selectedRow.channelId) ? "top" : "bottom"}
+                  headerOnly={welcomeIsBannerOnly}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
                     : isCompanyChannel

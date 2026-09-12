@@ -383,8 +383,8 @@
       {:else}
         <p class="hero-body">{heroBody}</p>
       {/if}
-      {#if agent?.api || setupBot}
-        <!-- What Run Setup will do (the setup bot walks the same ground). -->
+      {#if agent?.api && !setupBot}
+        <!-- What the scripted Run Setup will do. The setup bot says this itself. -->
         <ol class="steps-preview" aria-label="Setup steps" data-testid="setup-steps-preview">
           {#each SETUP_RUN_STEPS as step, index (step.id)}
             <li class="steps-preview-step">
@@ -454,6 +454,13 @@
         <p class="launch-error" role="alert" data-testid="setup-run-start-error">{agent?.error}</p>
       {/if}
 
+      {#if setupBot}
+        <!-- Setup bot mode: #welcome is just this banner. The bot does the
+             rest in its DM, so the only other thing here is where to learn HQ. -->
+        <div class="bot-resources" data-testid="setup-resources">
+          {@render resourceList()}
+        </div>
+      {:else}
       <details class="advanced" data-testid="setup-advanced">
         <summary>{SETUP_ADVANCED_LABEL}</summary>
         <div class="advanced-body">
@@ -521,49 +528,57 @@
 
           <p data-testid="setup-hosted-agent-guidance">{SETUP_HOSTED_AGENT_NOTE}</p>
 
-          <ul class="resources" aria-label="Learn HQ">
-            {#each SETUP_RESOURCES as resource (resource.id)}
-              <li class="resource">
-                <a
-                  class="resource-link"
-                  href={resource.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  data-testid={`setup-resource-${resource.id}`}
-                  onclick={(event) => openResourceLink(event, resource.href)}
-                >
-                  <svg
-                    class="resource-glyph"
-                    viewBox="0 0 16 16"
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.25"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
-                  </svg>
-                  <span class="resource-text">
-                    <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
-                    <span class="resource-title">{resource.title}</span>
-                    <span class="resource-desc">{resource.description}</span>
-                  </span>
-                </a>
-              </li>
-            {/each}
-          </ul>
+          {@render resourceList()}
           <p class="support-note" data-testid="setup-support-note">{SETUP_SUPPORT_NOTE}</p>
         </div>
       </details>
+      {/if}
     </div>
     {/if}
   </div>
 </section>
 
+{#snippet resourceList()}
+  <ul class="resources" aria-label="Learn HQ">
+    {#each SETUP_RESOURCES as resource (resource.id)}
+      <li class="resource">
+        <a
+          class="resource-link"
+          href={resource.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid={`setup-resource-${resource.id}`}
+          onclick={(event) => openResourceLink(event, resource.href)}
+        >
+          <svg
+            class="resource-glyph"
+            viewBox="0 0 16 16"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.25"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
+          </svg>
+          <span class="resource-text">
+            <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
+            <span class="resource-title">{resource.title}</span>
+            <span class="resource-desc">{resource.description}</span>
+          </span>
+        </a>
+      </li>
+    {/each}
+  </ul>
+{/snippet}
+
 <style>
+  .bot-resources {
+    margin-top: 18px;
+  }
   .advanced {
     margin-top: 14px;
     font-size: 13px;
@@ -590,14 +605,20 @@
     color: rgba(255, 255, 255, 0.72);
   }
   /* Learn-HQ rows live inside the dark hero now: keep them legible on it. */
+  .bot-resources .resources,
   .advanced-body .resources {
     margin-top: 4px;
     border-top: 1px solid rgba(255, 255, 255, 0.14);
   }
+  .bot-resources .resource-link,
+  .bot-resources .resource-title,
   .advanced-body .resource-link,
   .advanced-body .resource-title {
     color: #ffffff;
   }
+  .bot-resources .resource-desc,
+  .bot-resources .eyebrow--muted,
+  .bot-resources .resource-glyph,
   .advanced-body .resource-desc,
   .advanced-body .eyebrow--muted,
   .advanced-body .support-note {
