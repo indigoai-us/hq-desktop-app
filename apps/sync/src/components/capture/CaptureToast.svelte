@@ -54,6 +54,14 @@
   let pickerOpen = $state(false);
   let companies = $state<string[]>([]);
 
+  /**
+   * Last failed write, surfaced in the toast. Every write here is a real
+   * mutation of the user's vault: swallowing a rejected invoke would leave
+   * the toast claiming "Undone" or "Filed to <other>" for a change that
+   * never happened (the defect US-010's review found in the detail pane).
+   */
+  let writeError = $state<string | null>(null);
+
   /** True while hovered or mid-interaction — either suspends the auto-dismiss timer. */
   let hovering = false;
   let suspended = false;
@@ -83,6 +91,11 @@
 
   function hasTauri(): boolean {
     return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  }
+
+  function errorText(e: unknown): string {
+    if (e instanceof Error) return e.message;
+    return typeof e === 'string' && e.trim() !== '' ? e : 'unknown error';
   }
 
   function clearDismissTimer() {
@@ -125,6 +138,14 @@
   }
 
   async function dismiss(): Promise<void> {
+    // A note typed but never committed must not be silently dropped just
+    // because the toast is going away (US-010 review: Escape/close discarded
+    // blur-only drafts). Flush first, and abort the dismiss if it failed so
+    // the error is visible.
+    if (noteEditing) {
+      await commitNote();
+      if (writeError !== null) return;
+    }
     clearDismissTimer();
     if (undoneTimer !== undefined) {
       clearTimeout(undoneTimer);
@@ -146,6 +167,7 @@
     noteValue = '';
     pickerOpen = false;
     companies = [];
+    writeError = null;
     hovering = false;
     suspended = false;
   }
@@ -196,8 +218,16 @@
     if (!record) return;
     beginInteraction();
     const id = record.id;
+    writeError = null;
     if (hasTauri()) {
-      void invoke('ideas_delete_capture', { id }).catch(() => {});
+      try {
+        await invoke('ideas_delete_capture', { id });
+      } catch (e) {
+        // The record (and its PNG/sidecar) is still on disk — saying "Undone"
+        // here would be a lie the user can only discover much later.
+        writeError = `Couldn't undo: ${errorText(e)}`;
+        return;
+      }
     }
     phase = 'undone';
     undoneTimer = setTimeout(() => {
@@ -218,22 +248,28 @@
     if (!record) return;
     const id = record.id;
     const note = noteValue;
-    noteEditing = false;
+    writeError = null;
     if (hasTauri()) {
       try {
         await invoke('ideas_set_note', { id, note });
-      } catch {
-        // Best-effort: the note write failed, but the toast still closes.
+      } catch (e) {
+        // Keep the draft on screen: the text is still only in this input.
+        writeError = `Couldn't save that note: ${errorText(e)}`;
+        return;
       }
     }
+    noteEditing = false;
     await setFocusable(false);
     endInteraction();
   }
 
-  async function cancelNoteEdit(): Promise<void> {
-    noteEditing = false;
-    await setFocusable(false);
-    endInteraction();
+  /**
+   * Escape leaves note editing. It commits rather than discards: the toast is
+   * a 6-second surface with no second chance, and US-010's review found
+   * exactly this silent-discard bug in the detail pane.
+   */
+  async function leaveNoteEdit(): Promise<void> {
+    await commitNote();
   }
 
   async function openPicker(): Promise<void> {
@@ -263,8 +299,15 @@
     if (!record) return;
     const id = record.id;
     closePicker();
+    writeError = null;
     if (hasTauri()) {
-      void invoke('ideas_move_capture', { id, toCompany }).catch(() => {});
+      try {
+        await invoke('ideas_move_capture', { id, toCompany });
+      } catch (e) {
+        // "Filed to" must keep naming where the record actually lives.
+        writeError = `Couldn't reassign: ${errorText(e)}`;
+        return;
+      }
     }
     filedCompany = toCompany;
   }
@@ -272,8 +315,15 @@
   async function openBoard(): Promise<void> {
     if (!record) return;
     const id = record.id;
+    writeError = null;
     if (hasTauri()) {
-      void invoke('ideas_open_board', { id }).catch(() => {});
+      try {
+        await invoke('ideas_open_board', { id });
+      } catch (e) {
+        // Dismissing here would hide the toast without opening anything.
+        writeError = `Couldn't open the board: ${errorText(e)}`;
+        return;
+      }
     }
     await dismiss();
   }
@@ -292,7 +342,7 @@
         void commitNote();
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        void cancelNoteEdit();
+        void leaveNoteEdit();
       }
       // Any other key is normal typing into the note input.
       return;
@@ -352,17 +402,21 @@
   });
 </script>
 
-<svelte:window onkeydown={onKeyDown} />
+<!--
+  The toast owns its whole window, so a click anywhere in it is a click "into
+  the toast" — listening at the window level keeps the status region a plain
+  live region (no dead svelte-ignore, no a11y warning) and also catches clicks
+  on the padding around the card.
+-->
+<svelte:window onkeydown={onKeyDown} onclick={onToastClick} />
 
 {#if record}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
   <div
     class="toast"
     data-testid="capture-toast"
     role="status"
     onpointerenter={onPointerEnter}
     onpointerleave={onPointerLeave}
-    onclick={onToastClick}
   >
     {#if phase === 'undone'}
       <div class="undone" data-testid="capture-toast-undone">Undone</div>
@@ -415,6 +469,10 @@
           <span data-testid="capture-toast-filed">Filed to <span class="co">{filedCompany}</span></span>
           <span>⌘⌥ to change</span>
         </div>
+      {/if}
+
+      {#if writeError}
+        <div class="toast-error" data-testid="capture-toast-error" role="alert">{writeError}</div>
       {/if}
 
       <div class="toast-keys">
@@ -563,6 +621,13 @@
 
   .picker-item:hover {
     background: rgba(255, 255, 255, 0.08);
+  }
+
+  .toast-error {
+    padding: 8px 15px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 11px;
+    color: #f6a5a5;
   }
 
   .toast-keys {

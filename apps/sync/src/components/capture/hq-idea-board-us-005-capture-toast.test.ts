@@ -174,16 +174,19 @@ describe('CaptureToast (hq-idea-board US-005)', () => {
     expect(invokeMock).toHaveBeenCalledWith('dismiss_capture_toast');
   });
 
-  it('⌘Z deletes the capture and shows "Undone"', () => {
+  it('⌘Z deletes the capture and shows "Undone"', async () => {
     const target = mountToast();
     show(target, baseRecord());
     invokeMock.mockClear();
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true }));
-    flushSync();
-
+    // The delete is awaited before the toast claims success, so "Undone"
+    // appears only once the command resolved.
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-undone"]')?.textContent).toBe('Undone');
+    });
     expect(invokeMock).toHaveBeenCalledWith('ideas_delete_capture', { id: 'rec-1' });
-    expect(target.querySelector('[data-testid="capture-toast-undone"]')?.textContent).toBe('Undone');
+    expect(target.querySelector('[data-testid="capture-toast-error"]')).toBeNull();
 
     vi.advanceTimersByTime(1200);
     flushSync();
@@ -237,7 +240,10 @@ describe('CaptureToast (hq-idea-board US-005)', () => {
     expect(target.querySelector('[data-testid="capture-toast-note-input"]')).toBeNull();
   });
 
-  it('Escape cancels note editing and flips focusable back to false without saving', async () => {
+  it('Escape commits the typed note instead of silently discarding it', async () => {
+    // The toast is a ~6s surface with no second chance: leaving the note
+    // field must persist what was typed (US-010's review found the detail
+    // pane dropping blur-only drafts on Escape).
     const target = mountToast();
     show(target, baseRecord());
     invokeMock.mockClear();
@@ -249,14 +255,118 @@ describe('CaptureToast (hq-idea-board US-005)', () => {
     flushSync();
 
     const input = target.querySelector('[data-testid="capture-toast-note-input"]') as HTMLInputElement;
+    input.value = 'typed but never committed';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     flushSync();
 
     await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('ideas_set_note', {
+        id: 'rec-1',
+        note: 'typed but never committed',
+      });
       expect(invokeMock).toHaveBeenCalledWith('set_capture_toast_focusable', { focusable: false });
     });
-    expect(invokeMock).not.toHaveBeenCalledWith('ideas_set_note', expect.anything());
     expect(target.querySelector('[data-testid="capture-toast-note-input"]')).toBeNull();
+  });
+
+  it('flushes an in-progress note when the toast is dismissed by ⏎ open', async () => {
+    const target = mountToast();
+    show(target, baseRecord());
+    invokeMock.mockClear();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-note-input"]')).not.toBeNull();
+    });
+    flushSync();
+    const input = target.querySelector('[data-testid="capture-toast-note-input"]') as HTMLInputElement;
+    input.value = 'draft in flight';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    // Commit + leave edit mode, then open: the dismiss path must not drop it.
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('ideas_set_note', { id: 'rec-1', note: 'draft in flight' });
+    });
+  });
+
+  it('a rejected ideas_delete_capture surfaces an error and never claims "Undone"', async () => {
+    invokeMock.mockImplementation(async (...args: unknown[]) => {
+      if ((args[0] as string) === 'ideas_delete_capture') throw new Error('vault is read-only');
+      return undefined;
+    });
+    const target = mountToast();
+    show(target, baseRecord());
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true }));
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-error"]')?.textContent).toContain(
+        'vault is read-only',
+      );
+    });
+    expect(target.querySelector('[data-testid="capture-toast-undone"]')).toBeNull();
+    // The record is still on disk, so the toast must still be up saying so.
+    vi.advanceTimersByTime(1200);
+    flushSync();
+    expect(target.querySelector('[data-testid="capture-toast"]')).not.toBeNull();
+  });
+
+  it('a rejected ideas_move_capture keeps "Filed to" on the original company', async () => {
+    invokeMock.mockImplementation(async (...args: unknown[]) => {
+      const cmd = args[0] as string;
+      if (cmd === 'ideas_list_companies') return ['acme'];
+      if (cmd === 'ideas_move_capture') throw new Error('acme is not yours');
+      return undefined;
+    });
+    const target = mountToast();
+    show(target, baseRecord({ company_slug: 'indigo' }));
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Alt', altKey: true, metaKey: true, bubbles: true }),
+    );
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-picker-item"]')).not.toBeNull();
+    });
+    (
+      target.querySelector('[data-testid="capture-toast-picker-item"][data-company="acme"]') as HTMLButtonElement
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-error"]')?.textContent).toContain(
+        'acme is not yours',
+      );
+    });
+    expect(target.querySelector('[data-testid="capture-toast-filed"]')?.textContent).toContain('indigo');
+    expect(target.querySelector('[data-testid="capture-toast-filed"]')?.textContent).not.toContain('acme');
+  });
+
+  it('a rejected ideas_set_note surfaces the error and keeps the typed text on screen', async () => {
+    invokeMock.mockImplementation(async (...args: unknown[]) => {
+      if ((args[0] as string) === 'ideas_set_note') throw new Error('disk full');
+      return undefined;
+    });
+    const target = mountToast();
+    show(target, baseRecord());
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-note-input"]')).not.toBeNull();
+    });
+    const input = target.querySelector('[data-testid="capture-toast-note-input"]') as HTMLInputElement;
+    input.value = 'precious';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-error"]')?.textContent).toContain('disk full');
+    });
+    const still = target.querySelector('[data-testid="capture-toast-note-input"]') as HTMLInputElement;
+    expect(still).not.toBeNull();
+    expect(still.value).toBe('precious');
   });
 
   it('⌘⌥ lists companies and choosing one calls ideas_move_capture and re-renders "Filed to <new>"', async () => {
@@ -285,24 +395,26 @@ describe('CaptureToast (hq-idea-board US-005)', () => {
       '[data-testid="capture-toast-picker-item"][data-company="acme"]',
     ) as HTMLButtonElement;
     item.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    flushSync();
-
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-filed"]')?.textContent).toContain('acme');
+    });
     expect(invokeMock).toHaveBeenCalledWith('ideas_move_capture', { id: 'rec-1', toCompany: 'acme' });
-    expect(target.querySelector('[data-testid="capture-toast-filed"]')?.textContent).toContain('acme');
+    expect(target.querySelector('[data-testid="capture-toast-error"]')).toBeNull();
     // Choosing a company does not dismiss the toast.
     expect(target.querySelector('[data-testid="capture-toast"]')).not.toBeNull();
   });
 
-  it('Enter (no note editing, no picker) opens the board and dismisses', () => {
+  it('Enter (no note editing, no picker) opens the board and dismisses', async () => {
     const target = mountToast();
     show(target, baseRecord());
     invokeMock.mockClear();
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('dismiss_capture_toast');
+    });
     flushSync();
-
     expect(invokeMock).toHaveBeenCalledWith('ideas_open_board', { id: 'rec-1' });
-    expect(invokeMock).toHaveBeenCalledWith('dismiss_capture_toast');
     expect(target.querySelector('[data-testid="capture-toast"]')).toBeNull();
   });
 

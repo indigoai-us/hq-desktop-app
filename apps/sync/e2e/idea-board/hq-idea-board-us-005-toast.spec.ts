@@ -63,6 +63,40 @@ describe('US-005 capture toast (source contract)', () => {
     }
   });
 
+  it('grants the capture-toast window the minimum capability set', () => {
+    // App-defined commands need no per-command token and the window drives no
+    // core window/webview API itself, so anything beyond core:default +
+    // core:event:default would be an unused grant on an always-on-top window.
+    const parsed = JSON.parse(capabilityJson) as {
+      windows: string[];
+      permissions: string[];
+    };
+    expect(parsed.windows).toEqual(['capture-toast']);
+    expect([...parsed.permissions].sort()).toEqual(['core:default', 'core:event:default']);
+  });
+
+  it('routes every "open" action through an app command, never plugin-shell', () => {
+    // US-010's review found provenance URLs reaching @tauri-apps/plugin-shell
+    // unvalidated. The toast must not grow that seam: its only open action is
+    // the in-app board route.
+    expect(toastSvelte).not.toContain('@tauri-apps/plugin-shell');
+    expect(toastSvelte).not.toMatch(/\bopenUrl\s*\(/);
+    expect(toastSvelte).toContain("'ideas_open_board'");
+  });
+
+  it('never swallows a write rejection into a fire-and-forget invoke', () => {
+    // Every mutation (undo/note/reassign/open) must be awaited so a failure
+    // can surface instead of leaving the toast claiming a change that never
+    // happened.
+    for (const command of ['ideas_delete_capture', 'ideas_set_note', 'ideas_move_capture', 'ideas_open_board']) {
+      expect(toastSvelte).toContain(`await invoke('${command}'`);
+      expect(toastSvelte).not.toMatch(
+        new RegExp(`void invoke\\('${command}'[^)]*\\)\\.catch`),
+      );
+    }
+    expect(toastSvelte).toContain('capture-toast-error');
+  });
+
   it('never uses native browser dialogs', () => {
     expect(toastSvelte).not.toMatch(/window\.confirm\s*\(/);
     expect(toastSvelte).not.toMatch(/window\.alert\s*\(/);
