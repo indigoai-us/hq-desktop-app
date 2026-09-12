@@ -98,6 +98,8 @@ describe("workMesh.migrateSession", () => {
     // handlers that ENFORCE the company boundary rather than cross it —
     // handleListEvents 403s when the thread's companyUid does not match the
     // requested one.
+    // putProjectView PUTs a view onto one companyUid+projectId; it does not
+    // rebind a session across companies.
     const workMeshKeys = Object.keys(adapter.workMesh).sort();
     expect(workMeshKeys).toEqual([
       "createProjectStory",
@@ -105,6 +107,7 @@ describe("workMesh.migrateSession", () => {
       "listProjectThreads",
       "listThreadEvents",
       "migrateSession",
+      "putProjectView",
       "readLocalSnapshot",
     ]);
     expect(workMeshKeys).not.toContain("organizeSession");

@@ -49,7 +49,7 @@
   .reauth-card {
     --mesh-a: #7dd3fc;
     --mesh-b: #34d399;
-    --mesh-c: #a78bfa;
+    --mesh-c: #94a3b8;
     --mesh-base: #1f2f3a;
     display: flex;
     align-items: center;
