@@ -16,6 +16,7 @@ import { ok, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
 import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
+import { createChatWakeBus, type ChatWakeBus } from "../chat/chat-api.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import { SETUP_BOT_COPY, SETUP_BOT_INTRO, SETUP_BOT_KICKOFF } from "../chat/setup-bot.js";
@@ -44,11 +45,13 @@ function setupBotRow(over: Partial<LocalBotRow> = {}): LocalBotRow {
 
 interface AdapterOptions {
   bots?: Partial<NonNullable<PlatformAdapter["bots"]>>;
+  /** The setup bot's DM, oldest first; tests push the intro / answer here. */
+  dm?: Array<Record<string, unknown>>;
   /** What `sessions.preflight` says about signed-in runtimes. */
   claudeLoggedIn?: boolean;
 }
 
-function adapter({ bots = {}, claudeLoggedIn = true }: AdapterOptions = {}): PlatformAdapter {
+function adapter({ bots = {}, claudeLoggedIn = true, dm = [] }: AdapterOptions = {}): PlatformAdapter {
   return {
     kind: "web",
     isAvailable: () => false,
@@ -57,7 +60,7 @@ function adapter({ bots = {}, claudeLoggedIn = true }: AdapterOptions = {}): Pla
       listContacts: async () => ok({ contacts: [] }),
       listChannelMembers: async () => ok({ members: [] }),
       fetchChannel: async () => ({ ok: false as const, reason: "unavailable" }),
-      fetchDmThread: async () => ok({ messages: [], nextCursor: null }),
+      fetchDmThread: async () => ok({ messages: [...dm].reverse(), nextCursor: null }),
     },
     settings: {
       getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }),
@@ -141,7 +144,7 @@ function q<T extends Element = HTMLElement>(sel: string): T | null {
   return host.querySelector<T>(sel);
 }
 
-async function mountWelcome(platform: PlatformAdapter, setupRun: SetupRunApi): Promise<void> {
+async function mountWelcome(platform: PlatformAdapter, setupRun: SetupRunApi, wakes?: ChatWakeBus): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
@@ -152,6 +155,7 @@ async function mountWelcome(platform: PlatformAdapter, setupRun: SetupRunApi): P
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_test", displayName: "Test", email: "test@example.com" },
       coreFixtures: false,
+      ...(wakes ? { wakes } : {}),
       extraPages: {
         sessions: {
           label: "Sessions",
@@ -197,6 +201,41 @@ describe("#welcome Run Setup creates the setup bot", () => {
     expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup");
     // …and setup counts as run, so a later boot lands in the company channel.
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
+  });
+
+  it("shows the bot thinking while it works on its first step, and clears it when that answer lands", async () => {
+    const dm: Array<Record<string, unknown>> = [];
+    const wakes = createChatWakeBus();
+    await mountWelcome(adapter({ dm }), fakeSetupRun(), wakes);
+    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    // Before the intro lands there is nothing to be thinking after.
+    expect(q('[data-testid="agent-thinking-row"]')).toBeNull();
+
+    // The runtime's intro arrives; the kickoff turn is now running.
+    const at = Date.now();
+    dm.push({
+      eventId: "evt_intro",
+      body: SETUP_BOT_INTRO,
+      fromPersonUid: SETUP_BOT_UID,
+      fromDisplayName: "setup",
+      createdAt: new Date(at).toISOString(),
+      direction: "in",
+    });
+    wakes.emit("mesh:catchup", { reason: "focus" });
+    await vi.waitFor(() => expect(q('[data-testid="agent-thinking-row"]')?.textContent).toContain("setup is thinking"));
+
+    // The first step's answer ends it.
+    dm.push({
+      eventId: "evt_step_one",
+      body: "Here's what's set up already…",
+      fromPersonUid: SETUP_BOT_UID,
+      fromDisplayName: "setup",
+      createdAt: new Date(at + 60_000).toISOString(),
+      direction: "in",
+    });
+    wakes.emit("mesh:catchup", { reason: "focus" });
+    await vi.waitFor(() => expect(q('[data-testid="agent-thinking-row"]')).toBeNull());
   });
 
   it("opens the setup bot that already exists instead of creating a second one", async () => {

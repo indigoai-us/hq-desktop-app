@@ -254,6 +254,7 @@
     isAgentUid,
     newestMessageAtFrom,
     startThinkingIn,
+    kickoffThinkingState,
     tickAll,
     type ThinkingByRow,
     type ThinkingEntry,
@@ -887,6 +888,9 @@
     const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
     await refreshLocalBots();
     if (!agentUid) return { ok: true, agentUid: "", name: input.name };
+    // A kickoff turn starts with no message from the person, so nothing else
+    // would show "is thinking…" while the bot works on it.
+    if (input.kickoff?.trim()) kickoffPendingByUid = { ...kickoffPendingByUid, [agentUid]: input.name };
     // Identity exists (the CLI returned a uid); the launch agent is installing.
     botProgressByUid = {
       ...botProgressByUid,
@@ -1519,6 +1523,24 @@
   // row, a failed send there, or the hard expiry) — never a row switch.
   const AGENT_THINKING_TICK_MS = 5_000;
   let thinkingByRow = $state<ThinkingByRow>({});
+  /** Bots created with a kickoff whose first turn has not been shown yet
+   *  (uid → name). Once the intro is in the open DM, the row starts there. */
+  let kickoffPendingByUid = $state<Record<string, string>>({});
+  $effect(() => {
+    const row = selectedRow;
+    const uid = row?.kind === "dm" ? (row.personUid?.trim() ?? "") : "";
+    if (!row || !uid || !kickoffPendingByUid[uid] || liveTimelineId !== row.id) return;
+    const decision = kickoffThinkingState(liveTimeline, uid);
+    if (decision.state === "waiting") return;
+    const name = kickoffPendingByUid[uid]!;
+    const { [uid]: _started, ...rest } = kickoffPendingByUid;
+    kickoffPendingByUid = rest;
+    if (decision.state === "start") {
+      thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: row.title?.trim() || name }, Date.now(), {
+        afterMs: decision.afterMs,
+      });
+    }
+  });
   const agentThinking = $derived<ThinkingEntry[]>(
     selectedRow ? (thinkingByRow[selectedRow.id] ?? []) : [],
   );

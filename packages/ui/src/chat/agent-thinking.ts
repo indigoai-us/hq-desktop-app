@@ -243,6 +243,31 @@ export function newestMessageAtFrom(
   return newest;
 }
 
+/**
+ * A bot created with a kickoff (`hq bot create --kickoff`) sends its intro and
+ * then works on a first turn nobody asked for, so no send ever starts its
+ * thinking row. Decide from that bot's messages in its DM:
+ * - `waiting`: the intro has not landed yet;
+ * - `start`: only the intro is there — show the row, pinned to the intro so
+ *   the intro itself never clears it and the kickoff answer does;
+ * - `done`: the answer already landed (or the DM already has more than the
+ *   intro), so there is nothing left to wait for.
+ */
+export function kickoffThinkingState(
+  messages: ReadonlyArray<{
+    fromPersonUid?: string | null;
+    createdAt?: string | null;
+  }>,
+  agentUid: string,
+): { state: 'waiting' } | { state: 'start'; afterMs: number } | { state: 'done' } {
+  const uid = agentUid.trim();
+  const fromBot = messages.filter((m) => (m.fromPersonUid ?? '').trim() === uid);
+  if (fromBot.length === 0) return { state: 'waiting' };
+  if (fromBot.length > 1) return { state: 'done' };
+  const afterMs = newestMessageAtFrom(fromBot, uid);
+  return afterMs === undefined ? { state: 'done' } : { state: 'start', afterMs };
+}
+
 /** Status copy for a row. Unicode ellipsis (U+2026) matches the rest of
  * the messaging UI (`Sending…`, `Joining…`). */
 export function labelFor(entry: ThinkingEntry): string {

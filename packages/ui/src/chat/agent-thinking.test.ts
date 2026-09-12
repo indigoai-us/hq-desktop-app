@@ -15,6 +15,7 @@ import {
   tickAll,
   clearRowFromMessages,
   dropRow,
+  kickoffThinkingState,
 } from './agent-thinking.js';
 
 function member(personUid: string, displayName: string): MentionCandidate {
@@ -331,5 +332,29 @@ describe('per-row map (thinking survives navigation)', () => {
     expect(dropped).toEqual({ [B]: map[B] });
     expect(map[A]).toHaveLength(1);
     expect(dropRow(dropped, 'ch:nope')).toEqual(dropped);
+  });
+});
+
+describe('kickoffThinkingState', () => {
+  const bot = 'agt_setup';
+  const intro = { fromPersonUid: bot, createdAt: '2026-09-12T21:40:41.000Z' };
+  const reply = { fromPersonUid: bot, createdAt: '2026-09-12T21:42:10.000Z' };
+  const mine = { fromPersonUid: 'prs_me', createdAt: '2026-09-12T21:41:00.000Z' };
+
+  it('waits until the intro lands', () => {
+    expect(kickoffThinkingState([], bot)).toEqual({ state: 'waiting' });
+    expect(kickoffThinkingState([mine], bot)).toEqual({ state: 'waiting' });
+  });
+  it('starts once only the intro is there, pinned so the intro never clears the row but the answer does', () => {
+    const decision = kickoffThinkingState([intro, mine], bot);
+    expect(decision).toEqual({ state: 'start', afterMs: Date.parse(intro.createdAt) });
+    const rows = startThinking([], { agentUid: bot, agentName: 'setup' }, Date.parse(intro.createdAt) + 500, {
+      afterMs: (decision as { afterMs: number }).afterMs,
+    });
+    expect(clearFromMessages(rows, [intro])).toHaveLength(1);
+    expect(clearFromMessages(rows, [intro, reply])).toHaveLength(0);
+  });
+  it('is done when the answer already landed', () => {
+    expect(kickoffThinkingState([intro, reply], bot)).toEqual({ state: 'done' });
   });
 });
