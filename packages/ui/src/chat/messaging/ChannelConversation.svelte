@@ -62,7 +62,7 @@
   } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
-  import GenerateTaskModal from "./GenerateTaskModal.svelte";
+
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
@@ -136,11 +136,6 @@
     mentionCandidates?: MentionTarget[];
     /** Open ReplyPanel for this root eventId. */
     onreply?: (rootEventId: string) => void;
-    onGenerateTask?: (input: {
-      body: string;
-      notes: string;
-      thread: Array<{ author: string; body: string }>;
-    }) => Promise<void>;
     /** Start an in-channel session from this message. */
     onstartsession?: (rootEventId: string) => void;
     /** Open an existing in-channel session from a work-session card. */
@@ -284,39 +279,7 @@
     draftStorage = null,
     composerLocked = false,
     restoreScroll = null,
-    onGenerateTask,
   }: Props = $props();
-
-  let generateFor = $state<ConversationMessageWire | null>(null);
-  let generateNotes = $state("");
-  let generatePending = $state(false);
-  let generateError = $state("");
-
-  async function submitGenerateTask(): Promise<void> {
-    if (!generateFor || !onGenerateTask || generatePending) return;
-    generatePending = true;
-    generateError = "";
-    try {
-      const thread = messages
-        .filter((row) => (row.body ?? row.prompt ?? "").trim())
-        .slice(-12)
-        .map((row) => ({
-          author: messageAuthor(row),
-          body: (row.body ?? row.prompt ?? "").trim(),
-        }));
-      await onGenerateTask({
-        body: (generateFor.body ?? generateFor.prompt ?? "").trim(),
-        notes: generateNotes,
-        thread,
-      });
-      generateFor = null;
-      generateNotes = "";
-    } catch {
-      generateError = "Could not start task generation. Try again.";
-    } finally {
-      generatePending = false;
-    }
-  }
 
   /** Presence-store online flag for an actor in this conversation's company. */
   function actorOnline(actorUid: string | null | undefined): boolean {
@@ -1474,22 +1437,6 @@
                       />
                     {/if}
                   </span>
-                  {#if onGenerateTask}
-                    <button
-                      type="button"
-                      class="dm-quick-react-btn"
-                      data-testid="message-generate-task"
-                      aria-label="Generate task"
-                      title="Generate task"
-                      onclick={() => {
-                        generateFor = msg;
-                        generateNotes = "";
-                        generateError = "";
-                      }}
-                    >
-                      Task
-                    </button>
-                  {/if}
                   <button
                     type="button"
                     class="dm-quick-react-btn dm-quick-reply"
@@ -1762,19 +1709,6 @@
       onclose={() => (linkMenu = null)}
     />
   {/if}
-  <GenerateTaskModal
-    open={Boolean(generateFor)}
-    messageBody={(generateFor?.body ?? generateFor?.prompt ?? "").trim()}
-    notes={generateNotes}
-    pending={generatePending}
-    error={generateError}
-    onnotes={(value) => (generateNotes = value)}
-    onconfirm={() => void submitGenerateTask()}
-    oncancel={() => {
-      if (generatePending) return;
-      generateFor = null;
-    }}
-  />
 </div>
 
 <style>

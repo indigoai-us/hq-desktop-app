@@ -55,20 +55,7 @@
   import { liveSessionStore } from './lib/live-session-store.svelte';
   import LiveChannelSessionPane from './components/LiveChannelSessionPane.svelte';
   import type { SessionThread } from '@hq/ui';
-  import { parseMeshProjectView } from '@hq/core';
-  import {
-    GENERATE_TASK_TIMEOUT_MS,
-    GENERATE_TASK_SETTLE_MS,
-    backgroundJobFailure,
-    createdStoryTitle,
-    parseGeneratedStoryFromEvents,
-  } from './lib/background-job';
-  import { readRememberedTool } from '../components/sessions/session-models';
   import { planFirstSend } from '../components/sessions/startwork';
-  import {
-    isPermissionGranted as isNotifyPermissionGranted,
-    sendNotification,
-  } from '@tauri-apps/plugin-notification';
   import { configureSessionStarterCache } from '../components/sessions/session-starter';
   import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
   import { SETUP_PROMPT } from './lib/setup-launch';
@@ -978,96 +965,6 @@
               : {},
           );
           return { sessionId };
-        }}
-        onGenerateTask={async (seed) => {
-          const company = (companies ?? []).find((row) => row.cloudUid === seed.companyUid);
-          const slug = company?.slug?.trim();
-          if (!slug) throw new Error('Company unavailable');
-          const beforeRes = await adapter.workMesh.getProjectView(seed.projectId, seed.companyUid);
-          if (!beforeRes.ok) throw new Error(beforeRes.message || 'Project unavailable');
-          const before = parseMeshProjectView(beforeRes.value);
-          const known = new Set((before?.stories ?? []).map((story) => story.id));
-          const preflight = await invokeFn<{
-            claudeLoggedIn?: boolean;
-            codexLoggedIn?: boolean;
-            grokLoggedIn?: boolean;
-          }>('agent_session_preflight');
-          const remembered = readRememberedTool();
-          const logged = {
-            claude: Boolean(preflight.claudeLoggedIn),
-            codex: Boolean(preflight.codexLoggedIn),
-            grok: Boolean(preflight.grokLoggedIn),
-          } as const;
-          const tool = logged[remembered]
-            ? remembered
-            : logged.grok
-              ? 'grok'
-              : logged.codex
-                ? 'codex'
-                : logged.claude
-                  ? 'claude'
-                  : remembered;
-          const sessionId = await liveSessionStore.startBackground(
-            {
-              sessionId: '',
-              title: null,
-              tool,
-              cwd: '',
-              company: slug,
-              project: seed.projectId,
-              model: null,
-              effort: null,
-              resume: null,
-              permissionMode: 'bypassAll',
-              hidden: true,
-            },
-            seed.prompt,
-          );
-          const deadline = Date.now() + GENERATE_TASK_TIMEOUT_MS;
-          let settleUntil = 0;
-          const lookForCreated = async (): Promise<string | null> => {
-            const nextRes = await adapter.workMesh.getProjectView(seed.projectId, seed.companyUid);
-            if (!nextRes.ok) return null;
-            const after = parseMeshProjectView(nextRes.value);
-            return createdStoryTitle(known, after?.stories ?? []);
-          };
-          const finish = async (title: string) => {
-            try {
-              if (await isNotifyPermissionGranted()) {
-                sendNotification({ title: 'Task created', body: title });
-              }
-            } catch {
-              /* in-chat status is the required signal */
-            }
-            return { title };
-          };
-          while (Date.now() < deadline) {
-            const created = await lookForCreated();
-            if (created) return finish(created);
-            const status = await liveSessionStore.backgroundStatus(sessionId);
-            const failed = backgroundJobFailure(status.events);
-            const draft = parseGeneratedStoryFromEvents(status.events);
-            if (draft && adapter.workMesh.createProjectStory) {
-              const posted = await adapter.workMesh.createProjectStory(
-                seed.projectId,
-                seed.companyUid,
-                draft,
-              );
-              if (posted.ok) return finish(draft.title);
-            }
-            if (failed && /authenticate|sign in/i.test(failed)) throw new Error(failed);
-            if (failed && !status.gone) throw new Error(failed);
-            if (status.gone) {
-              if (!settleUntil) settleUntil = Date.now() + GENERATE_TASK_SETTLE_MS;
-              if (Date.now() >= settleUntil) {
-                throw new Error('The generator session stopped before the task landed.');
-              }
-            }
-            await new Promise((resolve) => setTimeout(resolve, 1500));
-          }
-          const late = await lookForCreated();
-          if (late) return finish(late);
-          throw new Error('Timed out creating the task');
         }}
         data={{ user: capabilities.hostIdentity }}
         runtimeKind={capabilities.runtimeKind}

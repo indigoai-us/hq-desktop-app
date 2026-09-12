@@ -183,12 +183,6 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
-    onGenerateTask?: (seed: {
-      companyUid: string;
-      projectId: string;
-      channelId?: string | null;
-      prompt: string;
-    }) => Promise<{ title: string }>;
     onstartlivesession?: ComponentProps<typeof DesktopApp>["onstartlivesession"];
     channelSessionBody?: ComponentProps<typeof DesktopApp>["channelSessionBody"];
     /**
@@ -229,7 +223,6 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
-    onGenerateTask,
     onstartlivesession,
     channelSessionBody,
     rosterRetryDelaysMs,
@@ -856,7 +849,6 @@
       {rowExtrasLoading}
       {rowExtrasError}
       {rowExtras}
-      {onGenerateTask}
       {onstartlivesession}
       {channelSessionBody}
     />

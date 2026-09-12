@@ -113,10 +113,6 @@
   import ArtifactPanel from "../chat/messaging/ArtifactPanel.svelte";
   import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
-  import {
-    boardTaskGeneratePrompt,
-    messageTaskGeneratePrompt,
-  } from "../chat/messaging/task-generate.js";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import CompanyTabs from "../chat/CompanyTabs.svelte";
   import TeamTab from "../chat/tabs/TeamTab.svelte";
@@ -582,12 +578,6 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
-    onGenerateTask?: (seed: {
-      companyUid: string;
-      projectId: string;
-      channelId?: string | null;
-      prompt: string;
-    }) => Promise<{ title: string }>;
     /**
      * Desktop host starts the real agent session for an in-channel pane.
      * Web omits this; the pane falls back to a notice.
@@ -656,7 +646,6 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
-    onGenerateTask,
     onstartlivesession,
     channelSessionBody,
   }: Props = $props();
@@ -1692,27 +1681,6 @@
     void loadProjectActivity(row);
   });
 
-  let taskGenLines = $state<Record<string, ConversationMessageWire[]>>({});
-
-  function taskGenMessage(id: string, note: string): ConversationMessageWire {
-    return {
-      eventId: id,
-      createdAt: new Date().toISOString(),
-      direction: "in",
-      messageKind: "system",
-      body: note,
-      systemEvent: { v: 1, type: "work_session_task_status", note },
-    };
-  }
-
-  function upsertTaskGenLine(rowKey: string, id: string, note: string): void {
-    const existing = taskGenLines[rowKey] ?? [];
-    const next = existing.some((row) => row.eventId === id)
-      ? existing.map((row) => (row.eventId === id ? taskGenMessage(id, note) : row))
-      : [...existing, taskGenMessage(id, note)];
-    taskGenLines = { ...taskGenLines, [rowKey]: next };
-  }
-
   // Diagnostic: what the setup channel is showing and why. Logged only when
   // the picture changes, so the log is not spammed on every timeline poll.
   let lastSetupStateLog = "";
@@ -1757,8 +1725,6 @@
       rows =
         setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
     }
-    const extras = selectedRow ? taskGenLines[activityKeyForRow(selectedRow)] ?? [] : [];
-    if (extras.length) rows = [...rows, ...extras];
     if (localSessionWires.length === 0) return coalesceWorkSessionWires(rows);
     return coalesceWorkSessionWires([...rows, ...localSessionWires]);
   });
@@ -1818,116 +1784,6 @@
     })) };
   });
 
-  async function createBoardTask(task: {id: string; title: string; description: string; status: string}): Promise<void> {
-    const row = selectedRow;
-    const companyUid = row?.companyUid?.trim();
-    const projectId = row ? projectIdForRow(row) : null;
-    if (!row || !companyUid || !projectId || !onGenerateTask) throw new Error("Project unavailable");
-    const prompt = boardTaskGeneratePrompt({
-      title: task.title,
-      description: task.description,
-      projectId,
-    });
-    const key = activityKeyForRow(row);
-    const lineId = `task-gen-${task.id}`;
-    upsertTaskGenLine(key, lineId, "Creating task");
-    void onGenerateTask({
-      companyUid,
-      projectId,
-      channelId: row.channelId,
-      prompt,
-    }).then(
-      (created) => upsertTaskGenLine(key, lineId, `Task created — ${created.title}`),
-      (err) =>
-        upsertTaskGenLine(
-          key,
-          lineId,
-          `Could not create the task — ${err instanceof Error ? err.message : "unknown error"}`,
-        ),
-    );
-    const prior = createdTasks[key];
-    const placeholder = projectViewToBoard({
-      companyUid,
-      projectId,
-      stories: [{
-        id: task.id,
-        title: task.title,
-        description: task.description,
-        status: task.status,
-        acceptanceCriteria: [],
-      }],
-      repos: [],
-    });
-    const generating = {
-      ...placeholder,
-      stories: Object.fromEntries(
-        Object.entries(placeholder.stories).map(([id, story]) => [
-          id,
-          { ...story, statusBadge: "Generating", fields: { ...story.fields, status: "Generating" } },
-        ]),
-      ),
-    };
-    createdTasks = {...createdTasks, [key]: prior ? {
-      ...generating, stories: {...prior.stories, ...generating.stories},
-      columns: generating.columns.map(column => ({...column, cards: [...(prior.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => card.storyId !== task.id), ...column.cards]})),
-    } : generating};
-  }
-
-  async function deleteBoardTask(task: {id: string; title: string; status: string}): Promise<void> {
-    const row = selectedRow;
-    const companyUid = row?.companyUid?.trim();
-    const projectId = row ? projectIdForRow(row) : null;
-    const put = adapter.workMesh.putProjectView;
-    if (!row || !companyUid || !projectId || !put) throw new Error("Project unavailable");
-    const before = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
-    if (!before || before.companyUid !== companyUid || before.projectId !== projectId) throw new Error("Project unavailable");
-    unwrapAdapter(await put(projectId, companyUid, {
-      ...before,
-      stories: before.stories.filter((story) => story.id !== task.id),
-    }));
-    const key = activityKeyForRow(row);
-    const prior = createdTasks[key];
-    if (prior) {
-      const remaining = Object.fromEntries(Object.entries(prior.stories).filter(([id]) => id !== task.id));
-      const next = {...createdTasks};
-      if (!Object.keys(remaining).length) delete next[key];
-      else next[key] = {...prior, stories: remaining, columns: prior.columns.map(column => ({...column, cards: column.cards.filter(card => card.storyId !== task.id)}))};
-      createdTasks = next;
-    }
-  }
-
-  async function generateTaskFromMessage(input: {
-    body: string;
-    notes: string;
-    thread: Array<{ author: string; body: string }>;
-  }): Promise<void> {
-    const row = selectedRow;
-    const companyUid = row?.companyUid?.trim();
-    const projectId = row ? projectIdForRow(row) : null;
-    if (!row || !companyUid || !projectId || !onGenerateTask) throw new Error("Project unavailable");
-    const rowKey = activityKeyForRow(row);
-    const lineId = `task-gen-${crypto.randomUUID()}`;
-    upsertTaskGenLine(rowKey, lineId, "Creating task");
-    void onGenerateTask({
-      companyUid,
-      projectId,
-      channelId: row.channelId,
-      prompt: messageTaskGeneratePrompt({
-        projectId,
-        messageBody: input.body,
-        notes: input.notes,
-        thread: input.thread,
-      }),
-    }).then(
-      (created) => upsertTaskGenLine(rowKey, lineId, `Task created — ${created.title}`),
-      (err) =>
-        upsertTaskGenLine(
-          rowKey,
-          lineId,
-          `Could not create the task — ${err instanceof Error ? err.message : "unknown error"}`,
-        ),
-    );
-  }
   const files = $derived<ChannelFileItemModel[]>(
     overlayFiles.length > 0 ? overlayFiles : (liveTabs?.files ?? []),
   );
@@ -6122,7 +5978,6 @@
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
-                  onGenerateTask={onGenerateTask && selectedRow?.companyUid ? generateTaskFromMessage : undefined}
                   onstartsession={startSessionFromMessage}
                   onopensession={openSessionFromCard}
                   onstartchannelsession={
@@ -6322,8 +6177,6 @@
             </div>
           {:else if activeTab === "board"}
             <BoardTab
-              onCreateTask={onGenerateTask && selectedRow?.companyUid ? createBoardTask : undefined}
-              onDeleteTask={adapter.workMesh?.putProjectView && selectedRow?.companyUid ? deleteBoardTask : undefined}
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
               onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}
