@@ -6,6 +6,17 @@ use sha2::{Digest, Sha256};
 // cognito.rs's COGNITO_CLIENT_ID — drift between the two breaks token refresh
 // (sign-in succeeds against one client but refresh hits InvalidClient).
 pub const COGNITO_CLIENT_ID: &str = "7acei2c8v870enheptb1j5foln";
+
+/// App client id: `$HQ_COGNITO_CLIENT_ID` when set and non-empty (staging
+/// stages such as hq-meet), else the canonical hq-prod client. Mirrors the
+/// HQ CLI's `HQ_COGNITO_CLIENT_ID` override so a stage-targeted `hq login`
+/// and the app refresh/sign-in agree on the client.
+pub fn cognito_client_id() -> String {
+    match std::env::var("HQ_COGNITO_CLIENT_ID") {
+        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+        _ => COGNITO_CLIENT_ID.to_string(),
+    }
+}
 pub const DEFAULT_COGNITO_DOMAIN_PREFIX: &str = "vault-indigo-hq-prod";
 pub const REDIRECT_URI: &str = "http://localhost:53682/callback";
 
@@ -52,7 +63,7 @@ pub fn build_authorize_url(state: &str, challenge: &str, identity_provider: &str
          &code_challenge={challenge}\
          &code_challenge_method=S256",
         base = cognito_authorize_url(),
-        client_id = COGNITO_CLIENT_ID,
+        client_id = cognito_client_id(),
         redirect_uri = REDIRECT_URI,
         identity_provider = identity_provider,
         state = state,
@@ -217,7 +228,17 @@ mod tests {
     }
 
     #[test]
-    fn authorize_url_contains_required_params() {
+    fn client_id_env_override_wins_when_non_empty() {
+        std::env::set_var("HQ_COGNITO_CLIENT_ID", " staging-client ");
+        assert_eq!(cognito_client_id(), "staging-client");
+        std::env::set_var("HQ_COGNITO_CLIENT_ID", "");
+        assert_eq!(cognito_client_id(), COGNITO_CLIENT_ID);
+        std::env::remove_var("HQ_COGNITO_CLIENT_ID");
+        assert_eq!(cognito_client_id(), COGNITO_CLIENT_ID);
+    }
+
+    #[test]
+fn authorize_url_contains_required_params() {
         // We can't call the async command directly in a sync test, so test
         // the URL construction logic inline.
         let state = "test-state-123";

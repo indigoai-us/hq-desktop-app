@@ -40,7 +40,7 @@
 use super::cognito::{AuthState, CognitoTokens};
 use hq_desktop_core::oauth::{
     build_authorize_url, cognito_identity_provider, cognito_token_url, compute_code_challenge,
-    generate_code_verifier, parse_callback, COGNITO_CLIENT_ID, REDIRECT_URI,
+    cognito_client_id, generate_code_verifier, parse_callback, REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -508,9 +508,10 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
 
     let client = crate::util::client_info::build_client();
 
+    let client_id = cognito_client_id();
     let params = [
         ("grant_type", "authorization_code"),
-        ("client_id", COGNITO_CLIENT_ID),
+        ("client_id", client_id.as_str()),
         ("code", &code),
         ("redirect_uri", REDIRECT_URI),
         ("code_verifier", &verifier),
