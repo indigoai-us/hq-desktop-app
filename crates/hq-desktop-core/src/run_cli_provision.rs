@@ -27,11 +27,20 @@
 //! Stderr: free-form progress lines prefixed by the CLI itself (e.g.
 //! `[hq cloud provision] validated slug=acme`). We tee every line into
 //! the persistent diagnostic log via `util::logfile::log("provision-cli", …)`
-//! so a stuck or failed provision leaves breadcrumbs we can grep for.
+//! so a stuck or failed provision leaves breadcrumbs we can grep for. The
+//! stderr (and stdout) readers decode with `String::from_utf8_lossy`, so a
+//! single non-UTF-8 byte replaces itself with U+FFFD rather than ending the
+//! capture — a silently-truncated tail is what let an exit-1 provision reach
+//! Sentry with `stderr_tail=""` and get mislabelled a vault incident
+//! (HQ-DESKTOP-68).
 //!
 //! Exit codes:
 //!   * `0` — success, JSON has `ok: true`, `initial_sync.ok: true`
-//!   * `1` — vault auth/network/API error (no entity provisioned)
+//!   * `1` — vault auth/network/API error, BUT only when the CLI actually said
+//!     so on stderr. Exit 1 is overloaded: `npx`/`npm` also exit 1 for local
+//!     failures before the CLI loads. We classify local-env failures first;
+//!     an exit 1 that wrote NOTHING to stderr is reported as `no-output`
+//!     (cause unproven) with runtime/duration/stdout evidence, never as vault.
 //!   * `2` — validation error (bad slug, manifest missing, dir missing, etc.)
 //!   * `3` — entity provisioned + manifest patched + config written, but the
 //!     initial sync failed. The JSON line on stdout still carries the
@@ -60,19 +69,70 @@
 use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{ChildStderr, ChildStdout};
 
 use crate::hq_resolver::{self, HqInvocation};
 use crate::logfile::log;
 use crate::paths;
-use crate::runtime_diagnosis::{self, RuntimeDiagnosis, RuntimeDiagnosisInput};
+use crate::runtime_diagnosis::{self, ChildExitDiagnosis, RuntimeDiagnosis, RuntimeDiagnosisInput};
 
 /// Last N stderr lines kept in memory so we can attach them to Sentry events.
 /// Capped to keep payloads under Sentry's per-event size limits.
 const STDERR_TAIL_CAP: usize = 50;
+
+/// Last N stdout lines attached to a failure event as evidence. The full
+/// stdout line list still feeds `parse_provision_stdout`; only the Sentry
+/// extra is capped, matching `STDERR_TAIL_CAP` so payloads stay bounded.
+const STDOUT_TAIL_CAP: usize = 50;
+
+/// Outcome of draining one child pipe. A closed vocabulary so it can travel as
+/// a Sentry tag without exposing raw bytes: the previous reader ended silently
+/// on the first non-UTF-8 line, which is exactly how an exit-1 provision could
+/// reach Sentry with an empty tail (HQ-DESKTOP-68).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReaderOutcome {
+    /// The stream reached end-of-file cleanly.
+    Eof,
+    /// The stream read errored mid-way (kind only — never the raw message).
+    IoError(std::io::ErrorKind),
+    /// The reader task itself failed to join (panic / cancellation).
+    JoinFailed,
+}
+
+impl ReaderOutcome {
+    /// Closed-cardinality tag value. Never carries the io error message.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::Eof => "eof",
+            Self::IoError(_) => "io-error",
+            Self::JoinFailed => "join-failed",
+        }
+    }
+}
+
+/// Everything captured from the child's pipes, drained concurrently with
+/// `child.wait()`. `stdout_lines` is the complete stream (fed to the JSON
+/// parser); `stdout_tail`/`stderr_tail` are the bounded rings attached to
+/// Sentry; the reader outcomes record whether either stream ended abnormally.
+#[derive(Debug, Clone)]
+pub struct ChildOutput {
+    pub stdout_lines: Vec<String>,
+    pub stdout_tail: Vec<String>,
+    pub stderr_tail: Vec<String>,
+    pub stdout_reader: ReaderOutcome,
+    pub stderr_reader: ReaderOutcome,
+    /// Total stderr lines the child wrote, counted while draining — NOT the
+    /// capped ring length, so a chatty failure reports its true volume.
+    pub stderr_line_count: usize,
+    /// Whether any nonblank stderr line was observed while draining. Tracked at
+    /// the source rather than derived from the (capped) `stderr_tail`, so a real
+    /// diagnostic followed by >50 blank lines is still seen as "stderr spoke".
+    pub stderr_had_nonblank: bool,
+}
 
 /// Remove ANSI colour/control sequences before looking for a JSON result.
 /// npm normally emits plain text, but this makes the stdout contract robust to
@@ -138,28 +198,59 @@ fn parse_provision_stdout(lines: &[String]) -> Result<CliProvisionResult, String
     }
 }
 
+/// Everything a non-spawn provision failure attaches to Sentry beyond the
+/// error itself. Split out so `finish_child_exit` (production) and
+/// `finish_child_exit_for_test` share one reporter: the only difference between
+/// them is where `runtime`/`node_major` come from (a real probe vs. an injected
+/// value), never what gets emitted.
+///
+/// Every free-form field (`stderr_tail`, `stdout_tail`) rides as a Sentry
+/// *extra*, which passes through `hq_telemetry::before_send` scrubbing; every
+/// *tag* stays closed-vocabulary (reader outcomes, provenance, probe outcomes,
+/// node major) because the scrubber does not rewrite tags.
+struct ProvisionExitDiagnostics {
+    stderr_tail: Vec<String>,
+    stdout_tail: Vec<String>,
+    stderr_line_count: usize,
+    stdout_line_count: usize,
+    stderr_reader: ReaderOutcome,
+    stdout_reader: ReaderOutcome,
+    duration_ms: u64,
+    /// Present only on the no-output arm — the one failure where the child left
+    /// no diagnostic of its own, so runtime provenance/probes are the evidence.
+    runtime: Option<RuntimeDiagnosisInput>,
+    node_major: Option<u32>,
+}
+
 /// Capture a provision-cli failure to Sentry with full diagnostic context.
-/// Tags carry the slug + CLI invocation kind + exit code so we can slice
-/// failures by stack/version. Extra carries the stderr tail (the most useful
-/// signal — what the CLI was actually doing when it died).
+/// Tags carry the slug + CLI invocation + exit code + reader outcomes so we can
+/// slice failures by stack/version; extras carry the stderr/stdout tails, line
+/// counts and the child's wall-clock duration.
 ///
 /// `local-env` failures (npm cache permission, disk full, npm registry
 /// unreachable / timeout) carry an additional `local_env_kind` tag so the
 /// existing `provision_kind=network` vault-incident alert rule can be
 /// tightened to exclude them — these are user-laptop problems, not platform
 /// incidents.
+///
+/// A `no-output` failure (exit with an empty stderr tail — cause unproven) is
+/// tagged `provision_kind=no-output` so it no longer matches the vault-incident
+/// rule, carries runtime provenance/probe evidence, and is fingerprinted into
+/// one issue instead of minting a fresh per-slug title every time.
 fn report_provision_error(
     err: &CliProvisionError,
     slug: &str,
     invocation_label: &str,
+    invocation_kind: &str,
     exit_code: Option<i32>,
-    stderr_tail: &[String],
+    diag: &ProvisionExitDiagnostics,
 ) {
     let kind = match err {
         CliProvisionError::Spawn(_) => "spawn",
         CliProvisionError::Validation(_) => "validation",
         CliProvisionError::Network(_) => "network",
         CliProvisionError::LocalEnv { .. } => "local-env",
+        CliProvisionError::NoOutput { .. } => "no-output",
         CliProvisionError::Sync { .. } => "sync",
         CliProvisionError::Other(_) => "other",
     };
@@ -167,7 +258,9 @@ fn report_provision_error(
         CliProvisionError::LocalEnv { kind, .. } => Some(kind),
         _ => None,
     };
-    let stderr_blob = stderr_tail.join("\n");
+    let is_no_output = matches!(err, CliProvisionError::NoOutput { .. });
+    let stderr_blob = diag.stderr_tail.join("\n");
+    let stdout_blob = diag.stdout_tail.join("\n");
     let exit_str = exit_code
         .map(|c| c.to_string())
         .unwrap_or_else(|| "signal/none".to_string());
@@ -181,7 +274,46 @@ fn report_provision_error(
             }
             scope.set_tag("cli_invocation", invocation_label);
             scope.set_tag("exit_code", &exit_str);
+            scope.set_tag("stderr_reader", diag.stderr_reader.tag());
+            scope.set_tag("stdout_reader", diag.stdout_reader.tag());
             scope.set_extra("stderr_tail", stderr_blob.into());
+            scope.set_extra("stdout_tail", stdout_blob.into());
+            scope.set_extra("stderr_lines", (diag.stderr_line_count as u64).into());
+            scope.set_extra("stdout_lines", (diag.stdout_line_count as u64).into());
+            scope.set_extra("child_duration_ms", diag.duration_ms.into());
+            // Runtime evidence rides only on the no-output arm, where the child
+            // said nothing about why it exited. Closed vocabulary, no paths —
+            // exactly the tags `report_unexplained_spawn` already emits, plus
+            // the node major from the version probe.
+            if let Some(runtime) = diag.runtime.as_ref() {
+                scope.set_tag("program_provenance", runtime.program_provenance.tag());
+                scope.set_tag(
+                    "runtime_owner",
+                    runtime_diagnosis::runtime_owner(&runtime.managed_runtime),
+                );
+                scope.set_tag("node_probe", runtime.node_probe.tag());
+                scope.set_tag("npx_probe", runtime.npx_probe.tag());
+                if let Some(reason) = runtime_diagnosis::unknown_reason(&runtime.managed_runtime) {
+                    scope.set_tag("runtime_unknown_reason", reason);
+                }
+                scope.set_tag(
+                    "node_major",
+                    diag.node_major
+                        .map(|m| m.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                );
+            }
+            // Collapse all no-output exits into one issue instead of a fresh
+            // per-slug title each time; slug/cli_invocation/exit_code/node_major
+            // stay as tags for slicing.
+            if is_no_output {
+                scope.set_fingerprint(Some(&[
+                    "provision-cli",
+                    "no-output",
+                    invocation_kind,
+                    &exit_str,
+                ]));
+            }
         },
         || {
             sentry::capture_message(&format!("[provision-cli] {err}"), sentry::Level::Error);
@@ -376,6 +508,309 @@ fn first_matching_line(blob: &str, needles: &[&str]) -> Option<String> {
     None
 }
 
+// ── Child output draining ─────────────────────────────────────────────────────
+
+/// Decode one raw line (delimiter included) into a String, replacing invalid
+/// UTF-8 with U+FFFD and trimming a single trailing `\n`/`\r\n`. Lossy decoding
+/// is the fix for HQ-DESKTOP-68: `Lines::next_line` returned an error on the
+/// first non-UTF-8 byte, which ended the reader loop and left an empty tail.
+fn decode_line(raw: &[u8]) -> String {
+    let mut line = String::from_utf8_lossy(raw).into_owned();
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+    }
+    line
+}
+
+/// Last `cap` elements of `lines`, cloned in order.
+fn last_n(lines: &[String], cap: usize) -> Vec<String> {
+    let start = lines.len().saturating_sub(cap);
+    lines[start..].to_vec()
+}
+
+/// Everything `read_stderr_tail` observes while draining: the bounded tail, how
+/// the stream ended, the TRUE line count (uncapped), and whether any nonblank
+/// line was seen. The last two are tracked at the source so neither the reported
+/// count nor the vault-vs-no-output decision is derived from the capped tail.
+struct StderrDrain {
+    tail: Vec<String>,
+    outcome: ReaderOutcome,
+    line_count: usize,
+    had_nonblank: bool,
+}
+
+/// Drain stderr into the diagnostic log AND a bounded ring, lossily, while
+/// counting every line and remembering whether any was nonblank.
+async fn read_stderr_tail(stderr: ChildStderr) -> StderrDrain {
+    let mut reader = BufReader::new(stderr);
+    let mut ring: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_CAP);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut line_count: usize = 0;
+    let mut had_nonblank = false;
+    let outcome = loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => break ReaderOutcome::Eof,
+            Ok(_) => {
+                let line = decode_line(&buf);
+                // Tee every line the child writes into ~/.hq/logs/hq-sync.log.
+                log("provision-cli", &line);
+                line_count += 1;
+                if !line.trim().is_empty() {
+                    had_nonblank = true;
+                }
+                if ring.len() == STDERR_TAIL_CAP {
+                    ring.pop_front();
+                }
+                ring.push_back(line);
+            }
+            Err(error) => break ReaderOutcome::IoError(error.kind()),
+        }
+    };
+    StderrDrain {
+        tail: ring.into_iter().collect(),
+        outcome,
+        line_count,
+        had_nonblank,
+    }
+}
+
+/// Drain stdout into the full line list (fed to `parse_provision_stdout`),
+/// lossily. Returns the lines plus how the stream ended.
+async fn read_stdout_lines(stdout: ChildStdout) -> (Vec<String>, ReaderOutcome) {
+    let mut reader = BufReader::new(stdout);
+    let mut lines: Vec<String> = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
+    let outcome = loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => break ReaderOutcome::Eof,
+            Ok(_) => lines.push(decode_line(&buf)),
+            Err(error) => break ReaderOutcome::IoError(error.kind()),
+        }
+    };
+    (lines, outcome)
+}
+
+/// Drain both child pipes concurrently. The reader tasks are spawned so they run
+/// alongside `child.wait()` (a full pipe can't wedge the child); a reader task
+/// that fails to join is recorded as `ReaderOutcome::JoinFailed` rather than
+/// silently dropping the stream.
+async fn drain_child_output(stdout: ChildStdout, stderr: ChildStderr) -> ChildOutput {
+    let stderr_task = tokio::spawn(read_stderr_tail(stderr));
+    let stdout_task = tokio::spawn(read_stdout_lines(stdout));
+
+    let stderr = match stderr_task.await {
+        Ok(drain) => drain,
+        Err(join) => {
+            log(
+                "provision-cli",
+                &format!("stderr reader task join failed (non-fatal): {join}"),
+            );
+            StderrDrain {
+                tail: Vec::new(),
+                outcome: ReaderOutcome::JoinFailed,
+                line_count: 0,
+                had_nonblank: false,
+            }
+        }
+    };
+    let (stdout_lines, stdout_reader) = match stdout_task.await {
+        Ok(pair) => pair,
+        Err(join) => {
+            log(
+                "provision-cli",
+                &format!("stdout reader task join failed (non-fatal): {join}"),
+            );
+            (Vec::new(), ReaderOutcome::JoinFailed)
+        }
+    };
+
+    let stdout_tail = last_n(&stdout_lines, STDOUT_TAIL_CAP);
+    ChildOutput {
+        stdout_lines,
+        stdout_tail,
+        stderr_tail: stderr.tail,
+        stdout_reader,
+        stderr_reader: stderr.outcome,
+        stderr_line_count: stderr.line_count,
+        stderr_had_nonblank: stderr.had_nonblank,
+    }
+}
+
+// ── Post-wait exit decision ───────────────────────────────────────────────────
+
+/// Map the child's exit code + captured output to a typed result. Pure: no
+/// probing, no Sentry — `finish_child_exit` layers the runtime probe and the
+/// capture on top so this classification can be unit-tested in isolation.
+///
+/// Exit 1 is only a vault/network failure when the CLI actually wrote to stderr.
+/// An exit 1 with a non-empty tail the local-env classifier can't place stays
+/// `Network` (unchanged); an exit 1 whose stderr tail is empty becomes
+/// `NoOutput` (cause unproven) instead of a false vault incident.
+// The `Err` type is the shared `CliProvisionError`, whose `Sync` variant embeds
+// a full `CliProvisionResult`; every provision fn returns this same Result, so
+// the large-err lint is architectural, not specific to this seam.
+#[allow(clippy::result_large_err)]
+fn classify_child_exit(
+    exit_code: Option<i32>,
+    output: &ChildOutput,
+    slug: &str,
+) -> Result<CliProvisionResult, CliProvisionError> {
+    let parse_result = parse_provision_stdout(&output.stdout_lines);
+    let parsed: Option<CliProvisionResult> = parse_result.as_ref().ok().cloned();
+
+    match exit_code {
+        Some(0) => parsed.ok_or_else(|| {
+            let detail = parse_result
+                .as_ref()
+                .err()
+                .cloned()
+                .unwrap_or_else(|| "stdout parser returned no result".to_string());
+            CliProvisionError::Other(format!("exit 0 but {detail} for slug={slug}"))
+        }),
+        // Exit 1 is overloaded: the CLI documents it as "vault auth/network",
+        // but `npx`/`npm` also return 1 for local failures before the CLI even
+        // loads — and a child that dies at startup can exit 1 while writing
+        // nothing at all. Classify local-env first (npm may write on either
+        // stream); then split the remainder into vault (stderr said something)
+        // vs. no-output (stderr said nothing — cause unproven).
+        Some(1) => {
+            let mut combined = output.stderr_tail.clone();
+            combined.extend(output.stdout_tail.iter().cloned());
+            match classify_local_env_failure(&combined) {
+                Some((env_kind, detail)) => Err(CliProvisionError::LocalEnv {
+                    kind: env_kind,
+                    detail,
+                }),
+                None => {
+                    // Use the nonblank flag observed while draining, NOT the
+                    // capped tail: a real diagnostic followed by >50 blank lines
+                    // is evicted from the ring but still means stderr spoke, so
+                    // it stays Network rather than being mislabelled no-output.
+                    if output.stderr_had_nonblank {
+                        Err(CliProvisionError::Network(format!(
+                            "exit 1 (vault) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
+                        )))
+                    } else {
+                        Err(CliProvisionError::NoOutput {
+                            exit_code: 1,
+                            slug: slug.to_string(),
+                        })
+                    }
+                }
+            }
+        }
+        Some(2) => Err(CliProvisionError::Validation(format!(
+            "exit 2 (validation) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
+        ))),
+        Some(3) => Err(CliProvisionError::Sync {
+            message: format!(
+                "exit 3 (initial sync) — entity provisioned but upload failed; see ~/.hq/logs/hq-sync.log for slug={slug}"
+            ),
+            partial: parsed,
+        }),
+        Some(other) => Err(CliProvisionError::Other(format!(
+            "unexpected exit code {other} for slug={slug}"
+        ))),
+        None => Err(CliProvisionError::Other(format!(
+            "child terminated by signal (no exit code) for slug={slug}"
+        ))),
+    }
+}
+
+/// Classify the child exit, capture the failure to Sentry with full evidence,
+/// and return the typed result. The runtime probe runs ONLY on the no-output
+/// arm (where the child left no diagnostic of its own); every other arm reports
+/// with the captured output but no probe.
+async fn finish_child_exit(
+    slug: &str,
+    invocation: &HqInvocation,
+    attempted_program: String,
+    exit_code: Option<i32>,
+    output: ChildOutput,
+    duration_ms: u64,
+) -> Result<CliProvisionResult, CliProvisionError> {
+    let result = classify_child_exit(exit_code, &output, slug);
+
+    if let Err(ref err) = result {
+        let (runtime, node_major) = if matches!(err, CliProvisionError::NoOutput { .. }) {
+            let ChildExitDiagnosis {
+                runtime,
+                node_major,
+            } = runtime_diagnosis::inspect_child_exit(attempted_program).await;
+            (Some(runtime), node_major)
+        } else {
+            (None, None)
+        };
+        let diag = ProvisionExitDiagnostics {
+            stderr_tail: output.stderr_tail,
+            stdout_tail: output.stdout_tail,
+            stderr_line_count: output.stderr_line_count,
+            stdout_line_count: output.stdout_lines.len(),
+            stderr_reader: output.stderr_reader,
+            stdout_reader: output.stdout_reader,
+            duration_ms,
+            runtime,
+            node_major,
+        };
+        report_provision_error(
+            err,
+            slug,
+            &invocation.label(),
+            invocation.telemetry_kind(),
+            exit_code,
+            &diag,
+        );
+    }
+    result
+}
+
+/// Test-only seam over the WHOLE post-wait decision — classification, evidence
+/// assembly and the capture together — with the runtime probe stubbed by the
+/// caller. Mirrors `finish_spawn_failure_for_test`: production derives
+/// `runtime`/`node_major` from a real probe, the test injects them so an
+/// envelope assertion is deterministic and measures production reporting rather
+/// than re-implementing it.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
+pub fn finish_child_exit_for_test(
+    slug: &str,
+    invocation: &HqInvocation,
+    exit_code: Option<i32>,
+    output: ChildOutput,
+    duration_ms: u64,
+    runtime: Option<RuntimeDiagnosisInput>,
+    node_major: Option<u32>,
+) -> Result<CliProvisionResult, CliProvisionError> {
+    let result = classify_child_exit(exit_code, &output, slug);
+    if let Err(ref err) = result {
+        let diag = ProvisionExitDiagnostics {
+            stderr_tail: output.stderr_tail,
+            stdout_tail: output.stdout_tail,
+            stderr_line_count: output.stderr_line_count,
+            stdout_line_count: output.stdout_lines.len(),
+            stderr_reader: output.stderr_reader,
+            stdout_reader: output.stdout_reader,
+            duration_ms,
+            runtime,
+            node_major,
+        };
+        report_provision_error(
+            err,
+            slug,
+            &invocation.label(),
+            invocation.telemetry_kind(),
+            exit_code,
+            &diag,
+        );
+    }
+    result
+}
+
 // ── Public types ─────────────────────────────────────────────────────────────
 
 /// Per-step sync result inside `CliProvisionResult`. Mirrors the CLI's
@@ -452,6 +887,14 @@ pub enum CliProvisionError {
     /// of the IPC contract with the frontend's `OpenInClaudeCodeButton` /
     /// `copy-prompts.ts` registry.
     LocalEnv { kind: &'static str, detail: String },
+    /// A non-zero exit (in practice exit 1) whose stderr tail was EMPTY, so the
+    /// vault/network cause is unproven. The old code fell through to `Network`
+    /// here, minting false `provision_kind=network` vault incidents for a child
+    /// that never reached any vault route (HQ-DESKTOP-68 / HQ-DESKTOP-69). This
+    /// variant keeps the failure loud but honest: the event carries runtime
+    /// provenance, node/npx probes, the child duration and the stdout tail so
+    /// the next occurrence can be attributed instead of guessed.
+    NoOutput { exit_code: i32, slug: String },
     /// Exit code 3 — entity created, manifest patched, config written, but
     /// the initial `share()` upload failed. The CLI's stdout still emits a
     /// `CliProvisionResult` with `cloud_uid` populated, so callers can
@@ -478,6 +921,14 @@ impl std::fmt::Display for CliProvisionError {
             // `src/lib/copy-prompts.ts::parseLocalEnvFailure`.
             Self::LocalEnv { kind, detail } => {
                 write!(f, "local environment failure ({kind}): {detail}")
+            }
+            Self::NoOutput { exit_code, slug } => {
+                write!(
+                    f,
+                    "`hq cloud provision` exited {exit_code} with no stderr output \
+                     (vault/network cause unproven) — see ~/.hq/logs/hq-sync.log \
+                     [provision-cli] for slug={slug}"
+                )
             }
             Self::Sync { message, .. } => {
                 write!(f, "initial sync failed after entity provisioned: {message}")
@@ -593,6 +1044,10 @@ pub async fn run_cli_provision(
     let invocation_kind = invocation.telemetry_kind();
     let sentry_invocation_label = invocation.sentry_label();
     let attempted_program = cmd.as_std().get_program().to_string_lossy().into_owned();
+    // Measure wall-clock from just before spawn so a silent, slow child (the
+    // reported occurrence ran ~58 s and printed nothing) carries its duration
+    // as evidence on the failure event.
+    let started = Instant::now();
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -618,126 +1073,51 @@ pub async fn run_cli_provision(
         .take()
         .ok_or_else(|| CliProvisionError::Other("child stderr pipe missing".to_string()))?;
 
-    // Stream stderr line-by-line into the diagnostic log AND a bounded
-    // ring buffer. The ring buffer survives past the subprocess and gets
-    // attached to Sentry events on error so we can see what the CLI was
-    // doing right before it died.
-    let stderr_buffer: Arc<Mutex<VecDeque<String>>> =
-        Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_CAP)));
-    let stderr_buffer_for_task = Arc::clone(&stderr_buffer);
-    let stderr_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            log("provision-cli", &line);
-            if let Ok(mut buf) = stderr_buffer_for_task.lock() {
-                if buf.len() == STDERR_TAIL_CAP {
-                    buf.pop_front();
-                }
-                buf.push_back(line);
-            }
-        }
-    });
-
-    // Stream stdout line-by-line into a buffer. `parse_provision_stdout`
-    // later finds the last complete result object, tolerating wrapper chatter
-    // both before *and after* the JSON (notably npm's `fund` notice).
-    let stdout_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(stdout).lines();
-        let mut lines: Vec<String> = Vec::new();
-        while let Ok(Some(line)) = reader.next_line().await {
-            lines.push(line);
-        }
-        lines
-    });
-
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| CliProvisionError::Other(format!("wait child: {e}")))?;
-
-    // Drain both readers — these complete once the child closes the pipes,
-    // which happens on exit. `wait()` already returned, so they should be
-    // ready immediately.
-    let lines = stdout_task
-        .await
-        .map_err(|e| CliProvisionError::Other(format!("stdout reader join: {e}")))?;
-    if let Err(e) = stderr_task.await {
-        // Stderr reader join failure shouldn't fail the call — we still have
-        // a status code and stdout. Log and continue.
-        log(
-            "provision-cli",
-            &format!("stderr reader task join failed (non-fatal): {e}"),
-        );
-    }
-
-    let parse_result = parse_provision_stdout(&lines);
-    let parsed: Option<CliProvisionResult> = parse_result.as_ref().ok().cloned();
+    // Drain both pipes concurrently with `child.wait()`: a chatty npx install
+    // can't wedge a full pipe, and a non-UTF-8 byte can no longer end a reader
+    // early and strip the tail (HQ-DESKTOP-68). Every stderr line is tee'd into
+    // ~/.hq/logs/hq-sync.log inside `read_stderr_tail`.
+    let (status, output) = tokio::join!(child.wait(), drain_child_output(stdout, stderr));
+    let status = status.map_err(|e| CliProvisionError::Other(format!("wait child: {e}")))?;
+    let duration_ms = started.elapsed().as_millis() as u64;
 
     let exit_code = status.code();
     log(
         "provision-cli",
         &format!(
-            "exit code={:?}, parsed_json={}, slug={slug}",
+            "exit code={:?}, parsed_json={}, slug={slug}, child_duration_ms={duration_ms}",
             exit_code,
-            parsed.is_some(),
+            parse_provision_stdout(&output.stdout_lines).is_ok(),
         ),
     );
-
-    // Preserve the stdout parser's diagnosis on exit 0. This makes a genuine
-    // CLI/Rust schema drift actionable, while `npm fund` noise is ignored by
-    // the parser rather than being misreported as a provision failure.
-    let exit0_err = || -> CliProvisionError {
-        let detail = parse_result
-            .as_ref()
-            .err()
-            .cloned()
-            .unwrap_or_else(|| "stdout parser returned no result".to_string());
-        CliProvisionError::Other(format!("exit 0 but {detail} for slug={slug}"))
-    };
-
-    let stderr_tail: Vec<String> = stderr_buffer
-        .lock()
-        .map(|buf| buf.iter().cloned().collect())
-        .unwrap_or_default();
-
-    let result: Result<CliProvisionResult, CliProvisionError> = match exit_code {
-        Some(0) => parsed.ok_or_else(exit0_err),
-        // Exit 1 is overloaded: the CLI documents it as "vault auth/network",
-        // but `npx` (the pre-launch wrapper from `hq_resolver` when the user
-        // has no local `hq` or a stale one) also returns 1 for npm cache
-        // EACCES, ENOSPC, ENOTFOUND, ETIMEDOUT — failures that happen before
-        // the CLI is even loaded. Run the local-env classifier on the stderr
-        // tail first; only fall through to `Network` if nothing matched.
-        Some(1) => match classify_local_env_failure(&stderr_tail) {
-            Some((env_kind, detail)) => Err(CliProvisionError::LocalEnv {
-                kind: env_kind,
-                detail,
-            }),
-            None => Err(CliProvisionError::Network(format!(
-                "exit 1 (vault) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
-            ))),
-        },
-        Some(2) => Err(CliProvisionError::Validation(format!(
-            "exit 2 (validation) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
-        ))),
-        Some(3) => Err(CliProvisionError::Sync {
-            message: format!(
-                "exit 3 (initial sync) — entity provisioned but upload failed; see ~/.hq/logs/hq-sync.log for slug={slug}"
+    if output.stderr_reader != ReaderOutcome::Eof {
+        log(
+            "provision-cli",
+            &format!(
+                "stderr reader ended abnormally: {}",
+                output.stderr_reader.tag()
             ),
-            partial: parsed,
-        }),
-        Some(other) => Err(CliProvisionError::Other(format!(
-            "unexpected exit code {other} for slug={slug}"
-        ))),
-        None => Err(CliProvisionError::Other(format!(
-            "child terminated by signal (no exit code) for slug={slug}"
-        ))),
-    };
-
-    if let Err(ref err) = result {
-        report_provision_error(err, slug, &invocation.label(), exit_code, &stderr_tail);
+        );
     }
-    result
+    if output.stdout_reader != ReaderOutcome::Eof {
+        log(
+            "provision-cli",
+            &format!(
+                "stdout reader ended abnormally: {}",
+                output.stdout_reader.tag()
+            ),
+        );
+    }
+
+    finish_child_exit(
+        slug,
+        &invocation,
+        attempted_program,
+        exit_code,
+        output,
+        duration_ms,
+    )
+    .await
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1136,5 +1516,288 @@ mod tests {
         assert!(ipc.contains("Repair or reinstall Node.js and reopen HQ Sync"));
         let log = std::fs::read_to_string(log_path).expect("local diagnostic log");
         assert!(log.contains(&managed_node.to_string_lossy().to_string()));
+    }
+
+    // ── No-output classification (HQ-DESKTOP-68) ──────────────────────────────
+
+    fn child_output(stdout_lines: Vec<&str>, stderr_tail: Vec<&str>) -> ChildOutput {
+        let stdout_lines: Vec<String> = stdout_lines.into_iter().map(String::from).collect();
+        let stdout_tail = last_n(&stdout_lines, STDOUT_TAIL_CAP);
+        let stderr_tail: Vec<String> = stderr_tail.into_iter().map(String::from).collect();
+        let stderr_had_nonblank = stderr_tail.iter().any(|l| !l.trim().is_empty());
+        let stderr_line_count = stderr_tail.len();
+        ChildOutput {
+            stdout_lines,
+            stdout_tail,
+            stderr_tail,
+            stdout_reader: ReaderOutcome::Eof,
+            stderr_reader: ReaderOutcome::Eof,
+            stderr_line_count,
+            stderr_had_nonblank,
+        }
+    }
+
+    #[test]
+    fn classify_child_exit_no_stderr_is_no_output_not_network() {
+        // THE regression: exit 1 with an empty stderr tail is no longer a false
+        // vault/network incident.
+        let out = child_output(vec![], vec![]);
+        let err = classify_child_exit(Some(1), &out, "arbium").expect_err("exit 1 is an error");
+        assert!(
+            matches!(err, CliProvisionError::NoOutput { exit_code: 1, .. }),
+            "empty exit-1 must be no-output, not vault/network; got {err:?}"
+        );
+    }
+
+    #[test]
+    fn classify_child_exit_keeps_network_when_stderr_has_unclassified_text() {
+        let out = child_output(
+            vec![],
+            vec!["[hq cloud provision] vault POST /v1/entity returned 503"],
+        );
+        let err = classify_child_exit(Some(1), &out, "arbium").expect_err("exit 1 is an error");
+        assert!(matches!(err, CliProvisionError::Network(_)), "got {err:?}");
+        assert!(err.to_string().contains("vault/network"));
+    }
+
+    #[test]
+    fn classify_child_exit_reads_npm_errors_from_stdout_tail() {
+        // npm may write its error blob to stdout; the combined-tail classifier
+        // must still bucket it as local-env rather than no-output.
+        let out = child_output(
+            vec!["npm error code EACCES", "npm error path /x/.npm/_cacache"],
+            vec![],
+        );
+        let err = classify_child_exit(Some(1), &out, "arbium").expect_err("exit 1 is an error");
+        assert!(
+            matches!(
+                err,
+                CliProvisionError::LocalEnv {
+                    kind: "npm-cache-permission",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn no_output_display_carries_exit_code_and_slug_without_paths() {
+        let e = CliProvisionError::NoOutput {
+            exit_code: 1,
+            slug: "arbium".to_string(),
+        };
+        let s = e.to_string();
+        assert!(s.contains("exited 1"), "{s}");
+        assert!(s.contains("slug=arbium"), "{s}");
+        assert!(!s.contains("/Users/") && !s.contains("/home/"), "{s}");
+    }
+
+    #[test]
+    fn no_output_report_attaches_evidence_extras_reader_tags_and_fingerprint() {
+        let runtime = RuntimeDiagnosisInput {
+            attempted_program: "/opt/homebrew/bin/npx".to_string(),
+            program_provenance: runtime_diagnosis::ProgramProvenance::SystemPath,
+            spawn_error_kind: std::io::ErrorKind::Other,
+            node_probe: runtime_diagnosis::ProbeOutcome::Ok,
+            npx_probe: runtime_diagnosis::ProbeOutcome::Ok,
+            managed_runtime: crate::toolchain::ManagedRuntime::NotProvisioned,
+        };
+        let output = child_output(vec![], vec![]);
+        let mut err = None;
+        let events = sentry::test::with_captured_events(|| {
+            err = Some(finish_child_exit_for_test(
+                "arbium",
+                &HqInvocation::Npx,
+                Some(1),
+                output,
+                58_000,
+                Some(runtime),
+                Some(26),
+            ));
+        });
+
+        assert!(matches!(err, Some(Err(CliProvisionError::NoOutput { .. }))));
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.level, sentry::Level::Error);
+        assert_eq!(event.tags["provision_kind"], "no-output");
+        assert_eq!(
+            event.tags["cli_invocation"],
+            "npx:@indigoai-us/hq-cli@^5.10.0"
+        );
+        assert_eq!(event.tags["exit_code"], "1");
+        assert_eq!(event.tags["stderr_reader"], "eof");
+        assert_eq!(event.tags["stdout_reader"], "eof");
+        assert_eq!(event.tags["program_provenance"], "system-path");
+        assert_eq!(event.tags["runtime_owner"], "user");
+        assert_eq!(event.tags["node_probe"], "ok");
+        assert_eq!(event.tags["npx_probe"], "ok");
+        assert_eq!(event.tags["node_major"], "26");
+        assert_eq!(
+            event.extra["child_duration_ms"],
+            serde_json::Value::from(58_000u64)
+        );
+        assert_eq!(event.extra["stderr_lines"], serde_json::Value::from(0u64));
+        assert_eq!(event.extra["stdout_lines"], serde_json::Value::from(0u64));
+        assert!(event.extra.contains_key("stdout_tail"));
+        let fingerprint: Vec<&str> = event.fingerprint.iter().map(|c| c.as_ref()).collect();
+        assert_eq!(fingerprint, ["provision-cli", "no-output", "npx", "1"]);
+    }
+
+    #[test]
+    fn classify_child_exit_uses_observed_nonblank_not_the_truncated_tail() {
+        // Codex P2: a real diagnostic evicted by >50 trailing blank lines leaves
+        // an all-blank tail, but stderr DID speak, so exit 1 must stay Network —
+        // never derive that decision from the capped tail.
+        let blanks: Vec<String> = std::iter::repeat(String::new())
+            .take(STDERR_TAIL_CAP)
+            .collect();
+        let output = ChildOutput {
+            stdout_lines: vec![],
+            stdout_tail: vec![],
+            stderr_tail: blanks,
+            stdout_reader: ReaderOutcome::Eof,
+            stderr_reader: ReaderOutcome::Eof,
+            stderr_line_count: STDERR_TAIL_CAP + 11,
+            stderr_had_nonblank: true,
+        };
+        let err = classify_child_exit(Some(1), &output, "arbium").expect_err("exit 1 is an error");
+        assert!(matches!(err, CliProvisionError::Network(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn report_emits_full_stderr_line_count_not_the_capped_tail() {
+        // Codex P2: the stderr_lines extra must report the true volume, not
+        // min(count, 50) — so a chatty failure is distinguishable from a quiet
+        // one, symmetric with stdout_lines.
+        let output = ChildOutput {
+            stdout_lines: vec![],
+            stdout_tail: vec![],
+            stderr_tail: vec!["some vault error".to_string()],
+            stdout_reader: ReaderOutcome::Eof,
+            stderr_reader: ReaderOutcome::Eof,
+            stderr_line_count: 1234,
+            stderr_had_nonblank: true,
+        };
+        let events = sentry::test::with_captured_events(|| {
+            let _ = finish_child_exit_for_test(
+                "arbium",
+                &HqInvocation::Npx,
+                Some(1),
+                output,
+                10,
+                None,
+                None,
+            );
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].extra["stderr_lines"],
+            serde_json::Value::from(1234u64)
+        );
+    }
+
+    #[cfg(unix)]
+    async fn spawn_sh(script: &str) -> (ChildStdout, ChildStderr, tokio::process::Child) {
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn sh");
+        let stdout = child.stdout.take().expect("stdout pipe");
+        let stderr = child.stderr.take().expect("stderr pipe");
+        (stdout, stderr, child)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drain_child_output_keeps_lines_after_invalid_utf8() {
+        // A 0xFF byte used to end the reader loop (Lines::next_line →
+        // InvalidData), stripping the tail — the exact mechanism that let an
+        // exit-1 provision reach Sentry with an empty tail (HQ-DESKTOP-68).
+        let (stdout, stderr, mut child) =
+            spawn_sh("printf 'o\\377ut1\\nout2\\n'; printf 'e\\377rr1\\nerr2\\n' >&2; exit 1")
+                .await;
+        let output = drain_child_output(stdout, stderr).await;
+        let _ = child.wait().await;
+
+        assert_eq!(output.stderr_reader, ReaderOutcome::Eof);
+        assert_eq!(output.stdout_reader, ReaderOutcome::Eof);
+        assert_eq!(
+            output.stderr_tail,
+            vec!["e\u{FFFD}rr1".to_string(), "err2".to_string()]
+        );
+        assert_eq!(
+            output.stdout_lines,
+            vec!["o\u{FFFD}ut1".to_string(), "out2".to_string()]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drain_child_output_caps_stdout_tail_at_50_and_keeps_full_lines_for_parsing() {
+        let (stdout, stderr, mut child) =
+            spawn_sh("i=1; while [ $i -le 60 ]; do echo line$i; i=$((i+1)); done").await;
+        let output = drain_child_output(stdout, stderr).await;
+        let _ = child.wait().await;
+
+        assert_eq!(
+            output.stdout_lines.len(),
+            60,
+            "full stdout feeds the parser"
+        );
+        assert_eq!(output.stdout_tail.len(), STDOUT_TAIL_CAP);
+        assert_eq!(output.stdout_tail.first().unwrap(), "line11");
+        assert_eq!(output.stdout_tail.last().unwrap(), "line60");
+        assert_eq!(output.stdout_reader, ReaderOutcome::Eof);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drain_child_output_reports_eof_on_clean_exit() {
+        let (stdout, stderr, mut child) = spawn_sh("echo hello; echo oops >&2; exit 0").await;
+        let output = drain_child_output(stdout, stderr).await;
+        let _ = child.wait().await;
+
+        assert_eq!(output.stdout_reader, ReaderOutcome::Eof);
+        assert_eq!(output.stderr_reader, ReaderOutcome::Eof);
+        assert_eq!(output.stdout_lines, vec!["hello".to_string()]);
+        assert_eq!(output.stderr_tail, vec!["oops".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drain_tracks_full_stderr_count_and_nonblank_beyond_the_cap() {
+        // Codex P2 (both findings) at the source: one real line then 60 blanks.
+        // The real line is evicted from the 50-line ring, but the drain still
+        // reports that stderr spoke and counts all 61 lines — so the failure
+        // stays Network and stderr_lines is not clamped to 50.
+        let (stdout, stderr, mut child) = spawn_sh(
+            "echo 'real vault error' >&2; i=1; while [ $i -le 60 ]; do echo '' >&2; i=$((i+1)); done; exit 1",
+        )
+        .await;
+        let output = drain_child_output(stdout, stderr).await;
+        let _ = child.wait().await;
+
+        assert!(
+            output.stderr_had_nonblank,
+            "the real line must be remembered past the cap"
+        );
+        assert_eq!(
+            output.stderr_line_count, 61,
+            "full count, not the capped ring length"
+        );
+        assert_eq!(output.stderr_tail.len(), STDERR_TAIL_CAP);
+        assert!(
+            output.stderr_tail.iter().all(|l| l.trim().is_empty()),
+            "the tail is all blanks once the real line is evicted"
+        );
+
+        let err = classify_child_exit(Some(1), &output, "arbium").expect_err("exit 1 is an error");
+        assert!(matches!(err, CliProvisionError::Network(_)), "got {err:?}");
     }
 }
