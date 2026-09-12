@@ -55,6 +55,7 @@
   import { liveSessionStore } from './lib/live-session-store.svelte';
   import LiveChannelSessionPane from './components/LiveChannelSessionPane.svelte';
   import type { SessionThread } from '@hq/ui';
+  import { readRememberedTool } from '../components/sessions/session-models';
   import { planFirstSend } from '../components/sessions/startwork';
   import { configureSessionStarterCache } from '../components/sessions/session-starter';
   import { setSessionComposerDraftAccount } from '../components/sessions/session-composer-drafts';
