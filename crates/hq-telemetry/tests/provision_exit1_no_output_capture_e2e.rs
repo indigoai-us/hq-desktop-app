@@ -60,12 +60,17 @@ fn captured(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
 fn output(stdout_lines: Vec<&str>, stderr_tail: Vec<&str>) -> ChildOutput {
     let stdout_lines: Vec<String> = stdout_lines.into_iter().map(String::from).collect();
     let stdout_tail = stdout_lines.clone();
+    let stderr_tail: Vec<String> = stderr_tail.into_iter().map(String::from).collect();
+    let stderr_had_nonblank = stderr_tail.iter().any(|l| !l.trim().is_empty());
+    let stderr_line_count = stderr_tail.len();
     ChildOutput {
         stdout_lines,
         stdout_tail,
-        stderr_tail: stderr_tail.into_iter().map(String::from).collect(),
+        stderr_tail,
         stdout_reader: ReaderOutcome::Eof,
         stderr_reader: ReaderOutcome::Eof,
+        stderr_line_count,
+        stderr_had_nonblank,
     }
 }
 

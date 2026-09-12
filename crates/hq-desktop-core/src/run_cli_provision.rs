@@ -125,6 +125,13 @@ pub struct ChildOutput {
     pub stderr_tail: Vec<String>,
     pub stdout_reader: ReaderOutcome,
     pub stderr_reader: ReaderOutcome,
+    /// Total stderr lines the child wrote, counted while draining — NOT the
+    /// capped ring length, so a chatty failure reports its true volume.
+    pub stderr_line_count: usize,
+    /// Whether any nonblank stderr line was observed while draining. Tracked at
+    /// the source rather than derived from the (capped) `stderr_tail`, so a real
+    /// diagnostic followed by >50 blank lines is still seen as "stderr spoke".
+    pub stderr_had_nonblank: bool,
 }
 
 /// Remove ANSI colour/control sequences before looking for a JSON result.
@@ -204,6 +211,7 @@ fn parse_provision_stdout(lines: &[String]) -> Result<CliProvisionResult, String
 struct ProvisionExitDiagnostics {
     stderr_tail: Vec<String>,
     stdout_tail: Vec<String>,
+    stderr_line_count: usize,
     stdout_line_count: usize,
     stderr_reader: ReaderOutcome,
     stdout_reader: ReaderOutcome,
@@ -270,7 +278,7 @@ fn report_provision_error(
             scope.set_tag("stdout_reader", diag.stdout_reader.tag());
             scope.set_extra("stderr_tail", stderr_blob.into());
             scope.set_extra("stdout_tail", stdout_blob.into());
-            scope.set_extra("stderr_lines", (diag.stderr_tail.len() as u64).into());
+            scope.set_extra("stderr_lines", (diag.stderr_line_count as u64).into());
             scope.set_extra("stdout_lines", (diag.stdout_line_count as u64).into());
             scope.set_extra("child_duration_ms", diag.duration_ms.into());
             // Runtime evidence rides only on the no-output arm, where the child
@@ -523,18 +531,25 @@ fn last_n(lines: &[String], cap: usize) -> Vec<String> {
     lines[start..].to_vec()
 }
 
-/// True when at least one line has non-whitespace content — the signal that the
-/// child actually said something on a stream.
-fn has_nonblank_line(lines: &[String]) -> bool {
-    lines.iter().any(|line| !line.trim().is_empty())
+/// Everything `read_stderr_tail` observes while draining: the bounded tail, how
+/// the stream ended, the TRUE line count (uncapped), and whether any nonblank
+/// line was seen. The last two are tracked at the source so neither the reported
+/// count nor the vault-vs-no-output decision is derived from the capped tail.
+struct StderrDrain {
+    tail: Vec<String>,
+    outcome: ReaderOutcome,
+    line_count: usize,
+    had_nonblank: bool,
 }
 
-/// Drain stderr into the diagnostic log AND a bounded ring, lossily. Returns the
-/// ring tail plus how the stream ended.
-async fn read_stderr_tail(stderr: ChildStderr) -> (Vec<String>, ReaderOutcome) {
+/// Drain stderr into the diagnostic log AND a bounded ring, lossily, while
+/// counting every line and remembering whether any was nonblank.
+async fn read_stderr_tail(stderr: ChildStderr) -> StderrDrain {
     let mut reader = BufReader::new(stderr);
     let mut ring: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_CAP);
     let mut buf: Vec<u8> = Vec::new();
+    let mut line_count: usize = 0;
+    let mut had_nonblank = false;
     let outcome = loop {
         buf.clear();
         match reader.read_until(b'\n', &mut buf).await {
@@ -543,6 +558,10 @@ async fn read_stderr_tail(stderr: ChildStderr) -> (Vec<String>, ReaderOutcome) {
                 let line = decode_line(&buf);
                 // Tee every line the child writes into ~/.hq/logs/hq-sync.log.
                 log("provision-cli", &line);
+                line_count += 1;
+                if !line.trim().is_empty() {
+                    had_nonblank = true;
+                }
                 if ring.len() == STDERR_TAIL_CAP {
                     ring.pop_front();
                 }
@@ -551,7 +570,12 @@ async fn read_stderr_tail(stderr: ChildStderr) -> (Vec<String>, ReaderOutcome) {
             Err(error) => break ReaderOutcome::IoError(error.kind()),
         }
     };
-    (ring.into_iter().collect(), outcome)
+    StderrDrain {
+        tail: ring.into_iter().collect(),
+        outcome,
+        line_count,
+        had_nonblank,
+    }
 }
 
 /// Drain stdout into the full line list (fed to `parse_provision_stdout`),
@@ -579,14 +603,19 @@ async fn drain_child_output(stdout: ChildStdout, stderr: ChildStderr) -> ChildOu
     let stderr_task = tokio::spawn(read_stderr_tail(stderr));
     let stdout_task = tokio::spawn(read_stdout_lines(stdout));
 
-    let (stderr_tail, stderr_reader) = match stderr_task.await {
-        Ok(pair) => pair,
+    let stderr = match stderr_task.await {
+        Ok(drain) => drain,
         Err(join) => {
             log(
                 "provision-cli",
                 &format!("stderr reader task join failed (non-fatal): {join}"),
             );
-            (Vec::new(), ReaderOutcome::JoinFailed)
+            StderrDrain {
+                tail: Vec::new(),
+                outcome: ReaderOutcome::JoinFailed,
+                line_count: 0,
+                had_nonblank: false,
+            }
         }
     };
     let (stdout_lines, stdout_reader) = match stdout_task.await {
@@ -604,9 +633,11 @@ async fn drain_child_output(stdout: ChildStdout, stderr: ChildStderr) -> ChildOu
     ChildOutput {
         stdout_lines,
         stdout_tail,
-        stderr_tail,
+        stderr_tail: stderr.tail,
         stdout_reader,
-        stderr_reader,
+        stderr_reader: stderr.outcome,
+        stderr_line_count: stderr.line_count,
+        stderr_had_nonblank: stderr.had_nonblank,
     }
 }
 
@@ -656,7 +687,11 @@ fn classify_child_exit(
                     detail,
                 }),
                 None => {
-                    if has_nonblank_line(&output.stderr_tail) {
+                    // Use the nonblank flag observed while draining, NOT the
+                    // capped tail: a real diagnostic followed by >50 blank lines
+                    // is evicted from the ring but still means stderr spoke, so
+                    // it stays Network rather than being mislabelled no-output.
+                    if output.stderr_had_nonblank {
                         Err(CliProvisionError::Network(format!(
                             "exit 1 (vault) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
                         )))
@@ -714,6 +749,7 @@ async fn finish_child_exit(
         let diag = ProvisionExitDiagnostics {
             stderr_tail: output.stderr_tail,
             stdout_tail: output.stdout_tail,
+            stderr_line_count: output.stderr_line_count,
             stdout_line_count: output.stdout_lines.len(),
             stderr_reader: output.stderr_reader,
             stdout_reader: output.stdout_reader,
@@ -755,6 +791,7 @@ pub fn finish_child_exit_for_test(
         let diag = ProvisionExitDiagnostics {
             stderr_tail: output.stderr_tail,
             stdout_tail: output.stdout_tail,
+            stderr_line_count: output.stderr_line_count,
             stdout_line_count: output.stdout_lines.len(),
             stderr_reader: output.stderr_reader,
             stdout_reader: output.stdout_reader,
@@ -1486,12 +1523,17 @@ mod tests {
     fn child_output(stdout_lines: Vec<&str>, stderr_tail: Vec<&str>) -> ChildOutput {
         let stdout_lines: Vec<String> = stdout_lines.into_iter().map(String::from).collect();
         let stdout_tail = last_n(&stdout_lines, STDOUT_TAIL_CAP);
+        let stderr_tail: Vec<String> = stderr_tail.into_iter().map(String::from).collect();
+        let stderr_had_nonblank = stderr_tail.iter().any(|l| !l.trim().is_empty());
+        let stderr_line_count = stderr_tail.len();
         ChildOutput {
             stdout_lines,
             stdout_tail,
-            stderr_tail: stderr_tail.into_iter().map(String::from).collect(),
+            stderr_tail,
             stdout_reader: ReaderOutcome::Eof,
             stderr_reader: ReaderOutcome::Eof,
+            stderr_line_count,
+            stderr_had_nonblank,
         }
     }
 
@@ -1603,6 +1645,59 @@ mod tests {
         assert_eq!(fingerprint, ["provision-cli", "no-output", "npx", "1"]);
     }
 
+    #[test]
+    fn classify_child_exit_uses_observed_nonblank_not_the_truncated_tail() {
+        // Codex P2: a real diagnostic evicted by >50 trailing blank lines leaves
+        // an all-blank tail, but stderr DID speak, so exit 1 must stay Network —
+        // never derive that decision from the capped tail.
+        let blanks: Vec<String> = std::iter::repeat(String::new())
+            .take(STDERR_TAIL_CAP)
+            .collect();
+        let output = ChildOutput {
+            stdout_lines: vec![],
+            stdout_tail: vec![],
+            stderr_tail: blanks,
+            stdout_reader: ReaderOutcome::Eof,
+            stderr_reader: ReaderOutcome::Eof,
+            stderr_line_count: STDERR_TAIL_CAP + 11,
+            stderr_had_nonblank: true,
+        };
+        let err = classify_child_exit(Some(1), &output, "arbium").expect_err("exit 1 is an error");
+        assert!(matches!(err, CliProvisionError::Network(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn report_emits_full_stderr_line_count_not_the_capped_tail() {
+        // Codex P2: the stderr_lines extra must report the true volume, not
+        // min(count, 50) — so a chatty failure is distinguishable from a quiet
+        // one, symmetric with stdout_lines.
+        let output = ChildOutput {
+            stdout_lines: vec![],
+            stdout_tail: vec![],
+            stderr_tail: vec!["some vault error".to_string()],
+            stdout_reader: ReaderOutcome::Eof,
+            stderr_reader: ReaderOutcome::Eof,
+            stderr_line_count: 1234,
+            stderr_had_nonblank: true,
+        };
+        let events = sentry::test::with_captured_events(|| {
+            let _ = finish_child_exit_for_test(
+                "arbium",
+                &HqInvocation::Npx,
+                Some(1),
+                output,
+                10,
+                None,
+                None,
+            );
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].extra["stderr_lines"],
+            serde_json::Value::from(1234u64)
+        );
+    }
+
     #[cfg(unix)]
     async fn spawn_sh(script: &str) -> (ChildStdout, ChildStderr, tokio::process::Child) {
         let mut child = tokio::process::Command::new("sh")
@@ -1672,5 +1767,37 @@ mod tests {
         assert_eq!(output.stderr_reader, ReaderOutcome::Eof);
         assert_eq!(output.stdout_lines, vec!["hello".to_string()]);
         assert_eq!(output.stderr_tail, vec!["oops".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drain_tracks_full_stderr_count_and_nonblank_beyond_the_cap() {
+        // Codex P2 (both findings) at the source: one real line then 60 blanks.
+        // The real line is evicted from the 50-line ring, but the drain still
+        // reports that stderr spoke and counts all 61 lines — so the failure
+        // stays Network and stderr_lines is not clamped to 50.
+        let (stdout, stderr, mut child) = spawn_sh(
+            "echo 'real vault error' >&2; i=1; while [ $i -le 60 ]; do echo '' >&2; i=$((i+1)); done; exit 1",
+        )
+        .await;
+        let output = drain_child_output(stdout, stderr).await;
+        let _ = child.wait().await;
+
+        assert!(
+            output.stderr_had_nonblank,
+            "the real line must be remembered past the cap"
+        );
+        assert_eq!(
+            output.stderr_line_count, 61,
+            "full count, not the capped ring length"
+        );
+        assert_eq!(output.stderr_tail.len(), STDERR_TAIL_CAP);
+        assert!(
+            output.stderr_tail.iter().all(|l| l.trim().is_empty()),
+            "the tail is all blanks once the real line is evicted"
+        );
+
+        let err = classify_child_exit(Some(1), &output, "arbium").expect_err("exit 1 is an error");
+        assert!(matches!(err, CliProvisionError::Network(_)), "got {err:?}");
     }
 }
