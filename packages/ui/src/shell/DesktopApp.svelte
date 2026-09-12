@@ -69,6 +69,7 @@
     findSetupBot,
     firstSignedInRuntime,
     SETUP_BOT_INTRO,
+    SETUP_BOT_KICKOFF,
     SETUP_BOT_MODE,
     SETUP_BOT_NAME,
     SETUP_BOT_NO_RUNTIME,
@@ -975,12 +976,15 @@
     const runtime = firstSignedInRuntime(localBotRuntimeReady);
     if (!runtime) return { ok: false, reason: SETUP_BOT_NO_RUNTIME };
     // `intro` is sent by the runtime on start, so the first message is
-    // instant instead of a ~30 s wait for a model turn.
+    // instant instead of a ~30 s wait for a model turn; `kickoff` then runs
+    // one turn by itself so the bot starts step one without waiting for the
+    // person to type.
     const created = await createBotEntry({
       name: SETUP_BOT_NAME,
       worker: SETUP_BOT_WORKER,
       runtime,
       intro: SETUP_BOT_INTRO,
+      kickoff: SETUP_BOT_KICKOFF,
     });
     if (!created.ok) return { ok: false, reason: created.reason };
     recordWelcomeSetupRun();

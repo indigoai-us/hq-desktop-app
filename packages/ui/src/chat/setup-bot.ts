@@ -35,16 +35,39 @@ export const SETUP_BOT_WORKER = "setup";
 
 /**
  * The bot's first message, sent by the runtime the moment it starts
- * (`hq bot create --intro`) instead of waiting ~30 s for a model turn. One
- * short paragraph, then what happens next. Keep it under 500 characters — the
- * CLI's limit for `--intro`.
+ * (`hq bot create --intro`) instead of waiting for a model turn. Two short
+ * sentences: the plan, and that step one is starting now — never an open
+ * "what would you like to do?", because the kickoff turn below follows it
+ * automatically. Keep it under 500 characters (the CLI's `--intro` limit) and
+ * on one line (the host rejects control characters).
  */
 export const SETUP_BOT_INTRO =
-  "Hi — I'm your setup bot. I run right here on this Mac under your own coding tool login, " +
-  "and I'll stick around afterwards for any \"how do I…\" you have. " +
-  "Here's what we'll do next: check the tools on this Mac, sign you in to HQ Cloud, create or join your company, " +
-  "bring across anything you already have, learn a little about you, and set up your first real bot. " +
-  "Say hi whenever you're ready.";
+  "Hi, I'm your setup bot, and together we'll get HQ ready: your tools, HQ Cloud, your company, " +
+  "the work you already have, the apps you use, and your first bot. " +
+  "I'm starting step one now by checking what's already set up on this Mac.";
+
+/**
+ * Prefix the setup template recognises (`core/workers/public/setup`, "When
+ * you receive the kickoff").
+ */
+export const SETUP_BOT_KICKOFF_PREFIX = "Kickoff:";
+
+/**
+ * The first task the bot runs by itself right after the intro
+ * (`hq bot create --kickoff`): one model turn, as if the person had sent it,
+ * answered in the DM. It makes the bot start the walkthrough without waiting
+ * for the person to type. Under 2000 characters and on one line.
+ */
+export const SETUP_BOT_KICKOFF =
+  `${SETUP_BOT_KICKOFF_PREFIX} setup has just started and your hello already went out, naming the plan and saying you are starting step one now, ` +
+  "so do not greet again or repeat the plan. " +
+  "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
+  "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and which of the tools HQ leans on are missing. " +
+  "Then begin the first unfinished step right away, exactly as your instructions for the kickoff say: " +
+  "do the part you can do yourself, tell me in one line what you found or fixed, " +
+  "and end with exactly one concrete question or one concrete action for me. " +
+  "If setup is already finished, say so in one line and offer two or three concrete next moves drawn from this HQ, then ask which to start. " +
+  "Never end with an open question like \"what would you like to do?\"";
 
 /** Hero + button copy for the setup-bot path. */
 export const SETUP_BOT_COPY = {

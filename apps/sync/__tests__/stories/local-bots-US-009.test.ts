@@ -100,7 +100,7 @@ describe('US-009: bot presence in the DM list and thread', () => {
     // one-liner here is what let `intro` and `memory` go missing unnoticed
     // (live 2026-09-12). The behavioural cover is
     // packages/platform/src/tauri/sync-adapter-bots.test.ts.
-    for (const field of ['name', 'runtime', 'model', 'autoApprove', 'worker', 'intro', 'memory']) {
+    for (const field of ['name', 'runtime', 'model', 'autoApprove', 'worker', 'intro', 'kickoff', 'memory']) {
       expect(sync).toContain(`${field}: input.${field}`);
     }
     expect(sync).toContain("remove: (name) => call('local_bots_remove', { name })");

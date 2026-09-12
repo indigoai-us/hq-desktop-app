@@ -18,7 +18,7 @@ import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
-import { SETUP_BOT_COPY, SETUP_BOT_INTRO } from "../chat/setup-bot.js";
+import { SETUP_BOT_COPY, SETUP_BOT_INTRO, SETUP_BOT_KICKOFF } from "../chat/setup-bot.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
 
 const SETUP_BOT_UID = "agt_setup";
@@ -187,6 +187,8 @@ describe("#welcome Run Setup creates the setup bot", () => {
       worker: "setup",
       runtime: "claude",
       intro: SETUP_BOT_INTRO,
+      // The bot starts step one by itself right after the intro.
+      kickoff: SETUP_BOT_KICKOFF,
     });
     // The scripted `/setup` session is not started any more.
     expect(scripted.start).not.toHaveBeenCalled();

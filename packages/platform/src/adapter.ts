@@ -1072,6 +1072,12 @@ export interface LocalBotCreateInput {
   worker?: string;
   /** Optional first message the bot sends when it comes online (≤ 500 chars). */
   intro?: string;
+  /**
+   * Optional first task (≤ 2000 chars): right after the intro, on first start
+   * only, the bot runs one model turn on this prompt as if the owner sent it
+   * and DMs the answer (`hq bot create --kickoff`).
+   */
+  kickoff?: string;
   /** Where the bot's memory lives: HQ-synced (default) or this Mac only. */
   memory?: "synced" | "local";
 }

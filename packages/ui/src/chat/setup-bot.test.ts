@@ -12,6 +12,8 @@ import {
   setupBotActionLabel,
   SETUP_BOT_COPY,
   SETUP_BOT_INTRO,
+  SETUP_BOT_KICKOFF,
+  SETUP_BOT_KICKOFF_PREFIX,
   SETUP_BOT_MODE,
   SETUP_BOT_NAME,
   SETUP_BOT_WORKER,
@@ -76,8 +78,39 @@ describe("copy", () => {
     expect(copy).toContain("setup bot");
   });
 
-  it("keeps the intro inside the CLI's --intro limit", () => {
+  it("keeps the intro inside the CLI's --intro limit, on one line", () => {
     expect(SETUP_BOT_INTRO.length).toBeLessThanOrEqual(500);
+    // The host rejects control characters in --intro.
+    expect(SETUP_BOT_INTRO).not.toMatch(/[\u0000-\u001f\u007f]/);
+  });
+
+  it("the intro is two short sentences: the plan, then step one starting now — never an open question", () => {
+    const sentences = SETUP_BOT_INTRO.split(/(?<=[.!?])\s+/).filter(Boolean);
+    expect(sentences).toHaveLength(2);
+    for (const part of ["tools", "HQ Cloud", "company", "work you already have", "apps", "first bot"]) {
+      expect(SETUP_BOT_INTRO).toContain(part);
+    }
+    expect(sentences[1]).toMatch(/starting step one now/i);
+    expect(SETUP_BOT_INTRO).not.toContain("?");
+    expect(SETUP_BOT_INTRO.toLowerCase()).not.toMatch(/what would you like|say hi whenever/);
+  });
+
+  it("the kickoff fits the CLI's --kickoff limit, on one line, and starts with the prefix the template recognises", () => {
+    expect(SETUP_BOT_KICKOFF.length).toBeLessThanOrEqual(2000);
+    expect(SETUP_BOT_KICKOFF).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(SETUP_BOT_KICKOFF.startsWith(`${SETUP_BOT_KICKOFF_PREFIX} `)).toBe(true);
+    expect(SETUP_BOT_KICKOFF_PREFIX).toBe("Kickoff:");
+  });
+
+  it("the kickoff asks for the state check, the first unfinished step, and exactly one concrete question or action", () => {
+    const k = SETUP_BOT_KICKOFF;
+    expect(k).toMatch(/signed in to HQ Cloud/);
+    expect(k).toMatch(/has a company/);
+    expect(k).toMatch(/tools/);
+    expect(k).toMatch(/first unfinished step/);
+    expect(k).toMatch(/exactly one concrete question or one concrete action/);
+    expect(k).toMatch(/do not greet again/);
+    expect(k).toMatch(/already finished/);
   });
 
   it("creates `setup` from the core `setup` worker, with the bot path on", () => {

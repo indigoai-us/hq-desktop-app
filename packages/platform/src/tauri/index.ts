@@ -669,6 +669,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         autoApprove: input.autoApprove ?? null,
         worker: input.worker ?? null,
         intro: input.intro ?? null,
+        kickoff: input.kickoff ?? null,
         memory: input.memory ?? null,
       }),
     workers: () => this.call("local_bots_workers"),
