@@ -936,6 +936,8 @@
    * live in `chat/setup-bot.ts`; everything here reuses `createBotEntry` (and
    * therefore the progress card, the synthetic DM row and presence polling).
    */
+  /** Set once the setup bot was started this session, automatically or by Run Setup. */
+  let setupBotAutoStarted = false;
   const existingSetupBot = $derived(findSetupBot(localBots));
   const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
   const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
@@ -966,6 +968,8 @@
    * earlier run on this Mac — may already have made it.
    */
   async function startSetupBot(): Promise<SetupBotStart> {
+    // Any start (the automatic one or a click) settles the automatic start.
+    setupBotAutoStarted = true;
     if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
     await refreshLocalBots();
     const existing = findSetupBot(localBots);
@@ -994,6 +998,24 @@
     recordWelcomeSetupRun();
     return { ok: true, existing: false };
   }
+  /**
+   * First open on this Mac: the setup bot starts by itself, so the person is
+   * greeted and walked through setup without pressing anything. Only when
+   * setup has never been run here, a coding tool is signed in (otherwise Run
+   * Setup shows the Connect step first), and once per app session. Run Setup
+   * then opens the bot's conversation. A failure leaves Run Setup to retry
+   * and explain.
+   */
+  $effect(() => {
+    if (setupBotAutoStarted || !adapter.bots || !SETUP_BOT_MODE || welcomeSetupRun) return;
+    if (!firstSignedInRuntime(localBotRuntimeReady)) return;
+    setupBotAutoStarted = true;
+    void startSetupBot()
+      .then((result) => {
+        if (!result.ok) console.warn("[hq-desktop] setup bot did not start by itself:", result.reason);
+      })
+      .catch((err) => console.warn("[hq-desktop] setup bot did not start by itself:", err));
+  });
   /** Retry from the progress card: start the bot if it exists, else re-run the same create. */
   async function retryBotProgress(uid: string): Promise<void> {
     const entry = botProgressByUid[uid];

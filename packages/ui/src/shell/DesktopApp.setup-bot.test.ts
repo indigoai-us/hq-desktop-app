@@ -175,16 +175,32 @@ async function mountWelcome(platform: PlatformAdapter, setupRun: SetupRunApi, wa
 }
 
 describe("#welcome Run Setup creates the setup bot", () => {
-  it("creates `setup` from the core template with the welcome intro, opens its DM, and marks setup as run", async () => {
+  it("on first open the setup bot starts by itself: created from the core template with the welcome intro and kickoff, its DM opened, setup marked as run", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const scripted = fakeSetupRun();
-    await mountWelcome(adapter({ bots: { create } }), scripted);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: adapter({ bots: { create } }),
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_test", displayName: "Test", email: "test@example.com" },
+        coreFixtures: false,
+        extraPages: {
+          sessions: {
+            label: "Sessions",
+            detail: "Local sessions",
+            component: ExtraPageProbe,
+            setupAction: { label: "Run Setup", param: () => "new?draft=x" },
+            setupRun: scripted,
+          },
+        },
+      },
+    });
 
-    const run = q<HTMLButtonElement>('[data-testid="setup-run"]')!;
-    expect(run.textContent).toContain(SETUP_BOT_COPY.run);
-    expect(q('[data-testid="setup-channel-intro"]')?.textContent).toContain("conversation with your setup bot");
-    run.click();
-
+    // Nobody pressed anything.
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     expect(create).toHaveBeenCalledWith({
       name: "setup",
@@ -204,6 +220,8 @@ describe("#welcome Run Setup creates the setup bot", () => {
   });
 
   it("#welcome is just the banner: the setup button and the Learn HQ resources, no messages, no composer", async () => {
+    // Setup already ran here, so nothing navigates away from #welcome.
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
     await mountWelcome(adapter(), fakeSetupRun());
 
     expect(q('[data-testid="setup-hero"]')).toBeTruthy();
@@ -278,6 +296,9 @@ describe("#welcome Run Setup creates the setup bot", () => {
     }));
     const scripted = fakeSetupRun();
     await mountWelcome(adapter({ bots: { create } }), scripted);
+    // The automatic start tried once and failed quietly; #welcome still offers Run Setup.
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(q('[data-testid="setup-bot-error"]')).toBeNull();
 
     q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="setup-bot-error"]')?.textContent).toContain("not signed in"));
@@ -285,7 +306,7 @@ describe("#welcome Run Setup creates the setup bot", () => {
 
     // Retry runs the same create again.
     q<HTMLButtonElement>('[data-testid="setup-bot-retry"]')!.click();
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(3));
 
     // And the old scripted run is still one click away.
     q<HTMLButtonElement>('[data-testid="setup-bot-fallback"]')!.click();
@@ -314,6 +335,14 @@ describe("#welcome Run Setup creates the setup bot", () => {
     q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ runtime: "claude" }));
+  });
+
+  it("does not start by itself when setup already ran on this Mac", async () => {
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    await mountWelcome(adapter({ bots: { create } }), fakeSetupRun());
+    await settle(20);
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("with no coding tool signed in, the Connect step still comes first", async () => {

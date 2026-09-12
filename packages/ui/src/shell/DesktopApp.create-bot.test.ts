@@ -6,13 +6,19 @@
  * adapter's `bots` group and opens its DM even before the intro message has
  * landed (synthetic row), so the user is never left staring at the modal.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
+import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
+
+// Setup already ran on this "Mac": the setup bot must not start by itself here.
+beforeEach(() => {
+  window.localStorage?.setItem?.(WELCOME_SETUP_RUN_KEY, "1");
+});
 
 function adapter(bots: Partial<NonNullable<PlatformAdapter["bots"]>>): PlatformAdapter {
   return {

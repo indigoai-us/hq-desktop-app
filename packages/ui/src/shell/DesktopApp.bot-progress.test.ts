@@ -15,6 +15,7 @@ import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { LOCAL_BOTS_POLL_MS } from "../chat/local-bots.js";
+import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 
 const BOT_UID = "agt_new";
 
@@ -82,6 +83,8 @@ beforeEach(() => {
   rows = [];
   start = vi.fn(async () => ok({}));
   window.localStorage?.clear?.();
+  // Setup already ran on this "Mac": the setup bot must not start by itself here.
+  window.localStorage?.setItem?.(WELCOME_SETUP_RUN_KEY, "1");
   vi.useFakeTimers({ shouldAdvanceTime: true });
 });
 
