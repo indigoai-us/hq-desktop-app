@@ -44,7 +44,18 @@
 //!
 //!   Case C — envelope hygiene: every envelope survives `before_send` with its
 //!   tags — including the new `tree_present` / `settle_eligible` booleans — intact
-//!   and carries no absolute path, username, or repository content.
+//!   and carries no absolute path, username, or repository content. It also feeds
+//!   a failed drain, whose error string carries an absolute path, through the real
+//!   scrubber and asserts that path never reaches a tag or the serialized event
+//!   while `drain_failed` / `drain_failure_class` survive intact.
+//!
+//!   Case D — a failed drain warns instead of accepting: the same aged, present,
+//!   partial wedge whose drain COMMIT fails bills exactly one `level=warning`
+//!   `bulk-delete-refused` envelope tagged `drain_failed=true` with a closed
+//!   `drain_failure_class`, and ZERO acceptances — while the identical inputs with
+//!   the commit succeeding still bill one `level=info` acceptance (case A). This is
+//!   the reopen fix's failure path: a drain that does not land escalates, never
+//!   silently clears.
 
 use std::sync::Arc;
 
@@ -117,6 +128,7 @@ fn case_a_a_settled_wedge_bills_one_info_acceptance_and_zero_warnings() {
             EIGHT_DAYS_SECS,
             FIRST_BANNER,
             &records,
+            false,
         );
         assert_eq!(
             kind, "bulk-delete-accepted",
@@ -168,6 +180,7 @@ fn case_b1_the_reopening_shape_is_held_and_bills_nothing() {
             CONFIRMED_EPISODE_SECS,
             FIRST_BANNER,
             &records,
+            false,
         );
         assert_eq!(
             kind, "none",
@@ -202,6 +215,7 @@ fn case_b2_a_wedge_that_never_self_heals_still_bills_one_warning() {
             CONFIRMED_EPISODE_SECS,
             FIRST_BANNER,
             &records,
+            false,
         );
         assert_eq!(kind, "bulk-delete-refused", "an absent tree still warns");
     });
@@ -224,6 +238,7 @@ fn case_b2_a_wedge_that_never_self_heals_still_bills_one_warning() {
             CONFIRMED_EPISODE_SECS,
             FIRST_BANNER,
             &records,
+            false,
         );
         assert_eq!(
             kind, "bulk-delete-refused",
@@ -253,6 +268,7 @@ fn case_c_no_local_detail_survives_scrubbing_and_the_new_tags_are_intact() {
             EIGHT_DAYS_SECS,
             FIRST_BANNER,
             &records,
+            false,
         );
     });
     // A NON-eligible refusal, so the gate still emits one warning to scrub.
@@ -266,10 +282,47 @@ fn case_c_no_local_detail_survives_scrubbing_and_the_new_tags_are_intact() {
             CONFIRMED_EPISODE_SECS,
             FIRST_BANNER,
             &records,
+            false,
         );
     });
 
-    for (label, events) in [("accepted", accepted), ("refused", refused)] {
+    // A settled drain whose COMMIT failed: the aged present partial wedge, but
+    // reported as a refusal carrying the git error string — which holds an absolute
+    // path. The new tags must survive `before_send`; the path must not.
+    let failed_drain = captured(|| {
+        let kind = drive_bulk_delete_decision_for_test(
+            FIELD_DELETIONS,
+            FIELD_TRACKED,
+            Some(EIGHT_DAYS_SECS),
+            true,
+            CONFIRMED_OCCURRENCES,
+            EIGHT_DAYS_SECS,
+            FIRST_BANNER,
+            &records,
+            true,
+        );
+        assert_eq!(
+            kind, "bulk-delete-refused",
+            "a failed drain reports a refusal"
+        );
+    });
+    assert_eq!(failed_drain.len(), 1, "a failed drain bills one envelope");
+    assert_eq!(
+        failed_drain[0].tags["drain_failed"], "true",
+        "the failed-drain discriminator survives scrubbing"
+    );
+    assert!(
+        ["lock", "timeout", "spawn", "exit", "other"]
+            .contains(&failed_drain[0].tags["drain_failure_class"].as_str()),
+        "drain_failure_class survives as a closed-vocabulary word, got {:?}",
+        failed_drain[0].tags.get("drain_failure_class")
+    );
+
+    for (label, events) in [
+        ("accepted", accepted),
+        ("refused", refused),
+        ("failed_drain", failed_drain),
+    ] {
         assert_eq!(events.len(), 1, "{label}");
         let event = &events[0];
         // Every tag this path sets is a count, a duration, a bool, or a fixed
@@ -295,4 +348,79 @@ fn case_c_no_local_detail_survives_scrubbing_and_the_new_tags_are_intact() {
             );
         }
     }
+}
+
+#[test]
+fn case_d_a_failed_drain_bills_one_warning_and_zero_acceptances() {
+    let records = hq_subtree_records();
+
+    // The aged, present, partial wedge of case A — but the drain's commit failed.
+    let failed = captured(|| {
+        let kind = drive_bulk_delete_decision_for_test(
+            FIELD_DELETIONS,
+            FIELD_TRACKED,
+            Some(EIGHT_DAYS_SECS),
+            true,
+            CONFIRMED_OCCURRENCES,
+            EIGHT_DAYS_SECS,
+            FIRST_BANNER,
+            &records,
+            true,
+        );
+        assert_eq!(
+            kind, "bulk-delete-refused",
+            "a failed drain reports an aged refusal, not an acceptance"
+        );
+    });
+
+    assert_eq!(
+        failed.len(),
+        1,
+        "a failed drain bills exactly one envelope, got: {:?}",
+        failed
+            .iter()
+            .map(|e| (e.level, kind(e).map(str::to_string)))
+            .collect::<Vec<_>>()
+    );
+    let event = &failed[0];
+    assert_eq!(event.level, sentry::Level::Warning);
+    assert_eq!(kind(event), Some("bulk-delete-refused"));
+    assert_eq!(event.tags["drain_failed"], "true");
+    assert!(
+        ["lock", "timeout", "spawn", "exit", "other"]
+            .contains(&event.tags["drain_failure_class"].as_str()),
+        "drain_failure_class is a closed-vocabulary word, got {:?}",
+        event.tags.get("drain_failure_class")
+    );
+    assert_eq!(event.tags["settle_eligible"], "true");
+    assert_eq!(event.tags["tree_present"], "true");
+    assert_eq!(event.tags["report_source"], "first-confirmed");
+    assert_eq!(
+        failed
+            .iter()
+            .filter(|e| kind(e) == Some("bulk-delete-accepted"))
+            .count(),
+        0,
+        "a failed drain bills zero acceptances"
+    );
+
+    // The identical inputs, but the commit lands: exactly one info acceptance
+    // (case A behaviour, pinned here beside its failure twin).
+    let ok = captured(|| {
+        let kind = drive_bulk_delete_decision_for_test(
+            FIELD_DELETIONS,
+            FIELD_TRACKED,
+            Some(EIGHT_DAYS_SECS),
+            true,
+            CONFIRMED_OCCURRENCES,
+            EIGHT_DAYS_SECS,
+            FIRST_BANNER,
+            &records,
+            false,
+        );
+        assert_eq!(kind, "bulk-delete-accepted");
+    });
+    assert_eq!(ok.len(), 1, "a successful drain bills one acceptance");
+    assert_eq!(ok[0].level, sentry::Level::Info);
+    assert_eq!(kind(&ok[0]), Some("bulk-delete-accepted"));
 }
