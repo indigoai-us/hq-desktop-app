@@ -62,6 +62,13 @@ function primaryButton(): HTMLButtonElement {
   return button;
 }
 
+/** A button on the ready screen by test id (the tool launchers live under Advanced). */
+function readyButton(testId: string): HTMLButtonElement {
+  const button = host.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
+  if (!button) throw new Error(`Expected ${testId} to render.`);
+  return button;
+}
+
 async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -171,7 +178,7 @@ describe('onboarding launch handoff', () => {
       }
     });
 
-    primaryButton().click();
+    readyButton('onboarding-launch-claude').click();
     await flush();
 
     const summary = host.querySelector('[data-testid="onboarding-summary"]');
@@ -207,7 +214,7 @@ describe('onboarding launch handoff', () => {
       Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
     );
 
-    primaryButton().click();
+    readyButton('onboarding-launch-claude').click();
     await flush();
     await vi.advanceTimersByTimeAsync(1);
     await flush();
@@ -232,7 +239,7 @@ describe('onboarding launch handoff', () => {
     ).toHaveLength(1);
   });
 
-  it('renders a ready-panel button for every detected tool and keeps Finish off that row', async () => {
+  it('leads with Open HQ Desktop and keeps Claude Code and Codex under Advanced', async () => {
     mountWizard(vi.fn(), 4, {
       ...NO_AI_TOOLS,
       claude_desktop: true,
@@ -241,22 +248,29 @@ describe('onboarding launch handoff', () => {
       any: true,
     });
     await flushUntil(() =>
-      Boolean(host.querySelector('[data-testid="onboarding-launch-grok"]')),
+      Boolean(host.querySelector('[data-testid="onboarding-launch-codex"]')),
     );
 
-    const row = host.querySelector('[data-testid="onboarding-launchers"]');
+    // The one primary action: open HQ Desktop, where the setup bot takes over.
+    expect(primaryButton().textContent?.trim()).toBe('Open HQ Desktop');
+    expect(primaryButton().dataset.testid).toBe('onboarding-open-desktop');
+    expect(host.querySelector('[data-testid="onboarding-summary"]')?.textContent).not.toContain(
+      'Complete setup in your AI tool',
+    );
+
+    // Advanced holds exactly the two own-tool launchers, none of them primary.
+    const advanced = host.querySelector<HTMLDetailsElement>('[data-testid="onboarding-advanced"]');
+    expect(advanced).not.toBeNull();
+    expect(advanced!.open).toBe(false);
+    expect(advanced!.querySelector('summary')?.textContent?.trim()).toBe('Advanced');
+    const row = advanced!.querySelector('[data-testid="onboarding-launchers"]');
     expect(row).not.toBeNull();
     const labels = Array.from(row!.querySelectorAll('button')).map((button) =>
       button.textContent?.trim(),
     );
-    expect(labels).toEqual(['Open in Claude Code', 'Open in Codex', 'Open in Grok']);
+    expect(labels).toEqual(['Open in Claude Code', 'Open in Codex']);
+    expect(row!.querySelector('.btn-primary')).toBeNull();
     expect(row!.textContent).not.toMatch(/\bFinish\b/);
-    expect(host.querySelector('[data-testid="onboarding-launch-claude"]')?.className).toContain(
-      'btn-primary',
-    );
-    expect(host.querySelector('[data-testid="onboarding-launch-codex"]')?.className).toContain(
-      'btn-secondary',
-    );
   });
 
   it('offers both Claude Code and Codex when no AI tool is installed', async () => {
@@ -270,9 +284,9 @@ describe('onboarding launch handoff', () => {
     expect(host.querySelector('[data-testid="onboarding-install-claude"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="onboarding-install-codex"]')).not.toBeNull();
 
-    // Claude keeps the primary slot: it is the path that starts the readiness
-    // watch, and the row still needs one obvious next step.
-    expect(primaryButton().textContent).toBe('Install Claude Code');
+    // Opening HQ Desktop stays the primary step; the installs sit under Advanced.
+    expect(primaryButton().textContent?.trim()).toBe('Open HQ Desktop');
+    expect(readyButton('onboarding-install-claude').textContent?.trim()).toBe('Install Claude Code');
   });
 
   it('restores friendly checklist labels instead of internal setup stage names', async () => {
@@ -662,17 +676,17 @@ describe('onboarding launch handoff', () => {
     });
 
     await flush();
-    primaryButton().click();
+    readyButton('onboarding-install-claude').click();
     await flush();
-    expect(primaryButton().textContent).toBe('Waiting for Claude…');
+    expect(readyButton('onboarding-install-claude').textContent).toBe('Waiting for Claude…');
 
     await vi.advanceTimersByTimeAsync(3000);
     flushSync();
-    expect(primaryButton().textContent).toBe('Waiting for Claude…');
+    expect(readyButton('onboarding-install-claude').textContent).toBe('Waiting for Claude…');
 
     await vi.advanceTimersByTimeAsync(3000);
     flushSync();
-    expect(primaryButton().textContent).toBe('Waiting for Claude…');
+    expect(readyButton('onboarding-install-claude').textContent).toBe('Waiting for Claude…');
 
     await vi.advanceTimersByTimeAsync(3000);
     await flush();
@@ -702,7 +716,7 @@ describe('onboarding launch handoff', () => {
     });
 
     await flush();
-    primaryButton().click();
+    readyButton('onboarding-install-claude').click();
     await flush();
 
     await vi.advanceTimersByTimeAsync(27_000);
@@ -734,7 +748,7 @@ describe('onboarding launch handoff', () => {
     });
 
     await flush();
-    primaryButton().click();
+    readyButton('onboarding-install-claude').click();
     await flush();
 
     await vi.advanceTimersByTimeAsync(9000);
@@ -963,5 +977,21 @@ describe('anonymous installer step pings', () => {
     expect(wizardSource).toContain("invokeCommand<{ personUid?: string | null }>('whoami')");
     expect(wizardSource).toContain('onboardingTelemetry.setPersonUid(uid)');
     expect(wizardSource).toContain('void resolveInstallerPersonUid()');
+  });
+});
+
+describe('ready screen: Open HQ Desktop', () => {
+  it('finishes onboarding without launching any AI tool', async () => {
+    const onfinish = mountWizard(vi.fn(), 4, { ...NO_AI_TOOLS, claude_desktop: true, any: true });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-open-desktop"]')));
+
+    readyButton('onboarding-open-desktop').click();
+    await flush();
+
+    expect(onfinish).toHaveBeenCalledOnce();
+    const launchCommands = tauri.invoke.mock.calls
+      .map(([command]) => command)
+      .filter((command) => /^(open_claude_code_link|launch_claude_code|launch_codex_workspace|launch_codex_desktop|launch_cli_in_terminal)$/.test(String(command)));
+    expect(launchCommands).toEqual([]);
   });
 });

@@ -432,7 +432,7 @@ describe('lifecycle scenario wire shapes', () => {
 });
 
 describe('desktop shell boots the lifecycle scenario', () => {
-  it('paints #setup with the create_company card and fires shell_ready', async () => {
+  it('paints #setup as just the welcome banner (the setup bot creates the company) and fires shell_ready', async () => {
     const { invokeFn, calls } = createLifecycleInvoke({ delayScale: 0 });
     host = document.createElement('div');
     document.body.appendChild(host);
@@ -446,9 +446,10 @@ describe('desktop shell boots the lifecycle scenario', () => {
       () => {
         expect(host.querySelector('[data-testid="channel-skeleton"]')).toBeNull();
         expect(host.querySelector('[data-testid="setup-channel-intro"]')).toBeTruthy();
-        const card = host.querySelector('[data-testid="lifecycle-card"]');
-        expect(card?.getAttribute('data-card-kind')).toBe('create_company');
-        expect(card?.getAttribute('data-state')).toBe('open');
+        expect(host.querySelector('[data-testid="setup-run"]')).toBeTruthy();
+        // #welcome is only the banner in setup-bot mode: no seeded cards, no composer.
+        expect(host.querySelector('[data-testid="lifecycle-card"]')).toBeNull();
+        expect(host.querySelector('[data-testid="conversation-composer"]')).toBeNull();
         expect(calls).toContain('shell_ready');
       },
       { timeout: 5_000 },

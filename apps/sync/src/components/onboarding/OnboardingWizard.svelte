@@ -10,7 +10,6 @@
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
   import {
-    COMPLETE_SETUP,
     escapeForLaunch,
     type OnboardingEscape,
   } from '../../lib/onboarding-escape';
@@ -27,11 +26,9 @@
     launchEntries,
     markToolUnavailable,
     readyCommandFor,
-    selectPrimaryLaunch,
     type AiTools,
     type LaunchEntry,
     type LaunchKind,
-    type PrimaryLaunch,
   } from '../../lib/onboarding-summary';
   import {
     allSettled,
@@ -236,6 +233,11 @@
   let claudeWatchExpired = $state(false);
   let launchEscape = $state<OnboardingEscape | null>(null);
   let showManualTools = $state(false);
+  /** The ready screen's Advanced disclosure (own-tool launchers); opens itself when a launch needs a next step. */
+  let advancedOpen = $state(false);
+  $effect(() => {
+    if (launchEscape || finishError || claudeWatchExpired || detectionFailed) advancedOpen = true;
+  });
   let revealingFolder = $state(false);
   let commandCopied = $state(false);
   let pathCopied = $state(false);
@@ -317,22 +319,12 @@
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
-  const readyCaution = $derived(launchEscape ?? COMPLETE_SETUP);
   const userFacingInstallPath = $derived(
     installPath ? toUserFacingPath(installPath) : null,
   );
   const manualCommand = $derived(readyCommandFor(userFacingInstallPath, aiTools));
   const launchOptions = $derived(availableLaunches(aiTools));
   const launchSlots = $derived<LaunchEntry[]>(launchEntries(aiTools));
-  // With nothing installed every slot is an install link, so there is no
-  // launch button to carry `btn-primary`. Promote the Claude install — it is
-  // the path that starts the readiness watch, and leaving the row with no
-  // primary at all reads as "no next step" on the one screen that most needs
-  // one.
-  const noToolInstalled = $derived(
-    launchSlots.length > 0 && launchSlots.every((slot) => !slot.installed),
-  );
-  const primaryLaunch = $derived<PrimaryLaunch>(selectPrimaryLaunch(aiTools));
   const manualToolsVisible = $derived(
     showManualTools || Boolean(launchEscape || detectionFailed),
   );
@@ -2199,161 +2191,175 @@
           aria-labelledby="onboarding-title-ready"
         >
           <h2 class="h" id="onboarding-title-ready">HQ is ready</h2>
-          <p class="body">HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.</p>
-          <div
-            class="setup-caution"
-            role="note"
-            data-testid="onboarding-escape"
-            aria-label={readyCaution.title}
-          >
-            <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M10 2.4 18 17H2L10 2.4Z"></path>
-              <path d="M10 7v4.5"></path>
-              <circle cx="10" cy="14.2" r=".7"></circle>
-            </svg>
-            <div class="setup-caution-copy">
-              <strong>{readyCaution.title}</strong>
-              <span>{readyCaution.body}</span>
+          <p class="body">HQ now lives in your menubar and keeps everything in sync. Open HQ Desktop and your setup bot will walk you through the rest.</p>
+          {#if launchEscape}
+            <div
+              class="setup-caution"
+              role="note"
+              data-testid="onboarding-escape"
+              aria-label={launchEscape.title}
+            >
+              <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M10 2.4 18 17H2L10 2.4Z"></path>
+                <path d="M10 7v4.5"></path>
+                <circle cx="10" cy="14.2" r=".7"></circle>
+              </svg>
+              <div class="setup-caution-copy">
+                <strong>{launchEscape.title}</strong>
+                <span>{launchEscape.body}</span>
+              </div>
             </div>
+          {/if}
+          <div class="btns">
+            <button
+              class="btn btn-primary"
+              type="button"
+              data-testid="onboarding-open-desktop"
+              disabled={finishing || (launching !== null && launching !== 'watching')}
+              aria-busy={finishing}
+              onclick={() => void handleFinish()}
+            >
+              {finishing ? 'Opening…' : 'Open HQ Desktop'}
+            </button>
           </div>
-          {#if detectionFailed && !launchEscape}
-            <p class="inline-note" role="status">
-              Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.
-            </p>
-          {/if}
-          {#if claudeWatchExpired}
-            <p class="inline-note" role="status">
-              Claude is taking longer than expected. You can open this HQ folder from Claude manually.
-            </p>
-          {/if}
-          {#if finishError}
-            <div class="finish-action" role="status" data-testid="launcher-finish-error">
-              <span>The tool opened. Finish HQ setup here when you’re ready.</span>
-              <button
-                type="button"
-                onclick={handleFinish}
-                disabled={finishing}
-                aria-busy={finishing}
-              >
-                {finishing ? 'Retrying…' : 'Finish setup'}
-              </button>
-            </div>
-          {/if}
-          {#if manualToolsVisible}
-            <div class="manual-tools" aria-label="Manual setup options">
-              <button
-                type="button"
-                onclick={handleRevealFolder}
-                disabled={revealingFolder}
-                aria-busy={revealingFolder}
-              >
-                {revealingFolder ? 'Revealing…' : 'Reveal folder'}
-              </button>
-              <button
-                type="button"
-                onclick={handleCopyPath}
-                disabled={copyingAction !== null}
-                aria-busy={copyingAction === 'path'}
-              >
-                {copyingAction === 'path' ? 'Copying…' : pathCopied ? 'Path copied' : 'Copy path'}
-              </button>
-              <button
-                type="button"
-                onclick={handleCopyCommand}
-                disabled={copyingAction !== null}
-                aria-busy={copyingAction === 'command'}
-              >
-                {copyingAction === 'command' ? 'Copying…' : commandCopied ? 'Command copied' : 'Copy command'}
-              </button>
-              <button
-                type="button"
-                onclick={handleCopySetupPrompt}
-                disabled={copyingAction !== null}
-                aria-busy={copyingAction === 'setup'}
-              >
-                {copyingAction === 'setup' ? 'Copying…' : setupPromptCopied ? '/setup copied' : 'Copy /setup'}
-              </button>
-              <button
-                type="button"
-                onclick={handleCopyImportPrompt}
-                disabled={copyingAction !== null}
-                aria-busy={copyingAction === 'import'}
-              >
-                {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
-              </button>
-            </div>
-            {#if copyFailure}
-              <div class="copy-action" role="status" data-testid="onboarding-copy-error">
-                <span>Clipboard is blocked. Select the path above, or try again.</span>
+          <!-- Advanced: work in your own AI tool instead. Opens with the
+               folder's /setup, exactly as the wizard always did. -->
+          <details class="advanced" data-testid="onboarding-advanced" bind:open={advancedOpen}>
+            <summary>Advanced</summary>
+            <p class="inline-note">Prefer your own AI tool? Open the HQ folder in it and run /setup there.</p>
+            {#if detectionFailed && !launchEscape}
+              <p class="inline-note" role="status">
+                Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.
+              </p>
+            {/if}
+            {#if claudeWatchExpired}
+              <p class="inline-note" role="status">
+                Claude is taking longer than expected. You can open this HQ folder from Claude manually.
+              </p>
+            {/if}
+            {#if finishError}
+              <div class="finish-action" role="status" data-testid="launcher-finish-error">
+                <span>The tool opened. Finish HQ setup here when you’re ready.</span>
                 <button
                   type="button"
-                  onclick={() => void retryCopyAction()}
-                  disabled={copyingAction !== null}
-                  aria-busy={copyingAction !== null}
+                  onclick={handleFinish}
+                  disabled={finishing}
+                  aria-busy={finishing}
                 >
-                  {copyingAction ? 'Retrying…' : 'Try again'}
+                  {finishing ? 'Retrying…' : 'Finish setup'}
                 </button>
               </div>
             {/if}
-          {/if}
-          <div class="btns" data-testid="onboarding-launchers">
-            <!-- `launchSlots` is empty only while detection is still in flight;
-                 once it resolves it always carries Claude Code and Codex, so a
-                 machine with neither installed gets two install links rather
-                 than the old Claude-only dead end. -->
-            {#if launchSlots.length === 0}
-              <button
-                class="btn btn-primary"
-                type="button"
-                data-testid="onboarding-launch-download"
-                disabled={finishing || (launching !== null && launching !== 'watching')}
-                aria-busy={finishing || (launching !== null && launching !== 'watching')}
-                onclick={() => void handleLaunch('download')}
-              >
-                {finishing
-                  ? 'Finishing…'
-                  : launching === 'watching'
-                  ? 'Waiting for Claude…'
-                  : launching === 'download'
-                    ? 'Opening…'
-                    : 'Download Claude'}
-              </button>
-            {:else}
-              {#each launchSlots as slot (slot.kind)}
-                {#if slot.installed}
+            {#if manualToolsVisible}
+              <div class="manual-tools" aria-label="Manual setup options">
+                <button
+                  type="button"
+                  onclick={handleRevealFolder}
+                  disabled={revealingFolder}
+                  aria-busy={revealingFolder}
+                >
+                  {revealingFolder ? 'Revealing…' : 'Reveal folder'}
+                </button>
+                <button
+                  type="button"
+                  onclick={handleCopyPath}
+                  disabled={copyingAction !== null}
+                  aria-busy={copyingAction === 'path'}
+                >
+                  {copyingAction === 'path' ? 'Copying…' : pathCopied ? 'Path copied' : 'Copy path'}
+                </button>
+                <button
+                  type="button"
+                  onclick={handleCopyCommand}
+                  disabled={copyingAction !== null}
+                  aria-busy={copyingAction === 'command'}
+                >
+                  {copyingAction === 'command' ? 'Copying…' : commandCopied ? 'Command copied' : 'Copy command'}
+                </button>
+                <button
+                  type="button"
+                  onclick={handleCopySetupPrompt}
+                  disabled={copyingAction !== null}
+                  aria-busy={copyingAction === 'setup'}
+                >
+                  {copyingAction === 'setup' ? 'Copying…' : setupPromptCopied ? '/setup copied' : 'Copy /setup'}
+                </button>
+                <button
+                  type="button"
+                  onclick={handleCopyImportPrompt}
+                  disabled={copyingAction !== null}
+                  aria-busy={copyingAction === 'import'}
+                >
+                  {copyingAction === 'import' ? 'Copying…' : importPromptCopied ? 'Import copied' : 'Copy /import-claude'}
+                </button>
+              </div>
+              {#if copyFailure}
+                <div class="copy-action" role="status" data-testid="onboarding-copy-error">
+                  <span>Clipboard is blocked. Select the path above, or try again.</span>
                   <button
-                    class="btn {slot.kind === primaryLaunch.kind ? 'btn-primary' : 'btn-secondary'}"
                     type="button"
-                    data-testid="onboarding-launch-{slot.kind}"
-                    disabled={finishing || (launching !== null && launching !== 'watching')}
-                    aria-busy={finishing || launching === slot.kind}
-                    onclick={() => void handleLaunch(slot.kind)}
+                    onclick={() => void retryCopyAction()}
+                    disabled={copyingAction !== null}
+                    aria-busy={copyingAction !== null}
                   >
-                    {finishing && slot.kind === primaryLaunch.kind
-                      ? 'Finishing…'
-                      : launching === slot.kind
-                        ? 'Opening…'
-                        : slot.label}
+                    {copyingAction ? 'Retrying…' : 'Try again'}
                   </button>
-                {:else}
-                  <button
-                    class="btn {noToolInstalled && slot.kind === 'claude'
-                      ? 'btn-primary'
-                      : 'btn-ghost'}"
-                    type="button"
-                    data-testid="onboarding-install-{slot.kind}"
-                    disabled={finishing}
-                    aria-busy={launching === 'watching' && slot.kind === 'claude'}
-                    onclick={() => void handleInstallTool(slot.kind)}
-                  >
-                    {launching === 'watching' && slot.kind === 'claude'
-                      ? 'Waiting for Claude…'
-                      : slot.installLabel}
-                  </button>
-                {/if}
-              {/each}
+                </div>
+              {/if}
             {/if}
-          </div>
+            <div class="btns advanced-launchers" data-testid="onboarding-launchers">
+              <!-- `launchSlots` is empty only while detection is still in flight;
+                   once it resolves it always carries Claude Code and Codex, so a
+                   machine with neither installed gets two install links rather
+                   than the old Claude-only dead end. -->
+              {#if launchSlots.length === 0}
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  data-testid="onboarding-launch-download"
+                  disabled={finishing || (launching !== null && launching !== 'watching')}
+                  aria-busy={finishing || (launching !== null && launching !== 'watching')}
+                  onclick={() => void handleLaunch('download')}
+                >
+                  {launching === 'watching'
+                    ? 'Waiting for Claude…'
+                    : launching === 'download'
+                      ? 'Opening…'
+                      : 'Download Claude'}
+                </button>
+              {:else}
+                {#each launchSlots.filter((slot) => slot.kind !== 'grok') as slot (slot.kind)}
+                  {#if slot.installed}
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      data-testid="onboarding-launch-{slot.kind}"
+                      disabled={finishing || (launching !== null && launching !== 'watching')}
+                      aria-busy={finishing || launching === slot.kind}
+                      onclick={() => void handleLaunch(slot.kind)}
+                    >
+                      {launching === slot.kind
+                          ? 'Opening…'
+                          : slot.label}
+                    </button>
+                  {:else}
+                    <button
+                      class="btn btn-ghost"
+                      type="button"
+                      data-testid="onboarding-install-{slot.kind}"
+                      disabled={finishing}
+                      aria-busy={launching === 'watching' && slot.kind === 'claude'}
+                      onclick={() => void handleInstallTool(slot.kind)}
+                    >
+                      {launching === 'watching' && slot.kind === 'claude'
+                        ? 'Waiting for Claude…'
+                        : slot.installLabel}
+                    </button>
+                  {/if}
+                {/each}
+              {/if}
+            </div>
+          </details>
         </section>
 
         <section
@@ -2716,6 +2722,10 @@
   .bigcheck { width:84px; height:84px; display:block; }
 
   .manual-tools { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+  .advanced { margin-top:14px; font-size:13px; }
+  .advanced > summary { cursor:pointer; width:fit-content; color:var(--c-muted); font-size:12px; }
+  .advanced > summary:hover { color:inherit; }
+  .advanced .advanced-launchers { margin-top:10px; }
   .manual-tools button { appearance:none; border:0.5px solid var(--c-field-border); border-radius:6px; background:var(--c-btn2-bg); color:var(--c-muted); font:inherit; font-size:11.5px; line-height:15px; padding:4px 7px; cursor:pointer; }
   .manual-tools button:hover:not(:disabled) { color:var(--c-text); }
   .manual-tools button:disabled { opacity:.5; cursor:not-allowed; }
