@@ -22,6 +22,7 @@
     type OfficeStore,
     type OfficeWillingness,
     isRoomJoinable,
+    isWalkIn,
   } from "./office-store.svelte.js";
 
   interface Props {
@@ -36,6 +37,12 @@
     tickMs?: number;
     /** "Start a room" — the host creates the room and opens the call window. */
     onstartroom?: () => void | Promise<void>;
+    /**
+     * "Open my door" — the host sets willingness to `open` AND makes sure there
+     * is a live room to walk into, then opens the call window. Absent → the
+     * button only writes the preference, which is a door with no room behind it.
+     */
+    onopendoor?: (ttlMs: number) => void | Promise<void>;
     /** "Open room" on a member row whose room is joinable. */
     onopenroom?: (person: OfficePerson) => void | Promise<void>;
     /** Retry after an error state. */
@@ -51,8 +58,13 @@
     knocks?: KnockStore | null;
     /** Knock a person, with an optional short note. */
     onknock?: (person: OfficePerson, note: string) => void | Promise<void>;
-    /** Accept: the host opens the call window. Never starts capture here. */
+    /**
+     * Accept: let the knocker into OUR room. This opens no window — the knock
+     * was bound to our room, not theirs.
+     */
     onacceptknock?: (knock: Knock) => void | Promise<void>;
+    /** "Go to your room" on an accepted knock, when we are not in it. */
+    ongotoknock?: (knock: Knock) => void | Promise<void>;
     /** Reply with text instead of opening the door. */
     onreplyknock?: (knock: Knock, text: string) => void | Promise<void>;
     ondeferknock?: (knock: Knock) => void | Promise<void>;
@@ -71,11 +83,13 @@
     now = () => Date.now(),
     tickMs = 1000,
     onstartroom,
+    onopendoor,
     onopenroom,
     onretry,
     knocks = null,
     onknock,
     onacceptknock,
+    ongotoknock,
     onreplyknock,
     ondeferknock,
     ondismissknock,
@@ -149,6 +163,30 @@
 
   function joinable(person: OfficePerson): boolean {
     return isRoomJoinable(person, at);
+  }
+
+  /**
+   * Row policy (US-019). A knock asks to enter THEIR room, so what a row can
+   * offer is decided entirely by what is behind their door:
+   *
+   *   - `open` willingness, a live room, not private  → Join, straight in.
+   *   - a live room, but `knock` willingness or a private room → Knock.
+   *   - no live room at all → nothing to knock on, said in words.
+   *   - `dnd` → nothing at all, said in words.
+   *
+   * There is deliberately no "knock anyway" for someone with no room: the
+   * binding a knock needs is their room, and inventing one produces an empty
+   * room the server seals a minute later.
+   */
+  function walkIn(person: OfficePerson): boolean {
+    return isWalkIn(person, at);
+  }
+
+  /** Why this row offers no knock, in words, or null when it does offer one. */
+  function knockBlockedReason(person: OfficePerson): string | null {
+    if (person.willingness === "dnd") return "Do not disturb — no knocks";
+    if (!joinable(person)) return "No open door yet";
+    return null;
   }
 
   const busy = $derived(view.saving);
@@ -247,7 +285,10 @@
             aria-pressed={self?.willingness === choice.id}
             disabled={busy || view.status === "loading"}
             title={choice.hint}
-            onclick={() => void store.setWillingness(choice.id, ttlMs)}
+            onclick={() =>
+              void (choice.id === "open" && onopendoor
+                ? onopendoor(ttlMs)
+                : store.setWillingness(choice.id, ttlMs))}
           >
             {choice.label}
           </button>
@@ -284,7 +325,10 @@
           class="office-button"
           data-testid="office-open-door"
           disabled={busy || view.status === "loading"}
-          onclick={() => void store.setWillingness("open", ttlMs)}
+          onclick={() =>
+            void (onopendoor
+              ? onopendoor(ttlMs)
+              : store.setWillingness("open", ttlMs))}
         >
           Open my door
         </button>
@@ -327,9 +371,13 @@
             {sendFeedback}
           </p>
         {/if}
-        {#if knocks.state.error}
+        {#if knocks.state.actionError ?? knocks.state.error}
+          <!--
+            An action refusal outranks a list-load error, and lives in its own
+            field so the next poll's success cannot quietly erase it.
+          -->
           <p role="alert" data-testid="office-knock-error">
-            {knocks.state.error.message}
+            {(knocks.state.actionError ?? knocks.state.error)?.message}
           </p>
         {/if}
         {#if received.length === 0 && sent.length === 0}
@@ -350,6 +398,7 @@
                   busy={knockBusy}
                   replySuggestion={replySuggestion(knock)}
                   onaccept={onacceptknock}
+                  ongoto={ongotoknock}
                   onreply={onreplyknock}
                   ondefer={ondeferknock}
                   ondismiss={ondismissknock}
@@ -431,7 +480,21 @@
             </span>
 
             <span class="office-actions">
-              {#if knocks && person.willingness !== "dnd"}
+              {#if knocks && walkIn(person)}
+                <!--
+                  Their door is open and their room is company-visible: walking
+                  in needs nobody's permission, so asking for it would be
+                  ceremony. No knock is offered alongside it.
+                -->
+                <button
+                  type="button"
+                  class="office-button office-button-primary"
+                  data-testid={`office-open-room-${person.personUid}`}
+                  onclick={() => void onopenroom?.(person)}
+                >
+                  Join
+                </button>
+              {:else if knocks && knockBlockedReason(person) === null}
                 <button
                   type="button"
                   class="office-button"
@@ -446,17 +509,26 @@
                 >
                   Knock
                 </button>
+                <span
+                  class="office-soon"
+                  data-testid={`office-knock-note-why-${person.personUid}`}
+                >
+                  They ask to be knocked on first.
+                </span>
               {:else if knocks}
                 <!--
-                  Do-not-disturb is stated, not hidden behind a dead button: a
-                  permanently disabled control is focus-skipped and explains
-                  nothing. The server would suppress the knock anyway.
+                  A reason, not a dead button: a permanently disabled control is
+                  focus-skipped and explains nothing. Do-not-disturb would be
+                  suppressed server-side anyway, and someone with no live room
+                  has no binding for a knock to name.
                 -->
                 <span
                   class="office-soon"
-                  data-testid={`office-knock-dnd-${person.personUid}`}
+                  data-testid={person.willingness === "dnd"
+                    ? `office-knock-dnd-${person.personUid}`
+                    : `office-knock-none-${person.personUid}`}
                 >
-                  Do not disturb — no knocks
+                  {knockBlockedReason(person)}
                 </span>
               {:else}
                 <!--
@@ -472,16 +544,16 @@
                 >
                   Knocks coming next
                 </span>
-              {/if}
-              {#if joinable(person)}
-                <button
-                  type="button"
-                  class="office-button"
-                  data-testid={`office-open-room-${person.personUid}`}
-                  onclick={() => void onopenroom?.(person)}
-                >
-                  Open room
-                </button>
+                {#if joinable(person)}
+                  <button
+                    type="button"
+                    class="office-button"
+                    data-testid={`office-open-room-${person.personUid}`}
+                    onclick={() => void onopenroom?.(person)}
+                  >
+                    Open room
+                  </button>
+                {/if}
               {/if}
             </span>
 

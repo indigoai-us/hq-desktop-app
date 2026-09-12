@@ -3,38 +3,47 @@
  *
  * ## Which way round a knock goes (read this before changing anything)
  *
- * The backend (`hq-pro src/meetings/native/knock.service.ts`) models a knock as
- * a request bound to a ROOM the knocker names:
+ * A knock is a request to ENTER THE TARGET'S ROOM. It is not an invitation
+ * into a room of our own.
  *
  *   POST /v1/meet-native/knocks { roomId, callId, epoch, target, note }
  *
- * `knock.service.create` validates that binding against the live room/call
- * (`roomAndCall`: current call id, matching epoch, call still open), and for a
- * PRIVATE room additionally requires that `target` already belongs to it.
- * `knock.service.decide(..., "accept")` then mints `admissionGrantId`, and the
- * controller's `view()` only ever discloses it to the knocker:
+ * The `{roomId, callId, epoch}` triple is the TARGET's room. `knock.service.create`
+ * validates that binding against the live room/call (current call id, matching
+ * epoch, call still open) and, for a PRIVATE room, additionally requires that
+ * `target` already belongs to it — which is exactly the check that makes sense
+ * when the target is the person who would be letting us in.
+ *
+ * `knock.service.decide(..., "accept")` — run by the target, or by a host or
+ * cohost of that room — mints `admissionGrantId`, and the controller's `view()`
+ * discloses it only to `knock.from`:
  *
  *   ...(actor === knock.from && knock.admissionGrantId
  *        ? { admissionCapability: { grantId, expiresAt } } : {})
  *
  * So the direction is:
  *
- *   - The KNOCKER creates (or reuses) their own open room and knocks with that
- *     binding. Knocking "on a person" is therefore: I open a door and ask you
- *     to let me hold it open for us.
- *   - The TARGET accepts. Acceptance is the authorization event: it runs the
- *     membership check for `from`, re-reads room+call, refuses on
- *     CALL_SEALED / STALE_EPOCH / CAPACITY_EXCEEDED, and issues the admission
- *     capability TO THE KNOCKER.
- *   - Everybody ends up in the KNOCKER's room. The knocker joins carrying
- *     `knock {knockId, capabilityId}` (that is the capability the accept
- *     issued); the target joins the same room on its own visibility/membership,
- *     with no capability, because the capability was never theirs.
+ *   - The KNOCKER binds the TARGET's live room, read from the office payload,
+ *     and asks to be let in. Knocking on a person is: you have a door, may I
+ *     come through it.
+ *   - The TARGET (or a host/cohost of that room) accepts. Acceptance is the
+ *     authorization event: it re-reads room+call, refuses on CALL_SEALED /
+ *     STALE_EPOCH / CAPACITY_EXCEEDED, and issues a short-lived admission
+ *     capability to the KNOCKER.
+ *   - Only the KNOCKER moves. They open the call window on the TARGET's room
+ *     carrying `knock {knockId, capabilityId}`. The target does not open
+ *     anything: they are already in that room, or it is theirs to walk back
+ *     into on their own membership, with no capability at all.
  *
- * That is why `openCallWindow` gets a knock binding on the SENDER side and a
- * plain binding on the ACCEPTER side. Do not "fix" this by handing the target a
- * capability: the server will not have issued one for them and the admit would
- * be refused.
+ * Two things follow, and both were got wrong once already:
+ *
+ *   - Never create a fresh empty room to knock "with". `room.service` seals an
+ *     empty room GRACE_MS (60s) after it empties, so a room nobody ever entered
+ *     dies under the knock.
+ *   - Never hand the accepting side a capability. The server issued none for
+ *     them, and the grant it issued for the knocker expires shortly after
+ *     acceptance (GRANT_EXPIRED) — so the knocker must open exactly once, at
+ *     once, and surface a refusal instead of leaving a dead window behind.
  *
  * ## Everything else
  *
@@ -74,13 +83,16 @@ export const KNOCK_LIMITS = Object.freeze({
   listLimit: 50,
 });
 
-/** The capability an acceptance issues — disclosed to the KNOCKER only. */
+/**
+ * The short-lived admission grant an acceptance issues — disclosed to the
+ * KNOCKER only, and only good for the moments right after acceptance.
+ */
 export interface KnockCapability {
   grantId: string;
   expiresAt: number | null;
 }
 
-/** One knock, exactly as the server described it. */
+/** One knock, exactly as the server described it. The binding is the TARGET's room. */
 export interface Knock {
   knockId: string;
   companyUid: string;
@@ -134,7 +146,7 @@ export const KNOCK_FRIENDLY: Readonly<Record<string, string>> = {
   FEATURE_DISABLED: "Native calls are not enabled for this company.",
   CALLS_UNSUPPORTED_HOST: "Native calls are not available on this host.",
   CALLS_PREFLIGHT_REQUIRED: "Calling is not verified on this device yet.",
-  KNOCK_NO_ROOM: "Your room could not be opened, so there was nothing to knock about.",
+  KNOCK_NO_ROOM: "They have no open door yet, so there is nothing to knock on.",
 };
 
 export function knockFailure(result: AdapterResult<unknown>): KnockError {

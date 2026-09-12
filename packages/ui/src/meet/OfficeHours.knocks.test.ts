@@ -36,15 +36,34 @@ function testid(root: HTMLElement, id: string): HTMLElement | null {
   return root.querySelector<HTMLElement>(`[data-testid="${id}"]`);
 }
 
-function person(personUid: string, willingness: string) {
+/**
+ * A knock names the TARGET's room, so every knockable row in this file has one.
+ * `room` omitted = no live door, which is its own row state.
+ */
+function person(
+  personUid: string,
+  willingness: string,
+  room?: Record<string, unknown> | null,
+) {
   return {
     personUid,
     connectivity: "online",
     connectivityExpiresAt: NOW + 60_000,
     willingness,
     willingnessExpiresAt: NOW + 60_000,
-    occupancy: "unoccupied",
-    occupancyExpiresAt: null,
+    occupancy: room ? "occupied" : "unoccupied",
+    occupancyExpiresAt: room ? NOW + 60_000 : null,
+    ...(room ? { room } : {}),
+  };
+}
+
+function roomOf(who: string, visibility?: string) {
+  return {
+    roomId: `room_${who}`,
+    callId: `call_${who}`,
+    epoch: 3,
+    participants: [who],
+    ...(visibility ? { visibility } : {}),
   };
 }
 
@@ -53,8 +72,15 @@ const ROSTER = ok({
   observedAt: NOW,
   people: [
     person("prs_self", "open"),
-    person("prs_open", "knock"),
-    person("prs_quiet", "dnd"),
+    // Knock-first, with a live room: the ordinary knockable row.
+    person("prs_open", "knock", roomOf("prs_open")),
+    person("prs_quiet", "dnd", roomOf("prs_quiet")),
+    // Door open and company-visible: walk in, no permission needed.
+    person("prs_walkin", "open", roomOf("prs_walkin", "company")),
+    // Open, but the room is private: the server still decides. Knock.
+    person("prs_private", "open", roomOf("prs_private", "private")),
+    // No room at all: there is nothing to knock on.
+    person("prs_nodoor", "knock"),
   ],
 } as unknown as Json);
 
@@ -126,6 +152,54 @@ describe("office knocks", () => {
     expect(testid(root, "office-knock-prs_quiet")).toBeNull();
     expect(testid(root, "office-knock-dnd-prs_quiet")?.textContent).toContain(
       "Do not disturb",
+    );
+  });
+
+  it("offers Join instead of a knock where the door is open and company-visible", async () => {
+    const knocks = knockStore({});
+    const opened: string[] = [];
+    const root = await render({
+      knocks,
+      onopenroom: (p: { personUid: string }) => opened.push(p.personUid),
+    });
+    // Walking into an open, company-visible room needs nobody's permission, so
+    // there is no knock to send — asking would be pure ceremony.
+    expect(testid(root, "office-knock-prs_walkin")).toBeNull();
+    const join = testid(root, "office-open-room-prs_walkin")!;
+    expect(join.textContent?.trim()).toBe("Join");
+    join.click();
+    flushSync();
+    expect(opened).toEqual(["prs_walkin"]);
+  });
+
+  it("knocks rather than walking in when the room is private, even on an open door", async () => {
+    const knocks = knockStore({});
+    const root = await render({ knocks });
+    expect(testid(root, "office-open-room-prs_private")).toBeNull();
+    expect(testid(root, "office-knock-prs_private")).not.toBeNull();
+  });
+
+  it("says there is no door yet instead of offering a knock bound to nothing", async () => {
+    const knocks = knockStore({});
+    const root = await render({ knocks });
+    expect(testid(root, "office-knock-prs_nodoor")).toBeNull();
+    expect(testid(root, "office-open-room-prs_nodoor")).toBeNull();
+    const reason = testid(root, "office-knock-none-prs_nodoor")!;
+    expect(reason.tagName).toBe("SPAN");
+    expect(reason.textContent).toContain("No open door yet");
+  });
+
+  it("shows an action refusal even after a later list read succeeds", async () => {
+    const knocks = knockStore({
+      listKnocks: async () => ok({ knocks: [] } as unknown as Json),
+      getKnock: async () => ok(knockWire() as unknown as Json),
+      respondToKnock: async () => failure("CAPACITY_EXCEEDED", "full"),
+    });
+    await knocks.accept("knk_1");
+    await knocks.refresh();
+    const root = await render({ knocks });
+    expect(testid(root, "office-knock-error")?.textContent).toContain(
+      "That room is full",
     );
   });
 

@@ -59,11 +59,21 @@ export const OFFICE_DURATIONS: ReadonlyArray<{
   { ttlMs: OFFICE_LIMITS.leaseMs, label: "90 seconds" },
 ];
 
+/** Mirrors hq-pro `RoomVisibility`. */
+export type OfficeRoomVisibility = "company" | "private";
+
 export interface OfficeRoom {
   roomId: string;
   callId: string;
   epoch: number;
   participants: string[];
+  /**
+   * Absent when the payload did not say. A missing visibility is NOT read as
+   * "private": the office projection only discloses a room the caller is
+   * allowed to see at all, and a room it named is treated as walk-in-able only
+   * in combination with the owner's `open` willingness (see `isWalkIn`).
+   */
+  visibility?: OfficeRoomVisibility;
 }
 
 export interface OfficePerson {
@@ -168,7 +178,17 @@ function parseRoom(value: unknown): OfficeRoom | null {
   const participants = Array.isArray(value.participants)
     ? value.participants.map(String).filter((entry) => entry.length > 0)
     : [];
-  return { roomId, callId, epoch, participants };
+  const visibility =
+    value.visibility === "company" || value.visibility === "private"
+      ? (value.visibility as OfficeRoomVisibility)
+      : undefined;
+  return {
+    roomId,
+    callId,
+    epoch,
+    participants,
+    ...(visibility ? { visibility } : {}),
+  };
 }
 
 /** Parse one wire person. Unknown enum values fall back to the safe default. */
@@ -225,6 +245,23 @@ export function expireOfficePerson(
 export function isRoomJoinable(person: OfficePerson, now: number): boolean {
   const live = expireOfficePerson(person, now);
   return live.occupancy === "occupied" && live.room !== undefined;
+}
+
+/**
+ * True when this person's door is genuinely open: a live room we are allowed
+ * to see, explicitly NOT private, and a stated willingness of `open`.
+ *
+ * This is the ONLY condition under which the surface offers a direct Join.
+ * Anything else — willingness `knock`, a private room, no room at all — needs
+ * the server's own decision, which is what a knock is.
+ */
+export function isWalkIn(person: OfficePerson, now: number): boolean {
+  const live = expireOfficePerson(person, now);
+  return (
+    isRoomJoinable(live, now) &&
+    live.willingness === "open" &&
+    live.room?.visibility !== "private"
+  );
 }
 
 function failureOf(result: AdapterResult<unknown>): OfficeError {

@@ -7,6 +7,12 @@
  * Story-level regression cover for the three PRD e2e statements plus the named
  * failure and authorization paths:
  *
+ * Direction, because it is the thing this file exists to hold still: a knock
+ * asks to enter the TARGET's room. The knocker binds the target's live room
+ * from the office payload, the target accepts, and the KNOCKER — nobody else —
+ * opens one window carrying the short-lived admission grant. Accepting opens
+ * nothing on the receiving side. See the note at the top of `knocks.ts`.
+ *
  *   e2e 1 — a knock delivered twice is ONE quiet actionable item, announced
  *           once, with no media capture; do not disturb suppresses the banner
  *           without touching the server's record of the knock.
@@ -115,23 +121,45 @@ function knockWire(overrides: KnockOverrides = {}): Record<string, unknown> {
   };
 }
 
-function personWire(personUid: string, willingness: string) {
+function personWire(
+  personUid: string,
+  willingness: string,
+  room?: Record<string, unknown> | null,
+) {
   return {
     personUid,
     connectivity: "online",
     connectivityExpiresAt: BASE + 600_000,
     willingness,
     willingnessExpiresAt: BASE + 600_000,
-    occupancy: "unoccupied",
-    occupancyExpiresAt: null,
+    occupancy: room ? "occupied" : "unoccupied",
+    occupancyExpiresAt: room ? BASE + 600_000 : null,
+    ...(room ? { room } : {}),
   };
 }
 
-function roster(selfWillingness: string) {
+/** PEER's live room — the binding every knock in this file is aimed at. */
+const PEER_ROOM = {
+  roomId: "room_peer",
+  callId: "call_peer",
+  epoch: 4,
+  participants: [PEER],
+  visibility: "company",
+};
+
+function roster(
+  selfWillingness: string,
+  peerWillingness = "knock",
+  peerRoom: Record<string, unknown> | null = PEER_ROOM,
+  selfRoom?: Record<string, unknown>,
+) {
   return ok({
     companyUid: COMPANY,
     observedAt: BASE,
-    people: [personWire(SELF, selfWillingness), personWire(PEER, "knock")],
+    people: [
+      personWire(SELF, selfWillingness, selfRoom),
+      personWire(PEER, peerWillingness, peerRoom),
+    ],
   } as unknown as Json);
 }
 
@@ -139,6 +167,10 @@ function roster(selfWillingness: string) {
 
 interface PanelOptions {
   selfWillingness?: string;
+  peerWillingness?: string;
+  /** `null` → PEER has no live room at all. */
+  peerRoom?: Record<string, unknown> | null;
+  selfRoom?: Record<string, unknown>;
   /** Answers for `GET /knocks`, consumed one per call (last one repeats). */
   listings?: Array<Record<string, unknown>[]>;
   getKnock?: (knockId: string) => Promise<unknown>;
@@ -155,6 +187,7 @@ interface PanelHarness {
   openCallWindow: ReturnType<typeof vi.fn>;
   sendDm: ReturnType<typeof vi.fn>;
   respond: ReturnType<typeof vi.fn>;
+  createRoom: ReturnType<typeof vi.fn>;
   created: Array<Record<string, unknown>>;
   listCalls: () => number;
 }
@@ -176,10 +209,20 @@ async function renderPanel(options: PanelOptions = {}): Promise<PanelHarness> {
       (async (_id: string, _action: string) => ok({} as Json) as unknown),
   );
   const created: Array<Record<string, unknown>> = [];
+  let roomSeq = 0;
+  const createRoom = vi.fn(
+    options.createRoom ??
+      (async () => {
+        roomSeq += 1;
+        return ok({
+          room: { roomId: `room_self_${roomSeq}` },
+          call: { callId: `call_self_${roomSeq}`, epoch: roomSeq },
+        } as unknown as Json);
+      }),
+  );
   const listings = options.listings ?? [[]];
   let listIndex = 0;
   let listCount = 0;
-  let roomSeq = 0;
 
   const adapter = {
     kind: "desktop",
@@ -190,18 +233,17 @@ async function renderPanel(options: PanelOptions = {}): Promise<PanelHarness> {
     isAvailable: () => true,
     calls: {
       preflight: async () => ok({ passed: true } as never),
-      discoverOffice: async () => roster(options.selfWillingness ?? "knock"),
+      discoverOffice: async () =>
+        roster(
+          options.selfWillingness ?? "knock",
+          options.peerWillingness ?? "knock",
+          options.peerRoom === undefined ? PEER_ROOM : options.peerRoom,
+          options.selfRoom,
+        ),
       setOfficePreference: async () => ok({} as Json),
       setOfficeConnectivity: async () => ok({} as Json),
-      createRoom:
-        options.createRoom ??
-        (async () => {
-          roomSeq += 1;
-          return ok({
-            room: { roomId: `room_self_${roomSeq}` },
-            call: { callId: `call_self_${roomSeq}`, epoch: roomSeq },
-          } as unknown as Json);
-        }),
+      createRoom,
+      getRoom: async () => ok({ call: { callId: "call_peer", epoch: 4 } } as unknown as Json),
       createKnock: async (input: Record<string, unknown>) => {
         created.push(input);
         return options.createKnock
@@ -255,6 +297,7 @@ async function renderPanel(options: PanelOptions = {}): Promise<PanelHarness> {
     openCallWindow,
     sendDm,
     respond,
+    createRoom,
     created,
     listCalls: () => listCount,
   };
@@ -290,10 +333,11 @@ function knockStore(calls: Record<string, unknown>, extra: {
     now: () => BASE,
     companyUid: COMPANY,
     newKey: () => "idem_1",
+    // The TARGET's room: the binding a knock names.
     resolveRoom: async () => ({
-      roomId: "room_self",
-      callId: "call_self",
-      epoch: 1,
+      roomId: "room_peer",
+      callId: "call_peer",
+      epoch: 4,
     }),
     ...(extra.onKnockArrived ? { onKnockArrived: extra.onKnockArrived } : {}),
   });
@@ -508,7 +552,7 @@ describe("US-019 e2e 2: opening a door the server will not open", () => {
     expect(harness.openCallWindow).not.toHaveBeenCalled();
   });
 
-  it("opens the room only when the server actually accepted, with no capability of its own", async () => {
+  it("accepts without opening anything: the knock named OUR room, not theirs", async () => {
     const accepted = knockWire({ state: "accepted", updatedAt: BASE + 1 });
     const harness = await renderPanel({
       listings: [[], [knockWire()]],
@@ -520,18 +564,260 @@ describe("US-019 e2e 2: opening a door the server will not open", () => {
     await settle();
 
     expect(testid(harness.root, "office-action-error")).toBeNull();
+    // Accepting lets THEM through our door. It does not move us: the room the
+    // knock names is ours, and the grant the acceptance minted was issued to
+    // the knocker. Opening a window here would be a window with no admission.
+    expect(harness.openCallWindow).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("offers Go to your room — one explicit click, no capability — when we are not in it", async () => {
+    const accepted = knockWire({ state: "accepted", updatedAt: BASE + 1 });
+    const harness = await renderPanel({
+      listings: [[], [knockWire()]],
+      respondToKnock: async () => ok(accepted as unknown as Json),
+      getKnock: async () => ok(accepted as unknown as Json),
+    });
+    await poll(1);
+    testid(harness.root, "knock-accept-knk_1")!.click();
+    await settle();
+
+    const goto = testid(harness.root, "knock-goto-knk_1");
+    expect(goto).not.toBeNull();
+    expect(harness.openCallWindow).not.toHaveBeenCalled();
+
+    goto!.click();
+    await settle();
     expect(harness.openCallWindow).toHaveBeenCalledTimes(1);
     const target = harness.openCallWindow.mock.calls[0][0] as Record<
       string,
       unknown
     >;
-    // We join the KNOCKER's room, on our own membership: the capability the
-    // acceptance minted was issued to them, never to us.
+    // Our own room, on our own membership: no grant travels with us, because
+    // the server issued us none.
     expect(target.roomId).toBe("room_peer");
     expect(target.callId).toBe("call_peer");
     expect(target).not.toHaveProperty("knock");
-    // Opening a door is still not capture.
     expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("does not offer Go to your room while the office says we are already in it", async () => {
+    const accepted = knockWire({ state: "accepted", updatedAt: BASE + 1 });
+    const harness = await renderPanel({
+      selfRoom: {
+        roomId: "room_peer",
+        callId: "call_peer",
+        epoch: 4,
+        participants: [SELF],
+      },
+      listings: [[], [knockWire()]],
+      respondToKnock: async () => ok(accepted as unknown as Json),
+      getKnock: async () => ok(accepted as unknown as Json),
+    });
+    await poll(1);
+    testid(harness.root, "knock-accept-knk_1")!.click();
+    await settle();
+
+    expect(testid(harness.root, "knock-goto-knk_1")).toBeNull();
+    expect(harness.openCallWindow).not.toHaveBeenCalled();
+  });
+});
+
+// ── sender path ──────────────────────────────────────────────────────────────
+
+/**
+ * The corrected direction, pinned end to end. Before this, the surface created
+ * an empty company-visible room of its own and invited the target into it —
+ * which the server seals 60s after it empties, and for which the capability it
+ * issues is useless to the accepting side.
+ */
+describe("US-019 sender: a knock asks to enter THEIR room", () => {
+  const sentWire = (overrides: Record<string, unknown> = {}) =>
+    knockWire({
+      knockId: "knk_out",
+      from: SELF,
+      target: PEER,
+      note: "",
+      ...overrides,
+    });
+
+  async function sendKnock(harness: PanelHarness): Promise<void> {
+    testid(harness.root, `office-knock-${PEER}`)!.click();
+    flushSync();
+    testid(harness.root, `office-knock-send-${PEER}`)!.click();
+    await settle();
+  }
+
+  it("binds the target's live room from the office payload, and creates no room of its own", async () => {
+    const harness = await renderPanel();
+    await sendKnock(harness);
+
+    expect(harness.createRoom).not.toHaveBeenCalled();
+    expect(harness.created).toHaveLength(1);
+    expect(harness.created[0]).toMatchObject({
+      companyUid: COMPANY,
+      roomId: "room_peer",
+      callId: "call_peer",
+      epoch: 4,
+      target: PEER,
+    });
+    // Sending a knock is not a call: nothing opened, nothing captured.
+    expect(harness.openCallWindow).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("opens exactly ONE window on acceptance, carrying the grant into their room", async () => {
+    const sent = sentWire();
+    const harness = await renderPanel({
+      createKnock: async () =>
+        ok({ created: true, waked: true, knock: sent } as unknown as Json),
+      getKnock: async () =>
+        ok(
+          sentWire({
+            state: "accepted",
+            updatedAt: BASE + 1_000,
+            admissionCapability: {
+              grantId: "grant_1",
+              expiresAt: BASE + 90_000,
+            },
+          }) as unknown as Json,
+        ),
+    });
+    await sendKnock(harness);
+    expect(harness.openCallWindow).not.toHaveBeenCalled();
+
+    // The acceptance is observed through the authoritative re-read, not a wake.
+    await poll(1);
+    expect(harness.openCallWindow).toHaveBeenCalledTimes(1);
+    const target = harness.openCallWindow.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(target).toMatchObject({
+      companyUid: COMPANY,
+      roomId: "room_peer",
+      callId: "call_peer",
+      epoch: 4,
+      knock: { knockId: "knk_out", capabilityId: "grant_1" },
+    });
+    // Ids only: the grant id is an admission, not a credential.
+    expect(JSON.stringify(target)).not.toMatch(/token|secret|password|bearer/i);
+    expect(getUserMedia).not.toHaveBeenCalled();
+
+    // Re-reads keep arriving; one window per knock, not one per poll.
+    await poll(3);
+    expect(harness.openCallWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses in words rather than opening a dead window on a spent grant", async () => {
+    const harness = await renderPanel({
+      createKnock: async () =>
+        ok({ created: true, waked: true, knock: sentWire() } as unknown as Json),
+      getKnock: async () =>
+        ok(
+          sentWire({
+            state: "accepted",
+            updatedAt: BASE + 1_000,
+            // The grant the acceptance minted is short-lived, and this one is
+            // already spent by the time our poll saw the acceptance.
+            admissionCapability: { grantId: "grant_1", expiresAt: BASE - 1 },
+          }) as unknown as Json,
+        ),
+    });
+    await sendKnock(harness);
+    await poll(1);
+
+    expect(harness.openCallWindow).not.toHaveBeenCalled();
+    expect(testid(harness.root, "office-action-error")?.textContent).toContain(
+      "expired before you opened the door",
+    );
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a sealed room from the host instead of leaving a window behind", async () => {
+    const harness = await renderPanel({
+      createKnock: async () =>
+        ok({ created: true, waked: true, knock: sentWire() } as unknown as Json),
+      getKnock: async () =>
+        ok(
+          sentWire({
+            state: "accepted",
+            updatedAt: BASE + 1_000,
+            admissionCapability: { grantId: "grant_1", expiresAt: null },
+          }) as unknown as Json,
+        ),
+    });
+    harness.openCallWindow.mockRejectedValue(
+      Object.assign(new Error("sealed"), { code: "CALL_SEALED" }),
+    );
+    await sendKnock(harness);
+    await poll(1);
+
+    expect(testid(harness.root, "office-action-error")?.textContent).toContain(
+      "Room ended",
+    );
+  });
+
+  it("says so instead of knocking when the target has no live room at all", async () => {
+    const harness = await renderPanel({ peerRoom: null });
+
+    // No binding exists, so no knock is offered — and none is invented. An
+    // empty room created to knock "with" is sealed by the server a minute
+    // later, which is exactly the bug this row state replaces.
+    expect(testid(harness.root, `office-knock-${PEER}`)).toBeNull();
+    expect(testid(harness.root, `office-knock-none-${PEER}`)?.textContent).toContain(
+      "No open door yet",
+    );
+    expect(harness.createRoom).not.toHaveBeenCalled();
+    expect(harness.created).toEqual([]);
+  });
+
+  it("walks straight in — no knock — when their door is open and company-visible", async () => {
+    const harness = await renderPanel({ peerWillingness: "open" });
+
+    expect(testid(harness.root, `office-knock-${PEER}`)).toBeNull();
+    const join = testid(harness.root, `office-open-room-${PEER}`)!;
+    expect(join.textContent?.trim()).toBe("Join");
+    join.click();
+    await settle();
+
+    expect(harness.created).toEqual([]);
+    expect(harness.openCallWindow).toHaveBeenCalledTimes(1);
+    const target = harness.openCallWindow.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(target.roomId).toBe("room_peer");
+    expect(target).not.toHaveProperty("knock");
+  });
+
+  it("opening my door creates a live company-visible room and puts me in it", async () => {
+    const harness = await renderPanel();
+    testid(harness.root, "office-open-door")!.click();
+    await settle();
+
+    expect(harness.createRoom).toHaveBeenCalledTimes(1);
+    expect(harness.createRoom.mock.calls[0][0]).toMatchObject({
+      companyUid: COMPANY,
+      visibility: "company",
+    });
+    // A door with no room behind it is an advertisement, not an office hour.
+    expect(harness.openCallWindow).toHaveBeenCalledTimes(1);
+    const target = harness.openCallWindow.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(target.roomId).toBe("room_self_1");
+    expect(target).not.toHaveProperty("knock");
+    // Still an explicit act: the window opens, capture does not start.
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("never creates a room on load — only a click makes one", async () => {
+    const harness = await renderPanel({ listings: [[], [knockWire()]] });
+    await poll(3);
+    expect(harness.createRoom).not.toHaveBeenCalled();
+    expect(harness.openCallWindow).not.toHaveBeenCalled();
   });
 });
 

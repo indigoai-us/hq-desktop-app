@@ -2,8 +2,9 @@
  * Knock store (US-019) — authoritative knock state for every surface.
  *
  * Read `knocks.ts` first: it documents which way round a knock goes. In short,
- * the KNOCKER binds their own open room and the TARGET's acceptance issues the
- * admission capability back to the knocker.
+ * the KNOCKER binds the TARGET's live room and asks to be let into it; the
+ * target's acceptance issues a short-lived admission grant back to the knocker,
+ * who is the only side that then opens anything.
  *
  * Three rules this store exists to keep:
  *
@@ -20,6 +21,7 @@
 import type { AdapterResult, CallsApi, Json, KnockAction } from "@hq/platform";
 
 import {
+  KNOCK_FRIENDLY,
   KNOCK_LIMITS,
   expireKnock,
   isNoteTooLong,
@@ -33,7 +35,10 @@ import {
   type KnockSendOutcome,
 } from "./knocks.js";
 
-/** The room the knocker knocks WITH. Supplied by the host, never invented. */
+/**
+ * The room a knock is bound to — the TARGET's live room, read from the office
+ * payload by the host. Never invented here, and never a room of our own.
+ */
 export interface KnockRoomBinding {
   roomId: string;
   callId: string;
@@ -49,7 +54,19 @@ export interface KnockState {
   loading: boolean;
   /** True while a send/accept/decline/defer/cancel is in flight. */
   busy: boolean;
+  /**
+   * Why the last LIST read failed. Cleared by the next successful read, which
+   * is why an action's refusal may not live here: a poll would erase it before
+   * anyone read it.
+   */
   error: KnockError | null;
+  /**
+   * Why the last ACTION (send / accept / decline / defer / cancel) was refused.
+   * Kept separate from `error` on purpose — a background poll must not wipe the
+   * sentence explaining why the door did not open. Cleared when the next action
+   * starts, or by `clearActionError()`.
+   */
+  actionError: KnockError | null;
   /** Last send outcome, so the composer can explain duplicate/suppressed. */
   lastSend: KnockSendOutcome | null;
   /** Set by the host from the office self row; suppresses OS banners only. */
@@ -75,9 +92,8 @@ export interface KnockStoreOptions {
   /** Initial company binding; `bind()` changes it. */
   companyUid?: string | null;
   /**
-   * Open (or create) the caller's OWN room to knock with. Returning null means
-   * "there is nothing to knock about" and the send is refused locally, before
-   * any request goes out.
+   * Resolve the TARGET's live room binding. Returning null means "they have no
+   * open door", and the send is refused locally, before any request goes out.
    */
   resolveRoom?: (target: string) => Promise<KnockRoomBinding | null>;
   /** Idempotency keys. Injected so a test can make a send deterministic. */
@@ -101,6 +117,8 @@ export interface KnockStore {
   cancel(knockId: string): Promise<Knock | null>;
   /** Set the DND flag from the office self row. */
   setDnd(dnd: boolean): void;
+  /** Drop the last action refusal, once a surface has shown it. */
+  clearActionError(): void;
   /** Received knocks with local expiry applied, newest first, deduped. */
   visibleReceived(): Knock[];
   /** Our own sent knocks with local expiry applied, newest first. */
@@ -134,6 +152,7 @@ export function createKnockStore(options: KnockStoreOptions): KnockStore {
     loading: false,
     busy: false,
     error: null,
+    actionError: null,
     lastSend: null,
     dnd: false,
   });
@@ -187,6 +206,7 @@ export function createKnockStore(options: KnockStoreOptions): KnockStore {
       loading: false,
       busy: false,
       error: null,
+      actionError: null,
       lastSend: null,
       dnd: false,
     };
@@ -262,11 +282,11 @@ export function createKnockStore(options: KnockStoreOptions): KnockStore {
     const companyUid = state.companyUid;
     if (!companyUid || !knockId) return null;
     if (!has("respondToKnock")) {
-      state = { ...state, error: MISSING_KNOCKS };
+      state = { ...state, actionError: MISSING_KNOCKS };
       return null;
     }
     const gen = generation;
-    state = { ...state, busy: true, error: null };
+    state = { ...state, busy: true, actionError: null };
     const result = await options.calls.respondToKnock(
       knockId,
       action,
@@ -275,7 +295,8 @@ export function createKnockStore(options: KnockStoreOptions): KnockStore {
     if (!current(gen, companyUid)) return null;
     state = { ...state, busy: false };
     if (!result.ok) {
-      state = { ...state, error: knockFailure(result) };
+      // An ACTION refusal, kept where the next poll cannot erase it.
+      state = { ...state, actionError: knockFailure(result) };
       // The refusal is the server's; re-read so every window agrees on why.
       await reload(knockId);
       return null;
@@ -298,7 +319,7 @@ export function createKnockStore(options: KnockStoreOptions): KnockStore {
         waked: false,
         error,
       };
-      state = { ...state, busy: false, error, lastSend: outcome };
+      state = { ...state, busy: false, actionError: error, lastSend: outcome };
       return outcome;
     };
     if (!companyUid) {
@@ -315,7 +336,7 @@ export function createKnockStore(options: KnockStoreOptions): KnockStore {
       });
     }
     const gen = generation;
-    state = { ...state, busy: true, error: null, lastSend: null };
+    state = { ...state, busy: true, actionError: null, lastSend: null };
     const room = await options.resolveRoom?.(target);
     if (!current(gen, companyUid)) {
       return { ok: false, created: false, duplicate: false, waked: false };
@@ -323,8 +344,7 @@ export function createKnockStore(options: KnockStoreOptions): KnockStore {
     if (!room) {
       return fail({
         code: "KNOCK_NO_ROOM",
-        message:
-          "Your room could not be opened, so there was nothing to knock about.",
+        message: KNOCK_FRIENDLY.KNOCK_NO_ROOM,
       });
     }
     const result = await options.calls.createKnock({
@@ -375,6 +395,10 @@ export function createKnockStore(options: KnockStoreOptions): KnockStore {
     decline: (knockId) => respond(knockId, "decline"),
     defer: (knockId) => respond(knockId, "defer"),
     cancel: (knockId) => respond(knockId, "cancel"),
+    clearActionError() {
+      if (state.actionError === null) return;
+      state = { ...state, actionError: null };
+    },
     setDnd(dnd) {
       // Idempotent on purpose: this is driven from an effect that mirrors the
       // office self row, and an unconditional write would make the effect its

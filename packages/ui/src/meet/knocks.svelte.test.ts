@@ -46,6 +46,7 @@ function store(calls: Record<string, unknown>, extra: Record<string, unknown> = 
     now: () => NOW,
     companyUid: COMPANY,
     newKey: () => "idem_1",
+    // The TARGET's live room, as the host reads it from the office payload.
     resolveRoom: async () => ({ roomId: "room_1", callId: "call_1", epoch: 3 }),
     ...extra,
   });
@@ -157,8 +158,10 @@ describe("knock store", () => {
     await subject.refresh();
     const accepted = await subject.accept("knk_1");
     expect(accepted).toBeNull();
-    expect(subject.state.error?.code).toBe("CAPACITY_EXCEEDED");
-    expect(subject.state.error?.message).toBe("That room is full.");
+    // An ACTION refusal lives in its own field, so the next poll cannot erase
+    // the sentence explaining why the door did not open.
+    expect(subject.state.actionError?.code).toBe("CAPACITY_EXCEEDED");
+    expect(subject.state.actionError?.message).toBe("That room is full.");
     expect(getKnock).toHaveBeenCalledWith("knk_1", COMPANY);
     expect(subject.visibleReceived()[0].state).toBe("expired");
   });
@@ -184,13 +187,58 @@ describe("knock store", () => {
     expect(subject.visibleSent()).toHaveLength(1);
   });
 
-  it("refuses locally when there is no room to knock about — no request goes out", async () => {
+  it("refuses locally when the target has no open door — no request goes out", async () => {
     const createKnock = vi.fn();
     const subject = store({ createKnock }, { resolveRoom: async () => null });
     const outcome = await subject.send("prs_other");
     expect(outcome.ok).toBe(false);
     expect(outcome.error?.code).toBe("KNOCK_NO_ROOM");
+    expect(outcome.error?.message).toContain("no open door");
     expect(createKnock).not.toHaveBeenCalled();
+  });
+
+  it("binds the TARGET's room into the knock, and never creates one of its own", async () => {
+    const createKnock = vi.fn(
+      async (_input: Record<string, unknown>) =>
+        ok({ created: true } as unknown as Json),
+    );
+    const subject = store(
+      { createKnock },
+      {
+        resolveRoom: async (target: string) => {
+          expect(target).toBe("prs_other");
+          return { roomId: "room_theirs", callId: "call_theirs", epoch: 9 };
+        },
+      },
+    );
+    const outcome = await subject.send("prs_other", "got a sec?");
+    expect(outcome.ok).toBe(true);
+    expect(createKnock).toHaveBeenCalledTimes(1);
+    expect(createKnock.mock.calls[0][0]).toMatchObject({
+      companyUid: COMPANY,
+      roomId: "room_theirs",
+      callId: "call_theirs",
+      epoch: 9,
+      target: "prs_other",
+      note: "got a sec?",
+    });
+  });
+
+  it("keeps an action refusal alive across a successful poll", async () => {
+    const subject = store({
+      listKnocks: async () => listing([wire()]),
+      getKnock: async () => ok(wire() as unknown as Json),
+      respondToKnock: async () => failure("CAPACITY_EXCEEDED", "full"),
+    });
+    await subject.refresh();
+    await subject.accept("knk_1");
+    expect(subject.state.actionError?.code).toBe("CAPACITY_EXCEEDED");
+    // A background poll succeeds; it clears the LOAD error and nothing else.
+    await subject.refresh();
+    expect(subject.state.error).toBeNull();
+    expect(subject.state.actionError?.code).toBe("CAPACITY_EXCEEDED");
+    subject.clearActionError();
+    expect(subject.state.actionError).toBeNull();
   });
 
   it("refuses an oversized note before spending a request on it", async () => {

@@ -7,16 +7,14 @@
 // This file pins what only the Desktop host can get wrong, through the panel
 // the shell actually mounts and an injected `invoke`:
 //
-//  * the SENDER path — knocking on a person opens (or reuses) OUR OWN
-//    company-visible room first and binds it into the knock, because the
-//    backend issues the admission capability to the knocker, not the target;
-//    a stale binding is worth exactly one retry with a fresh room; and an
-//    acceptance opens exactly ONE call window, carrying the knock binding and
-//    no credential of any kind;
-//  * the RECEIVER path — accepting goes through the authorized accept route
-//    and, on success, joins the knocker's room on our OWN membership with NO
-//    capability attached and nothing captured; a server refusal is surfaced and
-//    no window opens at all;
+//  * the SENDER path — knocking on a person binds THEIR live room, straight
+//    from the office payload, and creates no room of its own (an empty room
+//    would be sealed by the server a minute later); an acceptance opens exactly
+//    ONE call window on THEIR room, carrying the short-lived admission grant
+//    and no credential of any kind;
+//  * the RECEIVER path — accepting goes through the authorized accept route and
+//    opens NOTHING, because the knock named OUR room and the grant was issued
+//    to the knocker; a server refusal is surfaced and no window opens at all;
 //  * and the quiet answers — defer, dismiss and a text reply never open a
 //    window, and are always followed by a fresh authoritative `GET /knocks`.
 //
@@ -99,15 +97,39 @@ async function poll(times = 1): Promise<void> {
   }
 }
 
-function person(personUid: string, willingness: string) {
-  return { personUid, connectivity: 'online', willingness };
+function person(
+  personUid: string,
+  willingness: string,
+  room?: Record<string, unknown>,
+) {
+  return {
+    personUid,
+    connectivity: 'online',
+    willingness,
+    occupancy: room ? 'occupied' : 'unoccupied',
+    ...(room ? { room } : {}),
+  };
 }
 
-const OFFICE_BODY = JSON.stringify({
-  companyUid: COMPANY,
-  observedAt: RUN_AT,
-  people: [person(SELF, 'knock'), person(MATE, 'knock')],
-});
+/** MATE's live room — the binding every knock in this file is aimed at. */
+const MATE_ROOM = {
+  roomId: 'room_mate',
+  callId: 'call_mate',
+  epoch: 7,
+  participants: [MATE],
+  visibility: 'company',
+};
+
+function officeBody(mateRoom: Record<string, unknown> | null = MATE_ROOM): string {
+  return JSON.stringify({
+    companyUid: COMPANY,
+    observedAt: RUN_AT,
+    people: [
+      person(SELF, 'knock'),
+      person(MATE, 'knock', mateRoom ?? undefined),
+    ],
+  });
+}
 
 interface KnockSeed {
   [key: string]: unknown;
@@ -147,6 +169,8 @@ interface HostOptions {
     body: Record<string, unknown>,
     attempt: number,
   ) => { status: number; body: string };
+  /** `null` → MATE has no live room at all. */
+  mateRoom?: Record<string, unknown> | null;
 }
 
 interface Harness {
@@ -195,7 +219,12 @@ async function render(options: HostOptions = {}): Promise<Harness> {
     fetched.push({ url, method, body: parsed });
 
     if (url.startsWith('/v1/meet-native/office')) {
-      return { status: 200, body: OFFICE_BODY };
+      return {
+        status: 200,
+        body: officeBody(
+          options.mateRoom === undefined ? MATE_ROOM : options.mateRoom,
+        ),
+      };
     }
     if (url === '/v1/meet-native/rooms' && method === 'POST') {
       roomSeq += 1;
@@ -272,8 +301,8 @@ function assertNoCredentials(target: Record<string, unknown>): void {
 
 // ── sender path ──────────────────────────────────────────────────────────────
 
-describe('US-019 desktop: knocking binds our own room and opens one door', () => {
-  it('creates (or reuses) our own room and binds it into the knock', async () => {
+describe('US-019 desktop: a knock asks to enter THEIR room', () => {
+  it("binds the target's live room from the office payload, creating no room of its own", async () => {
     const harness = await render();
     await knockOn(harness.root, MATE);
 
@@ -281,61 +310,46 @@ describe('US-019 desktop: knocking binds our own room and opens one door', () =>
     const knocks = harness.fetched.filter(
       (call) => call.url === '/v1/meet-native/knocks' && call.method === 'POST',
     );
-    expect(rooms).toHaveLength(1);
+    // No POST /rooms at all. The old shape opened an empty company-visible room
+    // and invited the target into it; `room.service` seals an empty room 60s
+    // after it empties, so that door died under the knock.
+    expect(rooms).toHaveLength(0);
     expect(knocks).toHaveLength(1);
-    // The room is created BEFORE the knock — a knock bound to nothing is never
-    // sent — and it is company-visible, because a PRIVATE room would only
-    // accept a knock aimed at someone already inside it.
-    expect(harness.fetched.indexOf(rooms[0])).toBeLessThan(
-      harness.fetched.indexOf(knocks[0]),
-    );
-    expect(rooms[0].body.visibility).toBe('company');
     expect(knocks[0].body).toMatchObject({
       companyUid: COMPANY,
-      roomId: 'room_self_1',
-      callId: 'call_self_1',
-      epoch: 1,
+      roomId: 'room_mate',
+      callId: 'call_mate',
+      epoch: 7,
       target: MATE,
     });
     expect(typeof knocks[0].body.idempotencyKey).toBe('string');
     // Sending a knock is not a call: nothing opened, nothing captured.
     expect(harness.windows).toEqual([]);
     expect(getUserMedia).not.toHaveBeenCalled();
-
-    // A second knock in the same session reuses the room rather than leaving
-    // an abandoned one behind.
-    await knockOn(harness.root, MATE);
-    expect(harness.urls('/v1/meet-native/rooms')).toHaveLength(1);
   });
 
-  it('retries a stale binding exactly once, with a freshly opened room', async () => {
-    const harness = await render({
-      createKnock: (_body, attempt) =>
-        attempt === 1
-          ? { status: 409, body: JSON.stringify({ code: 'STALE_EPOCH' }) }
-          : { status: 200, body: JSON.stringify({ created: true, waked: true }) },
-    });
-    await knockOn(harness.root, MATE);
+  it('offers no knock — and invents no room — when the target has no live room', async () => {
+    const harness = await render({ mateRoom: null });
 
-    const knocks = harness.fetched.filter(
-      (call) => call.url === '/v1/meet-native/knocks' && call.method === 'POST',
-    );
-    expect(knocks).toHaveLength(2);
-    expect(harness.urls('/v1/meet-native/rooms')).toHaveLength(2);
-    // The retry used the NEW room, not the one the server just rejected.
-    expect(knocks[0].body.roomId).toBe('room_self_1');
-    expect(knocks[1].body.roomId).toBe('room_self_2');
-    expect(knocks[1].body.callId).toBe('call_self_2');
-    expect(harness.windows).toEqual([]);
+    expect(testid(harness.root, `office-knock-${MATE}`)).toBeNull();
+    expect(
+      testid(harness.root, `office-knock-none-${MATE}`)?.textContent,
+    ).toContain('No open door yet');
+    expect(harness.urls('/v1/meet-native/rooms')).toHaveLength(0);
+    expect(
+      harness.fetched.filter(
+        (call) => call.url === '/v1/meet-native/knocks' && call.method === 'POST',
+      ),
+    ).toHaveLength(0);
   });
 
-  it('opens exactly ONE window on acceptance, carrying the knock binding and no credential', async () => {
+  it('opens exactly ONE window on acceptance, carrying the grant into their room', async () => {
     const sent = {
       knockId: 'knk_out',
       companyUid: COMPANY,
-      roomId: 'room_self_1',
-      callId: 'call_self_1',
-      epoch: 1,
+      roomId: 'room_mate',
+      callId: 'call_mate',
+      epoch: 7,
       from: SELF,
       target: MATE,
       note: '',
@@ -360,7 +374,7 @@ describe('US-019 desktop: knocking binds our own room and opens one door', () =>
             updatedAt: RUN_AT + 1_000,
             admissionCapability: {
               grantId: 'grant_1',
-              expiresAt: RUN_AT + 90_000,
+              expiresAt: RUN_AT + 180_000,
             },
           }),
         };
@@ -376,9 +390,9 @@ describe('US-019 desktop: knocking binds our own room and opens one door', () =>
     const target = harness.windows[0];
     expect(target).toMatchObject({
       companyUid: COMPANY,
-      roomId: 'room_self_1',
-      callId: 'call_self_1',
-      epoch: 1,
+      roomId: 'room_mate',
+      callId: 'call_mate',
+      epoch: 7,
       knock: { knockId: 'knk_out', capabilityId: 'grant_1' },
     });
     expect(target.self).toEqual({ personUid: SELF, deviceId: 'dev_self' });
@@ -389,12 +403,36 @@ describe('US-019 desktop: knocking binds our own room and opens one door', () =>
     await poll(3);
     expect(harness.windows).toHaveLength(1);
   });
+
+  it('opening my door creates a live company-visible room and puts me in it', async () => {
+    const harness = await render();
+    testid(harness.root, 'office-open-door')!.click();
+    await settle();
+
+    const rooms = harness.urls('/v1/meet-native/rooms');
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].method).toBe('POST');
+    expect(rooms[0].body.visibility).toBe('company');
+    // A door with no room behind it is an advertisement, not an office hour.
+    expect(harness.windows).toHaveLength(1);
+    expect(harness.windows[0]).toMatchObject({ roomId: 'room_self_1' });
+    expect(harness.windows[0]).not.toHaveProperty('knock');
+    assertNoCredentials(harness.windows[0]);
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it('never opens a room on load — only a click makes one', async () => {
+    const harness = await render({ listings: [[], [knockRow()]] });
+    await poll(3);
+    expect(harness.urls('/v1/meet-native/rooms')).toHaveLength(0);
+    expect(harness.windows).toEqual([]);
+  });
 });
 
 // ── receiver path ────────────────────────────────────────────────────────────
 
 describe('US-019 desktop: opening the door goes through the server', () => {
-  it('accepts through the authorized route and joins the knocker room with no capability', async () => {
+  it('accepts through the authorized route and opens nothing at all', async () => {
     const harness = await render({
       listings: [[], [knockRow()]],
       respond: (knockId, action) => ({
@@ -420,10 +458,33 @@ describe('US-019 desktop: opening the door goes through the server', () => {
     expect(accept[0].body.companyUid).toBe(COMPANY);
     expect(testid(harness.root, 'office-action-error')).toBeNull();
 
+    // Accepting lets THEM through our door. The room the knock names is ours,
+    // and the grant the acceptance minted was issued to the knocker — handing
+    // it to us would be an admission the server never authorized.
+    expect(harness.windows).toEqual([]);
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it('offers Go to your room as one explicit click, with no capability', async () => {
+    const harness = await render({
+      listings: [[], [knockRow()]],
+      respond: (knockId) => ({
+        status: 200,
+        body: JSON.stringify(
+          knockRow({ knockId, state: 'accepted', updatedAt: RUN_AT + 61_000 }),
+        ),
+      }),
+    });
+    await poll(1);
+    testid(harness.root, 'knock-accept-knk_in')!.click();
+    await settle();
+    expect(harness.windows).toEqual([]);
+
+    testid(harness.root, 'knock-goto-knk_in')!.click();
+    await settle();
+
     expect(harness.windows).toHaveLength(1);
     const target = harness.windows[0];
-    // We go to THEIR room, on our own membership. The capability the acceptance
-    // minted belongs to the knocker and must not travel with us.
     expect(target).toMatchObject({
       companyUid: COMPANY,
       roomId: 'room_mate',
@@ -432,7 +493,6 @@ describe('US-019 desktop: opening the door goes through the server', () => {
     });
     expect(target).not.toHaveProperty('knock');
     assertNoCredentials(target);
-    // Opening the door is not joining with media.
     expect(getUserMedia).not.toHaveBeenCalled();
   });
 

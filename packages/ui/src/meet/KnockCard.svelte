@@ -10,9 +10,11 @@
    * Nothing here means anything by colour alone: the state is written out, the
    * countdown is written out, and a refusal is rendered as text in an alert.
    *
-   * Accepting opens a door; it never starts capture. The host's accept handler
-   * opens the call window, where US-017's explicit join controls decide what
-   * (if anything) is captured — the card only says what WILL be asked.
+   * Accepting opens a door; it never starts capture, and — on a RECEIVED
+   * knock — it does not open a window either. The knock is bound to OUR room:
+   * accepting lets the knocker in, it does not move us anywhere. When we are
+   * not currently in that room the host offers `ongoto`, which walks us back
+   * into our own room on our own membership, with no capability.
    */
   import {
     expireKnock,
@@ -39,6 +41,12 @@
     ondefer?: (knock: Knock) => void | Promise<void>;
     ondismiss?: (knock: Knock) => void | Promise<void>;
     oncancel?: (knock: Knock) => void | Promise<void>;
+    /**
+     * "Go to your room" on an accepted RECEIVED knock. Supplied by the host
+     * only while we are not already in that room; absent means we are in it and
+     * there is nothing to press.
+     */
+    ongoto?: (knock: Knock) => void | Promise<void>;
     /** Suggested reply text when the composer is opened. */
     replySuggestion?: string;
   }
@@ -56,6 +64,7 @@
     ondefer,
     ondismiss,
     oncancel,
+    ongoto,
     replySuggestion = "",
   }: Props = $props();
 
@@ -239,6 +248,23 @@
         </div>
       </div>
     {/if}
+  {:else if !pending && direction === "received" && live.state === "accepted" && ongoto}
+    <!--
+      We accepted, so THEY are on their way into our room. Nothing opened on
+      its own: this is an explicit click, and it carries no capability, because
+      the room is ours to walk into.
+    -->
+    <div class="knock-actions">
+      <button
+        type="button"
+        class="knock-button knock-button-primary"
+        data-testid={`knock-goto-${knock.knockId}`}
+        disabled={busy}
+        onclick={() => void ongoto?.(knock)}
+      >
+        Go to your room
+      </button>
+    </div>
   {:else if pending && direction === "sent"}
     <div class="knock-actions">
       <button

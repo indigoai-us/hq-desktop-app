@@ -27,7 +27,7 @@
     type OfficePerson,
   } from "./office-store.svelte.js";
   import type { OfficeCallsHost } from "./office-host.js";
-  import { cannedReply, type Knock } from "./knocks.js";
+  import { KNOCK_FRIENDLY, cannedReply, type Knock } from "./knocks.js";
   import {
     createKnockStore,
     type KnockRoomBinding,
@@ -72,20 +72,20 @@
   /** Set when the host itself refused before the store could be used. */
   let hostRefusal = $state<{ code: string; message: string } | null>(null);
   let actionError = $state<string | null>(null);
+  /** A quiet confirmation, for the answers that succeed silently otherwise. */
+  let actionNote = $state<string | null>(null);
   let opening = $state(false);
   let ready = $state(false);
 
   /**
-   * The room this device knocks WITH.
+   * Our OWN live room, once this session has started one.
    *
-   * Per the backend (see the direction note at the top of `knocks.ts`), the
-   * KNOCKER binds a room they can already reach and the target's acceptance
-   * issues the admission capability back to the knocker. So knocking on a
-   * person means: open (or reuse) my own company-visible room, then ask them
-   * to come to it. Reused across knocks in a session so three knocks do not
-   * leave three abandoned rooms behind.
+   * This is not a room we knock with — see the direction note at the top of
+   * `knocks.ts`: a knock names the TARGET's room. This is the door we open for
+   * other people, created only by an explicit "Open my door" / "Start a room"
+   * click and reused for the rest of the session.
    */
-  let ownRoom = $state<KnockRoomBinding | null>(null);
+  let selfRoom = $state<KnockRoomBinding | null>(null);
   /** Sent knocks whose acceptance has already opened a window for us. */
   let openedForKnock = new Set<string>();
 
@@ -100,7 +100,7 @@
   const knocks = createKnockStore({
     calls: adapter.calls,
     now: () => Date.now(),
-    resolveRoom: () => ensureOwnRoom(),
+    resolveRoom: (target) => resolveTargetRoom(target),
     onKnockArrived: (knock) => notifyKnock(knock),
   });
 
@@ -166,9 +166,10 @@
     // Same tick as the office reset: a knock from the company we just left
     // must never render under the new company's heading.
     knocks.bind(target);
-    ownRoom = null;
+    selfRoom = null;
     openedForKnock = new Set();
     actionError = null;
+    actionNote = null;
     if (!target) return;
     let cancelled = false;
     void (async () => {
@@ -176,6 +177,11 @@
       if (cancelled) return;
       await store.load(target);
       if (cancelled) return;
+      // Seed DND from the office self row BEFORE the first knock read. The
+      // mirroring effect below would land a tick too late, and a knock arriving
+      // on that first read would raise an OS banner the person explicitly
+      // switched off.
+      knocks.setDnd(store.visibleSelf()?.willingness === "dnd");
       await knocks.refresh();
     })();
     return () => {
@@ -216,12 +222,18 @@
       void knocks.refresh();
     }, knockPollMs);
     const onFocus = () => void knocks.refresh();
+    // Becoming HIDDEN is not a reason to spend a request: only the transition
+    // back to visible can have missed something.
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      void knocks.refresh();
+    };
     window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       clearInterval(handle);
       window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   });
 
@@ -231,10 +243,13 @@
   });
 
   /**
-   * Our OWN knock was accepted → the capability we were issued is what admits
-   * us to our own room. Opening happens once per knockId; the guard survives a
-   * duplicate refresh, and the call window still applies US-017's explicit
-   * join controls before anything is captured.
+   * Our OWN knock was accepted → we are the one who moves.
+   *
+   * The knock is bound to THEIR room, and the grant the acceptance minted was
+   * issued to us, for that room, for a short while only. So: open exactly once
+   * per knockId, at once, and if the grant is already spent say so rather than
+   * leaving a dead window behind. The call window still applies US-017's
+   * explicit join controls before anything is captured.
    */
   $effect(() => {
     for (const knock of knocks.visibleSent()) {
@@ -242,12 +257,45 @@
       const capability = knock.admissionCapability;
       if (!capability || openedForKnock.has(knock.knockId)) continue;
       openedForKnock.add(knock.knockId);
-      void openWindow(knock, {
-        knockId: knock.knockId,
-        capabilityId: capability.grantId,
-      });
+      void enterOnKnock(knock, capability.grantId, capability.expiresAt);
     }
   });
+
+  /**
+   * Walk through the door they just opened. Refusals are stated, never
+   * swallowed: a window that cannot admit us is worse than no window.
+   */
+  async function enterOnKnock(
+    knock: Knock,
+    capabilityId: string,
+    expiresAt: number | null,
+  ): Promise<void> {
+    if (expiresAt !== null && expiresAt <= Date.now()) {
+      actionError = KNOCK_FRIENDLY.GRANT_EXPIRED;
+      return;
+    }
+    try {
+      await openWindow(knock, { knockId: knock.knockId, capabilityId });
+    } catch (error) {
+      actionError = refusalMessage(error);
+    }
+  }
+
+  /**
+   * A thrown host refusal, in words. `GRANT_EXPIRED` and `CALL_SEALED` are the
+   * two the knock path actually produces, and both must read as "that door is
+   * gone", not as a generic failure.
+   */
+  function refusalMessage(error: unknown): string {
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code: unknown }).code)
+        : String(error ?? "");
+    for (const known of ["GRANT_EXPIRED", "CALL_SEALED", "CAPACITY_EXCEEDED"]) {
+      if (code.includes(known)) return KNOCK_FRIENDLY[known];
+    }
+    return "The call window could not be opened.";
+  }
 
   /**
    * A knock banner is a nudge, never a ring: no sound, no window steal. On do
@@ -287,31 +335,75 @@
       callId: room.callId,
       epoch: room.epoch,
       self: { personUid: selfPersonUid, deviceId },
-      // Only the knocker is ever issued a capability; the accepting side joins
-      // on its own membership and must NOT be handed one it does not hold.
+      // Only the KNOCKER is ever issued a grant, and only for the target's
+      // room. Every other path into a window — our own room, a walk-in to a
+      // company-visible open door — travels on plain membership and must NOT
+      // be handed a capability nobody minted for it.
       ...(knock ? { knock } : {}),
     });
   }
 
   /**
-   * Open (or reuse) the room this device knocks with. Returns null when the
-   * room could not be opened — the store then refuses the send locally rather
-   * than sending a knock bound to nothing.
+   * The TARGET's live room, from the authorized office payload.
+   *
+   * `discoverOffice` already carries `roomId`, `callId` and `epoch` for every
+   * room the caller is permitted to see (`parseRoom` refuses a partial one), so
+   * there is nothing to fetch. When the payload named no room, `getRoom` is the
+   * fallback for a room we know the id of but not its live call.
+   *
+   * Returning null means "they have no open door": the knock store then refuses
+   * the send locally, with no request spent and no room invented.
    */
-  async function ensureOwnRoom(): Promise<KnockRoomBinding | null> {
+  async function resolveTargetRoom(
+    target: string,
+  ): Promise<KnockRoomBinding | null> {
     if (!companyUid) return null;
-    if (ownRoom) return ownRoom;
-    const binding = await createOwnRoom();
-    ownRoom = binding;
-    return binding;
+    const person = store
+      .visiblePeople()
+      .find((entry) => entry.personUid === target);
+    const room = person?.room;
+    if (!room) return null;
+    if (room.callId && Number.isFinite(room.epoch)) {
+      return { roomId: room.roomId, callId: room.callId, epoch: room.epoch };
+    }
+    return await readRoom(room.roomId);
   }
 
-  async function createOwnRoom(): Promise<KnockRoomBinding | null> {
+  /** Read a room's live call binding when the office payload lacked one. */
+  async function readRoom(roomId: string): Promise<KnockRoomBinding | null> {
+    if (!companyUid || !roomId) return null;
+    const result = await adapter.calls.getRoom(roomId, companyUid);
+    if (!result.ok) return null;
+    const payload = asRecord(result.value);
+    const call = asRecord(payload.call);
+    const callId = typeof call.callId === "string" ? call.callId : "";
+    const epoch = typeof call.epoch === "number" ? call.epoch : 0;
+    return callId ? { roomId, callId, epoch } : null;
+  }
+
+  /**
+   * Make sure there IS a door: reuse our own live room when the office payload
+   * already reports one, and otherwise create a company-visible one.
+   *
+   * Only ever called from an explicit click. Nothing on this surface creates a
+   * room on load — an empty room is sealed by the server a minute later, and a
+   * room nobody asked for is a call nobody agreed to.
+   */
+  async function ensureSelfRoom(): Promise<KnockRoomBinding | null> {
     if (!companyUid) return null;
+    const mine = store.visibleSelf()?.room;
+    if (mine) {
+      selfRoom = {
+        roomId: mine.roomId,
+        callId: mine.callId,
+        epoch: mine.epoch,
+      };
+      return selfRoom;
+    }
+    if (selfRoom) return selfRoom;
     const created = await adapter.calls.createRoom({
       companyUid,
-      // Company-visible on purpose: a PRIVATE room only accepts a knock aimed
-      // at somebody already inside it, which nobody is on a fresh room.
+      // Company-visible: an open door people can see is the whole point.
       visibility: "company",
     });
     if (!created.ok) return null;
@@ -322,7 +414,8 @@
     const callId = typeof call.callId === "string" ? call.callId : "";
     const epoch = typeof call.epoch === "number" ? call.epoch : 0;
     if (!roomId || !callId) return null;
-    return { roomId, callId, epoch };
+    selfRoom = { roomId, callId, epoch };
+    return selfRoom;
   }
 
   function asRecord(value: unknown): Record<string, unknown> {
@@ -331,30 +424,27 @@
       : {};
   }
 
-  async function startRoom(): Promise<void> {
+  /**
+   * "Start a room" / "Open my door" — the only two ways a room comes into
+   * existence here, and both are a click.
+   *
+   * Opening a door means being behind it: the preference alone advertises a
+   * room that does not exist, so this creates (or reuses) the room and walks us
+   * into it. No capability: it is ours, and we are its host.
+   */
+  async function enterOwnRoom(): Promise<void> {
     if (opening || !companyUid) return;
     opening = true;
     actionError = null;
     try {
-      const created = await adapter.calls.createRoom({
-        companyUid,
-        visibility: "company",
-      });
-      if (!created.ok) {
+      const room = await ensureSelfRoom();
+      if (!room) {
         actionError = "The room could not be started. Try again.";
         return;
       }
-      const body = asRecord(created.value);
-      const room = asRecord(body.room);
-      const call = asRecord(body.call);
-      const roomId = typeof room.roomId === "string" ? room.roomId : "";
-      const callId = typeof call.callId === "string" ? call.callId : "";
-      const epoch = typeof call.epoch === "number" ? call.epoch : 0;
-      if (!roomId || !callId) {
-        actionError = "The room could not be started. Try again.";
-        return;
-      }
-      await openWindow({ roomId, callId, epoch });
+      await openWindow(room);
+      // The roster is what tells everyone else the door is open.
+      void store.refresh();
     } catch {
       actionError = "The call window could not be opened.";
     } finally {
@@ -362,61 +452,91 @@
     }
   }
 
+  /** Say the door is open, then actually open one. */
+  async function openDoor(ttlMs: number): Promise<void> {
+    await store.setWillingness("open", ttlMs);
+    await enterOwnRoom();
+  }
+
   async function knockPerson(
     person: OfficePerson,
     note: string,
   ): Promise<void> {
     actionError = null;
-    const outcome = await knocks.send(person.personUid, note);
-    // A stale binding is worth exactly one retry with a fresh room: the room we
-    // reused may have sealed or moved epoch since we opened it.
-    if (
-      !outcome.ok &&
-      (outcome.error?.code === "STALE_EPOCH" ||
-        outcome.error?.code === "CALL_SEALED")
-    ) {
-      ownRoom = null;
-      await knocks.send(person.personUid, note);
-    }
+    // No retry with a "fresh room": there is no room of ours to refresh. A
+    // STALE_EPOCH here means THEIR call moved on, and the honest answer is to
+    // say so and let the next roster read supply the new binding.
+    await knocks.send(person.personUid, note);
   }
 
   /**
-   * Open the door. Acceptance is the server's decision — capacity, membership
-   * and epoch are all re-checked there — so a refusal is surfaced and we do NOT
-   * enter the room. On success we join the KNOCKER's room on our own
-   * membership, with no capability, and with nothing captured until the call
-   * window's explicit join controls say so.
+   * Open the door: let them in. Acceptance is the server's decision — capacity,
+   * membership and epoch are all re-checked there — so a refusal is surfaced.
+   *
+   * Nothing opens here. The knock named OUR room, and the grant the acceptance
+   * minted was issued to THEM. If we are not currently in that room the card
+   * offers "Go to your room", which is a separate, explicit click.
    */
   async function acceptKnock(knock: Knock): Promise<void> {
     actionError = null;
     const accepted = await knocks.accept(knock.knockId);
     if (!accepted || accepted.state !== "accepted") {
       actionError =
+        knocks.state.actionError?.message ??
         knocks.state.error?.message ??
         "That door could not be opened. Ask them to knock again.";
-      return;
-    }
-    try {
-      await openWindow(accepted);
-    } catch {
-      actionError = "The call window could not be opened.";
     }
   }
 
   /**
-   * Reply with words instead of a room: send the DM, then decline so the
-   * knocker is not left waiting on a door that is not going to open.
+   * Walk back into our own room after accepting. It is ours (or at least one we
+   * are a member of), so no capability travels with us — the server would not
+   * have issued us one anyway.
+   */
+  async function goToOwnRoom(knock: Knock): Promise<void> {
+    if (opening) return;
+    opening = true;
+    actionError = null;
+    try {
+      await openWindow(knock);
+    } catch (error) {
+      actionError = refusalMessage(error);
+    } finally {
+      opening = false;
+    }
+  }
+
+  /**
+   * Reply with words instead of a room: send the DM, and only then close the
+   * door. A DM that never left must NOT be followed by a decline — that would
+   * leave the knocker refused and unanswered, which is the one outcome this
+   * action exists to avoid.
    */
   async function replyToKnock(knock: Knock, text: string): Promise<void> {
     actionError = null;
+    actionNote = null;
+    let sent = false;
     try {
-      const sent = await adapter.messaging.sendDm(knock.from, text);
-      if (!sent.ok) actionError = "The reply could not be sent.";
+      const result = await adapter.messaging.sendDm(knock.from, text);
+      sent = result.ok;
     } catch {
-      actionError = "The reply could not be sent.";
+      sent = false;
+    }
+    if (!sent) {
+      actionError =
+        "The reply could not be sent, so the knock is still open. Try again, or answer it another way.";
+      return;
     }
     await knocks.decline(knock.knockId);
+    actionNote = "Your reply was sent and the knock was answered by message.";
   }
+
+  /**
+   * Are we already in our own room? The office payload is the authority: if it
+   * says we are occupied, "Go to your room" would be a button that does nothing
+   * anyone can see, so it is not offered at all.
+   */
+  const selfInRoom = $derived(store.visibleSelf()?.occupancy === "occupied");
 
   async function openRoom(person: OfficePerson): Promise<void> {
     const room = person.room;
@@ -453,15 +573,27 @@
       {actionError}
     </p>
   {/if}
+  {#if actionNote}
+    <p
+      class="office-host-error"
+      role="status"
+      aria-live="polite"
+      data-testid="office-action-note"
+    >
+      {actionNote}
+    </p>
+  {/if}
   <OfficeHours
     {store}
     {selfPersonUid}
     {displayName}
     {knocks}
-    onstartroom={startRoom}
+    onstartroom={enterOwnRoom}
+    onopendoor={openDoor}
     onopenroom={openRoom}
     onknock={knockPerson}
     onacceptknock={acceptKnock}
+    ongotoknock={selfInRoom ? undefined : goToOwnRoom}
     onreplyknock={replyToKnock}
     ondeferknock={(knock) => void knocks.defer(knock.knockId)}
     ondismissknock={(knock) => void knocks.decline(knock.knockId)}

@@ -17,6 +17,16 @@ export interface OfficeCallTarget {
   callId: string;
   epoch: number;
   self: { personUid: string; deviceId: string };
+  /**
+   * Present only when this admission rides an accepted knock — that is, only
+   * on the KNOCKER's side, entering the TARGET's room.
+   *
+   * `capabilityId` is the id of a short-lived admission GRANT the server minted
+   * for this one admission: not a token, not a credential, and worth nothing to
+   * anyone else. It expires shortly after acceptance, so a window opened with
+   * it must be opened at once, or not at all.
+   */
+  knock?: { knockId: string; capabilityId: string };
 }
 
 export interface OfficeCallsHost {
