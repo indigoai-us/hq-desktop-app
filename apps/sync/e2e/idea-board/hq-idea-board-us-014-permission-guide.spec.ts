@@ -84,9 +84,52 @@ describe('US-014 e2e-1: denied chord opens the guided panel, writes nothing', ()
     expect(captureRs).toContain('SETTINGS_WINDOW_W');
   });
 
-  it('hands the user a drag source and a copy-path fallback', () => {
-    expect(guide).toContain('draggable="true"');
-    expect(guide).toContain("setData('text/uri-list'");
+  it('hands the user a REAL native drag source and a copy-path fallback', () => {
+    // REGRESSION (owner-reported): the chip was an HTML5 DOM drag
+    // (`draggable="true"` + a `dragstart` writing a file:// string). Inside a
+    // WKWebView that starts no NSDraggingSession, so System Settings was
+    // never offered a file and its Screen Recording list never highlighted —
+    // while it did for ChatGPT, which drags natively. The seam that decides
+    // whether this works is that the chip reaches AppKit.
+    expect(guide).not.toContain('draggable="true"');
+    expect(guide).not.toContain("setData('text/uri-list'");
+    expect(guide).toContain("invoke<string>('permission_guide_begin_drag')");
+    // Armed on hover, not on press: arming costs an IPC round-trip, and a
+    // quick press-and-flick would otherwise finish before the monitor exists.
+    expect(guide).toContain('onpointerenter={onChipEnter}');
+    // No pointer capture: AppKit owns the mouse during a real drag, so a
+    // captured pointer would never be released and would swallow later clicks.
+    expect(guide).not.toContain('setPointerCapture(');
+    expect(mainRs).toContain('commands::capture::permission_guide_begin_drag');
+    expect(capability.description).toContain('permission_guide_begin_drag');
+    // AppKit half: a real session, carrying the bundle as a file URL, from a
+    // source that offers a real operation (a source answering "none" makes
+    // every destination refuse the drop — highlight included).
+    expect(captureRs).toContain('beginDraggingSessionWithItems');
+    expect(captureRs).toContain('fileURLWithPath');
+    expect(captureRs).toContain('initWithPasteboardWriter');
+    expect(captureRs).toContain('draggingSession:sourceOperationMaskForDraggingContext:');
+    // The seed event comes from AppKit's live dispatch, never from a stale
+    // NSApp current-event read after the IPC hop — a session seeded with a
+    // stale or foreign event tracks nothing, which is the no-highlight bug
+    // wearing a native costume.
+    expect(captureRs).toContain('addLocalMonitorForEventsMatchingMask');
+    // The handler must never remove its own monitor inline: AppKit's copy of
+    // the block is the only strong reference, so that would free the block
+    // mid-frame.
+    expect(captureRs).toContain('fn schedule_disarm(');
+    expect(captureRs.slice(0, captureRs.indexOf('#[cfg(test)]'))).not.toContain(
+      'msg_send![ns_app,',
+    );
+    expect(mainRs).toContain('commands::capture::permission_guide_cancel_drag');
+    // The panel window must be a non-activating NSPanel, or starting the drag
+    // activates HQ and raises HQ's windows over the drag's own destination.
+    expect(fnBody(captureRs, 'pub fn setup_permission_guide_window')).toContain(
+      'make_window_nonactivating_panel(&window)',
+    );
+    // The fallback is not optional: a machine where the session cannot begin
+    // must show the path, never an inert chip.
+    expect(guide).toContain('data-testid="drag-failed"');
     expect(guide).toContain('data-testid="copy-path"');
     // The panel is re-armed for the keyboard on every show, not only on its
     // first mount — the window is pre-rendered once and Rust drops

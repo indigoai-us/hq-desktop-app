@@ -1016,6 +1016,8 @@ fn main() {
             commands::capture::set_capture_toast_focusable,
             commands::capture::permission_guide_ready,
             commands::capture::set_permission_guide_focusable,
+            commands::capture::permission_guide_begin_drag,
+            commands::capture::permission_guide_cancel_drag,
             commands::capture::dismiss_permission_guide,
             commands::capture::ideas_open_board,
             commands::capture::ideas_capture_preview,

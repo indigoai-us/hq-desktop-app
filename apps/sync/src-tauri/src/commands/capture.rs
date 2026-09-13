@@ -556,7 +556,46 @@ pub fn setup_permission_guide_window(app: &AppHandle) {
         });
     }
 
+    // Promote to a non-activating NSPanel, for the same reason commit
+    // ecf6eef8 did it to the capture overlay: without it, the first click or
+    // drag inside this panel activates HQ and raises HQ's other windows over
+    // the System Settings pane the user is being asked to drop into. That is
+    // fatal here specifically — the drag's destination would be covered by the
+    // app that started the drag.
+    //
+    // COUPLING: this swaps out tao's `TaoWindow` subclass, so tao's
+    // `focusable` ivar goes with it and `window.set_focusable(..)` must never
+    // be called on this window again. `set_permission_guide_focusable` speaks
+    // to the NSPanel directly instead — see its note.
+    make_window_nonactivating_panel(&window);
+    // ...but unlike the overlay, this panel *is* keyboard-operable (Escape,
+    // tabbing to the buttons), so it must be allowed to become key on a plain
+    // click rather than only when a view demands input.
+    set_guide_becomes_key_only_if_needed(&window, false);
+
     log(LOG_TAG, &format!("guide setup: pre-rendered hidden window {GUIDE_W}x{GUIDE_H}"));
+    }
+}
+
+/// MAIN THREAD ONLY. Set the guide panel's `becomesKeyOnlyIfNeeded`.
+///
+/// `false` lets a click anywhere in the panel make it key — which, on a
+/// *non-activating* panel, gives it the keyboard without activating HQ or
+/// raising HQ's other windows. That is how the panel stays keyboard-operable
+/// after the NSPanel promotion took tao's focusable ivar away.
+#[cfg(target_os = "macos")]
+fn set_guide_becomes_key_only_if_needed(window: &tauri::WebviewWindow, value: bool) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    let Ok(ns_win) = window.ns_window() else { return };
+    if ns_win.is_null() {
+        return;
+    }
+    // SAFETY: main thread, live NSPanel, public AppKit selector.
+    unsafe {
+        let obj = ns_win as *mut AnyObject;
+        let _: () = msg_send![obj, setBecomesKeyOnlyIfNeeded: value];
     }
 }
 
@@ -650,11 +689,24 @@ fn hide_permission_guide(app: &AppHandle) {
     let app_main = app.clone();
     let hop = app.run_on_main_thread(move || {
         if let Some(window) = app_main.get_webview_window(GUIDE_WINDOW_LABEL) {
-            // Drop focusability with the window so the next open is
-            // non-activating again, exactly as it was built.
+            // Drop key-ability with the window so the next open behaves
+            // exactly as it was built.
+            //
+            // NOT tao's `set_focusable`: the window is promoted to an NSPanel
+            // at setup, which replaces tao's `TaoWindow` subclass — and tao's
+            // macOS `set_focusable` writes a `focusable` ivar that no longer
+            // exists on the class, which panics on the main thread. That
+            // would wedge this teardown, the single path every dismissal,
+            // grant-resume and quit funnels through.
+            #[cfg(target_os = "macos")]
+            set_guide_becomes_key_only_if_needed(&window, true);
+            #[cfg(not(target_os = "macos"))]
             if let Err(e) = window.set_focusable(false) {
                 log(LOG_TAG, &format!("guide hide: set_focusable failed: {e}"));
             }
+            // Any half-armed drag dies with the panel.
+            #[cfg(target_os = "macos")]
+            disarm_drag_monitor_on_main();
             if let Err(e) = window.hide() {
                 log(LOG_TAG, &format!("guide hide FAILED: {e}"));
             }
@@ -734,18 +786,21 @@ pub async fn set_permission_guide_focusable(app: AppHandle, focusable: bool) -> 
         let Some(window) = app_main.get_webview_window(GUIDE_WINDOW_LABEL) else {
             return;
         };
-        match window.set_focusable(focusable) {
-            Ok(()) => {
-                log(
-                    LOG_TAG,
-                    &format!("set_permission_guide_focusable: focusable={focusable}"),
-                );
-            }
-            Err(e) => log(
-                LOG_TAG,
-                &format!("set_permission_guide_focusable: set_focusable failed: {e}"),
-            ),
-        }
+        // NOT `window.set_focusable(..)`: this window was promoted to an
+        // NSPanel at setup, which replaced tao's `TaoWindow` subclass and the
+        // `focusable` ivar that call reads. The NSPanel equivalent is
+        // `becomesKeyOnlyIfNeeded` — false means a click anywhere gives the
+        // panel the keyboard, and because the panel is non-activating that
+        // costs the user neither their frontmost app nor the Screen Recording
+        // window they are dragging into.
+        #[cfg(target_os = "macos")]
+        set_guide_becomes_key_only_if_needed(&window, !focusable);
+        #[cfg(not(target_os = "macos"))]
+        let _ = window.set_focusable(focusable);
+        log(
+            LOG_TAG,
+            &format!("set_permission_guide_focusable: focusable={focusable}"),
+        );
     })
     .map_err(|e| e.to_string())
 }
@@ -760,6 +815,478 @@ pub fn dismiss_permission_guide(app: AppHandle) -> Result<(), String> {
     GUIDE_DISMISSED.store(true, Ordering::SeqCst);
     log(LOG_TAG, MARK_GUIDE_DISMISSED);
     hide_permission_guide(&app);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// US-014 drag: a REAL native file drag of the .app bundle
+// ---------------------------------------------------------------------------
+//
+// The panel used to present the chip as an HTML5 DOM drag (`draggable="true"`
+// + `dragstart` writing a `file://` string). That looks draggable and does
+// nothing: an HTML5 drag inside a WKWebView never starts an
+// `NSDraggingSession`, so System Settings is never offered a file and its
+// Screen Recording list never highlights. The owner saw exactly that — the
+// list highlights for ChatGPT (a real Finder/native drag) and not for us.
+//
+// The fix is to start the drag from AppKit: put the bundle's `NSURL` on a
+// dragging item (NSURL is an `NSPasteboardWriting`, so it lands on the
+// pasteboard as `public.file-url` — the type System Settings reads), give it
+// the bundle's Finder icon as the drag image, and call
+// `beginDraggingSessionWithItems:event:source:` on the panel's content view.
+
+/// `NSDragOperationCopy` — the only operation this drag ever offers.
+pub const NS_DRAG_OPERATION_COPY: u64 = 1;
+
+/// `NSEventTypeLeftMouseDown`.
+pub const NS_EVENT_TYPE_LEFT_MOUSE_DOWN: u64 = 1;
+/// `NSEventTypeLeftMouseUp`.
+pub const NS_EVENT_TYPE_LEFT_MOUSE_UP: u64 = 2;
+/// `NSEventTypeLeftMouseDragged`.
+pub const NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED: u64 = 6;
+
+/// Edge of the square drag image, in points.
+pub const DRAG_IMAGE_EDGE: f64 = 64.0;
+
+/// True when `ty` is an event `beginDraggingSessionWithItems:event:source:`
+/// accepts. Apple's contract is "a mouse-down or mouse-drag event"; handing it
+/// anything else (a `mouseUp`, or the `nil` you get when no event is being
+/// dispatched) yields no session at all — which is indistinguishable, from the
+/// user's side, from the inert HTML5 drag this replaced.
+///
+/// Pure so the contract is unit-testable without AppKit.
+pub fn is_drag_initiating_event(ty: u64) -> bool {
+    ty == NS_EVENT_TYPE_LEFT_MOUSE_DOWN || ty == NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED
+}
+
+/// Mark: the panel was pressed and the drag monitor is watching for the
+/// user's own mouse-drag.
+pub const MARK_GUIDE_DRAG_ARMED: &str = "idea.capture.permission_guide_drag_armed";
+/// Mark: a native dragging session was begun for the grant bundle.
+pub const MARK_GUIDE_DRAG_BEGAN: &str = "idea.capture.permission_guide_drag_began";
+/// Mark: the native drag could not start (` reason=...`) — the panel falls
+/// back to copy-path, which is why this is a log and not a silent return.
+pub const MARK_GUIDE_DRAG_FAILED: &str = "idea.capture.permission_guide_drag_failed";
+
+/// Lazily register (once) a minimal `NSDraggingSource` class.
+///
+/// `beginDraggingSessionWithItems:event:source:` requires a source object; a
+/// source that does not answer
+/// `draggingSession:sourceOperationMaskForDraggingContext:` with a real
+/// operation makes every destination refuse the drop — no highlight, which is
+/// the whole bug. So the class exists purely to answer `Copy` outside the
+/// application, and to ignore modifier keys (holding ⌥ must not turn the drop
+/// into something System Settings rejects).
+///
+/// Returns `None` if the runtime refuses to register or find the class —
+/// never a fabricated reference, because the caller immediately sends it
+/// `alloc`.
+#[cfg(target_os = "macos")]
+fn drag_source_class() -> Option<&'static objc2::runtime::AnyClass> {
+    use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
+    use std::num::NonZeroUsize;
+    use std::sync::OnceLock;
+
+    static CLASS: OnceLock<Option<NonZeroUsize>> = OnceLock::new();
+
+    // `NSDraggingContext` is an NSInteger; `NSDragOperation` an NSUInteger.
+    extern "C" fn operation_mask(
+        _this: &AnyObject,
+        _sel: Sel,
+        _session: *mut AnyObject,
+        _context: isize,
+    ) -> u64 {
+        // Same answer for both contexts (within-application and outside). The
+        // panel is never itself a drop target, and System Settings is always
+        // "outside".
+        NS_DRAG_OPERATION_COPY
+    }
+
+    extern "C" fn ignore_modifiers(_this: &AnyObject, _sel: Sel, _session: *mut AnyObject) -> Bool {
+        Bool::YES
+    }
+
+    let slot = CLASS.get_or_init(|| {
+        let registered: *const AnyClass = match ClassBuilder::new(
+            c"HQIdeaBoardGrantDragSource",
+            objc2::class!(NSObject),
+        ) {
+            Some(mut builder) => {
+                if let Some(proto) = objc2::runtime::AnyProtocol::get(c"NSDraggingSource") {
+                    builder.add_protocol(proto);
+                }
+                // SAFETY: both selectors are declared by `NSDraggingSource`
+                // with exactly these signatures, and the implementations
+                // touch no state.
+                unsafe {
+                    builder.add_method(
+                        objc2::sel!(draggingSession:sourceOperationMaskForDraggingContext:),
+                        operation_mask as extern "C" fn(_, _, _, _) -> _,
+                    );
+                    builder.add_method(
+                        objc2::sel!(ignoreModifierKeysForDraggingSession:),
+                        ignore_modifiers as extern "C" fn(_, _, _) -> _,
+                    );
+                }
+                builder.register()
+            }
+            // The only way `new` fails for a fixed name is that the class is
+            // already registered in this process.
+            None => match AnyClass::get(c"HQIdeaBoardGrantDragSource") {
+                Some(c) => c,
+                None => return None,
+            },
+        };
+        NonZeroUsize::new(registered as usize)
+    });
+    // SAFETY: the pointer came from a `&'static AnyClass` above, and the
+    // `NonZeroUsize` proves it is not the null sentinel.
+    slot.map(|p| unsafe { &*(p.get() as *const objc2::runtime::AnyClass) })
+}
+
+/// The single drag-source instance.
+///
+/// `NSDraggingSession.draggingSource` is **unretained**, so the source must
+/// outlive the drag by some other means. One process-lifetime singleton is
+/// that means: it holds no per-drag state, so sharing it is free, and it is
+/// deliberately never released. Do NOT "fix" this into a per-drag alloc that
+/// gets released — that is a use-after-free of the source mid-drag.
+#[cfg(target_os = "macos")]
+fn drag_source_instance() -> Option<*mut objc2::runtime::AnyObject> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use std::num::NonZeroUsize;
+    use std::sync::OnceLock;
+
+    static SOURCE: OnceLock<Option<NonZeroUsize>> = OnceLock::new();
+    let slot = SOURCE.get_or_init(|| {
+        let class = drag_source_class()?;
+        // SAFETY: plain NSObject alloc/init on a class we registered.
+        let obj: *mut AnyObject = unsafe {
+            let o: *mut AnyObject = msg_send![class, alloc];
+            msg_send![o, init]
+        };
+        NonZeroUsize::new(obj as usize)
+    });
+    slot.map(|p| p.get() as *mut AnyObject)
+}
+
+/// The armed local event monitor, if any (an `id`, retained).
+#[cfg(target_os = "macos")]
+static DRAG_MONITOR: Mutex<Option<usize>> = Mutex::new(None);
+
+/// MAIN THREAD ONLY. Remove any armed drag monitor. Idempotent.
+#[cfg(target_os = "macos")]
+fn disarm_drag_monitor_on_main() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    let Ok(mut slot) = DRAG_MONITOR.lock() else { return };
+    if let Some(ptr) = slot.take() {
+        // SAFETY: main thread; `ptr` is the retained monitor object AppKit
+        // handed back from `addLocalMonitorForEventsMatchingMask:handler:`.
+        unsafe {
+            let obj = ptr as *mut AnyObject;
+            let _: () = msg_send![class!(NSEvent), removeMonitor: obj];
+            objc2::ffi::objc_release(obj.cast());
+        }
+    }
+}
+
+/// Remove the monitor on the NEXT main-thread turn.
+///
+/// The handler block must NEVER call `disarm_drag_monitor_on_main` directly:
+/// once armed, AppKit's copy of the block is the only strong reference to it,
+/// so `removeMonitor:` from inside the handler releases the block — and its
+/// captured `AppHandle`/`String` — while the handler's own frame is still
+/// running and still has to return. Deferring the removal by one turn means
+/// the block has always returned before anything releases it.
+#[cfg(target_os = "macos")]
+fn schedule_disarm(app: &AppHandle) {
+    // `run_on_main_thread` posts to the event loop rather than running inline,
+    // which is precisely the one-turn delay this needs.
+    let _ = app.run_on_main_thread(disarm_drag_monitor_on_main);
+}
+
+/// Arm the drag: the panel was pressed, so watch for the user's own
+/// left-mouse-drag and start the native session from *that* event.
+///
+/// Why a local event monitor rather than reading `NSApp`'s current-event
+/// inside the command: the webview's press crosses the Tauri IPC boundary and a
+/// thread hop, so by the time Rust runs, the event AppKit is dispatching is no
+/// longer the user's press — it may belong to another window entirely (System
+/// Settings is right there). `beginDraggingSessionWithItems:event:source:`
+/// seeded with a stale or foreign event starts no session that tracks the
+/// pointer, which reproduces the original symptom exactly: no highlight. A
+/// local monitor runs **synchronously inside AppKit's dispatch**, so the event
+/// it hands us is the real one.
+///
+/// Waiting for a `leftMouseDragged` also means a plain click on the chip (the
+/// copy-path affordance) never spawns a stray session: a click produces no
+/// drag event at all.
+#[cfg(target_os = "macos")]
+fn arm_drag_monitor_on_main(app: &AppHandle, path: String) -> Result<(), String> {
+    use block2::RcBlock;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    // Re-arming replaces, never stacks.
+    disarm_drag_monitor_on_main();
+
+    // Fail loudly *now* if the pieces the drag needs are missing, so the panel
+    // can show its copy-path fallback instead of an inert chip.
+    if app.get_webview_window(GUIDE_WINDOW_LABEL).is_none() {
+        log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_FAILED} reason=no_window"));
+        return Err("guide window is gone".into());
+    }
+    if drag_source_instance().is_none() {
+        log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_FAILED} reason=no_drag_source"));
+        return Err("could not create the drag source".into());
+    }
+
+    let app = app.clone();
+    let armed_path = path.clone();
+    let handler = RcBlock::new(move |event: *mut AnyObject| -> *mut AnyObject {
+        if event.is_null() {
+            return event;
+        }
+        // SAFETY: main thread, inside AppKit's own dispatch; `event` is a live
+        // NSEvent.
+        let ty: u64 = unsafe { msg_send![event, type] };
+        if ty == NS_EVENT_TYPE_LEFT_MOUSE_UP {
+            // Released without dragging — the press was a click. Stand down.
+            schedule_disarm(&app);
+            return event;
+        }
+        if is_drag_initiating_event(ty) {
+            let _ = begin_grant_drag_with_event(&app, &path, event);
+            // One session per press either way: a refusal must not retry on
+            // every subsequent drag event.
+            schedule_disarm(&app);
+        }
+        event
+    });
+
+    // NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp.
+    let mask: u64 = (1 << NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED) | (1 << NS_EVENT_TYPE_LEFT_MOUSE_UP);
+    // SAFETY: main thread; AppKit copies the handler block, and we retain the
+    // returned monitor so `removeMonitor:` has something valid to take.
+    unsafe {
+        let monitor: *mut AnyObject = msg_send![
+            class!(NSEvent),
+            addLocalMonitorForEventsMatchingMask: mask,
+            handler: &*handler,
+        ];
+        if monitor.is_null() {
+            log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_FAILED} reason=no_monitor"));
+            return Err("could not watch for the drag".into());
+        }
+        objc2::ffi::objc_retain(monitor.cast());
+        if let Ok(mut slot) = DRAG_MONITOR.lock() {
+            *slot = Some(monitor as usize);
+        }
+    }
+    log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_ARMED} path={armed_path}"));
+    Ok(())
+}
+
+/// Arm the native drag of the running app bundle.
+///
+/// Called when the user presses the chip. Returns the path that will be put on
+/// the pasteboard, so the caller (and the tests) can assert the drag offers
+/// the *running* bundle rather than a hardcoded or stale path. Errors are
+/// meaningful: the panel shows its copy-path fallback whenever this rejects,
+/// so a machine where the drag cannot start is never left with a chip that
+/// silently does nothing.
+#[tauri::command]
+pub async fn permission_guide_begin_drag(app: AppHandle) -> Result<String, String> {
+    // Always resolved at runtime from the running executable
+    // (`hq_platform::permissions::screen_capture_grant_path`), never a
+    // constant — a shipped `.app` in /Applications and a dev build under
+    // target/ must each offer their own bundle or the grant lands on the
+    // wrong identity.
+    let state = permission_guide_state_inner();
+    if state.grant_path.is_empty() {
+        log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_FAILED} reason=no_grant_path"));
+        return Err("no bundle path to drag".into());
+    }
+    if !std::path::Path::new(&state.grant_path).exists() {
+        log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_FAILED} reason=path_missing"));
+        return Err(format!("bundle path does not exist: {}", state.grant_path));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = &app;
+        Err("native drag is macOS-only".into())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let path = state.grant_path.clone();
+        let armed = run_on_main_and_wait(&app, {
+            let path = path.clone();
+            move |app| arm_drag_monitor_on_main(app, path.clone())
+        })
+        .await?;
+        armed.map(|()| path)
+    }
+}
+
+/// Stand down an armed drag (the press ended without one, or the panel is
+/// going away). Idempotent and safe to call when nothing is armed.
+#[tauri::command]
+pub async fn permission_guide_cancel_drag(app: AppHandle) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = &app;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        run_on_main_and_wait::<(), _>(&app, |_| disarm_drag_monitor_on_main()).await
+    }
+}
+
+/// Run `f` on the main thread and await its result without parking a runtime
+/// worker on a blocking `recv` (a wedged main thread must not cost a tokio
+/// thread for the duration).
+#[cfg(target_os = "macos")]
+async fn run_on_main_and_wait<T, F>(app: &AppHandle, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&AppHandle) -> T + Send + 'static,
+{
+    let app_main = app.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<T>();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f(&app_main));
+    })
+    .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|e| format!("main thread did not answer: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// MAIN THREAD ONLY. Begin the dragging session from `event` — the user's own
+/// left-mouse-drag, handed to us synchronously by the local monitor.
+#[cfg(target_os = "macos")]
+fn begin_grant_drag_with_event(
+    app: &AppHandle,
+    path: &str,
+    event: *mut objc2::runtime::AnyObject,
+) -> Result<(), String> {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+
+    let Some(window) = app.get_webview_window(GUIDE_WINDOW_LABEL) else {
+        log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_FAILED} reason=no_window"));
+        return Err("guide window is gone".into());
+    };
+    let ns_win = window.ns_window().map_err(|e| e.to_string())?;
+    if ns_win.is_null() {
+        log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_FAILED} reason=null_ns_window"));
+        return Err("guide window has no NSWindow".into());
+    }
+    let win = ns_win as *mut AnyObject;
+    let Some(source) = drag_source_instance() else {
+        log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_FAILED} reason=no_drag_source"));
+        return Err("could not create the drag source".into());
+    };
+
+    // SAFETY: main thread, inside AppKit's event dispatch; `win` is a live
+    // NSWindow and `event` a live NSEvent. Every selector below is public
+    // AppKit. Objects we create are explicitly released at the end of the
+    // frame — except the source, which the session holds *unretained* and
+    // which is therefore a deliberate process-lifetime singleton.
+    unsafe {
+        // The seed event must belong to THIS window. A monitor sees every
+        // local event, and a drag that started in System Settings would give
+        // us coordinates in a foreign window and a session that tracks
+        // nothing.
+        let event_window: *mut AnyObject = msg_send![event, window];
+        if event_window != win {
+            return Err("drag event belongs to another window".into());
+        }
+
+        let view: *mut AnyObject = msg_send![win, contentView];
+        if view.is_null() {
+            log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_FAILED} reason=no_content_view"));
+            return Err("guide window has no content view".into());
+        }
+
+        // The file URL. NSURL is an NSPasteboardWriting, so the dragging item
+        // publishes `public.file-url` — the representation System Settings
+        // reads when it decides whether to highlight.
+        let ns_path: *mut AnyObject = {
+            let s: *mut AnyObject = msg_send![class!(NSString), alloc];
+            msg_send![s, initWithBytes: path.as_ptr(),
+                         length: path.len(),
+                         encoding: 4usize] // NSUTF8StringEncoding
+        };
+        if ns_path.is_null() {
+            return Err("could not encode the bundle path".into());
+        }
+        let url: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: ns_path];
+        if url.is_null() {
+            objc2::ffi::objc_release(ns_path.cast());
+            return Err("could not build a file URL for the bundle".into());
+        }
+
+        let item: *mut AnyObject = msg_send![class!(NSDraggingItem), alloc];
+        let item: *mut AnyObject = msg_send![item, initWithPasteboardWriter: url];
+        if item.is_null() {
+            objc2::ffi::objc_release(ns_path.cast());
+            return Err("could not build the dragging item".into());
+        }
+
+        // Drag image: the bundle's own Finder icon, so what the user drags
+        // looks like the app they are being asked to add.
+        let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let icon: *mut AnyObject = msg_send![workspace, iconForFile: ns_path];
+
+        // Centre the image on the pointer, in the view's coordinates.
+        let win_point: CGPoint = msg_send![event, locationInWindow];
+        let local: CGPoint =
+            msg_send![view, convertPoint: win_point, fromView: std::ptr::null::<AnyObject>()];
+        let frame = CGRect {
+            origin: CGPoint {
+                x: local.x - DRAG_IMAGE_EDGE / 2.0,
+                y: local.y - DRAG_IMAGE_EDGE / 2.0,
+            },
+            size: CGSize { width: DRAG_IMAGE_EDGE, height: DRAG_IMAGE_EDGE },
+        };
+        if icon.is_null() {
+            // A dragging item with nil contents drags nothing visible (and can
+            // raise). Frame-only keeps the session valid; the pasteboard —
+            // the part System Settings actually reads — is unaffected.
+            let _: () = msg_send![item, setDraggingFrame: frame];
+        } else {
+            let edge = CGSize { width: DRAG_IMAGE_EDGE, height: DRAG_IMAGE_EDGE };
+            let _: () = msg_send![icon, setSize: edge];
+            let _: () = msg_send![item, setDraggingFrame: frame, contents: icon];
+        }
+
+        let items: *mut AnyObject = msg_send![class!(NSArray), arrayWithObject: item];
+
+        let session: *mut AnyObject =
+            msg_send![view, beginDraggingSessionWithItems: items, event: event, source: source];
+
+        // The session retains the items it needs; ours are +1 from alloc/init.
+        objc2::ffi::objc_release(item.cast());
+        objc2::ffi::objc_release(ns_path.cast());
+
+        if session.is_null() {
+            log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_FAILED} reason=no_session"));
+            return Err("AppKit refused to begin the dragging session".into());
+        }
+        log(LOG_TAG, &format!("{MARK_GUIDE_DRAG_BEGAN} path={path}"));
+    }
+
     Ok(())
 }
 
@@ -2597,19 +3124,54 @@ mod hq_idea_board_capture_tests {
             .filter(|l| l.trim_start().starts_with("window.set_focusable(focusable)")
                 || l.trim_start().starts_with("match window.set_focusable(focusable)"))
             .count();
-        // US-014 added a second sanctioned toggle
-        // (`set_permission_guide_focusable`). Both are the *named* toggle
-        // commands for their non-activating window; a third site would mean a
-        // window is flipping focusable somewhere other than its own command.
+        // `set_capture_toast_focusable` is now the ONLY tao-level toggle. The
+        // permission guide used to be the second, but the US-014 drag fix
+        // promoted its window to a non-activating NSPanel — which replaces
+        // tao's `TaoWindow` subclass and the `focusable` ivar
+        // `set_focusable` reads. On macOS it now speaks to the NSPanel
+        // directly (`becomesKeyOnlyIfNeeded`); calling tao there would read
+        // state that no longer exists.
         assert_eq!(
-            toggle_sites, 2,
-            "only the two named toggle commands may flip focusable at runtime \
-             (set_capture_toast_focusable, set_permission_guide_focusable)"
+            toggle_sites, 1,
+            "set_capture_toast_focusable is the only sanctioned tao-level \
+             focusable toggle; a second site means a window is flipping \
+             focusable outside its own command"
         );
         let guide_toggle = fn_body(&src, "fn set_permission_guide_focusable(");
         assert!(
-            guide_toggle.contains("set_focusable(focusable)"),
-            "set_permission_guide_focusable must toggle via its `focusable` param"
+            guide_toggle.contains("set_guide_becomes_key_only_if_needed(&window, !focusable)"),
+            "the guide panel must be made key-able through its NSPanel, driven \
+             by its own `focusable` param"
+        );
+        // Every `set_focusable` reachable for THIS window must sit behind a
+        // not(macos) gate: on macOS the window is a promoted NSPanel and tao's
+        // setter reads an ivar the class no longer has, which panics.
+        //
+        // Scan the *production* half so the assertion text below is not itself
+        // a match, and pair every guide-side call with the cfg line above it.
+        let production = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+        let lines: Vec<&str> = production.lines().collect();
+        let mut guide_calls = 0;
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("window.set_focusable(") || line.trim_start().starts_with("//") {
+                continue;
+            }
+            // The toast keeps an unmodified tao window, so its own toggles are
+            // legitimate; only the guide's are gated.
+            let context = lines[i.saturating_sub(14)..i].join("\n");
+            if !context.contains("GUIDE_WINDOW_LABEL") {
+                continue;
+            }
+            guide_calls += 1;
+            let gate = if i == 0 { "" } else { lines[i - 1] };
+            assert!(
+                gate.contains("#[cfg(not(target_os = \"macos\"))]"),
+                "guide set_focusable must be not(macos)-gated, got guard: {gate}"
+            );
+        }
+        assert!(
+            guide_calls >= 2,
+            "expected the guide's hide + focusable-toggle call sites, found {guide_calls}"
         );
     }
 
@@ -3506,6 +4068,126 @@ mod hq_idea_board_capture_tests {
     }
 
     #[test]
+    fn hq_idea_board_guide_drag_only_starts_from_a_mouse_down_or_drag_event() {
+        // AppKit begins no dragging session for any other event type, and a
+        // session that never begins is exactly the inert-chip bug: the drop
+        // target is never offered a file and never highlights.
+        assert!(is_drag_initiating_event(NS_EVENT_TYPE_LEFT_MOUSE_DOWN));
+        assert!(is_drag_initiating_event(NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED));
+        // leftMouseUp(2), rightMouseDown(3), mouseMoved(5), keyDown(10).
+        for ty in [0u64, 2, 3, 5, 10] {
+            assert!(!is_drag_initiating_event(ty), "event {ty} cannot seed a drag");
+        }
+    }
+
+    #[test]
+    fn hq_idea_board_guide_drag_offers_the_running_bundle_as_a_file_url() {
+        // REGRESSION (owner-reported): the chip was an HTML5 DOM drag, which
+        // inside a WKWebView starts no NSDraggingSession at all — System
+        // Settings' Screen Recording list never highlighted. The drag must be
+        // begun by AppKit, offering the bundle as an NSURL (an
+        // NSPasteboardWriting, so it publishes `public.file-url`).
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+        let body = fn_body(&src, "fn begin_grant_drag_with_event(");
+        assert!(
+            body.contains("beginDraggingSessionWithItems"),
+            "the drag must start a real NSDraggingSession"
+        );
+        assert!(
+            body.contains("fileURLWithPath") && body.contains("initWithPasteboardWriter"),
+            "the session must carry the bundle as a file URL"
+        );
+        // A source that answers no operation makes every destination refuse
+        // the drop — highlight included.
+        assert!(
+            src.contains("draggingSession:sourceOperationMaskForDraggingContext:")
+                && src.contains("NS_DRAG_OPERATION_COPY"),
+            "the drag source must offer a real operation"
+        );
+
+        // The path is resolved from the RUNNING executable every time, never
+        // a constant: a shipped .app and a dev build must each grant their own
+        // identity.
+        let cmd = fn_body(&src, "pub async fn permission_guide_begin_drag(");
+        assert!(
+            cmd.contains("permission_guide_state_inner()"),
+            "the dragged path must be resolved at runtime"
+        );
+        assert!(
+            !cmd.contains("/Applications/"),
+            "the dragged path must never be hardcoded"
+        );
+        // And the panel must be told when the drag cannot start, so the
+        // copy-path fallback surfaces instead of a chip that does nothing.
+        assert!(cmd.contains("return Err(") && cmd.contains("MARK_GUIDE_DRAG_FAILED"));
+
+        // The seed event must come from AppKit's own dispatch, not from
+        // `NSApp`'s current-event read after an IPC hop: by then the event is
+        // stale and may belong to another window, and a session seeded with
+        // one of those tracks nothing — the original no-highlight symptom
+        // wearing a native costume.
+        // Scan only the non-test half: the assertion text itself would
+        // otherwise satisfy the very pattern it forbids.
+        let production = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+        assert!(
+            !production.contains("msg_send![ns_app,"),
+            "the drag must not be seeded from a stale NSApp current-event"
+        );
+        assert!(
+            src.contains("addLocalMonitorForEventsMatchingMask"),
+            "the drag must be seeded from the live event monitor"
+        );
+        assert!(
+            body.contains("if event_window != win"),
+            "a drag event from another window must be refused"
+        );
+        // The dragging source is held UNRETAINED by the session, so it must
+        // be a singleton that is never released — releasing it would be a
+        // use-after-free mid-drag.
+        assert!(src.contains("fn drag_source_instance()") && src.contains("static SOURCE:"));
+    }
+
+    #[test]
+    fn hq_idea_board_guide_grant_path_is_the_running_bundle() {
+        // `permission_guide_state_inner` is what the drag command offers, so
+        // pin that it comes from the live executable, not a literal.
+        let state = permission_guide_state_inner();
+        let exe = std::env::current_exe().expect("current_exe");
+        let expected = hq_platform::permissions::bundle_path_from_exe(&exe);
+        assert_eq!(state.grant_path, expected.to_string_lossy());
+        assert!(!state.grant_path.is_empty());
+    }
+
+    #[test]
+    fn hq_idea_board_guide_panel_never_activates_hq_when_dragged() {
+        // Commit ecf6eef8 made the capture overlay a non-activating NSPanel so
+        // a drag on it could not raise HQ's windows. The guide panel needs the
+        // same treatment for a sharper reason: the drag's DESTINATION is the
+        // System Settings window beside it, and activating HQ covers it.
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+        let setup = fn_body(&src, "pub fn setup_permission_guide_window(");
+        assert!(
+            setup.contains("make_window_nonactivating_panel(&window)"),
+            "the guide panel must be non-activating"
+        );
+        // The promotion takes tao's focusable ivar with it, so the focusable
+        // command must NOT call set_focusable on macOS or it reads free'd state.
+        let focusable = fn_body(&src, "pub async fn set_permission_guide_focusable(");
+        assert!(
+            focusable.contains("set_guide_becomes_key_only_if_needed"),
+            "post-promotion the panel is made key-able through NSPanel, not tao"
+        );
+    }
+
+    #[test]
     fn hq_idea_board_guide_poll_interval_is_neither_busy_nor_sluggish() {
         // A busy loop would burn a core behind a modal panel; anything over a
         // second would make the drop feel unacknowledged.
@@ -3635,7 +4317,11 @@ mod hq_idea_board_capture_tests {
         let hide = fn_body(&src, "fn hide_permission_guide(");
         assert!(hide.contains("GUIDE_OPEN.store(false"));
         assert!(hide.contains("window.hide()"));
-        assert!(hide.contains("set_focusable(false)"));
+        // Key-ability is dropped through the NSPanel, not tao (see the note
+        // in hide_permission_guide: tao's set_focusable panics on a promoted
+        // panel, which would wedge the single teardown path).
+        assert!(hide.contains("set_guide_becomes_key_only_if_needed(&window, true)"));
+        assert!(hide.contains("disarm_drag_monitor_on_main()"));
         for caller in [
             "fn dismiss_permission_guide(",
             "fn shutdown_permission_guide(",
@@ -3721,6 +4407,11 @@ mod hq_idea_board_capture_tests {
             "commands::capture::permission_guide_ready",
             "commands::capture::set_permission_guide_focusable",
             "commands::capture::dismiss_permission_guide",
+            // The native drag (US-014 AC2). Unregistered, the chip throws on
+            // every press and the drag silently does nothing — the exact
+            // failure this command exists to end.
+            "commands::capture::permission_guide_begin_drag",
+            "commands::capture::permission_guide_cancel_drag",
         ] {
             assert!(main_rs.contains(cmd), "{cmd} is not in generate_handler!");
         }

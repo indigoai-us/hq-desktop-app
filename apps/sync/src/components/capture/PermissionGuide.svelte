@@ -61,6 +61,7 @@
   let copied = $state(false);
   let copyFailed = $state(false);
   let openFailed = $state(false);
+  let dragFailed = $state(false);
   let entered = $state(false);
 
   let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -142,6 +143,7 @@
   async function copyPath() {
     copied = false;
     copyFailed = false;
+    dragFailed = false;
     if (!grantPath) return;
     try {
       await navigator.clipboard.writeText(grantPath);
@@ -166,16 +168,86 @@
     }
   }
 
-  function onDragStart(event: DragEvent) {
-    if (!event.dataTransfer || !grantPath) return;
-    // Encode per segment: encodeURI leaves `#`, `?` and `&` raw, so a bundle
-    // path containing any of them would truncate the URL at the fragment.
-    const url = `file://${grantPath.split('/').map(encodeURIComponent).join('/')}`;
-    // System Settings accepts a file URL drop; text/plain is the fallback
-    // every other drop target understands.
-    event.dataTransfer.setData('text/uri-list', url);
-    event.dataTransfer.setData('text/plain', grantPath);
-    event.dataTransfer.effectAllowed = 'copy';
+  /**
+   * Start the REAL drag.
+   *
+   * This used to be an HTML5 DOM drag (a draggable chip whose `dragstart`
+   * wrote a `file://` string onto the DataTransfer). That drag was inert: an
+   * HTML5 drag inside a WKWebView never starts an `NSDraggingSession`, so
+   * System Settings was never offered a file and its Screen Recording list
+   * never highlighted — the chip looked draggable and accomplished nothing.
+   * The drag has to be begun by AppKit.
+   *
+   * The webview's job is only to say "the chip is pressed" (arm) and "the
+   * press ended" (cancel). Rust watches for the user's own left-mouse-drag
+   * with a local event monitor and begins the session from that live event —
+   * it cannot be begun from here, because by the time an invoke crosses the
+   * IPC boundary the event AppKit is dispatching is no longer the user's
+   * press. Waiting for a real drag event also means a plain click on the chip
+   * never spawns a stray session.
+   */
+  let armed = false;
+  let pressed = false;
+
+  async function arm() {
+    if (armed || !hasTauri()) return;
+    armed = true;
+    try {
+      await invoke<string>('permission_guide_begin_drag');
+      dragFailed = false;
+    } catch (err) {
+      console.error('permission_guide_begin_drag failed:', err);
+      armed = false;
+      // Never leave a chip that silently does nothing: surface the copy-path
+      // route instead, which always works.
+      dragFailed = true;
+    }
+  }
+
+  function disarm() {
+    if (!armed) return;
+    armed = false;
+    if (!hasTauri()) return;
+    void invoke('permission_guide_cancel_drag').catch((err) =>
+      console.error('permission_guide_cancel_drag failed:', err),
+    );
+  }
+
+  /**
+   * Arm on hover, not on press.
+   *
+   * Arming costs one IPC round-trip plus a main-thread hop. Done on
+   * `pointerdown`, a quick press-and-flick — exactly the gesture someone makes
+   * when dragging toward another window — can be over before the monitor
+   * exists, and the user sees the old do-nothing symptom intermittently.
+   * Hovering gives Rust the head start, and you cannot press elsewhere in the
+   * panel while the pointer is over the chip, so nothing else can trip it.
+   */
+  function onChipEnter() {
+    void arm();
+  }
+
+  function onChipDown(event: PointerEvent) {
+    if (event.button !== 0) return;
+    pressed = true;
+    // Belt and braces if the hover never fired (keyboard-driven pointer,
+    // pointer warped onto the chip).
+    void arm();
+    // Deliberately NO setPointerCapture: on a successful drag AppKit owns the
+    // mouse, so the webview never sees pointerup — a captured pointer would
+    // stay captured and swallow clicks meant for the panel's other buttons.
+    // Rust's own monitor stands the drag down on the real mouse-up.
+  }
+
+  function onChipUp() {
+    pressed = false;
+  }
+
+  function onChipLeave() {
+    // A drag in flight is AppKit's now, and its monitor disarms itself on
+    // mouse-up; only an un-pressed pointer leaving means "not dragging after
+    // all".
+    if (!pressed) disarm();
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -235,11 +307,14 @@
         <div
           class="chip"
           data-testid="drag-source"
-          draggable="true"
           role="button"
           tabindex="0"
           aria-label={`Drag ${grantName} into the Screen Recording list, or press Enter to copy its path`}
-          ondragstart={onDragStart}
+          onpointerenter={onChipEnter}
+          onpointerdown={onChipDown}
+          onpointerup={onChipUp}
+          onpointercancel={onChipUp}
+          onpointerleave={onChipLeave}
           onkeydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
@@ -250,6 +325,11 @@
           <span class="chip-icon" aria-hidden="true">◧</span>
           <span class="chip-name">{grantName}</span>
         </div>
+        {#if dragFailed}
+          <p class="err" data-testid="drag-failed">
+            Dragging isn't available right now — use the path below instead.
+          </p>
+        {/if}
         <div class="fallback">
           <button class="link" type="button" onclick={copyPath} data-testid="copy-path">
             {copied ? 'Path copied' : "Can't drag? Copy the path"}

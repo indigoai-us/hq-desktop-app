@@ -136,9 +136,13 @@ describe('US-014 permission guide — rendered panel', () => {
     await settle();
     expect(q(target, '[data-testid="grant-path"]').textContent).toContain(GRANT_PATH);
     const chip = q(target, '[data-testid="drag-source"]');
-    expect(chip.getAttribute('draggable')).toBe('true');
-    // Draggable is not enough: it must also be reachable and actionable by
-    // keyboard for anyone who cannot drag.
+    // NOT `draggable="true"`: an HTML5 DOM drag inside a WKWebView starts no
+    // native dragging session, so System Settings was never offered a file
+    // and never highlighted. The chip drags through Rust now — see
+    // "starts a REAL native drag" below.
+    expect(chip.getAttribute('draggable')).toBeNull();
+    // It must also be reachable and actionable by keyboard for anyone who
+    // cannot drag.
     expect(chip.getAttribute('tabindex')).toBe('0');
     expect(chip.getAttribute('role')).toBe('button');
     expect(chip.getAttribute('aria-label')).toContain('HQ Sync.app');
@@ -241,21 +245,94 @@ describe('US-014 permission guide — rendered panel', () => {
     expect(q(target, '[data-testid="copy-path"]').textContent).not.toContain('copied');
   });
 
-  it('puts the bundle path on the drag payload', async () => {
+  // REGRESSION (owner-reported, US-014 AC2): "if I try to drag the HQ Idea
+  // Board Bench.app thing into the area it doesn't seem to recognize it...
+  // When I did it for ChatGPT and another app the area highlights."
+  //
+  // The old chip was `draggable="true"` + a `dragstart` that wrote a
+  // `file://` string onto the DataTransfer. Those tests passed while the
+  // interaction was completely inert, because a DataTransfer payload inside a
+  // WebView is not an NSDraggingSession — System Settings was never offered a
+  // real file. The only assertion that can tell the difference is that the
+  // chip reaches AppKit, so that is what these pin.
+  function pointer(chip: Element, type: string, button = 0) {
+    chip.dispatchEvent(
+      Object.assign(new Event(type, { bubbles: true }), { button, pointerId: 1 }),
+    );
+  }
+
+  it('starts a REAL native drag through Rust, not a DOM-only dragstart', async () => {
     const target = mountGuide();
     await settle();
-    const data = new Map<string, string>();
-    const event = new Event('dragstart', { bubbles: true }) as DragEvent;
-    Object.defineProperty(event, 'dataTransfer', {
-      value: {
-        setData: (k: string, v: string) => data.set(k, v),
-        effectAllowed: '',
-      },
+    const chip = q(target, '[data-testid="drag-source"]');
+
+    // A DOM dragstart must not be how this works any more: if the component
+    // still relied on it, nothing would reach Rust.
+    chip.dispatchEvent(new Event('dragstart', { bubbles: true }));
+    await settle();
+    expect(invokesOf('permission_guide_begin_drag')).toHaveLength(0);
+
+    // Hovering the chip arms AppKit's own drag monitor, ahead of the press —
+    // arming costs a round-trip, and a quick press-and-flick would otherwise
+    // be over before the monitor existed.
+    pointer(chip, 'pointerenter');
+    await settle();
+    const calls = invokesOf('permission_guide_begin_drag');
+    expect(calls).toHaveLength(1);
+    // No arguments: the path is resolved in Rust from the RUNNING bundle, so
+    // the frontend can never offer a stale or hardcoded one.
+    expect(calls[0]?.[1]).toBeUndefined();
+
+    // Pressing does not re-arm redundantly.
+    pointer(chip, 'pointerdown');
+    await settle();
+    expect(invokesOf('permission_guide_begin_drag')).toHaveLength(1);
+  });
+
+  it('stands the monitor down when the pointer leaves without dragging', async () => {
+    const target = mountGuide();
+    await settle();
+    const chip = q(target, '[data-testid="drag-source"]');
+
+    pointer(chip, 'pointerenter');
+    await settle();
+    pointer(chip, 'pointerleave');
+    await settle();
+    expect(invokesOf('permission_guide_cancel_drag')).toHaveLength(1);
+  });
+
+  it('keeps the drag armed while the pointer is pressed and moving away', async () => {
+    const target = mountGuide();
+    await settle();
+    const chip = q(target, '[data-testid="drag-source"]');
+
+    pointer(chip, 'pointerenter');
+    await settle();
+    pointer(chip, 'pointerdown');
+    // Dragging off the chip is the whole gesture — it must NOT cancel.
+    pointer(chip, 'pointerleave');
+    await settle();
+    expect(invokesOf('permission_guide_cancel_drag')).toHaveLength(0);
+  });
+
+  it('falls back honestly when the native drag cannot be armed', async () => {
+    invokeMock.mockImplementation(async (cmd: unknown) => {
+      if (cmd === 'permission_guide_begin_drag') throw new Error('no session');
+      return cmd === 'permission_guide_ready' ? state() : undefined;
     });
-    q(target, '[data-testid="drag-source"]').dispatchEvent(event);
-    expect(data.get('text/plain')).toBe(GRANT_PATH);
-    // Per-segment encoding: a bundle path with `#` must not truncate the URL.
-    expect(data.get('text/uri-list')).toBe('file:///Applications/HQ%20Sync.app');
+    const target = mountGuide();
+    await settle();
+    const chip = q(target, '[data-testid="drag-source"]');
+    pointer(chip, 'pointerenter');
+    await settle();
+    // Never a chip that silently does nothing: the copy-path route is named.
+    expect(q(target, '[data-testid="drag-failed"]').textContent).toMatch(/path below/i);
+    expect(target.querySelector('[data-testid="copy-path"]')).not.toBeNull();
+
+    // ...and the notice clears once the user takes that route.
+    q<HTMLButtonElement>(target, '[data-testid="copy-path"]').click();
+    await settle();
+    expect(target.querySelector('[data-testid="drag-failed"]')).toBeNull();
   });
 
   it('dismisses through Rust on Escape, the close button, and "Not now"', async () => {
