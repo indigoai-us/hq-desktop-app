@@ -123,6 +123,68 @@ afterEach(async () => {
 });
 
 describe('HqWorkWorkShell workspace roster refresh', () => {
+  it('recovers when the native roster succeeds after the UI deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      let resolveRoster!: (value: unknown) => void;
+      const pending = new Promise((resolve) => { resolveRoster = resolve; });
+      const { invokeFn } = mockInvoke([() => pending]);
+      component = mount(HqWorkWorkShell, {
+        target: host,
+        props: { invokeFn, rosterRetryDelaysMs: [100_000] },
+      });
+      await flush();
+      await vi.advanceTimersByTimeAsync(15_001);
+      await flush();
+      const notice = host.querySelector('[data-testid="hq-work-workspace-error"]');
+      expect(notice?.textContent).toContain('Workspaces couldn’t refresh.');
+      expect(notice?.textContent).not.toContain('timed out');
+      expect(notice?.getAttribute('role')).toBe('status');
+      resolveRoster({ workspaces: [ACME] });
+      await flush();
+      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+    } finally {
+      if (component) await unmount(component);
+      component = null;
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a newer failed retry authoritative over an older late success', async () => {
+    vi.useFakeTimers();
+    try {
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      let resolveOld!: (value: unknown) => void;
+      const old = new Promise((resolve) => { resolveOld = resolve; });
+      const { invokeFn, calls } = mockInvoke([
+        () => old,
+        () => { throw new Error('still offline'); },
+      ]);
+      component = mount(HqWorkWorkShell, {
+        target: host,
+        props: { invokeFn, rosterRetryDelaysMs: [100_000] },
+      });
+      await flush();
+      await vi.advanceTimersByTimeAsync(15_001);
+      await flush();
+      const retry = host.querySelector<HTMLButtonElement>('[data-testid="hq-work-workspace-error"] button');
+      expect(retry).toBeTruthy();
+      retry!.click();
+      await flush();
+      expect(rosterCalls(calls)).toBe(2);
+      resolveOld({ workspaces: [ACME] });
+      await flush();
+      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeTruthy();
+    } finally {
+      if (component) await unmount(component);
+      component = null;
+      vi.useRealTimers();
+    }
+  });
+
   it('retries a failed roster fetch on a bounded backoff and clears the warning', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
@@ -207,8 +269,9 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     await flush();
     await vi.waitFor(() => {
       expect(host.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).toContain(
-        'vault unreachable',
+        'Workspaces couldn’t refresh.',
       );
+      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).not.toContain('vault unreachable');
     });
     await vi.waitFor(() => {
       expect(rosterCalls(calls)).toBe(2);

@@ -50,8 +50,10 @@
 //! the full repair surface.
 
 use std::collections::BTreeMap;
-use std::path::Path;
-use futures_util::{stream, StreamExt, TryStreamExt};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+use futures_util::{stream, FutureExt, StreamExt, TryStreamExt};
 
 use serde::Serialize;
 
@@ -631,9 +633,7 @@ pub(crate) async fn fetch_cloud_roster(
 pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let hq_root = resolve_hq_folder_path()?;
     let hq_folder_path = hq_root.to_string_lossy().to_string();
-    let root_for_discovery = hq_root.clone();
-    let (mut local_companies, manifest_error) = tokio::task::spawn_blocking(move || discover_local_companies(&root_for_discovery))
-        .await.map_err(|e| e.to_string())?;
+    let (mut local_companies, manifest_error) = bounded_local_discovery(&hq_root).await;
 
     let cloud_outcome: CloudOutcome = async {
         let vault_url = resolve_vault_api_url()?;
@@ -712,6 +712,48 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         hq_folder_path,
         manifest_error,
     })
+}
+
+type LocalDiscovery = (Vec<LocalCompanyEntry>, Option<String>);
+type PendingLocalDiscovery = futures_util::future::Shared<futures_util::future::BoxFuture<'static, LocalDiscovery>>;
+
+/// A blocked filesystem open (for example a macOS folder-access stall) must
+/// not block the cloud roster or spawn another stuck thread on every retry.
+async fn bounded_local_discovery(root: &Path) -> LocalDiscovery {
+    static PENDING: OnceLock<Mutex<BTreeMap<PathBuf, PendingLocalDiscovery>>> = OnceLock::new();
+    let pending = {
+        let mut jobs = PENDING.get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        reuse_local_discovery(&mut jobs, root, || local_discovery_job(root.to_path_buf()))
+    };
+    wait_local_discovery(pending, Duration::from_secs(3)).await
+}
+
+fn reuse_local_discovery(
+    jobs: &mut BTreeMap<PathBuf, PendingLocalDiscovery>,
+    root: &Path,
+    create: impl FnOnce() -> PendingLocalDiscovery,
+) -> PendingLocalDiscovery {
+    if let Some(job) = jobs.get(root) {
+        if job.peek().is_none() { return job.clone(); }
+    }
+    let job = create();
+    jobs.insert(root.to_path_buf(), job.clone());
+    job
+}
+
+async fn wait_local_discovery(pending: PendingLocalDiscovery, budget: Duration) -> LocalDiscovery {
+    match tokio::time::timeout(budget, pending).await {
+        Ok(result) => result,
+        Err(_) => (Vec::new(), Some("Local workspace folders are taking longer to open. Cloud workspaces are still available.".to_string())),
+    }
+}
+
+fn local_discovery_job(root: PathBuf) -> PendingLocalDiscovery {
+    async move {
+        tokio::task::spawn_blocking(move || discover_local_companies(&root)).await
+            .unwrap_or_else(|error| (Vec::new(), Some(format!("Local workspace discovery failed: {error}"))))
+    }.boxed().shared()
 }
 
 /// Bound fan-out while avoiding one network round trip per membership in series.
@@ -1318,6 +1360,28 @@ mod node_self_repair_tests {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stalled_local_discovery_yields_and_reuses_the_pending_job() {
+        use futures_util::FutureExt;
+        use std::{collections::BTreeMap, path::Path, time::Duration};
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let mut jobs = BTreeMap::new();
+        let root = Path::new("/test/workspace");
+        let first = super::reuse_local_discovery(&mut jobs, root, || {
+            async move { receive.await.unwrap() }.boxed().shared()
+        });
+        let (rows, error) = super::wait_local_discovery(first, Duration::from_millis(5)).await;
+        assert!(rows.is_empty());
+        assert!(error.unwrap().contains("Cloud workspaces are still available"));
+        let retry = super::reuse_local_discovery(&mut jobs, root, || panic!("retry spawned a second blocked read"));
+        send.send((Vec::new(), None)).unwrap();
+        assert_eq!(super::wait_local_discovery(retry, Duration::from_secs(1)).await, (Vec::new(), None));
+        let refreshed = super::reuse_local_discovery(&mut jobs, root, || {
+            futures_util::future::ready((Vec::new(), Some("fresh read".to_string()))).boxed().shared()
+        });
+        assert_eq!(refreshed.await.1.as_deref(), Some("fresh read"));
+    }
+
     use crate::commands::workspaces::*;
     use tempfile::TempDir;
     use PERSONAL_VAULT_JOURNAL_SLUG;

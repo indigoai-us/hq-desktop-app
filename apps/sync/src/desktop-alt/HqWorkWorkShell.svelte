@@ -406,13 +406,25 @@
    * Resolves `true` when the roster applied (or the session moved on — nothing
    * left to retry) and `false` when the fetch failed for the session that asked.
    */
+  let workspaceRequest = 0;
   async function refreshWorkspaces(request: number, generation = authGeneration): Promise<boolean> {
+    const sequence = ++workspaceRequest;
+    const isCurrent = () => sequence === workspaceRequest && request === hydration && generation === authGeneration && lifecycle === 'ready';
     try {
+      // The native request keeps running after the UI deadline. Accept a late
+      // success while it still belongs to this account and newest request.
+      const pending = adapter.identity.listWorkspaces().then((result) => {
+        if (isCurrent() && result.ok) {
+          companies = workspacesFromMembershipRows(result.value);
+          workspaceError = null;
+        }
+        return result;
+      });
       const result = await bounded(
-        adapter.identity.listWorkspaces(),
+        pending,
         'Workspace lookup',
       );
-      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return true;
+      if (!isCurrent()) return true;
       if (!result.ok) {
         // Keep a previously good roster on screen; the refresher retries.
         workspaceError = result.message ?? 'Couldn’t load company workspaces.';
@@ -422,7 +434,7 @@
       workspaceError = null;
       return true;
     } catch (error) {
-      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return true;
+      if (!isCurrent()) return true;
       workspaceError = readableError(error, 'Couldn’t load company workspaces.');
       return false;
     }
@@ -911,9 +923,9 @@
     </section>
   {:else if capabilities}
     {#if workspaceError}
-      <div class="workspace-warning" data-testid="hq-work-workspace-error" role="alert">
-        <span>{workspaceError}</span>
-        <button type="button" onclick={() => void retryWorkspaces()}>Retry workspaces</button>
+      <div class="workspace-warning" data-testid="hq-work-workspace-error" role="status">
+        <span>Workspaces couldn’t refresh.</span>
+        <button type="button" onclick={() => void retryWorkspaces()}>Retry</button>
       </div>
     {/if}
     {#if signOutError}
@@ -1009,8 +1021,7 @@
     margin: 0;
   }
 
-  .lifecycle-state > button,
-  .workspace-warning button {
+  .lifecycle-state > button {
     width: fit-content;
     padding: 7px 10px;
     border: 1px solid #4b5563;
@@ -1039,13 +1050,38 @@
     bottom: 16px;
     display: flex;
     align-items: center;
-    gap: 10px;
-    max-width: min(560px, calc(100% - 32px));
-    padding: 10px 12px;
-    border: 1px solid #854d0e;
+    gap: 12px;
+    max-width: min(360px, calc(100% - 32px));
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border: 1px solid var(--v4-hairline, #414141);
     border-radius: 8px;
-    color: #fef3c7;
-    background: #3b2f10;
+    font-family: var(--font-sans, system-ui, sans-serif);
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--v4-text-2, #b0b0b0);
+    background: var(--v4-surface-solid, #282828);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+  }
+
+  .workspace-warning button {
+    flex-shrink: 0;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: 4px;
+    font: inherit;
+    color: var(--v4-text-1, #ededed);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .workspace-warning button:hover {
+    background: var(--c-hover, rgb(128 128 128 / 15%));
+  }
+
+  .workspace-warning button:focus-visible {
+    outline: 2px solid var(--v4-text-1, #ededed);
+    outline-offset: 2px;
   }
 
   .hq-work-boot {
