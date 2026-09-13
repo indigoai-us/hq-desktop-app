@@ -68,6 +68,15 @@ function mountPanel(props: {
 const q = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel);
 
 describe("LocalBotDetailPanel", () => {
+  it.each([
+    "/Users/test/.hq/bots/assistant/memory",
+    "personal/workers/assistant-custom/memory",
+  ])("displays the supervisor's actual memory folder: %s", async (memoryDir) => {
+    mountPanel({ bot: bot({ memoryDir }), bots: botsApi() });
+    await tick();
+    expect(q('[data-testid="local-bot-detail-memory"]')?.textContent).toBe(memoryDir);
+  });
+
   it("renders the bot's name, Local · runtime chip, presence, model, worker, and memory folder", async () => {
     mountPanel({
       bot: bot({ workerId: "iris-cx", companySlug: "indigo" }),

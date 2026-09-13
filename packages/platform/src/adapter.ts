@@ -1042,6 +1042,8 @@ export interface LocalBotRow {
   daemonInstalled: boolean;
   daemonLoaded: boolean;
   dir: string;
+  /** Configured memory folder, reported by the supervisor; may be absolute for Mac-only memory. */
+  memoryDir?: string;
   /** Set when the bot was created from a company/core worker (`--worker`). */
   workerId?: string;
   companySlug?: string;

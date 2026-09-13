@@ -98,7 +98,7 @@
     }
     return heartbeat ? `Offline · ${heartbeat}` : "Offline · never checked in";
   });
-  const memoryPath = $derived(`personal/workers/${bot.name}/memory`);
+  const memoryPath = $derived(bot.memoryDir?.trim() || `personal/workers/${bot.name}/memory`);
   const startedFrom = $derived(
     bot.workerId ? `${bot.workerId}${bot.companySlug ? ` · ${bot.companySlug}` : ""}` : null,
   );
