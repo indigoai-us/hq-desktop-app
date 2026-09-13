@@ -18,8 +18,13 @@
 //
 // Modes:
 //   --drive           (default on macOS) press the chord + drag a region N times,
-//                     then read the app log. Requires the app to be running and
-//                     `cliclick` (brew install cliclick) for the drag.
+//                     then read the app log. Drives the PINNED benchmark bundle
+//                     (identifier ai.indigo.hq-idea-board-bench, built by
+//                     `npm run bundle:bench`), never target/debug/hq-sync-menubar:
+//                     macOS keys the Screen Recording grant on the bundle
+//                     identifier, so the grant is a ONE-TIME action for that
+//                     bundle and rebuilding it no longer voids the grant.
+//                     Requires `cliclick` (brew install cliclick) for the drag.
 //   --from-log <file> skip driving; score an existing log (CI / fixtures).
 //
 // Options:
@@ -28,11 +33,18 @@
 //   --out <file>      results JSON (default apps/sync/e2e/idea-board/bench-results.json)
 //   --chord <keys>    chord for osascript, default "c" + option+shift (US-003)
 //   --settle-ms N     wait between cycles (default 600)
+//   --app <path>      override the benchmark .app bundle to drive
+//   --no-launch       assume the bench app is already running
+//
+// Screen Recording: grant it ONCE to the bench .app (System Settings >
+// Privacy & Security > Screen & System Audio Recording). Because the bundle
+// identifier is pinned, that grant survives every rebuild. If it is missing,
+// --drive fails loudly instead of reporting zero samples.
 //
 // Exit codes: 0 within budget, 1 over budget, 2 usage / no data.
 
 import { execFile as execFileCb } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -57,6 +69,38 @@ const LINE_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)\s+\[([^\]
 const here = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_LOG = join(homedir(), '.hq', 'logs', 'hq-sync.log');
 export const DEFAULT_OUT = resolve(here, '..', 'e2e', 'idea-board', 'bench-results.json');
+
+/**
+ * The pinned benchmark bundle. Its identifier is DELIBERATELY distinct from
+ * the shipping app (ai.indigo.hq-sync-menubar) for two reasons:
+ *   1. macOS TCC keys the Screen Recording grant on the bundle identifier, so
+ *      a pinned identifier means the grant is given once and survives rebuilds.
+ *   2. A distinct identifier means the bench app does not collide with the
+ *      developer's own running HQ dev app on the single-instance socket.
+ * Built by apps/sync/scripts/build-bench-bundle.sh (`npm run bundle:bench`).
+ */
+export const BENCH_BUNDLE_IDENTIFIER = 'ai.indigo.hq-idea-board-bench';
+export const BENCH_PRODUCT_NAME = 'HQ Idea Board Bench';
+export const DEFAULT_BENCH_APP = resolve(
+  here,
+  '..',
+  'src-tauri',
+  'target',
+  'debug',
+  'bundle',
+  'macos',
+  `${BENCH_PRODUCT_NAME}.app`,
+);
+
+/** Read the identifier macOS/TCC will key on out of a built bundle. */
+export async function bundleIdentifier(appPath) {
+  const { stdout, stderr } = await execFile('codesign', ['-dv', appPath]).catch((err) => ({
+    stdout: '',
+    stderr: String(err.stderr ?? err.message ?? ''),
+  }));
+  const m = /Identifier=(.+)/.exec(`${stdout}\n${stderr}`);
+  return m ? m[1].trim() : null;
+}
 
 /**
  * Parse logfile lines into capture marks. Lines that are not idea-board marks
@@ -193,6 +237,8 @@ export function parseArgs(argv) {
     out: DEFAULT_OUT,
     chord: 'c',
     settleMs: 600,
+    app: DEFAULT_BENCH_APP,
+    launch: true,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -223,6 +269,12 @@ export function parseArgs(argv) {
         break;
       case '--settle-ms':
         args.settleMs = Number.parseInt(next(), 10);
+        break;
+      case '--app':
+        args.app = next();
+        break;
+      case '--no-launch':
+        args.launch = false;
         break;
       case '--help':
       case '-h':
@@ -260,6 +312,58 @@ async function driveCycleDarwin(chordKey) {
   await execFile('cliclick', [`dd:${x0},${y0}`, `dm:${x0 + 120},${y0 + 80}`, `du:${x0 + 240},${y0 + 160}`]);
 }
 
+/**
+ * Ensure the pinned benchmark bundle exists and is the app we drive. Returns
+ * the identifier TCC keys the Screen Recording grant on.
+ */
+export async function ensureBenchBundle(appPath) {
+  if (!existsSync(appPath)) {
+    throw new Error(
+      `benchmark bundle not found: ${appPath}\n` +
+        '  Build it with:  npm run bundle:bench   (apps/sync)\n' +
+        '  It pins the bundle identifier so the Screen Recording grant survives rebuilds.',
+    );
+  }
+  const identifier = await bundleIdentifier(appPath);
+  if (identifier !== BENCH_BUNDLE_IDENTIFIER) {
+    throw new Error(
+      `benchmark bundle has identifier ${identifier ?? '(unsigned)'}, expected ${BENCH_BUNDLE_IDENTIFIER}.\n` +
+        '  The Screen Recording grant is keyed on the identifier — rebuild with npm run bundle:bench.',
+    );
+  }
+  return identifier;
+}
+
+/**
+ * Fail loudly when Screen Recording is denied. A denied grant makes capture
+ * produce nothing and the bench would otherwise report zero samples as if the
+ * instrumentation were missing.
+ */
+export function assertScreenRecordingGranted(granted, appPath) {
+  if (granted) return;
+  throw new Error(
+    'Screen Recording permission is DENIED for the benchmark app — no frames can be captured,\n' +
+      'so the bench would record zero samples. Grant it once:\n' +
+      '  System Settings > Privacy & Security > Screen & System Audio Recording > +\n' +
+      `  ${appPath}\n` +
+      `Identifier: ${BENCH_BUNDLE_IDENTIFIER} (pinned — rebuilding does NOT void the grant).`,
+  );
+}
+
+/** Ask macOS whether this process' screen-capture access is granted. */
+async function screenRecordingGranted() {
+  try {
+    const { stdout } = await execFile('/usr/bin/swift', [
+      '-e',
+      'import CoreGraphics; print(CGPreflightScreenCaptureAccess())',
+    ]);
+    return stdout.trim() === 'true';
+  } catch {
+    // Cannot determine (no swift toolchain) — do not block the run.
+    return true;
+  }
+}
+
 async function drive(args) {
   if (process.platform !== 'darwin') {
     throw new Error('--drive is only implemented on macOS; use --from-log elsewhere');
@@ -268,6 +372,16 @@ async function drive(args) {
     await execFile('cliclick', ['-V']);
   } catch {
     throw new Error('cliclick is required to drive the drag (brew install cliclick)');
+  }
+  const appPath = args.app;
+  await ensureBenchBundle(appPath);
+  assertScreenRecordingGranted(await screenRecordingGranted(), appPath);
+  if (args.launch) {
+    // `open` the pinned bundle (never target/debug/hq-sync-menubar): launching
+    // the bare binary gives macOS no bundle identity, so TCC cannot match the
+    // grant and every capture comes back empty.
+    await execFile('open', ['-a', appPath]);
+    await sleep(3000);
   }
   const startedAt = Date.now();
   for (let i = 0; i < args.cycles; i += 1) {
@@ -305,7 +419,7 @@ export async function main(argv = process.argv.slice(2)) {
     return 2;
   }
   if (args.help) {
-    console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 32).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+    console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 45).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     return 0;
   }
 
