@@ -346,7 +346,8 @@ export function assertScreenRecordingGranted(granted, appPath) {
       'so the bench would record zero samples. Grant it once:\n' +
       '  System Settings > Privacy & Security > Screen & System Audio Recording > +\n' +
       `  ${appPath}\n` +
-      `Identifier: ${BENCH_BUNDLE_IDENTIFIER} (pinned — rebuilding does NOT void the grant).`,
+      `Identifier: ${BENCH_BUNDLE_IDENTIFIER} (pinned, and signed with the stable Developer ID\n` +
+      `identity FSZQ97X3V6 — so rebuilding does NOT void the grant. Ad-hoc signing would.)`,
   );
 }
 
