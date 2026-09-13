@@ -1735,6 +1735,11 @@ pub fn arm_overlay_drag_tracker(app: &AppHandle, window: &tauri::WebviewWindow) 
         // firing for the life of the process, so never skip the bookkeeping.
         *OVERLAY_FRAME.lock().unwrap_or_else(|p| p.into_inner()) = Some(frame);
 
+        // The reticle is the NATIVE crosshair cursor (the overlay no longer
+        // paints one in the DOM). Push it once at arm time so the very first
+        // frame already shows it even if the mouse never moves.
+        push_crosshair_cursor();
+
         let mask = overlay_drag_event_mask();
 
         // Shared per-event work: read the *global* mouse location (valid for

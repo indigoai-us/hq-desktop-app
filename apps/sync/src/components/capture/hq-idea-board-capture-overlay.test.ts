@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 //
 // hq-idea-board US-003: the pre-rendered capture overlay renders a dim layer,
-// a crosshair with a live pixel readout, and a hint — and, because its window
-// is non-activating, hosts no text input.
+// a small live pixel readout beside the pointer, and a hint — and, because
+// its window is non-activating, hosts no text input.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -61,12 +61,27 @@ describe('CaptureOverlay (hq-idea-board US-003)', () => {
     expect(listenMock).not.toHaveBeenCalled();
   });
 
+  it('flips the readout back across the cursor at the right/bottom edge', () => {
+    const target = mountOverlay();
+    const overlay = target.querySelector('[data-testid="capture-overlay"]') as HTMLElement;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    overlay.dispatchEvent(
+      new MouseEvent('mousemove', { clientX: w - 4, clientY: h - 4, bubbles: true }),
+    );
+    flushSync();
+    const plate = target.querySelector('[data-testid="capture-readout"]') as HTMLElement;
+    // Like Cmd+Shift+4: it never hangs off the edge.
+    expect(parseFloat(plate.style.left)).toBeLessThan(w - 4);
+    expect(parseFloat(plate.style.top)).toBeLessThan(h - 4);
+  });
+
   it('hosts no text input (non-activating window policy)', () => {
     const target = mountOverlay();
     expect(target.querySelectorAll('input, textarea, [contenteditable]')).toHaveLength(0);
   });
 
-  it('tracks the pointer with a crosshair and pixel readout', () => {
+  it('tracks the pointer with a close-in pixel readout and no guide rules', () => {
     const target = mountOverlay();
     const overlay = target.querySelector('[data-testid="capture-overlay"]') as HTMLElement;
     expect(target.querySelector('[data-testid="capture-readout"]')).toBeNull();
@@ -77,8 +92,14 @@ describe('CaptureOverlay (hq-idea-board US-003)', () => {
     expect(readout).not.toBeNull();
     const dpr = window.devicePixelRatio || 1;
     expect(readout?.textContent?.trim()).toBe(`${Math.round(120 * dpr)}, ${Math.round(80 * dpr)}`);
-    expect(target.querySelector('.crosshair-v')).not.toBeNull();
-    expect(target.querySelector('.crosshair-h')).not.toBeNull();
+    // OWNER FEEDBACK: "this giant crosshairs thing is no good". The reticle is
+    // the native macOS crosshair NSCursor; the DOM must NOT draw full-screen
+    // guide rules on top of it. Falsified by reintroducing either rule.
+    expect(target.querySelector('.crosshair-v')).toBeNull();
+    expect(target.querySelector('.crosshair-h')).toBeNull();
+    // And the readout stays tight to the pointer, not offset across the screen.
+    expect((readout as HTMLElement).style.left).toBe('132px');
+    expect((readout as HTMLElement).style.top).toBe('92px');
 
     overlay.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false }));
     flushSync();
@@ -173,7 +194,7 @@ describe('CaptureOverlay drag selection (hq-idea-board US-004)', () => {
     expect(
       target.querySelector('[data-testid="capture-dimensions"]')?.textContent?.trim(),
     ).toBe('400 × 300');
-    // Crosshair/readout give way to the dimension label during the drag.
+    // The readout gives way to the running dimension label during the drag.
     expect(target.querySelector('[data-testid="capture-readout"]')).toBeNull();
 
     overlay.dispatchEvent(new MouseEvent('mouseup', { clientX: 500, clientY: 400, button: 0, bubbles: true }));
@@ -412,20 +433,21 @@ describe('CaptureOverlay drag robustness (live-capture fix BUG 1)', () => {
   });
 
   /**
-   * The crosshair the owner has never seen: it renders only under
+   * The readout the owner has never seen: it renders only under
    * `{:else if pointer}`, so with no mousemove it could never appear. A
-   * native pointer update must light it up.
+   * native pointer update must light it up — and must still bring no guide
+   * rules with it.
    */
-  it('hq-idea-board shows the crosshair from a native pointer update', () => {
+  it('hq-idea-board shows the readout from a native pointer update', () => {
     const { target } = mountShown(); // this block's fixture is a 2x display
-    expect(target.querySelector('.crosshair-v')).toBeNull();
+    expect(target.querySelector('[data-testid="capture-readout"]')).toBeNull();
     const nativeDrag = listenMock.mock.calls.find((c) => c[0] === 'capture-overlay:drag')?.[1] as (
       ev: { payload: unknown },
     ) => void;
     nativeDrag({ payload: { phase: 'pointer', selection: null, pointer: { x: 240, y: 160 } } });
     flushSync();
-    expect(target.querySelector('.crosshair-v')).not.toBeNull();
-    expect(target.querySelector('.crosshair-h')).not.toBeNull();
+    expect(target.querySelector('.crosshair-v')).toBeNull();
+    expect(target.querySelector('.crosshair-h')).toBeNull();
     expect(target.querySelector('[data-testid="capture-readout"]')?.textContent?.trim()).toBe(
       '480, 320',
     );

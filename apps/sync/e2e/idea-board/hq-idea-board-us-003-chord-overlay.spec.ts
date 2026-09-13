@@ -103,4 +103,40 @@ describe('US-003 capture chord -> overlay (live macOS log)', () => {
     // And the fix that must not regress while fixing this one.
     expect(capture).toContain('make_window_nonactivating_panel(&window)');
   });
+
+  /**
+   * OWNER FEEDBACK on the first live look: "ok this giant crosshairs thing is
+   * no good". The overlay was drawing full-screen vertical + horizontal guide
+   * rules in the DOM ON TOP OF the native crosshair NSCursor — two reticles,
+   * and nothing like the Cmd+Shift+4 feel design.md line 63 asks for ("a
+   * crosshair with a live pixel readout").
+   *
+   * The reticle now has exactly one owner: the native cursor. This asserts
+   * both halves at the source-contract layer — falsified by reintroducing the
+   * DOM guide rules, or by dropping the native push that replaces them.
+   */
+  it('owns the reticle natively and draws no full-screen guide rules', () => {
+    const capture = readFileSync(
+      resolve(__dirname, '../../src-tauri/src/commands/capture.rs'),
+      'utf8',
+    );
+    // The native crosshair is pushed up front, so the first frame has a
+    // reticle even if the mouse never moves.
+    expect(capture).toContain('fn push_crosshair_cursor');
+    // Two call sites: once at arm time (so a still mouse still gets a reticle)
+    // and once per tracked event. Counted rather than position-matched, so
+    // `cargo fmt` cannot fail this for formatting reasons.
+    expect(capture.match(/^\s*push_crosshair_cursor\(\);$/gm)?.length ?? 0).toBe(2);
+
+    const overlay = readFileSync(
+      resolve(__dirname, '../../src/components/capture/CaptureOverlay.svelte'),
+      'utf8',
+    );
+    expect(overlay).not.toContain('crosshair-v');
+    expect(overlay).not.toContain('crosshair-h');
+    // The close-in readout survives; the running dimensions do too.
+    expect(overlay).toContain('data-testid="capture-readout"');
+    expect(overlay).toContain('data-testid="capture-dimensions"');
+    expect(overlay).toContain('data-testid="capture-hint"');
+  });
 });

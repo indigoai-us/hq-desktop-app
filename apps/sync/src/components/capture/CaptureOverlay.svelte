@@ -46,9 +46,11 @@
    * Renders inside the pre-rendered, hidden `capture-overlay` Tauri window
    * (see src-tauri/src/commands/capture.rs). The Rust side owns show/hide,
    * display placement, the global chord and the transient Escape binding; this
-   * component only paints the dim layer, a crosshair with a live pixel readout,
-   * and the hint line. It resets its state on `capture-overlay:shown` /
-   * `capture-overlay:hidden`.
+   * component only paints the dim layer, a small live pixel readout beside the
+   * pointer, and the hint line. The crosshair reticle itself is NOT drawn here:
+   * it is the native macOS crosshair NSCursor pushed from Rust, which is why
+   * the overlay reads like Cmd+Shift+4 rather than a full-screen axis. It
+   * resets its state on `capture-overlay:shown` / `capture-overlay:hidden`.
    *
    * Design lock: the window is NON-ACTIVATING (`focusable: false`) so the
    * user's app keeps focus. Per repo policy
@@ -104,6 +106,23 @@
     return {
       w: Math.round(selection.width * scale),
       h: Math.round(selection.height * scale),
+    };
+  });
+
+  /**
+   * Where the readout plate sits. It rides just off the native reticle, and —
+   * like the system capture readout — flips to the other side of the cursor
+   * near the right/bottom edge instead of clipping off-screen.
+   */
+  const readoutPos = $derived.by(() => {
+    if (!pointer) return null;
+    const gap = 12;
+    const plate = { w: 64, h: 20 };
+    const w = display?.width ?? window.innerWidth;
+    const h = display?.height ?? window.innerHeight;
+    return {
+      x: pointer.x + gap + plate.w > w ? pointer.x - gap - plate.w : pointer.x + gap,
+      y: pointer.y + gap + plate.h > h ? pointer.y - gap - plate.h : pointer.y + gap,
     };
   });
 
@@ -348,19 +367,21 @@
         {selectionPhysical.w} × {selectionPhysical.h}
       </div>
     {/if}
-  {:else if pointer}
-    <div class="crosshair-v" style:left="{pointer.x}px"></div>
-    <div class="crosshair-h" style:top="{pointer.y}px"></div>
-    {#if readout}
-      <div
-        class="readout"
-        data-testid="capture-readout"
-        style:left="{pointer.x + 14}px"
-        style:top="{pointer.y + 14}px"
-      >
-        {readout.x}, {readout.y}
-      </div>
-    {/if}
+  {:else if readout}
+    <!-- CROSSHAIR OWNERSHIP: the reticle is the NATIVE macOS crosshair cursor
+         pushed by `push_crosshair_cursor()` in src-tauri/src/commands/capture.rs
+         (CSS `cursor: crosshair` is not honoured for a background, non-key
+         panel's view). The DOM used to draw full-screen guide rules on top of
+         it — two crosshairs fighting, and nothing like Cmd+Shift+4. They are
+         gone: the DOM contributes only the small, close-in pixel readout. -->
+    <div
+      class="readout"
+      data-testid="capture-readout"
+      style:left="{readoutPos?.x ?? 0}px"
+      style:top="{readoutPos?.y ?? 0}px"
+    >
+      {readout.x}, {readout.y}
+    </div>
   {/if}
   {#if !selection}
     <div class="hint" data-testid="capture-hint">
@@ -429,53 +450,41 @@
     white-space: nowrap;
   }
 
-  .crosshair-v,
-  .crosshair-h {
-    position: absolute;
-    pointer-events: none;
-    background: rgba(255, 255, 255, 0.75);
-  }
-  .crosshair-v {
-    top: 0;
-    bottom: 0;
-    width: 1px;
-  }
-  .crosshair-h {
-    left: 0;
-    right: 0;
-    height: 1px;
-  }
-
+  /* Small and close in — it rides just off the native reticle rather than
+     announcing itself, exactly as the system capture readout does. */
   .readout {
     position: absolute;
     pointer-events: none;
     font:
-      500 11px/1 ui-monospace,
+      500 10.5px/1 ui-monospace,
       SFMono-Regular,
       Menlo,
       monospace;
-    color: #fff;
-    background: rgba(0, 0, 0, 0.6);
-    padding: 4px 6px;
-    border-radius: 4px;
+    color: rgba(255, 255, 255, 0.92);
+    background: rgba(0, 0, 0, 0.62);
+    padding: 3px 5px;
+    border-radius: 3px;
     white-space: nowrap;
   }
 
+  /* DESIGN.md: hierarchy comes from weight and text colour, not size. The hint
+     is ambient guidance, never the focus, so it sits a step below the body size
+     at regular weight on a barely-there plate. */
   .hint {
     position: absolute;
     left: 50%;
-    top: 24px;
+    top: 20px;
     transform: translateX(-50%);
     pointer-events: none;
     font:
-      500 13px/1.2 -apple-system,
+      400 12px/1.2 -apple-system,
       BlinkMacSystemFont,
       'Segoe UI',
       sans-serif;
-    color: rgba(255, 255, 255, 0.9);
-    background: rgba(0, 0, 0, 0.55);
-    padding: 8px 12px;
-    border-radius: 8px;
+    color: rgba(255, 255, 255, 0.72);
+    background: rgba(0, 0, 0, 0.4);
+    padding: 5px 10px;
+    border-radius: 6px;
   }
   .sep {
     opacity: 0.6;
