@@ -1626,9 +1626,9 @@
     gap: 6px;
     flex: 0 0 auto;
     margin: 0 12px 16px;
-    padding: 12px 8px 8px 14px;
+    padding: 14px 10px 10px 16px;
     border: 1px solid var(--line2, var(--pop-border));
-    border-radius: 10px;
+    border-radius: 12px;
     background: var(--raised, var(--pop-hover));
     transition: border-color 0.12s;
   }
@@ -1648,7 +1648,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--t1, var(--pop-text));
-    font: 400 14px/1.5 var(--font-ui, inherit);
+    font: 400 13px/1.5 var(--font-ui, inherit);
     caret-color: var(--t1, #f4f4f5);
     box-sizing: border-box;
   }

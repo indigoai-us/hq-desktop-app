@@ -131,7 +131,7 @@
    than this plain `:root`, so forced light wins without a :not() guard. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --v4-ground: rgb(17 17 17 / clamp(0.22, calc(0.48 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
+    --v4-ground: rgb(32 32 32 / clamp(0.15, calc(0.35 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
     --v4-raised: rgba(255, 255, 255, 0.05);
     --v4-surface-solid: #303030;
     --v4-inset: rgba(0, 0, 0, 0.32);
@@ -170,7 +170,7 @@
 
 .dark,
 :root[data-force-theme="dark"] {
-  --v4-ground: rgb(17 17 17 / clamp(0.22, calc(0.48 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
+  --v4-ground: rgb(32 32 32 / clamp(0.15, calc(0.35 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
   --v4-raised: rgba(255, 255, 255, 0.05);
   --v4-surface-solid: #303030;
   --v4-inset: rgba(0, 0, 0, 0.32);

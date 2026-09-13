@@ -1771,7 +1771,7 @@
     overflow-y: auto;
     /* 16px bottom so the last message's reaction bar doesn't kiss the
        composer frame. */
-    padding: 8px 16px 16px;
+    padding: 16px 20px 20px;
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -1918,7 +1918,7 @@
     max-width: 42ch;
     overflow: hidden;
     color: var(--t1);
-    font-size: 14px;
+    font-size: 13px;
     /* 600 is the heaviest Geist face the shell ships; asking for 700 only
        rounds down (or synthesizes a smeared bold on fallback fonts). */
     font-weight: 600;
@@ -1949,7 +1949,7 @@
   .dm-msg-header-time {
     flex: 0 0 auto;
     color: var(--t3);
-    font-size: 12px;
+    font-size: 11px;
     font-variant-numeric: tabular-nums;
     line-height: 1.45;
     opacity: 1;
@@ -1975,8 +1975,8 @@
   .dm-bubble-details {
     margin: 0;
     padding: 8px 10px;
-    border-left: 2px solid var(--line2, rgba(255, 255, 255, 0.14));
-    border-radius: 6px;
+    border-left: 0;
+    border-radius: 8px;
     background: var(--raised, rgba(255, 255, 255, 0.04));
     color: var(--t2, rgba(255, 255, 255, 0.72));
     font-family: var(--font-mono, ui-monospace, Menlo, monospace);
@@ -1984,6 +1984,8 @@
     line-height: 18px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+
+    border: 1px solid var(--line);
   }
 
   .dm-bubble-body {
@@ -2004,11 +2006,9 @@
     max-width: 100%;
     margin: 0;
     font-family: var(--font-ui);
-    /* Reading size. The shell chrome stays 13px; the timeline is prose and
-       sits one step up (14px) with a slightly looser leading so the light
-       weight on a dark ground reads crisp rather than heavy. */
-    font-size: 14px;
-    line-height: 1.55;
+    /* Match the composer and shell body; authors and metadata carry hierarchy. */
+    font-size: 13px;
+    line-height: 1.5;
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;
@@ -2241,14 +2241,14 @@
   .date-separator {
     display: flex;
     align-items: center;
-    gap: 0;
-    margin: 12px 8px;
-    color: var(--t2);
+    gap: 12px;
+    margin: 16px 8px 20px;
+    color: var(--t3);
     font-family: var(--font-ui);
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0;
-    text-transform: none;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
 
   .date-separator::before,
@@ -2260,11 +2260,11 @@
   }
 
   .date-separator span {
-    margin: 0 12px;
-    padding: 2px 12px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: var(--v4-ground, var(--raised, #161618));
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
   }
 
   .dm-msg-reply-active {
@@ -2276,14 +2276,14 @@
     align-items: center;
     gap: 0.5rem;
     margin: 4px 0 0;
-    padding: 4px 8px;
+    padding: 5px 9px;
     border: 1px solid transparent;
-    border-radius: 8px;
+    border-radius: 999px;
     background: transparent;
     /* Neutral text tokens, not link blue: primary weight for the count, the
        trailing preview stays muted (--t3 below). */
-    color: var(--t1);
-    font: 600 13px/1.3 var(--font-ui);
+    color: var(--ice-ink);
+    font: 500 12px/1.3 var(--font-ui);
     cursor: pointer;
   }
 
@@ -2297,6 +2297,8 @@
   .dm-replies-preview {
     color: var(--t3);
     font-weight: 400;
+
+    font-size: 11px;
   }
 
   /* Slack-style overlapping participant avatars, left of "N replies". */
@@ -2372,7 +2374,7 @@
     padding: 0 0.25rem;
     border: 0;
     border-radius: 6px;
-    background: var(--pop-hover);
+    background: transparent;
     font-size: 12px;
     line-height: 1;
     cursor: pointer;
@@ -2397,12 +2399,14 @@
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
-    margin: 0 16px 20px;
-    padding: 8px 8px 8px 12px;
+    margin: 0 20px 20px;
+    padding: 14px 10px 10px 16px;
     background: var(--raised, var(--pop-hover));
     border: 1px solid var(--line2, var(--pop-border));
-    border-radius: 8px;
+    border-radius: 12px;
     transition: border-color 0.12s;
+
+    box-shadow: 0 2px 8px rgb(0 0 0 / 0.04);
   }
 
   .dm-reply.is-locked {
@@ -2432,7 +2436,7 @@
     word-wrap: break-word;
     overflow: hidden;
     color: transparent;
-    font: 400 14px/1.5 var(--font-ui);
+    font: 400 13px/1.5 var(--font-ui);
   }
 
   .composer-mention {
@@ -2451,7 +2455,7 @@
     border: none;
     background: none;
     color: var(--t1, var(--pop-text));
-    font: 400 14px/1.5 var(--font-ui);
+    font: 400 13px/1.5 var(--font-ui);
     caret-color: var(--t1, #f4f4f5);
   }
 
@@ -2569,13 +2573,13 @@
     display: grid;
     place-items: center;
     margin-left: auto;
-    width: 28px;
-    height: 26px;
+    width: 30px;
+    height: 28px;
     padding: 0;
     border: none;
-    border-radius: 6px;
-    background: #c9d6e4;
-    color: #101014;
+    border-radius: 8px;
+    background: var(--ice-ink);
+    color: var(--badge-fg);
     cursor: pointer;
     transition:
       opacity 0.15s,

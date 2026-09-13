@@ -461,13 +461,7 @@
         <p class="launch-error" role="alert" data-testid="setup-run-start-error">{agent?.error}</p>
       {/if}
 
-      {#if setupBot}
-        <!-- Setup bot mode: #welcome is just this banner. The bot does the
-             rest in its DM, so the only other thing here is where to learn HQ. -->
-        <div class="bot-resources" data-testid="setup-resources">
-          {@render resourceList()}
-        </div>
-      {:else}
+      {#if !setupBot}
       <details class="advanced" data-testid="setup-advanced">
         <summary>{SETUP_ADVANCED_LABEL}</summary>
         <div class="advanced-body">
@@ -543,6 +537,11 @@
     </div>
     {/if}
   </div>
+  {#if setupBot && !(runActive && agent)}
+    <div class="bot-resources" data-testid="setup-resources">
+      {@render resourceList()}
+    </div>
+  {/if}
 </section>
 
 {#snippet resourceList()}
@@ -584,7 +583,7 @@
 
 <style>
   .bot-resources {
-    margin-top: 18px;
+    margin-top: 0;
   }
   .advanced {
     margin-top: 14px;
@@ -611,21 +610,15 @@
     line-height: 1.5;
     color: rgba(255, 255, 255, 0.72);
   }
-  /* Learn-HQ rows live inside the dark hero now: keep them legible on it. */
-  .bot-resources .resources,
+  /* Advanced resources remain on the image; the bot resources use canvas ink. */
   .advanced-body .resources {
     margin-top: 4px;
     border-top: 1px solid rgba(255, 255, 255, 0.14);
   }
-  .bot-resources .resource-link,
-  .bot-resources .resource-title,
   .advanced-body .resource-link,
   .advanced-body .resource-title {
     color: #ffffff;
   }
-  .bot-resources .resource-desc,
-  .bot-resources .eyebrow--muted,
-  .bot-resources .resource-glyph,
   .advanced-body .resource-desc,
   .advanced-body .eyebrow--muted,
   .advanced-body .support-note {
@@ -635,16 +628,28 @@
     font-size: 12px;
   }
   .setup-intro {
+    container-type: inline-size;
     flex: 0 0 auto;
     overflow: visible;
     width: 100%;
-    max-width: 760px;
-    padding: var(--space-2, 8px) 0 var(--space-3, 12px);
+    max-width: none;
+    padding: 4px 0 12px;
     margin-bottom: var(--space-3, 12px);
     display: flex;
     flex-direction: column;
     gap: var(--space-4, 16px);
-    border-bottom: 1px solid var(--border);
+    border-bottom: 0;
+  }
+
+  .advanced-body .resource-link {
+    background: rgba(255, 255, 255, 0.065);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+  }
+  .resource-link:hover {
+    background: var(--btn-bg);
+  }
+  .advanced-body .resource-link:hover {
+    background: rgba(255, 255, 255, 0.11);
   }
 
   /* ---- Hero ------------------------------------------------------------ */
@@ -666,6 +671,14 @@
     --setup-btn-primary-fg: #111;
     --setup-btn-muted: rgba(255, 255, 255, 0.8);
     --setup-btn-hover: rgba(255, 255, 255, 0.14);
+
+    border-radius: 12px;
+  }
+
+  .hero-actions :global(.setup-btn) {
+    border-radius: 8px;
+    min-height: 32px;
+    padding-inline: 14px;
   }
 
   .hero-art {
@@ -720,12 +733,13 @@
   }
 
   .hero-copy {
+    box-sizing: border-box;
     position: relative;
     z-index: 2;
     display: flex;
     flex-direction: column;
     gap: var(--space-2, 8px);
-    padding: var(--space-6, 24px) var(--space-5, 20px) var(--space-5, 20px);
+    padding: 28px;
     min-height: 248px;
     justify-content: flex-end;
   }
@@ -752,19 +766,19 @@
 
   .hero-title {
     margin: 0;
-    max-width: 22ch;
-    font-size: var(--type-detail, 24px);
-    font-weight: 500;
-    line-height: 1.15;
+    max-width: none;
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.25;
     letter-spacing: -0.012em;
     color: #ffffff;
   }
 
   .hero-body {
     margin: 0;
-    max-width: 52ch;
+    max-width: 64ch;
     font-size: var(--text-base, 13px);
-    line-height: 1.55;
+    line-height: 1.5;
     color: rgba(255, 255, 255, 0.74);
   }
 
@@ -851,29 +865,47 @@
     color: rgba(255, 255, 255, 0.85);
   }
 
-  /* ---- Resources (ghost rows, no card chrome) ------------------------- */
+  /* ---- Resource cards ------------------------------------------------ */
 
   .resources {
     margin: 0;
     padding: 0;
     list-style: none;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     column-gap: var(--space-6, 24px);
+
+    gap: 10px;
+  }
+
+  @container (max-width: 420px) {
+    .resources {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   .resource {
-    border-top: 1px solid var(--border);
+    border-top: 0;
+
+    min-width: 0;
   }
 
   .resource-link {
     display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) 14px;
+    grid-template-columns: 20px minmax(0, 1fr);
     align-items: start;
-    gap: var(--space-3, 12px);
-    padding: var(--space-3, 12px) 0 var(--space-4, 16px);
+    gap: 12px;
+    padding: 16px;
     color: var(--fg);
     text-decoration: none;
+
+    height: 100%;
+
+    box-sizing: border-box;
+
+    border-radius: 10px;
+
+    background: var(--raised);
   }
 
   .resource-glyph {
@@ -894,8 +926,8 @@
   }
 
   .resource-title {
-    font-size: var(--text-base, 13px);
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 600;
     line-height: 1.35;
     color: var(--fg);
     text-decoration: underline;
@@ -905,7 +937,7 @@
   }
 
   .resource-desc {
-    font-size: var(--text-base, 13px);
+    font-size: 12px;
     line-height: 1.5;
     color: var(--muted);
   }
@@ -942,9 +974,9 @@
 
   .support-note {
     margin: 0;
-    padding-top: var(--space-3, 12px);
+    padding-top: 16px;
     border-top: 1px solid var(--border);
-    font-size: var(--text-base, 13px);
+    font-size: 12px;
     line-height: 1.5;
     color: var(--muted-2);
   }
