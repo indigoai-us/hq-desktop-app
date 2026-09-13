@@ -62,10 +62,11 @@ the app relaunched against its normal endpoint after verification.
 
 ## Remaining limits
 
-Native welcome visual acceptance passed: hand tile, no wallpaper, and four
-resource cards fit without clipping. VM welcome is selected but its final
-visual inspection remains obstructed by an OS permission dialog; no permission
-settings were changed. VM setup DM visual acceptance is complete.
+Native and VM welcome visual acceptance passed: hand tile, no wallpaper, and
+four resource cards fit without clipping. Restarting the disposable VM cleared
+an OS permission dialog without changing permission settings. VM setup DM
+visual acceptance also passed. Final host/VM executable SHA-256:
+`a3303b314e8d0ed6d3556c9b8d196e8f4ee70e9d7e79186b09ef89942a1ef4f7`.
 
 Gateway restart on the same disk is verified; instance replacement/disaster
 recovery, cancellation/rollback, and old queued-message migration are not
