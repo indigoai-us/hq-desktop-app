@@ -855,6 +855,21 @@ pub fn setup_capture_overlay_window(app: &AppHandle) {
         }
     };
 
+    // ---------------------------------------------------------------------
+    // LIVE-CAPTURE FIX (BUG 2): never activate HQ on a click.
+    //
+    // `.focusable(false)` only stops the window becoming *key*. AppKit still
+    // ACTIVATES the owning application when any of its ordinary NSWindows is
+    // clicked, and activation raises every other window of that app — so the
+    // first mousedown on the overlay pulled the main HQ window in front of
+    // exactly the content the user was trying to capture.
+    //
+    // The only AppKit construct that suppresses click-to-activate is an
+    // NSPanel carrying `NSWindowStyleMaskNonactivatingPanel`. Promote the
+    // window's class to NSPanel and OR that bit into its style mask.
+    #[cfg(target_os = "macos")]
+    make_window_nonactivating_panel(&window);
+
     // Clear WKWebView's underPageBackgroundColor so the transparent page does
     // not sit on a system-gray sheet (same idiom as widget.rs / banner.rs).
     #[cfg(target_os = "macos")]
@@ -878,6 +893,75 @@ pub fn setup_capture_overlay_window(app: &AppHandle) {
             initial.w, initial.h, initial.x, initial.y, initial.scale
         ),
     );
+}
+
+/// `NSWindowStyleMaskNonactivatingPanel` (AppKit, `1 << 7`). Only meaningful
+/// on an `NSPanel`; on a plain `NSWindow` the bit is ignored, which is exactly
+/// why the overlay has to be promoted to a panel as well.
+pub const NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL: u64 = 1 << 7;
+
+/// The style mask an overlay window must end up with so clicking it never
+/// activates HQ. Pure so the contract is unit-testable without AppKit.
+///
+/// Regression guard for the live bug where dragging on the overlay brought the
+/// main HQ window to the front and covered the capture target.
+pub fn nonactivating_panel_style_mask(current: u64) -> u64 {
+    current | NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL
+}
+
+/// True when `mask` will not activate the application on click.
+pub fn mask_is_nonactivating(mask: u64) -> bool {
+    mask & NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL != 0
+}
+
+/// MAIN THREAD ONLY. Promote a Tauri window's `NSWindow` to a non-activating
+/// `NSPanel` so clicks and drags on it never activate HQ or raise HQ's other
+/// windows. No-op off macOS.
+#[cfg(target_os = "macos")]
+fn make_window_nonactivating_panel(window: &tauri::WebviewWindow) {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    let Ok(ns_win) = window.ns_window() else {
+        log(LOG_TAG, "overlay setup: ns_window() unavailable; overlay may activate HQ on click");
+        return;
+    };
+    if ns_win.is_null() {
+        log(LOG_TAG, "overlay setup: ns_window() null; overlay may activate HQ on click");
+        return;
+    }
+    let obj = ns_win as *mut AnyObject;
+    // SAFETY: main thread, live NSWindow. `object_setClass` to NSPanel is the
+    // documented-by-practice promotion used by non-activating overlay panels
+    // (the same move `tauri-nspanel` makes); NSPanel adds no instance variables
+    // over NSWindow.
+    //
+    // COUPLING: this replaces tao's `TaoWindow` subclass, so tao's
+    // `canBecomeKeyWindow` override and its `focusable` ivar go with it.
+    // NSPanel's own non-activating semantics take over, which is what we want —
+    // but it means `window.set_focusable(..)` must NEVER be called on the
+    // overlay (it would read a now-absent ivar). The overlay hosts no text
+    // input by design (repo policy
+    // `hq-desktop-app-nonactivating-window-toggle-focusable-for-input`), so
+    // nothing needs it; the toast and the permission guide keep their own
+    // unmodified windows for that.
+    unsafe {
+        let panel_class: *const objc2::runtime::AnyClass = class!(NSPanel);
+        let _ = objc2::ffi::object_setClass(obj, panel_class);
+        let current: u64 = msg_send![obj, styleMask];
+        let _: () = msg_send![obj, setStyleMask: nonactivating_panel_style_mask(current)];
+        let _: () = msg_send![obj, setFloatingPanel: true];
+        let _: () = msg_send![obj, setBecomesKeyOnlyIfNeeded: true];
+        let _: () = msg_send![obj, setHidesOnDeactivate: false];
+        let applied: u64 = msg_send![obj, styleMask];
+        log(
+            LOG_TAG,
+            &format!(
+                "overlay setup: non-activating panel styleMask={applied:#x} nonactivating={}",
+                mask_is_nonactivating(applied)
+            ),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1321,6 +1405,103 @@ pub async fn set_capture_toast_focusable(app: AppHandle, focusable: bool) -> Res
 pub async fn ideas_open_board(app: AppHandle, id: String) -> Result<(), String> {
     crate::commands::desktop_alt::open_desktop_alt_window_inner(app, Some(&format!("ideas:{id}")))
         .await
+}
+
+/// Mark: the capture toast could not load its thumbnail. The live bug this
+/// guards was invisible — the toast silently fell back to a placeholder.
+pub const MARK_THUMB_FAILED: &str = "idea.capture.thumb_failed";
+
+/// Bytes the toast thumbnail is allowed to pull back (matches the desktop
+/// Files preview cap).
+const MAX_THUMB_BYTES: u64 = 2 * 1024 * 1024;
+
+/// The toast thumbnail payload — same field names as the desktop Files
+/// preview so the renderer shape is unchanged.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturePreview {
+    pub mime_type: String,
+    pub data_base64: String,
+}
+
+/// Is `rel` an HQ-relative path to a capture image inside the ideas tree?
+///
+/// LIVE-CAPTURE FIX (BUG 3): the toast used to read its thumbnail through
+/// `get_authorized_file_preview`, whose `enforce_desktop_read_scope` requires
+/// a bound desktop *session* company. The capture toast is its own window and
+/// never binds one, so every `companies/<slug>/ideas/<id>/image.png` thumbnail
+/// failed with "company scope not bound" and was swallowed by the frontend's
+/// silent `thumbFailed` fallback. Local-only captures under
+/// `workspace/ideas-local/` carry no company segment and so happened to work,
+/// which is why this never showed up before US-012 moved them apart.
+///
+/// This predicate is the whole authorization surface for the toast: it accepts
+/// ONLY an `image.png` that the capture pipeline itself writes, under either
+/// ideas root (see `hq_desktop_core::ideas::settings::ideas_root_relative`),
+/// with no traversal segments. Symlinks are refused separately, at read time.
+pub fn is_ideas_capture_image_rel(rel: &str) -> bool {
+    if rel.contains('\\') || rel.starts_with('/') {
+        return false;
+    }
+    let segments: Vec<&str> = rel.split('/').collect();
+    if segments.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
+        return false;
+    }
+    if segments.last() != Some(&"image.png") {
+        return false;
+    }
+    match segments.as_slice() {
+        ["companies", slug, "ideas", id, "image.png"] => {
+            !slug.is_empty() && !id.is_empty()
+        }
+        // Local-only captures: `ideas_root_relative` yields
+        // `workspace/ideas-local/{company}`, so the record dir is
+        // `workspace/ideas-local/{company}/{id}`.
+        ["workspace", "ideas-local", slug, id, "image.png"] => {
+            !slug.is_empty() && !id.is_empty()
+        }
+        _ => false,
+    }
+}
+
+/// Load the capture toast's thumbnail bytes for an ideas-tree image.
+///
+/// Deliberately NOT `get_authorized_file_preview`: that command is scoped to
+/// the desktop Files session (see [`is_ideas_capture_image_rel`]). Every
+/// failure is logged with a reason so a broken preview can never be invisible
+/// again.
+#[tauri::command]
+pub async fn ideas_capture_preview(app: AppHandle, path: String) -> Result<CapturePreview, String> {
+    let fail = |reason: &str| -> String {
+        log(LOG_TAG, &format!("{MARK_THUMB_FAILED} reason={reason} path={path}"));
+        reason.to_string()
+    };
+    if !is_ideas_capture_image_rel(&path) {
+        return Err(fail("not-an-ideas-capture-image"));
+    }
+    let (hq_root, _slug) = resolve_vault_target(&app).map_err(|e| {
+        log(LOG_TAG, &format!("{MARK_THUMB_FAILED} reason=vault detail={e}"));
+        e
+    })?;
+    let absolute = hq_root.join(&path);
+    // `symlink_metadata` does NOT follow links: a symlink planted in the ideas
+    // tree must not turn this command into an arbitrary-file reader.
+    let meta = std::fs::symlink_metadata(&absolute).map_err(|_| fail("missing"))?;
+    if meta.file_type().is_symlink() {
+        return Err(fail("symlink"));
+    }
+    if !meta.is_file() {
+        return Err(fail("not-a-file"));
+    }
+    if meta.len() > MAX_THUMB_BYTES {
+        return Err(fail("too-large"));
+    }
+    let bytes = std::fs::read(&absolute).map_err(|_| fail("unreadable"))?;
+    use base64::Engine as _;
+    Ok(CapturePreview {
+        mime_type: "image/png".to_string(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
 }
 
 /// MAIN THREAD ONLY. The overlay's native window number, or 0 when it can't
@@ -3576,6 +3757,109 @@ mod hq_idea_board_capture_tests {
         assert!(
             perms.contains(&"core:event:default"),
             "the panel receives permission-guide:state over core:event"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hq_idea_board_live_capture_fix_tests {
+    use super::*;
+
+    /// The overlay's own source, so the wiring assertion below is falsifiable
+    /// by deleting the call it names.
+    const CAPTURE_SRC: &str = include_str!("capture.rs");
+
+    /// BUG 2 (live): clicking the overlay activated HQ and raised the main
+    /// window over the capture target. `focusable(false)` does not prevent
+    /// AppKit's click-to-activate — only `NSWindowStyleMaskNonactivatingPanel`
+    /// on an `NSPanel` does.
+    ///
+    /// The real behaviour is only observable in a live drive; this is the
+    /// closest honest automated assertion: the overlay window IS constructed
+    /// through the non-activating-panel promotion, and the mask that promotion
+    /// applies really is non-activating.
+    #[test]
+    fn hq_idea_board_overlay_window_is_built_as_a_nonactivating_panel() {
+        assert_eq!(NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL, 1 << 7);
+
+        // A borderless window (what the overlay is built as) is activating
+        // until the panel bit is set.
+        let borderless: u64 = 0;
+        assert!(!mask_is_nonactivating(borderless));
+        assert!(mask_is_nonactivating(nonactivating_panel_style_mask(borderless)));
+        // Idempotent, and it never drops existing bits.
+        let with_titled: u64 = 1 << 0;
+        let promoted = nonactivating_panel_style_mask(with_titled);
+        assert_eq!(promoted & with_titled, with_titled);
+        assert_eq!(nonactivating_panel_style_mask(promoted), promoted);
+
+        let setup = CAPTURE_SRC
+            .split("pub fn setup_capture_overlay_window")
+            .nth(1)
+            .expect("setup_capture_overlay_window must exist");
+        let body = setup
+            .split("\n// ---")
+            .next()
+            .unwrap_or(setup);
+        assert!(
+            body.contains("make_window_nonactivating_panel(&window)"),
+            "setup_capture_overlay_window must promote the overlay to a non-activating NSPanel, \
+             or a click on the overlay activates HQ and raises the main window over the capture target"
+        );
+    }
+
+    /// BUG 3 (live): the toast thumbnail never rendered for a company capture.
+    /// `companies/<slug>/ideas/<id>/image.png` has to be previewable without a
+    /// bound desktop Files session.
+    #[test]
+    fn hq_idea_board_ideas_capture_images_are_previewable_without_a_desktop_session() {
+        assert!(is_ideas_capture_image_rel(
+            "companies/indigo/ideas/01M2CHF7CM99QZZZPNC1NXESK6/image.png"
+        ));
+        // The local-only root is `workspace/ideas-local/{company}` — the
+        // record dir adds the id, exactly as `create_record` writes it.
+        assert_eq!(
+            hq_desktop_core::ideas::settings::ideas_root_relative("indigo", false).unwrap(),
+            "workspace/ideas-local/indigo"
+        );
+        assert!(is_ideas_capture_image_rel(
+            "workspace/ideas-local/indigo/01M2CHF7CM99QZZZPNC1NXESK6/image.png"
+        ));
+
+        // …and nothing else in the tree is reachable through this door.
+        for bad in [
+            "companies/indigo/settings/vault.json",
+            "companies/indigo/ideas/../../../etc/passwd/image.png",
+            "companies/indigo/ideas/id/notes/image.png",
+            "companies/indigo/ideas//image.png",
+            "companies//ideas/id/image.png",
+            "/companies/indigo/ideas/id/image.png",
+            "companies\\indigo\\ideas\\id\\image.png",
+            "workspace/ideas-local/image.png",
+            "workspace/ideas-local/indigo/image.png",
+            "workspace/ideas-local/indigo/id/sub/image.png",
+            "workspace/threads/id/image.png",
+            "companies/indigo/ideas/id/image.png.txt",
+            "",
+        ] {
+            assert!(!is_ideas_capture_image_rel(bad), "must reject {bad:?}");
+        }
+    }
+
+    /// The toast must not go back through the desktop-Files-scoped command:
+    /// `enforce_desktop_read_scope` rejects every `companies/…` read when no
+    /// desktop session company is bound, which is the exact silent failure the
+    /// owner hit.
+    #[test]
+    fn hq_idea_board_capture_toast_does_not_use_the_desktop_scoped_preview() {
+        let toast = include_str!("../../../src/components/capture/CaptureToast.svelte");
+        assert!(
+            toast.contains("invoke('ideas_capture_preview'"),
+            "the capture toast must load its thumbnail through ideas_capture_preview"
+        );
+        assert!(
+            !toast.contains("invoke('get_authorized_file_preview'"),
+            "get_authorized_file_preview is desktop-session-scoped and always fails from the toast"
         );
     }
 }

@@ -30,7 +30,7 @@ const INVOKED_COMMANDS = [
   'ideas_move_capture',
   'ideas_list_companies',
   'ideas_open_board',
-  'get_authorized_file_preview',
+  'ideas_capture_preview',
 ];
 
 describe('US-005 capture toast (source contract)', () => {

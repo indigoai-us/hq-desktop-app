@@ -1018,6 +1018,7 @@ fn main() {
             commands::capture::set_permission_guide_focusable,
             commands::capture::dismiss_permission_guide,
             commands::capture::ideas_open_board,
+            commands::capture::ideas_capture_preview,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
             commands::compat::device_fingerprint,

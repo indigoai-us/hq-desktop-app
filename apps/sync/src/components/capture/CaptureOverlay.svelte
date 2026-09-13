@@ -114,14 +114,56 @@
   }
 
   function onPointerLeave() {
+    // Mid-drag the pointer legitimately leaves the element; clearing it there
+    // would drop the readout and, historically, the drag with it.
+    if (anchor) return;
     pointer = null;
   }
 
+  /**
+   * LIVE-CAPTURE FIX (BUG 1): capture the pointer on mousedown.
+   *
+   * The move/up handlers used to live ONLY on the overlay `<div>`. The moment
+   * the drag was interrupted — on macOS the click was activating HQ and
+   * raising its other windows over the overlay (BUG 2) — the subsequent
+   * `mousemove`/`mouseup` no longer had the overlay as their target, `dragEnd`
+   * never advanced past `anchor`, and the release shipped a 0x0 rect that Rust
+   * logged as `release_rejected reason=empty`. Exactly what the owner saw.
+   *
+   * Once a drag starts, the gesture belongs to the overlay: pointer capture
+   * (bound on `pointerdown`, which is the only event that carries a
+   * `pointerId`) plus window-level move/up listeners mean the rect forms even
+   * if the events stop landing on the element itself. Both `pointerdown` and
+   * `mousedown` route here; setting the same anchor twice is a no-op.
+   */
   function onPointerDown(e: MouseEvent) {
     // Right-click (and any non-primary button) is ignored entirely.
     if (e.button !== 0) return;
+    e.preventDefault();
+    const target = e.target as (Element & { setPointerCapture?: (id: number) => void }) | null;
+    const pointerId = (e as MouseEvent & { pointerId?: number }).pointerId;
+    if (target?.setPointerCapture && typeof pointerId === 'number') {
+      try {
+        target.setPointerCapture(pointerId);
+      } catch {
+        // Capture is an optimization; the window listeners are the guarantee.
+      }
+    }
     anchor = { x: e.clientX, y: e.clientY };
     dragEnd = { x: e.clientX, y: e.clientY };
+  }
+
+  /** Window-level move: only meaningful while a drag is live. */
+  function onWindowPointerMove(e: MouseEvent) {
+    if (!anchor) return;
+    pointer = { x: e.clientX, y: e.clientY };
+    dragEnd = { x: e.clientX, y: e.clientY };
+  }
+
+  /** Window-level release: finishes a drag that wandered off the element. */
+  function onWindowPointerUp(e: MouseEvent) {
+    if (!anchor) return;
+    onPointerUp(e);
   }
 
   /**
@@ -180,7 +222,11 @@
   });
 </script>
 
-<svelte:window onkeydown={onKeyDown} />
+<svelte:window
+  onkeydown={onKeyDown}
+  onmousemove={onWindowPointerMove}
+  onmouseup={onWindowPointerUp}
+/>
 
 <div
   class="overlay"
@@ -191,8 +237,8 @@
   class:dragging={selection !== null}
   onmousemove={onPointerMove}
   onmouseleave={onPointerLeave}
+  onpointerdown={onPointerDown}
   onmousedown={onPointerDown}
-  onmouseup={onPointerUp}
   oncontextmenu={(e) => e.preventDefault()}
 >
   {#if selection}

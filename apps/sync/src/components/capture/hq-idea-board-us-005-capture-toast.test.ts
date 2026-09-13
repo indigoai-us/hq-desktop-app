@@ -110,7 +110,7 @@ describe('CaptureToast (hq-idea-board US-005)', () => {
   it('renders thumbnail, pill, title, provenance, and "Filed to indigo" after capture-toast:show', async () => {
     invokeMock.mockImplementation(async (...args: unknown[]) => {
       const cmd = args[0] as string;
-      if (cmd === 'get_authorized_file_preview') {
+      if (cmd === 'ideas_capture_preview') {
         return { mimeType: 'image/png', dataBase64: 'AAAA' };
       }
       return undefined;
@@ -432,7 +432,7 @@ describe('CaptureToast (hq-idea-board US-005)', () => {
   it('renders a typed fallback when the thumbnail preview fails, without throwing or retrying', async () => {
     invokeMock.mockImplementation(async (...args: unknown[]) => {
       const cmd = args[0] as string;
-      if (cmd === 'get_authorized_file_preview') throw new Error('not authorized');
+      if (cmd === 'ideas_capture_preview') throw new Error('company scope not bound');
       return undefined;
     });
     const target = mountToast();
@@ -443,7 +443,7 @@ describe('CaptureToast (hq-idea-board US-005)', () => {
     });
     expect(target.querySelector('[data-testid="capture-toast-thumb"] img')).toBeNull();
 
-    const previewCalls = invokeMock.mock.calls.filter((c) => c[0] === 'get_authorized_file_preview');
+    const previewCalls = invokeMock.mock.calls.filter((c) => c[0] === 'ideas_capture_preview');
     expect(previewCalls).toHaveLength(1);
   });
 
@@ -467,5 +467,61 @@ describe('CaptureToast (hq-idea-board US-005)', () => {
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(alertSpy).not.toHaveBeenCalled();
     expect(promptSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('CaptureToast thumbnail (live-capture fix BUG 3)', () => {
+  it('hq-idea-board loads the thumbnail through the ideas-aware command, never the desktop-scoped one', async () => {
+    // The owner's capture landed at companies/indigo/ideas/<id>/image.png and
+    // the toast showed no preview: get_authorized_file_preview runs
+    // enforce_desktop_read_scope, which rejects every companies/… read when no
+    // desktop Files session company is bound — and the toast window never
+    // binds one.
+    invokeMock.mockImplementation(async (...args: unknown[]) => {
+      const cmd = args[0] as string;
+      if (cmd === 'get_authorized_file_preview') {
+        throw new Error('company scope not bound: reading companies/indigo/ requires an active company context');
+      }
+      if (cmd === 'ideas_capture_preview') {
+        return { mimeType: 'image/png', dataBase64: 'AAAA' };
+      }
+      return undefined;
+    });
+    const target = mountToast();
+    show(target, {
+      ...baseRecord(),
+      company_slug: 'indigo',
+      image_path: 'companies/indigo/ideas/01M2CHF7CM99QZZZPNC1NXESK6/image.png',
+    });
+
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-thumb"] img')?.getAttribute('src')).toBe(
+        'data:image/png;base64,AAAA',
+      );
+    });
+    expect(
+      invokeMock.mock.calls.some((c) => c[0] === 'get_authorized_file_preview'),
+    ).toBe(false);
+    expect(invokeMock).toHaveBeenCalledWith('ideas_capture_preview', {
+      path: 'companies/indigo/ideas/01M2CHF7CM99QZZZPNC1NXESK6/image.png',
+    });
+  });
+
+  it('hq-idea-board never fails the thumbnail silently — the reason is recorded on the DOM', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    invokeMock.mockImplementation(async (...args: unknown[]) => {
+      if ((args[0] as string) === 'ideas_capture_preview') throw new Error('missing');
+      return undefined;
+    });
+    const target = mountToast();
+    show(target, baseRecord());
+
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-thumb-fallback"]')).not.toBeNull();
+    });
+    const thumb = target.querySelector('[data-testid="capture-toast-thumb"]') as HTMLElement;
+    expect(thumb.dataset.thumbError).toContain('missing');
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 });

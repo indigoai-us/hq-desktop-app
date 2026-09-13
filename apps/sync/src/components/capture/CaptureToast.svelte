@@ -46,6 +46,8 @@
 
   let thumbSrc = $state<string | null>(null);
   let thumbFailed = $state(false);
+  /** Why the thumbnail failed — surfaced so a broken preview is never silent. */
+  let thumbError = $state<string | null>(null);
 
   let noteEditing = $state(false);
   let noteValue = $state('');
@@ -163,6 +165,7 @@
     filedCompany = null;
     thumbSrc = null;
     thumbFailed = false;
+    thumbError = null;
     noteEditing = false;
     noteValue = '';
     pickerOpen = false;
@@ -172,10 +175,23 @@
     suspended = false;
   }
 
+  /**
+   * LIVE-CAPTURE FIX (BUG 3): the thumbnail used to go through
+   * `get_authorized_file_preview`, which is gated on the DESKTOP FILES session
+   * scope (`enforce_desktop_read_scope`). The toast is its own window and
+   * never binds an active company, so every `companies/<slug>/ideas/<id>/
+   * image.png` preview failed with "company scope not bound" — and the
+   * `catch {}` below swallowed it, so the owner saw a toast with no thumbnail
+   * and no explanation anywhere.
+   *
+   * `ideas_capture_preview` is the ideas-tree-aware command (it authorizes the
+   * ideas roots directly and logs `idea.capture.thumb_failed reason=…`). The
+   * frontend now also records WHY it failed so the state is never silent.
+   */
   async function loadThumbnail(path: string): Promise<void> {
     if (!hasTauri()) return;
     try {
-      const preview = (await invoke('get_authorized_file_preview', { path })) as {
+      const preview = (await invoke('ideas_capture_preview', { path })) as {
         mimeType?: string;
         dataBase64?: string;
       } | null;
@@ -184,11 +200,16 @@
       if (mime && data) {
         thumbSrc = `data:${mime};base64,${data}`;
         thumbFailed = false;
+        thumbError = null;
       } else {
         thumbFailed = true;
+        thumbError = 'preview returned no image data';
+        console.error('capture thumbnail failed:', path, thumbError);
       }
-    } catch {
+    } catch (e) {
       thumbFailed = true;
+      thumbError = errorText(e);
+      console.error('capture thumbnail failed:', path, thumbError);
     }
   }
 
@@ -422,11 +443,19 @@
       <div class="undone" data-testid="capture-toast-undone">Undone</div>
     {:else}
       <div class="toast-top">
-        <div class="toast-thumb" data-testid="capture-toast-thumb">
+        <div
+          class="toast-thumb"
+          data-testid="capture-toast-thumb"
+          data-thumb-error={thumbError ?? undefined}
+        >
           {#if thumbSrc}
             <img src={thumbSrc} alt="" />
           {:else if thumbFailed}
-            <span class="thumb-fallback" data-testid="capture-toast-thumb-fallback" aria-hidden="true"
+            <span
+              class="thumb-fallback"
+              data-testid="capture-toast-thumb-fallback"
+              title={thumbError ? `Preview unavailable: ${thumbError}` : undefined}
+              aria-hidden="true"
             ></span>
           {/if}
         </div>

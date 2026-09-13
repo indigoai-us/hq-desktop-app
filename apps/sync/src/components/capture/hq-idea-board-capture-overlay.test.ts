@@ -256,3 +256,89 @@ describe('CaptureOverlay drag selection (hq-idea-board US-004)', () => {
     expect(target.querySelectorAll('input, textarea, [contenteditable]')).toHaveLength(0);
   });
 });
+
+describe('CaptureOverlay drag robustness (live-capture fix BUG 1)', () => {
+  function mountShown() {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    mounted = mount(CaptureOverlay, { target });
+    flushSync();
+    const shown = listenMock.mock.calls.find((c) => c[0] === 'capture-overlay:shown')?.[1] as (ev: {
+      payload: unknown;
+    }) => void;
+    shown({ payload: { display: { x: 0, y: 0, width: 1440, height: 900, scale: 2 } } });
+    flushSync();
+    invokeMock.mockClear();
+    return { target, overlay: target.querySelector('[data-testid="capture-overlay"]') as HTMLElement };
+  }
+
+  /**
+   * The owner's first attempt logged `release_rejected reason=empty`: the
+   * mousedown landed, but the drag never became a rect. Move/up were bound to
+   * the overlay `<div>` only, so the instant the gesture stopped being
+   * delivered with the overlay as its target (macOS was activating HQ and
+   * raising its other windows over it) `dragEnd` stayed pinned to `anchor`.
+   *
+   * Once a drag begins the overlay must own the whole gesture.
+   */
+  it('hq-idea-board forms the rect when the drag continues off the overlay element', () => {
+    const { target, overlay } = mountShown();
+    overlay.dispatchEvent(
+      new MouseEvent('mousedown', { clientX: 200, clientY: 150, button: 0, bubbles: true }),
+    );
+    // Deliberately NOT dispatched on the overlay: the drag left the element.
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 700, clientY: 600 }));
+    flushSync();
+
+    const rect = target.querySelector('[data-testid="capture-selection"]') as HTMLElement;
+    expect(rect, 'a drag that leaves the overlay element must still draw a rect').not.toBeNull();
+    expect(rect.dataset.w).toBe('1000');
+    expect(rect.dataset.h).toBe('900');
+
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 700, clientY: 600, button: 0 }));
+    flushSync();
+
+    expect(invokeMock).toHaveBeenCalledWith('capture_region_release', {
+      selection: { x: 200, y: 150, width: 500, height: 450 },
+    });
+    // …and never the empty rect that Rust rejects as reason=empty.
+    expect(
+      invokeMock.mock.calls.some(
+        (c) =>
+          c[0] === 'capture_region_release' &&
+          ((c[1] as { selection: { width: number; height: number } }).selection.width === 0 ||
+            (c[1] as { selection: { width: number; height: number } }).selection.height === 0),
+      ),
+    ).toBe(false);
+  });
+
+  it('hq-idea-board keeps the drag alive when the pointer leaves the overlay element', () => {
+    const { target, overlay } = mountShown();
+    overlay.dispatchEvent(
+      new MouseEvent('mousedown', { clientX: 100, clientY: 100, button: 0, bubbles: true }),
+    );
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 400, clientY: 300 }));
+    flushSync();
+    overlay.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500, clientY: 400 }));
+    flushSync();
+
+    const rect = target.querySelector('[data-testid="capture-selection"]') as HTMLElement;
+    expect(rect.dataset.w).toBe('800');
+    expect(rect.dataset.h).toBe('600');
+  });
+
+  it('hq-idea-board captures the pointer so the gesture cannot be stolen mid-drag', () => {
+    const { overlay } = mountShown();
+    const setPointerCapture = vi.fn();
+    (overlay as unknown as Record<string, unknown>).setPointerCapture = setPointerCapture;
+    // `pointerdown` is the only event that carries a pointerId, so that is the
+    // one the capture has to hang off.
+    const down = new MouseEvent('pointerdown', { clientX: 10, clientY: 10, button: 0, bubbles: true });
+    Object.defineProperty(down, 'pointerId', { value: 1 });
+    overlay.dispatchEvent(down);
+    flushSync();
+    expect(setPointerCapture).toHaveBeenCalledWith(1);
+  });
+});
