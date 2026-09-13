@@ -31,7 +31,19 @@
    * inert the moment `leaving` latches, so a window left open here offers no
    * control that still works — including Leave itself.
    */
-  let { onclose }: { onclose?: () => void } = $props();
+  let {
+    onclose,
+    onopensettings,
+  }: {
+    onclose?: () => void;
+    /**
+     * Opens the OS pane where this device is granted. macOS never re-prompts
+     * for a permission the user already refused, so a denied camera has
+     * exactly one way back and the banner must offer it — telling someone
+     * where the setting lives, with no way to get there, is not recovery.
+     */
+    onopensettings?: (device: 'microphone' | 'camera') => void;
+  } = $props();
 
   let leaving = $state(false);
   let busy = $state<'microphone' | 'camera' | 'transcription' | null>(null);
@@ -226,6 +238,13 @@
   {#if denial}
     <div class="notice" data-testid="call-permission-denied" role="alert">
       <span data-testid="call-permission-recovery">{denial.kind}: {denial.recovery}</span>
+      {#if onopensettings}
+        <button
+          type="button"
+          data-testid="call-permission-open-settings"
+          onclick={() => onopensettings?.(denial.device)}>Open System Settings</button
+        >
+      {/if}
       <button
         type="button"
         data-testid="call-permission-retry"

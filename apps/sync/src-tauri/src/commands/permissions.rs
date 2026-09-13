@@ -62,6 +62,10 @@ fn settings_url(permission: &str) -> Option<&'static str> {
         "microphone" => {
             Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
         }
+        // Calls need the camera; the Recall permission set never did, so this
+        // pane was missing until the call window grew an "Open System
+        // Settings" action for a denied camera.
+        "camera" => Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"),
         // system-audio doesn't have its own pane on modern macOS — the user
         // grants it as part of Screen Recording. Send them there.
         "system-audio" => {
@@ -418,6 +422,21 @@ mod tests {
         ] {
             assert!(settings_url(perm).is_some(), "missing url for {perm}");
         }
+    }
+
+    /// The call window's denied-camera banner deep-links with this exact
+    /// string. A miss here silently downgrades to the generic Privacy pane,
+    /// which is the dead end the banner exists to remove.
+    #[test]
+    fn settings_url_covers_the_call_media_permissions() {
+        assert_eq!(
+            settings_url("camera"),
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")
+        );
+        assert_eq!(
+            settings_url("microphone"),
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        );
     }
 
     #[test]

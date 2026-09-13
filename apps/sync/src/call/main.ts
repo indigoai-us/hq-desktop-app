@@ -43,7 +43,12 @@ const peerTracks = new Map<string, Set<string>>();
  */
 mount(CallShell, {
   target,
-  props: { onclose: () => void getCurrentWindow().close() },
+  props: {
+    onclose: () => void getCurrentWindow().close(),
+    onopensettings: (device: 'microphone' | 'camera') => {
+      void invoke('permissions_open_settings', { permission: device });
+    },
+  },
 });
 
 const started = startCallWindow({
