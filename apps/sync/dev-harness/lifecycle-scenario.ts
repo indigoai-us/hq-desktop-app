@@ -1350,6 +1350,10 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
         const members = row?.members ?? humans.map((h) => ({ personUid: h.uid, displayName: h.name, email: h.email }));
         return { members };
       }
+      case 'local_bots_list':
+        return { bots: [] };
+      case 'local_bots_workers':
+        return { workers: [] };
       case 'list_contacts':
         return {
           contacts: humans

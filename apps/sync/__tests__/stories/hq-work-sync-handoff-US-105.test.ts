@@ -211,6 +211,12 @@ function expectOk<T>(result: { ok: boolean; value?: T; reason?: string }): T {
 function mockInvoke(): SyncInvokeFn {
   return async (cmd, args) => {
     switch (cmd) {
+      case 'local_bots_list':
+        return { bots: [] };
+      case 'local_bots_workers':
+        return { workers: [] };
+      case 'agent_session_preflight':
+        return { claudeAvailable: false, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false, grokAvailable: false, grokLoggedIn: false };
       case 'get_auth_state':
         return {
           authenticated: true,

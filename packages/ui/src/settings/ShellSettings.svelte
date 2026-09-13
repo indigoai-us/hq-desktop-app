@@ -815,9 +815,10 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    background: var(--raised);
-    border: 1px solid var(--line);
-    border-radius: 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-top-color: var(--line);
+    border-radius: 0;
     padding: 14px 16px;
   }
 
@@ -829,8 +830,9 @@
 
   .sd {
     margin-top: 2px;
-    color: var(--t3);
-    font-size: 11px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.45;
   }
 
   .mono {

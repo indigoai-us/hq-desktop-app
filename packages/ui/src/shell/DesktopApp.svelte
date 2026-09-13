@@ -6774,7 +6774,10 @@
     border-radius: 0;
     background: transparent;
     color: var(--t1);
-    font: 500 12px/1 inherit;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
     cursor: pointer;
     white-space: nowrap;
   }
@@ -6809,7 +6812,10 @@
     border: none;
     background: transparent;
     color: var(--t2);
-    font: 500 12px/1.45 inherit;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
     cursor: pointer;
     text-decoration: underline;
     text-underline-offset: 3px;

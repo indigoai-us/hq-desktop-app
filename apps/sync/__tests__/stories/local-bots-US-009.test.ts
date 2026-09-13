@@ -25,11 +25,11 @@ describe('US-009: Settings → Bots', () => {
     expect(resolvePendingDesktopRoute('settings:bots')).toEqual({ kind: 'settings', tab: 'bots' });
   });
 
-  it('is a first-class ShellSettings nav item right after Agents, gated on the desktop bots adapter', () => {
+  it('is a first-class ShellSettings nav item right after AI tools, gated on the desktop bots adapter', () => {
     const shell = ui('settings', 'ShellSettings.svelte');
-    expect(shell).toContain('{ id: "agents", label: "Agents" },\n      { id: "bots", label: "Bots" },');
-    expect(shell).toContain('if (section.id === "bots") return Boolean(adapter?.bots);');
-    expect(shell).toContain('<BotsSettingsPane {adapter} />');
+    expect(shell).toContain('{ id: "agents", label: "AI tools" },\n      { id: "bots", label: "Bots" },');
+    expect(shell).toContain('if (section.id === "bots") return Boolean(adapter?.bots || adapter?.agents);');
+    expect(shell).toContain('<BotsSettingsPane {adapter} {companies} />');
     expect(ui('shell', 'embedded-navigation.ts')).toContain("'bots',");
     expect(ui('settings', 'SettingsNavIcon.svelte')).toContain('name === "bots"');
   });
@@ -38,7 +38,7 @@ describe('US-009: Settings → Bots', () => {
     const panel = ui('settings', 'BotsSettingsPane.svelte');
     expect(panel).toContain('data-testid="settings-bots"');
     expect(panel).toContain('await api.list()');
-    expect(panel).toContain('await api.create({ name, runtime: newRuntime })');
+    expect(panel).toContain('await api.create(input)');
     expect(panel).toContain('await api[verb](name)');
     expect(panel).toContain('act(bot.name, "start")');
     expect(panel).toContain('act(bot.name, "stop")');
@@ -47,7 +47,7 @@ describe('US-009: Settings → Bots', () => {
     expect(panel).toContain('runtimeLabel(bot.runtime)');
     expect(panel).toContain('presenceLabel(bot)');
     expect(panel).toContain('Really remove');
-    expect(panel).toContain('const MAX_BOTS = 3');
+    expect(panel).not.toContain('const MAX_BOTS = 3');
     expect(panel).not.toContain("from '@tauri-apps/api/core'");
   });
 
@@ -57,7 +57,7 @@ describe('US-009: Settings → Bots', () => {
     expect(rust).toContain('paths::tokio_spawn_command');
     expect(rust).toContain('.env("PATH", paths::child_path())');
     expect(rust).toContain('argv.push("--json")');
-    expect(rust).toContain('["create", &name, "--runtime", runtime]');
+    expect(rust).toContain('vec!["create".to_string(), name, "--runtime".to_string(), runtime.to_string()]');
     expect(rust).toContain('["rm", &name, "--yes"]');
     expect(rust).not.toContain('hq_pro_fetch');
     const main = source('src-tauri/src/main.rs');

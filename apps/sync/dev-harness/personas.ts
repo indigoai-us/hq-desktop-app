@@ -316,6 +316,12 @@ export function createPersonaInvoke(id: PersonaId): PersonaInvoke {
   const invokeFn: SyncInvokeFn = async (command, args) => {
     calls.push(command);
     switch (command) {
+      case 'local_bots_list':
+        return { bots: [] };
+      case 'local_bots_workers':
+        return { workers: [] };
+      case 'agent_session_preflight':
+        return { claudeAvailable: false, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false, grokAvailable: false, grokLoggedIn: false };
       case 'get_auth_state':
         return {
           authenticated: true,
