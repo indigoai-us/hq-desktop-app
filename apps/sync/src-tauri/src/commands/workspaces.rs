@@ -1275,7 +1275,10 @@ mod node_self_repair_tests {
     async fn unrelated_failures_never_trigger_a_node_install() {
         for err in [
             CliProvisionError::Network("503 from vault".into()),
-            CliProvisionError::Validation("bad slug".into()),
+            CliProvisionError::Validation {
+                message: "bad slug".into(),
+                validation_kind: "unclassified",
+            },
             CliProvisionError::Spawn("npx: No such file or directory (os error 2)".into()),
             CliProvisionError::Other("exit 0 but no cloud_uid".into()),
             CliProvisionError::LocalEnv {

@@ -247,7 +247,7 @@ fn report_provision_error(
 ) {
     let kind = match err {
         CliProvisionError::Spawn(_) => "spawn",
-        CliProvisionError::Validation(_) => "validation",
+        CliProvisionError::Validation { .. } => "validation",
         CliProvisionError::Network(_) => "network",
         CliProvisionError::LocalEnv { .. } => "local-env",
         CliProvisionError::NoOutput { .. } => "no-output",
@@ -257,6 +257,23 @@ fn report_provision_error(
     let local_env_kind: Option<&str> = match err {
         CliProvisionError::LocalEnv { kind, .. } => Some(kind),
         _ => None,
+    };
+    // Exit-2 validation subclass (HQ-DESKTOP-6A): a closed-vocabulary tag that
+    // also collapses the per-slug proliferation via fingerprint. `None` for
+    // every non-validation arm, so their tags/fingerprints/levels are untouched.
+    let validation_kind: Option<&str> = match err {
+        CliProvisionError::Validation { validation_kind, .. } => Some(validation_kind),
+        _ => None,
+    };
+    // Known setup-incomplete validation subclasses are user-laptop / setup
+    // problems, not platform errors — capture them at Warning so they stop
+    // reading as error-level incidents (the "reported as errors" defect).
+    // `unclassified` stays Error so a genuine CLI validation regression remains
+    // visible; every non-validation arm is unaffected. `before_send` preserves
+    // the capture-site level, so setting it here is sufficient.
+    let level = match validation_kind {
+        Some(vk) if is_setup_incomplete_validation(vk) => sentry::Level::Warning,
+        _ => sentry::Level::Error,
     };
     let is_no_output = matches!(err, CliProvisionError::NoOutput { .. });
     let stderr_blob = diag.stderr_tail.join("\n");
@@ -314,9 +331,29 @@ fn report_provision_error(
                     &exit_str,
                 ]));
             }
+            // Collapse per-slug validation proliferation (HQ-DESKTOP-6A) into
+            // one issue per subclass; slug/exit_code stay as tags for slicing.
+            // Applies to `unclassified` too (grouped, still Error), so a real
+            // CLI validation regression is one visible issue, not per-slug.
+            if let Some(vk) = validation_kind {
+                scope.set_tag("validation_kind", vk);
+                scope.set_fingerprint(Some(&["provision-cli", "validation", vk]));
+            }
+            // Collapse per-slug vault-arm proliferation (HQ-DESKTOP-69): the
+            // exit-1 vault failure interpolates the slug into its message and had
+            // no fingerprint, so Sentry's default message grouping minted a fresh
+            // issue per company slug (the HQ-DESKTOP-68/69 pair). Group into one
+            // issue while keeping `provision_kind=network` and Level::Error — a
+            // genuine vault failure IS an error. slug/cli_invocation/exit_code
+            // stay as tags for slicing, and the #hq-liveops vault-incident alert
+            // keys on the `provision_kind=network` tag (not issue identity), so it
+            // still fires on every occurrence.
+            if matches!(err, CliProvisionError::Network(_)) {
+                scope.set_fingerprint(Some(&["provision-cli", "network"]));
+            }
         },
         || {
-            sentry::capture_message(&format!("[provision-cli] {err}"), sentry::Level::Error);
+            sentry::capture_message(&format!("[provision-cli] {err}"), level);
         },
     );
 }
@@ -506,6 +543,77 @@ fn first_matching_line(blob: &str, needles: &[&str]) -> Option<String> {
         }
     }
     None
+}
+
+/// Subclass an exit-2 (validation) failure into a closed vocabulary by matching
+/// the CLI's stderr shapes. Returns a `&'static str` from a fixed set so it can
+/// travel as a Sentry tag AND ride inside the fingerprint without exposing any
+/// raw child text (paths in the raw stderr line stay in the scrubbed
+/// `stderr_tail` extra, never here).
+///
+/// The shapes come from `@indigoai-us/hq-cli`'s `cloud-provision.ts`
+/// `validateManifestAndDir`, which throws `ProvisionError(2, …)` with the
+/// messages matched below. The reported occurrence (HQ-DESKTOP-6A/6B) is
+/// `companies/manifest.yaml not found at <root>` -> `"manifest-missing"`.
+///
+/// Matching is over the joined blob (caller passes stderr + stdout tails) so an
+/// `npm warn` line that precedes the CLI's own message can't defeat the match,
+/// mirroring the exit-1 local-env classifier. Needles are deliberately specific
+/// so a genuinely unexpected validation message falls through to
+/// `"unclassified"` (kept at Error level by the reporter) rather than being
+/// silently downgraded. Order runs most-specific first so a single line lands
+/// in exactly one bucket.
+fn classify_setup_validation_failure(output_tail: &[String]) -> &'static str {
+    let blob = output_tail.join("\n");
+
+    // The company entry exists in the manifest but is marked archived.
+    if blob.contains("status=archived") || blob.contains("is archived") {
+        return "archived";
+    }
+    // The slug isn't a key under the manifest's top-level `.companies` map.
+    if blob.contains(".companies")
+        && (blob.contains("not found under")
+            || blob.contains("not present")
+            || blob.contains("no entry"))
+    {
+        return "slug-not-in-manifest";
+    }
+    // The company directory the manifest points at doesn't exist on disk.
+    if blob.contains("does not exist") && (blob.contains("director") || blob.contains("compan")) {
+        return "company-dir-missing";
+    }
+    // The manifest file exists but can't be parsed / lacks the top-level map.
+    // Require manifest-specific context so a generic "malformed" in some other
+    // diagnostic (e.g. "slug is malformed") is NOT mis-subclassed here and
+    // wrongly downgraded to Warning — it must fall through to `unclassified`
+    // and stay at Error.
+    if (blob.contains("manifest") && blob.contains("malformed"))
+        || blob.contains("missing top-level")
+    {
+        return "manifest-malformed";
+    }
+    // The resolved HQ root has no manifest at all — the reported 6A/6B shape.
+    if (blob.contains("manifest.yaml") && blob.contains("not found"))
+        || blob.contains("manifest not found")
+    {
+        return "manifest-missing";
+    }
+    "unclassified"
+}
+
+/// The closed set of exit-2 validation subclasses that are user-laptop / setup
+/// problems rather than platform errors. These are captured at `Level::Warning`
+/// (the "reported as errors" defect this fixes); `"unclassified"` is NOT in the
+/// set, so a genuine CLI validation regression stays at `Level::Error`.
+fn is_setup_incomplete_validation(validation_kind: &str) -> bool {
+    matches!(
+        validation_kind,
+        "manifest-missing"
+            | "manifest-malformed"
+            | "slug-not-in-manifest"
+            | "company-dir-missing"
+            | "archived"
+    )
 }
 
 // ── Child output draining ─────────────────────────────────────────────────────
@@ -704,9 +812,24 @@ fn classify_child_exit(
                 }
             }
         }
-        Some(2) => Err(CliProvisionError::Validation(format!(
-            "exit 2 (validation) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
-        ))),
+        // Exit 2 is a validation failure — almost always a user-setup / local-
+        // environment problem (chiefly a resolved HQ root with no
+        // `companies/manifest.yaml`). Subclass it from the CLI's stderr (and
+        // stdout, like the exit-1 arm, so an npm-warn prefix before the CLI's
+        // line can't defeat the match) into a closed vocabulary so Sentry can
+        // collapse the per-slug proliferation and downgrade the known setup
+        // subclasses to Warning. The message text and the exit-2 -> Validation
+        // mapping are byte-for-byte unchanged.
+        Some(2) => {
+            let mut combined = output.stderr_tail.clone();
+            combined.extend(output.stdout_tail.iter().cloned());
+            Err(CliProvisionError::Validation {
+                message: format!(
+                    "exit 2 (validation) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
+                ),
+                validation_kind: classify_setup_validation_failure(&combined),
+            })
+        }
         Some(3) => Err(CliProvisionError::Sync {
             message: format!(
                 "exit 3 (initial sync) — entity provisioned but upload failed; see ~/.hq/logs/hq-sync.log for slug={slug}"
@@ -871,7 +994,19 @@ pub enum CliProvisionError {
     Spawn(String),
     /// Exit code 2 — bad slug, missing manifest entry, archived company, etc.
     /// Caller should NOT retry; the user must fix the input.
-    Validation(String),
+    ///
+    /// `validation_kind` is a closed-vocabulary subclass of the exit-2 failure
+    /// (`manifest-missing`, `manifest-malformed`, `slug-not-in-manifest`,
+    /// `company-dir-missing`, `archived`, or `unclassified`) derived from the
+    /// CLI's stderr by `classify_setup_validation_failure`. It rides Sentry as a
+    /// tag + fingerprint so the per-slug setup failures collapse into one issue
+    /// per subclass instead of minting a fresh error per company slug
+    /// (HQ-DESKTOP-6A). It is telemetry-only: `Display` formats `message` alone,
+    /// so the IPC string the frontend parses is byte-for-byte unchanged.
+    Validation {
+        message: String,
+        validation_kind: &'static str,
+    },
     /// Exit code 1 — vault HTTP / network / auth failure. Retryable.
     Network(String),
     /// Exit code 1 *before* the CLI even started — `npx` / `npm` failed
@@ -912,7 +1047,12 @@ impl std::fmt::Display for CliProvisionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Spawn(m) => write!(f, "spawn `hq` failed: {m}"),
-            Self::Validation(m) => write!(f, "validation error from `hq cloud provision`: {m}"),
+            // `validation_kind` is telemetry-only and deliberately absent from
+            // the Display string — the frontend IPC contract depends on this
+            // exact text staying unchanged.
+            Self::Validation { message, .. } => {
+                write!(f, "validation error from `hq cloud provision`: {message}")
+            }
             Self::Network(m) => write!(f, "vault/network error from `hq cloud provision`: {m}"),
             // The exact prefix `"local environment failure (<kind>): "` is
             // part of the IPC contract — the frontend regex-parses the kind
@@ -1299,8 +1439,15 @@ mod tests {
 
     #[test]
     fn error_display_smoke() {
-        let e = CliProvisionError::Validation("bad slug".to_string());
+        let e = CliProvisionError::Validation {
+            message: "bad slug".to_string(),
+            validation_kind: "unclassified",
+        };
         assert!(e.to_string().contains("validation"));
+        assert!(
+            e.to_string().ends_with("bad slug"),
+            "validation_kind must not leak into the IPC Display string: {e}"
+        );
         let e = CliProvisionError::Network("503".to_string());
         assert!(e.to_string().contains("network"));
         let e = CliProvisionError::Sync {
@@ -1412,6 +1559,135 @@ mod tests {
         assert!(classify_local_env_failure(&[]).is_none());
         let tail: Vec<String> = vec!["".to_string(), "  ".to_string()];
         assert!(classify_local_env_failure(&tail).is_none());
+    }
+
+    // ── Exit-2 validation subclassing (HQ-DESKTOP-6A) ─────────────────────────
+
+    /// The reported 6A/6B stderr: a resolved HQ root with no manifest.
+    #[test]
+    fn classify_validation_manifest_missing() {
+        let tail = vec![
+            "[hq cloud provision] companies/manifest.yaml not found at /Users/isa/hq/companies/manifest.yaml"
+                .to_string(),
+        ];
+        assert_eq!(classify_setup_validation_failure(&tail), "manifest-missing");
+    }
+
+    /// An `npm warn` line printed before the CLI's own message must not defeat
+    /// the match — the classifier reads the joined blob, like the exit-1 arm.
+    #[test]
+    fn classify_validation_manifest_missing_survives_npm_warn_prefix() {
+        let tail = vec![
+            "npm warn exec The following package was not found and will be installed: @indigoai-us/hq-cli@5.109.10".to_string(),
+            "[hq cloud provision] companies/manifest.yaml not found at /Users/isa/hq/companies/manifest.yaml".to_string(),
+        ];
+        assert_eq!(classify_setup_validation_failure(&tail), "manifest-missing");
+    }
+
+    /// The sibling exit-2 shapes each land in their own closed-vocabulary bucket.
+    #[test]
+    fn classify_validation_sibling_shapes() {
+        assert_eq!(
+            classify_setup_validation_failure(&[
+                "[hq cloud provision] manifest.yaml is malformed: could not parse YAML".to_string(),
+            ]),
+            "manifest-malformed"
+        );
+        assert_eq!(
+            classify_setup_validation_failure(&[
+                "[hq cloud provision] slug `seo-brand` not found under `.companies` in manifest"
+                    .to_string(),
+            ]),
+            "slug-not-in-manifest"
+        );
+        assert_eq!(
+            classify_setup_validation_failure(&[
+                "[hq cloud provision] company directory companies/seo-brand does not exist"
+                    .to_string(),
+            ]),
+            "company-dir-missing"
+        );
+        assert_eq!(
+            classify_setup_validation_failure(&[
+                "[hq cloud provision] company seo-brand status=archived; refusing to provision"
+                    .to_string(),
+            ]),
+            "archived"
+        );
+    }
+
+    /// A genuinely unexpected validation message (or none at all) must fall
+    /// through to `unclassified` so it is NOT silently downgraded to Warning.
+    #[test]
+    fn classify_validation_unknown_is_unclassified() {
+        assert_eq!(classify_setup_validation_failure(&[]), "unclassified");
+        assert_eq!(
+            classify_setup_validation_failure(&[
+                "[hq cloud provision] slug must match ^[a-z][a-z0-9-]*$".to_string(),
+            ]),
+            "unclassified"
+        );
+        // A generic "malformed" without manifest context must NOT be downgraded
+        // as manifest-malformed — it stays unclassified/Error (Codex P2).
+        assert_eq!(
+            classify_setup_validation_failure(&["[hq cloud provision] slug is malformed".to_string()]),
+            "unclassified"
+        );
+    }
+
+    /// The Warning downgrade applies to exactly the closed set of setup-
+    /// incomplete subclasses; `unclassified` stays Error.
+    #[test]
+    fn setup_incomplete_set_is_closed_and_excludes_unclassified() {
+        for k in [
+            "manifest-missing",
+            "manifest-malformed",
+            "slug-not-in-manifest",
+            "company-dir-missing",
+            "archived",
+        ] {
+            assert!(is_setup_incomplete_validation(k), "{k} should downgrade");
+        }
+        assert!(!is_setup_incomplete_validation("unclassified"));
+    }
+
+    /// The Some(2) arm threads the subclass through from the combined
+    /// stderr+stdout tail while keeping the message text unchanged. Here the
+    /// manifest line arrives on stdout (npm can write there), proving the arm
+    /// classifies over both streams.
+    #[test]
+    fn classify_child_exit_exit2_threads_validation_kind_from_combined_tail() {
+        let out = child_output(
+            vec!["[hq cloud provision] companies/manifest.yaml not found at /x/hq/companies/manifest.yaml"],
+            vec![],
+        );
+        let err = classify_child_exit(Some(2), &out, "seo-brand").expect_err("exit 2 is an error");
+        match err {
+            CliProvisionError::Validation {
+                validation_kind,
+                message,
+            } => {
+                assert_eq!(validation_kind, "manifest-missing");
+                assert!(message.contains("for slug=seo-brand"), "{message}");
+                assert!(message.contains("exit 2 (validation)"), "{message}");
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// Exit 2 with no CLI message stays `unclassified` (kept at Error by the
+    /// reporter) rather than being mistaken for a setup subclass.
+    #[test]
+    fn classify_child_exit_exit2_empty_is_unclassified() {
+        let out = child_output(vec![], vec![]);
+        let err = classify_child_exit(Some(2), &out, "seo-brand").expect_err("exit 2 is an error");
+        assert!(matches!(
+            err,
+            CliProvisionError::Validation {
+                validation_kind: "unclassified",
+                ..
+            }
+        ));
     }
 
     /// `From<CliProvisionError> for String` lets callers `?`-propagate into
