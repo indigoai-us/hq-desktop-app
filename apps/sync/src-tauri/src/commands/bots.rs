@@ -458,3 +458,43 @@ mod tests {
         assert_eq!(strip_ansi("\u{1b}[31mNo bot named \"x\"\u{1b}[39m"), "No bot named \"x\"");
     }
 }
+
+
+fn promotion_args(name: &str, company_uid: &str) -> Result<Vec<String>, String> {
+    let name = validate_name(name)?;
+    if !company_uid.starts_with("cmp_")
+        || company_uid.len() <= 4
+        || company_uid.len() > 80
+        || !company_uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err("Choose a cloud company before promoting this bot".to_string());
+    }
+    Ok(vec!["promote".into(), name, "--company".into(), company_uid.into()])
+}
+
+#[tauri::command]
+pub async fn local_bots_promote(name: String, company_uid: String) -> Result<Value, String> {
+    let args = promotion_args(&name, &company_uid)?;
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_hq_bot(&argv, Duration::from_secs(150)).await
+}
+
+#[cfg(test)]
+mod promotion_tests {
+    use super::*;
+
+    #[test]
+    fn promotion_preserves_bot_and_destination_as_separate_arguments() {
+        assert_eq!(promotion_args("juniper", "cmp_TEST").unwrap(),
+            vec!["promote", "juniper", "--company", "cmp_TEST"]);
+    }
+
+    #[test]
+    fn promotion_rejects_invalid_inputs_before_spawning_cli() {
+        for company in ["", "cmp_", "prs_OWNER", "cmp_TEST --force", "cmp_TEST\n"] {
+            assert!(promotion_args("juniper", company).is_err());
+        }
+        assert!(promotion_args("../juniper", "cmp_TEST").is_err());
+        assert!(promotion_args("juniper", &format!("cmp_{}", "a".repeat(80))).is_err());
+    }
+}

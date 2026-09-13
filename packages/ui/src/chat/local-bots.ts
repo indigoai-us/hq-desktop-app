@@ -82,6 +82,9 @@ export function localBotPresence(
 
 /** One-line thread notice for an offline local bot. */
 export function localBotOfflineNotice(bot: LocalBotRow): string {
+  if (bot.promotionHold) {
+    return `${bot.name} is paused for cloud promotion. Open its profile to continue.`;
+  }
   if (bot.state === "failed") {
     return `${bot.name} stopped after repeated errors. Start it again to retry.`;
   }
@@ -106,4 +109,17 @@ export function lastHeartbeatLabel(
   const h = Math.round(m / 60);
   if (h < 48) return `checked in ${h}h ago`;
   return `checked in ${Math.round(h / 24)}d ago`;
+}
+
+
+/** Completed promotions leave the local-control registry, retaining their UID
+ * in the server DM/agent registry so existing conversations use cloud details. */
+export function locallyHostedBots(bots: readonly LocalBotRow[]): LocalBotRow[] {
+  return bots.filter(bot => bot.hosting !== "cloud");
+}
+
+
+export function promotedBotCompany(bots: readonly LocalBotRow[], agentUid: string): string | null {
+  const row = bots.find(bot => bot.agentUid === agentUid && bot.hosting === "cloud");
+  return row?.promotionHold?.companyUid ?? null;
 }

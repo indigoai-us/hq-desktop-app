@@ -678,6 +678,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     stop: (name) => this.call("local_bots_stop", { name }),
     remove: (name) => this.call("local_bots_remove", { name }),
     configure: (name, settings) => this.call("local_bots_configure", localBotSettingsArgs(name, settings)),
+    promote: (name, companyUid) => this.call("local_bots_promote", { name, companyUid }),
   };
 
   readonly settings: PlatformAdapter["settings"] = {

@@ -265,6 +265,8 @@
     localBotOfflineNotice,
     localBotPresence,
     type LocalBotEntryResult,
+    locallyHostedBots,
+    promotedBotCompany,
   } from "../chat/local-bots.js";
   import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption, SessionProviderId } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
@@ -804,14 +806,15 @@
   // The host's bots API shells to `hq bot list --json`; rows carry the server's
   // online verdict. Polled while the shell is mounted so the DM rail dot and the
   // thread notice track the bot without any CLI on the user's side.
-  let localBots = $state<LocalBotRow[]>([]);
+  let localBotRecords = $state<LocalBotRow[]>([]);
+  const localBots = $derived(locallyHostedBots(localBotRecords));
   let localBotBusy = $state<string | null>(null);
   let localBotActionError = $state<string | null>(null);
   async function refreshLocalBots(): Promise<void> {
     const api = adapter.bots;
     if (!api) return;
     const result = await api.list();
-    if (result.ok) localBots = result.value.bots ?? [];
+    if (result.ok) localBotRecords = result.value.bots ?? [];
   }
   onMount(() => {
     if (!adapter.bots) return;
@@ -5929,6 +5932,8 @@
 
           {#if isAgentChannel && agentSurface === "details" && agentChannelLocalBot}
             <LocalBotDetailPanel
+              companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug }))}
+              {onopenurl}
               bot={agentChannelLocalBot}
               avatarUrl={avatarByUid[agentChannelLocalBot.agentUid] ?? null}
               {adapter}
@@ -5941,7 +5946,7 @@
               {localBots}
               displayName={headerTitle}
               avatarUrl={avatarByUid[agentChannelUid] ?? null}
-              companyUid={selectedRow?.companyUid}
+              companyUid={promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid}
               {companyNames}
               {self}
               {isAdmin}
@@ -6137,7 +6142,7 @@
                   {#if selectedLocalBot && selectedLocalBotOffline}
                     <div class="local-bot-notice" data-testid="local-bot-offline-notice" role="status">
                       <span class="local-bot-notice-text">{localBotOfflineNotice(selectedLocalBot)}</span>
-                      {#if !selectedLocalBot.processAlive}
+                      {#if !selectedLocalBot.processAlive && !selectedLocalBot.promotionHold}
                         <button
                           type="button"
                           class="local-bot-notice-start"
@@ -6236,6 +6241,8 @@
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
                   <LocalBotDetailPanel
+                    companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug }))}
+                    {onopenurl}
                     bot={openLocalBot}
                     avatarUrl={openAgentMember.avatarUrl ??
                       avatarByUid[openLocalBot.agentUid] ??
@@ -6260,7 +6267,7 @@
                       avatarByUid[openAgentMember.personUid] ??
                       null}
                     description={openAgentMember.description}
-                    companyUid={selectedRow.companyUid}
+                    companyUid={promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid}
                     {companyNames}
                     {self}
                     {isAdmin}

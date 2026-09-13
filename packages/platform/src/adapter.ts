@@ -1022,6 +1022,8 @@ export interface SessionsApi {
 
 /** A personal local bot (local-bots US-009) as reported by `hq bot list --json`. */
 export interface LocalBotRow {
+  /** Absent on older CLI versions; cloud only after verified activation. */
+  hosting?: "local" | "cloud";
   name: string;
   agentUid: string;
   ownerUid: string;
@@ -1036,6 +1038,8 @@ export interface LocalBotRow {
   state: string;
   pid: number | null;
   processAlive: boolean;
+  /** Durable local handoff hold; null destination means it could not be verified. */
+  promotionHold?: { companyUid: string | null } | null;
   /** Server-side liveness (heartbeat < 90 s); null when hq-pro was unreachable. */
   online: boolean | null;
   lastHeartbeatAt: string | null;
@@ -1108,6 +1112,7 @@ export interface LocalBotsApi {
    * Optional for older hosts.
    */
   configure?(name: string, settings: LocalBotSettingsInput): AdapterPromise<Json>;
+  promote?(name: string, companyUid: string): AdapterPromise<Json>;
 }
 
 /** Input to `LocalBotsApi.configure`. */

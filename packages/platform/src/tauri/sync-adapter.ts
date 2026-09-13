@@ -1094,6 +1094,7 @@ export function createSyncPlatformAdapter(
       stop: (name) => call('local_bots_stop', { name }),
       remove: (name) => call('local_bots_remove', { name }),
       configure: (name, settings) => call('local_bots_configure', localBotSettingsArgs(name, settings)),
+    promote: (name, companyUid) => call("local_bots_promote", { name, companyUid }),
     },
 
     settings: {

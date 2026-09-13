@@ -33,17 +33,62 @@
     bot: LocalBotRow;
     adapter: Pick<PlatformAdapter, "bots"> | { bots?: PlatformAdapter["bots"] };
     avatarUrl?: string | null;
+    companies?: Array<{ uid: string; name: string }>;
+    onopenurl?: (url: string) => void;
     onclose?: () => void;
     /** Fired after a successful Start/Stop/Remove so the host refreshes localBots. */
     onchanged?: () => void | Promise<void>;
   }
 
-  let { bot, adapter, avatarUrl = null, onclose, onchanged }: Props = $props();
+  let { bot, adapter, avatarUrl = null, companies = [], onopenurl, onclose, onchanged }: Props = $props();
 
   let busy = $state<"start" | "stop" | "remove" | null>(null);
   let actionError = $state<string | null>(null);
   let confirmRemove = $state(false);
   let copied = $state(false);
+  let promotionCompany = $state("");
+  let promoting = $state(false);
+  let promotionPhase = $state("");
+  let pairing = $state<{ url: string; code: string } | null>(null);
+  async function promote(): Promise<void> {
+    const uid = bot.agentUid;
+    if (!adapter.bots?.promote || promoting || !promotionCompany) return;
+    promoting = true; actionError = null;
+    try {
+      const result = await adapter.bots.promote(bot.name, promotionCompany);
+      if (bot.agentUid !== uid) return;
+      if (!result.ok) { actionError = result.message || "Could not continue promotion."; return; }
+      const state = result.value.promotion as { agentUid?: string; phase?: string } | undefined;
+      if (state?.agentUid !== uid || !state.phase) throw new Error("Promotion returned an unexpected bot identity.");
+      promotionPhase = state.phase;
+      if (typeof result.value.failure === "string") actionError = result.value.failure;
+      const candidate = result.value.pairing as { url?: string; code?: string } | null;
+      pairing = candidate && ["https://auth.openai.com/codex/device", "https://auth.openai.com/device"].includes(candidate.url ?? "") && /^[A-Z0-9]{4,8}-[A-Z0-9]{4,8}$/.test(candidate.code ?? "")
+        ? { url: candidate.url!, code: candidate.code! } : null;
+      await onchanged?.();
+    } catch (error) { if (bot.agentUid === uid) actionError = error instanceof Error ? error.message : "Could not continue promotion."; }
+    finally { if (bot.agentUid === uid) promoting = false; }
+  }
+  let displayedUid = $state("");
+  $effect(() => {
+    if (displayedUid !== bot.agentUid) {
+      displayedUid = bot.agentUid;
+      promotionCompany = bot.promotionHold?.companyUid ?? "";
+      promotionPhase = bot.promotionHold ? "pending" : "";
+      pairing = null;
+      promoting = false;
+    } else if (bot.promotionHold && !promotionPhase) {
+      promotionCompany = bot.promotionHold.companyUid ?? "";
+      promotionPhase = "pending";
+    }
+  });
+  // Provisioning continues while this profile is open. Each call only queues a
+  // bounded cloud step; closing the profile stops polling but preserves the hold.
+  $effect(() => {
+    if (!promotionPhase || promotionPhase === "active" || promoting || actionError || !promotionCompany) return;
+    const timer = window.setTimeout(() => void promote(), 15_000);
+    return () => window.clearTimeout(timer);
+  });
   let panelEl = $state<HTMLElement | null>(null);
 
   // What the bot thinks with. Drafts follow the bot until the person edits
@@ -62,7 +107,7 @@
 
   async function saveSettings(): Promise<void> {
     const api = adapter.bots;
-    if (!api?.configure || savingSettings || !settingsDirty) return;
+    if (!api?.configure || savingSettings || promoting || promotionPhase || !settingsDirty) return;
     savingSettings = true;
     settingsNote = null;
     actionError = null;
@@ -232,7 +277,7 @@
           <select
             data-testid="local-bot-detail-model-select"
             value={modelValue}
-            disabled={savingSettings}
+            disabled={savingSettings || promoting || Boolean(promotionPhase)}
             onchange={(event) => {
               draftModel = (event.currentTarget as HTMLSelectElement).value;
               settingsNote = null;
@@ -248,7 +293,7 @@
           <select
             data-testid="local-bot-detail-effort-select"
             value={effortValue}
-            disabled={savingSettings}
+            disabled={savingSettings || promoting || Boolean(promotionPhase)}
             onchange={(event) => {
               draftEffort = (event.currentTarget as HTMLSelectElement).value;
               settingsNote = null;
@@ -276,6 +321,31 @@
       </section>
     {/if}
 
+    {#if adapter.bots?.promote && companies.length}
+      <section class="ad-section" data-testid="local-bot-promotion">
+        <h3 class="ad-kicker">Cloud hosting</h3>
+        <p class="ad-muted">Keep the same bot, conversation, role, skills, and memory. Connect its ChatGPT subscription on the cloud computer.</p>
+        <label class="ad-field"><span>Company</span>
+          <select value={promotionCompany} onchange={(event) => { promotionCompany = event.currentTarget.value; }} disabled={promoting || Boolean(promotionPhase)} aria-label="Promotion company">
+            <option value="">Choose company</option>
+            {#each companies as company (company.uid)}<option value={company.uid}>{company.name}</option>{/each}
+          </select>
+        </label>
+        {#if pairing}
+          <p class="ad-muted">Connect ChatGPT using code <strong>{pairing.code}</strong>.</p>
+          <button class="ad-btn" onclick={() => onopenurl?.(pairing!.url)} disabled={!onopenurl}>Connect ChatGPT</button>
+        {/if}
+        {#if promotionPhase === "active"}
+          <p role="status">Promoted. Continue in this conversation.</p>
+        {:else}
+          <button class="ad-btn" disabled={promoting || !promotionCompany || Boolean(busy)} onclick={() => void promote()}>
+            {promoting ? "Continuing promotion…" : promotionPhase ? "Continue promotion" : "Promote to cloud"}
+          </button>
+          {#if promotionPhase}<p class="ad-muted" role="status">{actionError ? "Promotion needs attention. Continue promotion to retry." : "Promotion continues automatically while this profile is open."} Your local bot stays paused during the handoff.</p>{/if}
+        {/if}
+      </section>
+    {/if}
+
     <section class="ad-section" data-testid="local-bot-detail-actions">
       <h3 class="ad-kicker">Manage</h3>
       {#if !adapter.bots}
@@ -287,7 +357,7 @@
               type="button"
               class="ad-btn"
               data-testid="local-bot-detail-stop"
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || promoting || Boolean(promotionPhase)}
               onclick={() => void run("stop")}
             >
               {busy === "stop" ? "Stopping…" : "Stop"}
@@ -297,7 +367,7 @@
               type="button"
               class="ad-btn"
               data-testid="local-bot-detail-start"
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || promoting || Boolean(promotionPhase)}
               onclick={() => void run("start")}
             >
               {busy === "start" ? "Starting…" : "Start"}
@@ -307,7 +377,7 @@
             type="button"
             class="ad-text-btn danger"
             data-testid="local-bot-detail-remove"
-            disabled={Boolean(busy)}
+            disabled={Boolean(busy) || promoting || Boolean(promotionPhase)}
             onclick={() => (confirmRemove = true)}
           >
             {busy === "remove" ? "Removing…" : "Remove"}

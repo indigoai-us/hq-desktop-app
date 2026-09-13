@@ -49,6 +49,8 @@ afterEach(async () => {
 function mountPanel(props: {
   bot: LocalBotRow;
   bots?: NonNullable<PlatformAdapter["bots"]> | undefined;
+  companies?: Array<{ uid: string; name: string }>;
+  onopenurl?: (url: string) => void;
   onclose?: () => void;
   onchanged?: () => void;
 }) {
@@ -58,6 +60,8 @@ function mountPanel(props: {
     target: host,
     props: {
       bot: props.bot,
+      companies: props.companies,
+      onopenurl: props.onopenurl,
       adapter: { bots: props.bots },
       onclose: props.onclose,
       onchanged: props.onchanged,
@@ -267,4 +271,97 @@ describe("LocalBotDetailPanel — model and thinking", () => {
     expect(host.querySelector('[data-testid="local-bot-detail-model"]')?.textContent).toBe("Opus · thinking High");
     expect(host.querySelector('[data-testid="local-bot-detail-settings"]')).toBeNull();
   });
+});
+
+
+describe("local bot cloud promotion", () => {
+  it("requires a destination and presents the returned subscription pairing", async () => {
+    const current = bot();
+    const promote = vi.fn(async () => ok({ promotion: { agentUid: current.agentUid, phase: "local-stopped" }, pairing: { url: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ" } }));
+    const open = vi.fn();
+    mountPanel({ bot: current, bots: { promote } as unknown as NonNullable<PlatformAdapter["bots"]>, companies: [{ uid: "cmp_TEST", name: "Test company" }], onopenurl: open });
+    await tick();
+    const select = q<HTMLSelectElement>('[aria-label="Promotion company"]')!;
+    const button = q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button')!;
+    expect(button.disabled).toBe(true);
+    await vi.waitFor(() => expect(select.options.length).toBe(2));
+    select.options[1].selected = true;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    button.click();
+    await vi.waitFor(() => expect(host.textContent).toContain("ABCD-EFGHJ"));
+    expect(promote).toHaveBeenCalledWith(current.name, "cmp_TEST");
+    expect(host!.textContent).toContain("ABCD-EFGHJ");
+    Array.from(host!.querySelectorAll("button")).find(b => b.textContent?.trim() === "Connect ChatGPT")!.click();
+    expect(open).toHaveBeenCalledWith("https://auth.openai.com/codex/device");
+    expect(q<HTMLButtonElement>('[data-testid="local-bot-detail-stop"]')?.disabled).toBe(true);
+  });
+});
+
+
+describe("promotion failure handling", () => {
+  it("blocks duplicate submissions and keeps an unsuccessful promotion retryable", async () => {
+    let finish!: (value: ReturnType<typeof failure>) => void;
+    const promote = vi.fn(() => new Promise<ReturnType<typeof failure>>(resolve => { finish = resolve; }));
+    mountPanel({ bot: bot(), bots: botsApi({ promote }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
+    await tick();
+    const select = q<HTMLSelectElement>('[aria-label="Promotion company"]')!;
+    select.value = "cmp_TEST";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    const button = q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button')!;
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    button.click();
+    await vi.waitFor(() => expect(button.disabled).toBe(true));
+    expect(button.textContent).toContain("Continuing promotion");
+    button.click();
+    expect(promote).toHaveBeenCalledTimes(1);
+    finish(failure("unknown", "Temporary promotion failure"));
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    expect(host.textContent).toContain("Temporary promotion failure");
+  });
+});
+
+
+it("reopens a held bot with local controls disabled and the saved destination", async () => {
+  mountPanel({ bot: bot({ promotionHold: { companyUid: "cmp_TEST" } }), bots: botsApi({ promote: vi.fn() }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
+  await tick();
+  const select = q<HTMLSelectElement>('[aria-label="Promotion company"]')!;
+  expect(select.value).toBe("cmp_TEST");
+  expect(select.disabled).toBe(true);
+  expect(q<HTMLButtonElement>('[data-testid="local-bot-detail-stop"]')!.disabled).toBe(true);
+  expect(host.textContent).toContain("Continue promotion");
+});
+
+it("automatically continues held promotion and stops polling after activation", async () => {
+  vi.useFakeTimers();
+  try {
+    const current = bot({ promotionHold: { companyUid: "cmp_TEST" } });
+    const promote = vi.fn(async () => ok({ promotion: { agentUid: current.agentUid, phase: "active" } }));
+    mountPanel({ bot: current, bots: botsApi({ promote }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
+    await tick();
+    expect(promote).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(15_000);
+    await tick();
+    expect(promote).toHaveBeenCalledExactlyOnceWith(current.name, "cmp_TEST");
+    expect(host.textContent).toContain("Promoted. Continue in this conversation.");
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(promote).toHaveBeenCalledTimes(1);
+  } finally { vi.useRealTimers(); }
+});
+
+it("shows a worker failure and stops automatic retries", async () => {
+  vi.useFakeTimers();
+  try {
+    const current = bot({ promotionHold: { companyUid: "cmp_TEST" } });
+    const promote = vi.fn(async () => ok({ promotion: { agentUid: current.agentUid, phase: "local-stopped" }, failure: "Cloud computer could not finish. Continue promotion to retry." }));
+    mountPanel({ bot: current, bots: botsApi({ promote }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
+    await tick();
+    await vi.advanceTimersByTimeAsync(15_000);
+    await tick();
+    expect(host.textContent).toContain("Cloud computer could not finish");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(promote).toHaveBeenCalledTimes(1);
+    expect(q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button')!.disabled).toBe(false);
+  } finally { vi.useRealTimers(); }
 });

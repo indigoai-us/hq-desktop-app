@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import {
   isValidLocalBotName,
+  locallyHostedBots,
+  promotedBotCompany,
   lastHeartbeatLabel,
   localBotsAsContacts,
   localBotForRow,
@@ -43,6 +45,9 @@ describe("local bot presence (US-009)", () => {
     expect(localBotOfflineNotice(bot({ online: false, processAlive: true }))).toMatch(/starting up/);
     expect(localBotOfflineNotice(bot({ online: false, processAlive: false, state: "failed" }))).toMatch(/repeated errors/);
   });
+  it("explains a promotion hold before ordinary offline or failure state", () => {
+    expect(localBotOfflineNotice(bot({ online: false, state: "failed", promotionHold: { companyUid: "cmp_target" } }))).toContain("paused for cloud promotion");
+  });
   it("formats the last heartbeat relatively", () => {
     const now = Date.parse("2026-09-10T12:01:00.000Z");
     expect(lastHeartbeatLabel("2026-09-10T12:00:45.000Z", now)).toBe("checked in 15s ago");
@@ -72,4 +77,22 @@ describe("localBotsAsContacts", () => {
     expect(out[2]).toEqual({ personUid: "agt_02", displayName: "iris", companyUid: null });
     expect(localBotsAsContacts(roster, null)).toEqual(roster);
   });
+});
+
+
+it("routes a promoted UID out of local controls while keeping pending and older bots local", () => {
+  const promoted = bot({ hosting: "cloud" });
+  const pending = bot({ agentUid: "agt_PENDING", promotionHold: { companyUid: "cmp_TEST" } });
+  const old = bot({ agentUid: "agt_OLD" });
+  const local = locallyHostedBots([promoted, pending, old]);
+  expect(local.map(b => b.agentUid)).toEqual(["agt_PENDING", "agt_OLD"]);
+  expect(localBotForRow(local, { kind: "dm", personUid: promoted.agentUid })).toBeNull();
+});
+
+
+it("uses the promoted destination for the original personal DM profile", () => {
+  const promoted = bot({ hosting: "cloud", promotionHold: { companyUid: "cmp_TARGET" } });
+  expect(promotedBotCompany([promoted], promoted.agentUid)).toBe("cmp_TARGET");
+  expect(promotedBotCompany([promoted], "agt_OTHER")).toBeNull();
+  expect(promotedBotCompany([bot({ promotionHold: { companyUid: "cmp_TARGET" } })], promoted.agentUid)).toBeNull();
 });

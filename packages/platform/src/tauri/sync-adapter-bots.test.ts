@@ -180,3 +180,20 @@ describe('local bots configure (model and thinking level)', () => {
     }
   });
 });
+
+
+describe('local bot promotion adapters', () => {
+  it.each(['sync', 'tauri'])('passes the same bot and destination through %s', async (kind) => {
+    const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+    const invoke = async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args });
+      return { promotion: { agentUid: 'agt_TEST', phase: 'local-stopped' } };
+    };
+    const adapter = kind === 'sync'
+      ? createSyncPlatformAdapter({ invoke, fetch: globalThis.fetch })
+      : new TauriPlatformAdapter({ invoke });
+    const result = await adapter.bots!.promote!('juniper', 'cmp_TEST');
+    expect(calls).toEqual([{ cmd: 'local_bots_promote', args: { name: 'juniper', companyUid: 'cmp_TEST' } }]);
+    expect(result).toEqual({ ok: true, value: { promotion: { agentUid: 'agt_TEST', phase: 'local-stopped' } } });
+  });
+});
