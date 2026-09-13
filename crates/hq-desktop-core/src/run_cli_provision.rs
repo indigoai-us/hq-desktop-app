@@ -339,6 +339,18 @@ fn report_provision_error(
                 scope.set_tag("validation_kind", vk);
                 scope.set_fingerprint(Some(&["provision-cli", "validation", vk]));
             }
+            // Collapse per-slug vault-arm proliferation (HQ-DESKTOP-69): the
+            // exit-1 vault failure interpolates the slug into its message and had
+            // no fingerprint, so Sentry's default message grouping minted a fresh
+            // issue per company slug (the HQ-DESKTOP-68/69 pair). Group into one
+            // issue while keeping `provision_kind=network` and Level::Error — a
+            // genuine vault failure IS an error. slug/cli_invocation/exit_code
+            // stay as tags for slicing, and the #hq-liveops vault-incident alert
+            // keys on the `provision_kind=network` tag (not issue identity), so it
+            // still fires on every occurrence.
+            if matches!(err, CliProvisionError::Network(_)) {
+                scope.set_fingerprint(Some(&["provision-cli", "network"]));
+            }
         },
         || {
             sentry::capture_message(&format!("[provision-cli] {err}"), level);
