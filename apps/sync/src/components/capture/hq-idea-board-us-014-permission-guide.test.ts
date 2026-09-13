@@ -148,6 +148,34 @@ describe('US-014 permission guide — rendered panel', () => {
     expect(chip.getAttribute('aria-label')).toContain('HQ Sync.app');
   });
 
+  // Regression: the bench bundle's grant read as ON in System Settings while
+  // CGPreflightScreenCaptureAccess() kept returning false. tccd's own log shows
+  // why — the surviving TCC row pinned a bare `cdhash H"cc1305…"` requirement
+  // from an earlier ad-hoc-signed build, so SecStaticCodeCheckValidity failed
+  // with errSecCSReqFailed (-67050) against every later build and tccd answered
+  // "Auth Right: Unknown (None)". Dropping a fresh bundle onto that existing row
+  // does NOT rewrite its requirement, so the guide's drag was a silent no-op.
+  // The panel must tell the user to remove the stale row first.
+  it('tells the user to remove an existing entry before dragging', async () => {
+    const target = mountGuide();
+    await settle();
+    const stale = q(target, '[data-testid="stale-entry"]');
+    // Collapse the source's own wrapping: textContent keeps Prettier's newlines
+    // and indentation, so un-normalized phrase regexes fail on a reflow rather
+    // than on a real regression.
+    const text = (stale.textContent ?? '').replace(/\s+/g, ' ');
+    expect(text).toMatch(/already/i);
+    expect(text).toMatch(/remove/i);
+    // It must explain WHY a re-drag alone cannot work, or the user will just
+    // drag again and hit the same dead end.
+    expect(text).toMatch(/changes nothing/i);
+    // The advice is only actionable next to the drag source — assert it sits in
+    // step 2 with the chip, not adrift in step 1 or 3.
+    const li = stale.closest('li');
+    expect(li).not.toBeNull();
+    expect(li?.querySelector('[data-testid="drag-source"]')).not.toBeNull();
+  });
+
   it('states plainly that macOS will not ask again', async () => {
     const target = mountGuide();
     await settle();

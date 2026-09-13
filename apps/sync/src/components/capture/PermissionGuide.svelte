@@ -304,6 +304,12 @@
       <span class="step-n">2</span>
       <div>
         <p class="step-t">Drag {grantName} into that list</p>
+        <p class="step-sub stale" data-testid="stale-entry">
+          If {grantName} is <em>already</em> in that list, select it and press the &minus; (remove)
+          button first, then drag it back in. macOS remembers the exact copy each entry was added
+          from; once that no longer matches, dropping a newer copy onto the existing entry changes
+          nothing — the switch keeps reading on while access stays denied.
+        </p>
         <div
           class="chip"
           data-testid="drag-source"
@@ -492,6 +498,12 @@
     line-height: 1.5;
     color: rgba(255, 255, 255, 0.6);
     margin: 0;
+  }
+
+  /* Must follow .step-sub and carry higher specificity: .step-sub sets
+     `margin: 0`, and an equal-specificity `.stale` would be overridden. */
+  .step-sub.stale {
+    margin-bottom: 10px;
   }
 
   .action {
