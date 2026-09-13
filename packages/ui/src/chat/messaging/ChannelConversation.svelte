@@ -1771,12 +1771,14 @@
     overflow-y: auto;
     /* 16px bottom so the last message's reaction bar doesn't kiss the
        composer frame. */
-    padding: 16px 20px 20px;
+    padding: 8px 16px 16px;
+    /* Float the 4px thumb 8px off the window edge, the way every other
+       scroller in the design does — the sidebar already did this and the
+       timeline did not, so the two rails disagreed down the same window. */
+    margin-right: 8px;
     display: flex;
     flex-direction: column;
     gap: 0;
-    scrollbar-width: thin;
-    scrollbar-color: var(--line, var(--pop-muted)) transparent;
   }
 
   .dm-thread::-webkit-scrollbar {
@@ -1803,22 +1805,34 @@
     bottom: 12px;
     transform: translateX(-50%);
     z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     padding: 5px 12px;
-    border: 1px solid var(--line);
+    /* No outline: the shadow already lifts it off the timeline, and a hairline
+       on top of that read as two frames around one small pill. */
+    border: 0;
     border-radius: 999px;
-    background: var(--bg2, var(--bg1));
+    /* Opaque, floated. `--bg2` is translucent in this theme, so history
+       scrolled visibly through the pill and neither the pill nor the message
+       under it stayed readable. Same composite the hover bar uses: a solid
+       colour underneath, the themed panel fill painted over it, so the pill is
+       opaque in both themes without hard-coding either one. */
+    background-color: var(--v4-ground, #1c1c1f);
+    background-image: linear-gradient(var(--panel-bg), var(--panel-bg));
+    box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
     color: var(--t2, var(--t1));
     font: 500 12px/1.3 var(--font-ui);
     white-space: nowrap;
     cursor: pointer;
-    box-shadow: 0 2px 8px color-mix(in srgb, var(--t1) 14%, transparent);
   }
   .new-messages-jump:hover {
-    background: var(--hover, color-mix(in srgb, var(--t1) 6%, transparent));
+    background-image:
+      linear-gradient(var(--hover), var(--hover)),
+      linear-gradient(var(--panel-bg), var(--panel-bg));
     color: var(--t1);
   }
   .new-messages-jump.has-unseen {
-    border-color: var(--accent, var(--line));
     color: var(--accent, var(--t1));
   }
 
@@ -1847,9 +1861,16 @@
   .dm-msg {
     position: relative;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr);
+    /* 32px avatar + 12px gutter, per the design. The wider avatar and tighter
+       gutter it replaced pushed the text column right while leaving less air
+       around the mark. */
+    grid-template-columns: 32px minmax(0, 1fr);
     align-items: start;
-    gap: 8px;
+    gap: 12px;
+    /* `@hq/ui` ships into hosts with and without a border-box reset, so say
+       it here: `width: 100%` plus 8px of padding otherwise overflowed the
+       thread and carried every card in the column out past the pane edge. */
+    box-sizing: border-box;
     width: 100%;
     max-width: none;
     margin-top: 0;
@@ -1875,8 +1896,8 @@
   .dm-msg-avatar-spacer {
     display: grid;
     place-items: start center;
-    flex: 0 0 36px;
-    width: 36px;
+    flex: 0 0 32px;
+    width: 32px;
     min-height: 1px;
     padding-top: var(--msg-avatar-pad-top, 2px);
   }
@@ -1903,7 +1924,6 @@
     flex-direction: column;
     align-items: flex-start;
     min-width: 0;
-    max-width: 720px;
   }
 
   .dm-msg-meta {
@@ -1911,6 +1931,9 @@
     align-items: baseline;
     gap: 0.4375rem;
     margin: 0 0 var(--msg-name-body-gap, 0.1875rem);
+    /* Full width so the timestamp can ride the right edge rather than sitting
+       against the name. */
+    width: 100%;
     min-width: 0;
   }
 
@@ -1948,11 +1971,25 @@
 
   .dm-msg-header-time {
     flex: 0 0 auto;
+    margin-left: auto;
     color: var(--t3);
-    font-size: 11px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-variant-numeric: tabular-nums;
     line-height: 1.45;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+
+  .dm-msg:hover .dm-msg-header-time,
+  .dm-msg:focus-within .dm-msg-header-time {
     opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dm-msg-header-time {
+      transition: none;
+    }
   }
 
   /* Plain text row — no bubble background/border for either direction. Only
@@ -2241,13 +2278,18 @@
   .date-separator {
     display: flex;
     align-items: center;
+    /* 8px each side puts the rule on exactly the edges `.dm-msg`'s own padding
+       gives the messages, so the divider and the column agree. */
+    margin: 12px 8px;
+    /* The concept's `.daysep`: two hairlines and a small mono caption between
+       them. The 13px/700 pill this replaces read as a heading and became the
+       loudest thing in the timeline. */
     gap: 12px;
-    margin: 16px 8px 20px;
     color: var(--t3);
-    font-family: var(--font-ui);
-    font-size: 11px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
   }
 
@@ -2262,8 +2304,7 @@
   .date-separator span {
     margin: 0;
     padding: 0;
-    border: 0;
-    border-radius: 0;
+    border: none;
     background: none;
   }
 
@@ -2274,48 +2315,51 @@
   .dm-replies-count {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    margin: 4px 0 0;
-    padding: 5px 9px;
+    gap: 8px;
+    margin: 8px 0 0 -7px;
+    padding: 5px 9px 5px 6px;
     border: 1px solid transparent;
     border-radius: 999px;
     background: transparent;
-    /* Neutral text tokens, not link blue: primary weight for the count, the
-       trailing preview stays muted (--t3 below). */
     color: var(--ice-ink);
-    font: 500 12px/1.3 var(--font-ui);
+    font: 500 11px/1.3 var(--font-ui);
     cursor: pointer;
+    transition:
+      background 0.12s,
+      border-color 0.12s;
   }
 
   .dm-replies-count:hover,
   .dm-replies-count:focus-visible {
-    border-color: var(--line);
-    background: var(--hover, color-mix(in srgb, var(--t1) 5%, transparent));
+    border-color: var(--line2);
+    background: var(--btn-bg);
     outline: none;
   }
 
   .dm-replies-preview {
     color: var(--t3);
-    font-weight: 400;
-
     font-size: 11px;
+    font-weight: 400;
   }
 
   /* Slack-style overlapping participant avatars, left of "N replies". */
   .dm-replies-avatars {
     display: inline-flex;
     align-items: center;
+    gap: 3px;
   }
 
   .dm-replies-avatar {
     display: inline-flex;
-    margin-left: -6px;
+    flex-shrink: 0;
     border-radius: 999px;
-    box-shadow: 0 0 0 2px var(--v4-ground, var(--raised, #161618));
   }
 
-  .dm-replies-avatar:first-child {
-    margin-left: 0;
+  .dm-replies-avatar :global(.identity.small) {
+    width: 18px;
+    height: 18px;
+    flex-basis: 18px;
+    font-size: 7px;
   }
 
   /* Slack-style hover toolbar pinned to the message. */
@@ -2399,14 +2443,13 @@
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
-    margin: 0 20px 20px;
-    padding: 14px 10px 10px 16px;
+    margin: 0 16px 20px;
+    /* Concept `.composer`: 10px radius, 12px of air above the caret. */
+    padding: 12px 8px 8px 14px;
     background: var(--raised, var(--pop-hover));
     border: 1px solid var(--line2, var(--pop-border));
-    border-radius: 12px;
+    border-radius: 10px;
     transition: border-color 0.12s;
-
-    box-shadow: 0 2px 8px rgb(0 0 0 / 0.04);
   }
 
   .dm-reply.is-locked {
@@ -2436,7 +2479,10 @@
     word-wrap: break-word;
     overflow: hidden;
     color: transparent;
-    font: 400 13px/1.5 var(--font-ui);
+    /* Must stay byte-identical to `.dm-reply-input` — this is an absolutely
+       positioned mirror of it, and any difference in metrics slides the
+       mention highlights off the words they belong to. */
+    font: 400 13px/1.46 var(--font-ui);
   }
 
   .composer-mention {
@@ -2455,7 +2501,10 @@
     border: none;
     background: none;
     color: var(--t1, var(--pop-text));
-    font: 400 13px/1.5 var(--font-ui);
+    /* The chat body's size. What you type and what you have typed are the
+       same copy, so the composer setting its own larger size made the
+       message shrink the moment it was sent. */
+    font: 400 13px/1.46 var(--font-ui);
     caret-color: var(--t1, #f4f4f5);
   }
 
@@ -2573,11 +2622,14 @@
     display: grid;
     place-items: center;
     margin-left: auto;
-    width: 30px;
-    height: 28px;
+    width: 28px;
+    height: 26px;
     padding: 0;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
+    /* Concept `.cmp-send`: the ice INK fill with the badge foreground on it.
+       These were the dark theme's literals, so in light mode the button came
+       out a pale chip with a dark arrow instead of a solid one. */
     background: var(--ice-ink);
     color: var(--badge-fg);
     cursor: pointer;

@@ -85,7 +85,7 @@
 }
 
 /* PR #772 material treatment, adapted to retain the existing transparency
-   preference. Dark ground retains a neutral base for native contrast.
+   preference. Default RGB and alpha values match the reference in both themes.
    Light is the default and is repeated on the force-theme selector so visual
    QA remains deterministic even when the host OS is dark. */
 :root,
@@ -99,8 +99,8 @@
   --v4-chrome: rgb(255 255 255 / clamp(0, calc(0 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
   --v4-sidebar: rgb(255 255 255 / clamp(0.04, calc(0.18 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
   --v4-secondary-sidebar: rgb(255 255 255 / clamp(0.04, calc(0.18 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
-  --v4-popover: rgb(252 252 252 / clamp(0.90, calc(0.96 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
-  --v4-popover-strong: rgb(252 252 252 / clamp(0.90, calc(0.96 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
+  --v4-popover: rgb(252 252 253 / clamp(0.90, calc(0.96 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
+  --v4-popover-strong: rgb(252 252 253 / clamp(0.90, calc(0.96 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
   --v4-hairline: rgba(0, 0, 0, 0.12);
   --v4-rowline: rgba(0, 0, 0, 0.08);
 
@@ -131,15 +131,15 @@
    than this plain `:root`, so forced light wins without a :not() guard. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --v4-ground: rgb(32 32 32 / clamp(0.15, calc(0.35 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
+    --v4-ground: rgb(255 255 255 / clamp(0.02, calc(0.02 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
     --v4-raised: rgba(255, 255, 255, 0.05);
-    --v4-surface-solid: #303030;
+    --v4-surface-solid: #1e1e24;
     --v4-inset: rgba(0, 0, 0, 0.32);
     --v4-chrome: rgb(0 0 0 / clamp(0, calc(0 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
     --v4-sidebar: rgb(0 0 0 / clamp(0.04, calc(0.12 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
     --v4-secondary-sidebar: rgb(0 0 0 / clamp(0.04, calc(0.12 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
-    --v4-popover: rgb(44 44 44 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
-    --v4-popover-strong: rgb(44 44 44 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
+    --v4-popover: rgb(44 44 54 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
+    --v4-popover-strong: rgb(44 44 54 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
     --v4-hairline: rgba(255, 255, 255, 0.12);
     --v4-rowline: rgba(255, 255, 255, 0.08);
     --v4-text-1: #f2f2f2;
@@ -170,15 +170,15 @@
 
 .dark,
 :root[data-force-theme="dark"] {
-  --v4-ground: rgb(32 32 32 / clamp(0.15, calc(0.35 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
+  --v4-ground: rgb(255 255 255 / clamp(0.02, calc(0.02 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
   --v4-raised: rgba(255, 255, 255, 0.05);
-  --v4-surface-solid: #303030;
+  --v4-surface-solid: #1e1e24;
   --v4-inset: rgba(0, 0, 0, 0.32);
   --v4-chrome: rgb(0 0 0 / clamp(0, calc(0 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
   --v4-sidebar: rgb(0 0 0 / clamp(0.04, calc(0.12 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
   --v4-secondary-sidebar: rgb(0 0 0 / clamp(0.04, calc(0.12 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
-  --v4-popover: rgb(44 44 44 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
-  --v4-popover-strong: rgb(44 44 44 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
+  --v4-popover: rgb(44 44 54 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
+  --v4-popover-strong: rgb(44 44 54 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));
   --v4-hairline: rgba(255, 255, 255, 0.12);
   --v4-rowline: rgba(255, 255, 255, 0.08);
   --v4-text-1: #f2f2f2;

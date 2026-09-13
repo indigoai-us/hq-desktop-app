@@ -2979,10 +2979,13 @@
     height: auto;
     overflow: hidden;
     border-right: 1px solid var(--line);
+    /* One glass pass only. The window already blurs what is behind it; a
+       second backdrop-filter here re-blurred and re-saturated that result, so
+       `--side-bg` at 18% white painted as near-opaque white instead of the
+       translucent rail the design draws. The concept's `.sidebar` is a flat
+       `var(--side-bg)` over the window glass with no filter and no inner
+       highlight — match it. */
     background: var(--side-bg);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
-    box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-ui);
     color: var(--t1);
     /* border-box is load-bearing: without it, height + padding overflow the
@@ -3267,7 +3270,9 @@
     color: var(--t3);
     font-family: var(--font-mono, inherit);
     font-size: 10px;
+    font-weight: 400;
     font-variant-numeric: tabular-nums;
+    letter-spacing: normal;
   }
 
   /* Real box so the pin control can sit beside the row (not nested in it). */
@@ -3610,6 +3615,13 @@
     background: var(--line2);
     color: var(--t2);
     font: 600 9px var(--font-ui);
+    /* `line-height: 1`, as IdentityMark does. The `font:` shorthand resets
+       line-height to `normal`, and `normal` is the font's own line box —
+       WebKit folds the line gap into it where Chromium does not, so a
+       centred all-caps monogram sat visibly high in the app and looked
+       fine in the browser harness. An explicit number removes the
+       variable. */
+    line-height: 1;
     letter-spacing: 0.02em;
   }
 

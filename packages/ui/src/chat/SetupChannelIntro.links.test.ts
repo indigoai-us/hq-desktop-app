@@ -139,12 +139,9 @@ describe("SetupChannelIntro welcome experience", () => {
     const hero = host.querySelector('[data-testid="setup-hero"]');
     expect(hero?.textContent).toContain(SETUP_HERO.title);
     expect(hero?.textContent).toContain(SETUP_HERO.eyebrow);
-    const arts = hero?.querySelectorAll<HTMLImageElement>("img.hero-art") ?? [];
-    expect(arts).toHaveLength(2);
-    for (const art of arts) {
-      expect(art.getAttribute("alt")).toBe("");
-      expect(art.getAttribute("src")).toBeTruthy();
-    }
+    // The supplied reference puts welcome copy on the window ground,
+    // without a decorative wallpaper; all setup and resource actions remain.
+    expect(hero?.querySelector("img.hero-art")).toBeNull();
 
     for (const resource of SETUP_RESOURCES) {
       const link = host.querySelector<HTMLAnchorElement>(

@@ -6558,7 +6558,7 @@
   }
 
   .chat-stage:has(.reply-column:not(.overlay)) :global(.conversation) {
-    min-width: 320px;
+    min-width: min(320px, 50%);
   }
 
   /* Open thread pane takes half the conversation area — a 50/50 split
@@ -6567,7 +6567,7 @@
   .chat-stage:has(.reply-column:not(.profile-column):not(.overlay))
     :global(.conversation) {
     flex: 1 1 0;
-    min-width: 360px;
+    min-width: min(360px, 50%);
   }
 
   .reply-column {
@@ -6578,13 +6578,12 @@
        hover chrome and message text. .overlay still overrides to
        position:absolute; z-index:5. */
     isolation: isolate;
-    width: clamp(340px, 34%, 420px);
+    width: clamp(min(340px, 50%), 34%, 420px);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
     border-left: 1px solid var(--line);
-    background: var(--v4-ground, #161618);
     transition: width 150ms ease;
   }
 
@@ -6595,7 +6594,7 @@
   .reply-column:not(.profile-column):not(.overlay) {
     width: auto;
     flex: 1 1 0;
-    min-width: 360px;
+    min-width: min(360px, 50%);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -6774,23 +6773,31 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 5px;
     height: 28px;
     min-height: 28px;
     padding: 0 10px;
-    border: 1px solid var(--line2, var(--panel-border));
-    border-radius: 0;
-    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg);
     color: var(--t1);
+    /* Longhands, not the `font:` shorthand: `inherit` is not a valid
+       font-family inside it, so the whole declaration was dropped and this
+       button rendered in the UA default (Arial 13.3px/400) beside 12px/500
+       Geist tabs. */
     font-family: inherit;
     font-size: 12px;
     font-weight: 500;
     line-height: 1;
     cursor: pointer;
     white-space: nowrap;
+    transition:
+      border-color 0.12s ease,
+      background-color 0.12s ease;
   }
 
   .header-ghost-btn:hover {
-    background: var(--hover);
+    border-color: var(--line2);
   }
 
   .header-ghost-btn:disabled {

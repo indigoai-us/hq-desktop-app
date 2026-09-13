@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * SetupChannelIntro — the welcome experience at the top of the synthetic
-   * #setup support channel in the live desktop shell: a wallpaper hero with
+   * #setup support channel in the live desktop shell: a window-ground introduction with
    * the three launch actions (Claude Code / Codex / Grok Build), then ghost
    * rows for the getting-started guide, the free book, the weekly onboarding
    * training, and the docs, closed by the support note.
@@ -11,8 +11,7 @@
    * the title-bar Launch menu uses, with `/setup` prefilled from
    * `SETUP_LAUNCH_COMMANDS`. The HQ folder path comes from
    * `settings.getSetupStatus`. Copy + links come from `setup-channel.ts`
-   * (shared with the classic messaging surface); art from
-   * `setup-welcome-art.ts`. The live message thread + composer below this
+   * (shared with the classic messaging surface). The live message thread + composer below this
    * header are the shell's standard ChannelConversation pipeline with
    * channelId "setup" — this component owns only the intro. Lifecycle cards
    * (`create_company`, `companies_summary`) render in that conversation.
@@ -29,6 +28,7 @@
    * localStorage so a relaunch offers "Continue setup (N of 4)".
    */
   import { onMount } from "svelte";
+  import SetupWelcomeMark from "./SetupWelcomeMark.svelte";
   import type { SettingsApi, ShellApi } from "@hq/platform";
   import {
     createLaunchActions,
@@ -50,7 +50,6 @@
     setupRosterLoading,
     type SetupRosterStatus,
   } from "./setup-channel";
-  import { SETUP_HERO_ART } from "./setup-welcome-art";
   import { SETUP_RESOURCE_GLYPHS } from "./setup-resource-glyphs";
   import SetupRunCard from "./SetupRunCard.svelte";
   import SetupConnectStep from "./SetupConnectStep.svelte";
@@ -339,23 +338,9 @@
   data-setup-roster-status={rosterStatus ?? "ready"}
 >
   <div class="hero" data-testid="setup-hero">
-    <img
-      class="hero-art hero-art--light"
-      src={SETUP_HERO_ART.light}
-      alt=""
-      aria-hidden="true"
-      decoding="async"
-      draggable="false"
-    />
-    <img
-      class="hero-art hero-art--dark"
-      src={SETUP_HERO_ART.dark}
-      alt=""
-      aria-hidden="true"
-      decoding="async"
-      draggable="false"
-    />
-    <div class="hero-scrim" aria-hidden="true"></div>
+    {#if !runActive}
+      <div class="hero-mark"><SetupWelcomeMark /></div>
+    {/if}
     {#if runActive && agent}
       <div class="hero-copy hero-copy--run">
         <SetupRunCard
@@ -592,12 +577,12 @@
   .advanced summary {
     cursor: pointer;
     width: fit-content;
-    color: rgba(255, 255, 255, 0.72);
+    color: var(--t2);
     font-size: 12px;
     letter-spacing: 0.02em;
   }
   .advanced summary:hover {
-    color: #ffffff;
+    color: var(--t1);
   }
   .advanced-body {
     display: flex;
@@ -608,21 +593,21 @@
   .advanced-body p {
     margin: 0;
     line-height: 1.5;
-    color: rgba(255, 255, 255, 0.72);
+    color: var(--t2);
   }
-  /* Advanced resources remain on the image; the bot resources use canvas ink. */
+  /* Resources and setup details share the reference canvas ink. */
   .advanced-body .resources {
     margin-top: 4px;
-    border-top: 1px solid rgba(255, 255, 255, 0.14);
+    border-top: 1px solid var(--line);
   }
   .advanced-body .resource-link,
   .advanced-body .resource-title {
-    color: #ffffff;
+    color: var(--t1);
   }
   .advanced-body .resource-desc,
   .advanced-body .eyebrow--muted,
   .advanced-body .support-note {
-    color: rgba(255, 255, 255, 0.66);
+    color: var(--t3);
   }
   .advanced-body .support-note {
     font-size: 12px;
@@ -642,94 +627,49 @@
   }
 
   .advanced-body .resource-link {
-    background: rgba(255, 255, 255, 0.065);
-    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: var(--raised);
+    border: 1px solid var(--line);
   }
   .resource-link:hover {
     background: var(--btn-bg);
   }
   .advanced-body .resource-link:hover {
-    background: rgba(255, 255, 255, 0.11);
+    background: var(--hover);
   }
 
   /* ---- Hero ------------------------------------------------------------ */
 
+  /* The supplied #772 reference places the welcome copy directly on the
+     window ground; the current setup actions and state machine stay intact. */
   .hero {
     position: relative;
-    isolation: isolate;
-    overflow: hidden;
-    min-height: 248px;
-    /* Wallpaper panels are always dark; the eyebrow/title sit on white. The
-       fallback color covers the frame before the art decodes. */
-    background: #0a0b0d;
-    color: #ffffff;
-    /* Buttons live on the wallpaper, so they are image-relative (white on
-       dark), not theme-relative — the same in light and dark shells. */
-    --setup-btn-fg: #fff;
-    --setup-btn-line: rgba(255, 255, 255, 0.6);
-    --setup-btn-primary-bg: #fff;
-    --setup-btn-primary-fg: #111;
-    --setup-btn-muted: rgba(255, 255, 255, 0.8);
-    --setup-btn-hover: rgba(255, 255, 255, 0.14);
+    color: var(--t1);
+    background: transparent;
+    --setup-btn-fg: var(--t1);
+    --setup-btn-line: var(--line2);
+    --setup-btn-primary-bg: var(--btn-bg);
+    --setup-btn-primary-fg: var(--t1);
+    --setup-btn-muted: var(--t2);
+    --setup-btn-hover: var(--hover);
+  }
 
-    border-radius: 12px;
+  .hero-mark {
+    position: absolute;
+    top: 20px;
+    left: 0;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: var(--ice-tile);
+    color: var(--ice-ink);
   }
 
   .hero-actions :global(.setup-btn) {
     border-radius: 8px;
     min-height: 32px;
     padding-inline: 14px;
-  }
-
-  .hero-art {
-    position: absolute;
-    inset: 0;
-    z-index: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    /* Aim the crop at the clean sky band, keeping the moon in frame. */
-    object-position: center 28%;
-    user-select: none;
-    pointer-events: none;
-  }
-
-  /* Light shell shows the brighter monoliths piece; dark shows the aurora.
-     Mirrors the chat-tokens.css theme cascade (force-theme wins over OS). */
-  .hero-art--dark {
-    display: none;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :global(:root:not([data-force-theme="light"])) .hero-art--dark {
-      display: block;
-    }
-
-    :global(:root:not([data-force-theme="light"])) .hero-art--light {
-      display: none;
-    }
-  }
-
-  :global(:root[data-force-theme="dark"]) .hero-art--dark {
-    display: block;
-  }
-
-  :global(:root[data-force-theme="dark"]) .hero-art--light {
-    display: none;
-  }
-
-  .hero-scrim {
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    background:
-      linear-gradient(
-        180deg,
-        rgba(6, 6, 6, 0.08) 0%,
-        rgba(6, 6, 6, 0.42) 48%,
-        rgba(6, 6, 6, 0.86) 100%
-      ),
-      linear-gradient(90deg, rgba(6, 6, 6, 0.55) 0%, rgba(6, 6, 6, 0) 70%);
   }
 
   .hero-copy {
@@ -739,12 +679,13 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2, 8px);
-    padding: 28px;
-    min-height: 248px;
-    justify-content: flex-end;
+    padding: 20px 0 24px 56px;
+    border-bottom: 1px solid var(--line);
+    justify-content: flex-start;
   }
 
   .hero-copy--run {
+    padding-left: 0;
     justify-content: flex-end;
     min-height: 168px;
     padding-top: var(--space-4, 16px);
@@ -761,7 +702,7 @@
     font-weight: 500;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.62);
+    color: var(--t3);
   }
 
   .hero-title {
@@ -771,7 +712,7 @@
     font-weight: 600;
     line-height: 1.25;
     letter-spacing: -0.012em;
-    color: #ffffff;
+    color: var(--t1);
   }
 
   .hero-body {
@@ -779,11 +720,11 @@
     max-width: 64ch;
     font-size: var(--text-base, 13px);
     line-height: 1.5;
-    color: rgba(255, 255, 255, 0.74);
+    color: var(--t2);
   }
 
   .roster-loading {
-    color: rgba(255, 255, 255, 0.62);
+    color: var(--t3);
   }
 
   .roster-failed {
@@ -794,7 +735,7 @@
     margin: 0;
     font-size: var(--text-base, 13px);
     line-height: 1.4;
-    color: rgba(255, 255, 255, 0.85);
+    color: var(--t2);
   }
 
   .steps-preview {
@@ -805,7 +746,7 @@
     padding: 0;
     list-style: none;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.78);
+    color: var(--t2);
   }
   .steps-preview-step {
     display: inline-flex;
@@ -819,7 +760,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.45);
+    border: 1px solid var(--line2);
     font-size: 10px;
     font-variant-numeric: tabular-nums;
   }
@@ -862,7 +803,7 @@
     max-width: 22rem;
     font-size: var(--text-base, 13px);
     line-height: 1.4;
-    color: rgba(255, 255, 255, 0.85);
+    color: var(--t2);
   }
 
   /* ---- Resource cards ------------------------------------------------ */
@@ -891,9 +832,9 @@
   }
 
   .resource-link {
-    display: grid;
-    grid-template-columns: 20px minmax(0, 1fr);
-    align-items: start;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
     gap: 12px;
     padding: 16px;
     color: var(--fg);
@@ -909,7 +850,11 @@
   }
 
   .resource-glyph {
-    margin-top: 2px;
+    padding: 8px;
+    box-sizing: content-box;
+    border-radius: 8px;
+    background: var(--btn-bg);
+    margin-top: 0;
     color: var(--muted);
     transition: color 140ms ease;
   }

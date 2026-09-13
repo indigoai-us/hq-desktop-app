@@ -1003,6 +1003,29 @@
     overflow: hidden;
   }
 
+  /* PR #772's staged window backing, below the shared surface tokens.
+     AppKit supplies the blur; repeating backdrop-filter inside WebKit washes
+     the native window out. Preserve the existing opacity control, with the
+     reference's .82/.86 alphas at its default transparency of 65.
+     The dark backing follows the supplied rendered PR reference: unobstructed
+     canvas samples (600,200) = #171435 and (540,940) = #12182e on its
+     1920x1305 preview. This retains that reference appearance across desktops. */
+  .hq-work-embedded {
+    background: rgb(250 250 252 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.276923), 1));
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-force-theme="light"])) .hq-work-embedded {
+      --reference-window-alpha: clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.215385), 1);
+      background: linear-gradient(180deg, rgb(23 20 53 / var(--reference-window-alpha)), rgb(18 24 46 / var(--reference-window-alpha)));
+    }
+  }
+
+  :global(:root[data-force-theme="dark"]) .hq-work-embedded {
+    --reference-window-alpha: clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.215385), 1);
+    background: linear-gradient(180deg, rgb(23 20 53 / var(--reference-window-alpha)), rgb(18 24 46 / var(--reference-window-alpha)));
+  }
+
   .lifecycle-state {
     display: grid;
     place-content: center;
