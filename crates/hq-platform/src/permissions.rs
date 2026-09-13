@@ -337,6 +337,101 @@ pub fn force_native_register() -> Result<(bool, bool), String> {
     }
 }
 
+/// The user-draggable identity for the Screen Recording permissions list.
+///
+/// macOS grants Screen Recording to an *app bundle*, not to the raw binary
+/// inside it, so the guidance panel (hq-idea-board US-014) must hand the user
+/// the enclosing `.app` — dropping `Contents/MacOS/hq-sync-menubar` into the
+/// list produces a second, confusing entry. In a `cargo run` dev build there
+/// is no bundle; the executable itself is then the honest answer.
+///
+/// Pure over the path so it is testable without a bundle on disk. Walks
+/// `Path::ancestors()` (never byte-slices the string — a `.app` name may hold
+/// multi-byte characters) and returns the *outermost* `.app` ancestor.
+pub fn bundle_path_from_exe(exe: &std::path::Path) -> std::path::PathBuf {
+    let mut outermost: Option<&std::path::Path> = None;
+    for ancestor in exe.ancestors() {
+        let is_app = ancestor
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("app"));
+        if is_app {
+            outermost = Some(ancestor);
+        }
+    }
+    outermost.unwrap_or(exe).to_path_buf()
+}
+
+/// [`bundle_path_from_exe`] applied to the running executable. Returns `None`
+/// only when the platform cannot report `current_exe`.
+pub fn screen_capture_grant_path() -> Option<std::path::PathBuf> {
+    std::env::current_exe().ok().map(|e| bundle_path_from_exe(&e))
+}
+
+#[cfg(test)]
+mod grant_path_tests {
+    use super::bundle_path_from_exe;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn hq_idea_board_grant_path_is_the_enclosing_app_bundle() {
+        let exe = Path::new("/Applications/HQ Sync.app/Contents/MacOS/hq-sync-menubar");
+        assert_eq!(
+            bundle_path_from_exe(exe),
+            PathBuf::from("/Applications/HQ Sync.app")
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_grant_path_prefers_the_outermost_app_bundle() {
+        // A nested helper bundle must not shadow the app the user actually
+        // needs to drop into the permissions list.
+        let exe = Path::new("/Applications/HQ Sync.app/Contents/Helpers/Updater.app/Contents/MacOS/up");
+        assert_eq!(
+            bundle_path_from_exe(exe),
+            PathBuf::from("/Applications/HQ Sync.app")
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_grant_path_falls_back_to_the_bare_executable() {
+        let exe = Path::new("/repo/target/debug/hq-sync-menubar");
+        assert_eq!(bundle_path_from_exe(exe), PathBuf::from(exe));
+    }
+
+    #[test]
+    fn hq_idea_board_grant_path_handles_multibyte_bundle_names() {
+        // "HQ – Sync.app" holds a multi-byte en dash. Path-component walking
+        // is indifferent to it; string arithmetic on byte offsets is not.
+        let exe = Path::new("/Applications/HQ – Sync.app/Contents/MacOS/hq-sync-menubar");
+        assert_eq!(
+            bundle_path_from_exe(exe),
+            PathBuf::from("/Applications/HQ – Sync.app")
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_grant_path_is_not_fooled_by_app_inside_another_component() {
+        // The real reason this walks path components rather than searching
+        // the string: a naive `find(".app")` + slice would cut at ".apple"
+        // here and hand the user "/Volumes/mac.app" to drag — a path that
+        // does not exist.
+        let exe = Path::new("/Volumes/mac.apple/HQ Sync.app/Contents/MacOS/hq-sync-menubar");
+        assert_eq!(
+            bundle_path_from_exe(exe),
+            PathBuf::from("/Volumes/mac.apple/HQ Sync.app")
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_grant_path_ignores_a_dot_app_directory_that_is_not_a_bundle_suffix() {
+        // ".appdata" is not the `.app` extension; only a true extension match
+        // may be offered as the grant target.
+        let exe = Path::new("/Users/x/.appdata/hq/hq-sync-menubar");
+        assert_eq!(bundle_path_from_exe(exe), PathBuf::from(exe));
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;

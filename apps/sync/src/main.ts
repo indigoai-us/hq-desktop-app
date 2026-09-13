@@ -12,6 +12,7 @@ import BannerNotification from './components/BannerNotification.svelte';
 import Widget from './components/Widget.svelte';
 import CaptureOverlay from './components/capture/CaptureOverlay.svelte';
 import CaptureToast from './components/capture/CaptureToast.svelte';
+import PermissionGuide from './components/capture/PermissionGuide.svelte';
 import GlobalErrorBoundary from './components/GlobalErrorBoundary.svelte';
 import { mount } from 'svelte';
 import { invoke } from '@tauri-apps/api/core';
@@ -71,6 +72,8 @@ if (windowLabel === 'meetings-window') {
   Component = CaptureOverlay as unknown as typeof App;
 } else if (windowLabel === 'capture-toast') {
   Component = CaptureToast as unknown as typeof App;
+} else if (windowLabel === 'permission-guide') {
+  Component = PermissionGuide as unknown as typeof App;
 } else {
   Component = App;
 }

@@ -68,6 +68,14 @@ pub const MARK_RELEASE_REJECTED: &str = "idea.capture.release_rejected";
 pub const MARK_CAPTURE_FAILED: &str = "idea.capture.failed";
 /// Mark: Screen Recording permission is missing, so no overlay was shown.
 pub const MARK_PERMISSION_DENIED: &str = "idea.capture.permission_denied";
+/// Mark: the US-014 guidance panel was opened after a refused/denied grant.
+pub const MARK_GUIDE_SHOWN: &str = "idea.capture.permission_guide_shown";
+/// Mark: the user closed the guidance panel without granting.
+pub const MARK_GUIDE_DISMISSED: &str = "idea.capture.permission_guide_dismissed";
+/// Mark: the poller saw the preflight flip to granted while the panel was open.
+pub const MARK_GUIDE_GRANTED: &str = "idea.capture.permission_guide_granted";
+/// Mark: the capture the user originally attempted was resumed automatically.
+pub const MARK_GUIDE_RESUMED: &str = "idea.capture.permission_guide_resumed";
 
 // ---------------------------------------------------------------------------
 // US-012 wiring: the two capture preferences, resolved OFF the hot path
@@ -333,6 +341,426 @@ Settings › Privacy & Security › Screen Recording and enable HQ."
             log(LOG_TAG, &format!("permission banner FAILED: {e}"));
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// US-014: guided screen-recording permission onboarding (macOS)
+// ---------------------------------------------------------------------------
+
+/// Window label — kept in sync with `main.ts`'s router branch and
+/// `capabilities/permission-guide.json`.
+pub const GUIDE_WINDOW_LABEL: &str = "permission-guide";
+
+/// Payload event delivered to the guidance panel on its ready handshake.
+pub const EVENT_GUIDE_STATE: &str = "permission-guide:state";
+
+/// Panel dimensions and screen margin (logical points).
+const GUIDE_W: f64 = 380.0;
+const GUIDE_H: f64 = 460.0;
+const GUIDE_MARGIN: f64 = 24.0;
+
+/// Poll cadence for `CGPreflightScreenCaptureAccess` while the panel is open.
+///
+/// 500ms is fast enough that the drop into the permissions list feels like it
+/// is detected instantly, and slow enough that this is two syscalls a second
+/// on a background thread — not a busy loop. The poller exits the moment the
+/// panel closes, so nothing runs when the panel is not on screen.
+pub const GUIDE_POLL_INTERVAL_MS: u64 = 500;
+
+/// True while the guidance panel is on screen. Also the poller's run flag —
+/// clearing it is what stops the polling thread.
+static GUIDE_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// True once the user has closed the panel without granting. A second chord
+/// then falls back to the one-line denial banner rather than re-opening a
+/// panel the user just rejected.
+static GUIDE_DISMISSED: AtomicBool = AtomicBool::new(false);
+
+/// How to answer a chord that found Screen Recording unavailable *after* the
+/// (at most once ever) system prompt. Only reached on a real denial — the
+/// granted case never gets here, so there is no "proceed" arm to go stale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DenialResponse {
+    /// Open the guided panel (macOS, first refusal).
+    Guide,
+    /// Fall back to the existing one-line banner + deep link.
+    Banner,
+}
+
+/// Pure denial policy, so the (untestable-in-CI) TCC behaviour stays out of
+/// the decision.
+///
+/// * `guide_dismissed` — the user already closed the panel without granting.
+///   Process-global and only cleared by an actual grant, so one dismissal
+///   means the banner for the rest of the session: re-opening a panel the
+///   user just rejected would be nagging, not guidance.
+/// * `guide_supported` — macOS only; Windows has no Screen Recording gate and
+///   no Settings pane to guide anyone to.
+pub fn denial_response(guide_dismissed: bool, guide_supported: bool) -> DenialResponse {
+    if guide_supported && !guide_dismissed {
+        DenialResponse::Guide
+    } else {
+        DenialResponse::Banner
+    }
+}
+
+/// One poll tick's outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuidePoll {
+    /// Panel closed (or never opened) — the thread must exit.
+    Stop,
+    /// Access just appeared — dismiss the panel and resume the capture.
+    Resume,
+    /// Still waiting.
+    Continue,
+}
+
+/// Pure poll policy. The `open` check comes first so a dismissed panel never
+/// resurrects a capture the user walked away from, even if the grant lands in
+/// the same tick.
+pub fn guide_poll(open: bool, granted: bool) -> GuidePoll {
+    if !open {
+        GuidePoll::Stop
+    } else if granted {
+        GuidePoll::Resume
+    } else {
+        GuidePoll::Continue
+    }
+}
+
+/// Typical System Settings window width in logical points. macOS opens that
+/// window centred on the active display and gives no API for another app's
+/// window geometry, so this is the honest way to park *beside* it.
+pub const SETTINGS_WINDOW_W: f64 = 715.0;
+
+/// Logical origin that parks a `w`x`h` panel immediately to the LEFT of the
+/// centred System Settings window, vertically centred, clamped inside the
+/// display so it can never land offscreen on a small or scaled screen.
+///
+/// Pure so it is unit-testable without a live window.
+pub fn guide_position(display: &DisplayRect, w: f64, h: f64, margin: f64) -> (f64, f64) {
+    let settings_left = display.x + (display.w - SETTINGS_WINDOW_W) / 2.0;
+    let desired_x = settings_left - w - margin;
+    let desired_y = display.y + (display.h - h) / 2.0;
+    // Clamp: the low bound wins, so a display too narrow to hold both windows
+    // still shows the panel fully rather than half off the left edge.
+    let max_x = display.x + display.w - w - margin;
+    let max_y = display.y + display.h - h - margin;
+    let x = desired_x.min(max_x).max(display.x + margin);
+    let y = desired_y.min(max_y).max(display.y + margin);
+    (x, y)
+}
+
+/// State handed to the panel on its ready handshake.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionGuideState {
+    /// Absolute path of the `.app` bundle the user drags into the list.
+    pub grant_path: String,
+    /// Display name shown on the drag chip.
+    pub grant_name: String,
+    /// False on macOS: the system prompt fires at most once per app identity,
+    /// so a user who has already refused will never see it again and the drag
+    /// path is their only route. The panel says so plainly.
+    pub will_reprompt: bool,
+}
+
+/// Resolve the panel's state. Kept out of the command so tests can call it.
+pub fn permission_guide_state_inner() -> PermissionGuideState {
+    let path = hq_platform::permissions::screen_capture_grant_path();
+    let grant_path = path
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let grant_name = path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "HQ".to_string());
+    PermissionGuideState {
+        grant_path,
+        grant_name,
+        // macOS never re-prompts once a decision is cached; by the time this
+        // panel is on screen the one-shot prompt is already spent.
+        will_reprompt: false,
+    }
+}
+
+/// Build the hidden guidance-panel window at app start (idempotent).
+///
+/// macOS only. Windows has no Screen Recording gate — `denial_response`
+/// always answers `Banner` there — so building a transparent always-on-top
+/// window that can never be shown would be pure overhead.
+///
+/// Built **non-activating** (`.focusable(false)`) per repo policy
+/// `hq-desktop-app-nonactivating-window-toggle-focusable-for-input`, so
+/// opening it never yanks focus away from System Settings. It becomes
+/// focusable — and therefore keyboard-operable — only through
+/// `set_permission_guide_focusable`, which the panel calls on its ready
+/// handshake and flips back off on dismiss.
+#[allow(unused_variables)]
+pub fn setup_permission_guide_window(app: &AppHandle) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        log(LOG_TAG, "guide setup: skipped (no Screen Recording gate off macOS)");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+    if app.get_webview_window(GUIDE_WINDOW_LABEL).is_some() {
+        log(LOG_TAG, "guide setup: window already exists");
+        return;
+    }
+    GUIDE_OPEN.store(false, Ordering::SeqCst);
+
+    let build = WebviewWindowBuilder::new(
+        app,
+        GUIDE_WINDOW_LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Screen Recording")
+    .inner_size(GUIDE_W, GUIDE_H)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .focusable(false)
+    .visible_on_all_workspaces(true)
+    .visible(false)
+    .build();
+
+    let window = match build {
+        Ok(w) => w,
+        Err(e) => {
+            log(LOG_TAG, &format!("guide setup: WebviewWindowBuilder FAILED: {e}"));
+            return;
+        }
+    };
+
+    // Clear WKWebView's underPageBackgroundColor so the transparent page does
+    // not sit on a system-gray sheet (same idiom as the overlay/toast).
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window.with_webview(|webview| {
+            use objc2::{class, msg_send, runtime::AnyObject};
+            // SAFETY: with_webview runs on the main thread; `inner()` is the
+            // live WKWebView; selectors are public AppKit/WebKit.
+            unsafe {
+                let wk = webview.inner() as *mut AnyObject;
+                let clear: *mut AnyObject = msg_send![class!(NSColor), clearColor];
+                let _: () = msg_send![wk, setUnderPageBackgroundColor: clear];
+            }
+        });
+    }
+
+    log(LOG_TAG, &format!("guide setup: pre-rendered hidden window {GUIDE_W}x{GUIDE_H}"));
+    }
+}
+
+/// Show the guidance panel, open the Screen Recording pane it guides to, and
+/// start the grant poller.
+///
+/// Never blocks the chord: the System Settings deep link is spawned, the
+/// positioning/show hops onto the main thread, and the poller runs on its own
+/// thread. The deep link is fired here — not left to a click — because AC2
+/// asks the panel to *land beside* that window; opening it ourselves is what
+/// makes the side-by-side placement mean anything. The panel still carries an
+/// explicit button for when macOS ignores the URL.
+fn show_permission_guide(app: &AppHandle) {
+    // Already up: nothing to do, and re-arming the poller would duplicate it.
+    if GUIDE_OPEN.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    // Fire-and-forget: `open` spawns a child process, which must never sit on
+    // the chord's stack.
+    tauri::async_runtime::spawn(async {
+        if let Err(e) =
+            crate::commands::permissions::permissions_open_settings("screen-capture".to_string())
+        {
+            log(LOG_TAG, &format!("guide: open settings FAILED: {e}"));
+        }
+    });
+
+    let app_main = app.clone();
+    let hop = app.run_on_main_thread(move || {
+        let Some(window) = app_main.get_webview_window(GUIDE_WINDOW_LABEL) else {
+            // No panel window (build failed at setup): do not leave the flag
+            // set claiming a panel is up, and give the user the banner.
+            GUIDE_OPEN.store(false, Ordering::SeqCst);
+            log(LOG_TAG, "guide show FAILED: window missing");
+            prompt_for_screen_recording(&app_main);
+            return;
+        };
+        let display = app_main
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map(|m| monitor_rect(&m))
+            .unwrap_or(DisplayRect { x: 0.0, y: 0.0, w: 1440.0, h: 900.0, scale: 1.0 });
+        let (x, y) = guide_position(&display, GUIDE_W, GUIDE_H, GUIDE_MARGIN);
+
+        #[cfg(target_os = "macos")]
+        {
+            let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+        }
+
+        match window.show() {
+            Ok(()) => log(LOG_TAG, MARK_GUIDE_SHOWN),
+            Err(e) => {
+                GUIDE_OPEN.store(false, Ordering::SeqCst);
+                log(LOG_TAG, &format!("guide show FAILED: {e}"));
+                prompt_for_screen_recording(&app_main);
+                return;
+            }
+        }
+        let _ = app_main.emit_to(
+            GUIDE_WINDOW_LABEL,
+            EVENT_GUIDE_STATE,
+            permission_guide_state_inner(),
+        );
+    });
+
+    // If the hop itself failed (event loop gone), the closure above never ran:
+    // do not leave GUIDE_OPEN latched true, which would swallow every later
+    // chord and leave an orphan poller running for the process lifetime.
+    if let Err(e) = hop {
+        GUIDE_OPEN.store(false, Ordering::SeqCst);
+        log(LOG_TAG, &format!("guide show FAILED: main-thread hop {e}"));
+        prompt_for_screen_recording(app);
+        return;
+    }
+
+    start_guide_poller(app);
+}
+
+/// Hide the panel and stop the poller. Safe to call repeatedly and from any
+/// thread; this is the single teardown path for dismissal, grant, panel
+/// errors, and app quit, so no code path can leave a stuck always-on-top
+/// window behind.
+fn hide_permission_guide(app: &AppHandle) {
+    GUIDE_OPEN.store(false, Ordering::SeqCst);
+    let app_main = app.clone();
+    let hop = app.run_on_main_thread(move || {
+        if let Some(window) = app_main.get_webview_window(GUIDE_WINDOW_LABEL) {
+            // Drop focusability with the window so the next open is
+            // non-activating again, exactly as it was built.
+            if let Err(e) = window.set_focusable(false) {
+                log(LOG_TAG, &format!("guide hide: set_focusable failed: {e}"));
+            }
+            if let Err(e) = window.hide() {
+                log(LOG_TAG, &format!("guide hide FAILED: {e}"));
+            }
+        }
+    });
+    // A dropped hop is the one way a visible panel could outlive its flag, so
+    // it is logged loudly rather than swallowed.
+    if let Err(e) = hop {
+        log(LOG_TAG, &format!("guide hide FAILED: main-thread hop {e}"));
+    }
+}
+
+/// Background poller: watches `CGPreflightScreenCaptureAccess` while the panel
+/// is open and, the instant it flips, closes the panel and resumes the capture
+/// the user originally attempted — no second chord press.
+fn start_guide_poller(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(GUIDE_POLL_INTERVAL_MS));
+        let open = GUIDE_OPEN.load(Ordering::SeqCst);
+        // Skip the syscall entirely once the panel is gone.
+        let granted = open && hq_platform::permissions::screen_capture_preflight();
+        match guide_poll(open, granted) {
+            GuidePoll::Stop => return,
+            GuidePoll::Continue => continue,
+            GuidePoll::Resume => {
+                // Claim the panel atomically. `dismiss_permission_guide` also
+                // clears GUIDE_OPEN, so if the user pressed "Not now" while
+                // this tick was inside the preflight syscall, the swap below
+                // reads false and we exit without resurrecting a capture they
+                // walked away from — and without clearing their dismissal.
+                if !GUIDE_OPEN.swap(false, Ordering::SeqCst) {
+                    return;
+                }
+                log(LOG_TAG, MARK_GUIDE_GRANTED);
+                hide_permission_guide(&app);
+                GUIDE_DISMISSED.store(false, Ordering::SeqCst);
+                log(LOG_TAG, MARK_GUIDE_RESUMED);
+                let app_main = app.clone();
+                let _ = app.run_on_main_thread(move || show_overlay(&app_main));
+                return;
+            }
+        }
+    });
+}
+
+/// App-quit teardown. Called from the exit path so a panel that is on screen
+/// when the user quits never outlives the app as a stuck always-on-top window.
+pub fn shutdown_permission_guide(app: &AppHandle) {
+    if GUIDE_OPEN.load(Ordering::SeqCst) {
+        hide_permission_guide(app);
+    }
+}
+
+/// Ready handshake from the panel webview: deliver the drag/copy state.
+#[tauri::command]
+pub fn permission_guide_ready(app: AppHandle) -> Result<PermissionGuideState, String> {
+    let state = permission_guide_state_inner();
+    let _ = app.emit_to(GUIDE_WINDOW_LABEL, EVENT_GUIDE_STATE, state.clone());
+    Ok(state)
+}
+
+/// Toggle the panel's focusable state so it can take keyboard input. Per
+/// policy `hq-desktop-app-nonactivating-window-toggle-focusable-for-input`
+/// the panel is built non-activating and only becomes focusable through this
+/// command (same shape as `set_capture_toast_focusable`).
+///
+/// Deliberately does NOT call `set_focus()`: the whole point of this panel is
+/// that the user is working in the Screen Recording pane next to it, and
+/// yanking key focus off that window would break the drag it is asking for.
+/// Making the window focusable is enough — clicking or tabbing into the panel
+/// then gives it the keyboard.
+#[tauri::command]
+pub async fn set_permission_guide_focusable(app: AppHandle, focusable: bool) -> Result<(), String> {
+    let app_main = app.clone();
+    app.run_on_main_thread(move || {
+        let Some(window) = app_main.get_webview_window(GUIDE_WINDOW_LABEL) else {
+            return;
+        };
+        match window.set_focusable(focusable) {
+            Ok(()) => {
+                log(
+                    LOG_TAG,
+                    &format!("set_permission_guide_focusable: focusable={focusable}"),
+                );
+            }
+            Err(e) => log(
+                LOG_TAG,
+                &format!("set_permission_guide_focusable: set_focusable failed: {e}"),
+            ),
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// User closed the panel without granting. Hides the panel, stops the poller,
+/// and arms the banner fallback for the next chord press.
+#[tauri::command]
+pub fn dismiss_permission_guide(app: AppHandle) -> Result<(), String> {
+    if !GUIDE_OPEN.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    GUIDE_DISMISSED.store(true, Ordering::SeqCst);
+    log(LOG_TAG, MARK_GUIDE_DISMISSED);
+    hide_permission_guide(&app);
+    Ok(())
 }
 
 fn monitor_rect(m: &tauri::Monitor) -> DisplayRect {
@@ -614,7 +1042,16 @@ pub fn on_capture_chord(app: &AppHandle) {
     // drag on but that can never produce an image is worse than no overlay.
     if action == OverlayAction::Show && !screen_capture_allowed() {
         log(LOG_TAG, MARK_PERMISSION_DENIED);
-        prompt_for_screen_recording(app);
+        // US-014: the first refusal gets the guided panel (macOS only); once
+        // the user has closed that panel without granting, fall back to the
+        // one-line banner rather than re-opening something they rejected.
+        match denial_response(
+            GUIDE_DISMISSED.load(Ordering::SeqCst),
+            cfg!(target_os = "macos"),
+        ) {
+            DenialResponse::Guide => show_permission_guide(app),
+            DenialResponse::Banner => prompt_for_screen_recording(app),
+        }
         return;
     }
     let app_main = app.clone();
@@ -1979,9 +2416,19 @@ mod hq_idea_board_capture_tests {
             .filter(|l| l.trim_start().starts_with("window.set_focusable(focusable)")
                 || l.trim_start().starts_with("match window.set_focusable(focusable)"))
             .count();
+        // US-014 added a second sanctioned toggle
+        // (`set_permission_guide_focusable`). Both are the *named* toggle
+        // commands for their non-activating window; a third site would mean a
+        // window is flipping focusable somewhere other than its own command.
         assert_eq!(
-            toggle_sites, 1,
-            "exactly one parameterized set_focusable toggle site (set_capture_toast_focusable)"
+            toggle_sites, 2,
+            "only the two named toggle commands may flip focusable at runtime \
+             (set_capture_toast_focusable, set_permission_guide_focusable)"
+        );
+        let guide_toggle = fn_body(&src, "fn set_permission_guide_focusable(");
+        assert!(
+            guide_toggle.contains("set_focusable(focusable)"),
+            "set_permission_guide_focusable must toggle via its `focusable` param"
         );
     }
 
@@ -2845,5 +3292,290 @@ mod hq_idea_board_capture_tests {
         let stored = image::open(hq_root.join(&record.image_path)).unwrap();
         assert_eq!(stored.width().max(stored.height()), 1200);
         assert!(record.image_path.starts_with("workspace/ideas-local/alpha/"));
+    }
+    // -----------------------------------------------------------------
+    // US-014: guided screen-recording permission onboarding
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn hq_idea_board_denial_response_truth_table() {
+        // macOS, first refusal -> the guided panel.
+        assert_eq!(denial_response(false, true), DenialResponse::Guide);
+
+        // macOS, the user already closed the panel without granting -> the
+        // one-line banner, not a panel they just rejected (US-014 AC5 / e2e 3).
+        assert_eq!(denial_response(true, true), DenialResponse::Banner);
+
+        // Windows: no Screen Recording gate and no pane to guide to, so the
+        // panel is never offered regardless of the dismissal flag.
+        assert_eq!(denial_response(false, false), DenialResponse::Banner);
+        assert_eq!(denial_response(true, false), DenialResponse::Banner);
+    }
+
+    #[test]
+    fn hq_idea_board_guide_poll_truth_table() {
+        // Closed panel stops the thread even if the grant lands in the same
+        // tick — a dismissed panel must never resurrect a capture.
+        assert_eq!(guide_poll(false, false), GuidePoll::Stop);
+        assert_eq!(guide_poll(false, true), GuidePoll::Stop);
+        // Open and still denied: keep waiting.
+        assert_eq!(guide_poll(true, false), GuidePoll::Continue);
+        // Open and just granted: close + resume.
+        assert_eq!(guide_poll(true, true), GuidePoll::Resume);
+    }
+
+    #[test]
+    fn hq_idea_board_guide_poll_interval_is_neither_busy_nor_sluggish() {
+        // A busy loop would burn a core behind a modal panel; anything over a
+        // second would make the drop feel unacknowledged.
+        assert!(GUIDE_POLL_INTERVAL_MS >= 100, "poll must not busy-loop");
+        assert!(GUIDE_POLL_INTERVAL_MS <= 1000, "grant must feel instant");
+    }
+
+    #[test]
+    fn hq_idea_board_guide_poller_skips_the_syscall_when_closed() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+        let body = fn_body(&src, "fn start_guide_poller(");
+        // `open &&` short-circuits the preflight call, so a closed panel costs
+        // nothing, and the loop always sleeps before polling.
+        assert!(body.contains("let granted = open && hq_platform::permissions::screen_capture_preflight()"));
+        let sleep_idx = body.find("thread::sleep").expect("poller sleeps each tick");
+        let poll_idx = body.find("screen_capture_preflight").expect("poller preflights");
+        assert!(sleep_idx < poll_idx, "sleep before poll — never a busy loop");
+        // Every terminal arm leaves the loop.
+        assert!(body.contains("GuidePoll::Stop => return"));
+    }
+
+    #[test]
+    fn hq_idea_board_guide_state_says_macos_will_not_reprompt() {
+        // The one-shot system prompt is already spent by the time this panel
+        // exists, so the panel must never imply another dialog is coming.
+        let state = permission_guide_state_inner();
+        assert!(!state.will_reprompt);
+        assert!(!state.grant_name.is_empty());
+    }
+
+    #[test]
+    fn hq_idea_board_guide_sits_beside_the_centred_settings_window() {
+        // A non-primary display left of the primary has a negative origin.
+        let display = DisplayRect { x: -2560.0, y: -200.0, w: 2560.0, h: 1440.0, scale: 1.0 };
+        let (x, y) = guide_position(&display, GUIDE_W, GUIDE_H, GUIDE_MARGIN);
+        // Parked to the LEFT of where macOS centres System Settings, with the
+        // margin as the gap between the two windows.
+        let settings_left = display.x + (display.w - SETTINGS_WINDOW_W) / 2.0;
+        assert_eq!(x + GUIDE_W + GUIDE_MARGIN, settings_left);
+        // Vertically centred, not pinned to a corner.
+        assert_eq!(y, display.y + (display.h - GUIDE_H) / 2.0);
+        // Inside the display it was anchored to, not the virtual desktop.
+        assert!(x >= display.x && x + GUIDE_W <= display.x + display.w);
+        assert!(y >= display.y && y + GUIDE_H <= display.y + display.h);
+    }
+
+    #[test]
+    fn hq_idea_board_guide_position_clamps_onto_a_small_display() {
+        // A display too narrow to hold the panel beside Settings would put the
+        // ideal x off the left edge; clamping keeps the whole panel visible.
+        let display = DisplayRect { x: 0.0, y: 0.0, w: 900.0, h: 600.0, scale: 1.0 };
+        let (x, y) = guide_position(&display, GUIDE_W, GUIDE_H, GUIDE_MARGIN);
+        assert!(x >= display.x + GUIDE_MARGIN, "panel ran off the left edge");
+        assert!(x + GUIDE_W <= display.x + display.w, "panel ran off the right edge");
+        assert!(y >= display.y + GUIDE_MARGIN);
+        assert!(y + GUIDE_H <= display.y + display.h);
+    }
+
+    #[test]
+    fn hq_idea_board_guide_window_is_built_hidden_and_non_activating() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+        let body = fn_body(&src, "fn setup_permission_guide_window(");
+        assert!(body.contains(".visible(false)"), "panel must be pre-rendered hidden");
+        assert!(body.contains(".focusable(false)"), "panel must be built non-activating");
+        assert!(body.contains(".always_on_top(true)"));
+        // macOS-only: Windows has no gate, so no window is built there.
+        assert!(body.contains(r#"#[cfg(target_os = "macos")]"#));
+        // Setup must never request a permission — US-014 AC7 (the one-shot
+        // macOS prompt is only spent on genuine capture intent).
+        assert!(!body.contains("request_screen_capture_access"));
+        assert!(!body.contains("screen_capture_preflight"));
+        assert!(!body.contains("set_focusable"));
+    }
+
+    #[test]
+    fn hq_idea_board_no_screen_permission_is_requested_at_launch() {
+        // AC7 regression: the only caller of the one-shot request in the app
+        // is the chord's permission gate (and the explicit user-driven
+        // meeting-permissions button in permissions.rs), never app setup.
+        let main_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+            .expect("main.rs is readable");
+        assert!(
+            !main_rs.contains("request_screen_capture_access"),
+            "app setup must never burn the one-shot Screen Recording prompt"
+        );
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+        let request_sites = src
+            .lines()
+            // Only real call/reference sites: a line that *starts* with the
+            // path. The filter literal itself is nested inside this closure,
+            // so the check is not self-referential.
+            .filter(|l| {
+                l.trim_start()
+                    .starts_with("hq_platform::permissions::request_screen_capture_access")
+            })
+            .count();
+        assert_eq!(
+            request_sites, 1,
+            "exactly one request site: the chord's screen_capture_allowed gate"
+        );
+        assert!(fn_body(&src, "fn screen_capture_allowed(")
+            .contains("request_screen_capture_access"));
+    }
+
+    #[test]
+    fn hq_idea_board_guide_teardown_is_the_single_cleanup_path() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+        // Dismissal, grant-resume, and app quit all funnel through
+        // hide_permission_guide, which clears the run flag *and* hides the
+        // window — so no path can leave a stuck always-on-top panel.
+        let hide = fn_body(&src, "fn hide_permission_guide(");
+        assert!(hide.contains("GUIDE_OPEN.store(false"));
+        assert!(hide.contains("window.hide()"));
+        assert!(hide.contains("set_focusable(false)"));
+        for caller in [
+            "fn dismiss_permission_guide(",
+            "fn shutdown_permission_guide(",
+        ] {
+            assert!(
+                fn_body(&src, caller).contains("hide_permission_guide("),
+                "{caller} must tear down through hide_permission_guide"
+            );
+        }
+        assert!(fn_body(&src, "fn start_guide_poller(").contains("hide_permission_guide(&app)"));
+        // A failed show must not leave the flag claiming a panel is up —
+        // neither when the closure runs and the window is missing, nor when
+        // the main-thread hop itself is rejected.
+        let show = fn_body(&src, "fn show_permission_guide(");
+        assert!(show.contains("GUIDE_OPEN.store(false, Ordering::SeqCst)"));
+        assert!(show.contains("prompt_for_screen_recording(&app_main)"));
+        assert!(
+            show.contains("if let Err(e) = hop"),
+            "a dropped main-thread hop must reset the flag, not latch it forever"
+        );
+        assert!(
+            show.contains("prompt_for_screen_recording(app);"),
+            "a panel that cannot be shown still owes the user the banner"
+        );
+        // ...and the dropped-hop branch returns before the poller is armed.
+        let hop_idx = show.find("if let Err(e) = hop").expect("hop guard");
+        let poller_idx = show.find("start_guide_poller(app)").expect("poller");
+        assert!(hop_idx < poller_idx);
+    }
+
+    #[test]
+    fn hq_idea_board_a_dismiss_racing_a_grant_never_resurrects_the_capture() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+        let poller = fn_body(&src, "fn start_guide_poller(");
+        let resume = &poller[poller.find("GuidePoll::Resume").expect("resume arm")..];
+        // The resume arm must *claim* the panel with a swap before it acts:
+        // a plain load would let a dismiss that landed during the preflight
+        // syscall be overwritten, showing an overlay the user declined.
+        let claim = resume
+            .find("GUIDE_OPEN.swap(false, Ordering::SeqCst)")
+            .expect("resume must claim the panel atomically");
+        for after in ["hide_permission_guide", "GUIDE_DISMISSED.store(false", "show_overlay"] {
+            let idx = resume.find(after).unwrap_or_else(|| panic!("missing {after}"));
+            assert!(claim < idx, "{after} must come after the atomic claim");
+        }
+        assert!(resume[claim..].contains("return;"), "a lost claim must bail out");
+    }
+
+    #[test]
+    fn hq_idea_board_guide_opens_the_pane_it_guides_to_and_keeps_focus_off_itself() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/capture.rs"
+        ))
+        .expect("capture.rs is readable");
+        let show = fn_body(&src, "fn show_permission_guide(");
+        // AC2: the panel deep-links the Screen Recording pane itself — being
+        // "beside that window" is meaningless if nothing opened it.
+        assert!(show.contains(r#"permissions_open_settings("screen-capture".to_string())"#));
+        // Spawned, so the chord never waits on a child process.
+        assert!(show.contains("tauri::async_runtime::spawn"));
+        // The panel never activates itself: the user is dragging into the
+        // Settings window next door and must keep key focus there.
+        let toggle = fn_body(&src, "fn set_permission_guide_focusable(");
+        assert!(
+            !toggle.contains("set_focus()"),
+            "the guide must never steal focus from the Settings pane"
+        );
+    }
+
+    #[test]
+    fn hq_idea_board_guide_commands_are_registered_with_tauri() {
+        // A command the panel invokes but main.rs never registers fails only
+        // at runtime, as a rejected invoke inside a window the user is stuck
+        // in. Assert the registration instead.
+        let main_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+            .expect("main.rs is readable");
+        for cmd in [
+            "commands::capture::permission_guide_ready",
+            "commands::capture::set_permission_guide_focusable",
+            "commands::capture::dismiss_permission_guide",
+        ] {
+            assert!(main_rs.contains(cmd), "{cmd} is not in generate_handler!");
+        }
+        assert!(main_rs.contains("commands::capture::setup_permission_guide_window(app)"));
+        assert!(main_rs.contains("commands::capture::shutdown_permission_guide(&_app_handle)"));
+    }
+
+    #[test]
+    fn hq_idea_board_guide_label_matches_capability_file() {
+        let cap_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/capabilities/permission-guide.json"
+        );
+        let cap = std::fs::read_to_string(cap_path).expect("permission-guide.json is readable");
+        let parsed: serde_json::Value = serde_json::from_str(&cap).expect("valid json");
+        assert_eq!(
+            parsed["identifier"].as_str(),
+            Some(GUIDE_WINDOW_LABEL),
+            "capability identifier drifted from GUIDE_WINDOW_LABEL"
+        );
+        assert_eq!(
+            parsed["windows"][0].as_str(),
+            Some(GUIDE_WINDOW_LABEL),
+            "capability window drifted from GUIDE_WINDOW_LABEL"
+        );
+        // Every core command the panel invokes must be covered by the grant.
+        let perms: Vec<&str> = parsed["permissions"]
+            .as_array()
+            .expect("permissions array")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(perms.contains(&"core:default"));
+        assert!(
+            perms.contains(&"core:event:default"),
+            "the panel receives permission-guide:state over core:event"
+        );
     }
 }

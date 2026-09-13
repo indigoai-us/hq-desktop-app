@@ -201,6 +201,10 @@ fn setup_startup_surfaces(
     // US-005: pre-render the hidden capture-toast window the same way.
     commands::capture::setup_capture_toast_window(app);
 
+    // US-014: pre-render the hidden screen-recording guidance panel. Built
+    // hidden and non-activating; nothing here requests any permission.
+    commands::capture::setup_permission_guide_window(app);
+
     // macOS: the menu-bar item lives in a separate native helper process
     // (tao parks an in-process status item off-screen on Tahoe).
     #[cfg(target_os = "macos")]
@@ -1010,6 +1014,9 @@ fn main() {
             commands::capture::capture_toast_ready,
             commands::capture::dismiss_capture_toast,
             commands::capture::set_capture_toast_focusable,
+            commands::capture::permission_guide_ready,
+            commands::capture::set_permission_guide_focusable,
+            commands::capture::dismiss_permission_guide,
             commands::capture::ideas_open_board,
             commands::dock::apply_dock_icon,
             commands::compat::check_ai_tools,
@@ -1520,6 +1527,9 @@ fn main() {
             // `WM_ENDSESSION` produces neither. That path is handled in the
             // `RunEvent::Exit` arm below — see `handle_run_event_exit`.
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                // US-014: never let an always-on-top guidance panel outlive
+                // the app as a stuck floating window.
+                commands::capture::shutdown_permission_guide(&_app_handle);
                 // Latch first, so the `Exit` arm that follows can tell an
                 // app-initiated quit from an OS-forced session end.
                 commands::process::note_app_initiated_exit();

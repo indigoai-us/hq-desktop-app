@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "permission-guide",
+  "description": "Capability set for the permission-guide window (hq-idea-board US-014: guided screen-recording permission onboarding). Receives permission-guide:state via core:event. Invokes permission_guide_ready (ready handshake - returns the .app bundle path to drag into the Screen Recording list and whether macOS will re-prompt), set_permission_guide_focusable (toggle focusable so the panel is keyboard-operable once the user clicks or tabs into it - it is built non-activating and is never programmatically focused, so opening it does not pull key focus off the System Settings pane the user is dragging into), dismiss_permission_guide (hide, never close, and arm the banner fallback), and permissions_open_settings (deep-link the Privacy_ScreenCapture pane). App-defined commands need no per-command permission tokens, and the window never calls a core window/webview API itself (show/hide/position/focusable are driven from Rust), so the grant is core:default + core:event:default only - the same minimum as capture-overlay and capture-toast. The copy-path fallback uses navigator.clipboard (the repo-wide idiom), not a Tauri clipboard plugin, so no clipboard token is needed.",
+  "windows": ["permission-guide"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}
