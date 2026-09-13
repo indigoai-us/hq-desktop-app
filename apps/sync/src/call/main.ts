@@ -148,17 +148,36 @@ const started = startCallWindow({
  * the window with the Rust registry still armed, which refused every later open
  * with CALL_ACTIVE until the app restarted.
  */
+/**
+ * True once teardown has run. The next close request is then let straight
+ * through, un-prevented, so the window closes natively even if `destroy`
+ * could not run.
+ */
+let tornDown = false;
+
 void getCurrentWindow().onCloseRequested(async (event) => {
-  await handleCloseRequested({
-    handle: () => handle,
-    started,
-    // Published by the bootstrap as soon as the target resolves — that is,
-    // well before the handle exists.
-    sessionId: () => callView.state.sessionId,
-    invoke: (command, args) => invoke(command, args),
-    preventDefault: () => event.preventDefault(),
-    destroy: () => getCurrentWindow().destroy(),
-  });
+  // Teardown already happened — do NOT prevent this one.
+  if (tornDown) return;
+  try {
+    await handleCloseRequested({
+      handle: () => handle,
+      started,
+      // Published by the bootstrap as soon as the target resolves — that is,
+      // well before the handle exists.
+      sessionId: () => callView.state.sessionId,
+      invoke: (command, args) => invoke(command, args),
+      preventDefault: () => event.preventDefault(),
+      destroy: () => getCurrentWindow().destroy(),
+      fallbackClose: async () => {
+        // Re-entering this handler with the flag set skips preventDefault,
+        // so the close completes the ordinary way.
+        tornDown = true;
+        await getCurrentWindow().close();
+      },
+    });
+  } finally {
+    tornDown = true;
+  }
 });
 
 /**

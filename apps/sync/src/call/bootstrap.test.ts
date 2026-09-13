@@ -284,6 +284,35 @@ describe("handleCloseRequested", () => {
     expect(bench.order).toEqual(["preventDefault", "close", "destroy"]);
   });
 
+  /**
+   * Regression: `destroy` requires the `core:window:allow-destroy` ACL grant,
+   * which the call window did not have. The close is already cancelled by the
+   * time it runs, so the rejection left the window permanently unclosable.
+   */
+  it("falls back to a plain close when destroy is refused", async () => {
+    const bench = closeBench({});
+    const handle = fakeHandle(bench.order);
+    bench.land(handle);
+    await handleCloseRequested({
+      ...bench.deps,
+      handle: () => handle,
+      destroy: async () => {
+        bench.order.push("destroy:denied");
+        throw new Error("window.destroy not allowed. Permissions associated…");
+      },
+      fallbackClose: async () => {
+        bench.order.push("fallbackClose");
+      },
+    });
+    expect(bench.order).toEqual([
+      "preventDefault",
+      "leave:window-close",
+      "close",
+      "destroy:denied",
+      "fallbackClose",
+    ]);
+  });
+
   it("destroys the window even when close never settles", async () => {
     const bench = closeBench({});
     const handle = {

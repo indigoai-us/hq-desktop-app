@@ -845,3 +845,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod call_window_capability_tests {
+    /// The call window closes itself by calling `destroy()` after cancelling
+    /// the OS close so teardown can finish. `core:window:default` carries only
+    /// read-only getters, so without an explicit `allow-destroy` grant that
+    /// call is refused by the ACL and the window can never be closed — a
+    /// silent UnhandledRejection in the webview, invisible from Rust.
+    ///
+    /// This asserts the grant is present so nobody trims the capability back
+    /// to "least privilege" and re-wedges every call window.
+    #[test]
+    fn call_window_may_destroy_itself() {
+        let capability = include_str!("../../capabilities/call-window.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(capability).expect("call-window.json parses");
+        let permissions = parsed["permissions"]
+            .as_array()
+            .expect("permissions is an array");
+        assert!(
+            permissions
+                .iter()
+                .any(|p| p.as_str() == Some("core:window:allow-destroy")),
+            "call window must keep core:window:allow-destroy or it cannot be closed"
+        );
+        assert!(
+            permissions
+                .iter()
+                .any(|p| p.as_str() == Some("core:window:allow-close")),
+            "call window must keep core:window:allow-close"
+        );
+    }
+}

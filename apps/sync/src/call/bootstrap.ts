@@ -1489,6 +1489,12 @@ export interface CloseRequestedDeps {
   /** Stop the close so teardown can finish first. */
   preventDefault: () => void;
   destroy: () => Promise<void>;
+  /**
+   * Last resort when `destroy` itself fails — an ACL denial being the live
+   * case. Must close the window by a route that does NOT come back through
+   * this handler, or the window stays open forever.
+   */
+  fallbackClose?: () => Promise<void>;
   waitMs?: number;
   /** Bound on each teardown step. Defaults to `CLOSE_TEARDOWN_WAIT_MS`. */
   teardownMs?: number;
@@ -1573,7 +1579,18 @@ export async function handleCloseRequested(
   }
 
   await bounded(() => handle?.close());
-  await deps.destroy();
+
+  /**
+   * `destroy` is the only thing that can still close this window: the close
+   * was cancelled at the top so teardown could run, and nothing re-issues it.
+   * A throw here therefore strands the window, so a failure falls through to
+   * `fallbackClose` rather than propagating.
+   */
+  try {
+    await deps.destroy();
+  } catch {
+    await deps.fallbackClose?.().catch(() => {});
+  }
 }
 
 async function releaseOnly(
