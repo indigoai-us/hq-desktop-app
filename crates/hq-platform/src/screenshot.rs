@@ -790,6 +790,11 @@ mod imp {
 /// `exclude_window` is the native window number of a window to keep *out* of
 /// the shot (macOS only — the capture overlay). Pass `None` when there is no
 /// such window; the platform then captures whatever is on screen.
+///
+/// It must only ever be `Some` for a window that is **still on screen**. The
+/// idea-capture release path hides its overlay before grabbing, so it passes
+/// `None` — see `capture::grab_exclusion`. An anchor that has already been
+/// ordered out does not error; it yields a black frame.
 pub fn capture_region(
     region: &CaptureRegion,
     exclude_window: Option<u32>,
@@ -813,11 +818,19 @@ pub fn capture_region(
     // returns only the calling process's own windows over a black desktop.
     // That grant is now in place, so that specific cause should be gone. This
     // guard covers the other one, which permission cannot fix.)
-    if exclude_window.is_some() {
-        if let Ok(cap) = &shot {
-            if is_blank_capture(&cap.rgba) {
-                return imp::capture_region(region, None);
-            }
+    let shot = match (&shot, exclude_window) {
+        (Ok(cap), Some(_)) if is_blank_capture(&cap.rgba) => imp::capture_region(region, None),
+        _ => shot,
+    };
+    // An empty frame is never a capture. Whatever produced it — a dead anchor,
+    // a revoked grant, a display that went away mid-gesture — the user gets a
+    // named failure they can act on, because a black PNG filed as a real idea
+    // is worse than an error: it looks like it worked.
+    if let Ok(cap) = &shot {
+        if is_blank_capture(&cap.rgba) {
+            return Err(ScreenshotError::CaptureFailed(
+                "the captured frame is entirely black - nothing was on screen to grab".into(),
+            ));
         }
     }
     shot
@@ -876,8 +889,50 @@ mod hq_idea_board_screenshot_tests {
         let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/screenshot.rs"))
             .expect("own source");
         assert!(
-            src.contains("return imp::capture_region(region, None);"),
+            src.contains("=> imp::capture_region(region, None),"),
             "a blank exclude-path capture must fall back to the plain display grab"
+        );
+    }
+
+    /// A frame with nothing in it is a failure, not a capture. Saving it is
+    /// worse than erroring: it looks to the user like the capture worked.
+    #[test]
+    fn hq_idea_board_blank_frame_is_an_error_not_a_saved_capture() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/screenshot.rs"))
+            .expect("own source");
+        // The public wrapper is the last `capture_region` in the file; the
+        // earlier ones are the per-platform `imp` bodies.
+        let body = src
+            .rsplit("pub fn capture_region(")
+            .next()
+            .expect("capture_region defined");
+        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        let guard = body
+            .rfind("if is_blank_capture(&cap.rgba)")
+            .expect("capture_region must check the frame it is about to return");
+        assert!(
+            body[guard..].contains("ScreenshotError::CaptureFailed"),
+            "a still-blank frame must surface as a named failure"
+        );
+    }
+
+    /// The defect the owner hit did NOT trip `is_blank_capture`: the degraded
+    /// below-window frames were ~0.9% non-black, because they contained HQ's
+    /// own overlay readout over a black desktop. A pixel guard cannot be the
+    /// fix for a stale anchor - not excluding a hidden window is.
+    #[test]
+    fn hq_idea_board_overlay_contaminated_frame_is_not_detectable_as_blank() {
+        let mut frame = vec![0u8; 1000 * 4];
+        for px in frame.chunks_exact_mut(4).take(9) {
+            px.copy_from_slice(&[255, 255, 255, 255]); // the dimensions label
+        }
+        for px in frame.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        assert!(
+            !is_blank_capture(&frame),
+            "0.9% non-black reads as real content - the structural fix is what \
+             has to prevent this frame, not the blank guard"
         );
     }
 

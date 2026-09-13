@@ -184,9 +184,19 @@ static SHOWN_DISPLAY: Mutex<Option<DisplayRect>> = Mutex::new(None);
 static PENDING_PROVENANCE: Mutex<Option<FrontmostSnapshot>> = Mutex::new(None);
 
 /// The overlay's native window number (macOS `NSWindow.windowNumber`), read on
-/// the main thread at show time. `CGWindowListCreateImage` uses it to capture
-/// everything *below* the overlay, so the dimmed sheet is excluded without
-/// waiting for the hide to land. 0 = unknown (fall back to a display grab).
+/// the main thread at show time, and cleared again the moment the overlay is
+/// ordered out. 0 = no overlay on screen.
+///
+/// It is only ever a valid `CGWindowListCreateImage` anchor **while the
+/// overlay is still on screen**. AppKit assigns a window number when a window
+/// is first ordered in, so the overlay — built `.visible(false)` — reports 0
+/// until its first `show()` and a real number on every show after that. That
+/// asymmetry is what made the first capture of a session work and every one
+/// after it come back black: capture 1 anchored on 0 (no exclusion, plain
+/// display grab), captures 2+ anchored on a window that `hide_overlay` had
+/// already ordered out, and an on-screen-below-window query anchored on an
+/// off-screen window returns the caller's own layers over a black desktop.
+/// See [`grab_exclusion`].
 static OVERLAY_WINDOW_NUMBER: AtomicU32 = AtomicU32::new(0);
 
 /// The capture chord: ⌥⇧C.
@@ -2140,6 +2150,9 @@ fn show_overlay(app: &AppHandle) {
 /// MAIN THREAD ONLY. Hide the overlay without capturing anything.
 pub fn hide_overlay(app: &AppHandle, reason: &str) {
     let was_visible = OVERLAY_VISIBLE.swap(false, Ordering::SeqCst);
+    // The number is only an anchor while the window is on screen. Clearing it
+    // here means a stale one can never survive into a later grab.
+    OVERLAY_WINDOW_NUMBER.store(0, Ordering::SeqCst);
     disarm_overlay_drag_tracker();
     if was_visible {
         defer_escape_binding(app);
@@ -2597,6 +2610,43 @@ pub async fn capture_region_release(app: AppHandle, selection: SelectionRect) ->
     }
 }
 
+/// Hide the overlay, then decide what the grab may exclude.
+///
+/// The order is the whole point, and is why this is one function rather than
+/// two statements a later edit can quietly transpose: the exclusion must be
+/// read from the overlay's state *after* it is off screen, never from a window
+/// number remembered at show time. Running these two steps in the other order
+/// is the black-capture defect.
+fn release_grab_plan(hide: impl FnOnce()) -> Option<u32> {
+    hide();
+    grab_exclusion(
+        OVERLAY_VISIBLE.load(Ordering::SeqCst),
+        OVERLAY_WINDOW_NUMBER.load(Ordering::SeqCst),
+    )
+}
+
+/// What the pixel grab may exclude, given the overlay's state *at grab time*.
+///
+/// `CGWindowListCreateImage`'s on-screen-below-window mode needs its anchor to
+/// still be on screen. Ask it for "everything below window N" when N has
+/// already been ordered out and it does not error — it hands back the calling
+/// process's own layers over a black desktop, which is saved as a
+/// convincing-looking black PNG.
+///
+/// The release path hides the overlay before grabbing (so the user's screen is
+/// clean before any encoding starts), so by grab time there is nothing left to
+/// exclude and the honest answer is `None` — the plain display grab, which is
+/// exactly the path the one good capture of the owner's session took.
+fn grab_exclusion(overlay_on_screen_at_grab: bool, window_number: u32) -> Option<u32> {
+    if !overlay_on_screen_at_grab {
+        return None;
+    }
+    match window_number {
+        0 => None,
+        n => Some(n),
+    }
+}
+
 /// MAIN THREAD ONLY. The one release path: freeze the rect, hide the overlay,
 /// and hand the pixels to the background capture thread.
 ///
@@ -2623,11 +2673,7 @@ pub fn release_selection_on_main(app: &AppHandle, selection: SelectionRect) {
         hide_overlay(app, "click");
         return;
     };
-    let exclude = match OVERLAY_WINDOW_NUMBER.load(Ordering::SeqCst) {
-        0 => None,
-        n => Some(n),
-    };
-    hide_overlay(app, "release");
+    let exclude = release_grab_plan(|| hide_overlay(app, "release"));
 
     let app_bg = app.clone();
     std::thread::spawn(move || capture_and_store(&app_bg, region, exclude));
@@ -3336,6 +3382,85 @@ pub async fn ideas_list_companies(app: AppHandle) -> Result<Vec<String>, String>
 #[cfg(test)]
 mod hq_idea_board_capture_tests {
     use super::*;
+
+    /// Drive the production release decision the way an app session does:
+    /// show, release, show again, release again. AppKit gives the overlay no
+    /// window number until its first order-in, so capture 1 saw 0 and every
+    /// capture after it saw a real number — and the old code turned that
+    /// difference into a below-window grab anchored on a window it had just
+    /// hidden, i.e. a black PNG. Both cycles must produce the same plan.
+    #[test]
+    fn hq_idea_board_second_capture_takes_the_same_grab_path_as_the_first() {
+        // What `NSWindow.windowNumber` returns at each successive show.
+        let numbers_at_show = [0u32, 4271, 4271];
+        let mut plans = Vec::new();
+        for number in numbers_at_show {
+            // ...what `show_overlay` records.
+            OVERLAY_WINDOW_NUMBER.store(number, Ordering::SeqCst);
+            OVERLAY_VISIBLE.store(true, Ordering::SeqCst);
+            // ...and what the release path does, hide included.
+            plans.push(release_grab_plan(|| {
+                OVERLAY_VISIBLE.store(false, Ordering::SeqCst);
+                OVERLAY_WINDOW_NUMBER.store(0, Ordering::SeqCst);
+            }));
+        }
+        assert_eq!(
+            plans[0], plans[1],
+            "capture 2 took a different grab path than capture 1: {plans:?}"
+        );
+        assert_eq!(plans[1], plans[2], "capture 3 drifted again: {plans:?}");
+        assert!(
+            plans.iter().all(|p| p.is_none()),
+            "the overlay is hidden before the grab, so there is nothing to \
+             exclude - a below-window anchor here is the black capture: {plans:?}"
+        );
+        OVERLAY_VISIBLE.store(false, Ordering::SeqCst);
+        OVERLAY_WINDOW_NUMBER.store(0, Ordering::SeqCst);
+    }
+
+    /// A window number is only an anchor while its window is on screen.
+    #[test]
+    fn hq_idea_board_grab_exclusion_requires_an_on_screen_anchor() {
+        // On screen with a real number: excluding it is meaningful.
+        assert_eq!(grab_exclusion(true, 4271), Some(4271));
+        // On screen but never ordered in: nothing to anchor on.
+        assert_eq!(grab_exclusion(true, 0), None);
+        // Already hidden: the number is stale no matter how real it looks.
+        assert_eq!(grab_exclusion(false, 4271), None);
+        assert_eq!(grab_exclusion(false, 0), None);
+    }
+
+    /// The stale number must not outlive the window being ordered out.
+    #[test]
+    fn hq_idea_board_release_plan_reads_state_after_the_hide_not_before() {
+        OVERLAY_VISIBLE.store(true, Ordering::SeqCst);
+        OVERLAY_WINDOW_NUMBER.store(4271, Ordering::SeqCst);
+        let mut hidden = false;
+        let plan = release_grab_plan(|| {
+            hidden = true;
+            OVERLAY_VISIBLE.store(false, Ordering::SeqCst);
+            OVERLAY_WINDOW_NUMBER.store(0, Ordering::SeqCst);
+        });
+        assert!(hidden, "the plan must hide the overlay, not just read flags");
+        assert_eq!(plan, None, "the plan was computed before the hide landed");
+    }
+
+    /// `hide_overlay` itself has to clear the number; the test above supplies
+    /// its own closure, so pin the real function's behaviour to the source.
+    #[test]
+    fn hq_idea_board_hide_overlay_clears_the_window_number() {
+        let src = std::fs::read_to_string(file!()).expect("own source");
+        let body = src
+            .split("pub fn hide_overlay(")
+            .nth(1)
+            .expect("hide_overlay defined");
+        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        assert!(
+            body.contains("OVERLAY_WINDOW_NUMBER.store(0, Ordering::SeqCst)"),
+            "hiding the overlay must clear its window number, or a stale \
+             anchor survives into the next capture"
+        );
+    }
 
     #[test]
     fn hq_idea_board_list_captures_sorts_newest_first_and_skips_junk() {
