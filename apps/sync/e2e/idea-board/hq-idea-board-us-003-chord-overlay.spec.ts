@@ -76,4 +76,31 @@ describe('US-003 capture chord -> overlay (live macOS log)', () => {
     }
     expect(state).toBe('hidden');
   });
+
+  /**
+   * REGRESSION (the drag that stopped dragging).
+   *
+   * The live log the owner produced after the non-activating-panel promotion
+   * contained chord -> overlay_visible -> overlay_hidden reason=escape and NOT
+   * ONE release mark, while a 0x0 selection sat on screen re-anchoring on each
+   * click. Only `mousedown` was reaching the WebView: a non-activating NSPanel
+   * is never sent `mouseMoved:` and did not reliably deliver `mouseUp` either.
+   *
+   * The gesture is therefore tracked by AppKit, not by the WebView. This
+   * asserts the shipped wiring at the e2e layer — falsified by deleting the
+   * arm call or by narrowing the mask back to move-only.
+   */
+  it('tracks the drag natively rather than through WebView mouse events', () => {
+    const capture = readFileSync(
+      resolve(__dirname, '../../src-tauri/src/commands/capture.rs'),
+      'utf8',
+    );
+    expect(capture).toContain('fn arm_overlay_drag_tracker');
+    expect(capture).toContain('addGlobalMonitorForEventsMatchingMask');
+    // The release is native: the mouse-up the WebView never saw.
+    expect(capture).toContain('NS_EVENT_TYPE_LEFT_MOUSE_UP => {');
+    expect(capture).toContain('release_selection_on_main(&deferred, rect)');
+    // And the fix that must not regress while fixing this one.
+    expect(capture).toContain('make_window_nonactivating_panel(&window)');
+  });
 });

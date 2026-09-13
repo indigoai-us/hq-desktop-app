@@ -2,6 +2,25 @@
   /** Events emitted by src-tauri/src/commands/capture.rs. */
   export const EVENT_SHOWN = 'capture-overlay:shown';
   export const EVENT_HIDDEN = 'capture-overlay:hidden';
+  /**
+   * Native drag updates pushed by Rust's AppKit event tracker
+   * (`arm_overlay_drag_tracker` in src-tauri/src/commands/capture.rs).
+   *
+   * The overlay window is a non-activating NSPanel, and such a panel is
+   * never delivered `mouseMoved:` (acceptsMouseMovedEvents defaults to NO)
+   * nor — as the hand-test proved — the `mouseUp` that ends the gesture.
+   * Only `mousedown` ever reached the WebView, which is exactly why the
+   * selection froze at 0x0 and no release was ever logged. So AppKit tracks
+   * the gesture and this component is a renderer: `phase` is
+   * start | move | end | pointer.
+   */
+  export const EVENT_DRAG = 'capture-overlay:drag';
+
+  export interface NativeDragPayload {
+    phase: 'start' | 'move' | 'end' | 'pointer';
+    selection: SelectionRect | null;
+    pointer: { x: number; y: number } | null;
+  }
 
   /** Normalized selection handed to `capture_region_release` (logical CSS px). */
   export interface SelectionRect {
@@ -52,6 +71,14 @@
   let anchor = $state<{ x: number; y: number } | null>(null);
   /** Live drag end point; null until the first mousemove after mousedown. */
   let dragEnd = $state<{ x: number; y: number } | null>(null);
+  /**
+   * A rect handed to us whole by the native tracker. When set it WINS over the
+   * locally derived one, and the DOM handlers stop owning the release — Rust
+   * already runs it from the native mouse-up, so invoking again here would
+   * capture twice.
+   */
+  let nativeSelection = $state<SelectionRect | null>(null);
+  let nativeDriving = $state(false);
 
   /**
    * The normalized selection in the overlay window's own logical CSS px —
@@ -59,6 +86,7 @@
    * normalized here so width/height are always >= 0).
    */
   const selection = $derived.by<SelectionRect | null>(() => {
+    if (nativeSelection) return nativeSelection;
     if (!anchor) return null;
     const end = dragEnd ?? anchor;
     return {
@@ -93,11 +121,36 @@
   function resetDrag() {
     anchor = null;
     dragEnd = null;
+    nativeSelection = null;
+  }
+
+  /** Apply one native tracker update. */
+  function applyNativeDrag(payload: NativeDragPayload) {
+    if (!payload) return;
+    if (payload.pointer) pointer = payload.pointer;
+    switch (payload.phase) {
+      case 'start':
+      case 'move':
+        nativeDriving = true;
+        nativeSelection = payload.selection ?? null;
+        break;
+      case 'end':
+        // Rust hides the window and runs the capture; just stop painting.
+        nativeDriving = true;
+        visible = false;
+        pointer = null;
+        resetDrag();
+        break;
+      case 'pointer':
+        nativeSelection = null;
+        break;
+    }
   }
 
   function onShown(payload: { display: OverlayDisplay | null }) {
     display = payload?.display ?? null;
     pointer = null;
+    nativeDriving = false;
     resetDrag();
     visible = true;
   }
@@ -180,7 +233,11 @@
     visible = false;
     pointer = null;
     resetDrag();
-    if (rect && hasTauri()) {
+    // When AppKit is tracking the gesture, Rust has already released on the
+    // native mouse-up (and the backend short-circuits a second release
+    // anyway). Only the DOM-only path — non-macOS, or a host where the
+    // WebView does see the whole gesture — invokes from here.
+    if (rect && !nativeDriving && hasTauri()) {
       void invoke('capture_region_release', { selection: rect }).catch(() => {});
     }
   }
@@ -206,6 +263,7 @@
     if (!hasTauri()) return;
     let unlistenShown: UnlistenFn | undefined;
     let unlistenHidden: UnlistenFn | undefined;
+    let unlistenDrag: UnlistenFn | undefined;
     void listen<{ display: OverlayDisplay | null }>(EVENT_SHOWN, (ev) => onShown(ev.payload)).then(
       (fn) => {
         unlistenShown = safeUnlisten(fn);
@@ -214,10 +272,14 @@
     void listen(EVENT_HIDDEN, () => onHidden()).then((fn) => {
       unlistenHidden = safeUnlisten(fn);
     });
+    void listen<NativeDragPayload>(EVENT_DRAG, (ev) => applyNativeDrag(ev.payload)).then((fn) => {
+      unlistenDrag = safeUnlisten(fn);
+    });
     void invoke('capture_overlay_ready').catch(() => {});
     return () => {
       safeUnlisten(unlistenShown)();
       safeUnlisten(unlistenHidden)();
+      safeUnlisten(unlistenDrag)();
     };
   });
 </script>

@@ -269,7 +269,7 @@ pub fn cursor_to_logical(raw: (f64, f64), primary_scale: f64) -> (f64, f64) {
 /// A selection rectangle in the overlay window's own logical coordinate
 /// space (origin = overlay top-left), already normalized by the frontend so
 /// `width`/`height` are non-negative.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectionRect {
     pub x: f64,
@@ -1480,14 +1480,330 @@ fn make_window_nonactivating_panel(window: &tauri::WebviewWindow) {
         let _: () = msg_send![obj, setFloatingPanel: true];
         let _: () = msg_send![obj, setBecomesKeyOnlyIfNeeded: true];
         let _: () = msg_send![obj, setHidesOnDeactivate: false];
+        // A non-activating panel never becomes key and
+        // `acceptsMouseMovedEvents` defaults to NO, so mouse-moved events
+        // would never reach its view. Correct and free to set; the native
+        // tracker (`arm_overlay_drag_tracker`) is what the drag actually
+        // depends on, because this flag does nothing for the missing
+        // `mouseUp` that also broke the gesture.
+        let _: () = msg_send![obj, setAcceptsMouseMovedEvents: true];
+        let accepts_moved: bool = msg_send![obj, acceptsMouseMovedEvents];
         let applied: u64 = msg_send![obj, styleMask];
         log(
             LOG_TAG,
             &format!(
-                "overlay setup: non-activating panel styleMask={applied:#x} nonactivating={}",
+                "overlay setup: non-activating panel styleMask={applied:#x} nonactivating={} acceptsMouseMoved={accepts_moved}",
                 mask_is_nonactivating(applied)
             ),
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// US-003 regression: NATIVE overlay drag tracking
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EXISTS (read before "simplifying" it back into DOM handlers).
+//
+// The overlay window is a non-activating `NSPanel` (see
+// `make_window_nonactivating_panel`) so a capture never raises HQ's own
+// windows over the content being captured. That promotion is load-bearing and
+// must not be reverted. But a panel that never becomes key is a hostile host
+// for a WebView drag gesture:
+//
+//   * `NSWindow.acceptsMouseMovedEvents` defaults to NO, so `mouseMoved:` is
+//     never delivered to the panel's view at all and the WebView never sees a
+//     DOM `mousemove` — no crosshair, no growing rect.
+//   * The hand-test also showed **`mouseup` missing**: the 0x0 selection
+//     stayed on screen and simply re-anchored on the next click, and the app
+//     log recorded zero `release` marks across two attempts. A missing
+//     `mouseUp` is NOT explained by `acceptsMouseMovedEvents` (a mouse-up is
+//     not a mouse-moved event), so "just set that flag" cannot be the whole
+//     fix — only `mousedown`, the one event AppKit routes to a non-key panel
+//     unconditionally, was ever arriving.
+//
+// So the gesture is tracked by AppKit, not by the WebView. A local monitor
+// (events dispatched to HQ) plus a global monitor (events dispatched to
+// whatever app the user is actually in — the normal case for a background
+// overlay) watch left mouse down / dragged / up and mouse moved, convert the
+// screen point into the overlay window's own logical space, and push the
+// selection to the webview, which is now a pure renderer. The release is run
+// by Rust from the native mouse-up; the webview no longer has to see a single
+// mouse event for a capture to work.
+//
+// `setAcceptsMouseMovedEvents:YES` is still applied (see
+// `make_window_nonactivating_panel`) because it is correct and costs nothing,
+// but nothing here depends on it.
+
+/// Selection/pointer updates pushed to the overlay webview by the native
+/// tracker. Payload: `{ phase, selection, pointer }`.
+pub const EVENT_DRAG: &str = "capture-overlay:drag";
+
+/// Mark: the native drag tracker is watching (overlay shown).
+pub const MARK_DRAG_ARMED: &str = "idea.capture.overlay_drag_armed";
+/// Mark: the native drag tracker could not be armed (` reason=...`).
+pub const MARK_DRAG_ARM_FAILED: &str = "idea.capture.overlay_drag_arm_failed";
+
+/// `NSEventTypeMouseMoved`.
+pub const NS_EVENT_TYPE_MOUSE_MOVED: u64 = 5;
+
+/// The event mask the overlay's own tracker arms.
+///
+/// Down/dragged/up are the gesture itself; moved only feeds the idle
+/// crosshair.
+pub fn overlay_drag_event_mask() -> u64 {
+    (1 << NS_EVENT_TYPE_LEFT_MOUSE_DOWN)
+        | (1 << NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED)
+        | (1 << NS_EVENT_TYPE_LEFT_MOUSE_UP)
+        | (1 << NS_EVENT_TYPE_MOUSE_MOVED)
+}
+
+/// Does `mask` carry a whole drag gesture without help from the WebView?
+///
+/// The regression this guards: a tracker that watches only `mouseMoved` (or
+/// only `dragged`) leaves the release depending on a DOM `mouseup` that a
+/// non-key panel never delivers — exactly the shipped defect.
+pub fn mask_tracks_whole_gesture(mask: u64) -> bool {
+    let needed = (1 << NS_EVENT_TYPE_LEFT_MOUSE_DOWN)
+        | (1 << NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED)
+        | (1 << NS_EVENT_TYPE_LEFT_MOUSE_UP);
+    mask & needed == needed
+}
+
+/// Convert an AppKit screen point (origin = bottom-left of the primary
+/// display, points) into the overlay window's own logical CSS px (origin =
+/// the overlay's top-left) — the space `SelectionRect` is defined in.
+///
+/// `frame` is the overlay `NSWindow`'s frame as `(x, y, w, h)` in the same
+/// AppKit screen space. Going through the window's own frame (rather than
+/// tao's virtual-desktop coordinates) means no primary-screen-height constant
+/// and no AppKit/tao origin mismatch on multi-display setups.
+pub fn overlay_point_from_screen(frame: (f64, f64, f64, f64), mouse: (f64, f64)) -> (f64, f64) {
+    (mouse.0 - frame.0, (frame.1 + frame.3) - mouse.1)
+}
+
+/// Normalize a drag into the rect shape the capture path consumes. Negative
+/// drags (right-to-left / bottom-to-top) come out with non-negative extents.
+pub fn drag_rect(anchor: (f64, f64), end: (f64, f64)) -> SelectionRect {
+    SelectionRect {
+        x: anchor.0.min(end.0).round(),
+        y: anchor.1.min(end.1).round(),
+        width: (end.0 - anchor.0).abs().round(),
+        height: (end.1 - anchor.1).abs().round(),
+    }
+}
+
+/// The overlay frame cached when the tracker armed (the overlay does not move
+/// while shown), as AppKit `(x, y, w, h)`.
+static OVERLAY_FRAME: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
+
+/// The live drag anchor in overlay-logical px; `None` when no drag is down.
+static OVERLAY_DRAG_ANCHOR: Mutex<Option<(f64, f64)>> = Mutex::new(None);
+
+/// Armed overlay event monitors (retained `id`s) — local and global.
+#[cfg(target_os = "macos")]
+static OVERLAY_DRAG_MONITORS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// MAIN THREAD ONLY. Stop tracking. Idempotent.
+pub fn disarm_overlay_drag_tracker() {
+    if let Ok(mut a) = OVERLAY_DRAG_ANCHOR.lock() {
+        *a = None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        let mut slot = OVERLAY_DRAG_MONITORS.lock().unwrap_or_else(|p| p.into_inner());
+        for ptr in slot.drain(..) {
+            // SAFETY: main thread; each `ptr` is a monitor object AppKit
+            // returned and we retained.
+            unsafe {
+                let obj = ptr as *mut AnyObject;
+                let _: () = msg_send![class!(NSEvent), removeMonitor: obj];
+                objc2::ffi::objc_release(obj.cast());
+            }
+        }
+    }
+}
+
+/// MAIN THREAD ONLY. Push the crosshair cursor. A background, non-key panel
+/// does not get to set the cursor through CSS (`cursor: crosshair` on the
+/// WebView is only honoured for the key window's cursor rects), so the
+/// overlay asks AppKit directly on every tracked event.
+#[cfg(target_os = "macos")]
+fn push_crosshair_cursor() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    // SAFETY: main thread; `crosshairCursor` is a public AppKit class method
+    // returning an autoreleased NSCursor, and `set` takes no arguments.
+    unsafe {
+        let cursor: *mut AnyObject = msg_send![class!(NSCursor), crosshairCursor];
+        if !cursor.is_null() {
+            let _: () = msg_send![cursor, set];
+        }
+    }
+}
+
+/// One tracked native event, already in overlay-logical coordinates.
+/// Returns the payload to push to the webview, if any.
+fn on_tracked_event(app: &AppHandle, ty: u64, point: (f64, f64)) {
+    if !OVERLAY_VISIBLE.load(Ordering::SeqCst) {
+        return;
+    }
+    let anchor = OVERLAY_DRAG_ANCHOR.lock().ok().and_then(|a| *a);
+    match ty {
+        NS_EVENT_TYPE_LEFT_MOUSE_DOWN => {
+            if let Ok(mut a) = OVERLAY_DRAG_ANCHOR.lock() {
+                *a = Some(point);
+            }
+            emit_drag(app, "start", Some(drag_rect(point, point)), point);
+        }
+        NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED => {
+            let Some(anchor) = anchor else { return };
+            emit_drag(app, "move", Some(drag_rect(anchor, point)), point);
+        }
+        NS_EVENT_TYPE_LEFT_MOUSE_UP => {
+            let Some(anchor) = anchor else { return };
+            if let Ok(mut a) = OVERLAY_DRAG_ANCHOR.lock() {
+                *a = None;
+            }
+            let rect = drag_rect(anchor, point);
+            emit_drag(app, "end", Some(rect), point);
+            // USE-AFTER-FREE GUARD — do NOT inline this call.
+            //
+            // We are running INSIDE AppKit's dispatch of the monitor block,
+            // and AppKit's copy of that block is its only strong reference.
+            // The release hides the overlay, `hide_overlay` disarms the
+            // tracker, and `removeMonitor:` + release would free this very
+            // block — its code and its captured `AppHandle` — while this
+            // frame is still running and still has to return the event. Same
+            // hazard `schedule_disarm` documents for the permission-guide
+            // monitor. `run_on_main_thread` posts to the next main-thread
+            // turn, by which time the handler has returned.
+            let deferred = app.clone();
+            let _ = app.run_on_main_thread(move || release_selection_on_main(&deferred, rect));
+        }
+        NS_EVENT_TYPE_MOUSE_MOVED => {
+            if anchor.is_some() {
+                return;
+            }
+            emit_drag(app, "pointer", None, point);
+        }
+        _ => {}
+    }
+}
+
+fn emit_drag(app: &AppHandle, phase: &str, selection: Option<SelectionRect>, point: (f64, f64)) {
+    let _ = app.emit_to(
+        WINDOW_LABEL,
+        EVENT_DRAG,
+        serde_json::json!({
+            "phase": phase,
+            "selection": selection,
+            "pointer": { "x": point.0, "y": point.1 },
+        }),
+    );
+}
+
+/// MAIN THREAD ONLY. Arm the native tracker for the currently shown overlay.
+/// No-op off macOS (where the WebView's own DOM events are delivered normally
+/// and the frontend fallback path drives the drag).
+#[allow(unused_variables)]
+pub fn arm_overlay_drag_tracker(app: &AppHandle, window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        use block2::RcBlock;
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+
+        disarm_overlay_drag_tracker();
+
+        let Ok(ns_win) = window.ns_window() else {
+            log(LOG_TAG, &format!("{MARK_DRAG_ARM_FAILED} reason=no_ns_window"));
+            return;
+        };
+        if ns_win.is_null() {
+            log(LOG_TAG, &format!("{MARK_DRAG_ARM_FAILED} reason=null_ns_window"));
+            return;
+        }
+        // SAFETY: main thread, live NSWindow. `frame` returns an NSRect
+        // (== CGRect on 64-bit macOS) by value.
+        use objc2_core_foundation::CGRect;
+        let frame: CGRect = unsafe { msg_send![ns_win as *mut AnyObject, frame] };
+        let frame = (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
+        // Poison-tolerant: a leaked-but-still-installed monitor would keep
+        // firing for the life of the process, so never skip the bookkeeping.
+        *OVERLAY_FRAME.lock().unwrap_or_else(|p| p.into_inner()) = Some(frame);
+
+        let mask = overlay_drag_event_mask();
+
+        // Shared per-event work: read the *global* mouse location (valid for
+        // both monitor kinds, and for a global event that carries no window),
+        // convert into overlay space, and act.
+        let handle = |app: &AppHandle, event: *mut AnyObject| {
+            if event.is_null() {
+                return;
+            }
+            // SAFETY: inside AppKit's dispatch on the main thread; `event` is
+            // a live NSEvent and `mouseLocation` is a class method returning
+            // an NSPoint of plain doubles.
+            let ty: u64 = unsafe { msg_send![event, type] };
+            let loc: objc2_core_foundation::CGPoint =
+                unsafe { msg_send![class!(NSEvent), mouseLocation] };
+            let frame = (*OVERLAY_FRAME.lock().unwrap_or_else(|p| p.into_inner())).unwrap_or(frame);
+            // Not on mouse-up: the gesture is over and the foreground app
+            // should get its own cursor back on the next cursor-rect update.
+            if ty != NS_EVENT_TYPE_LEFT_MOUSE_UP {
+                push_crosshair_cursor();
+            }
+            on_tracked_event(app, ty, overlay_point_from_screen(frame, (loc.x, loc.y)));
+        };
+
+        let local_app = app.clone();
+        let local_handle = handle;
+        let local = RcBlock::new(move |event: *mut AnyObject| -> *mut AnyObject {
+            local_handle(&local_app, event);
+            event
+        });
+        let global_app = app.clone();
+        let global_handle = handle;
+        let global = RcBlock::new(move |event: *mut AnyObject| {
+            global_handle(&global_app, event);
+        });
+
+        let mut armed: Vec<usize> = Vec::new();
+        // SAFETY: main thread; AppKit copies each handler block and we retain
+        // the returned monitors so `removeMonitor:` has something valid.
+        unsafe {
+            let l: *mut AnyObject = msg_send![
+                class!(NSEvent),
+                addLocalMonitorForEventsMatchingMask: mask,
+                handler: &*local,
+            ];
+            if !l.is_null() {
+                objc2::ffi::objc_retain(l.cast());
+                armed.push(l as usize);
+            }
+            // A background overlay's events are dispatched to the user's OWN
+            // app, not to HQ, so the global monitor — not the local one — is
+            // the load-bearing half. Mouse monitors need no Accessibility
+            // grant (only keyboard ones do).
+            let g: *mut AnyObject = msg_send![
+                class!(NSEvent),
+                addGlobalMonitorForEventsMatchingMask: mask,
+                handler: &*global,
+            ];
+            if !g.is_null() {
+                objc2::ffi::objc_retain(g.cast());
+                armed.push(g as usize);
+            }
+        }
+        if armed.is_empty() {
+            log(LOG_TAG, &format!("{MARK_DRAG_ARM_FAILED} reason=no_monitor"));
+            return;
+        }
+        *OVERLAY_DRAG_MONITORS.lock().unwrap_or_else(|p| p.into_inner()) = armed;
+        log(LOG_TAG, &format!("{MARK_DRAG_ARMED} mask={mask:#x}"));
     }
 }
 
@@ -1807,6 +2123,9 @@ fn show_overlay(app: &AppHandle) {
         Ok(()) => {
             OVERLAY_VISIBLE.store(true, Ordering::SeqCst);
             log(LOG_TAG, MARK_OVERLAY_VISIBLE);
+            // The gesture is tracked natively — see `arm_overlay_drag_tracker`.
+            // Armed AFTER the visibility flag, which the handler gates on.
+            arm_overlay_drag_tracker(app, &window);
             defer_escape_binding(app);
         }
         Err(e) => log(LOG_TAG, &format!("overlay show FAILED: {e}")),
@@ -1816,6 +2135,7 @@ fn show_overlay(app: &AppHandle) {
 /// MAIN THREAD ONLY. Hide the overlay without capturing anything.
 pub fn hide_overlay(app: &AppHandle, reason: &str) {
     let was_visible = OVERLAY_VISIBLE.swap(false, Ordering::SeqCst);
+    disarm_overlay_drag_tracker();
     if was_visible {
         defer_escape_binding(app);
     }
@@ -2252,32 +2572,60 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
 /// user's screen is clear before any encoding starts.
 #[tauri::command]
 pub async fn capture_region_release(app: AppHandle, selection: SelectionRect) -> Result<(), String> {
-    // Bare mark, first statement: the bench pairs this with png_written.
-    log(LOG_TAG, MARK_RELEASE);
-
-    let display = SHOWN_DISPLAY
+    if !OVERLAY_VISIBLE.load(Ordering::SeqCst) {
+        // The native tracker (`on_tracked_event`) already ran this release on
+        // the mouse-up. A late DOM `mouseup` must not capture twice.
+        return Ok(());
+    }
+    let empty = SHOWN_DISPLAY
         .lock()
         .ok()
         .and_then(|d| *d)
-        .ok_or_else(|| "no display recorded for the overlay".to_string())?;
+        .map(|d| selection_to_global(&d, &selection).is_none());
+    let app_main = app.clone();
+    app.run_on_main_thread(move || release_selection_on_main(&app_main, selection))
+        .map_err(|e| e.to_string())?;
+    match empty {
+        None => Err("no display recorded for the overlay".to_string()),
+        Some(true) => Err("empty selection".to_string()),
+        Some(false) => Ok(()),
+    }
+}
+
+/// MAIN THREAD ONLY. The one release path: freeze the rect, hide the overlay,
+/// and hand the pixels to the background capture thread.
+///
+/// Both entry points funnel through here — the native mouse-up tracked by
+/// `arm_overlay_drag_tracker` (the path that actually runs on macOS) and the
+/// `capture_region_release` command (the DOM fallback, and every non-macOS
+/// host). It is idempotent by way of `OVERLAY_VISIBLE`: a second release for
+/// the same gesture finds the overlay already hidden and does nothing.
+pub fn release_selection_on_main(app: &AppHandle, selection: SelectionRect) {
+    if !OVERLAY_VISIBLE.load(Ordering::SeqCst) {
+        return;
+    }
+    // Bare mark, first statement: the bench pairs this with png_written.
+    log(LOG_TAG, MARK_RELEASE);
+
+    let display = SHOWN_DISPLAY.lock().ok().and_then(|d| *d);
+    let Some(display) = display else {
+        log(LOG_TAG, &format!("{MARK_RELEASE_REJECTED} reason=no_display"));
+        hide_overlay(app, "click");
+        return;
+    };
     let Some(region) = selection_to_global(&display, &selection) else {
         log(LOG_TAG, &format!("{MARK_RELEASE_REJECTED} reason=empty"));
-        let app_main = app.clone();
-        let _ = app.run_on_main_thread(move || hide_overlay(&app_main, "click"));
-        return Err("empty selection".to_string());
+        hide_overlay(app, "click");
+        return;
     };
     let exclude = match OVERLAY_WINDOW_NUMBER.load(Ordering::SeqCst) {
         0 => None,
         n => Some(n),
     };
-
-    let app_main = app.clone();
-    app.run_on_main_thread(move || hide_overlay(&app_main, "release"))
-        .map_err(|e| e.to_string())?;
+    hide_overlay(app, "release");
 
     let app_bg = app.clone();
     std::thread::spawn(move || capture_and_store(&app_bg, region, exclude));
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3545,7 +3893,7 @@ mod hq_idea_board_capture_tests {
     /// Code text of `name`'s body, from its signature to the first column-0
     /// `}` that closes it, with comment lines stripped — the test reasons
     /// about what executes, not about what the comments mention.
-    fn fn_body(src: &str, name: &str) -> String {
+    pub(super) fn fn_body(src: &str, name: &str) -> String {
         let start = src.find(name).unwrap_or_else(|| panic!("{name} exists"));
         let end = src[start..]
             .find("\n}\n")
@@ -4459,6 +4807,144 @@ mod hq_idea_board_live_capture_fix_tests {
     /// The overlay's own source, so the wiring assertion below is falsifiable
     /// by deleting the call it names.
     const CAPTURE_SRC: &str = include_str!("capture.rs");
+
+
+    // ── US-003 regression: the drag must not depend on WebView mouse events ────
+
+    /// THE REGRESSION THIS BLOCK EXISTS FOR.
+    ///
+    /// ecf6eef8 promoted the overlay to a non-activating `NSPanel` (correct — it
+    /// stopped HQ raising its own windows over the capture target) and, in the
+    /// same breath, moved the drag onto `<svelte:window>` DOM handlers. A panel
+    /// that never becomes key is never sent `mouseMoved:` and — as the hand-test
+    /// showed by logging zero `release` marks while a 0x0 selection sat on screen
+    /// and re-anchored on each click — is not reliably sent the `mouseUp` either.
+    /// Only `mousedown` got through. The suite stayed green because every test
+    /// dispatched synthetic DOM events, which a happy-dom window always delivers.
+    ///
+    /// So the invariant is not "a flag is set" but "the gesture is tracked by
+    /// AppKit end to end": the tracker's mask must carry mouse DOWN, DRAGGED and
+    /// UP. Falsified by dropping any one of them from `overlay_drag_event_mask`.
+    #[test]
+    fn hq_idea_board_overlay_drag_is_tracked_natively_end_to_end() {
+        let mask = overlay_drag_event_mask();
+        assert!(mask & (1 << NS_EVENT_TYPE_LEFT_MOUSE_DOWN) != 0, "the anchor is native");
+        assert!(mask & (1 << NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED) != 0, "the rect grows natively");
+        assert!(
+            mask & (1 << NS_EVENT_TYPE_LEFT_MOUSE_UP) != 0,
+            "the RELEASE is native — the shipped bug was a mouseUp that never arrived"
+        );
+        assert!(mask_tracks_whole_gesture(mask));
+
+        // A tracker that only watched moves is exactly the half-fix that
+        // `setAcceptsMouseMovedEvents:` alone would have been: it leaves the
+        // release on the WebView, which is where it died.
+        assert!(!mask_tracks_whole_gesture(1 << NS_EVENT_TYPE_MOUSE_MOVED));
+        assert!(!mask_tracks_whole_gesture(
+            (1 << NS_EVENT_TYPE_LEFT_MOUSE_DOWN) | (1 << NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED)
+        ));
+    }
+
+    /// The tracker has to actually be armed while the overlay is up and torn down
+    /// when it goes away, or the mask above is decoration. Falsified by deleting
+    /// either call.
+    #[test]
+    fn hq_idea_board_overlay_arms_and_disarms_the_native_tracker() {
+        let show = super::hq_idea_board_capture_tests::fn_body(CAPTURE_SRC, "fn show_overlay(app: &AppHandle)");
+        assert!(
+            show.contains("arm_overlay_drag_tracker(app, &window)"),
+            "show_overlay must arm the native tracker"
+        );
+        let hide = super::hq_idea_board_capture_tests::fn_body(CAPTURE_SRC, "pub fn hide_overlay(app: &AppHandle, reason: &str)");
+        assert!(
+            hide.contains("disarm_overlay_drag_tracker()"),
+            "hide_overlay must disarm the native tracker"
+        );
+    }
+
+    /// The non-activating promotion (which must NOT be reverted) also has to stop
+    /// suppressing mouse-moved delivery. Falsified by removing the setter.
+    #[test]
+    fn hq_idea_board_overlay_panel_accepts_mouse_moved_events() {
+        let body = super::hq_idea_board_capture_tests::fn_body(
+            CAPTURE_SRC,
+            "fn make_window_nonactivating_panel(window: &tauri::WebviewWindow)",
+        );
+        assert!(
+            body.contains("setAcceptsMouseMovedEvents: true"),
+            "a non-activating panel defaults acceptsMouseMovedEvents to NO"
+        );
+        // And the fix that must never regress while fixing this one.
+        assert!(body.contains("nonactivating_panel_style_mask(current)"));
+    }
+
+    /// One release path, run from the native mouse-up. A second release for the
+    /// same gesture (a late DOM `mouseup`) must not capture twice.
+    #[test]
+    fn hq_idea_board_native_mouse_up_runs_the_one_release_path() {
+        let tracked = super::hq_idea_board_capture_tests::fn_body(
+            CAPTURE_SRC,
+            "fn on_tracked_event(app: &AppHandle, ty: u64, point: (f64, f64))",
+        );
+        assert!(
+            tracked.contains("release_selection_on_main(&deferred, rect)"),
+            "the native mouse-up must run the release itself"
+        );
+        // USE-AFTER-FREE: the handler runs inside AppKit's dispatch of the
+        // monitor block, and the release disarms the tracker — which frees
+        // that very block. It MUST be deferred a turn (the same hazard
+        // `schedule_disarm` documents for the permission-guide monitor).
+        assert!(
+            tracked.contains("app.run_on_main_thread(move || release_selection_on_main"),
+            "the release must be deferred off the monitor handler's own frame"
+        );
+        assert!(
+            !tracked.contains("\n            release_selection_on_main("),
+            "an INLINE release from the handler frees the running block"
+        );
+        let cmd = super::hq_idea_board_capture_tests::fn_body(
+            CAPTURE_SRC,
+            "pub async fn capture_region_release(app: AppHandle, selection: SelectionRect)",
+        );
+        assert!(cmd.contains("release_selection_on_main"), "one release path, not two");
+        assert!(
+            cmd.contains("if !OVERLAY_VISIBLE.load(Ordering::SeqCst)"),
+            "a second release for the same gesture must be a no-op"
+        );
+    }
+
+    /// AppKit screen point (bottom-left origin) -> overlay-local CSS px (top-left
+    /// origin), via the overlay window's own frame so a secondary display with a
+    /// negative or offset origin lands in the right place.
+    #[test]
+    fn hq_idea_board_overlay_point_from_screen_maps_appkit_to_overlay_space() {
+        let frame = (0.0, 0.0, 1800.0, 1080.0);
+        assert_eq!(overlay_point_from_screen(frame, (0.0, 1080.0)), (0.0, 0.0), "top-left");
+        assert_eq!(overlay_point_from_screen(frame, (1800.0, 0.0)), (1800.0, 1080.0), "bottom-right");
+        assert_eq!(overlay_point_from_screen(frame, (900.0, 540.0)), (900.0, 540.0), "centre");
+
+        // A display to the left of and below the primary.
+        let secondary = (-1440.0, -200.0, 1440.0, 900.0);
+        assert_eq!(overlay_point_from_screen(secondary, (-1440.0, 700.0)), (0.0, 0.0));
+        assert_eq!(overlay_point_from_screen(secondary, (-1000.0, 500.0)), (440.0, 200.0));
+    }
+
+    /// Negative drags (right-to-left, bottom-to-top) must normalize, or the
+    /// backend rejects them as empty and the capture silently does nothing.
+    #[test]
+    fn hq_idea_board_drag_rect_normalizes_every_direction() {
+        let forward = drag_rect((100.0, 50.0), (300.0, 250.0));
+        assert_eq!(forward, SelectionRect { x: 100.0, y: 50.0, width: 200.0, height: 200.0 });
+        assert_eq!(drag_rect((300.0, 250.0), (100.0, 50.0)), forward, "backwards selects the same");
+        assert_eq!(
+            drag_rect((300.0, 50.0), (100.0, 250.0)),
+            SelectionRect { x: 100.0, y: 50.0, width: 200.0, height: 200.0 }
+        );
+
+        // A click with no movement stays degenerate so the backend can reject it.
+        let click = drag_rect((10.0, 10.0), (10.0, 10.0));
+        assert!(click.width < 1.0 && click.height < 1.0);
+    }
 
     /// BUG 2 (live): clicking the overlay activated HQ and raised the main
     /// window over the capture target. `focusable(false)` does not prevent

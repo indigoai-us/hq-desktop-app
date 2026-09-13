@@ -797,7 +797,36 @@ pub fn capture_region(
     if region.w < 1.0 || region.h < 1.0 {
         return Err(ScreenshotError::EmptyRegion);
     }
-    imp::capture_region(region, exclude_window)
+    let shot = imp::capture_region(region, exclude_window);
+    // BLACK-CAPTURE GUARD (hq-idea-board US-004).
+    //
+    // The exclude path asks `CGWindowListCreateImage` for everything *below*
+    // the overlay window. By the time it runs the overlay has already been
+    // ordered out, so that reference window may no longer be on screen — and
+    // an on-screen-below-window query anchored on a window that is gone comes
+    // back as an all-black image rather than an error. The user sees a
+    // successful capture of nothing.
+    //
+    // (The one black PNG the owner actually got ALSO contained HQ's own
+    // overlay label, which is the documented degraded behaviour of
+    // `CGWindowListCreateImage` under a DENIED Screen Recording grant: it
+    // returns only the calling process's own windows over a black desktop.
+    // That grant is now in place, so that specific cause should be gone. This
+    // guard covers the other one, which permission cannot fix.)
+    if exclude_window.is_some() {
+        if let Ok(cap) = &shot {
+            if is_blank_capture(&cap.rgba) {
+                return imp::capture_region(region, None);
+            }
+        }
+    }
+    shot
+}
+
+/// Is every pixel fully black? A real screenshot of real content essentially
+/// never is, and an empty `CGWindowListCreateImage` result always is.
+pub fn is_blank_capture(rgba: &[u8]) -> bool {
+    !rgba.is_empty() && rgba.chunks_exact(4).all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0)
 }
 
 /// Cheap frontmost snapshot. Call this on the chord path, **before** showing
@@ -829,6 +858,28 @@ pub fn display_id_for_point(x: f64, y: f64) -> u32 {
 #[cfg(test)]
 mod hq_idea_board_screenshot_tests {
     use super::*;
+
+    /// An all-black result from the exclude path means the below-window query
+    /// found nothing (the reference window was already ordered out), not that
+    /// the screen is black. `capture_region` retries without the exclusion.
+    #[test]
+    fn hq_idea_board_all_black_capture_is_recognized_as_empty() {
+        assert!(is_blank_capture(&[0, 0, 0, 255, 0, 0, 0, 255]));
+        // Opaque black with a single non-black pixel is real content.
+        assert!(!is_blank_capture(&[0, 0, 0, 255, 0, 0, 1, 255]));
+        // A genuinely empty buffer is not a "blank capture" to retry.
+        assert!(!is_blank_capture(&[]));
+    }
+
+    #[test]
+    fn hq_idea_board_capture_region_retries_without_the_exclusion_when_blank() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/screenshot.rs"))
+            .expect("own source");
+        assert!(
+            src.contains("return imp::capture_region(region, None);"),
+            "a blank exclude-path capture must fall back to the plain display grab"
+        );
+    }
 
     #[test]
     fn hq_idea_board_bgra_becomes_rgba_with_opaque_alpha() {

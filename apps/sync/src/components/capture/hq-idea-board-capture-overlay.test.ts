@@ -329,6 +329,108 @@ describe('CaptureOverlay drag robustness (live-capture fix BUG 1)', () => {
     expect(rect.dataset.h).toBe('600');
   });
 
+  // ── US-003 regression: the drag must survive a WebView that sees nothing ──
+
+  /**
+   * THE SHIPPED DEFECT this covers.
+   *
+   * The overlay window is a non-activating NSPanel. Such a panel never becomes
+   * key, is never sent `mouseMoved:`, and — per the owner's hand test — is not
+   * reliably sent `mouseUp` either: the 0x0 selection stayed on screen and
+   * simply re-anchored on the next click, and zero `release` marks were
+   * logged. Every existing test above passed anyway, because happy-dom
+   * dispatches whatever synthetic DOM event the test hands it.
+   *
+   * So the real contract is: with NOT ONE DOM mouse event, a drag pushed by
+   * Rust's AppKit tracker still forms the rect and still ends the gesture.
+   */
+  it('hq-idea-board forms and releases a drag from native events alone, with zero DOM mouse events', () => {
+    const { target, overlay } = mountShown();
+    const nativeDrag = listenMock.mock.calls.find((c) => c[0] === 'capture-overlay:drag')?.[1] as
+      | ((ev: { payload: unknown }) => void)
+      | undefined;
+    expect(nativeDrag, 'the overlay must subscribe to the native tracker').toBeTypeOf('function');
+
+    nativeDrag!({
+      payload: {
+        phase: 'start',
+        selection: { x: 100, y: 100, width: 0, height: 0 },
+        pointer: { x: 100, y: 100 },
+      },
+    });
+    nativeDrag!({
+      payload: {
+        phase: 'move',
+        selection: { x: 100, y: 100, width: 400, height: 300 },
+        pointer: { x: 500, y: 400 },
+      },
+    });
+    flushSync();
+
+    const rect = target.querySelector('[data-testid="capture-selection"]') as HTMLElement;
+    expect(rect, 'the rect must grow without a DOM mousemove').not.toBeNull();
+    expect(rect.style.width).toBe('400px');
+    expect(rect.style.height).toBe('300px');
+    expect(rect.dataset.w).toBe('800');
+    expect(rect.dataset.h).toBe('600');
+
+    // Rust runs the release itself on the native mouse-up, so the component
+    // must stop painting and must NOT invoke a second capture.
+    nativeDrag!({
+      payload: {
+        phase: 'end',
+        selection: { x: 100, y: 100, width: 400, height: 300 },
+        pointer: { x: 500, y: 400 },
+      },
+    });
+    flushSync();
+    expect(overlay.dataset.visible).toBe('false');
+    expect(invokeMock).not.toHaveBeenCalledWith('capture_region_release', expect.anything());
+  });
+
+  /**
+   * Double-capture guard: once AppKit is driving, a late DOM `mouseup` (a host
+   * where the WebView does happen to see it) must not fire a second capture.
+   */
+  it('hq-idea-board does not capture twice when a DOM mouseup trails the native release', () => {
+    const { overlay } = mountShown();
+    const nativeDrag = listenMock.mock.calls.find((c) => c[0] === 'capture-overlay:drag')?.[1] as (
+      ev: { payload: unknown },
+    ) => void;
+    nativeDrag({
+      payload: { phase: 'start', selection: { x: 10, y: 10, width: 0, height: 0 }, pointer: { x: 10, y: 10 } },
+    });
+    nativeDrag({
+      payload: { phase: 'move', selection: { x: 10, y: 10, width: 90, height: 90 }, pointer: { x: 100, y: 100 } },
+    });
+    flushSync();
+
+    overlay.dispatchEvent(new MouseEvent('mousedown', { clientX: 10, clientY: 10, button: 0, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 100, clientY: 100, button: 0, bubbles: true }));
+    flushSync();
+    expect(invokeMock).not.toHaveBeenCalledWith('capture_region_release', expect.anything());
+  });
+
+  /**
+   * The crosshair the owner has never seen: it renders only under
+   * `{:else if pointer}`, so with no mousemove it could never appear. A
+   * native pointer update must light it up.
+   */
+  it('hq-idea-board shows the crosshair from a native pointer update', () => {
+    const { target } = mountShown(); // this block's fixture is a 2x display
+    expect(target.querySelector('.crosshair-v')).toBeNull();
+    const nativeDrag = listenMock.mock.calls.find((c) => c[0] === 'capture-overlay:drag')?.[1] as (
+      ev: { payload: unknown },
+    ) => void;
+    nativeDrag({ payload: { phase: 'pointer', selection: null, pointer: { x: 240, y: 160 } } });
+    flushSync();
+    expect(target.querySelector('.crosshair-v')).not.toBeNull();
+    expect(target.querySelector('.crosshair-h')).not.toBeNull();
+    expect(target.querySelector('[data-testid="capture-readout"]')?.textContent?.trim()).toBe(
+      '480, 320',
+    );
+  });
+
   it('hq-idea-board captures the pointer so the gesture cannot be stolen mid-drag', () => {
     const { overlay } = mountShown();
     const setPointerCapture = vi.fn();
