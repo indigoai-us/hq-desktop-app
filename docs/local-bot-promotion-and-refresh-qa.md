@@ -42,8 +42,12 @@ readable messages, and visible composer controls.
 
 The workspace lookup fix bounds local discovery, accepts valid late results,
 retains the last successful roster, and offers a compact retry status. Normal
-native roster loading passed without the former amber banner. Forced-timeout
-and retry interaction in the native app still require acceptance testing.
+native roster loading passed without the former amber banner. A loopback proxy then delayed only the real membership response beyond the
+15-second UI deadline. The built app showed its compact status row without
+covering Send. Clicking Retry acknowledged immediately; releasing the delay
+forwarded HTTP 200 responses and restored the real roster. A separate late
+response also cleared the warning automatically. The proxy was stopped and
+the app relaunched against its normal endpoint after verification.
 
 ## Automated validation
 
@@ -52,12 +56,15 @@ and retry interaction in the native app still require acceptance testing.
 - Promotion UI: 29 passed; platform adapter: nine passed.
 - Refresh: 20 setup tests, 45 settings/sidebar/bot interaction tests,
   12 appearance tests, and one reply-layout test passed.
-- UI typecheck: zero errors, 70 warnings. Frontend and native debug builds pass.
+- UI typecheck: zero errors, 70 warnings. Native host typecheck: zero errors,
+  76 warnings. Six workspace-roster regression tests pass. Frontend and native
+  debug builds pass.
 
 ## Remaining limits
 
-Final welcome hero/resource visual acceptance is pending: host locking and a
-guest remote-control permission dialog interrupted that check. No permission
+Native welcome visual acceptance passed: hand tile, no wallpaper, and four
+resource cards fit without clipping. VM welcome is selected but its final
+visual inspection remains obstructed by an OS permission dialog; no permission
 settings were changed. VM setup DM visual acceptance is complete.
 
 Gateway restart on the same disk is verified; instance replacement/disaster

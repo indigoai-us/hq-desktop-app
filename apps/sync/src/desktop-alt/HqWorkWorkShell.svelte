@@ -933,6 +933,7 @@
         <span>{signOutError}</span>
       </div>
     {/if}
+    <div class="work-shell-frame">
     {#key authGeneration}
       <WorkShell
         data={{ user: capabilities.hostIdentity }}
@@ -979,6 +980,7 @@
         }}
       />
     {/key}
+    </div>
   {/if}
 </div>
 
@@ -996,6 +998,8 @@
   }
 
   .hq-work-embedded {
+    display: flex;
+    flex-direction: column;
     width: 100%;
     height: 100%;
     min-width: 0;
@@ -1067,24 +1071,26 @@
   }
 
   .workspace-warning {
-    position: absolute;
-    z-index: 100;
-    right: 16px;
-    bottom: 16px;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 12px;
-    max-width: min(360px, calc(100% - 32px));
     box-sizing: border-box;
-    padding: 8px 10px;
-    border: 1px solid var(--v4-hairline, #414141);
-    border-radius: 8px;
+    padding: 3px 10px;
+    border-bottom: 1px solid var(--v4-hairline, #414141);
     font-family: var(--font-sans, system-ui, sans-serif);
     font-size: 13px;
     line-height: 1.4;
     color: var(--v4-text-2, #b0b0b0);
     background: var(--v4-surface-solid, #282828);
-    box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+  }
+
+  .work-shell-frame {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .workspace-warning button {
