@@ -1,6 +1,7 @@
 /** Meet area barrel — the shared, platform-pure office-hours surface (US-018). */
 export { default as CallView } from "./CallView.svelte";
 export { default as MediaControls } from "./MediaControls.svelte";
+export { default as MediaPermissionCard } from "./MediaPermissionCard.svelte";
 export {
   CALL_TILE_LIMIT,
   DEVICE_PREFS_KEY,

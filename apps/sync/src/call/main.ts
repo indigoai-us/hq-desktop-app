@@ -36,6 +36,35 @@ let handle: CallWindowHandle | null = null;
 /** Track ids rendered for each peer, so a removal drops exactly that peer. */
 const peerTracks = new Map<string, Set<string>>();
 
+type NativePermission = 'prompt' | 'denied' | 'granted' | 'unknown';
+
+/**
+ * Narrow one device out of the Rust `CallMediaPermissions` payload.
+ *
+ * Anything unrecognised becomes `unknown`, which the card renders as "ask"
+ * rather than asserting a verdict macOS did not give us.
+ */
+function permissionFor(
+  device: 'microphone' | 'camera',
+  state: unknown,
+): NativePermission {
+  const value = (state as Record<string, unknown> | null)?.[device];
+  return value === 'prompt' || value === 'denied' || value === 'granted'
+    ? value
+    : 'unknown';
+}
+
+/** Both devices out of one Rust `CallMediaPermissions` payload. */
+function bothPermissions(state: unknown): {
+  microphone: NativePermission;
+  camera: NativePermission;
+} {
+  return {
+    microphone: permissionFor('microphone', state),
+    camera: permissionFor('camera', state),
+  };
+}
+
 /**
  * Leaving closes the window through the SAME door as the OS close button:
  * `close()` raises `onCloseRequested`, so teardown (leave, release, destroy)
@@ -48,6 +77,12 @@ mount(CallShell, {
     onopensettings: (device: 'microphone' | 'camera') => {
       void invoke('permissions_open_settings', { permission: device });
     },
+    onrequestpermission: async (device: 'microphone' | 'camera') =>
+      bothPermissions(
+        await invoke('call_media_permission_request', { kind: device }),
+      ),
+    onreadpermissions: async () =>
+      bothPermissions(await invoke('call_media_permissions')),
   },
 });
 

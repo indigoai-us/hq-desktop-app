@@ -810,6 +810,8 @@ fn main() {
             commands::meetings::meetings_notify_detected,
             commands::meetings::meetings_clear_prompt_badge,
             commands::permissions::permissions_open_settings,
+            commands::permissions::call_media_permissions,
+            commands::permissions::call_media_permission_request,
             commands::permissions::permissions_force_native_register,
             commands::permissions::meetings_permissions_state,
             commands::permissions::open_meeting_permissions_window,

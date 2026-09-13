@@ -219,6 +219,94 @@ pub mod macos {
             ];
         }
     }
+
+    /// `AVCaptureDevice.authorizationStatus(for: .video)`.
+    ///
+    /// Same encoding as the audio variant:
+    ///   0 = NotDetermined (we report as `Prompt`)
+    ///   1 = Restricted    (we report as `Denied` — user can't grant)
+    ///   2 = Denied
+    ///   3 = Authorized
+    pub fn authorization_status_for_video() -> i64 {
+        use objc2::{
+            class, msg_send,
+            runtime::{AnyClass, AnyObject},
+        };
+        // SAFETY: identical contract to `authorization_status_for_audio` —
+        // a documented class method on AVCaptureDevice, no Rust-owned refs.
+        unsafe {
+            let ns_string_cls: &AnyClass = class!(NSString);
+            let video_type: *mut AnyObject = msg_send![
+                ns_string_cls,
+                stringWithUTF8String: b"vide\0".as_ptr() as *const i8
+            ];
+            if video_type.is_null() {
+                return 0; // NotDetermined as a safe default
+            }
+            let av_cls: &AnyClass = class!(AVCaptureDevice);
+            let status: i64 = msg_send![av_cls, authorizationStatusForMediaType: video_type];
+            status
+        }
+    }
+
+    /// Register this .app bundle with macOS TCC for Camera, and show the
+    /// native prompt if the user has not answered yet.
+    ///
+    /// **Why this is the only way in:** the Camera pane in System Settings has
+    /// no `+` button. An app appears there if, and only if, it has called
+    /// `+[AVCaptureDevice requestAccessForMediaType:]` at least once. Until
+    /// then the user cannot grant the permission even if they want to — there
+    /// is nothing in the list to switch on. Opening the pane before this call
+    /// is a dead end, which is precisely the trap the call window fell into.
+    ///
+    /// Calling it from `hq-sync-menubar` (the stable signed .app identity)
+    /// rather than a helper is what makes the entry say "HQ" — see
+    /// `request_microphone_access` for the same reasoning about attribution.
+    ///
+    /// Fire-and-forget. The caller re-reads `authorization_status_for_video`
+    /// once the user has answered; the completion handler only logs.
+    pub fn request_camera_access() {
+        use block2::RcBlock;
+        use hq_desktop_core::logfile::log;
+        use objc2::{
+            class, msg_send,
+            runtime::{AnyClass, AnyObject, Bool},
+        };
+
+        // SAFETY: mirrors `request_microphone_access` exactly, with the video
+        // media type. The completion block is heap-allocated by RcBlock so
+        // AVFoundation can hold its own strong reference past this scope.
+        unsafe {
+            let av_cls: &AnyClass = class!(AVCaptureDevice);
+            let ns_string_cls: &AnyClass = class!(NSString);
+            // AVMediaTypeVideo is the NSString constant @"vide".
+            let video_type: *mut AnyObject = msg_send![
+                ns_string_cls,
+                stringWithUTF8String: b"vide\0".as_ptr() as *const i8
+            ];
+            if video_type.is_null() {
+                log(super::LOG_TAG, "request_camera_access: NSString init failed");
+                return;
+            }
+
+            let handler = RcBlock::new(|granted: Bool| {
+                log(
+                    super::LOG_TAG,
+                    &format!(
+                        "AVCaptureDevice.requestAccess(video) -> granted={}",
+                        granted.as_bool()
+                    ),
+                );
+            });
+
+            log(super::LOG_TAG, "AVCaptureDevice.requestAccess(video): calling");
+            let _: () = msg_send![
+                av_cls,
+                requestAccessForMediaType: video_type,
+                completionHandler: &*handler
+            ];
+        }
+    }
 }
 
 /// Returns whether the current process is trusted for Accessibility.
@@ -287,6 +375,26 @@ pub fn request_microphone_access() {
 
 #[cfg(not(target_os = "macos"))]
 pub fn request_microphone_access() {}
+
+#[cfg(target_os = "macos")]
+pub fn authorization_status_for_video() -> i64 {
+    macos::authorization_status_for_video()
+}
+
+/// Non-macOS has no TCC camera gate; report Authorized so the UI never shows
+/// a permission wall that the platform cannot produce.
+#[cfg(not(target_os = "macos"))]
+pub fn authorization_status_for_video() -> i64 {
+    3
+}
+
+#[cfg(target_os = "macos")]
+pub fn request_camera_access() {
+    macos::request_camera_access();
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn request_camera_access() {}
 
 /// Trigger native macOS API calls for Accessibility + Screen Recording +
 /// Microphone from the app process itself. Idempotent — safe to call on every

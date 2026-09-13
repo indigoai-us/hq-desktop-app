@@ -193,6 +193,7 @@ export type { OfficeCallsHost, OfficeCallTarget } from "./meet/office-host.js";
 // window mounts it directly and consumes its model types.
 export { default as CallView } from "./meet/CallView.svelte";
 export { default as MediaControls } from "./meet/MediaControls.svelte";
+export { default as MediaPermissionCard } from "./meet/MediaPermissionCard.svelte";
 export {
   CALL_TILE_LIMIT,
   canModerate,

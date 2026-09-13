@@ -16,9 +16,9 @@
    * `getUserMedia`: mounting, receiving a knock, restoring a remembered
    * preference or picking a device in a picker never reaches capture.
    */
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
 
-  import { CallView, type CallTile } from '@hq/ui';
+  import { CallView, MediaPermissionCard, type CallTile } from '@hq/ui';
 
   import { SELF_TILE, applyStream, setTileTracks } from './media-sinks';
   import { callView } from './view.svelte';
@@ -34,6 +34,8 @@
   let {
     onclose,
     onopensettings,
+    onrequestpermission,
+    onreadpermissions,
   }: {
     onclose?: () => void;
     /**
@@ -43,7 +45,105 @@
      * where the setting lives, with no way to get there, is not recovery.
      */
     onopensettings?: (device: 'microphone' | 'camera') => void;
+    /**
+     * Asks macOS for access, which shows the native dialog AND is the only
+     * thing that puts HQ in the System Settings list for that device. Returns
+     * the status read back afterwards.
+     */
+    onrequestpermission?: (
+      device: 'microphone' | 'camera',
+    ) => Promise<MediaPermissions> | MediaPermissions;
+    /** Reads the native permission status without prompting. */
+    onreadpermissions?: () => Promise<MediaPermissions> | MediaPermissions;
   } = $props();
+
+  type MediaPermission = 'prompt' | 'denied' | 'granted' | 'unknown';
+  type MediaPermissions = { microphone: MediaPermission; camera: MediaPermission };
+
+  /**
+   * Native TCC status, distinct from the capture result. `getUserMedia`
+   * failing tells us capture did not happen; only this tells us WHY, and
+   * therefore whether the way forward is a prompt or System Settings.
+   */
+  let permissions = $state<MediaPermissions | null>(null);
+  let permissionBusy = $state(false);
+  let permissionWatching = $state(false);
+  /** Set when the user waves the card away; cleared by the next denial. */
+  let permissionDismissed = $state(false);
+
+  async function readPermissions(): Promise<MediaPermissions | null> {
+    if (!onreadpermissions) return null;
+    try {
+      const next = await onreadpermissions();
+      permissions = next;
+      return next;
+    } catch {
+      // A host that cannot answer must not replace the call with a wall.
+      return null;
+    }
+  }
+
+  async function requestPermission(device: 'microphone' | 'camera') {
+    if (!onrequestpermission || permissionBusy) return;
+    permissionBusy = true;
+    try {
+      permissions = await onrequestpermission(device);
+    } catch {
+      // Fall through to a re-read; the card stays on whatever is true.
+    } finally {
+      permissionBusy = false;
+    }
+    // The native dialog is asynchronous — the value above is usually still
+    // `prompt`. Watch until it settles rather than asking the user to retry.
+    void watchForGrant(device);
+  }
+
+  function openSettings(device: 'microphone' | 'camera') {
+    onopensettings?.(device);
+    // Returning from System Settings should just work, so poll from here too.
+    void watchForGrant(device);
+  }
+
+  /**
+   * Poll until the OS verdict changes, then start the device.
+   *
+   * Bounded so a user who wanders off does not leave a timer running for the
+   * life of the call, and re-armed by `focus` because coming back to the
+   * window is the strongest signal that something changed.
+   */
+  async function watchForGrant(device: 'microphone' | 'camera') {
+    if (permissionWatching) return;
+    permissionWatching = true;
+    try {
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const next = await readPermissions();
+        const verdict = next?.[device];
+        if (verdict === 'granted') {
+          permissionDismissed = false;
+          await retryDevice(device);
+          return;
+        }
+      }
+    } finally {
+      permissionWatching = false;
+    }
+  }
+
+  /**
+   * Read the OS verdict once on mount, and again whenever the window regains
+   * focus. Returning from System Settings is the moment the answer changes,
+   * and `focus` is the only signal the webview gets for it.
+   */
+  onMount(() => {
+    void readPermissions();
+    const onFocus = () => {
+      void readPermissions();
+    };
+    globalThis.addEventListener?.('focus', onFocus);
+    return () => globalThis.removeEventListener?.('focus', onFocus);
+  });
 
   let leaving = $state(false);
   let busy = $state<'microphone' | 'camera' | 'transcription' | null>(null);
@@ -68,11 +168,41 @@
   );
   const denial = $derived(
     mic.recovery && (mic.status === 'denied' || mic.status === 'error')
-      ? { kind: 'Microphone', recovery: mic.recovery, device: 'microphone' as const }
+      ? {
+          kind: 'Microphone',
+          recovery: mic.recovery,
+          device: 'microphone' as const,
+          deviceStatus: mic.status,
+        }
       : cam.recovery && (cam.status === 'denied' || cam.status === 'error')
-        ? { kind: 'Camera', recovery: cam.recovery, device: 'camera' as const }
+        ? {
+            kind: 'Camera',
+            recovery: cam.recovery,
+            device: 'camera' as const,
+            deviceStatus: cam.status,
+          }
         : null,
   );
+  /**
+   * The permission surface takes over the stage only for a real permission
+   * problem. A device that is missing or busy keeps the call visible and uses
+   * the inline notice — replacing a live call with a full-bleed card over a
+   * unplugged webcam would be the cure being worse than the disease.
+   */
+  const permissionBlock = $derived.by(() => {
+    if (!denial || permissionDismissed) return null;
+    const verdict = permissions?.[denial.device] ?? null;
+    if (verdict === 'denied' || verdict === 'prompt') {
+      return { device: denial.device, status: verdict };
+    }
+    // No native reading (non-macOS, or the host does not expose it): fall back
+    // to the capture result, which at least distinguishes denied from broken.
+    if (!permissions && denial.deviceStatus === 'denied') {
+      return { device: denial.device, status: 'denied' as const };
+    }
+    return null;
+  });
+
   const transcriptionLabel = $derived(
     view.transcription === 'ready'
       ? 'Transcription on'
@@ -235,7 +365,7 @@
     </div>
   {/if}
 
-  {#if denial}
+  {#if denial && !permissionBlock}
     <div class="notice" data-testid="call-permission-denied" role="alert">
       <span data-testid="call-permission-recovery">{denial.kind}: {denial.recovery}</span>
       {#if onopensettings}
@@ -255,6 +385,18 @@
   {/if}
 
   <main class="stage">
+    {#if permissionBlock}
+      <MediaPermissionCard
+        device={permissionBlock.device}
+        status={permissionBlock.status}
+        busy={permissionBusy}
+        watching={permissionWatching}
+        onrequest={(device) => void requestPermission(device)}
+        onopensettings={(device) => openSettings(device)}
+        onretry={(device) => void retryDevice(device)}
+        ondismiss={() => (permissionDismissed = true)}
+      />
+    {:else}
     <CallView
       snapshot={roster}
       self={selfMedia}
@@ -289,6 +431,7 @@
       }}
       ondismissnotice={() => callView.handle?.dismissNotice()}
     />
+    {/if}
   </main>
 
   <!--

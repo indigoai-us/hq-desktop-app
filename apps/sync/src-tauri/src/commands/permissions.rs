@@ -161,6 +161,84 @@ fn microphone_status() -> PermStatus {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn camera_status() -> PermStatus {
+    match permissions::authorization_status_for_video() {
+        0 => PermStatus::Prompt,
+        1 | 2 => PermStatus::Denied,
+        3 => PermStatus::Granted,
+        _ => PermStatus::Unknown,
+    }
+}
+
+/// The two capture permissions a call needs, read WITHOUT prompting.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallMediaPermissions {
+    pub microphone: PermStatus,
+    pub camera: PermStatus,
+}
+
+/// Current camera + microphone TCC status for the call window.
+///
+/// Separate from `meetings_permissions_state` on purpose: that one answers
+/// "can the Recall SDK record a meeting" and reads five permissions including
+/// Accessibility and Full Disk Access. A call needs exactly two, and asking
+/// for the other three would read as HQ wanting far more than it does.
+#[tauri::command]
+pub fn call_media_permissions() -> CallMediaPermissions {
+    #[cfg(not(target_os = "macos"))]
+    {
+        // No TCC gate off macOS; capture failures there are device problems,
+        // not permission problems, and must not render a permission wall.
+        CallMediaPermissions {
+            microphone: PermStatus::Granted,
+            camera: PermStatus::Granted,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        CallMediaPermissions {
+            microphone: microphone_status(),
+            camera: camera_status(),
+        }
+    }
+}
+
+/// Ask macOS for camera or microphone access, showing the native prompt.
+///
+/// This is the ONLY way an app enters the Camera or Microphone list in System
+/// Settings — neither pane has a `+` button, so until this runs there is
+/// literally no row for the user to switch on. Sending someone to the pane
+/// first shows them a list that does not contain HQ, which is the dead end
+/// this command exists to remove.
+///
+/// Returns the status read back immediately afterwards. On a first ask that
+/// is still `Prompt`: the native dialog is asynchronous, so the caller polls
+/// (or re-reads on window focus) rather than trusting this one value.
+#[tauri::command]
+pub fn call_media_permission_request(kind: String) -> Result<CallMediaPermissions, String> {
+    if kind != "camera" && kind != "microphone" {
+        return Err(format!("unsupported media permission: {kind}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        log(
+            LOG_TAG,
+            &format!("call_media_permission_request: requesting {kind}"),
+        );
+        if kind == "camera" {
+            permissions::request_camera_access();
+        } else {
+            permissions::request_microphone_access();
+        }
+    }
+
+    Ok(call_media_permissions())
+}
+
 /// Read all five TCC statuses WITHOUT prompting. Idempotent and safe to
 /// call on every Settings open.
 ///
