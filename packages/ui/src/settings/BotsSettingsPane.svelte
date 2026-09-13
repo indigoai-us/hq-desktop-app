@@ -488,10 +488,6 @@
       <CreateBotFlow
         botRuntimeReady={runtimeReadyById}
         botWorkers={workers}
-        cloneCandidates={[
-          ...bots.map((b) => ({ uid: b.agentUid, displayName: b.name, kind: "local" as const })),
-          ...cloudBots.map((b) => ({ uid: b.uid, displayName: b.displayName, kind: "cloud" as const })),
-        ]}
         existingNames={bots.map((b) => b.name)}
         agentTargets={[]}
         oncreate={create}

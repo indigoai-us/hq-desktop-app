@@ -15,7 +15,7 @@ import type { AvatarSelection } from "../../avatars/types.js";
 import { LOCAL_BOT_RUNTIMES, isValidLocalBotName } from "../local-bots.js";
 
 export type CreateBotStep = "kind" | "home" | "details";
-export type BotKindChoice = "blank" | "template" | "clone";
+export type BotKindChoice = "blank" | "template";
 export type BotHome = "local" | "cloud";
 export type BotRuntime = LocalBotCreateInput["runtime"];
 export type BotMemory = "synced" | "local";
@@ -23,7 +23,6 @@ export type BotMemory = "synced" | "local";
 export interface CreateBotDraft {
   kind: BotKindChoice;
   templateId?: string;
-  cloneUid?: string;
   home: BotHome;
   runtime: BotRuntime;
   companyUid?: string;
@@ -154,17 +153,6 @@ export function suggestBotNames(
   return out;
 }
 
-/** A free slug derived from a display name (clone prefill). */
-export function freeSlugFrom(display: string, existing: readonly string[]): string {
-  const base = slugifyBotName(display) || "bot";
-  if (!taken(base, existing)) return base;
-  for (let i = 2; i < 1000; i += 1) {
-    const candidate = `${base.slice(0, 40 - String(i).length - 1)}-${i}`;
-    if (!taken(candidate, existing)) return candidate;
-  }
-  return base;
-}
-
 // ── intro ──────────────────────────────────────────────────────────────────
 
 export function introIssue(intro: string): string | null {
@@ -247,7 +235,15 @@ function matchesTemplate(card: TemplateCard, query: string): boolean {
 }
 
 /**
- * Cards grouped by company (core first, then companies alphabetically),
+ * Only company workers can start a bot from a template; HQ core workers
+ * (setup and friends) are never offered.
+ */
+export function companyTemplates(options: readonly LocalBotWorkerOption[]): LocalBotWorkerOption[] {
+  return options.filter((option) => templateCard(option).source === "company");
+}
+
+/**
+ * Cards grouped by company (companies alphabetically),
  * filtered by a free-text query over id/name/summary/company. Empty groups
  * are dropped; card order within a group is by name.
  */
@@ -285,34 +281,6 @@ export function templateBringsLine(card: TemplateCard | null): string {
   return `Brings ${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}.`;
 }
 
-// ── clone ──────────────────────────────────────────────────────────────────
-
-export interface CloneCandidate {
-  uid: string;
-  displayName: string;
-  description?: string | null;
-  avatarUrl?: string | null;
-  kind: "cloud" | "local";
-}
-
-/** Copy a bot's persona (name, description as intro, avatar) into a fresh Local draft. */
-export function draftFromClone(
-  bot: CloneCandidate,
-  base: CreateBotDraft,
-  existingNames: readonly string[],
-): CreateBotDraft {
-  const intro = (bot.description ?? "").replace(/\s+/g, " ").trim().slice(0, INTRO_MAX);
-  return {
-    ...base,
-    kind: "clone",
-    cloneUid: bot.uid,
-    templateId: undefined,
-    home: "local",
-    name: freeSlugFrom(bot.displayName, existingNames),
-    intro,
-  };
-}
-
 // ── steps ──────────────────────────────────────────────────────────────────
 
 /** The steps this draft walks: Cloud stops at home, Local continues to details. */
@@ -337,7 +305,6 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
   switch (step) {
     case "kind":
       if (draft.kind === "template" && !draft.templateId) return "Pick a template.";
-      if (draft.kind === "clone" && !draft.cloneUid) return "Pick a bot to clone.";
       return null;
     case "home":
       if (draft.home === "local") {

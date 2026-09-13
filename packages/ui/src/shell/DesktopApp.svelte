@@ -269,7 +269,6 @@
   import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption, SessionProviderId } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
-  import type { CloneCandidate } from "../chat/create-bot/create-bot-model.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
     ChatSidebarApi,
@@ -1087,24 +1086,6 @@
   const selectedBotProgress = $derived(
     selectedRow?.kind === "dm" && selectedRow.personUid ? (botProgressByUid[selectedRow.personUid] ?? null) : null,
   );
-  /** Bots the new-bot flow can clone: Cloud bots the rail knows, plus this Mac's own. */
-  const cloneCandidates = $derived.by<CloneCandidate[]>(() => {
-    const out: CloneCandidate[] = [];
-    const seen = new Set<string>();
-    for (const bot of localBots) {
-      const uid = bot.agentUid.trim();
-      if (!uid || seen.has(uid)) continue;
-      seen.add(uid);
-      out.push({ uid, displayName: bot.name, avatarUrl: avatarByUid[uid] ?? null, kind: "local" });
-    }
-    for (const row of railRows) {
-      const uid = (row.personUid ?? "").trim();
-      if (row.kind !== "dm" || !uid || seen.has(uid) || !isAgentUid(uid)) continue;
-      seen.add(uid);
-      out.push({ uid, displayName: row.title, avatarUrl: avatarByUid[uid] ?? null, kind: "cloud" });
-    }
-    return out;
-  });
   const existingBotNames = $derived(localBots.map((b) => b.name));
   /** Inline runtime sign-in for the flow's Home step (browser login + status poll). */
   const botSignIn = $derived.by<RuntimeSignInApi | null>(() => {
@@ -5466,7 +5447,6 @@
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
           botWorkers={localBotWorkers}
-          {cloneCandidates}
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}

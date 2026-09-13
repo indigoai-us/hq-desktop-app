@@ -42,7 +42,7 @@
   import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
   import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
-  import type { BotRuntime, CloneCandidate } from "./create-bot/create-bot-model.js";
+  import type { BotRuntime } from "./create-bot/create-bot-model.js";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { AvatarPack } from "../avatars/types.js";
   import { botKindFor } from "./bot-kind.js";
@@ -205,8 +205,7 @@
       | null;
     botRuntimeReady?: Record<string, boolean> | null;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
-    /** New bot flow extras (see CreateModal): clone sources, taken names, sign-in, avatars. */
-    cloneCandidates?: readonly CloneCandidate[] | null;
+    /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
     existingBotNames?: readonly string[] | null;
     botSignIn?: RuntimeSignInApi | null;
     onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
@@ -287,7 +286,6 @@
     oncreatebot = null,
     botRuntimeReady = null,
     botWorkers = null,
-    cloneCandidates = null,
     existingBotNames = null,
     botSignIn = null,
     onbotsignedin = null,
@@ -2702,7 +2700,6 @@
       {oncreatebot}
       {botRuntimeReady}
       {botWorkers}
-      {cloneCandidates}
       {existingBotNames}
       {botSignIn}
       {onbotsignedin}

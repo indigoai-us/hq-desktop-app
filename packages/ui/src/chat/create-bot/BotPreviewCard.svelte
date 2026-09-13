@@ -15,11 +15,11 @@
     /** "thinks with Claude Code" / "hosted by Indigo". */
     thinksWith: string;
     intro?: string;
-    /** Chosen avatar (pack tile, or a cloned bot's photo). */
+    /** Chosen avatar (a pack tile). */
     avatarUrl?: string | null;
     /** Seed for the generated mark while no avatar is chosen. */
     markSeed?: string;
-    /** Kind line under the name: "Blank bot", "From Iris Cx", "Clone of Izzy". */
+    /** Kind line under the name: "Blank bot", "From Iris Cx". */
     kindLine?: string;
     placement?: "rail" | "top";
   }

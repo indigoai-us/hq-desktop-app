@@ -20,7 +20,7 @@
   import type { LocalBotEntryResult } from "./local-bots.js";
   import type { AvatarPack } from "../avatars/types.js";
   import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
-  import type { CloneCandidate, BotRuntime } from "./create-bot/create-bot-model.js";
+  import type { BotRuntime } from "./create-bot/create-bot-model.js";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type { SelfIdentity } from "../identity/self.js";
@@ -118,10 +118,8 @@
       | null;
     /** `{ claude: true, codex: false, … }` — which runtimes are signed in here. */
     botRuntimeReady?: Record<string, boolean> | null;
-    /** Company/core workers a bot can be created from (empty → plain bot only). */
+    /** Workers a bot can be created from (the flow offers company workers only; none → blank bot only). */
     botWorkers?: readonly LocalBotWorkerOption[] | null;
-    /** Existing bots (Cloud + Local) the new bot can copy its persona from. */
-    cloneCandidates?: readonly CloneCandidate[] | null;
     /** Names the user's local bots already use (availability check). */
     existingBotNames?: readonly string[] | null;
     /** Inline runtime sign-in (browser login + status poll) for the Home step. */
@@ -157,7 +155,6 @@
     oncreatebot = null,
     botRuntimeReady = null,
     botWorkers = null,
-    cloneCandidates = null,
     existingBotNames = null,
     botSignIn = null,
     onbotsignedin = null,
@@ -1724,7 +1721,6 @@
       <CreateBotFlow
         {botRuntimeReady}
         {botWorkers}
-        {cloneCandidates}
         existingNames={existingBotNames}
         agentTargets={canCreateCloudBot ? agentTargets : []}
         onCloudCreate={canCreateCloudBot ? newAgentFor : null}

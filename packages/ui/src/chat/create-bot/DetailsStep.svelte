@@ -28,8 +28,6 @@
     template?: TemplateCard | null;
     avatarPacks?: AvatarPack[] | null;
     loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
-    /** A cloned bot's photo, shown until the user picks something else. */
-    inheritedAvatarUrl?: string | null;
     disabled?: boolean;
     autofocus?: boolean;
     onpatch: (patch: Partial<CreateBotDraft>) => void;
@@ -42,7 +40,6 @@
     template = null,
     avatarPacks = null,
     loadAvatarPacks = null,
-    inheritedAvatarUrl = null,
     disabled = false,
     autofocus = true,
     onpatch,
@@ -58,7 +55,7 @@
 
   let avatarOpen = $state(false);
   let avatarSrc = $state<string | null>(null);
-  const previewAvatar = $derived(avatarSrc ?? inheritedAvatarUrl ?? null);
+  const previewAvatar = $derived(avatarSrc ?? null);
 
   function onAvatarChange(selection: AvatarSelection, src: string | null): void {
     avatarSrc = selection.kind === "generated" ? null : src;
@@ -133,7 +130,6 @@
       <div class="avatar-picker" data-testid="chat-bot-avatar-picker">
         <AvatarPackPicker
           agentUid={`agt_preview_${normalizeBotName(draft.name) || "bot"}`}
-          currentSrc={inheritedAvatarUrl}
           packs={avatarPacks}
           loadPacks={loadAvatarPacks ?? undefined}
           hideSave

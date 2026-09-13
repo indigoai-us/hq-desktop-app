@@ -21,10 +21,19 @@ const WORKERS: LocalBotWorkerOption[] = [
   },
   {
     id: "note-taker",
-    path: "core/workers/note-taker",
+    path: "companies/acme/workers/note-taker",
+    company: "acme",
     name: "Note Taker",
     summary: "Turns meetings into decisions.",
     skillCount: 1,
+  },
+  {
+    id: "setup",
+    path: "core/workers/setup",
+    name: "Setup",
+    summary: "Walks you through HQ on day one.",
+    skillCount: 1,
+    source: "core",
   },
 ];
 
@@ -113,6 +122,27 @@ describe("CreateBotFlow", () => {
     expect(q('[data-testid="create-bot-home-step"]')).toBeTruthy();
   });
 
+  it("picking Blank moves straight on to where it runs", async () => {
+    render({ oncreate: vi.fn() });
+    await settle();
+    click('[data-testid="create-bot-kind-template"]');
+    await settle();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    click('[data-testid="create-bot-kind-blank"]');
+    await settle();
+    expect(q('[data-testid="create-bot-home-step"]')).toBeTruthy();
+    expect(q('[data-testid="bot-preview-kind"]')?.textContent).toContain("Blank bot");
+  });
+
+  it("offers only Blank and From a template, and no template without company workers", async () => {
+    render({ oncreate: vi.fn(), botWorkers: WORKERS.filter((w) => w.id === "setup") });
+    await settle();
+    const kinds = Array.from(host.querySelectorAll<HTMLButtonElement>('[data-testid="create-bot-kinds"] [data-kind]'));
+    expect(kinds.map((k) => k.dataset.kind)).toEqual(["blank", "template"]);
+    expect(q('[data-testid="create-bot-kind-clone"]')).toBeNull();
+    expect(q<HTMLButtonElement>('[data-testid="create-bot-kind-template"]')?.disabled).toBe(true);
+  });
+
   it("a template card fills the draft and rides along to the CLI input", async () => {
     const oncreate = vi.fn(async () => undefined);
     render({ oncreate });
@@ -130,7 +160,8 @@ describe("CreateBotFlow", () => {
     expect(cards[1]!.textContent).not.toContain("Escalates");
     expect(cards[1]!.textContent).toContain("3 skills");
     const groups = Array.from(host.querySelectorAll('[data-testid="create-bot-templates"] .cb-group-title'));
-    expect(groups.map((g) => g.textContent)).toEqual(["HQ core", "Indigo"]);
+    // Company workers only: the core setup worker is never offered.
+    expect(groups.map((g) => g.textContent)).toEqual(["Acme", "Indigo"]);
 
     // Until a card is picked, the kind step is blocked.
     expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')?.disabled).toBe(true);
@@ -318,36 +349,4 @@ describe("CreateBotFlow", () => {
     expect(q('[data-testid="bot-preview-kind"]')?.textContent).toContain("From Note Taker");
   });
 
-  it("cloning copies the bot's persona into a fresh Local draft", async () => {
-    const oncreate = vi.fn(async () => undefined);
-    render({
-      oncreate,
-      cloneCandidates: [
-        { uid: "agt_izzy", displayName: "Izzy Bot", description: "Keeps the roadmap honest.", kind: "cloud" as const },
-      ],
-      existingNames: [],
-    });
-    await settle();
-    click('[data-testid="create-bot-kind-clone"]');
-    await settle();
-    click('[data-testid="create-bot-clone-card"]');
-    await settle();
-    expect(q('[data-testid="bot-preview-kind"]')?.textContent).toContain("Clone of Izzy Bot");
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    expect(q<HTMLInputElement>('[data-testid="chat-bot-name"]')?.value).toBe("izzy-bot");
-    click('[data-testid="chat-bot-create"]');
-    await settle();
-    expect(oncreate).toHaveBeenCalledWith(
-      {
-        name: "izzy-bot",
-        runtime: "claude",
-        autoApprove: true,
-        intro: "Keeps the roadmap honest.",
-      },
-      {},
-    );
-  });
 });

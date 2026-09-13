@@ -24,7 +24,7 @@
     STEP_TITLES,
     canAdvance,
     canCreate,
-    draftFromClone,
+    companyTemplates,
     firstBlockingStep,
     initialDraft,
     nextStep,
@@ -35,7 +35,6 @@
     thinksWithLine,
     toCreateInput,
     type BotRuntime,
-    type CloneCandidate,
     type CreateBotContext,
     type CreateBotDraft,
     type CreateBotStep,
@@ -48,7 +47,6 @@
   interface Props {
     botRuntimeReady?: Record<string, boolean> | null;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
-    cloneCandidates?: readonly CloneCandidate[] | null;
     existingNames?: readonly string[] | null;
     /** Companies a Cloud bot can be added to; empty hides Cloud. */
     agentTargets?: ReadonlyArray<{ companyUid: string; label: string; iconUrl?: string | null }> | null;
@@ -74,7 +72,6 @@
   let {
     botRuntimeReady = null,
     botWorkers = null,
-    cloneCandidates = null,
     existingNames = null,
     agentTargets = null,
     onCloudCreate = null,
@@ -91,8 +88,7 @@
     previewPlacement = null,
   }: Props = $props();
 
-  const templates = $derived<readonly LocalBotWorkerOption[]>(botWorkers ?? []);
-  const clones = $derived<readonly CloneCandidate[]>(cloneCandidates ?? []);
+  const templates = $derived<readonly LocalBotWorkerOption[]>(companyTemplates(botWorkers ?? []));
   const names = $derived<readonly string[]>(existingNames ?? []);
   const companies = $derived(agentTargets ?? []);
   const canLocal = $derived(!!oncreate);
@@ -111,8 +107,6 @@
   // (a worker list arriving, a sign-in landing) flow through `ctx` only.
   let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx)));
   let step = $state<CreateBotStep>("kind");
-  /** A cloned bot's photo; cleared when the user picks a pack avatar. */
-  let inheritedAvatarUrl = $state<string | null>(null);
   let pickedAvatarSrc = $state<string | null>(null);
 
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
@@ -128,19 +122,14 @@
       : null,
   );
   const chosenTemplateCard = $derived(chosenTemplate ? templateCard(chosenTemplate) : null);
-  const chosenClone = $derived(draft.kind === "clone" && draft.cloneUid ? (clones.find((c) => c.uid === draft.cloneUid) ?? null) : null);
   const kindLine = $derived(
     draft.kind === "template"
       ? chosenTemplateCard
         ? `From ${chosenTemplateCard.name}`
         : "From a template"
-      : draft.kind === "clone"
-        ? chosenClone
-          ? `Clone of ${chosenClone.displayName}`
-          : "Clone of a bot"
-        : "Blank bot",
+      : "Blank bot",
   );
-  const previewAvatar = $derived(pickedAvatarSrc ?? inheritedAvatarUrl);
+  const previewAvatar = $derived(pickedAvatarSrc);
   const cloudCompany = $derived(companies.find((c) => c.companyUid === draft.companyUid) ?? null);
 
   // Preview placement: right rail on wide windows, top otherwise.
@@ -160,13 +149,6 @@
     draft = { ...draft, ...p };
     // A Cloud draft has no details step: never strand the user there.
     if (draft.home === "cloud" && step === "details") step = "home";
-  }
-
-  function clone(bot: CloneCandidate): void {
-    if (busy) return;
-    draft = draftFromClone(bot, draft, names);
-    inheritedAvatarUrl = bot.avatarUrl ?? null;
-    pickedAvatarSrc = null;
   }
 
   function goTo(next: CreateBotStep): void {
@@ -276,7 +258,7 @@
 
     <div class="flow-body">
       {#if step === "kind"}
-        <KindStep {draft} {templates} cloneCandidates={clones} disabled={busy} onpatch={patch} onadvance={advance} onclone={clone} />
+        <KindStep {draft} {templates} disabled={busy} onpatch={patch} onadvance={advance} />
       {:else if step === "home"}
         <HomeStep
           {draft}
@@ -298,7 +280,6 @@
           template={chosenTemplateCard}
           {avatarPacks}
           {loadAvatarPacks}
-          {inheritedAvatarUrl}
           disabled={busy}
           onpatch={patch}
           onavatar={(_selection, src) => (pickedAvatarSrc = src)}

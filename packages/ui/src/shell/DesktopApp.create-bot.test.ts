@@ -129,11 +129,8 @@ describe("DesktopApp sidebar '+' → New bot", () => {
     expect(card.dataset.template).toBe("iris-cx");
     expect(card.textContent).toContain("Answers customer questions.");
     expect(card.textContent).toContain("3 skills");
-    // Blank is all this test needs; go back to it and move on.
+    // Blank is all this test needs; picking it moves straight on.
     click('[data-testid="create-bot-kind-blank"]');
-    await settle();
-
-    click('[data-testid="create-bot-next"]');
     await settle();
     expect(q('[data-testid="create-bot-home-step"]')).toBeTruthy();
     // Runtime readiness came from preflight: Claude is signed in, Codex is not.

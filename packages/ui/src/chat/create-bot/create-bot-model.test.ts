@@ -4,11 +4,10 @@ import type { LocalBotWorkerOption } from "@hq/platform";
 import {
   canAdvance,
   canCreate,
-  draftFromClone,
+  companyTemplates,
   firstBlockingStep,
   firstReadyRuntime,
   firstSentence,
-  freeSlugFrom,
   groupTemplates,
   initialDraft,
   introIssue,
@@ -108,12 +107,6 @@ describe("names", () => {
     expect(suggestBotNames(["assistant"], 3, "buddy")).toEqual(["scout", "atlas", "quill"]);
   });
 
-  it("derives a free slug from a display name", () => {
-    expect(freeSlugFrom("Izzy Bot", [])).toBe("izzy-bot");
-    expect(freeSlugFrom("Izzy Bot", ["izzy-bot"])).toBe("izzy-bot-2");
-    expect(freeSlugFrom("  Émile — v2!  ", [])).toBe("emile-v2");
-    expect(freeSlugFrom("???", [])).toBe("bot");
-  });
 });
 
 describe("intro", () => {
@@ -142,10 +135,16 @@ describe("templates", () => {
     expect(templateCard(WORKERS[3]!)).toMatchObject({ name: "Zed", summary: "", skillCount: null });
   });
 
-  it("groups by company with core first and searches across name/summary/company", () => {
-    const groups = groupTemplates(WORKERS);
+  it("offers company workers only, never core ones", () => {
+    expect(companyTemplates(WORKERS).map((w) => w.id)).toEqual(["iris-cx", "ads-analyst", "zed"]);
+    // No explicit source: a worker without a company counts as core.
+    expect(companyTemplates([{ id: "loose", path: "core/workers/loose" }])).toEqual([]);
+    expect(companyTemplates([{ id: "tagged", path: "x", source: "company", company: "indigo" }]).map((w) => w.id)).toEqual(["tagged"]);
+  });
+
+  it("groups by company and searches across name/summary/company", () => {
+    const groups = groupTemplates(companyTemplates(WORKERS));
     expect(groups.map((g) => [g.company, g.label, g.templates.map((t) => t.id)])).toEqual([
-      [null, "HQ core", ["setup"]],
       ["acme", "Acme", ["ads-analyst"]],
       ["indigo", "Indigo", ["iris-cx", "zed"]],
     ]);
@@ -162,19 +161,6 @@ describe("templates", () => {
   });
 });
 
-describe("clone prefill", () => {
-  it("copies name, description, and forces a Local home", () => {
-    const base = draft({ home: "cloud", kind: "template", templateId: "iris-cx" });
-    const d = draftFromClone(
-      { uid: "agt_izzy", displayName: "Izzy", description: "  Runs\nIndigo support.  ", avatarUrl: null, kind: "cloud" },
-      base,
-      ["izzy"],
-    );
-    expect(d).toMatchObject({ kind: "clone", cloneUid: "agt_izzy", home: "local", name: "izzy-2", intro: "Runs Indigo support." });
-    expect(d.templateId).toBeUndefined();
-  });
-});
-
 describe("steps", () => {
   it("a Cloud draft ends at home; a Local draft continues to details", () => {
     expect(stepsFor({ home: "cloud" })).toEqual(["kind", "home"]);
@@ -186,13 +172,11 @@ describe("steps", () => {
     expect(prevStep("details", { home: "local" })).toBe("home");
   });
 
-  it("kind needs a template or clone pick when chosen", () => {
+  it("kind needs a template pick when From a template is chosen", () => {
     const c = ctx();
     expect(stepIssue("kind", draft({ kind: "blank" }), c)).toBeNull();
     expect(stepIssue("kind", draft({ kind: "template" }), c)).toBe("Pick a template.");
     expect(stepIssue("kind", draft({ kind: "template", templateId: "iris-cx" }), c)).toBeNull();
-    expect(stepIssue("kind", draft({ kind: "clone" }), c)).toBe("Pick a bot to clone.");
-    expect(canAdvance("kind", draft({ kind: "clone", cloneUid: "agt_x" }), c)).toBe(true);
   });
 
   it("home needs a signed-in runtime (Local) or a company (Cloud)", () => {

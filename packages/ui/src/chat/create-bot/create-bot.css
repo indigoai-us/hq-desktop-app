@@ -246,7 +246,7 @@
   color: var(--v4-error, #d9534f);
 }
 
-/* ── template / clone libraries ────────────────────────────────────────── */
+/* ── template library ────────────────────────────────────────── */
 
 .cb-library {
   display: flex;
