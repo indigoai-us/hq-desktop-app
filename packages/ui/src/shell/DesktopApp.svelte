@@ -938,11 +938,13 @@
    */
   /** Set once the setup bot was started this session, automatically or by Run Setup. */
   let setupBotAutoStarted = false;
+  /** True while startSetupBot is creating the bot, so #welcome can say so. */
+  let setupBotStarting = $state(false);
   const existingSetupBot = $derived(findSetupBot(localBots));
   const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
   const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
     adapter.bots && SETUP_BOT_MODE
-      ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, start: startSetupBot }
+      ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, starting: setupBotStarting, start: startSetupBot }
       : null,
   );
   /** Open a setup bot's DM; setup counts as run from that moment. */
@@ -968,6 +970,14 @@
    * earlier run on this Mac — may already have made it.
    */
   async function startSetupBot(): Promise<SetupBotStart> {
+    setupBotStarting = true;
+    try {
+      return await startSetupBotNow();
+    } finally {
+      setupBotStarting = false;
+    }
+  }
+  async function startSetupBotNow(): Promise<SetupBotStart> {
     // Any start (the automatic one or a click) settles the automatic start.
     setupBotAutoStarted = true;
     if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
@@ -1008,6 +1018,9 @@
    */
   $effect(() => {
     if (setupBotAutoStarted || !adapter.bots || !SETUP_BOT_MODE || welcomeSetupRun) return;
+    // Wait for the shell's first conversation to be chosen, so opening the
+    // bot's DM is not undone by the boot selection landing afterwards.
+    if (!selectedRow) return;
     if (!firstSignedInRuntime(localBotRuntimeReady)) return;
     setupBotAutoStarted = true;
     void startSetupBot()

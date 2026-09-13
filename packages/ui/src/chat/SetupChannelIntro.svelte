@@ -237,7 +237,9 @@
   /** Hero body in bot mode — setup is a conversation now, not a wizard. */
   const heroBody = $derived(
     setupBot && !scriptedFallback && !rosterLoading
-      ? setupBot.existing
+      ? setupBot.starting && !setupBot.existing
+        ? SETUP_BOT_COPY.bodyStarting
+        : setupBot.existing
         ? SETUP_BOT_COPY.bodyExisting
         : SETUP_BOT_COPY.body
       : hero.body,
@@ -418,12 +420,17 @@
           variant="primary"
           data-testid="setup-run"
           disabled={botBusy ||
+            Boolean(setupBot?.starting && !scriptedFallback) ||
             Boolean(agent?.busy) ||
             (!setupBot && !agent?.api && !onopensessions && (!canLaunch || launching !== null))}
           aria-busy={botBusy || Boolean(agent?.busy) || (!onopensessions && launching === "claude")}
           onclick={runSetup}
         >
-          {botBusy || agent?.busy ? SETUP_BOT_COPY.starting : runLabel}
+          {setupBot?.starting && !scriptedFallback && !botBusy
+            ? SETUP_BOT_COPY.autoStarting
+            : botBusy || agent?.busy
+              ? SETUP_BOT_COPY.starting
+              : runLabel}
         </SetupButton>
       </div>
       {#if botError}

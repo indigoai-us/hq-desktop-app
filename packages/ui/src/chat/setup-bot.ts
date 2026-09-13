@@ -83,6 +83,10 @@ export const SETUP_BOT_COPY = {
     "Your HQ folder isn't ready yet. Your setup bot finishes it for you — it runs on this Mac under your own coding tool login.",
   /** While the CLI is provisioning. */
   starting: "Starting…",
+  /** The bot is being started automatically on first open. */
+  autoStarting: "Starting your setup bot…",
+  /** Under the hero while the automatic start runs. */
+  bodyStarting: "Your setup bot is starting on this Mac. Its conversation opens by itself in a moment.",
   /** Under the hero, before the first click. */
   body:
     "Setup happens in a conversation with your setup bot. It runs on this Mac under your own coding tool login, " +
@@ -126,6 +130,8 @@ export interface SetupBotLauncher {
   existing: boolean;
   /** A runtime is signed in, so creating one can succeed. */
   ready: boolean;
+  /** The setup bot is being created right now (e.g. the automatic first-open start). */
+  starting?: boolean;
   /** Open the existing bot's DM, or create it and open the new one. */
   start(): Promise<SetupBotStart>;
 }

@@ -337,6 +337,25 @@ describe("#welcome Run Setup creates the setup bot", () => {
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ runtime: "claude" }));
   });
 
+  it("while the automatic start runs, #welcome says the bot is starting instead of offering Run Setup", async () => {
+    let finish!: () => void;
+    const create = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+        }),
+    );
+    await mountWelcome(adapter({ bots: { create: create as never } }), fakeSetupRun());
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    // Still on #welcome while the CLI provisions the bot.
+    const run = q<HTMLButtonElement>('[data-testid="setup-run"]')!;
+    await vi.waitFor(() => expect(run.textContent).toContain(SETUP_BOT_COPY.autoStarting));
+    expect(run.disabled).toBe(true);
+    expect(q('[data-testid="setup-channel-intro"]')?.textContent).toContain("Your setup bot is starting");
+    finish();
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+  });
+
   it("does not start by itself when setup already ran on this Mac", async () => {
     window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
