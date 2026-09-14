@@ -95,6 +95,15 @@ pub fn require_local_toolchain(
     }
 }
 
+/// Whether desktop activation must stay on the installer. Only the toolchain
+/// gate holds the desktop back: a machine that looks set up but lacks local
+/// tools. A machine that is simply not installed yet (no HQ folder here) still
+/// opens the desktop workspace, where a signed-in person lands on #setup; the
+/// release artifact smoke launches exactly that person.
+pub fn toolchain_holds_desktop(classified: LifecycleState, gated: LifecycleState) -> bool {
+    !installation_required(classified) && installation_required(gated)
+}
+
 /// Desktop activation may not bypass the install wizard. This is distinct
 /// from the retired notification popover: completed installs open desktop.
 pub fn installation_required(state: LifecycleState) -> bool {
@@ -682,6 +691,29 @@ mod toolchain_readiness_tests {
         let recorded = inputs.install_completed || inputs.first_run_completed;
         let verdict = require_local_toolchain(classify_lifecycle(inputs), false, recorded);
         assert!(!installation_required(verdict.state));
+    }
+    #[test]
+    fn only_the_toolchain_gate_holds_the_desktop_back() {
+        // Not installed on this machine (smoke profile: no HQ folder) → desktop opens.
+        assert!(!toolchain_holds_desktop(LifecycleState::NeedsInstall, LifecycleState::NeedsInstall));
+        assert!(!toolchain_holds_desktop(LifecycleState::InstallResume, LifecycleState::InstallResume));
+        // Looks set up but the tools are missing → installer.
+        for classified in [LifecycleState::InstalledFirstRun, LifecycleState::InstalledLegacyUpdate, LifecycleState::SteadyState] {
+            assert!(toolchain_holds_desktop(classified, LifecycleState::NeedsInstall));
+            assert!(!toolchain_holds_desktop(classified, classified));
+        }
+    }
+    #[test]
+    fn release_smoke_profile_is_not_held_on_the_installer() {
+        let inputs = LifecycleInputs {
+            install_completed: false, first_run_completed: true, had_machine_id: true,
+            config_valid: false, hq_root_valid: false, has_auth: true,
+            install_in_progress: false, consent_answered: false,
+        };
+        let recorded = inputs.install_completed || inputs.first_run_completed;
+        let classified = classify_lifecycle(inputs).state;
+        let gated = require_local_toolchain(classify_lifecycle(inputs), false, recorded).state;
+        assert!(!toolchain_holds_desktop(classified, gated));
     }
     #[test]
     fn completed_install_opens_desktop_and_incomplete_install_resumes_wizard() {

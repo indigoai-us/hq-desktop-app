@@ -3,6 +3,7 @@ use hq_desktop_core::lifecycle::{
     classify_lifecycle, hq_root_valid, menubar_flags, LifecycleInputs, LifecycleState,
 };
 use serde_json::{Map, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 use tauri::{AppHandle, Manager, State};
 
@@ -20,6 +21,16 @@ impl LifecycleStateHandle {
     }
 }
 
+/// Set at startup when the toolchain gate (not the plain install state) sent
+/// this launch to the installer; cleared once setup advances past install.
+static TOOLCHAIN_HOLDS_DESKTOP: AtomicBool = AtomicBool::new(false);
+
+/// Whether desktop activation must stay on the installer for this launch.
+pub fn toolchain_holds_desktop(app: &AppHandle) -> bool {
+    TOOLCHAIN_HOLDS_DESKTOP.load(Ordering::SeqCst)
+        && current_lifecycle_state(app).is_some_and(hq_desktop_core::lifecycle::installation_required)
+}
+
 /// Current lifecycle verdict for the running process, if one was resolved.
 pub fn current_lifecycle_state(app: &AppHandle) -> Option<LifecycleState> {
     app.try_state::<LifecycleStateHandle>()
@@ -35,6 +46,9 @@ pub fn set_lifecycle_state(app: &AppHandle, state: LifecycleState) {
             .0
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = state;
+        if !hq_desktop_core::lifecycle::installation_required(state) {
+            TOOLCHAIN_HOLDS_DESKTOP.store(false, Ordering::SeqCst);
+        }
         log(
             "lifecycle",
             &format!("lifecycle state advanced to {}", lifecycle_state_str(state)),
@@ -125,7 +139,13 @@ pub fn setup_lifecycle(app: &AppHandle) {
         let tools_present = ["hq", "node"].iter().all(|name| {
             paths::resolve_bin_with_kind(name).kind != paths::ResolvedProgramKind::NotResolved
         }) && crate::commands::install_deps::bundled_hq_cli_ready(app);
-        hq_desktop_core::lifecycle::require_local_toolchain(classify_lifecycle(inputs), tools_present, setup_recorded_locally)
+        let classified = classify_lifecycle(inputs);
+        let gated = hq_desktop_core::lifecycle::require_local_toolchain(classified, tools_present, setup_recorded_locally);
+        TOOLCHAIN_HOLDS_DESKTOP.store(
+            hq_desktop_core::lifecycle::toolchain_holds_desktop(classified.state, gated.state),
+            Ordering::SeqCst,
+        );
+        gated
     };
     #[cfg(windows)]
     let verdict = classify_lifecycle(inputs);
