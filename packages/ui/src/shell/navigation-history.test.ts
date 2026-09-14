@@ -454,3 +454,10 @@ describe("navigation history stack", () => {
     );
   });
 });
+
+
+it("preserves Office as a distinct company destination through history serialization", () => {
+  const office = entry({kind:"channel",channelId:"company-channel",companyTab:"office"});
+  expect(canonicalizeDestination(JSON.parse(JSON.stringify(office.destination)))).toMatchObject({companyTab:"office"});
+  expect(destinationsEqual(office.destination,{kind:"channel",channelId:"company-channel",companyTab:"chat"})).toBe(false);
+});

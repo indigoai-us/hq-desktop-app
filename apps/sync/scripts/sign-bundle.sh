@@ -20,6 +20,18 @@ set -euo pipefail
 
 APP="${1:-}"
 IDENTITY="${2:-HQ Installer Dev}"
+# Optional isolated signing keychain; do not mutate the user's search list.
+KEYCHAIN_ARGS=()
+if [ -n "${HQ_SIGN_KEYCHAIN:-}" ]; then
+  if [ ! -f "$HQ_SIGN_KEYCHAIN" ]; then
+    echo "ERROR: HQ_SIGN_KEYCHAIN does not exist" >&2
+    exit 1
+  fi
+  KEYCHAIN_ARGS+=("$HQ_SIGN_KEYCHAIN")
+fi
+find_signing_identities() {
+  security find-identity -v -p codesigning "${KEYCHAIN_ARGS[@]}"
+}
 
 if [ -z "$APP" ] || [ ! -d "$APP" ]; then
   echo "Usage: $0 <path-to-HQ.app> [identity]" >&2
@@ -30,10 +42,10 @@ fi
 # builds so the app still runs on Apple Silicon (arm64 requires at least an
 # ad-hoc signature to execute) without a Developer ID cert or notarization.
 # Ad-hoc identities are not in the keychain, so skip the find-identity check.
-if [ "$IDENTITY" != "-" ] && ! security find-identity -v -p codesigning | grep -q "$IDENTITY"; then
-  echo "ERROR: code-signing identity '$IDENTITY' not found in the login keychain." >&2
+if [ "$IDENTITY" != "-" ] && ! find_signing_identities | grep -Fq -- "$IDENTITY"; then
+  echo "ERROR: code-signing identity '$IDENTITY' not found in the selected keychain scope." >&2
   echo "       Available identities:" >&2
-  security find-identity -v -p codesigning >&2 || true
+  find_signing_identities >&2 || true
   exit 1
 fi
 
@@ -52,6 +64,9 @@ echo "Inside-out signing $APP with identity '$IDENTITY'…"
 # `com.apple.security.cs.disable-library-validation` if the SDK still hits
 # the same wall on Apple's signing infrastructure.
 SIGN_FLAGS=(--force --sign "$IDENTITY")
+if [ -n "${HQ_SIGN_KEYCHAIN:-}" ]; then
+  SIGN_FLAGS+=(--keychain "$HQ_SIGN_KEYCHAIN")
+fi
 if [ "${HARDENED_RUNTIME:-0}" = "1" ]; then
   SIGN_FLAGS+=(--options runtime)
 fi
@@ -119,8 +134,8 @@ sign_file() {
   if ! out=$(codesign "${SIGN_FLAGS[@]}" "$target" 2>&1); then
     echo "ERROR: codesign failed for: $target" >&2
     echo "  codesign output: ${out:-<none>}" >&2
-    echo "  identities visible to codesign (default search list):" >&2
-    security find-identity -v -p codesigning >&2 || true
+    echo "  identities visible to codesign (selected keychain scope):" >&2
+    find_signing_identities >&2 || true
     return 1
   fi
 }

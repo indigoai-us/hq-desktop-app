@@ -32,6 +32,7 @@ import {
   createHqProFlagFetch,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
+import { createCallsApi } from '../calls/api.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -264,9 +265,21 @@ export function createSyncPlatformAdapter(
     return ok(slug);
   }
 
+  /**
+   * Native calling (US-014) over the same authenticated `hq_pro_fetch` seam
+   * every other cloud call uses — the bearer stays in Rust and this webview
+   * never grows a second fetch stack. Refuses everything until the US-011
+   * service evidence preflight passes on this instance.
+   */
+  const calls = createCallsApi(
+    <T,>(method: 'GET' | 'POST', path: string, body?: unknown) =>
+      hqProJson<T>(method, path, body),
+  );
+
   const adapter: PlatformAdapter = {
     kind: 'desktop',
     capabilities: TAURI_CAPABILITIES,
+    calls,
     isAvailable: (cap: Capability): boolean => TAURI_CAPABILITIES[cap],
 
     identity: {

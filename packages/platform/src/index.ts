@@ -3,6 +3,28 @@ export * from "./adapter.js";
 export * from "./capabilities.js";
 export * from "./host-platform.js";
 export * from "./library-shelf.js";
+
+// Native calling (US-014): contract mirror, evidence preflight, calls group.
+export * from "./calls/contract.js";
+export * from "./calls/evidence.js";
+export {
+  CALLS_PATHS,
+  CALLS_PREFLIGHT_REQUIRED,
+  CALLS_UNSUPPORTED_HOST,
+  createCallsApi,
+  createUnsupportedCallsApi,
+} from "./calls/api.js";
+export type { CallsTransport } from "./calls/api.js";
+export {
+  canonical,
+  contentDigest,
+  keyId,
+  sha256,
+  signedBytes,
+  toBase64Url,
+  verifyChunkBytes,
+  verifyEnvelope,
+} from "./calls/crypto.js";
 export { WebPlatformAdapter, WEB_PATHS } from "./web/index.js";
 export type { WebPlatformAdapterConfig } from "./web/index.js";
 export { TauriPlatformAdapter } from "./tauri/index.js";

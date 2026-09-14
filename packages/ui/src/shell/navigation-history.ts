@@ -124,6 +124,7 @@ const CHANNEL_TABS = new Set<ChannelSurfaceTab>(["chat", "board", "files"]);
 const AGENT_SURFACES = new Set<AgentSurfaceTab>(["chat", "details"]);
 const COMPANY_TABS = new Set<CompanyChannelTabId>([
   "chat",
+  "office",
   "atlas",
   "team",
   "settings",

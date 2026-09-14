@@ -1,0 +1,1 @@
+{"callId":"call_a","companyUid":"company_a","epoch":1,"expiresAt":60000,"from":"alice","idempotencyKey":"request_a","kind":"knock","knockId":"knock_a","note":"","roomId":"room_a","state":"pending","target":"bob","version":"hq-meet/1"}

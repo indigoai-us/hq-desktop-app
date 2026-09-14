@@ -3,6 +3,9 @@
 use std::sync::Mutex;
 use tauri::Manager;
 
+#[cfg(feature = "meet-native-webdriver")]
+mod meet_native;
+
 mod boot_watchdog;
 mod commands;
 mod deep_link;
@@ -265,6 +268,12 @@ where
     terminate();
 }
 
+#[cfg(feature = "meet-native-webdriver")]
+fn main() {
+    meet_native::run();
+}
+
+#[cfg(not(feature = "meet-native-webdriver"))]
 fn main() {
     // The copied Windows update helper must run before Sentry, Tauri, and the
     // single-instance plugin. It waits for the real app to exit, then launches
@@ -358,7 +367,7 @@ fn main() {
         }
     }
 
-    crate::recovery::register_protocol(tauri::Builder::default())
+    let builder = crate::recovery::register_protocol(tauri::Builder::default())
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
             webview_asset_cache::handle_page_load(webview.label(), payload.event());
@@ -403,7 +412,9 @@ fn main() {
             }
 
             surface_existing_instance(app);
-        }))
+        }));
+
+    builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(
@@ -527,6 +538,21 @@ fn main() {
                 if window.label() == crate::recovery::WINDOW_LABEL {
                     crate::recovery::on_recovery_closed(window.app_handle());
                 }
+                // US-016: the call window — and ONLY the call window — owns the
+                // call registry. Once it is destroyed (user close, crash, kill)
+                // the session is gone with it, so drop every entry and any
+                // undrained pending target. Without this a crashed call window
+                // would leave the registry hot and refuse the next open with
+                // CALL_ACTIVE forever.
+                if crate::commands::calls::owns_window_label(window.label()) {
+                    let released = crate::commands::calls::release_all_sessions();
+                    if !released.is_empty() {
+                        crate::util::logfile::log(
+                            "calls",
+                            &format!("window destroyed; released={}", released.join(",")),
+                        );
+                    }
+                }
             }
             // No eager standalone-install probe here. `refresh_hq_work_install_cache`
             // force-probes with no TTL — on macOS that falls through to a fresh
@@ -552,6 +578,13 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::meet_transcript_projection::meet_transcript_project,
+            commands::meet_transcript_projection::meet_personal_transcript_project,
+            commands::meet_transcript_outbox::meet_transcript_outbox_enqueue,
+            commands::meet_transcript_outbox::meet_transcript_outbox_read,
+            commands::meet_transcript_outbox::meet_transcript_outbox_ack,
+            commands::meet_transcription::meet_transcription_status,
+            commands::meet_transcription::meet_transcribe_pcm,
             commands::app::quit_app,
             commands::app::frontend_log,
             commands::app::bring_main_window_to_front,
@@ -855,11 +888,20 @@ fn main() {
             commands::meetings::meetings_cancel_bot,
             commands::meetings::meetings_set_company,
             commands::meetings::meetings_take_pending_focus,
+            commands::calls::calls_open_window,
+            commands::calls::calls_take_pending_target,
+            commands::calls::calls_window_ready,
+            commands::calls::calls_release,
+            commands::calls::calls_persist_pending,
+            commands::calls::calls_take_recovered,
+            commands::calls::calls_disposed,
             commands::meetings::open_meetings_window,
             commands::meetings::meetings_check_bot_for_url,
             commands::meetings::meetings_notify_detected,
             commands::meetings::meetings_clear_prompt_badge,
             commands::permissions::permissions_open_settings,
+            commands::permissions::call_media_permissions,
+            commands::permissions::call_media_permission_request,
             commands::permissions::permissions_force_native_register,
             commands::permissions::meetings_permissions_state,
             commands::permissions::open_meeting_permissions_window,
@@ -1494,6 +1536,14 @@ fn main() {
                 {
                     observer.shutdown(std::time::Duration::from_millis(500));
                 }
+                // US-016: a live call owns its own window. Give it a bounded
+                // chance to dispose its session (stopping camera + microphone
+                // and flushing pending completion work) before the process
+                // tears down. Never blocks the quit past its own budget.
+                commands::calls::dispose_call_windows_for_exit(
+                    _app_handle,
+                    commands::calls::DISPOSE_WAIT,
+                );
                 commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
             }
 
