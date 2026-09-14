@@ -1,0 +1,55 @@
+/* Workspace-surface token proposals (US-025).
+ *
+ * The v4 palette is deliberately achromatic. Every NEW token the buzz-adopted
+ * workspace look needs lives here as a PROPOSAL, documented in
+ * docs/design/workspace/US-025-token-proposals.md. Components must consume
+ * these through achromatic fallbacks — e.g. var(--ws-accent, var(--v4-text-1))
+ * — so the UI still renders correctly if a proposal is rejected at gate G1.
+ *
+ * Owner policy honored here:
+ * - NO purple anywhere.
+ * - Blue only on Messages surfaces. The channel screen IS a Messages surface,
+ *   so a restrained blue is proposed for mentions + the unread boundary only.
+ */
+
+:root,
+:root[data-force-theme='light'] {
+  /* PROPOSED (US-025): restrained Messages-surface blue for @mentions and the
+     unread "New" boundary. Touches the "achromatic palette" hard rule; scoped
+     to Messages surfaces per the "blue only on Messages" owner policy. */
+  --ws-accent: #2f6bd8;
+
+  /* PROPOSED (US-025): soft wash of the same blue for mention chips and the
+     active reaction pill. Same rule scope as --ws-accent. */
+  --ws-accent-soft: rgba(47, 107, 216, 0.12);
+
+  /* PROPOSED (US-025): skeleton shimmer base block. Achromatic (equal RGB) —
+     proposed only because v4 has no dedicated placeholder-surface token. */
+  --ws-skeleton-base: rgba(0, 0, 0, 0.07);
+
+  /* PROPOSED (US-025): the moving sheen of the skeleton shimmer. Achromatic. */
+  --ws-skeleton-sheen: rgba(255, 255, 255, 0.55);
+
+  /* PROPOSED (US-025): modal scrim behind the Cmd+K palette and add-agent
+     panel. Achromatic — proposed only because v4 has no overlay-scrim token. */
+  --ws-scrim: rgba(0, 0, 0, 0.32);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ws-accent: #82aaf0;
+    --ws-accent-soft: rgba(130, 170, 240, 0.16);
+    --ws-skeleton-base: rgba(255, 255, 255, 0.07);
+    --ws-skeleton-sheen: rgba(255, 255, 255, 0.1);
+    --ws-scrim: rgba(0, 0, 0, 0.52);
+  }
+}
+
+.dark,
+:root[data-force-theme='dark'] {
+  --ws-accent: #82aaf0;
+  --ws-accent-soft: rgba(130, 170, 240, 0.16);
+  --ws-skeleton-base: rgba(255, 255, 255, 0.07);
+  --ws-skeleton-sheen: rgba(255, 255, 255, 0.1);
+  --ws-scrim: rgba(0, 0, 0, 0.52);
+}

@@ -16,7 +16,6 @@ import {
   setStageStatus,
   setupAutoRetryDelayMs,
   setupCompletionResult,
-  setupNeedsAttention,
   setupProgressPercent,
   setupStageRecoveryAction,
   stageAutoRetryLimit,
@@ -97,6 +96,20 @@ describe('onboarding setup stages', () => {
     expect(stages.every((stage) => stage.status === 'pending')).toBe(true);
   });
 
+  it('runs only stages with verified onboarding work', () => {
+    expect(STAGE_ORDER).toEqual([
+      'content',
+      'deps',
+      'initial-sync',
+      'git-init',
+      'personalize',
+      'indexing',
+    ]);
+    expect(STAGE_ORDER).not.toContain('packages');
+    expect(STAGE_ORDER).not.toContain('import');
+    expect(STAGE_ORDER).not.toContain('menubar');
+  });
+
   it('settles only when every stage is ok or failed', () => {
     const pending = buildInitialStages();
     const running = setStageStatus(pending, 'deps', 'running');
@@ -155,18 +168,17 @@ describe('install manifest resume state', () => {
   });
 });
 
-describe('setup attention summary', () => {
-  it('does not ask for attention when required stages all succeed', () => {
+describe('setup failure record', () => {
+  it('has no failed required stages when all stages succeed', () => {
     const stages: StageState[] = buildInitialStages().map((stage) => ({
       ...stage,
       status: 'ok',
     }));
 
-    expect(setupNeedsAttention(stages)).toBe(false);
     expect(failedRequiredStages(stages)).toEqual([]);
   });
 
-  it('reports failed required stages with their labels and messages', () => {
+  it('retains failed required stages with their labels and messages for the journal', () => {
     const stages = setStageStatus(
       buildInitialStages().map((stage) => ({ ...stage, status: 'ok' })),
       'content',
@@ -174,7 +186,6 @@ describe('setup attention summary', () => {
       'template download failed',
     );
 
-    expect(setupNeedsAttention(stages)).toBe(true);
     expect(failedRequiredStages(stages)).toEqual([
       {
         id: 'content',
@@ -183,7 +194,6 @@ describe('setup attention summary', () => {
       },
     ]);
     expect(setupCompletionResult(stages)).toMatchObject({
-      needsAttention: true,
       failedStages: [
         {
           id: 'content',
@@ -204,6 +214,25 @@ describe('setup attention summary', () => {
         message: 'Stage failed with no detail recorded.',
       },
     ]);
+  });
+
+  it('keeps failed required stages in the completion telemetry record', () => {
+    const stages = setStageStatus(
+      buildInitialStages().map((stage) => ({ ...stage, status: 'ok' })),
+      'deps',
+      'failed',
+      'dependency install failed',
+    );
+
+    expect(setupCompletionResult(stages)).toMatchObject({
+      failedStages: [
+        {
+          id: 'deps',
+          label: 'Installing dependencies',
+          message: 'dependency install failed',
+        },
+      ],
+    });
   });
 });
 
@@ -231,6 +260,18 @@ describe('setup progress percent', () => {
   });
 
   it('returns 100 once all stages are settled', () => {
+    expect(
+      setupProgressPercent({
+        settledCount: STAGE_ORDER.length,
+        totalStages: STAGE_ORDER.length,
+        hasRunningStage: false,
+        stageCreep: 0,
+        allDone: true,
+      }),
+    ).toBe(100);
+  });
+
+  it('completes the seamless checklist when every stage has settled', () => {
     expect(
       setupProgressPercent({
         settledCount: STAGE_ORDER.length,
@@ -390,8 +431,8 @@ describe('automatic setup recovery', () => {
     ).toBe(true);
     expect(
       isTransientSetupStageFailure({
-        stageId: 'packages',
-        message: 'npm registry timeout fetching package',
+        stageId: 'initial-sync',
+        message: 'network timeout while syncing initial cloud data',
       }),
     ).toBe(true);
     expect(
@@ -465,7 +506,7 @@ describe('stage timeouts', () => {
     expect(stageTimeoutMs('deps')).toBeGreaterThan(DEFAULT_STAGE_TIMEOUT_MS);
     expect(stageTimeoutMs('indexing')).toBeGreaterThan(DEFAULT_STAGE_TIMEOUT_MS);
     expect(stageTimeoutMs('git-init')).toBe(DEFAULT_STAGE_TIMEOUT_MS);
-    expect(stageTimeoutMs('menubar')).toBe(DEFAULT_STAGE_TIMEOUT_MS);
+    expect(stageTimeoutMs('personalize')).toBe(DEFAULT_STAGE_TIMEOUT_MS);
   });
 
   it('resolves when the work settles before the timeout', async () => {

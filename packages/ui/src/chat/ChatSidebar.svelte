@@ -102,6 +102,7 @@
     takeRailConversations,
     pickAutoOpenConversation,
     pickSettledBootConversation,
+    pickWelcomeFirstConversation,
     railRowScopeLabel,
     togglePin,
     type CompanyScope,
@@ -112,6 +113,7 @@
     type SortMode,
     type ScopeCompany,
   } from "./sidebar-model";
+  import type { RowExtrasResolver } from "./row-extras.js";
   import {
     filterSwitcher,
     switcherInitials,
@@ -170,6 +172,13 @@
     avatarByUid?: Record<string, string> | null;
     /** Bump to refetch contacts (after an agent profile save). */
     rosterWakeSeq?: number;
+    /**
+     * Bump to re-read pending connection requests only. Hosts tie this to
+     * their notification wake (native poll or `notifications:*` MQTT
+     * reconcile) so a request that arrives without a `dm:request-new` wake
+     * — the web path has none — still surfaces without a remount.
+     */
+    requestsWakeSeq?: number;
     /** Contact-roster avatar URLs, including agents once hq-pro sends them. */
     onavatarmap?: (map: Record<string, string>) => void;
     oncommand?: () => void;
@@ -198,6 +207,16 @@
      */
     bootTimeoutMs?: number;
     /**
+     * Land on #welcome at boot even when live channels exist (setup has not
+     * been run on this machine yet). See `hasRunWelcomeSetup`.
+     */
+    /**
+     * `true`: #welcome wins the boot pick (setup not run here yet). `false`:
+     * real conversations win. `"pending"`: the host has not yet said whether
+     * setup is owed — hold the boot pick, briefly, rather than guess.
+     */
+    welcomeFirst?: boolean | "pending";
+    /**
      * Phone-width shells keep this mounted while it is closed — it is what
      * loads the roster and falls back to #setup — and move it off screen
      * instead of unmounting it.
@@ -213,6 +232,11 @@
      * in that project is online via the presence store — never from timestamps.
      */
     projectHasPresence?: (row: ConversationRow) => boolean;
+    /** Host decoration per row: badge, hover card, context-menu actions.
+     *  Session metadata may still be loading — never hide the rail for it. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
+    rowExtras?: RowExtrasResolver | null;
   }
 
   let {
@@ -230,6 +254,7 @@
     seedDirectory = null,
     avatarByUid = null,
     rosterWakeSeq = 0,
+    requestsWakeSeq = 0,
     onavatarmap,
     oncommand,
     onnavigateMessages,
@@ -241,10 +266,16 @@
     oncreateagent = null,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
+    welcomeFirst = false,
     offscreen = false,
     onShellReady,
     projectHasPresence = () => false,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
+    rowExtras = null,
   }: Props = $props();
+  // Host still reports load failures; the sidebar no longer paints them.
+  void rowExtrasError;
 
   interface PairUnreadEntry {
     withPersonUid: string;
@@ -375,6 +406,8 @@
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
+  let searchButton = $state<HTMLButtonElement | null>(null);
+  let activeSearchIndex = $state(0);
   let searchQuery = $state("");
   let filterOpen = $state(false);
   let scopeMenuOpen = $state(false);
@@ -386,7 +419,6 @@
    * once per idle window instead of on every keystroke. The inputs stay bound
    * to the raw values, so typing/cursor/IME are unaffected.
    */
-  let searchQueryDebounced = $state("");
   let historyQueryDebounced = $state("");
   /** Right-click conversation context menu (anchored at the cursor). */
   let contextMenu = $state<{
@@ -394,11 +426,63 @@
     x: number;
     y: number;
   } | null>(null);
+  /** The row whose host hover card is showing, anchored to the row's box. */
+  let hoverCard = $state<{ row: ConversationRow; x: number; y: number } | null>(null);
+  let hoverHideTimer: ReturnType<typeof setTimeout> | null = null;
+  const HOVER_HIDE_DELAY_MS = 180;
+  /** Explicit expansion choices for host-owned child rows. Missing means the
+   * host's default still applies, so fresh project channels can open eagerly. */
+  let childRowsOpen = $state<Record<string, boolean>>({});
+
+  function childrenAreOpen(rowId: string, defaultOpen: boolean): boolean {
+    return childRowsOpen[rowId] ?? defaultOpen;
+  }
+
+  function observeChildGroup(_node: HTMLElement, callback: ((visible: boolean) => void) | undefined) {
+    callback?.(true);
+    return {
+      update(next: typeof callback) { callback = next; callback?.(true); },
+      destroy() { callback?.(false); },
+    };
+  }
+
+  function toggleChildren(rowId: string, defaultOpen: boolean): void {
+    childRowsOpen = {
+      ...childRowsOpen,
+      [rowId]: !childrenAreOpen(rowId, defaultOpen),
+    };
+  }
+
+  function showHoverCard(row: ConversationRow, anchor: HTMLElement): void {
+    if (!rowExtras?.(row)?.hoverCard) return;
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = null;
+    const box = anchor.getBoundingClientRect();
+    hoverCard = { row, x: box.right + 6, y: box.top };
+  }
+
+  /** Delayed so the pointer can cross the gap into the card itself. */
+  function scheduleHoverCardHide(): void {
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = setTimeout(() => {
+      hoverCard = null;
+      hoverHideTimer = null;
+    }, HOVER_HIDE_DELAY_MS);
+  }
+
+  function keepHoverCard(): void {
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = null;
+  }
   let loading = $state(false);
   let loadError = $state<string | null>(null);
   /** First directory/contacts attempt has settled or timed out. */
   let bootAttempted = $state(false);
-  let firstRefreshSettled = false;
+  let firstRefreshSettled = $state(
+    (loadConversationCache(storage)?.channels?.length ?? 0) > 0 ||
+      (loadConversationCache(storage)?.contacts?.length ?? 0) > 0 ||
+      (seedDirectory?.length ?? 0) > 0,
+  );
   let reportedShellReady = false;
   let scopeMenuEl: HTMLDivElement | null = $state(null);
   let filterWrapEl: HTMLDivElement | null = $state(null);
@@ -410,15 +494,11 @@
     activeId = selectedId;
   });
 
-  // Debounce the search/history queries (~110ms). Collapses fast keystroke
-  // bursts into a single roster scan. One effect: any keystroke reschedules;
-  // the other is an idempotent no-op when unchanged. (The create modal owns its
-  // own 110ms debounce.)
+  // History searches are debounced; conversation completion stays synchronous
+  // so Enter can never open a result from the previous query.
   $effect(() => {
-    const s = searchQuery;
     const h = historyQuery;
     const timer = setTimeout(() => {
-      searchQueryDebounced = s;
       historyQueryDebounced = h;
     }, 110);
     return () => clearTimeout(timer);
@@ -617,12 +697,55 @@
   const hasNonSetupRows = $derived(
     allRows.some((row) => !isSetupChannel(row.channelId)),
   );
+  /**
+   * The roster already names a company (created on the website or another
+   * machine). Its channel rows usually hydrate a beat after the roster, so
+   * the settled-boot fallback must not race them into #setup: give the rows
+   * one more bounded wait, and open the company's channel the moment it
+   * lands. Only after that wait does #setup win — and by then the shell
+   * renders it around the existing company, never "Create a company".
+   */
+  const hasRosterCompany = $derived(
+    (companies ?? []).some((company) => company.kind === "company"),
+  );
+  let companyRowsGraceElapsed = $state(false);
+  $effect(() => {
+    if (
+      selectedId ||
+      !bootAttempted ||
+      loading ||
+      !hasRosterCompany ||
+      hasNonSetupRows ||
+      companyRowsGraceElapsed
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      companyRowsGraceElapsed = true;
+      sidebarLog("auto-open-company-grace-elapsed", { waitedMs: bootTimeoutMs });
+    }, bootTimeoutMs);
+    return () => clearTimeout(timer);
+  });
   $effect(() => {
     if (selectedId) {
       autoOpenRequestedId = null;
       return;
     }
     if (autoOpenRequestedId) return;
+    // The host has not said yet whether setup is owed here: opening either
+    // #welcome or a company channel now would be a guess the person sees.
+    if (welcomeFirst === "pending") return;
+    // Until setup has been run on this machine, #welcome wins the boot pick:
+    // the person needs Run Setup before a company channel is useful.
+    if (welcomeFirst) {
+      const welcome = pickWelcomeFirstConversation(filteredRows, selectedId);
+      if (welcome) {
+        autoOpenRequestedId = welcome.id;
+        sidebarLog("auto-open-welcome-first", { id: welcome.id });
+        void openRow(welcome, undefined, true);
+        return;
+      }
+    }
     // Real conversations auto-open immediately. #setup exists from first
     // paint, so it must not win the empty-selection race against deep links
     // and rows that hydrate a beat later — but once the first fetch has
@@ -638,6 +761,7 @@
       return;
     }
     if (!bootAttempted || loading) return;
+    if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
     const fallback = pickSettledBootConversation(filteredRows, selectedId);
     if (!fallback) return;
     autoOpenRequestedId = fallback.id;
@@ -665,8 +789,34 @@
     }),
   );
   const switcherResults = $derived(
-    filterSwitcher(liveSwitcherRows, searchQueryDebounced).slice(0, 200),
+    filterSwitcher(liveSwitcherRows, searchQuery).slice(0, 200),
   );
+  $effect(() => {
+    switcherResults;
+    activeSearchIndex = 0;
+  });
+
+  function closeSearch(): void {
+    searchOpen = false;
+    searchButton?.focus();
+  }
+
+  function searchKeydown(event: KeyboardEvent): void {
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSearch();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!switcherResults.length) return;
+      activeSearchIndex = (activeSearchIndex + (event.key === "ArrowDown" ? 1 : -1) + switcherResults.length) % switcherResults.length;
+      document.getElementById(`conversation-search-${activeSearchIndex}`)?.scrollIntoView?.({ block: "nearest" });
+    } else if (event.key === "Enter" && switcherResults[activeSearchIndex]) {
+      event.preventDefault();
+      selectSwitcherRow(switcherResults[activeSearchIndex]);
+    }
+  }
   const historyRows = $derived(
     searchHistory(filteredRows, historyQueryDebounced),
   );
@@ -739,6 +889,20 @@
     closeAllOverlays();
     createOpen = true;
   }
+  /** The "+" button: a plain channel; the host resets the kind on its own opens. */
+  function openCreateFromButton(): void {
+    createKind = "channel";
+    openCreate();
+  }
+
+  /** What the create modal makes inside a company when opened by the host. */
+  let createKind = $state<"channel" | "project">("channel");
+
+  /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
+  export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
+    createKind = options.kind ?? "channel";
+    openCreate();
+  }
 
   /** Close the create modal; optionally open the channel it just created. */
   function closeCreate(
@@ -793,7 +957,7 @@
   }
 
   function selectSwitcherRow(row: SwitcherRow): void {
-    searchOpen = false;
+    closeSearch();
     searchQuery = "";
     jumpToSwitcherRow(row);
   }
@@ -1079,8 +1243,8 @@
     if (firstPaint) loading = true;
     loadError = null;
     // Channels reconcile through the directory feed; contacts + requests keep
-    // their existing reads. All three settle (or time out) before the loading
-    // gate clears so first paint cannot wait forever.
+    // their existing reads. Paint cache/seed immediately — do not wait for
+    // the directory (or session extras) before showing rows.
     const directory = directoryReconciler.reconcile("manual").catch(() => {}); // onError already surfaced it
     try {
       const [contactsResp, requestsResp] = await Promise.all([
@@ -1103,6 +1267,11 @@
           bootTimeoutMs,
           "list_dm_requests",
         ).catch((err) => {
+          sidebarLog("boot-error", {
+            source: "list_dm_requests",
+            timeout: err instanceof BootTimeoutError,
+            message: err instanceof Error ? err.message : String(err),
+          });
           console.error("chat-sidebar: list_dm_requests failed", err);
           return { requests: pendingRequests };
         }),
@@ -1130,11 +1299,11 @@
       });
       console.error("chat-sidebar: refresh failed", err);
     } finally {
-      await directory;
       bootAttempted = true;
       loading = false;
       firstRefreshSettled = true;
       maybeReportShellReady();
+      void directory.finally(() => maybeReportShellReady());
     }
   }
 
@@ -1169,6 +1338,33 @@
     if (seq <= 0) return;
     untrack(() => {
       void refreshLists();
+    });
+  });
+
+  /** Re-read pending connection requests alone (no directory/contacts churn). */
+  async function refreshRequests(): Promise<void> {
+    try {
+      const resp = await raceTimeout(
+        api.listDmRequests(),
+        bootTimeoutMs,
+        "list_dm_requests",
+      );
+      pendingRequests = Array.isArray(resp?.requests) ? resp.requests : [];
+    } catch (err) {
+      sidebarLog("boot-error", {
+        source: "list_dm_requests",
+        timeout: err instanceof BootTimeoutError,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      console.error("chat-sidebar: list_dm_requests failed", err);
+    }
+  }
+
+  $effect(() => {
+    const seq = requestsWakeSeq;
+    if (seq <= 0) return;
+    untrack(() => {
+      void refreshRequests();
     });
   });
 
@@ -1257,7 +1453,7 @@
   }
 
   onMount(() => {
-    // Cache already painted; one cursor delta in the background. Safety
+    // Reconcile cached rows before revealing the complete list. Safety
     // polling stays off until we know MQTT is down.
     maybeReportShellReady();
     void refreshLists();
@@ -1403,6 +1599,19 @@
           void directoryReconciler.reconcile("catchup").catch(() => {});
         }),
       );
+
+      track(wakes.on("conversation:read", ({ id }) => {
+        const row = allRows.find((row) => row.id === id);
+        if (row?.kind === "dm" && row.personUid) {
+          dmDots = clearDmDot(dmDots, row.personUid);
+          saveDmDots(dmDots, storage);
+          pairUnreads = clearPairUnread(pairUnreads, row.personUid);
+          contacts = contacts.map((contact) => contact.personUid === row.personUid
+            ? { ...contact, unreadCount: 0 } : contact);
+        } else if (row?.channelId) {
+          channels = clearChannelUnread(channels, row.channelId);
+        }
+      }));
 
       // Per-pair DM unreads from the SINGLE inbox poll (hq-pro US-010).
       track(
@@ -1770,7 +1979,7 @@
           : "New message or channel"}
         aria-haspopup="dialog"
         aria-expanded={createOpen}
-        onclick={openCreate}
+        onclick={openCreateFromButton}
       >
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path
@@ -1788,6 +1997,7 @@
         aria-label="Search or jump to a conversation"
         title="Search or jump to…"
         onclick={openSearch}
+        bind:this={searchButton}
       >
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle
@@ -1987,7 +2197,15 @@
     </div>
   </header>
 
-  <div class="chat-scroll" data-testid="chat-conversation-list">
+  <div class="chat-scroll" data-testid="chat-conversation-list" aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}>
+    {#if allRows.length === 0 && (!firstRefreshSettled || loading)}
+      <div class="sidebar-skeleton" role="status" aria-label="Loading conversations" data-testid="sidebar-loading">
+        <span class="sr-only">Loading conversations…</span>
+        {#each Array(10) as _, index}
+          <div class="skeleton-row" aria-hidden="true"><span class="skeleton-icon"></span><span class="skeleton-line" style:width={`${45 + (index % 3) * 15}%`}></span></div>
+        {/each}
+      </div>
+    {:else}
     {#if pendingRequestCount > 0}
       <button
         type="button"
@@ -2100,6 +2318,7 @@
     {:else if filteredRows.length === 0}
       <div class="chat-empty">No conversations</div>
     {/if}
+    {/if}
   </div>
 
   <div class="chat-footer" bind:this={footerEl}>
@@ -2179,7 +2398,39 @@
           ? "Unpin conversation"
           : "Pin conversation"}
       </button>
+      {#each rowExtras?.(contextMenu.row)?.actions ?? [] as action (action.id)}
+        <button
+          type="button"
+          class="chat-popover-row"
+          role="menuitem"
+          data-testid={`chat-context-action-${action.id}`}
+          onclick={() => {
+            contextMenu = null;
+            action.onselect();
+          }}
+        >
+          {action.label}
+        </button>
+      {/each}
     </div>
+  {/if}
+
+  {#if hoverCard}
+    {@const HoverCard = rowExtras?.(hoverCard.row)?.hoverCard}
+    {#if HoverCard}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="chat-row-hover-card"
+        data-testid="chat-row-hover-card"
+        data-conversation-id={hoverCard.row.id}
+        use:portal
+        style="left:{hoverCard.x}px; top:{hoverCard.y}px;"
+        onmouseenter={keepHoverCard}
+        onmouseleave={scheduleHoverCardHide}
+      >
+        <HoverCard row={hoverCard.row} />
+      </div>
+    {/if}
   {/if}
 
   {#if historyOpen}
@@ -2392,14 +2643,24 @@
             placeholder="Search or jump to…"
             bind:value={searchQuery}
             aria-label="Search or jump to a conversation"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="conversation-search-results"
+            aria-autocomplete="list"
+            aria-activedescendant={switcherResults.length ? `conversation-search-${activeSearchIndex}` : undefined}
+            onkeydown={searchKeydown}
           />
         </div>
-        <div class="chat-switcher-list" role="list">
-          {#each switcherResults as row (row.id)}
+        <div class="chat-switcher-list" id="conversation-search-results" role="listbox" aria-label="Conversations">
+          {#each switcherResults as row, index (row.id)}
             <button
               type="button"
               class="chat-switcher-row"
-              role="listitem"
+              role="option"
+              id={`conversation-search-${index}`}
+              aria-selected={index === activeSearchIndex}
+              class:active={index === activeSearchIndex}
+              tabindex="-1"
               onclick={() => selectSwitcherRow(row)}
             >
               {#if row.kind === "channel"}
@@ -2441,6 +2702,7 @@
       {oncreatecompany}
       {oncreateagent}
       {agentCompanies}
+      initialKind={createKind}
     />
   {/if}
 </aside>
@@ -2492,116 +2754,188 @@
     ((row.channelScope ?? "").trim() === "project" ||
       Boolean((row.projectId ?? "").trim())) &&
     projectHasPresence(row)}
-  <div role="listitem" class="chat-li">
-    <button
-      type="button"
-      class="chat-row"
-      class:unread={!!row.unreadCount || row.unreadDot}
-      class:active={activeId === row.id}
-      class:has-badge={hasBadge}
-      data-kind={row.kind}
-      data-conversation-id={row.id}
-      title={scopeLabel?.text}
-      onclick={() => void openRow(row)}
-      oncontextmenu={(e) => openContextMenu(row, e)}
+  {@const extras = rowExtras?.(row) ?? null}
+  {@const hasChildren = Boolean(extras?.children?.length)}
+  {@const childrenOpen = childrenAreOpen(row.id, extras?.childrenExpandedByDefault === true)}
+  <div class="chat-row-group" data-testid="chat-row-group">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      role="listitem"
+      class="chat-li"
+      onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
+      onmouseleave={scheduleHoverCardHide}
     >
-      {#if row.kind === "channel"}
-        <span class="chat-glyph-wrap" aria-hidden="true">
-          {#if isCompanyScopedRow(row)}
-            <!-- A company channel is identified by its company, not by a
-                 generic `#`. Favicon when hq-pro resolved one, building glyph
-                 otherwise. Project/personal channels keep `#`. -->
-            <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
-          {:else}
-            <span class="chat-glyph">#</span>
+      {#if hasChildren}
+        <button
+          type="button"
+          class="chat-row-children-toggle"
+          class:open={childrenOpen}
+          data-testid="chat-row-children-toggle"
+          aria-label={`${childrenOpen ? 'Collapse' : 'Expand'} ${extras?.childrenLabel ?? row.title}`}
+          aria-expanded={childrenOpen}
+          onclick={() => toggleChildren(row.id, extras?.childrenExpandedByDefault === true)}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M3 2 7 5 3 8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      {/if}
+      <button
+        type="button"
+        class="chat-row"
+        class:unread={!!row.unreadCount || row.unreadDot}
+        class:active={activeId === row.id && !extras?.children?.some((child) => child.selected)}
+        class:has-badge={hasBadge}
+        data-kind={row.kind}
+        data-conversation-id={row.id}
+        title={scopeLabel?.text}
+        onclick={() => void openRow(row)}
+        oncontextmenu={(e) => openContextMenu(row, e)}
+      >
+        {#if row.kind === "channel"}
+          <span class="chat-glyph-wrap" aria-hidden="true">
+            {#if !hasChildren && isCompanyScopedRow(row)}
+              <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
+            {:else if !hasChildren}
+              <span class="chat-glyph">#</span>
+            {/if}
+            {#if showProjectPresence}
+              <span
+                class="chat-presence-dot"
+                data-testid="chat-presence-dot"
+                aria-label="Someone online"
+              ></span>
+            {/if}
+          </span>
+        {:else if row.kind === "group"}
+          <span
+            class="chat-avatar group"
+            aria-hidden="true"
+            data-testid="chat-group-avatar"
+          >
+            {row.memberCount ?? row.members?.length ?? 0}
+          </span>
+        {:else}
+          {@const avatar = rowAvatar(row, avatarByUid)}
+          <span
+            class="chat-avatar"
+            aria-hidden="true"
+            data-testid="chat-dm-avatar"
+            data-avatar={avatar.kind}
+          >
+            {#if avatar.src}
+              <img src={avatar.src} alt="" />
+            {:else}
+              {avatar.initials}
+            {/if}
+          </span>
+        {/if}
+        {#if draftIdSet.has(row.id)}
+          {@render draftMark()}
+        {/if}
+        <span class="chat-row-copy">
+          <span class="chat-row-title">{row.title}</span>
+          {#if extras?.badge}
+            <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
+              {extras.badge}
+            </span>
           {/if}
-          {#if showProjectPresence}
+          {#if scopeLabel}
             <span
-              class="chat-presence-dot"
-              data-testid="chat-presence-dot"
-              aria-label="Someone online"
-            ></span>
+              class="chat-row-scope"
+              data-testid="chat-row-scope"
+              data-kind={scopeLabel.kind}
+              title={scopeLabel.text}>{scopeLabel.text}</span
+            >
           {/if}
         </span>
-      {:else if row.kind === "group"}
-        <span
-          class="chat-avatar group"
-          aria-hidden="true"
-          data-testid="chat-group-avatar"
-        >
-          {row.memberCount ?? row.members?.length ?? 0}
-        </span>
-      {:else}
-        {@const avatar = rowAvatar(row, avatarByUid)}
-        <span
-          class="chat-avatar"
-          aria-hidden="true"
-          data-testid="chat-dm-avatar"
-          data-avatar={avatar.kind}
-        >
-          {#if avatar.src}
-            <img src={avatar.src} alt="" />
-          {:else}
-            {avatar.initials}
-          {/if}
-        </span>
-      {/if}
-      {#if draftIdSet.has(row.id)}
-        {@render draftMark()}
-      {/if}
-      <span class="chat-row-copy">
-        <span class="chat-row-title">{row.title}</span>
         {#if scopeLabel}
           <span
-            class="chat-row-scope"
-            data-testid="chat-row-scope"
-            data-kind={scopeLabel.kind}
-            title={scopeLabel.text}>{scopeLabel.text}</span
+            class="chat-row-reveal"
+            data-testid="chat-row-reveal"
+            aria-hidden="true">{scopeLabel.text}</span
           >
         {/if}
-      </span>
-      {#if scopeLabel}
-        <span
-          class="chat-row-reveal"
-          data-testid="chat-row-reveal"
-          aria-hidden="true">{scopeLabel.text}</span
-        >
-      {/if}
-      {#if row.unreadCount != null && row.unreadCount > 0}
-        <span
-          class="chat-unread-badge"
-          data-testid="chat-unread-badge"
-          aria-label={`${row.unreadCount} unread`}
-        >
-          {row.unreadCount > 99 ? "99+" : row.unreadCount}
-        </span>
-      {:else if row.unreadDot}
-        <span
-          class="chat-unread-dot"
-          data-testid="chat-unread-dot"
-          aria-label="Unread"
-        ></span>
-      {/if}
-    </button>
-    <button
-      type="button"
-      class="chat-pin-btn"
-      class:pinned={row.pinned}
-      aria-label={row.pinned ? `Unpin ${row.title}` : `Pin ${row.title}`}
-      aria-pressed={row.pinned}
-      data-testid="chat-pin"
-      onclick={() => handlePin(row)}
-    >
-      <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M6.2 1.8h3.6l.4 4.2 2.2 1.4v1.4H8.6v5.4h-1.2V8.8H3.6V7.4l2.2-1.4.4-4.2Z"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linejoin="round"
-        />
-      </svg>
-    </button>
+        {#if row.unreadCount != null && row.unreadCount > 0}
+          <span
+            class="chat-unread-badge"
+            data-testid="chat-unread-badge"
+            aria-label={`${row.unreadCount} unread`}
+          >
+            {row.unreadCount > 99 ? "99+" : row.unreadCount}
+          </span>
+        {:else if row.unreadDot}
+          <span
+            class="chat-unread-dot"
+            data-testid="chat-unread-dot"
+            aria-label="Unread"
+          ></span>
+        {/if}
+      </button>
+      <button
+        type="button"
+        class="chat-pin-btn"
+        class:pinned={row.pinned}
+        aria-label={row.pinned ? `Unpin ${row.title}` : `Pin ${row.title}`}
+        aria-pressed={row.pinned}
+        data-testid="chat-pin"
+        onclick={() => handlePin(row)}
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M6.2 1.8h3.6l.4 4.2 2.2 1.4v1.4H8.6v5.4h-1.2V8.8H3.6V7.4l2.2-1.4.4-4.2Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    </div>
+    {#if hasChildren && childrenOpen}
+      <div
+        class="chat-row-children"
+        use:observeChildGroup={extras?.onChildrenVisibilityChange}
+        role="list"
+        aria-label={extras?.childrenLabel ?? `Items for ${row.title}`}
+        data-testid="chat-row-children"
+      >
+        {#each extras?.children ?? [] as child (child.id)}
+          <button
+            type="button"
+            class="chat-row-child"
+            class:action={child.kind === "action"}
+            class:selected={child.selected === true}
+            aria-current={child.selected ? "page" : undefined}
+            title={child.meta ? `${child.label} · ${child.meta}` : child.label}
+            data-testid="chat-row-child"
+            data-child-id={child.id}
+            onclick={child.onselect}
+          >
+            <span
+              class="chat-row-child-mark"
+              data-child-kind={child.kind ?? "item"}
+              data-status={child.status ?? undefined}
+              aria-hidden="true"
+            >
+              {#if child.kind === "action"}
+                <svg width="12" height="12" viewBox="0 0 10 10">
+                  <path d="M5 1v8M1 5h8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                </svg>
+              {:else}
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
+                  <path d="M3 3h10v7H7l-4 3V3Z" />
+                </svg>
+              {/if}
+            </span>
+            <span class="chat-row-child-label">{child.label}</span>
+            {#if child.meta}
+              <span class="chat-row-child-meta">{child.meta}</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
 {/snippet}
 
@@ -2614,9 +2948,9 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    flex: 0 0 260px;
+    flex: 0 0 var(--sidebar-width, 260px);
     align-self: stretch;
-    width: 260px;
+    width: var(--sidebar-width, 260px);
     min-height: 0;
     height: auto;
     overflow: hidden;
@@ -2846,6 +3180,10 @@
     position: relative;
   }
 
+  .sidebar-skeleton { padding: 12px 8px; }
+  .skeleton-row { display: flex; align-items: center; gap: 10px; height: 36px; }
+  .skeleton-icon { width: 20px; height: 20px; border-radius: 5px; background: var(--line); }
+  .skeleton-line { height: 10px; border-radius: 4px; background: var(--line); }
   .chat-scroll {
     display: flex;
     flex: 1 1 auto;
@@ -2909,11 +3247,140 @@
   }
 
   /* Real box so the pin control can sit beside the row (not nested in it). */
+  .chat-row-group {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
   .chat-li {
     position: relative;
     display: flex;
     align-items: center;
     min-width: 0;
+  }
+
+  .chat-row-children-toggle {
+    position: absolute;
+    left: 8px;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--t3);
+    cursor: pointer;
+  }
+
+  .chat-row-children-toggle svg {
+    transition: transform 120ms ease;
+  }
+
+  .chat-row-children-toggle.open svg {
+    transform: rotate(90deg);
+  }
+
+  .chat-row-children-toggle:hover,
+  .chat-row-children-toggle:focus-visible {
+    color: var(--t1);
+  }
+
+  .chat-row-children {
+    display: flex;
+    flex-direction: column;
+    margin: 0 0 4px 16px;
+    padding: 0;
+    border: 0;
+  }
+
+  .chat-row-child {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 28px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 13px;
+    line-height: 20px;
+    font-weight: 400;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .chat-row-child:hover,
+  .chat-row-child:focus-visible {
+    background: var(--hover);
+    color: var(--t1);
+  }
+
+  .chat-row-child.action {
+    color: var(--t2);
+  }
+
+  .chat-row-child.selected {
+    background: var(--sel);
+    color: var(--t1);
+  }
+
+  .chat-row-child:focus-visible {
+    outline: 1px solid var(--t2);
+    outline-offset: -1px;
+  }
+
+  .chat-row-child-mark {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    color: var(--t3);
+  }
+
+  .chat-row-child-mark[data-status="working"] {
+    color: var(--v4-accent, #7c9cff);
+  }
+
+  .chat-row-child-mark[data-status="needsYou"] {
+    color: var(--v4-warning, #e0a33b);
+  }
+
+  .chat-row-child-mark[data-status="starting"],
+  .chat-row-child-mark[data-status="idle"] {
+    color: var(--v4-success, #5fbf7a);
+  }
+
+  .chat-row-child-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-row-child-meta {
+    color: var(--t3);
+    font: inherit;
+    max-width: 64px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-row-child.action {
+    opacity: 1;
+  }
+
+  .chat-row-child.action:hover,
+  .chat-row-child.action:focus-visible {
+    opacity: 1;
   }
 
   .chat-collapse-left {
@@ -3343,6 +3810,31 @@
     bottom: calc(100% + 4px);
     left: 8px;
     right: 8px;
+  }
+
+  /* Host row decoration (`rowExtras`): a quiet badge after the title, and a
+     card the host mounts beside the hovered row. */
+  .chat-row-extra-badge {
+    flex: none;
+    margin-left: 2px;
+    padding: 0;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--v4-text-3, var(--text-3));
+    background: transparent;
+    white-space: nowrap;
+  }
+
+  .chat-row-hover-card {
+    position: fixed;
+    z-index: 60;
+    min-width: 220px;
+    max-width: 320px;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--side-bg, var(--v4-glass-bg, #1c1f24));
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
   }
 
   /* Cursor-anchored right-click menu (portaled to .desktop-shell). */
@@ -3826,7 +4318,8 @@
     cursor: pointer;
   }
 
-  .chat-switcher-row:hover {
+  .chat-switcher-row:hover,
+  .chat-switcher-row.active {
     background: var(--hover);
   }
 

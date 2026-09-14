@@ -16,12 +16,6 @@ export type HqWorkInvoker = <T>(
   args?: Record<string, unknown>,
 ) => Promise<T>;
 
-export function hqWorkHandoffEnabled(
-  _flag?: boolean | null | undefined,
-): boolean {
-  return true;
-}
-
 export async function detectHqWorkInstalled(
   invokeFn: HqWorkInvoker = invoke as HqWorkInvoker,
 ): Promise<boolean> {
@@ -33,19 +27,6 @@ export async function launchHqWork(
   url?: string | null,
 ): Promise<void> {
   await invokeFn<void>('launch_hq_work', { url: url ?? null });
-}
-
-export async function getHqWorkHandoff(
-  invokeFn: HqWorkInvoker = invoke as HqWorkInvoker,
-): Promise<boolean> {
-  return invokeFn<boolean>('get_hq_work_handoff');
-}
-
-export async function setHqWorkHandoff(
-  invokeFn: HqWorkInvoker,
-  enabled: boolean,
-): Promise<void> {
-  await invokeFn<void>('set_hq_work_handoff', { enabled });
 }
 
 export async function installHqWork(

@@ -427,9 +427,7 @@ pub fn embedded_conversation_route(
     build_hqwork_open_url(channel, person, reply)
 }
 
-fn hqwork_query_tokens(
-    url: &str,
-) -> Option<(Option<&str>, Option<&str>, Option<&str>)> {
+fn hqwork_query_tokens(url: &str) -> Option<(Option<&str>, Option<&str>, Option<&str>)> {
     let query = url.split_once('?')?.1;
     let query = query.split_once('#').map(|(q, _)| q).unwrap_or(query);
     let mut channel = None;
@@ -629,18 +627,6 @@ pub fn mark_hq_work_handoff_card_shown() -> Result<(), String> {
     )
 }
 
-#[allow(dead_code)] // retained two-app probe; live intercept must not call this (finding-6)
-async fn handoff_inputs() -> (bool, bool, bool) {
-    let enabled = crate::commands::config::get_hq_work_handoff()
-        .await
-        .unwrap_or(false);
-    let installed = hq_work_installed();
-    let shown = get_hq_work_handoff_card_shown().unwrap_or(false);
-    // Once per intercept (user action), not on cache hits / app-activate.
-    handoff_log(&format!("handoff.detected installed={installed}"));
-    (enabled, installed, shown)
-}
-
 #[allow(dead_code)] // retained two-app launcher; live intercept no longer steals the window
 fn apply_handoff_plan(
     app: &AppHandle,
@@ -692,7 +678,7 @@ pub fn maybe_intercept_desktop_alt_handoff(
     route: Option<&str>,
 ) -> Result<bool, String> {
     // Combined-app embed: never launch HQ Work / never show the card.
-    // finding-6: do not call handoff_inputs() (install probe + handoff.detected).
+    // finding-6: do not probe installation or emit a handoff-detected event.
     let _ = (app, route);
     Ok(intercept_steals_desktop_alt_window())
 }

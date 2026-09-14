@@ -64,6 +64,9 @@ pub struct AgentSession {
     pub id: String,
     pub tool: AgentTool,
     pub origin: AgentOrigin,
+    /// Provider-native conversation title, when available.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub title: String,
     // The six nullable-on-the-wire fields. `default` covers an omitted key,
     // `null_as_default` covers an explicit null; absence is represented as the
     // empty string, exactly as the local collectors already do (see
@@ -82,6 +85,12 @@ pub struct AgentSession {
     #[serde(default, deserialize_with = "null_as_default")]
     pub last_activity_at: String,
     pub source: String,
+    /// Remote Control pairing id (`cse_…`) of a Claude session that can be
+    /// driven from claude.ai/code. Published by the outpost heartbeat
+    /// (hq-cloud ≥ 6.16.38); the frontend turns it into a claude.ai link.
+    /// Absent everywhere else, so `None` is omitted from the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_control_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,7 +188,7 @@ pub fn merge_sessions(
     agents: liveness::RunningAgents,
     now: SystemTime,
 ) -> Vec<AgentSession> {
-    claude
+    let mut sessions = claude
         .into_iter()
         .chain(codex)
         .map(|mut session| {
@@ -192,7 +201,20 @@ pub fn merge_sessions(
             );
             session
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    // The UI paginates this merged collection. Keeping reader order here put
+    // every Claude transcript ahead of every Codex rollout, which effectively
+    // hid recent Codex work on machines with a large Claude history. Merge the
+    // providers into one actual activity timeline before pagination.
+    sessions.sort_by(|a, b| {
+        let a_time =
+            liveness::parse_rfc3339_to_system_time(&a.last_activity_at).unwrap_or(UNIX_EPOCH);
+        let b_time =
+            liveness::parse_rfc3339_to_system_time(&b.last_activity_at).unwrap_or(UNIX_EPOCH);
+        b_time.cmp(&a_time).then_with(|| a.id.cmp(&b.id))
+    });
+    sessions
 }
 
 pub mod liveness {
@@ -526,6 +548,7 @@ mod tests {
             id: "25f8d9da-435d-44e6-8bb7-849fd8ad67c8".to_string(),
             tool: AgentTool::Claude,
             origin: AgentOrigin::Local,
+            title: "Mission control".to_string(),
             cwd: "/Users/corey/Documents/HQ/repos/public/hq-sync".to_string(),
             project: "mission-control".to_string(),
             company: "indigo".to_string(),
@@ -534,6 +557,7 @@ mod tests {
             started_at: "2026-06-15T18:00:00Z".to_string(),
             last_activity_at: "2026-06-15T18:43:20Z".to_string(),
             source: "claude-jsonl".to_string(),
+            remote_control_session_id: None,
         }
     }
 
@@ -743,6 +767,7 @@ mod tests {
             id: id.to_string(),
             tool,
             origin: AgentOrigin::Local,
+            title: id.to_string(),
             cwd: "/tmp".to_string(),
             project: "p".to_string(),
             company: "indigo".to_string(),
@@ -753,6 +778,7 @@ mod tests {
             started_at: "2026-06-15T18:00:00Z".to_string(),
             last_activity_at: last_activity_at.to_string(),
             source: "test".to_string(),
+            remote_control_session_id: None,
         }
     }
 
@@ -769,9 +795,9 @@ mod tests {
     }
 
     #[test]
-    fn merge_preserves_order_and_reapplies_liveness() {
+    fn merge_sorts_all_providers_newest_first_and_reapplies_liveness() {
         let now = SystemTime::now();
-        let claude = vec![session("c1", AgentTool::Claude, &iso_ago(now, 10))];
+        let claude = vec![session("c1", AgentTool::Claude, &iso_ago(now, 20))];
         let codex = vec![session("x1", AgentTool::Codex, &iso_ago(now, 10))];
         let agents = liveness::RunningAgents {
             claude: true,
@@ -780,10 +806,10 @@ mod tests {
 
         let merged = merge_sessions(claude, codex, agents, now);
 
-        // Claude first, then Codex — readers' order preserved.
+        // Provider does not determine placement: the newest session wins.
         assert_eq!(
             merged.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
-            ["c1", "x1"]
+            ["x1", "c1"]
         );
         // Fresh activity + live process → re-derived to running (NOT the stale Ended).
         assert!(merged.iter().all(|s| s.status == SessionStatus::Running));

@@ -997,36 +997,46 @@ pub async fn send_dm(to_person_uid: String, body: String) -> Result<(), String> 
     if body_text.is_empty() {
         return Err("Message body must not be empty".to_string());
     }
+    let payload = build_send_payload(&to_person_uid, body_text);
+    post_dm_payload(&payload, "DM_NOTIFY_SEND").await
+}
 
+/// POST one already-built DM payload to `/v1/notify/dm`.
+///
+/// The auth + URL plumbing behind `send_dm`, factored out so other senders
+/// that need the richer wire shape (`details` / `prompt` — the Sessions
+/// composer's `@`-mention fan-out in `session_mentions.rs`) take the SAME path
+/// instead of growing a second copy of it. `code` prefixes the log lines so a
+/// failure is attributable to its caller in `~/.hq/logs/hq-sync.log`.
+pub(crate) async fn post_dm_payload(payload: &serde_json::Value, code: &str) -> Result<(), String> {
     let access_token = cognito::get_valid_access_token().await.map_err(|e| {
-        log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAIL auth: {e}"));
+        log(LOG_TAG, &format!("{code}_FAIL auth: {e}"));
         format!("Not signed in: {e}")
     })?;
 
     let base_url = resolve_vault_api_url()
         .map(|u| u.trim_end_matches('/').to_string())
         .map_err(|e| {
-            log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAIL vault url: {e}"));
+            log(LOG_TAG, &format!("{code}_FAIL vault url: {e}"));
             format!("Could not resolve server URL: {e}")
         })?;
 
     let url = format!("{}/v1/notify/dm", base_url);
-    let payload = build_send_payload(&to_person_uid, body_text);
 
     let resp = build_client()
         .post(&url)
         .header("authorization", format!("Bearer {}", access_token))
-        .json(&payload)
+        .json(payload)
         .send()
         .await
         .map_err(|e| {
-            log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAIL network: {e}"));
+            log(LOG_TAG, &format!("{code}_FAIL network: {e}"));
             format!("Network error: {e}")
         })?;
 
     let status = resp.status();
     if status.is_success() {
-        log(LOG_TAG, "DM_NOTIFY_SEND_OK");
+        log(LOG_TAG, &format!("{code}_OK"));
         return Ok(());
     }
 
@@ -1038,7 +1048,7 @@ pub async fn send_dm(to_person_uid: String, body: String) -> Result<(), String> 
         .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
     log(
         LOG_TAG,
-        &format!("DM_NOTIFY_SEND_FAIL status={status} msg={server_msg:?}"),
+        &format!("{code}_FAIL status={status} msg={server_msg:?}"),
     );
     Err(server_msg.unwrap_or_else(|| format!("Send failed (status {})", status.as_u16())))
 }
@@ -1361,9 +1371,7 @@ pub async fn mark_dm_thread_read(app: AppHandle, with_person_uid: String) -> Res
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
         log(
             LOG_TAG,
-            &format!(
-                "DM_NOTIFY_THREAD_READ_ERROR uid={uid} status={status} msg={server_msg:?}"
-            ),
+            &format!("DM_NOTIFY_THREAD_READ_ERROR uid={uid} status={status} msg={server_msg:?}"),
         );
         return Err(
             server_msg.unwrap_or_else(|| format!("Request failed (status {})", status.as_u16()))
@@ -3174,6 +3182,7 @@ mod tests {
             from_email: String::new(),
             from_display_name: "Bryan".to_string(),
             body: "Looks good".to_string(),
+            attachments: None,
             details: None,
             prompt: None,
             created_at: "2026-09-01T00:00:00.000Z".to_string(),

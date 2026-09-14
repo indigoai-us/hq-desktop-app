@@ -33,7 +33,7 @@ export const SESSION_STATUSES = ['running', 'awaiting_input', 'idle', 'ended'] a
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
 /** The agent tool that owns the session. */
-export type AgentTool = 'claude' | 'codex';
+export type AgentTool = 'claude' | 'codex' | 'grok';
 
 /** Where the session is observed: this machine (`local`) or the user's outpost VM. */
 export type AgentOrigin = 'local' | 'outpost';
@@ -52,6 +52,8 @@ export interface AgentSession {
   tool: AgentTool;
   /** Where the session is observed (local machine vs. outpost VM). */
   origin: AgentOrigin;
+  /** Provider-native conversation title, when available. */
+  title?: string;
   /** Working directory the session is running in. */
   cwd: string;
   /** Project the session is working on (derived from cwd / HQ metadata). */
@@ -72,6 +74,12 @@ export interface AgentSession {
    * the observation channel and aids debugging.
    */
   source: string;
+  /**
+   * Remote Control pairing id (`cse_…`) of a Claude session that can be driven
+   * from claude.ai/code. Published by the outpost heartbeat; absent otherwise.
+   * Turn it into a link with {@link claudeCodeSessionUrl}.
+   */
+  remoteControlSessionId?: string;
 }
 
 /** Type guard: is `value` a member of the status taxonomy? */
@@ -86,6 +94,21 @@ export function isSessionStatus(value: unknown): value is SessionStatus {
  */
 export function isLiveStatus(status: SessionStatus): boolean {
   return status === 'running' || status === 'awaiting_input';
+}
+
+/** The `cse_<id>` shape Remote Control writes. Nothing else is ever linked. */
+const REMOTE_CONTROL_SESSION_ID = /^cse_([A-Za-z0-9]{8,64})$/;
+
+/**
+ * The claude.ai page for a Remote Control session: `cse_<id>` is served at
+ * `https://claude.ai/code/session_<id>`. `null` when the session is not a
+ * Claude session under Remote Control, or when its id has any other shape — the
+ * id arrives from the outpost, so it is validated before it becomes a URL.
+ */
+export function claudeCodeSessionUrl(session: AgentSession): string | null {
+  if (session.tool !== 'claude') return null;
+  const match = REMOTE_CONTROL_SESSION_ID.exec(session.remoteControlSessionId ?? '');
+  return match ? `https://claude.ai/code/session_${match[1]}` : null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -163,6 +186,53 @@ export interface MissionControlSnapshot {
 /** The Tauri event name the polling loop emits on each re-scan (US-005). Kept
  *  in lock-step with the Rust `EVENT_SESSIONS_UPDATED` constant. */
 export const SESSIONS_UPDATED_EVENT = 'sessions:updated';
+
+/** localStorage key for cache-first Mission Control / session-strip paint. */
+export const SESSIONS_CACHE_KEY = 'hq.mission-control.sessions-cache';
+
+export interface SessionsCachePayload {
+  snapshot: MissionControlSnapshot;
+  cachedAt: number;
+}
+
+export function loadSessionsCache(
+  storage: Pick<Storage, 'getItem'> | null | undefined,
+): SessionsCachePayload | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(SESSIONS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SessionsCachePayload;
+    if (!parsed?.snapshot || !Array.isArray(parsed.snapshot.sessions)) return null;
+    if (!Array.isArray(parsed.snapshot.history)) parsed.snapshot.history = [];
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function saveSessionsCache(
+  payload: SessionsCachePayload,
+  storage: Pick<Storage, 'setItem'> | null | undefined,
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(SESSIONS_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // best-effort
+  }
+}
+
+export function clearSessionsCache(
+  storage: Pick<Storage, 'removeItem'> | null | undefined,
+): void {
+  if (!storage) return;
+  try {
+    storage.removeItem(SESSIONS_CACHE_KEY);
+  } catch {
+    // best-effort
+  }
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Best-effort "kind" derivation (US-007)
@@ -555,6 +625,7 @@ export const HISTORY_TOOL_FILTERS: ReadonlyArray<{ value: HistoryToolFilter; lab
   { value: 'all', label: 'All' },
   { value: 'claude', label: 'Claude' },
   { value: 'codex', label: 'Codex' },
+  { value: 'grok', label: 'Grok' },
 ];
 
 /**
@@ -567,6 +638,7 @@ export const HISTORY_TOOL_FILTERS: ReadonlyArray<{ value: HistoryToolFilter; lab
 const EVENT_TOOL_MATCHERS: ReadonlyArray<{ tool: AgentTool; test: RegExp }> = [
   { tool: 'codex', test: /\bcodex\b|codex-rollout|rollout/ },
   { tool: 'claude', test: /\bclaude\b|claude-jsonl|claude-code/ },
+  { tool: 'grok', test: /\bgrok\b|xai|x\.ai/ },
 ];
 
 /** Build the lowercased match haystack for an event's tool inference. */

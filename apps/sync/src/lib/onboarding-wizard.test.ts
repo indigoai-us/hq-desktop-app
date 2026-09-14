@@ -6,6 +6,7 @@ import {
   createWizardRouter,
   getStepValidity,
   initialStepForLifecycle,
+  wizardModeForLifecycle,
   markSetupStepCompleted,
   WIZARD_STEPS,
   type WizardState,
@@ -176,6 +177,14 @@ describe('initialStepForLifecycle', () => {
 
   it('starts InstallResume at setup', () => {
     expect(initialStepForLifecycle('InstallResume')).toBe(2);
+  });
+
+  it('starts an installed machine that only lacks its consent answer at consent, in consent-only mode', () => {
+    expect(initialStepForLifecycle('InstalledFirstRun')).toBe(3);
+    expect(wizardModeForLifecycle('InstalledFirstRun')).toBe('consent');
+    for (const state of ['NeedsInstall', 'NeedsAuthForInstall', 'InstallResume', 'SteadyState']) {
+      expect(wizardModeForLifecycle(state)).toBe('onboarding');
+    }
   });
 
   it('starts NeedsInstall and unknown states at welcome', () => {

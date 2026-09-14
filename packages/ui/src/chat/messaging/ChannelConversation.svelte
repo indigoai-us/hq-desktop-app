@@ -11,7 +11,15 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
-  import { onDestroy, untrack, type Snippet } from "svelte";
+  import { onDestroy, tick, untrack, type Snippet } from "svelte";
+  import { observeConversationRead } from "./observe-conversation-read";
+  import {
+    isScrollNearBottom,
+    restoreNavigationScroll,
+    NAVIGATION_SCROLL_RETRY_LIMIT,
+    NAVIGATION_SCROLL_RETRY_MS,
+  } from "../../shell/navigation-scroll.js";
+  import type { NavigationScrollState } from "../../shell/navigation-history.js";
 
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
@@ -23,6 +31,7 @@
   import MentionPicker from "./MentionPicker.svelte";
   import ArtifactCard from "./ArtifactCard.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
+  import type { ImagePreviewCache } from "./image-preview-cache";
   import MessageAttachments from "./MessageAttachments.svelte";
   import AttachmentTray from "./AttachmentTray.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
@@ -53,9 +62,11 @@
   } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
+  import { decisionAnswersFromMessages } from "./decision-answers";
   import type { DecisionOption } from "./richMessageContent";
   import {
     handleLinkActivate,
@@ -92,6 +103,8 @@
   interface Props {
     /** Timeline, oldest → newest. Injected — never fetched here. */
     messages: ConversationMessageWire[];
+    /** The focused user has reached the newest rendered message. */
+    onseen?: () => Promise<void>;
     /** messageId → reaction aggregates. */
     reactions?: ReactionMap;
     /** Composer placeholder (host supplies "Message # … — or type / to run…"). */
@@ -114,6 +127,7 @@
       files?: File[],
     ) => void | Promise<void>;
     /** Presign a vault GET so image thumbs and the tray can render bytes. */
+    previewCache?: ImagePreviewCache | null;
     onpresign?: (
       companyUid: string,
       vaultPath: string,
@@ -122,6 +136,12 @@
     mentionCandidates?: MentionTarget[];
     /** Open ReplyPanel for this root eventId. */
     onreply?: (rootEventId: string) => void;
+    /** Start an in-channel session from this message. */
+    onstartsession?: (rootEventId: string) => void;
+    /** Open an existing in-channel session from a work-session card. */
+    onopensession?: (sessionId: string) => void;
+    /** Start a channel-level session (posts a card). */
+    onstartchannelsession?: () => void;
     /** Host-owned attachment modal (must render outside this column). */
     onopenattachment?: (
       item: FileAttachmentModel,
@@ -157,6 +177,8 @@
     activeRootEventId?: string | null;
     /** Host is fetching history — do not flash “No messages yet”. */
     loading?: boolean;
+    hasEarlier?: boolean;
+    onloadearlier?: () => Promise<void>;
     /**
      * Empty-state copy. A project channel with zero chat AND zero work-mesh
      * events is empty of ACTIVITY, so the host passes "No activity yet" there.
@@ -184,6 +206,14 @@
      */
     header?: Snippet;
     /**
+     * Where the pane lands when it opens. Chat lands on the newest message
+     * (`"bottom"`, default). A pane whose point is its header — #welcome's
+     * hero with Run Setup — lands at the top so the header is what the
+     * person sees first; the timeline below is reachable by scrolling and
+     * new arrivals still raise the "New messages" pill.
+     */
+    landAt?: "top" | "bottom";
+    /**
      * Optional status row rendered INSIDE the `.dm-thread` scroller, after the
      * newest message (typing-indicator position). Must live in the scroll flow
      * — `.chat-stage` is a horizontal flexbox, so a sibling of this component
@@ -201,20 +231,31 @@
     draftStorage?: DraftStorage | null;
     /** US-011: lock the composer while an agent box is still provisioning. */
     composerLocked?: boolean;
+    /**
+     * History restore (US-006). When set, land on this identity/offset instead
+     * of pinning to the newest message, and do not follow live arrivals.
+     */
+    restoreScroll?: NavigationScrollState | null;
   }
 
   let {
     messages,
+    onseen,
     reactions = {},
     placeholder = "Reply…",
     onopenurl,
     channelId = null,
+    landAt = "bottom",
     oncardaction,
     ontogglereaction,
     onsend,
+    previewCache,
     onpresign,
     mentionCandidates = [],
     onreply,
+    onstartsession,
+    onopensession,
+    onstartchannelsession,
     onopenattachment,
     onopenartifact,
     onreleaseurl,
@@ -223,6 +264,8 @@
     replyPreviewByRoot = {},
     activeRootEventId = null,
     loading = false,
+    hasEarlier = false,
+    onloadearlier,
     emptyLabel = "No messages yet",
     selfDisplayName = null,
     selfPersonUid = null,
@@ -235,6 +278,7 @@
     draftKey = null,
     draftStorage = null,
     composerLocked = false,
+    restoreScroll = null,
   }: Props = $props();
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -294,6 +338,8 @@
   // Optimistic local sends appended to the injected timeline (no persistence).
   let localSends = $state<ConversationMessageWire[]>([]);
   let extraOlder = $state(0);
+  /** Avoid scheduling the same history page twice from a burst of top scrolls. */
+  let loadingEarlier = $state(false);
   /** Release blob: previews created for optimistic sends (leak guard). */
   function revokeLocalPreviews(rows: ConversationMessageWire[]): void {
     for (const row of rows) {
@@ -307,7 +353,6 @@
 
   $effect(() => {
     void messages.at(-1)?.eventId;
-    extraOlder = 0;
     // untrack: reading localSends here would make this effect re-run on its
     // own `localSends = []` write (effect depth explosion).
     untrack(() => revokeLocalPreviews(localSends));
@@ -329,6 +374,20 @@
       out.push(msg);
     }
     return out;
+  });
+
+  // Persisted answered-decision state, derived from the whole injected message
+  // set (root + replies, oldest → newest) so a card locks + highlights its
+  // chosen option across reload and thread reopen — not just optimistically
+  // after a click. See decision-answers.ts for the correlation rules.
+  const answeredDecisions = $derived(decisionAnswersFromMessages(messages));
+  const answeredQuestionIds = $derived(new Set(answeredDecisions.keys()));
+  const answeredChoices = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const [qid, answer] of answeredDecisions) {
+      if (answer.label !== undefined) map.set(qid, answer.label);
+    }
+    return map;
   });
 
   // One-shot restore of the stored draft — `draftKey`/`draftStorage` are fixed
@@ -359,7 +418,13 @@
    * NOTHING may move their offset — not the host's periodic message refresh,
    * not live arrivals, not a timeline merge.
    */
-  let stickToBottom = $state(true);
+  // Remounted per conversation; only the landing restore matters. A `landAt`
+  // of "top" (#welcome) never pins to the newest row.
+  const restoreAtMount = restoreScroll;
+  let stickToBottom = $state(
+    landAt !== "top" && (!restoreAtMount || isScrollNearBottom(restoreAtMount)),
+  );
+  let restoreScrollPending = $state(restoreAtMount != null);
   /** New rows landed while scrolled up — drives the "jump to latest" pill. */
   let hasUnseenBelow = $state(false);
   /** Within this many px of the bottom still counts as pinned. */
@@ -378,6 +443,7 @@
       scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     stickToBottom = distance <= STICK_THRESHOLD_PX;
     if (stickToBottom) hasUnseenBelow = false;
+    if (scroller.scrollTop <= STICK_THRESHOLD_PX) showEarlier();
   }
 
   function jumpToLatest(): void {
@@ -387,9 +453,25 @@
   }
 
   /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
-  function showEarlier(): void {
+  let earlierError = $state(false);
+  async function showEarlier(): Promise<void> {
+    if (loadingEarlier || (windowed.hidden === 0 && !hasEarlier)) return;
+    loadingEarlier = true;
+    earlierError = false;
     prependAnchorHeight = scroller?.scrollHeight ?? 0;
-    extraOlder += TIMELINE_WINDOW;
+    try {
+      if (windowed.hidden === 0) await onloadearlier?.();
+      extraOlder += TIMELINE_WINDOW;
+    } catch {
+      earlierError = true;
+    } finally {
+      await tick();
+      if (scroller && prependAnchorHeight > 0) {
+        scroller.scrollTop += scroller.scrollHeight - prependAnchorHeight;
+      }
+      prependAnchorHeight = 0;
+      loadingEarlier = false;
+    }
   }
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
@@ -940,6 +1022,8 @@
    * untrack so flipping the flag never re-runs the effect on its own.
    */
   let prevTimelineLength = 0;
+  /** True once the timeline has painted at least one row. */
+  let historyPopulated = false;
   $effect(() => {
     const length = timeline.length;
     void timeline.at(-1)?.eventId;
@@ -948,19 +1032,43 @@
       const grew = length > prevTimelineLength;
       prevTimelineLength = length;
       if (!el) return;
-      if (prependAnchorHeight > 0) {
-        // Older history was prepended: hold the user's VISUAL position by
-        // shifting scrollTop by exactly the height the prepend added.
-        el.scrollTop += el.scrollHeight - prependAnchorHeight;
-        prependAnchorHeight = 0;
-        return;
-      }
+      if (loadingEarlier) return;
+      if (restoreScrollPending) return;
       if (stickToBottom) {
         el.scrollTop = el.scrollHeight;
-      } else if (grew) {
+      } else if (grew && historyPopulated) {
+        // Only arrivals AFTER the first populated paint are "unseen"; the
+        // initial history landing under a top-anchored pane is not news.
         hasUnseenBelow = true;
       }
+      if (length > 0) historyPopulated = true;
     });
+  });
+
+  $effect(() => {
+    const target = restoreScroll;
+    const el = scroller;
+    if (!target || !el) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tryRestore = (): void => {
+      if (cancelled) return;
+      if (restoreNavigationScroll(el, target)) {
+        stickToBottom = isScrollNearBottom(target, el);
+        restoreScrollPending = false;
+        return;
+      }
+      attempts += 1;
+      if (attempts >= NAVIGATION_SCROLL_RETRY_LIMIT) {
+        restoreScrollPending = false;
+        return;
+      }
+      setTimeout(tryRestore, NAVIGATION_SCROLL_RETRY_MS);
+    };
+    void tick().then(tryRestore);
+    return () => {
+      cancelled = true;
+    };
   });
 </script>
 
@@ -990,6 +1098,7 @@
       <div
         class="dm-thread"
         bind:this={scroller}
+        use:observeConversationRead={{ key: messages.at(-1)?.eventId ?? "", onseen }}
         onscroll={onThreadScroll}
         data-testid="conversation-thread"
       >
@@ -1003,15 +1112,16 @@
             {emptyLabel}
           </div>
         {/if}
-        {#if windowed.hidden > 0}
+        {#if loadingEarlier}
+          <div role="status" class="dm-load-earlier">Loading earlier messages…</div>
+        {:else if windowed.hidden > 0 || hasEarlier}
           <button
             type="button"
             class="dm-load-earlier"
             data-testid="conversation-load-earlier"
             onclick={showEarlier}
           >
-            Show {windowed.hidden} earlier
-            {windowed.hidden === 1 ? "message" : "messages"}
+            {earlierError ? "Couldn't load earlier messages. Retry" : windowed.hidden > 0 ? `Show ${windowed.hidden} earlier messages` : "Load earlier messages"}
           </button>
         {/if}
         {#each timeline as msg, index (msg.eventId)}
@@ -1036,6 +1146,7 @@
                   messageAuthor(msg),
                 msg,
               )}
+              {onopensession}
             />
           {:else if systemModel?.kind === "line"}
             <SystemEventLine
@@ -1073,6 +1184,8 @@
                 <RunCompleteCard model={systemModel} {onopenurl} />
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                     messageId={msg.eventId}
                     reactions={reactionsFor(msg.eventId)}
                     ontoggle={toggle}
@@ -1110,6 +1223,8 @@
                 />
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                     messageId={msg.eventId}
                     reactions={reactionsFor(msg.eventId)}
                     ontoggle={toggle}
@@ -1210,7 +1325,12 @@
                     </div>
                   {/if}
                   {#if rich.rich}
-                    <RichMessageContent content={rich.rich} ondecision={handleDecision} />
+                    <RichMessageContent
+                      content={rich.rich}
+                      ondecision={handleDecision}
+                      {answeredQuestionIds}
+                      {answeredChoices}
+                    />
                   {/if}
                   {#if msg.details?.trim()}
                     <ArtifactCard
@@ -1229,6 +1349,8 @@
                     />
                   {/if}
                   <MessageAttachments
+                    {previewCache}
+                    {vaultCompanyUid}
                     attachments={parseMessageAttachments(msg)}
                     onopen={openAttachment}
                     resolveUrl={resolveAttachmentUrl}
@@ -1325,9 +1447,23 @@
                   >
                     Reply
                   </button>
+                  {#if onstartsession}
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn"
+                      data-testid="message-start-session"
+                      aria-label="Start a session from this message"
+                      title="Start session"
+                      onclick={() => onstartsession(msg.eventId)}
+                    >
+                      Session
+                    </button>
+                  {/if}
                 </div>
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
+                    {selfPersonUid}
+                    {displayNameByUid}
                     messageId={msg.eventId}
                     reactions={reactionsFor(msg.eventId)}
                     ontoggle={toggle}
@@ -1339,7 +1475,7 @@
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}
       </div>
-      {#if !stickToBottom}
+      {#if !stickToBottom && (landAt !== "top" || hasUnseenBelow)}
         <button
           type="button"
           class="new-messages-jump"
@@ -1422,6 +1558,18 @@
     </div>
     <div class="dm-reply-footer">
       <div class="dm-reply-tools">
+        {#if onstartchannelsession}
+          <button
+            type="button"
+            class="dm-tool-btn"
+            data-testid="composer-start-session"
+            aria-label="Start a session in this channel"
+            title="Start session"
+            onclick={() => onstartchannelsession()}
+          >
+            Session
+          </button>
+        {/if}
         <label
           class="dm-tool-btn composer-attach"
           title="Attach a file"
@@ -1544,6 +1692,7 @@
   </div>
   {#if trayOpen && !onopenattachment}
     <AttachmentTray
+      {previewCache}
       items={conversationAttachments}
       selectedId={traySelectedId}
       onselect={(id) => (traySelectedId = id)}
@@ -1626,6 +1775,8 @@
   }
 
   .dm-thread-wrap {
+    min-width: 0;
+    overflow: hidden;
     position: relative;
     flex: 1;
     min-height: 0;
@@ -2465,4 +2616,5 @@
     opacity: 0.4;
     cursor: default;
   }
+
 </style>

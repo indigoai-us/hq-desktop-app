@@ -1,4 +1,8 @@
 <script lang="ts">
+  import {
+    parseMeshProjectView,
+    projectViewToBoard,
+  } from "@hq/core";
   /**
    * DesktopApp — the windowed V2 shell (design source: hq-sync desktop-alt +
    * its dev-harness ?view=v2 preview).
@@ -22,11 +26,17 @@
   import { failure, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
+  import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
+  import type { RowExtrasResolver } from "../chat/row-extras.js";
+  import DmRequestsPanel from "../chat/DmRequestsPanel.svelte";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
   } from "./sidebar-layout.js";
+  import { ImagePreviewCache } from "../chat/messaging/image-preview-cache";
+  import { createImagePreviewStore } from "../chat/messaging/image-preview-store";
+  import { parseMessageAttachments } from "../chat/messaging/channelMessageModels";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
@@ -39,7 +49,24 @@
     isAgentUid as isAgentTaskUid,
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
-  import { isSetupChannel, SETUP_CHANNEL_ID } from "../chat/setup-channel.js";
+  import SetupRunCard from "../chat/SetupRunCard.svelte";
+  import SetupConnectStep from "../chat/SetupConnectStep.svelte";
+  import SetupFinale from "../chat/SetupFinale.svelte";
+  import { SETUP_FAILURE_COPY } from "../chat/setup-run";
+  import type { SetupRunApi } from "../chat/setup-run.js";
+  import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
+  import { createLaunchActions } from "../settings/launch-actions";
+  import {
+    hasRunWelcomeSetup,
+    isSetupChannel,
+    markWelcomeSetupRun,
+    SETUP_CHANNEL_ID,
+    setupCompanies,
+    setupCompanyActionLabel,
+    setupRosterLoading,
+    withoutCompaniesSummaryCards,
+    withoutSeededCreateCompanyCards,
+  } from "../chat/setup-channel.js";
   import {
     findLifecycleCardElement,
     runAddAgentEntry,
@@ -70,6 +97,16 @@
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
+  import SessionThreadPanel from "../chat/messaging/SessionThreadPanel.svelte";
+  import {
+    coalesceWorkSessionWires,
+    contextPromptForThread,
+    createSessionThread,
+    excerptFromBody,
+    isDesktopLiveSessionId,
+    type SessionThread,
+  } from "../chat/messaging/session-thread.js";
+  import type { Snippet } from "svelte";
   import ArtifactPanel from "../chat/messaging/ArtifactPanel.svelte";
   import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
@@ -144,7 +181,30 @@
     type EmbeddedNavigationTarget,
     type EmbeddedSettingsSection,
   } from "./embedded-navigation.js";
-  import { onDestroy, onMount, untrack } from "svelte";
+  import {
+    createNavigationEntry,
+    createNavigationHistory,
+    destinationCompanyKey,
+    destinationFromEmbeddedTarget,
+    destinationLabel,
+    extraParamCompanyKey,
+    historyNeighbor,
+    type NavigationDestination,
+    type NavigationEntry,
+    type NavigationScrollState,
+  } from "./navigation-history.js";
+  import {
+    captureNavigationScroll,
+    scheduleNavigationScrollRestore,
+  } from "./navigation-scroll.js";
+  import {
+    createNavigationController,
+    type AppliedNavigation,
+    type NavigationMode,
+    type NavigationResolveOutcome,
+  } from "./navigation-controller.js";
+  import { consumeNavigationShortcut } from "./navigation-shortcuts.js";
+  import { onDestroy, onMount, untrack, type Component } from "svelte";
   import {
     applyColorTheme,
     applyUiSize,
@@ -287,18 +347,20 @@
   } from "../chat/live-catchup.js";
   import {
     OPEN_CHANNEL_EVENT,
+    OPEN_DM_REQUESTS_EVENT,
     OPEN_SETTINGS_EVENT,
     conversationDeepLinkFromLocation,
     conversationRowForDeepLink,
     requestChannelOpen,
     shouldOpenReplyDeepLink,
     takePendingChannelOpen,
+    takePendingDmRequests,
     type ConversationDeepLink,
     type PendingChannelOpen,
   } from "../chat/open-target.js";
+  import type { DmRequest, RequestAction } from "../chat/dm-requests.js";
   import {
     MESSAGE_PERSON_EVENT,
-    requestConversation,
     takePendingConversation,
     type ConversationTarget,
   } from "../chat/pending-conversation.js";
@@ -323,6 +385,7 @@
     type SelfIdentity,
   } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
+  import type { RosterStatus } from "../identity/roster-refresh.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
   import "../chat/messaging/messaging-tokens.css";
@@ -358,6 +421,14 @@
     wakes?: ChatWakeBus | null;
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
+    /**
+     * Where the host is in loading `companies` for this session. #setup
+     * hides the seeded "Create a company" card and the create hero copy
+     * until the roster has loaded once (`ready` | `failed`). Omitted = ready.
+     */
+    rosterStatus?: RosterStatus | null;
+    /** Re-run the host's roster fetch after `rosterStatus === "failed"`. */
+    onretryroster?: () => void;
     /**
      * Verified signed-in principal (host-supplied: web = Cognito session,
      * desktop = its auth source). Drives "you" tagging + admin gating in the
@@ -478,6 +549,57 @@
      * the panel refuses in its own voice when this is missing.
      */
     callsHost?: OfficeCallsHost | null;
+    /** Host-registered full-column destinations keyed by page id. */
+    extraPages?: Record<
+      string,
+      {
+        label: string;
+        detail?: string;
+        /** Optional host-owned create action in the window header. */
+        createAction?: { label: string; param: () => string | null };
+        /**
+         * Optional host-owned "Run Setup" destination for #welcome: a fresh
+         * session whose param carries the setup prompt so the page can send
+         * it as soon as the provider is ready. Falls back to `createAction`.
+         */
+        setupAction?: { label: string; param: () => string | null };
+        /**
+         * Optional host guided-run API. When present, #welcome's Run Setup
+         * runs `/setup` natively inside the hero (stepper + question cards)
+         * and only falls back to `setupAction` when the host's preflight says
+         * the Sessions page must go first. "Show details" opens the session
+         * on this page with its id as the param.
+         */
+        setupRun?: SetupRunApi;
+        /** After setup: a fresh session with `/startwork <company>` as its first turn. */
+        startworkAction?: { label: string; param: (company: string | null) => string | null };
+        component: Component<{
+          param?: string | null;
+          restoreScroll?: NavigationScrollState | null;
+          onnavigate?: (
+            param: string | null,
+            options?: { mode?: "push" | "replace" },
+          ) => void;
+        }>;
+      }
+    >;
+    /** Host decoration for sidebar rows: badge, hover card, and actions. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
+    rowExtras?: RowExtrasResolver | null;
+    /**
+     * Desktop host starts the real agent session for an in-channel pane.
+     * Web omits this; the pane falls back to a notice.
+     */
+    onstartlivesession?: (input: {
+      thread: SessionThread;
+      companySlug: string;
+      projectId: string;
+      taskId: string;
+      contextPrompt: string;
+      channelId?: string | null;
+    }) => Promise<{ sessionId: string }>;
+    channelSessionBody?: Snippet<[SessionThread]>;
   }
 
   let {
@@ -496,6 +618,8 @@
     oncardaction,
     wakes = null,
     companies = null,
+    rosterStatus = null,
+    onretryroster,
     self = null,
     tenantAccountId = null,
     tenantGeneration = 0,
@@ -528,6 +652,12 @@
     getAttachmentObject,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     onShellReady,
+    extraPages,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
+    rowExtras = null,
+    onstartlivesession,
+    channelSessionBody,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -618,8 +748,15 @@
     | "atlas"
     | "library"
     | "shared-files"
+    | "extra"
+    | "dm-requests"
   >("conversation");
+  let extraPageId = $state<string | null>(null);
+  let extraPageParam = $state<string | null>(null);
+  /** Which pending request the Requests panel should bring into view first. */
+  let dmRequestsFocusPairKey = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
+  let libraryItemId = $state<string | null>(null);
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
     meetingId: string;
@@ -627,7 +764,20 @@
   } | null>(null);
   let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
+  let navigationPending = $state(false);
+  let navigationUnavailable = $state<{
+    destination: NavigationDestination;
+    reason: string;
+  } | null>(null);
+  let navigationCanGoBack = $state(false);
+  let navigationCanGoForward = $state(false);
+  let navigationBackLabel = $state("");
+  let navigationForwardLabel = $state("");
+  let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
+  let cancelScrollRestore: (() => void) | null = null;
+  const DESTINATION_UNAVAILABLE = "This destination is no longer available.";
   let tab = $state<ChannelTab>("chat");
+  let channelFileKey = $state<string | null>(null);
   let companyTab = $state<CompanyChannelTabId>("chat");
   /**
    * US-018: the company tabs this host may actually offer. Office appears only
@@ -645,6 +795,10 @@
   /** Company display name from the settings tab appearance, when fetched. */
   let companyAppearanceName = $state<string | null>(null);
   let openReplyRootId = $state<string | null>(null);
+  /** In-channel session pane (spike) — same column as Thread. */
+  let openSessionThread = $state<SessionThread | null>(null);
+  let sessionThreadsById = $state<Record<string, SessionThread>>({});
+  let localSessionWires = $state<ConversationMessageWire[]>([]);
   /** Right side pane in ARTIFACT mode. Supersedes thread/profile while open;
    *  closing it falls back to whatever pane was open underneath. */
   let openArtifactView = $state<ChatArtifact | null>(null);
@@ -655,6 +809,55 @@
   let replyPreviewByRoot = $state<Record<string, ReplyPreview>>({});
   let replyCountOverride = $state<Record<string, number>>({});
   let narrowViewport = $state(false);
+  let threadWidth = $state<number | null>(null);
+  let threadDrag: { x: number; width: number } | null = null;
+
+  function resizeThread(handle: HTMLElement, width: number) {
+    const stageWidth =
+      handle.parentElement?.parentElement?.getBoundingClientRect().width ?? 0;
+    if (!stageWidth) return;
+    const minimum = Math.min(280, stageWidth / 2);
+    const maximum = stageWidth - Math.min(360, stageWidth / 2);
+    threadWidth = Math.round(Math.max(minimum, Math.min(maximum, width)));
+  }
+
+  function startThreadDrag(event: PointerEvent) {
+    if (event.button !== 0) return;
+    const handle = event.currentTarget as HTMLElement;
+    threadDrag = {
+      x: event.clientX,
+      width: handle.parentElement!.getBoundingClientRect().width,
+    };
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function moveThreadDrag(event: PointerEvent) {
+    if (!threadDrag) return;
+    resizeThread(
+      event.currentTarget as HTMLElement,
+      threadDrag.width + threadDrag.x - event.clientX,
+    );
+  }
+
+  function stopThreadDrag(event: PointerEvent) {
+    threadDrag = null;
+    const handle = event.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(event.pointerId)) {
+      handle.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function resizeThreadKey(event: KeyboardEvent) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const handle = event.currentTarget as HTMLElement;
+    resizeThread(
+      handle,
+      handle.parentElement!.getBoundingClientRect().width +
+        (event.key === "ArrowLeft" ? 20 : -20),
+    );
+    event.preventDefault();
+  }
   /**
    * On a phone the channel list is an overlay, so it must start closed —
    * otherwise the first thing the app shows is a list covering the
@@ -666,8 +869,13 @@
     sidebarLayout(window.innerWidth) === "overlay";
   let phoneViewport = $state(startsAsOverlay);
   let sidebarCollapsed = $state(startsAsOverlay);
+  let sidebarWidth = $state((() => {
+    try { const saved = Number(localStorage.getItem('hq.sidebar.width')); return saved >= 220 && saved <= 440 ? saved : 260; }
+    catch { return 260; }
+  })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+  let directorySettled = $state(false);
   let conversationBootTimedOut = $state(false);
   $effect(() => {
     if (selectedRow) {
@@ -773,7 +981,7 @@
         label: "Notifications",
         detail: "Open the notifications feed",
         action: () => {
-          view = "notifications";
+          void navigate({ kind: "notifications" });
         },
       },
       {
@@ -781,7 +989,7 @@
         label: "Meetings",
         detail: "Open the meetings agenda",
         action: () => {
-          view = "meetings";
+          void navigate({ kind: "meetings" });
         },
       },
       {
@@ -790,8 +998,7 @@
         detail: "People and agents on projects, live",
         shortcut: "g a",
         action: () => {
-          view = "atlas";
-          meetingFocusRequest = null;
+          void navigate({ kind: "atlas" });
         },
       },
     ];
@@ -807,6 +1014,14 @@
       detail: "Open settings",
       action: () => openSettings(),
     });
+    for (const [id, page] of Object.entries(extraPages ?? {})) {
+      nav.push({
+        id: `command-go-${id}`,
+        label: page.label,
+        detail: page.detail ?? page.label,
+        action: () => openExtraPage(id),
+      });
+    }
     if (!isWeb) {
       nav.push({
         id: "command-go-marketplace",
@@ -937,13 +1152,110 @@
   );
 
   /** Real ChannelView composer placeholder (verbatim from the desktop source). */
+  /**
+   * The Setup Agent: the guided `/setup` run as a conversation in #welcome.
+   * Its turns stream into the channel timeline as messages, the composer
+   * replies to it while it is listening, and the prompt under the messages
+   * carries choices / cards / the finish buttons. The hero shows its stepper.
+   */
+  // Starting is not finishing: a relaunch mid-run must still land on
+  // #welcome, so only the finish graduates welcome-first boot.
+  const setupAgent = new SetupAgent(extraPages?.sessions?.setupRun ?? null, {
+    onfinished: () => {
+      recordWelcomeSetupRun();
+      // On disk too: the window's memory does not survive a reinstall.
+      void adapter.settings.markWelcomeSetupComplete?.();
+    },
+  });
+  $effect(() => () => setupAgent.dispose());
+  const inSetupChannelWithAgent = $derived(
+    Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupAgent.active),
+  );
+  /** First-seen wall clock per session: synthetic turns need stable, ordered timestamps. */
+  const setupAgentClock = new Map<string, number>();
+  const setupAgentWires = $derived.by((): ConversationMessageWire[] => {
+    const sessionId = setupAgent.sessionId;
+    if (!setupAgent.active || !sessionId) return [];
+    let base = setupAgentClock.get(sessionId);
+    if (base === undefined) {
+      base = Date.now();
+      setupAgentClock.set(sessionId, base);
+    }
+    const start = base;
+    return setupAgent.transcript.map((turn) => ({
+      eventId: turn.id,
+      fromPersonUid: turn.role === "agent" ? SETUP_AGENT_UID : (self?.uid ?? null),
+      fromDisplayName: turn.role === "agent" ? SETUP_AGENT_NAME : (self?.displayName ?? "You"),
+      body: turn.text,
+      createdAt: new Date(start + turn.seq * 1000).toISOString(),
+      direction: turn.role === "agent" ? "in" : "out",
+      replyCount: 0,
+    }));
+  });
+  /** Between the person's turns the agent shows as "thinking", like any other agent. */
+  let setupThinkingSince = 0;
+  const setupThinking = $derived.by((): ThinkingEntry | null => {
+    if (!inSetupChannelWithAgent) return null;
+    // Starting a run (or quietly retrying a passing clash) is thinking too:
+    // the person clicked and must see the agent at work, not a blank beat.
+    if (setupAgent.mode === "starting" || setupAgent.retrying) {
+      if (!setupThinkingSince) setupThinkingSince = Date.now();
+      return { agentUid: SETUP_AGENT_UID, agentName: SETUP_AGENT_NAME, startedAt: setupThinkingSince, phase: "thinking" };
+    }
+    if (setupAgent.mode !== "live") {
+      setupThinkingSince = 0;
+      return null;
+    }
+    const state = setupAgent.state;
+    const phase = setupAgent.snapshot?.phase;
+    // Thinking is only while the engine is actually working on a turn — not
+    // while it waits for the person, and not once it has finished or stopped.
+    // The reported phase can lag or be missed; the event stream is the tiebreak.
+    const working = phase === "working" || phase === "starting" || (phase !== "needsYou" && phase !== "ended" && state?.inFlight);
+    if (!state || state.done || state.ended || state.question || !working) {
+      setupThinkingSince = 0;
+      return null;
+    }
+    if (!setupThinkingSince) setupThinkingSince = Date.now();
+    return { agentUid: SETUP_AGENT_UID, agentName: SETUP_AGENT_NAME, startedAt: setupThinkingSince, phase: "thinking" };
+  });
+  let setupLaunchError = $state<string | null>(null);
+  /** The company `/startwork` orients on after setup: the first company in the roster. */
+  const startworkCompany = $derived(setupCompanies(companies).find((c) => c.kind === "company")?.slug ?? null);
+  const startworkPrompt = $derived(startworkCompany ? `/startwork ${startworkCompany}` : "/startwork");
+  /** The finish buttons: open the HQ folder in a coding tool with `/startwork` ready to go. */
+  async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
+    setupLaunchError = null;
+    const res = await adapter.settings.getSetupStatus();
+    const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
+    if (!folder) {
+      setupLaunchError = "HQ folder is not ready yet.";
+      return;
+    }
+    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt: startworkPrompt });
+    const error = key === "claude" ? await actions.launchClaude() : await actions.launchCodex();
+    if (error) setupLaunchError = error;
+  }
+  /** The run has finished (marker or the person's own "I'm all set"): the finale replaces the prompt. */
+  const setupAgentDone = $derived(
+    inSetupChannelWithAgent && (setupAgent.mode === "done" || Boolean(setupAgent.state?.done)),
+  );
+  /** Once setup is done the composer rests; the finale carries every next step. */
+  const composerDisabled = $derived(setupAgentDone);
+  const SETUP_DONE_PLACEHOLDER = "Setup is complete — pick a next step above.";
   const composerPlaceholder = $derived(
-    isAgentChannel && provisioning.state === "pending"
-      ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
-      : composerPlaceholderFor(selectedRow, headerTitle),
+    setupAgentDone
+      ? SETUP_DONE_PLACEHOLDER
+      : inSetupChannelWithAgent && setupAgent.listening
+      ? setupAgent.state?.question?.kind === "choice"
+        ? "Type your answer…"
+        : "Reply to Setup Agent…"
+      : isAgentChannel && provisioning.state === "pending"
+        ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
+        : composerPlaceholderFor(selectedRow, headerTitle),
   );
   const composerLocked = $derived(
-    isAgentChannel && provisioning.state === "pending",
+    composerDisabled || (isAgentChannel && provisioning.state === "pending"),
   );
   const agentChannelUid = $derived(
     selectedRow?.members?.find((m) => m.personUid.startsWith("agt_"))
@@ -954,8 +1266,6 @@
 
   $effect(() => {
     selectedRow?.id;
-    agentSurface = "chat";
-    companyTab = "chat";
     companyTabData = null;
     companyWallpaper = "aurora";
     companyAppearanceName = null;
@@ -1036,7 +1346,27 @@
     const handle = window.setInterval(() => {
       agentThinking = tick(agentThinking, Date.now());
     }, AGENT_THINKING_TICK_MS);
-    return () => clearInterval(handle);
+    const onSessionStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; status?: string }>)
+        .detail;
+      const sessionId = detail?.sessionId?.trim();
+      const status = detail?.status?.trim();
+      if (!sessionId || !status) return;
+      const thread =
+        sessionThreadsById[sessionId] ??
+        Object.values(sessionThreadsById).find((row) => row.liveSessionId === sessionId);
+      upsertLocalWorkSession({
+        sessionId,
+        title: thread?.title ?? "Session",
+        status,
+        actorName: thread?.actorName ?? self?.displayName?.trim() ?? "You",
+      });
+    };
+    window.addEventListener("hq-channel-session-status", onSessionStatus);
+    return () => {
+      clearInterval(handle);
+      window.removeEventListener("hq-channel-session-status", onSessionStatus);
+    };
   });
 
   /** Clear thinking rows when those agents appear in a freshly fetched page
@@ -1140,9 +1470,27 @@
     }
   }
 
+  let historyCursors = $state<Record<string, string | null>>({});
+
+  async function loadEarlierTimeline(): Promise<void> {
+    const row = selectedRow;
+    if (!row) return;
+    const generation = tenantGeneration;
+    const cursor = historyCursors[row.id];
+    if (!cursor) return;
+    const raw = row.channelId
+      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50 }))
+      : null;
+    if (selectedRow?.id !== row.id || tenantGeneration !== generation || raw === null) return;
+    const page = timelinePageFromPayload(raw);
+    historyCursors[row.id] = page.nextCursor === cursor ? null : (page.nextCursor ?? null);
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw));
+  }
+
   async function applyFetchedTimeline(
     row: ConversationRow,
     raw: unknown | null,
+    pendingCardId?: string,
   ): Promise<void> {
     // Apply whenever this row is still selected. Do not require matching
     // timelineSeq — MQTT catch-up / a re-run of the hydrate effect used to
@@ -1151,7 +1499,19 @@
     if (selectedRow?.id !== row.id) return;
     timelineHydrating = false;
     if (raw == null) return;
-    const incoming = messagesForDisplay(raw);
+    historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
+    let incoming = messagesForDisplay(raw);
+    // An immediate readback can lag the accepted mutation. Preserve its
+    // pending receipt over a stale open card, but accept any newer state.
+    if (pendingCardId && incoming.some((message) => {
+      const envelope = message.systemEvent;
+      return !!envelope && typeof envelope === "object" &&
+        "type" in envelope && envelope.type === "lifecycle_card" &&
+        "cardId" in envelope && envelope.cardId === pendingCardId &&
+        "state" in envelope && envelope.state === "open";
+    })) {
+      incoming = patchLifecycleCardState(incoming, pendingCardId, { state: "pending", reason: null });
+    }
     commitTimeline(row, incoming);
     clearThinkingFromIncoming(incoming);
   }
@@ -1166,12 +1526,12 @@
     if (selectedRow?.id !== row.id) return;
     if (raw == null) return;
     const incoming = messagesForDisplay(raw);
-    commitTimeline(
-      row,
-      existing.length > 0
-        ? mergeFetchedTimeline(existing, raw)
-        : incoming,
-    );
+    // History may have loaded while this refresh was in flight. Merge into
+    // the current timeline so its newly prepended page is not discarded.
+    const current = liveTimelineId === row.id
+      ? liveTimeline
+      : (timelineCache.get(row.id) ?? []);
+    commitTimeline(row, mergeFetchedTimeline(current, raw));
     clearThinkingFromIncoming(incoming);
   }
 
@@ -1348,12 +1708,53 @@
     void loadProjectActivity(row);
   });
 
+  // Diagnostic: what the setup channel is showing and why. Logged only when
+  // the picture changes, so the log is not spammed on every timeline poll.
+  let lastSetupStateLog = "";
+  $effect(() => {
+    const hqLog = (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog;
+    if (!hqLog || !selectedRow || !isSetupChannel(selectedRow.channelId)) return;
+    const snapshot = JSON.stringify({
+        selected: selectedRow?.channelId ?? null,
+        isSetup: selectedRow ? isSetupChannel(selectedRow.channelId) : null,
+        companies: (companies ?? []).map((c) => `${c.kind}:${c.slug}:${c.state}`),
+        rosterCompanies: rosterCompanies.map((c) => c.slug),
+        rosterStatus: rosterStatus ?? null,
+        hasRosterCompany,
+        createCompanyRequested,
+        timeline: timeline.length,
+        shown: timelineWithActivity.length,
+        kinds: timeline.map((m) => {
+          const ev = (m as { systemEvent?: { type?: string; kind?: string } }).systemEvent;
+          return ev ? `${ev.type}/${ev.kind}` : "msg";
+        }),
+      });
+    if (snapshot === lastSetupStateLog) return;
+    lastSetupStateLog = snapshot;
+    hqLog("setup-state", snapshot);
+  });
+
   /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
-  const timelineWithActivity = $derived.by(() =>
-    projectActivityRows.length > 0
-      ? mergeActivityIntoTimeline(timeline, projectActivityRows)
-      : timeline,
-  );
+  const timelineWithActivity = $derived.by(() => {
+    const merged =
+      projectActivityRows.length > 0
+        ? mergeActivityIntoTimeline(timeline, projectActivityRows)
+        : timeline;
+    let rows = merged;
+    if (selectedRow && isSetupChannel(selectedRow.channelId)) {
+      const welcome = withoutCompaniesSummaryCards(
+        withoutSeededCreateCompanyCards(merged, {
+          hasCompany: hasRosterCompany,
+          createRequested: createCompanyRequested,
+          rosterLoading: setupRosterLoading(companies, rosterStatus),
+        }),
+      );
+      rows =
+        setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
+    }
+    if (localSessionWires.length === 0) return coalesceWorkSessionWires(rows);
+    return coalesceWorkSessionWires([...rows, ...localSessionWires]);
+  });
 
   /**
    * A project channel with no chat AND no work-mesh events is empty of
@@ -1383,9 +1784,33 @@
   const boardHasCards = $derived(
     Boolean(overlayBoard?.columns.some((column) => column.cards.length > 0)),
   );
-  const board = $derived<BoardTabData | null>(
-    boardHasCards ? overlayBoard : (liveTabs?.board ?? overlayBoard),
-  );
+  let createdTasks = $state<Record<string, BoardTabData>>({});
+  $effect(() => {
+    self?.uid;
+    createdTasks = {};
+  });
+  $effect(() => {
+    const key = selectedRow ? activityKeyForRow(selectedRow) : "";
+    const pending = createdTasks[key];
+    const base = boardHasCards ? overlayBoard : liveTabs?.board;
+    if (!pending || !base) return;
+    const remaining = Object.fromEntries(Object.entries(pending.stories).filter(([id]) => !base.stories[id]));
+    if (Object.keys(remaining).length === Object.keys(pending.stories).length) return;
+    const next = {...createdTasks};
+    if (!Object.keys(remaining).length) delete next[key];
+    else next[key] = {...pending, stories: remaining, columns: pending.columns.map(column => ({...column, cards: column.cards.filter(card => remaining[card.storyId])}))};
+    createdTasks = next;
+  });
+  const board = $derived.by((): BoardTabData | null => {
+    const base = boardHasCards ? overlayBoard : (liveTabs?.board ?? overlayBoard);
+    const added = selectedRow ? createdTasks[activityKeyForRow(selectedRow)] : null;
+    if (!added) return base;
+    if (!base) return added;
+    return { ...base, stories: {...added.stories, ...base.stories}, columns: base.columns.map(column => ({
+      ...column, cards: [...column.cards, ...(added.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => !base.stories[card.storyId])],
+    })) };
+  });
+
   const files = $derived<ChannelFileItemModel[]>(
     overlayFiles.length > 0 ? overlayFiles : (liveTabs?.files ?? []),
   );
@@ -1521,6 +1946,7 @@
   function openMemberProfile(row: StatusPersonRow): void {
     // One right panel at a time — a profile/agent pane supersedes a reply.
     openReplyRootId = null;
+    openSessionThread = null;
     openArtifactView = null;
     if (isAgentUid(row.personUid)) {
       openProfileMember = null;
@@ -2155,6 +2581,8 @@
         agentChannelId:
           typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
         agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
+        companyChannelId: typeof raw?.companyChannelId === "string" ? raw.companyChannelId : undefined,
+        companyUid: typeof raw?.companyUid === "string" ? raw.companyUid : undefined,
         focusCardId:
           typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
         // Entry points: the summary card's create_company action answers with
@@ -2305,11 +2733,105 @@
     typeof adapter.messaging.runCardAction === "function",
   );
 
-  /** Sidebar / switcher "New company": summary card action, then #setup. */
+  /**
+   * Companies the roster already knows about, whatever their sync state. Any
+   * of them means the account is NOT a blank slate: #welcome leads with that
+   * company and hides the seeded create_company card.
+   */
+  const rosterCompanies = $derived(setupCompanies(companies));
+  /**
+   * Boot lands on #welcome until Run Setup has been used on this machine
+   * (persisted; see `hasRunWelcomeSetup`). Flips in-session the moment the
+   * person starts setup so a later re-open goes to the company channel.
+   */
+  let welcomeSetupRun = $state(hasRunWelcomeSetup());
+  /**
+   * Whether this machine is still owed the welcome channel's guided setup,
+   * from the host's setup status. A person who set HQ up before the welcome
+   * flow existed (Caio: "I previously ran setup, but it showed me this") is
+   * not: boot goes to their channels and #welcome shows the finished state.
+   * Unknown until the host answers; unknown means owed, as before.
+   */
+  let welcomeSetupOwed = $state<boolean | null>(null);
+  /** The boot pick never waits longer than this for the host's answer. */
+  const WELCOME_OWED_TIMEOUT_MS = 2000;
+  onMount(() => {
+    let settled = false;
+    const resolve = (owed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      welcomeSetupOwed = owed;
+      if (owed) return;
+      welcomeSetupRun = true;
+      setupAgent.markAlreadySetUp();
+    };
+    const timer = window.setTimeout(() => resolve(true), WELCOME_OWED_TIMEOUT_MS);
+    void (async () => {
+      try {
+        const res = await adapter.settings.getSetupStatus();
+        const owed = res.ok ? (res.value as { welcomeSetupOwed?: unknown } | null)?.welcomeSetupOwed : undefined;
+        // Only an explicit "not owed" skips the welcome; anything else keeps today's behaviour.
+        resolve(owed !== false);
+      } catch {
+        resolve(true);
+      }
+    })();
+    return () => clearTimeout(timer);
+  });
+  /**
+   * An explicit conversation deep link (`?channel=` / `?person=`) is a
+   * stronger intent than first landing: it must never be swallowed by the
+   * welcome-first boot pick.
+   */
+  const bootDeepLink = conversationDeepLinkFromLocation();
+  const hasBootDeepLink = Boolean(
+    bootDeepLink.channelId?.trim() || bootDeepLink.personUid?.trim(),
+  );
+  function recordWelcomeSetupRun(): void {
+    markWelcomeSetupRun();
+    welcomeSetupRun = true;
+  }
+  const hasRosterCompany = $derived(rosterCompanies.length > 0);
+  /** The finale's "Open <Company>" button: the roster's first company, or nothing. */
+  const finaleCompany = $derived.by(() => {
+    const company = rosterCompanies[0];
+    if (!company) return null;
+    return { label: setupCompanyActionLabel(company), onopen: () => openCompanyFromSetup(company) };
+  });
+  /** The user explicitly asked for another company this session. */
+  let createCompanyRequested = $state(false);
+
+  /** Sidebar / switcher / #welcome "New company": summary card action, then #setup. */
   async function createCompanyEntry(): Promise<EntryPointResult> {
-    const result = await runCreateCompanyEntry(conversationApi);
+    const result = await runCreateCompanyEntry(conversationApi, {
+      hasCompanies: hasRosterCompany,
+    });
+    createCompanyRequested = result.ok;
     if (result.ok) navigateToEntryTarget(result.target, null);
     return result;
+  }
+
+  /**
+   * #welcome "Open <Company>" / "Continue setup for <Company>": select the
+   * company's own channel when the rail already has it, otherwise switch the
+   * sidebar into that company's scope so its rows hydrate and auto-open.
+   */
+  function openCompanyFromSetup(company: Workspace): void {
+    const uid = company.cloudUid?.trim() ?? "";
+    const row = uid
+      ? railRows.find(
+          (candidate) =>
+            candidate.kind === "channel" &&
+            !candidate.browseOnly &&
+            candidate.channelScope === "company" &&
+            candidate.companyUid === uid,
+        )
+      : undefined;
+    if (row) {
+      handleSelect(row);
+      return;
+    }
+    if (uid) changeTenantCompany(uid);
   }
 
   /** Sidebar / header "New agent": Team tab action, then the company channel. */
@@ -2361,7 +2883,7 @@
 
   const cardActionKeys: CardActionIdempotencyStore = new Map();
 
-  function applyCardActionFailure(cardId: string, message: string): void {
+  function applyCardActionFailure(cardId: string, message: string, values?: Record<string, string>): void {
     const row = selectedRow;
     if (!row) return;
     const current =
@@ -2371,8 +2893,9 @@
     commitTimeline(
       row,
       patchLifecycleCardState(current, cardId, {
-        state: "blocked",
+        state: /timed? out|timeout|network|connection|unavailable|fetch failed|could not reach|\b50[234]\b/i.test(message) ? "open" : "blocked",
         reason: message,
+        values,
       }),
     );
   }
@@ -2467,29 +2990,40 @@
       onFailure: () => {},
     });
     if (result?.navigateTo === "chat") {
-      companyTab = "chat";
+      pushConversationSurface({ companyTab: "chat" });
       return;
     }
     await loadCompanyTabSurface(companyTab);
   }
 
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
+    const actionRow = selectedRow;
     oncardaction?.(event);
     if (typeof adapter.messaging.runCardAction !== "function") return;
     const result = await submitLifecycleCardAction({
       event,
       store: cardActionKeys,
       run: conversationApi.runCardAction,
-      onFailure: applyCardActionFailure,
+      onFailure: (cardId, message) => applyCardActionFailure(cardId, message, event.values),
     });
-    const agentChannelId =
-      result && typeof result.agentChannelId === "string"
-        ? result.agentChannelId.trim()
-        : "";
-    if (agentChannelId.startsWith("chn_")) {
-      requestChannelOpen(agentChannelId, {
-        title: headerTitle,
-        companyUid: selectedRow?.companyUid ?? null,
+    // The HTTP response settles this interaction; MQTT is supplementary.
+    // Otherwise a missed lifecycle wake leaves localPending stuck forever.
+    if (result && actionRow && selectedRow?.id === actionRow.id) {
+      const state = result.state;
+      if (state === "open" || state === "pending" || state === "done" || state === "skipped" || state === "blocked") {
+        commitTimeline(actionRow, patchLifecycleCardState(liveTimeline, event.cardId, { state, reason: null }));
+      }
+      // Fetch newly created steps even when no live event arrives. Failure
+      // must not turn an already-saved choice into a failed mutation.
+      void fetchTimelineRaw(actionRow)
+        .then((raw) => applyFetchedTimeline(actionRow, raw, state === "pending" ? event.cardId : undefined))
+        .catch(() => {});
+    }
+    const destination = result?.companyChannelId?.trim() || result?.agentChannelId?.trim();
+    if (destination?.startsWith("chn_")) {
+      requestChannelOpen(destination, {
+        title: result?.companyChannelId ? "Company channel" : headerTitle,
+        companyUid: result?.companyUid ?? selectedRow?.companyUid ?? null,
       });
       return;
     }
@@ -2519,14 +3053,223 @@
     }
   }
 
+  function revealSessionThread(thread: SessionThread): void {
+    openReplyRootId = null;
+    openProfileMember = null;
+    openAgentMember = null;
+    openArtifactView = null;
+    openSessionThread = thread;
+    sessionThreadsById = {
+      ...sessionThreadsById,
+      [thread.id]: thread,
+      ...(thread.liveSessionId ? { [thread.liveSessionId]: thread } : {}),
+    };
+    if (tab !== "chat") tab = "chat";
+  }
+
+  function patchSessionThread(id: string, patch: Partial<SessionThread>): void {
+    const current = sessionThreadsById[id];
+    if (!current) return;
+    const next = { ...current, ...patch };
+    const byId: Record<string, SessionThread> = { ...sessionThreadsById, [id]: next };
+    if (next.liveSessionId) byId[next.liveSessionId] = next;
+    sessionThreadsById = byId;
+    if (openSessionThread?.id === id || openSessionThread?.liveSessionId === id) {
+      openSessionThread = next;
+    }
+  }
+
+  function upsertLocalWorkSession(input: {
+    sessionId: string;
+    title: string;
+    status: string;
+    actorName: string;
+    harness?: string;
+  }): void {
+    const eventId = `local-session-${input.sessionId}`;
+    const wire: ConversationMessageWire = {
+      eventId,
+      createdAt: new Date().toISOString(),
+      messageKind: "system",
+      fromDisplayName: input.actorName,
+      fromPersonUid: self?.uid ?? null,
+      body: "",
+      systemEvent: {
+        v: 1,
+        type: "work_session",
+        title: input.title,
+        note: input.title,
+        status: input.status,
+        harness: input.harness ?? "hq-desktop",
+        actorType: "human",
+        displayName: input.actorName,
+        sessionId: input.sessionId,
+      },
+    };
+    const index = localSessionWires.findIndex((row) => row.eventId === eventId);
+    if (index < 0) {
+      localSessionWires = [...localSessionWires, wire];
+      return;
+    }
+    const prev = localSessionWires[index];
+    const prevStatus =
+      prev?.systemEvent && typeof prev.systemEvent === "object"
+        ? String((prev.systemEvent as { status?: unknown }).status ?? "")
+        : "";
+    if (prevStatus === input.status) return;
+    localSessionWires = localSessionWires.map((row, i) =>
+      i === index ? { ...wire, createdAt: row.createdAt } : row,
+    );
+  }
+
+  function liveThreadMatching(match: (thread: SessionThread) => boolean): SessionThread | null {
+    const seen = new Set<string>();
+    for (const thread of Object.values(sessionThreadsById)) {
+      if (seen.has(thread.id)) continue;
+      seen.add(thread.id);
+      if (
+        (thread.status === "starting" || thread.status === "running") &&
+        match(thread)
+      ) {
+        return thread;
+      }
+    }
+    return null;
+  }
+
+  async function bindLiveSession(thread: SessionThread): Promise<void> {
+    patchSessionThread(thread.id, { status: "starting" });
+    const row = selectedRow;
+    const companyUid = row?.companyUid?.trim();
+    const projectId = row ? projectIdForRow(row) : null;
+    const companySlug =
+      (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyUid)
+        ?.slug ?? "";
+    try {
+      if (!onstartlivesession || !projectId || !companySlug) {
+        patchSessionThread(thread.id, { status: "idle" });
+        return;
+      }
+      const started = await onstartlivesession({
+        thread,
+        companySlug,
+        projectId,
+        taskId: thread.taskId ?? "",
+        contextPrompt: contextPromptForThread(thread),
+        channelId: row?.channelId ?? null,
+      });
+      patchSessionThread(thread.id, {
+        liveSessionId: started.sessionId,
+        status: "running",
+      });
+      upsertLocalWorkSession({
+        sessionId: started.sessionId,
+        title: thread.title,
+        status: "started",
+        actorName: thread.actorName,
+      });
+    } catch (err) {
+      patchSessionThread(thread.id, {
+        status: "idle",
+        startError: err instanceof Error ? err.message : String(err),
+      });
+      console.error("[hq-desktop] channel session", err);
+    }
+  }
+
+  function startSessionFromMessage(eventId: string): void {
+    const row = selectedRow;
+    if (!row) return;
+    const existing = liveThreadMatching(
+      (thread) => thread.origin.kind === "message" && thread.origin.eventId === eventId,
+    );
+    if (existing) {
+      revealSessionThread(existing);
+      return;
+    }
+    const msg = timelineWithActivity.find((m) => m.eventId === eventId);
+    const thread = createSessionThread({
+      origin: {
+        kind: "message",
+        eventId,
+        excerpt: excerptFromBody(msg?.body ?? ""),
+        author:
+          (msg?.fromDisplayName ?? "").trim() ||
+          displayNameByUid[msg?.fromPersonUid ?? ""] ||
+          "Message",
+      },
+      actorKind: "human",
+      actorName: self?.displayName?.trim() || "You",
+    });
+    revealSessionThread(thread);
+    void bindLiveSession(thread);
+  }
+
+  function startSessionFromChannel(): void {
+    const row = selectedRow;
+    if (!row?.channelId) return;
+    const existing = liveThreadMatching(
+      (thread) => thread.origin.kind === "channel" && thread.origin.channelId === row.channelId,
+    );
+    if (existing) {
+      revealSessionThread(existing);
+      return;
+    }
+    const thread = createSessionThread({
+      origin: {
+        kind: "channel",
+        channelId: row.channelId,
+        channelTitle: row.title || "channel",
+      },
+      actorKind: "human",
+      actorName: self?.displayName?.trim() || "You",
+    });
+    revealSessionThread(thread);
+    void bindLiveSession(thread);
+  }
+
+  function openSessionFromCard(sessionId: string): void {
+    const id = sessionId.trim();
+    if (!id) return;
+    const known =
+      sessionThreadsById[id] ??
+      Object.values(sessionThreadsById).find((row) => row.liveSessionId === id);
+    if (known?.liveSessionId && isDesktopLiveSessionId(known.liveSessionId)) {
+      revealSessionThread(known);
+      return;
+    }
+    if (!isDesktopLiveSessionId(id)) return;
+    const row = selectedRow;
+    const thread = createSessionThread({
+      origin: {
+        kind: "channel",
+        channelId: row?.channelId ?? "",
+        channelTitle: row?.title || "channel",
+      },
+      actorKind: "human",
+      actorName: self?.displayName?.trim() || "You",
+    });
+    thread.id = id;
+    thread.liveSessionId = id;
+    thread.status = "running";
+    sessionThreadsById = { ...sessionThreadsById, [id]: thread };
+    revealSessionThread(thread);
+  }
+
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
-    if (id) {
-      openProfileMember = null;
-      openAgentMember = null;
-      openArtifactView = null;
-      openReplyRootId = id;
-    }
+    if (!id || !selectedRow) return;
+    openProfileMember = null;
+    openAgentMember = null;
+    openArtifactView = null;
+    openSessionThread = null;
+    openReplyRootId = id;
+    pushConversationSurface({
+      replyRootEventId: id,
+      tab: "chat",
+      agentSurface: "chat",
+      companyTab: "chat",
+    });
   }
 
   /** Artifact mode for the side pane. The thread underneath is left intact so
@@ -2541,10 +3284,10 @@
   }
 
   function closeReply(): void {
-    openReplyRootId = null;
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
+    void leaveCurrentDestination();
   }
 
   function queueReplyForRow(
@@ -2561,8 +3304,6 @@
     const row = selectedRow;
     const scope = replyScopeForRow(row);
     if (!id || !row || !scope) return;
-    view = "conversation";
-    tab = "chat";
     replyApplyInFlight = id;
     try {
       const raw = unwrapAdapter(
@@ -2687,7 +3428,7 @@
     return () => mq.removeEventListener("change", apply);
   });
 
-  function handleSelect(
+  function selectConversationRow(
     row: ConversationRow,
     options?: {
       replyRootEventId?: string | null;
@@ -2706,6 +3447,9 @@
       meetingFocusRequest = null;
     }
     tab = "chat";
+    companyTab = "chat";
+    agentSurface = "chat";
+    channelFileKey = null;
     paletteOpen = false;
     membersOpen = false;
     projectAboutOpen = false;
@@ -2719,6 +3463,595 @@
     // closing on every select shut the overlay again the instant it opened.
     if (phoneViewport && options?.automatic !== true) sidebarCollapsed = true;
     onselectrow?.(row);
+  }
+
+  function currentNavigationScope() {
+    const accountId =
+      (self?.uid ?? tenantAccountId ?? "local").trim() || "local";
+    return { accountId, companyUid: tenantCompanyId };
+  }
+
+  function destinationFromConversation(
+    row: ConversationRow,
+    nested?: {
+      replyRootEventId?: string | null;
+      tab?: ChannelTab;
+      companyTab?: CompanyChannelTabId;
+      agentSurface?: AgentChannelTab;
+      fileKey?: string | null;
+    },
+  ): NavigationDestination {
+    const replyRootEventId = nested?.replyRootEventId ?? null;
+    if (row.channelId) {
+      const nextTab = nested?.tab ?? "chat";
+      return {
+        kind: "channel",
+        channelId: row.channelId,
+        replyRootEventId,
+        tab: nextTab,
+        companyTab: nested?.companyTab ?? "chat",
+        agentSurface: nested?.agentSurface ?? "chat",
+        fileKey: nextTab === "files" ? nested?.fileKey ?? null : null,
+      };
+    }
+    if (row.personUid) {
+      return {
+        kind: "dm",
+        personUid: row.personUid,
+        replyRootEventId,
+        agentSurface: nested?.agentSurface ?? "chat",
+      };
+    }
+    return { kind: "messages" };
+  }
+
+  function currentConversationNested() {
+    return {
+      replyRootEventId: openReplyRootId,
+      tab,
+      companyTab,
+      agentSurface,
+      fileKey: channelFileKey,
+    };
+  }
+
+  function pushConversationSurface(
+    patch: Partial<{
+      replyRootEventId: string | null;
+      tab: ChannelTab;
+      companyTab: CompanyChannelTabId;
+      agentSurface: AgentChannelTab;
+      fileKey: string | null;
+    }>,
+  ): void {
+    const row = selectedRow;
+    if (!row) return;
+    const nested = { ...currentConversationNested(), ...patch };
+    if (patch.tab && patch.tab !== "chat") nested.replyRootEventId = null;
+    if (patch.tab && patch.tab !== "files") nested.fileKey = null;
+    if (patch.companyTab && patch.companyTab !== "chat") {
+      nested.tab = "chat";
+      nested.replyRootEventId = null;
+      nested.fileKey = null;
+    }
+    if (patch.agentSurface && patch.agentSurface !== "chat") {
+      nested.replyRootEventId = null;
+    }
+    void navigate(destinationFromConversation(row, nested));
+  }
+
+  function currentShellDestination(): NavigationDestination {
+    if (navigationUnavailable) return navigationUnavailable.destination;
+    switch (view) {
+      case "settings":
+        return { kind: "settings", section: settingsSection };
+      case "notifications":
+        return { kind: "notifications" };
+      case "meetings":
+        return {
+          kind: "meetings",
+          meetingId: meetingFocusRequest?.meetingId ?? null,
+        };
+      case "atlas":
+        return { kind: "atlas" };
+      case "library":
+        return { kind: "library", tab: libraryTab, itemId: libraryItemId };
+      case "shared-files":
+        return { kind: "shared-files" };
+      case "extra":
+        if (extraPageId) return extraDestination(extraPageId, extraPageParam);
+        return { kind: "messages" };
+      default:
+        if (selectedRow) {
+          return destinationFromConversation(
+            selectedRow,
+            currentConversationNested(),
+          );
+        }
+        return { kind: "messages" };
+    }
+  }
+
+  function captureCurrentNavigation(): NavigationEntry | null {
+    try {
+      return createNavigationEntry(
+        currentShellDestination(),
+        currentNavigationScope(),
+        readNavigationScroll(),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  function readNavigationScroll(): NavigationScrollState | null {
+    if (typeof document === "undefined") return null;
+    return captureNavigationScroll(document);
+  }
+
+  function stopScrollRestore(): void {
+    cancelScrollRestore?.();
+    cancelScrollRestore = null;
+  }
+
+  /**
+   * The one live session that is legitimately company-less: #welcome's
+   * native setup run, which exists before the company it creates. "Open setup
+   * chat" lands on it by bare id while the run is in flight; it needs no
+   * company key because this app started it for this account. Everything
+   * else on the Sessions extra keeps needing its key.
+   */
+  function companyAccess(
+    companyKey: string | null | undefined,
+  ): "ok" | "unknown" | "denied" {
+    const key = companyKey?.trim() ?? "";
+    if (!key) return "ok";
+    if (companies == null) return "unknown";
+    return companies.some((company) => {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      return uid === key || slug === key;
+    })
+      ? "ok"
+      : "denied";
+  }
+
+  function companyIsAccessible(companyUid: string | null | undefined): boolean {
+    return companyAccess(companyUid) === "ok";
+  }
+
+  function accessOutcome(
+    destination: NavigationDestination,
+    companyKey: string | null | undefined,
+  ): NavigationResolveOutcome | null {
+    const access = companyAccess(companyKey);
+    if (access === "unknown") {
+      return { status: "transient-failure", error: "Directory still loading" };
+    }
+    if (access === "denied") {
+      return {
+        status: "unavailable",
+        destination,
+        reason: DESTINATION_UNAVAILABLE,
+      };
+    }
+    return null;
+  }
+
+  function rowForDestination(
+    destination: NavigationDestination,
+  ): ConversationRow | null {
+    const rows = [
+      ...searchRows,
+      ...railRows,
+      ...(selectedRow ? [selectedRow] : []),
+    ];
+    if (destination.kind === "channel") {
+      return (
+        rows.find((row) => row.channelId === destination.channelId) ?? null
+      );
+    }
+    if (destination.kind === "dm") {
+      return (
+        rows.find(
+          (row) => row.personUid === destination.personUid && !row.channelId,
+        ) ?? null
+      );
+    }
+    return null;
+  }
+
+  function resolveShellDestination(
+    destination: NavigationDestination,
+    context: {
+      isStale: () => boolean;
+      accountId: string;
+      companyUid: string | null;
+    },
+  ): NavigationResolveOutcome | Promise<NavigationResolveOutcome> {
+    if (context.isStale()) return { status: "cancelled" };
+    if (context.accountId !== currentNavigationScope().accountId) {
+      return {
+        status: "account-changed",
+        accountId: currentNavigationScope().accountId,
+      };
+    }
+    if (destination.kind === "extra") {
+      if (!extraPages?.[destination.page]) {
+        return {
+          status: "rejected",
+          reason: `Unknown destination: ${destination.page}`,
+        };
+      }
+      // A session with no company key is not gated: a personal chat, or a
+      // fresh one whose company the page has not learned yet. Only a key
+      // that is no longer in the membership makes a session unavailable.
+      const extraCompany =
+        destination.companyUid ?? extraParamCompanyKey(destination.param);
+      const extraDenied = accessOutcome(destination, extraCompany);
+      if (extraDenied) return extraDenied;
+      return { status: "ready", destination };
+    }
+    if (destination.kind === "channel" || destination.kind === "dm") {
+      const row = rowForDestination(destination);
+      if (row) {
+        // Rows already in the rail came from the membership directory.
+        // Only blank after companies has loaded and the uid is gone.
+        if (companyAccess(row.companyUid) === "denied") {
+          return {
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          };
+        }
+        return { status: "ready", destination };
+      }
+      return waitForDestinationRow(destination, context);
+    }
+    if (destination.kind === "setup-checkout") {
+      const checkoutDenied = accessOutcome(
+        destination,
+        destination.companyUid,
+      );
+      if (checkoutDenied) return checkoutDenied;
+    }
+    return { status: "ready", destination };
+  }
+
+  function waitForDestinationRow(
+    destination: Extract<NavigationDestination, { kind: "channel" | "dm" }>,
+    context: { isStale: () => boolean },
+  ): Promise<NavigationResolveOutcome> {
+    const attempts = 16;
+    const delayMs = 50;
+    return new Promise((resolve) => {
+      let tries = 0;
+      const tick = (): void => {
+        if (context.isStale()) {
+          resolve({ status: "cancelled" });
+          return;
+        }
+        const row = rowForDestination(destination);
+        if (row) {
+          if (companyAccess(row.companyUid) === "denied") {
+            resolve({
+              status: "unavailable",
+              destination,
+              reason: DESTINATION_UNAVAILABLE,
+            });
+            return;
+          }
+          resolve({ status: "ready", destination });
+          return;
+        }
+        tries += 1;
+        const directoryReady = directorySettled && companies != null;
+        if (tries >= attempts || directoryReady) {
+          if (!directoryReady && companies == null) {
+            resolve({
+              status: "transient-failure",
+              error: "Directory still loading",
+            });
+            return;
+          }
+          resolve({
+            status: "unavailable",
+            destination,
+            reason: DESTINATION_UNAVAILABLE,
+          });
+          return;
+        }
+        setTimeout(tick, delayMs);
+      };
+      setTimeout(tick, delayMs);
+    });
+  }
+
+  const navigationHistory = createNavigationHistory();
+
+  function syncNavigationChrome(): void {
+    const snap = navigationHistory.snapshot();
+    navigationCanGoBack = navigationHistory.canGoBack();
+    navigationCanGoForward = navigationHistory.canGoForward();
+    const back = historyNeighbor(snap, "back");
+    const forward = historyNeighbor(snap, "forward");
+    navigationBackLabel = back ? destinationLabel(back.destination) : "";
+    navigationForwardLabel = forward
+      ? destinationLabel(forward.destination)
+      : "";
+  }
+
+  function applyCommittedNavigation(applied: AppliedNavigation): void {
+    syncNavigationChrome();
+    paletteOpen = false;
+    membersOpen = false;
+    projectAboutOpen = false;
+    pendingRestoreScroll = applied.entry.scroll ?? null;
+    stopScrollRestore();
+    if (applied.availability === "unavailable") {
+      navigationUnavailable = {
+        destination: applied.entry.destination,
+        reason: applied.reason ?? DESTINATION_UNAVAILABLE,
+      };
+      selectedRow = null;
+      liveTimeline = [];
+      return;
+    }
+    navigationUnavailable = null;
+    embeddedNavigationError = null;
+    const next = applied.entry.destination;
+    meetingFocusRequest = null;
+    switch (next.kind) {
+      case "messages":
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "notifications":
+        view = "notifications";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "settings":
+        view = "settings";
+        settingsSection = next.section ?? null;
+        extraPageId = null;
+        extraPageParam = null;
+        onOpenSettings?.();
+        break;
+      case "meetings":
+        view = "meetings";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        if (next.meetingId?.trim()) {
+          meetingFocusRequest = {
+            meetingId: next.meetingId.trim(),
+            sequence: ++meetingFocusSequence,
+          };
+        }
+        break;
+      case "atlas":
+        view = "atlas";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "library":
+        libraryTab = next.tab;
+        libraryItemId = next.itemId ?? null;
+        view = "library";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "shared-files":
+        view = "shared-files";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "dm-requests":
+        dmRequestsFocusPairKey = next.pairKey ?? null;
+        view = "dm-requests";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
+      case "extra":
+        extraPageId = next.page;
+        extraPageParam = next.param ?? null;
+        view = "extra";
+        settingsSection = null;
+        break;
+      case "setup-checkout": {
+        const alreadySetup =
+          selectedRow?.channelId === SETUP_CHANNEL_ID && view === "conversation";
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        requestChannelOpen(SETUP_CHANNEL_ID, { companyUid: next.companyUid });
+        const row = selectedRow;
+        if (alreadySetup && row) void catchUpTimeline(row);
+        break;
+      }
+      case "channel":
+      case "dm": {
+        view = "conversation";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        libraryItemId = null;
+        const row = rowForDestination(next);
+        const reply = next.replyRootEventId ?? null;
+        const sameRow = Boolean(row && selectedRow?.id === row.id);
+        if (row && !sameRow) {
+          selectConversationRow(row, { replyRootEventId: reply });
+        } else if (row && sameRow) {
+          if ((openReplyRootId ?? null) !== (reply ?? null)) {
+            if (reply) queueReplyForRow(row, reply);
+            else {
+              openReplyRootId = null;
+              pendingReplyRootId = null;
+              pendingReplyForRowId = null;
+            }
+          }
+        }
+        if (next.kind === "channel") {
+          tab = next.tab ?? "chat";
+          companyTab = next.companyTab ?? "chat";
+          agentSurface = next.agentSurface ?? "chat";
+          channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
+        } else {
+          agentSurface = next.agentSurface ?? "chat";
+          channelFileKey = null;
+        }
+        break;
+      }
+    }
+  }
+
+  const navigation = createNavigationController({
+    history: navigationHistory,
+    getScope: () => currentNavigationScope(),
+    captureCurrent: () => captureCurrentNavigation(),
+    captureScroll: () => readNavigationScroll(),
+    resolve: (destination, context) =>
+      resolveShellDestination(destination, context),
+    apply: (applied) => applyCommittedNavigation(applied),
+    onPending: (pending) => {
+      navigationPending = pending != null;
+    },
+    onRejected: (reason) => {
+      embeddedNavigationError = reason;
+    },
+  });
+
+  $effect(() => {
+    const scroll = pendingRestoreScroll;
+    stopScrollRestore();
+    if (!scroll || navigationUnavailable) return;
+    const generation = navigation.generation();
+    cancelScrollRestore = scheduleNavigationScrollRestore(
+      () => (typeof document === "undefined" ? null : document),
+      scroll,
+      {
+        isCancelled: () => navigation.generation() !== generation,
+      },
+    );
+    return () => stopScrollRestore();
+  });
+
+  function navigate(
+    destination: NavigationDestination,
+    mode: NavigationMode = "push",
+  ) {
+    embeddedNavigationError = null;
+    return navigation.navigate(destination, mode);
+  }
+
+  function resolveDestination(
+    destination: NavigationDestination,
+    generation?: number,
+  ) {
+    return navigation.resolveDestination(destination, generation);
+  }
+
+  function commitDestination(
+    outcome: Extract<
+      NavigationResolveOutcome,
+      { status: "ready" | "unavailable" }
+    >,
+    mode: NavigationMode = "push",
+    generation: number = navigation.generation(),
+  ): boolean {
+    return navigation.commitDestination(outcome, mode, generation);
+  }
+
+  function goBack() {
+    return navigation.back();
+  }
+
+  function goForward() {
+    return navigation.forward();
+  }
+
+  function leaveCurrentDestination() {
+    if (navigationHistory.canGoBack()) return goBack();
+    return navigate({ kind: "messages" });
+  }
+
+  $effect(() => {
+    navigation.noteAccount((self?.uid ?? tenantAccountId ?? "").trim());
+  });
+
+  $effect(() => {
+    if (companies == null) return;
+    const allowed = new Set<string>();
+    for (const company of companies) {
+      const uid = (company.cloudUid ?? "").trim();
+      const slug = (company.slug ?? "").trim();
+      if (uid) allowed.add(uid);
+      if (slug) allowed.add(slug);
+    }
+    navigation.filterAccessible(allowed);
+    const current = navigationHistory.current();
+    const shownExtra =
+      extraPageId != null
+        ? {
+            kind: "extra" as const,
+            page: extraPageId,
+            param: extraPageParam,
+          }
+        : null;
+    const currentIsShownExtra = Boolean(
+      shownExtra &&
+        current?.destination.kind === "extra" &&
+        current.destination.page === shownExtra.page &&
+        (current.destination.param ?? null) === shownExtra.param,
+    );
+    const shownKey = shownExtra
+      ? extraParamCompanyKey(shownExtra.param) ??
+        (currentIsShownExtra && current
+          ? (destinationCompanyKey(current.destination) ?? current.companyUid)
+          : null)
+      : (current?.companyUid ??
+        (current ? destinationCompanyKey(current.destination) : null));
+    const extraPruned = Boolean(shownExtra && !currentIsShownExtra);
+    const lostCompany = Boolean(shownKey && !allowed.has(shownKey));
+    if (!extraPruned && !lostCompany) return;
+    if (navigationUnavailable && !extraPruned && !lostCompany) return;
+    navigationUnavailable = {
+      destination: current?.destination ?? shownExtra ?? { kind: "messages" },
+      reason: DESTINATION_UNAVAILABLE,
+    };
+    extraPageId = null;
+    extraPageParam = null;
+    selectedRow = null;
+    liveTimeline = [];
+  });
+
+  function handleSelect(
+    row: ConversationRow,
+    options?: {
+      replyRootEventId?: string | null;
+      preserveView?: boolean;
+      automatic?: boolean;
+    },
+  ): void {
+    if (options?.automatic || options?.preserveView) {
+      selectConversationRow(row, options);
+      return;
+    }
+    if (selectedRow?.id !== row.id) selectedRow = row;
+    void navigate(
+      destinationFromConversation(row, {
+        replyRootEventId: options?.replyRootEventId ?? null,
+      }),
+    );
   }
 
   function applyConversationDeepLink(
@@ -2779,6 +4112,41 @@
       },
       { preserveView: target.automatic === true && view !== "conversation" },
     );
+  }
+
+  /** The sidebar's "Connection requests" row (and any host deep link). */
+  function openDmRequests(pairKey?: string | null): void {
+    void navigate({ kind: "dm-requests", pairKey: pairKey?.trim() || null });
+  }
+
+  /**
+   * A request was answered. The panel already pruned it and emitted
+   * `dm:request-update`; refresh the rail (accept promotes a new contact) and,
+   * on accept, open the conversation with the requester through the same
+   * pending-conversation path a deep link uses.
+   */
+  function handleDmRequestResolved(
+    request: DmRequest,
+    action: RequestAction,
+  ): void {
+    rosterWakeSeq += 1;
+    if (action !== "accept") return;
+    const personUid = request.fromPersonUid?.trim() ?? "";
+    if (!personUid) return;
+    const target: ConversationTarget = {
+      personUid,
+      email: request.fromEmail ?? "",
+      displayName: request.fromDisplayName ?? "",
+      replyRootEventId: null,
+    };
+    const known = conversationRowForDeepLink(
+      { channelId: null, personUid, replyRootEventId: null },
+      [...searchRows, ...railRows],
+    );
+    // The rail may not list the new contact yet; fall back to the messages
+    // home rather than leaving the (now empty) request in view.
+    if (known) applyPendingConversation(target);
+    else void navigate({ kind: "messages" });
   }
 
   /**
@@ -2852,8 +4220,10 @@
 
   function changeTenantCompany(companyUid: string | null): void {
     if (tenantCompanyId === companyUid) return;
-    // Company scope is a tenant boundary too. Remove every visible selection
-    // before the re-keyed sidebar begins reads in the replacement scope.
+    // Company switching is in-account navigation: the history stack stays.
+    // Existing tenant-generation guards still cancel in-flight company reads.
+    // Remove every visible selection before the re-keyed sidebar begins reads
+    // in the replacement scope.
     tenantCompanyId = companyUid;
     selectedRow = null;
     liveTimeline = [];
@@ -2881,6 +4251,7 @@
     startMeetingsStore();
     if (view === "meetings") setMeetingsViewActive(true);
     void prefetchMeetings();
+    void navigate({ kind: "messages" });
   }
 
   /**
@@ -2929,6 +4300,7 @@
   });
 
   onDestroy(() => {
+    stopScrollRestore();
     // Account transitions unmount the shared shell; never leave its singleton
     // cache/snapshot visible until the next identity has finished hydrating.
     configureMeetingsApi(null);
@@ -3179,7 +4551,8 @@
     }
     const isDm = row.kind === "dm" && !!row.personUid;
     const selfUid = self?.uid?.trim() ?? "";
-    return uploadChatAttachments({
+    const cache = imagePreviewCache;
+    const uploaded = await uploadChatAttachments({
       files,
       companyUid,
       scope: isDm ? "dm" : "chan",
@@ -3200,6 +4573,13 @@
               })
           : putAttachmentObject,
     });
+    // Preserve the local upload preview under its final immutable vault path.
+    void Promise.all(uploaded.map(async (item, index) => {
+      if (item.kind !== "image" || !cache) return;
+      try { await cache.warm(item.companyUid, item.vaultPath, files[index]); }
+      catch (error) { console.warn("[image-preview] Upload preview unavailable", error); }
+    }));
+    return uploaded;
   }
 
   async function persistSend(
@@ -3210,6 +4590,12 @@
     const row = selectedRow;
     if (!row || (!body.trim() && files.length === 0)) {
       throw new Error("Nothing to send");
+    }
+    // While the Setup Agent is listening, the composer is its reply box.
+    if (isSetupChannel(row.channelId) && setupAgent.listening && files.length === 0) {
+      await setupAgent.reply(body.trim());
+      if (setupAgent.error) throw new Error(setupAgent.error);
+      return;
     }
     try {
       let attachments:
@@ -3303,6 +4689,61 @@
       agentThinking = [];
       throw err;
     }
+  }
+
+  let imagePreviewCache = $state<ImagePreviewCache | null>(null);
+  const imagePreviewStore = createImagePreviewStore();
+  let previousPreviewAccount = "";
+  let previousPreviewCache: ImagePreviewCache | null = null;
+  $effect(() => {
+    const account = self?.uid?.trim() || tenantAccountId?.trim() || "";
+    void tenantGeneration;
+    if (previousPreviewAccount && previousPreviewAccount !== account) {
+      void previousPreviewCache?.clearAccount().catch((error) => {
+        console.warn("[image-preview] Account cache cleanup failed", error);
+      });
+    }
+    previousPreviewAccount = account;
+    const cache = account ? new ImagePreviewCache({
+      account,
+      store: imagePreviewStore,
+      load: async (scope, path) => {
+        const signed = await adapter.files.presignVaultGet(scope, path);
+        if (!signed.ok) throw new Error("Image unavailable");
+        const url = presignUrlFromResult(signed.value)?.url;
+        if (!url) throw new Error("Image URL missing");
+        const response = await getVaultBytesForHost(url, 25 * 1024 * 1024);
+        if (!response.ok) throw new Error("Image unavailable");
+        return response.blob();
+      },
+    }) : null;
+    imagePreviewCache = cache;
+    previousPreviewCache = cache;
+    return () => cache?.dispose();
+  });
+
+  // Warm only a small recent slice; the cache limits concurrent byte/decode work.
+  $effect(() => {
+    const cache = imagePreviewCache;
+    const scope = attachmentCompanyUid(selectedRow);
+    const images = liveTimeline.slice(-20).flatMap(parseMessageAttachments)
+      .filter((item) => item.kind === "image" && item.contentType !== "image/svg+xml" && !/\.svg$/i.test(item.name)).slice(-8);
+    if (!cache || !scope) return;
+    for (const item of images) {
+      void cache.warm(item.companyUid || scope, item.vaultPath).catch(() => {
+        // The visible attachment owns the accessible retry/error state.
+      });
+    }
+  });
+
+  async function signOutWithImageCleanup(): Promise<void> {
+    navigation.clear();
+    stopScrollRestore();
+    pendingRestoreScroll = null;
+    const cache = imagePreviewCache;
+    await onsignout?.();
+    try { await cache?.clearAccount(); }
+    catch (error) { console.warn("[image-preview] Sign-out cache cleanup failed", error); }
   }
 
   async function presignAttachment(
@@ -3477,41 +4918,71 @@
         (searchRows ?? []).find(
           (row) => row.personUid === dest.personUid && !row.channelId,
         );
-      handleSelect(existing ?? stub);
+      handleSelect(existing ?? stub, {
+        replyRootEventId: dest.replyRootEventId,
+      });
       return;
     }
     if (dest.kind === "files") {
       // Share rows do not include a company UID. Route to the bounded,
       // server-scoped share list rather than guessing a tenant or aliasing it.
-      view = "shared-files";
-      paletteOpen = false;
-      membersOpen = false;
-      projectAboutOpen = false;
+      void navigate({ kind: "shared-files" });
+    }
+    if (dest.kind === "channel") {
+      const row = railRows.find((candidate) => candidate.channelId === dest.channelId);
+      if (row) {
+        handleSelect(row, { replyRootEventId: dest.replyRootEventId });
+      } else {
+        requestChannelOpen(dest.channelId, {
+          replyRootEventId: dest.replyRootEventId ?? null,
+        });
+      }
     }
   }
 
   function openLibrary(next: LibraryTab = "skills"): void {
-    libraryTab = next;
-    view = "library";
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
+    void navigate({ kind: "library", tab: next });
   }
 
   function toggleNotifications(): void {
-    view = view === "notifications" ? "conversation" : "notifications";
-    meetingFocusRequest = null;
+    if (view === "notifications") void navigate({ kind: "messages" });
+    else void navigate({ kind: "notifications" });
   }
 
   function openSettings(section: EmbeddedSettingsSection | null = null): void {
-    view = "settings";
-    settingsSection = section;
-    meetingFocusRequest = null;
-    paletteOpen = false;
-    membersOpen = false;
-    projectAboutOpen = false;
-    onOpenSettings?.();
+    void navigate({ kind: "settings", section });
+  }
+
+  function extraDestination(
+    page: string,
+    param: string | null,
+  ): NavigationDestination {
+    const fromParam = extraParamCompanyKey(param);
+    let inherited: string | null = null;
+    if (
+      !fromParam &&
+      page === extraPageId &&
+      param &&
+      param !== "new" &&
+      !param.startsWith("new?")
+    ) {
+      const current = navigationHistory.current();
+      inherited =
+        extraParamCompanyKey(extraPageParam) ??
+        (current?.destination.kind === "extra"
+          ? (current.destination.companyUid ?? null)
+          : null) ??
+        current?.companyUid ??
+        null;
+    }
+    const companyUid = fromParam ?? inherited;
+    return companyUid
+      ? { kind: "extra", page, param, companyUid }
+      : { kind: "extra", page, param };
+  }
+
+  function openExtraPage(id: string, param: string | null = null): void {
+    void navigate(extraDestination(id, param));
   }
 
   function onShellLinkEvent(event: Event): void {
@@ -3523,79 +4994,20 @@
   }
 
   function closeSettings(): void {
-    view = "conversation";
-    settingsSection = null;
-    meetingFocusRequest = null;
+    void leaveCurrentDestination();
   }
 
   /** Apply a host route after DesktopApp's event listeners have mounted. */
   function applyEmbeddedNavigation(target: EmbeddedNavigationTarget): void {
-    embeddedNavigationError = null;
-    switch (target.kind) {
-      case "home":
-      case "messages":
-        view = "conversation";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "setup-checkout": {
-        const alreadySetup =
-          selectedRow?.channelId === SETUP_CHANNEL_ID && view === "conversation";
-        view = "conversation";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        requestChannelOpen(SETUP_CHANNEL_ID, {
-          companyUid: target.companyUid,
-        });
-        const row = selectedRow;
-        if (alreadySetup && row) void catchUpTimeline(row);
-        return;
-      }
-      case "inbox":
-        view = "notifications";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "meetings":
-        view = "meetings";
-        settingsSection = null;
-        meetingFocusRequest = target.meetingId?.trim()
-          ? { meetingId: target.meetingId.trim(), sequence: ++meetingFocusSequence }
-          : null;
-        return;
-      case "atlas":
-        view = "atlas";
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "library":
-        openLibrary(target.tab);
-        settingsSection = null;
-        meetingFocusRequest = null;
-        return;
-      case "settings":
-        meetingFocusRequest = null;
-        openSettings(target.section ?? null);
-        return;
-      case "channel":
-        meetingFocusRequest = null;
-        requestChannelOpen(target.channelId, {
-          replyRootEventId: target.replyRootEventId,
-        });
-        return;
-      case "dm":
-        meetingFocusRequest = null;
-        requestConversation({
-          personUid: target.personUid,
-          email: "",
-          displayName: "",
-          replyRootEventId: target.replyRootEventId,
-        });
-        return;
-      case "unsupported":
-        embeddedNavigationError = `${target.reason}: ${target.route}`;
-        return;
+    const destination = destinationFromEmbeddedTarget(target);
+    if (!destination) {
+      embeddedNavigationError =
+        target.kind === "unsupported"
+          ? `${target.reason}: ${target.route}`
+          : "Unsupported embedded destination";
+      return;
     }
+    void navigate(destination);
   }
 
   function sweepStaleAttachmentTrays(reason: string): void {
@@ -3664,12 +5076,24 @@
     // US-016: `g a` opens Atlas (Slack-style go chord).
     const goChord = createGoChord((letter) => {
       if (letter !== "a") return false;
-      view = "atlas";
-      meetingFocusRequest = null;
+      void navigate({ kind: "atlas" });
       return true;
     });
 
     function onKey(event: KeyboardEvent) {
+      if (
+        consumeNavigationShortcut(event, {
+          onBack: () => {
+            if (navigationHistory.canGoBack()) void goBack();
+          },
+          onForward: () => {
+            if (navigationHistory.canGoForward()) void goForward();
+          },
+        })
+      ) {
+        goChord.reset();
+        return;
+      }
       const meta = event.metaKey || event.ctrlKey;
       if (meta) {
         const key = event.key.toLowerCase();
@@ -3683,12 +5107,10 @@
           openSettings();
         } else if (key === "1") {
           event.preventDefault();
-          view = "notifications";
-          meetingFocusRequest = null;
+          void navigate({ kind: "notifications" });
         } else if (key === "2") {
           event.preventDefault();
-          view = "meetings";
-          meetingFocusRequest = null;
+          void navigate({ kind: "meetings" });
         } else if (adapter.kind !== "web" && key === "3") {
           event.preventDefault();
           openLibrary("marketplace");
@@ -3744,8 +5166,14 @@
         return;
       applyPendingConversation({ ...detail, automatic: detail.automatic === true });
     }
-  function onOpenSettingsEvent(): void {
+    function onOpenSettingsEvent(): void {
       openSettings();
+    }
+    function onOpenDmRequests(event: Event): void {
+      const detail = (event as CustomEvent<{ pairKey?: string | null }>).detail;
+      // Consume the stash so a later mount does not replay this open.
+      takePendingDmRequests();
+      openDmRequests(detail?.pairKey ?? null);
     }
     function onEmbeddedNavigation(event: Event): void {
       const target = (event as CustomEvent<EmbeddedNavigationTarget>).detail;
@@ -3755,6 +5183,7 @@
     window.addEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
     window.addEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
     window.addEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+    window.addEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
     window.addEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
 
     applyConversationDeepLink(conversationDeepLinkFromLocation());
@@ -3762,6 +5191,8 @@
     if (pendingChannel) applyPendingChannelOpen(pendingChannel);
     const pendingDm = takePendingConversation();
     if (pendingDm) applyPendingConversation(pendingDm);
+    const pendingRequests = takePendingDmRequests();
+    if (pendingRequests) openDmRequests(pendingRequests.pairKey);
     const detachEmbeddedNavigation = onembeddednavigationready?.();
 
     return () => {
@@ -3771,6 +5202,7 @@
       if (syncTimer !== undefined) window.clearInterval(syncTimer);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+      window.removeEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
       window.removeEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
       window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
       window.removeEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
@@ -3795,6 +5227,13 @@
   <V4TitleBar
     {adapter}
     {version}
+    primaryAction={(() => {
+      const entry = Object.entries(extraPages ?? {}).find(([, page]) => page.createAction);
+      if (!entry) return undefined;
+      const [id, page] = entry;
+      const action = page.createAction!;
+      return { label: action.label, onselect: () => openExtraPage(id, action.param()) };
+    })()}
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
@@ -3805,16 +5244,18 @@
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
     onopenNotifications={toggleNotifications}
     onopenMeetings={() => {
-      view = "meetings";
-      meetingFocusRequest = null;
-      paletteOpen = false;
-      membersOpen = false;
-      projectAboutOpen = false;
+      void navigate({ kind: "meetings" });
     }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
     {onopenurl}
+    canGoBack={navigationCanGoBack}
+    canGoForward={navigationCanGoForward}
+    backLabel={navigationBackLabel}
+    forwardLabel={navigationForwardLabel}
+    onback={() => void goBack()}
+    onforward={() => void goForward()}
   />
 
   {#if recommendBanner}
@@ -3834,6 +5275,17 @@
       role="alert"
     >
       Couldn’t open requested destination. {embeddedNavigationError}
+    </div>
+  {/if}
+
+  {#if navigationPending}
+    <div
+      class="embedded-navigation-error"
+      data-testid="navigation-pending"
+      role="status"
+      aria-busy="true"
+    >
+      Opening destination…
     </div>
   {/if}
 
@@ -3870,7 +5322,25 @@
       void confirmMigrateSession(destinationCompanyUid)}
   />
 
-  {#if view === "settings"}
+  {#if navigationUnavailable}
+    <div class="desktop-body" data-testid="navigation-unavailable-host">
+      <div
+        class="navigation-unavailable"
+        data-testid="navigation-unavailable"
+        role="alert"
+      >
+        <p>{navigationUnavailable.reason}</p>
+        <button
+          type="button"
+          data-testid="navigation-unavailable-back"
+          onclick={() => void goBack()}
+          disabled={!navigationCanGoBack}
+        >
+          Back
+        </button>
+      </div>
+    </div>
+  {:else if view === "settings"}
     <!-- Settings is a full destination: it REPLACES everything below the
          titlebar. The channel rail is hidden and the whole area becomes the
          two-column Settings surface. -->
@@ -3883,8 +5353,9 @@
         storage={tenantStorage}
         {version}
         initialSection={settingsSection}
+        onsectionchange={(section) => openSettings(section)}
         onback={closeSettings}
-        onsignout={onsignout}
+        onsignout={onsignout ? signOutWithImageCleanup : undefined}
         onopenconsole={onOpenConsole
           ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
           : undefined}
@@ -3894,7 +5365,7 @@
       />
     </div>
   {:else}
-    <div class="desktop-body">
+    <div class="desktop-body" style:--sidebar-width={`${sidebarWidth}px`}>
       <!-- Kept mounted while closed at phone width: the list owns roster
            loading and the #setup fallback, so unmounting it leaves the phone
            with nothing selected. -->
@@ -3916,6 +5387,7 @@
           {seedDirectory}
           {avatarByUid}
           {rosterWakeSeq}
+          requestsWakeSeq={notificationWakeSeq}
           onavatarmap={(map) => (contactAvatarByUid = map)}
           onselect={(row, options) =>
             handleSelect(row, {
@@ -3925,19 +5397,26 @@
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
           onnavigateMessages={() => {
-            view = "conversation";
-            meetingFocusRequest = null;
+            void navigate({ kind: "messages" });
           }}
           onopenSettings={() => openSettings()}
-          onsignout={onsignout}
+          onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           oncreateagent={canRunEntryPoints ? addAgentEntry : null}
-          onrows={(rows) => (railRows = rows)}
+          onrows={(rows) => {
+            railRows = rows;
+            directorySettled = true;
+          }}
           {bootTimeoutMs}
+          welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
+          {rowExtrasLoading}
+          {rowExtrasError}
+          rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
         />
         {/key}
+        {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
@@ -3950,8 +5429,7 @@
             wakeSeq={notificationWakeSeq}
             signedIn={Boolean(self)}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
             onunreadchange={(n) => (unreadCount = n)}
             onopen={openNotification}
@@ -3961,9 +5439,38 @@
           <SharedFilesOverlay
             {adapter}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
+          />
+        {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
+          {@const Page = extraPages[extraPageId].component}
+          <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>
+            {#key `${extraPageId}:${extraPageParam ?? ""}`}
+              <Page
+                param={extraPageParam}
+                restoreScroll={pendingRestoreScroll}
+                onnavigate={(
+                  next: string | null,
+                  options?: { mode?: NavigationMode },
+                ) => {
+                  if (!extraPageId) return;
+                  void navigate(
+                    extraDestination(extraPageId, next),
+                    options?.mode ?? "push",
+                  );
+                }}
+              />
+            {/key}
+          </div>
+        {:else if view === "dm-requests"}
+          <DmRequestsPanel
+            api={sidebarApi}
+            {wakes}
+            focusPairKey={dmRequestsFocusPairKey}
+            onback={() => {
+              void leaveCurrentDestination();
+            }}
+            onresolved={handleDmRequestResolved}
           />
         {:else if view === "meetings"}
           <MeetingsPage
@@ -3972,8 +5479,7 @@
             storage={tenantStorage}
             sessionGeneration={tenantGeneration}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
             openExternal={onopenurl}
             focusRequest={meetingFocusRequest}
@@ -3991,8 +5497,7 @@
               openMigrateSession(sessionId, atlasCompanyUid)}
             migratingSessionId={migratingSessionId}
             onback={() => {
-              view = "conversation";
-              meetingFocusRequest = null;
+              void leaveCurrentDestination();
             }}
           />
         {:else if view === "conversation" && selectedRow}
@@ -4137,7 +5642,7 @@
                       class:active={agentSurface === t.id}
                       aria-current={agentSurface === t.id ? "page" : undefined}
                       data-testid={`agent-tab-${t.id}`}
-                      onclick={() => (agentSurface = t.id)}
+                      onclick={() => pushConversationSurface({ agentSurface: t.id })}
                     >
                       <span>{t.label}</span>
                     </button>
@@ -4169,7 +5674,7 @@
                 <CompanyTabs
                   active={companyTab}
                   tabs={companyTabsForHost}
-                  onselect={(id) => (companyTab = id)}
+                  onselect={(id) => pushConversationSurface({ companyTab: id })}
                 />
               {:else if isProjectChannel}
                 <nav
@@ -4183,7 +5688,7 @@
                       class="project-tab"
                       class:active={tab === t.id}
                       aria-current={tab === t.id ? "page" : undefined}
-                      onclick={() => (tab = t.id)}
+                      onclick={() => pushConversationSurface({ tab: t.id })}
                     >
                       <span class="project-tab-icon" aria-hidden="true">
                         {#if t.id === "chat"}
@@ -4403,7 +5908,7 @@
               avatarSaving={agentAvatarSaving}
               avatarSaveError={agentAvatarSaveError}
               onsaveavatar={saveOpenAgentAvatar}
-              onclose={() => (agentSurface = "chat")}
+              onclose={() => void leaveCurrentDestination()}
             />
           {:else if isCompanyChannel && companyTab !== "chat"}
             {#if companyTab === "office"}
@@ -4456,6 +5961,7 @@
               class:is-setup={isSetupChannel(selectedRow.channelId)}
               data-testid="chat-stage"
               data-reply-open={openReplyRootId ||
+                openSessionThread ||
                 openProfileMember ||
                 openAgentMember
                 ? "true"
@@ -4466,6 +5972,62 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if inSetupChannelWithAgent}
+                    {@const agentState = setupAgent.state}
+                    {@const stopFailure = setupAgent.failure}
+                    <div class="setup-agent-prompt" data-testid="setup-agent-prompt">
+                      {#if setupAgentDone}
+                        <!-- Finished: one calm block with every next step. -->
+                        <SetupFinale
+                          onsessions={extraPages?.sessions
+                            ? () =>
+                                openExtraPage(
+                                  "sessions",
+                                  extraPages!.sessions.startworkAction?.param(startworkCompany) ??
+                                    extraPages!.sessions.createAction?.param() ??
+                                    setupAgent.sessionId,
+                                )
+                            : undefined}
+                          onclaude={() => void launchSetupIn("claude")}
+                          oncodex={() => void launchSetupIn("codex")}
+                          launchError={setupLaunchError}
+                          {onopenurl}
+                          company={finaleCompany}
+                          onrunagain={() => void setupAgent.runAgain()}
+                        />
+                      {:else if stopFailure && setupAgent.api && setupAgent.providers}
+                        <!-- The run stopped: say why, and offer the agents right
+                             here — sign in to one, or run again with one that is. -->
+                        <SetupConnectStep
+                          variant="surface"
+                          api={setupAgent.api}
+                          providers={setupAgent.providers}
+                          lead={SETUP_FAILURE_COPY[stopFailure.kind].title}
+                          detail={setupAgent.failureDetail ?? undefined}
+                          onrefresh={() => setupAgent.refreshProviders(true)}
+                          onrun={(tool) => void setupAgent.runAgain(tool)}
+                          runBusy={setupAgent.busy}
+                        />
+                      {:else}
+                      <SetupRunCard
+                        variant="prompt"
+                        mode={setupAgent.mode === "starting" || setupAgent.mode === "idle" ? "live" : setupAgent.mode}
+                        run={agentState}
+                        resumeStep={setupAgent.resumeStep}
+                        busy={setupAgent.busy || setupAgent.mode === "starting"}
+                        error={setupAgent.error}
+                        onanswer={(requestId, questionId, values) => void setupAgent.answerChoice(requestId, questionId, values)}
+                        onpermission={(requestId, decision) => void setupAgent.answerPermission(requestId, decision)}
+                        onsend={(text) => void setupAgent.send(text)}
+                        oncontinue={() => void setupAgent.continueRun()}
+                        onrunagain={() => void setupAgent.runAgain()}
+                        onfinish={() => setupAgent.finish()}
+                        idle={setupAgent.snapshot?.phase === "idle"}
+                        onstoresecret={setupAgent.canStoreSecrets ? (card, value) => setupAgent.storeSecret(card, value) : undefined}
+                      />
+                      {/if}
+                    </div>
+                  {/if}
                   {#if isAgentChannel && provisioning.state}
                     <div
                       class="agent-provision-status"
@@ -4493,7 +6055,7 @@
                       {/if}
                     </div>
                   {/if}
-                  <AgentThinkingRow entries={agentThinking} />
+                  <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
                   <AgentTaskStrip tasks={mainPaneTasks} />
                 {/snippet}
                 {#snippet setupHeader()}
@@ -4501,13 +6063,43 @@
                     settings={adapter.settings}
                     shell={adapter.shell}
                     {onopenurl}
+                    onopensessions={extraPages?.sessions?.setupAction || extraPages?.sessions?.createAction
+                      ? () =>
+                          openExtraPage(
+                            "sessions",
+                            (extraPages!.sessions.setupAction ?? extraPages!.sessions.createAction!).param(),
+                          )
+                      : undefined}
+                    companies={rosterCompanies}
+                    onopencompany={openCompanyFromSetup}
+                    oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+                    {rosterStatus}
+                    {onretryroster}
+                    onsetupstarted={recordWelcomeSetupRun}
+                    agent={setupAgent}
+                    onopensessiondetails={extraPages?.sessions
+                      ? (sessionId) => openExtraPage("sessions", sessionId)
+                      : undefined}
                   />
                 {/snippet}
                 {#snippet companyHeader()}
                   <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
                 {/snippet}
                 <ChannelConversation
+                  restoreScroll={pendingRestoreScroll}
                   messages={timelineWithActivity}
+                  onseen={async () => {
+                    const row = selectedRow;
+                    if (!row) return;
+                    if (row.kind === "dm" && row.personUid) {
+                      await sidebarApi.markDmThreadRead(row.personUid);
+                    } else if (row.channelId && !row.browseOnly && row.membership !== "invited") {
+                      await sidebarApi.markChannelRead(row.channelId);
+                    } else return;
+                    wakes?.emit?.("conversation:read", { id: row.id });
+                  }}
+                  hasEarlier={Boolean(historyCursors[selectedRow.id])}
+                  onloadearlier={loadEarlierTimeline}
                   emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
@@ -4519,9 +6111,15 @@
                   selfDisplayName={self?.displayName ?? null}
                   selfPersonUid={self?.uid ?? null}
                   onsend={persistSend}
+                  previewCache={imagePreviewCache}
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
+                  onstartsession={startSessionFromMessage}
+                  onopensession={openSessionFromCard}
+                  onstartchannelsession={
+                    selectedRow.channelId ? startSessionFromChannel : undefined
+                  }
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
                   onopenartifact={openArtifact}
@@ -4535,6 +6133,7 @@
                   activeRootEventId={openReplyRootId}
                   loading={(timelineHydrating || projectActivityLoading) &&
                     timelineWithActivity.length === 0}
+                  landAt={isSetupChannel(selectedRow.channelId) ? "top" : "bottom"}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
                     : isCompanyChannel
@@ -4606,13 +6205,80 @@
                     onclose={closeMemberProfile}
                   />
                 </div>
+              {:else if openSessionThread}
+                <div
+                  class="reply-column"
+                  class:overlay={narrowViewport}
+                  class:resizable-thread={!narrowViewport}
+                  style:--thread-width={threadWidth === null ? "50%" : `${threadWidth}px`}
+                  data-testid="session-thread-column"
+                  data-reply-layout={narrowViewport ? "overlay" : "column"}
+                >
+                  {#if !narrowViewport}
+                    <div
+                      class="thread-resize-handle"
+                      role="separator"
+                      aria-label="Resize thread panel"
+                      aria-orientation="vertical"
+                      aria-valuenow={threadWidth ?? undefined}
+                      tabindex="0"
+                      onpointerdown={startThreadDrag}
+                      onpointermove={moveThreadDrag}
+                      onpointerup={stopThreadDrag}
+                      onpointercancel={stopThreadDrag}
+                      onlostpointercapture={() => {
+                        threadDrag = null;
+                      }}
+                      onkeydown={resizeThreadKey}
+                    ></div>
+                  {/if}
+                  <SessionThreadPanel
+                    thread={openSessionThread}
+                    onclose={() => (openSessionThread = null)}
+                    onexpand={
+                      extraPages?.sessions?.createAction
+                        ? (thread) => {
+                            const param =
+                              thread.liveSessionId ??
+                              extraPages!.sessions.createAction!.param();
+                            void navigate({
+                              kind: "extra",
+                              page: "sessions",
+                              param,
+                            });
+                          }
+                        : undefined
+                    }
+                    body={channelSessionBody}
+                  />
+                </div>
               {:else if openReplyRootId && replyScope}
                 <div
                   class="reply-column"
                   class:overlay={narrowViewport}
+                  class:resizable-thread={!narrowViewport}
+                  style:--thread-width={threadWidth === null ? "50%" : `${threadWidth}px`}
                   data-testid="reply-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
+                  {#if !narrowViewport}
+                    <div
+                      class="thread-resize-handle"
+                      role="separator"
+                      aria-label="Resize thread panel"
+                      aria-orientation="vertical"
+                      aria-valuenow={threadWidth ?? undefined}
+                      tabindex="0"
+                      onpointerdown={startThreadDrag}
+                      onpointermove={moveThreadDrag}
+                      onpointerup={stopThreadDrag}
+                      onpointercancel={stopThreadDrag}
+                      onlostpointercapture={() => {
+                        threadDrag = null;
+                      }}
+                      onkeydown={resizeThreadKey}
+                    ></div>
+                  {/if}
                   <ReplyPanel
                     api={conversationApi}
                     rootEventId={openReplyRootId}
@@ -4625,7 +6291,9 @@
                     reactions={rowReactions}
                     ontogglereaction={persistReaction}
                     selfDisplayName={self?.displayName ?? null}
+                    selfPersonUid={self?.uid ?? null}
                     onuploadfiles={uploadFilesForSelectedRow}
+                    previewCache={imagePreviewCache}
                     onpresign={presignAttachment}
                     onopenattachment={openAttachmentTray}
                     onopenartifact={openArtifact}
@@ -4648,16 +6316,21 @@
             <BoardTab
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
-              onOpenInChannel={() => (tab = "chat")}
+              onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}
             />
           {:else}
             <ChannelFilesTab
               {files}
               previewContext={channelFilePreviewContext}
+              previewKey={channelFileKey}
               onloadpreview={loadChannelFilePreview}
               onauthorizeaction={canPerformChannelFileAction}
               onreveal={revealChannelFile}
               onopen={openChannelFile}
+              onselectfile={(item) =>
+                pushConversationSurface({ tab: "files", fileKey: item.key })}
+              onclosepreview={() =>
+                pushConversationSurface({ tab: "files", fileKey: null })}
             />
           {/if}
         {:else if conversationBootTimedOut}
@@ -4676,16 +6349,18 @@
     </div>
   {/if}
 
-  {#if view === "library"}
+  {#if view === "library" && !navigationUnavailable}
     <LibraryOverlay
       {adapter}
       tab={libraryTab}
+      itemId={libraryItemId}
       {packagesEvents}
       onback={() => {
-        view = "conversation";
-        meetingFocusRequest = null;
+        void leaveCurrentDestination();
       }}
-      onnavigatetab={(next) => (libraryTab = next)}
+      onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
+      onnavigateitem={(id) =>
+        void navigate({ kind: "library", tab: libraryTab, itemId: id })}
     />
   {/if}
 
@@ -4698,6 +6373,7 @@
 
   {#if attachTray}
     <AttachmentTray
+      previewCache={imagePreviewCache}
       items={attachTray.items}
       selectedId={attachTray.selectedId}
       onselect={(id) => {
@@ -4778,6 +6454,34 @@
     --titlebar-leading-inset: 16px;
   }
 
+  .extra-page-host {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .navigation-unavailable {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+    padding: 24px;
+    color: var(--t2, rgba(255, 255, 255, 0.62));
+    font: 400 13px/1.45 var(--font-ui);
+    text-align: center;
+  }
+
+  .navigation-unavailable button:disabled {
+    opacity: 0.5;
+  }
+
   .conversation-boot-error {
     display: flex;
     flex: 1 1 auto;
@@ -4809,6 +6513,7 @@
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
+    overflow: hidden;
   }
 
   /* Synthetic #setup channel stacks the getting-started intro above the
@@ -4850,7 +6555,7 @@
     flex-direction: column;
     min-height: 0;
     border-left: 1px solid var(--line);
-    background: var(--v4-ground, #161618);
+    background: var(--v4-reading-surface, var(--v4-ground, #161618));
     transition: width 150ms ease;
   }
 
@@ -4862,6 +6567,28 @@
     width: auto;
     flex: 1 1 0;
     min-width: 360px;
+  }
+
+  .reply-column.resizable-thread {
+    flex: 0 0 clamp(280px, var(--thread-width, 50%), calc(100% - 360px));
+    min-width: min(280px, 50%);
+  }
+
+  .thread-resize-handle {
+    position: absolute;
+    left: -4px;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    z-index: 10;
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .thread-resize-handle:hover,
+  .thread-resize-handle:focus-visible {
+    background: var(--line);
+    outline: 1px solid var(--t2);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -4877,7 +6604,7 @@
     bottom: 0;
     width: min(100%, 420px);
     z-index: 5;
-    background: var(--v4-ground, #161618);
+    background: var(--v4-reading-surface, var(--v4-ground, #161618));
   }
 
   /* Channel header — ported from the real ChannelView: title left, tabs +
@@ -5201,5 +6928,19 @@
     position: relative;
     z-index: 21;
     flex: 0 0 auto;
+  }
+  /* ---- Setup Agent prompt (under the #welcome messages) ---------------- */
+  /* No box: the block sits under the last message on the message-text
+     column — left = row padding 8px + avatar 36px + gap 8px; right = the
+     row's 8px padding — so its edges match the messages above. */
+  .setup-agent-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: none;
+    margin: 8px 8px 8px 52px;
+  }
+  .setup-agent-prompt:empty {
+    display: none;
   }
 </style>

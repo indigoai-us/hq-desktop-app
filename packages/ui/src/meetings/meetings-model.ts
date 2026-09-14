@@ -268,10 +268,19 @@ export function botForEvent(
   const exact = botsByEventId.get(event.id);
   if (exact && isActiveBotStatus(exact.status)) return exact;
 
+  // A series and a meeting URL are reused by later occurrences. A finished
+  // recording belongs only to its own occurrence, never the next meeting.
+  const matchesOccurrence = (bot: ScheduledBot): boolean => {
+    if (bot.status !== "completed") return true;
+    const start = Date.parse(event.start.dateTime ?? event.start.date ?? "");
+    const botStart = Date.parse(bot.scheduledStartTime ?? "");
+    return Number.isFinite(start) && start === botStart;
+  };
+
   const seriesId = recurringSeriesId(event);
   if (seriesId) {
     const seriesBot = scheduledBots.find((bot) => {
-      if (!isActiveBotStatus(bot.status)) return false;
+      if (!isActiveBotStatus(bot.status) || !matchesOccurrence(bot)) return false;
       return bot.calendarSeriesId?.trim() === seriesId;
     });
     if (seriesBot) return seriesBot;
@@ -281,7 +290,7 @@ export function botForEvent(
   if (!eventUrl) return undefined;
 
   return scheduledBots.find((bot) => {
-    if (!isActiveBotStatus(bot.status)) return false;
+    if (!isActiveBotStatus(bot.status) || !matchesOccurrence(bot)) return false;
     return normalizeMeetingUrl(bot.meetingUrl) === eventUrl;
   });
 }

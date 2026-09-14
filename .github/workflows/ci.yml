@@ -101,6 +101,12 @@ jobs:
           SENTRY_AUTH_TOKEN: ""
           VITE_SENTRY_DSN: ""
         run: pnpm build
+      - name: Install layout regression browsers
+        working-directory: apps/sync
+        run: pnpm exec playwright install --with-deps chromium webkit
+      - name: Desktop scroll containment (Chromium + WebKit)
+        working-directory: apps/sync
+        run: pnpm test:e2e:browser
       - name: Vitest + coverage
         working-directory: apps/sync
         run: pnpm coverage

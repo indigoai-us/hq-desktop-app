@@ -288,12 +288,12 @@ async fn repair_cli() -> TerminalReceiptContent {
 }
 
 async fn update_core() -> TerminalReceiptContent {
-    let before = read_core_version();
+    let before = read_core_version().await;
     if let Err(e) = install_core_update().await {
         log(LOG_TAG, &format!("UPDATE_CORE install failed: {e}"));
         return failed(Some(ClientHealthFailureReason::CoreOutdated));
     }
-    let after = read_core_version();
+    let after = read_core_version().await;
     if version_readback_verified(before.as_deref(), after.as_deref()) {
         succeeded_with_versions(ClientHealthVersions {
             core: after,
@@ -542,12 +542,12 @@ async fn install_cli_update() -> Result<(), String> {
         .map(|_| ())
 }
 
-fn read_core_version() -> Option<String> {
+async fn read_core_version() -> Option<String> {
     #[cfg(test)]
     if let Some(v) = test_env("HQ_TEST_REPAIR_CORE_VERSION") {
         return non_empty(v);
     }
-    crate::commands::hq_core_update::get_hq_version()
+    crate::commands::hq_core_update::get_hq_version().await
 }
 
 async fn install_core_update() -> Result<(), String> {

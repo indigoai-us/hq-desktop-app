@@ -248,7 +248,9 @@ export function projectViewToBoard(
       description: story.description ?? "",
       fields: {
         status: STATUS_BADGE[col] ?? col,
-        assignee: project.updatedBy ?? "",
+        // PROJECT_VIEW.updatedBy identifies the last editor of the whole
+        // board. It is not an assignment to this story.
+        assignee: "Unassigned",
         project: project.name || project.projectId,
         branch: "",
       },

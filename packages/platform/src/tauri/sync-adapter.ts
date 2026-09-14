@@ -369,6 +369,19 @@ export function createSyncPlatformAdapter(
       listWorkspaces: async () => {
         const result = await call<unknown>('list_syncable_workspaces');
         if (!result.ok) return result;
+        // `list_syncable_workspaces` never rejects on a cloud failure: it
+        // resolves `{ workspaces: [], cloudReachable: false, error }` so the
+        // menubar can say "Cloud unreachable". For the company roster that is
+        // a failed fetch, not an empty one — reporting it as `ok([])` left a
+        // brand-new owner on "Create a company" until they relaunched.
+        const envelope = asRecord(result.value);
+        if (envelope && envelope.cloudReachable === false) {
+          const message =
+            typeof envelope.error === 'string' && envelope.error.trim()
+              ? envelope.error.trim()
+              : 'Couldn’t reach HQ cloud to load your companies.';
+          return failure('cloud-unreachable', message);
+        }
         return ok(unwrapNamedArray(result.value, ['workspaces', 'memberships']));
       },
       // Same REST route the web adapter uses (`WEB_PATHS.profile`); Sync has no
@@ -442,6 +455,10 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['requests']));
       },
+      // Tauri command args are camelCase: `respond_dm_request(pair_key, action)`
+      // is invoked as `{ pairKey, action }`.
+      respondDmRequest: ({ pairKey, action }) =>
+        call('respond_dm_request', { pairKey, action }),
       markChannelRead: (id) => call('mark_channel_read', { channelId: id }),
       markDmThreadRead: (personUid) =>
         call('mark_dm_thread_read', { withPersonUid: personUid }),
@@ -1062,6 +1079,12 @@ export function createSyncPlatformAdapter(
 
     sessions: {
       listAgentSessions: () => call('list_agent_sessions'),
+      preflight: () => call('agent_session_preflight'),
+      slashCommands: (tool) => call('agent_session_slash_commands', { tool }),
+      installProvider: (tool) => call<string>('install_session_provider', { tool }),
+      loginStart: (tool) => call('agent_provider_login_start', { tool }),
+      loginStatus: (tool) => call('agent_provider_login_status', { tool }),
+      loginCancel: (tool) => call('agent_provider_login_cancel', { tool }),
     },
 
     settings: {
@@ -1084,6 +1107,14 @@ export function createSyncPlatformAdapter(
     },
 
     workMesh: {
+      createProjectStory: (projectId, companyUid, story) => hqProJson(
+        'POST', `${WEB_PATHS.workMeshProject(projectId.trim())}/stories`,
+        { ...story, companyUid: companyUid.trim() },
+      ),
+      putProjectView: (projectId, companyUid, view) => hqProJson(
+        'PUT', WEB_PATHS.workMeshProject(projectId.trim()),
+        { ...(view as object), companyUid: companyUid.trim() },
+      ),
       readLocalSnapshot: async () => NOT_MAPPED,
       getProjectView: (projectId, companyUid) =>
         hqProJson(

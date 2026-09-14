@@ -278,7 +278,8 @@ mod tests {
         // LocalOnly fixture this replaced passed while every actual user's
         // personal board was denied one layer below, in
         // workspace_grants_company_file_access.
-        let mut personal = project_workspace("personal", WorkspaceState::Personal, None, Some("prs_abc"));
+        let mut personal =
+            project_workspace("personal", WorkspaceState::Personal, None, Some("prs_abc"));
         personal.kind = WorkspaceKind::Personal;
         personal.role = None;
         let workspaces = vec![personal];
@@ -310,7 +311,12 @@ mod tests {
     fn a_present_company_folder_still_authorizes_by_canonical_path() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp.path().join("companies/local")).unwrap();
-        let workspaces = vec![project_workspace("local", WorkspaceState::LocalOnly, None, None)];
+        let workspaces = vec![project_workspace(
+            "local",
+            WorkspaceState::LocalOnly,
+            None,
+            None,
+        )];
 
         let verdict = authorize_company_slug(temp.path(), "local", &workspaces)
             .expect("present + authorized folder resolves");

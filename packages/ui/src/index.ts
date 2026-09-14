@@ -6,6 +6,7 @@ export * from "./onboarding/index.js";
 
 // Chat shell (US-007, ported from desktop-alt)
 export { default as ChatSidebar } from "./chat/ChatSidebar.svelte";
+export { default as DmRequestsPanel } from "./chat/DmRequestsPanel.svelte";
 export { default as ChannelStatusPopover } from "./chat/ChannelStatusPopover.svelte";
 export { default as AgentDetailPanel } from "./chat/AgentDetailPanel.svelte";
 export { default as AvatarPickerSlot } from "./chat/AvatarPickerSlot.svelte";
@@ -25,6 +26,8 @@ export * from "./chat/live-catchup.js";
 export * from "./chat/reply-layout.js";
 export * from "./chat/channels.js";
 export * from "./chat/setup-channel.js";
+export * from "./chat/setup-run.js";
+export * from "./chat/setup-agent.svelte.js";
 // Agent "thinking" indicator state machine. Explicit list: `isAgentUid` is
 // intentionally NOT re-exported here — the barrel already ships the
 // mesh-overlay `isAgentUid`; import the agent-thinking one from the module
@@ -57,6 +60,7 @@ export {
 } from "./chat/boot-timeout.js";
 export * from "./chat/create-flow.js";
 export * from "./chat/channel-create-scope.js";
+export * from "./chat/row-extras.js";
 export * from "./chat/channel-status-model.js";
 export * from "./chat/mentions.js";
 export * from "./chat/portfolio-session.js";
@@ -110,6 +114,17 @@ export {
   type SettingsProfileChrome,
   type ResolveShellCompaniesInput,
 } from "./identity/self.js";
+export {
+  createRosterRefresher,
+  ROSTER_REFRESH_EVENTS,
+  ROSTER_RETRY_DELAYS_MS,
+  subscribeRosterRefreshEvents,
+  type RosterListenFn,
+  type RosterRefresher,
+  type RosterRefreshEvent,
+  type RosterSettledOutcome,
+  type RosterStatus,
+} from "./identity/roster-refresh.js";
 export { createTenantStorage } from "./identity/tenant-storage.js";
 
 export {
@@ -124,6 +139,11 @@ export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
 export * from "./shell/embedded-navigation.js";
+export * from "./shell/navigation-history.js";
+export * from "./shell/navigation-scroll.js";
+export * from "./shell/navigation-controller.js";
+export * from "./shell/navigation-shortcuts.js";
+export * from "./shell/navigation-handler-matrix.js";
 export {
   updateStore,
   checkDesktopUpdates,

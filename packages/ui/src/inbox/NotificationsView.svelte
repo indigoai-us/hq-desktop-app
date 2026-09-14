@@ -11,6 +11,7 @@
   import PageHeader from "../shell/PageHeader.svelte";
   import {
     buildNotificationsView,
+    notificationDestination,
     classifyNotificationsError,
     emptyFeedState,
     NOTIFICATIONS_EMPTY_MESSAGE,
@@ -63,6 +64,7 @@
   let markAllPending = $state(false);
   let actionPendingId = $state(null as string | null);
   let loadGeneration = 0;
+  let unavailableNotification = $state<NotificationItem | null>(null);
 
   const view = $derived(buildNotificationsView(feedState));
   /** Track filter as a primitive so load effect does not re-fire on every feedState rewrite. */
@@ -154,7 +156,8 @@
         console.error("notifications-view: ack_notification failed", err);
       });
     }
-    onopen?.(row);
+    unavailableNotification = notificationDestination(row).kind === "none" ? row : null;
+    if (!unavailableNotification) onopen?.(row);
   }
 
   async function handleMarkAllRead(): Promise<void> {
@@ -256,6 +259,14 @@
     </div>
     {/snippet}
   </PageHeader>
+  {#if unavailableNotification}
+    <div class="notif-unavailable" role="status">
+      <strong>{unavailableNotification.actorName || "Notification"}</strong>
+      <p>{unavailableNotification.contextLine}</p>
+      <p>This notification does not include a conversation link. You can find the conversation using search.</p>
+      <button type="button" onclick={() => (unavailableNotification = null)}>Dismiss</button>
+    </div>
+  {/if}
 
   <div class="notif-body" data-testid="notifications-list">
     {#if loading && feedState.items.length === 0}
@@ -484,6 +495,14 @@
 </section>
 
 <style>
+  .notif-unavailable {
+    margin: 12px 20px;
+    padding: 12px;
+    border: 1px solid var(--pop-border);
+    border-radius: 8px;
+    color: var(--pop-text);
+    background: var(--pop-hover);
+  }
   .notifications-view {
     display: flex;
     flex: 1 1 auto;

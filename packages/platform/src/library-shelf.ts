@@ -40,6 +40,14 @@ interface SkillSummary {
   department: string | null;
 }
 
+export interface ShelfSkillMetadata {
+  skillUid: string;
+  tags: string[];
+  groupId: string | null;
+  groupName: string | null;
+  companyWide: boolean;
+}
+
 interface AccessEntry {
   granteeType: string;
   granteeId: string;
@@ -168,6 +176,33 @@ function flattenSummaries(payload: unknown): SkillSummary[] {
     for (const dept of grouped.departments) {
       const section = asRecord(dept);
       if (Array.isArray(section?.skills)) section.skills.forEach(push);
+    }
+  }
+  return out;
+}
+
+/** Metadata needed to enrich an installed local catalog without replacing it. */
+export function skillMetadataFromShelf(payload: unknown): ShelfSkillMetadata[] {
+  const rec = asRecord(payload);
+  const grouped = asRecord(rec?.grouped) ?? rec;
+  if (!grouped) return [];
+  const out: ShelfSkillMetadata[] = [];
+  if (Array.isArray(grouped.companyWide)) {
+    for (const value of grouped.companyWide) {
+      const skill = parseSummary(value);
+      if (skill) out.push({ skillUid: skill.skillUid, tags: skill.tags, groupId: null, groupName: null, companyWide: true });
+    }
+  }
+  if (Array.isArray(grouped.departments)) {
+    for (const value of grouped.departments) {
+      const section = asRecord(value);
+      const groupId = asString(section?.groupId).trim();
+      const groupName = asString(section?.name).trim();
+      if (!groupId || !Array.isArray(section?.skills)) continue;
+      for (const item of section.skills) {
+        const skill = parseSummary(item);
+        if (skill) out.push({ skillUid: skill.skillUid, tags: skill.tags, groupId, groupName: groupName || groupId, companyWide: false });
+      }
     }
   }
   return out;

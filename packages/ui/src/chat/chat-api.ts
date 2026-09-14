@@ -12,7 +12,7 @@
  */
 
 import type { Channel } from "./channels";
-import type { DmRequest } from "./dm-requests";
+import type { DmRequest, RequestAction } from "./dm-requests";
 import type { ChannelDirectoryFeed } from "./channel-directory-reconciler";
 import type { InboxDmActivity } from "./live-catchup";
 import type { DmContactInput, MessageSearchResult } from "./sidebar-model";
@@ -45,6 +45,15 @@ export interface ChatSidebarApi {
   listCompanyMembers?(companyUid: string): Promise<ContactsResponse>;
   /** the desktop `list_dm_requests` command. */
   listDmRequests(): Promise<RequestsResponse>;
+  /**
+   * the desktop `respond_dm_request` command
+   * (`POST /v1/notify/connections/{accept|decline|block}` body `{ pairKey }`).
+   * Optional: hosts without it render pending requests read-only.
+   */
+  respondDmRequest?(args: {
+    pairKey: string;
+    action: RequestAction;
+  }): Promise<void>;
   /** the desktop `list_channels` command (US-021). */
   listChannels(args: {
     companyUid: string;
@@ -66,8 +75,12 @@ export interface ChatSidebarApi {
    */
   createChannel?(args: {
     name: string;
-    scope: "personal" | "company";
+    scope: "personal" | "company" | "project";
     companyUid?: string;
+    /** Required for `scope: "project"`: the project the channel belongs to. */
+    projectId?: string;
+    /** Project channels are invite-only on the server. */
+    visibility?: "invite" | "company";
   }): Promise<{ channelId: string }>;
   /** POST /v1/notify/channels/{id}/members — add a participant. */
   addChannelMember?(channelId: string, toPersonUid: string): Promise<void>;
@@ -88,7 +101,11 @@ export interface ChatSidebarApi {
     toEmail?: string;
     toPersonUid?: string;
     body: string;
-  }): Promise<{ state: "delivered" | "connectionRequested" }>;
+  }): Promise<{
+    state: "delivered" | "connectionRequested";
+    /** The recipient's person uid when the server resolved one. */
+    personUid?: string | null;
+  }>;
   /**
    * GET /v1/notify/thread — newest-first page of one 1:1 DM. Optional: the
    * rail uses it only to resolve a display name for a peer the contacts
@@ -360,6 +377,8 @@ export interface CardActionResult {
   /** US-006/011: agent channel minted on create_agent accept. */
   agentChannelId?: string;
   agentUid?: string;
+  companyChannelId?: string;
+  companyUid?: string;
   navigateTo?: "chat";
   focusCardId?: string;
   /**
@@ -399,6 +418,7 @@ export interface NotificationsApi {
 // ---------------------------------------------------------------------------
 
 export interface ChatWakeEvents {
+  "conversation:read": { id: string };
   /** New message in a channel — ids only; fetch that slice, not the inbox. */
   "channel:new-message": {
     channelId: string;

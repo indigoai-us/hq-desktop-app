@@ -348,6 +348,9 @@ export interface MessageSearchOptions {
  * global compose picker, WRONG for a channel-scoped mention roster, which must
  * only ever offer members of the channel's own company.
  */
+/** Recipient-side answer to a pending DM connection request. */
+export type DmRequestAction = "accept" | "decline" | "block";
+
 export interface ListContactsOptions {
   /** Restrict the roster to one company (`GET /v1/notify/contacts?companyUid=`). */
   companyUid?: string | null;
@@ -573,6 +576,15 @@ export interface MessagingApi {
   deleteChannel(channelId: string): AdapterPromise<Json>;
   listContacts(opts?: ListContactsOptions): AdapterPromise<Json[]>;
   listDmRequests(): AdapterPromise<Json[]>;
+  /**
+   * POST /v1/notify/connections/{accept|decline|block} body `{ pairKey }` —
+   * desktop `respond_dm_request`. Optional: hosts without the route omit it
+   * and the Requests panel shows the request as read-only.
+   */
+  respondDmRequest?(args: {
+    pairKey: string;
+    action: DmRequestAction;
+  }): AdapterPromise<Json>;
   markChannelRead(id: string): AdapterPromise<void>;
   markDmThreadRead(personUid: string): AdapterPromise<void>;
   searchMessages(
@@ -1011,8 +1023,17 @@ export interface PackagesApi {
 }
 
 /** Desktop-only group (capability: canSpawnSessions). */
+export type SessionProviderId = "claude" | "codex" | "grok";
+
 export interface SessionsApi {
   listAgentSessions(): AdapterPromise<Json[]>;
+  /** Desktop in-app sessions: CLI installed + signed-in flags. */
+  preflight?(): AdapterPromise<Json>;
+  slashCommands?(tool: SessionProviderId): AdapterPromise<Json>;
+  installProvider?(tool: SessionProviderId): AdapterPromise<string>;
+  loginStart?(tool: SessionProviderId): AdapterPromise<Json>;
+  loginStatus?(tool: SessionProviderId): AdapterPromise<Json>;
+  loginCancel?(tool: SessionProviderId): AdapterPromise<Json>;
 }
 
 /** Local per-platform settings. */
@@ -1022,6 +1043,11 @@ export interface SettingsApi {
   /** Persist a minimal patch over the latest host settings. */
   updateSettings(patch: Json): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
+  /**
+   * The welcome channel's guided setup finished on this machine. Optional:
+   * hosts without a native settings store have nothing to record.
+   */
+  markWelcomeSetupComplete?(): AdapterPromise<void>;
   getTelemetryConsent(): AdapterPromise<boolean | null>;
 }
 
@@ -1056,6 +1082,10 @@ export interface MigrateSessionRequest {
  * so both hosts share the @hq/core mapper.
  */
 export interface WorkMeshApi {
+  createProjectStory?(projectId: string, companyUid: string, story: {
+    id: string; title: string; description: string; status: string; passes: boolean;
+  }): AdapterPromise<Json>;
+  putProjectView?(projectId: string, companyUid: string, view: Json): AdapterPromise<Json>;
   readLocalSnapshot(): AdapterPromise<Json>;
   /** hq-pro GET /v1/work-mesh/projects/{id}?companyUid= is required. */
   getProjectView(projectId: string, companyUid?: string): AdapterPromise<Json>;

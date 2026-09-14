@@ -174,6 +174,23 @@
     }
   }
 
+  /**
+   * Dismiss the popover — Esc and the header close button.
+   *
+   * The popover window is undecorated, so there is no traffic-light close
+   * control; `hide_main_window` is the Rust side of the same intent (it hides
+   * the window and re-arms click-away dismissal). Failures are swallowed on
+   * purpose: outside Tauri (tests, `vite dev` in a browser) there is no window
+   * to hide, and a dismissal that can't happen has nothing useful to report.
+   */
+  async function dismissPopover() {
+    try {
+      await invoke('hide_main_window');
+    } catch (e) {
+      console.error('popover: hide failed', e);
+    }
+  }
+
   async function openMessages() {
     if (openingMessages) return;
     messagesOpenError = '';
@@ -425,6 +442,20 @@
         // Non-Tauri / test environment.
       });
 
+    // Esc dismisses the popover from anywhere inside it. Matches the detached
+    // MeetingsWindow, and is the keyboard half of the header close button.
+    // Two guards: a nested surface that already handled the key (ConflictModal
+    // closes itself on Esc) keeps its own meaning, and anything that called
+    // `preventDefault` has claimed the key.
+    const onkeydown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (event.defaultPrevented) return;
+      if (conflictModalActive) return;
+      event.preventDefault();
+      void dismissPopover();
+    };
+    window.addEventListener('keydown', onkeydown);
+
     void listen('popover:opened', () => restartOpeningMotion())
       .then((unlisten) => {
         const safe = safeUnlisten(unlisten);
@@ -437,6 +468,7 @@
 
     return () => {
       cancelled = true;
+      window.removeEventListener('keydown', onkeydown);
       unlistenFocus?.();
       unlistenOpened?.();
       if (openingTimer !== null) window.clearTimeout(openingTimer);
@@ -477,6 +509,23 @@
       <span class="gd" aria-hidden="true"></span>
       <span class="mbp-s1">{statusTitle}</span>
       <span class="mbp-s2">{lastSyncLabel}</span>
+      <button
+        class="mbp-sec-action mbp-close"
+        type="button"
+        data-testid="popover-close"
+        aria-label="Close"
+        title="Close (Esc)"
+        onclick={() => void dismissPopover()}
+      >
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path
+            d="m3 3 6 6M9 3l-6 6"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+          />
+        </svg>
+      </button>
       {#if syncState === 'syncing'}
         <p class="mbp-sync-sub" data-testid="popover-sync-sublabel">{liveWorkspaceLine}</p>
       {/if}
@@ -1055,6 +1104,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Header close affordance. Shares .mbp-sec-action's ghost-icon styling; the
+     fixed square keeps the glyph optically centred next to the status text. */
+  .mbp-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    flex-shrink: 0;
   }
 
   /* Full-width wrap; 17px = 8px status dot + 9px gap so it lines up with the title. */

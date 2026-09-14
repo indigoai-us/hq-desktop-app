@@ -557,7 +557,9 @@ impl RunTotals {
     /// Committed heap `(used, total)` MB for the retained heap OOM, or `None` when
     /// no GC line preceded the banner. Both-or-neither integers, never floats.
     pub fn runner_heap_used_total_mb(&self) -> Option<(u64, u64)> {
-        self.heap_oom.as_ref().and_then(|evidence| evidence.used_total_mb)
+        self.heap_oom
+            .as_ref()
+            .and_then(|evidence| evidence.used_total_mb)
     }
 
     /// Highest V8 GC heap-used MB before the retained heap-OOM banner, or `None`
@@ -915,9 +917,7 @@ fn strip_trailing_bracketed(symbol: &str) -> &str {
 /// normalizes to the fixed [`HEAP_OOM_ANON_FRAME`] placeholder.
 fn parse_native_frame_symbol(line: &str) -> Option<String> {
     let (ordinal, rest) = line.trim().split_once(':')?;
-    if ordinal.is_empty()
-        || ordinal.len() > 3
-        || !ordinal.bytes().all(|byte| byte.is_ascii_digit())
+    if ordinal.is_empty() || ordinal.len() > 3 || !ordinal.bytes().all(|byte| byte.is_ascii_digit())
     {
         return None;
     }
@@ -1158,6 +1158,32 @@ impl RunnerErrorClass {
     }
 }
 
+/// True when `haystack_lower` (already lowercased) contains `needle` as a bounded
+/// token — bordered on each side by the start/end of the string or by a byte that
+/// `is_word_byte` rejects. The shared boundary scanner behind both the errno and
+/// the auth-marker matchers, so their "is this a standalone token or a fragment
+/// inside a longer word?" decision can never drift apart. The caller chooses what
+/// counts as "inside a token" via `is_word_byte`.
+fn message_contains_bounded_token(
+    haystack_lower: &str,
+    needle: &str,
+    is_word_byte: impl Fn(u8) -> bool,
+) -> bool {
+    let bytes = haystack_lower.as_bytes();
+    let mut search_from = 0;
+    while let Some(offset) = haystack_lower[search_from..].find(needle) {
+        let index = search_from + offset;
+        let before_ok = index == 0 || !is_word_byte(bytes[index - 1]);
+        let after = index + needle.len();
+        let after_ok = after >= bytes.len() || !is_word_byte(bytes[after]);
+        if before_ok && after_ok {
+            return true;
+        }
+        search_from = index + 1;
+    }
+    false
+}
+
 /// True when `haystack` (already lowercased) contains `errno` as a bounded token
 /// — bordered by the start/end of the string or a non-alphanumeric byte on each
 /// side. `describeError` renders a Node errno as its own token (`EEXIST:`,
@@ -1165,19 +1191,56 @@ impl RunnerErrorClass {
 /// rendering while refusing an errno spelled INSIDE an ordinary word — e.g.
 /// `eexist` inside `preexisting`, which a bare `contains` would misclassify.
 fn message_contains_errno_token(haystack_lower: &str, errno: &str) -> bool {
-    let bytes = haystack_lower.as_bytes();
-    let mut search_from = 0;
-    while let Some(offset) = haystack_lower[search_from..].find(errno) {
-        let index = search_from + offset;
-        let before_ok = index == 0 || !bytes[index - 1].is_ascii_alphanumeric();
-        let after = index + errno.len();
-        let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
-        if before_ok && after_ok {
-            return true;
-        }
-        search_from = index + 1;
+    message_contains_bounded_token(haystack_lower, errno, |byte| byte.is_ascii_alphanumeric())
+}
+
+/// Auth/identity vocabulary matched as a plain substring. Each token is specific
+/// enough that it never occurs incidentally inside an unrelated path segment or
+/// identifier: `authentic`/`authoriz`/`authoris` are absent from `authors`, and
+/// `oauth`/`cognito`/`forbidden`/`auth-error` carry no path-segment collision. A
+/// substring match therefore keeps genuine `authentication`/`authorization` prose
+/// AND the runner's `auth-error` protocol discriminator
+/// (`{"type":"auth-error",…}`, the record `runner_stderr_needs_reauth` acts on)
+/// classified as identity failures — the full-word forms bounded matching would
+/// otherwise drop.
+const AUTH_MARKER_SUBSTRINGS: [&str; 7] = [
+    "oauth",
+    "cognito",
+    "forbidden",
+    "authentic",
+    "authoriz",
+    "authoris",
+    "auth-error",
+];
+
+/// The short auth markers that DO occur incidentally inside ordinary path segments
+/// and identifiers (`auth` in `authors/`, `token` in `token-providers` or
+/// `tokenCount`). These match only as bounded tokens: alphanumerics AND the
+/// connectors that join path segments and package / identifier names
+/// (`- _ . / \ @`) all count as "inside a token", so a marker buried in a path
+/// segment, a package name, or a camelCase key is refused, while a marker that
+/// stands as its own word (delimited by whitespace, prose punctuation, or the
+/// string edge) still classifies `Auth`. An unbounded `contains` over these two
+/// was the HQ-DESKTOP-67 miscue: 96 path-led stderr lines rendered the breadcrumb
+/// `identity` on an in-word match. This mirrors [`message_contains_errno_token`]'s
+/// fix for `eexist` inside `preexisting`.
+const AUTH_MARKER_BOUNDED: [&str; 2] = ["auth", "token"];
+
+/// True when `haystack_lower` carries a genuine identity/authorization signal: an
+/// unambiguous [`AUTH_MARKER_SUBSTRINGS`] token anywhere, or a short
+/// [`AUTH_MARKER_BOUNDED`] marker standing as its own token.
+fn message_contains_auth_marker(haystack_lower: &str) -> bool {
+    if AUTH_MARKER_SUBSTRINGS
+        .iter()
+        .any(|marker| haystack_lower.contains(marker))
+    {
+        return true;
     }
-    false
+    AUTH_MARKER_BOUNDED.iter().any(|marker| {
+        message_contains_bounded_token(haystack_lower, marker, |byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b'\\' | b'@')
+        })
+    })
 }
 
 /// Bridge the CAUSE axis to the CLASS axis: when the closed cause vocabulary has
@@ -1365,10 +1428,7 @@ pub fn classify_runner_error_class(message: &str) -> RunnerErrorClass {
         RunnerErrorClass::Exdev
     } else if is_transient_network_error(&msg) {
         RunnerErrorClass::Network
-    } else if ["auth", "unauthorized", "forbidden", "cognito", "token"]
-        .iter()
-        .any(|marker| msg.contains(marker))
-    {
+    } else if message_contains_auth_marker(&msg) {
         RunnerErrorClass::Auth
     } else {
         RunnerErrorClass::Other
@@ -1640,8 +1700,12 @@ fn is_libuv_fatal_syscall_line(line: &str) -> bool {
 /// to. `other` is the sentinel for any file that is not one of the recognised
 /// libuv sources — the same convention `runner_fatal_syscall` uses for an
 /// unknown syscall identifier.
-pub const RUNNER_ASSERT_SOURCES: &[&str] =
-    &["libuv_win_async", "libuv_unix_core", "libuv_handle", "other"];
+pub const RUNNER_ASSERT_SOURCES: &[&str] = &[
+    "libuv_win_async",
+    "libuv_unix_core",
+    "libuv_handle",
+    "other",
+];
 
 /// Content-safe identity of a libuv/Node runtime assertion. Every field is
 /// derived, never copied: `source` is one allow-listed constant, `line` is a
@@ -1662,8 +1726,10 @@ pub struct RunnerAssertion {
 fn runner_assert_source_token(file: &str) -> &'static str {
     let lowered = file.to_ascii_lowercase();
     for (marker, token) in RUNTIME_FRAME_TABLE {
-        if matches!(*token, "libuv_win_async" | "libuv_unix_core" | "libuv_handle")
-            && lowered.contains(&marker.to_ascii_lowercase())
+        if matches!(
+            *token,
+            "libuv_win_async" | "libuv_unix_core" | "libuv_handle"
+        ) && lowered.contains(&marker.to_ascii_lowercase())
         {
             return token;
         }
@@ -1727,9 +1793,10 @@ pub fn parse_runner_assertion(line: &str) -> Option<RunnerAssertion> {
 
     let (source, line_no) = match file_tail {
         Some(tail) => match split_once_ci(tail, ", line ") {
-            Some((path, after_line)) => {
-                (runner_assert_source_token(path), parse_leading_i64(after_line))
-            }
+            Some((path, after_line)) => (
+                runner_assert_source_token(path),
+                parse_leading_i64(after_line),
+            ),
             None => (runner_assert_source_token(tail), None),
         },
         None => ("other", None),
@@ -2799,9 +2866,7 @@ pub fn watcher_exit_capture_policy_with_attribution(
     // Positive evidence at exit time suppresses on the spot, exactly like an
     // observed message: a contemporaneous latch is committed OS session-end
     // evidence that survives the observer thread's death.
-    if latch.suppresses()
-        || attribution == Some(WindowsTerminatorAttribution::SessionEndObserved)
-    {
+    if latch.suppresses() || attribution == Some(WindowsTerminatorAttribution::SessionEndObserved) {
         return WatcherExitCapturePolicy::LocalLogOnly;
     }
     match attribution {
@@ -3847,8 +3912,13 @@ pub fn should_alert_on_nonzero_exit_with_fault(
     saw_genuine_crash: bool,
     error_rollup: &RunnerErrorRollup,
 ) -> bool {
-    should_alert_on_nonzero_exit(code, signal, saw_error, saw_alertable_error, saw_node_too_old)
-        && !runner_exit_is_disk_exhaustion(code, signal, saw_genuine_crash, error_rollup)
+    should_alert_on_nonzero_exit(
+        code,
+        signal,
+        saw_error,
+        saw_alertable_error,
+        saw_node_too_old,
+    ) && !runner_exit_is_disk_exhaustion(code, signal, saw_genuine_crash, error_rollup)
         && !runner_exit_is_file_lock(code, signal, saw_genuine_crash, error_rollup)
 }
 
@@ -3937,7 +4007,10 @@ mod tests {
             classify_runner_error_class(enoent_rename),
             RunnerErrorClass::Enoent
         );
-        assert_eq!(classify_runner_error_op(enoent_rename), RunnerErrorOp::Rename);
+        assert_eq!(
+            classify_runner_error_op(enoent_rename),
+            RunnerErrorOp::Rename
+        );
         // The other three new classes classify from their errno substrings.
         assert_eq!(
             classify_runner_error_class("EEXIST: file already exists, mkdir 'x'"),
@@ -3948,7 +4021,9 @@ mod tests {
             RunnerErrorClass::Enotempty
         );
         assert_eq!(
-            classify_runner_error_class("EXDEV: cross-device link not permitted, rename 'a' -> 'b'"),
+            classify_runner_error_class(
+                "EXDEV: cross-device link not permitted, rename 'a' -> 'b'"
+            ),
             RunnerErrorClass::Exdev
         );
     }
@@ -3983,8 +4058,7 @@ mod tests {
         totals.record_error(&SyncErrorEvent {
             company: None,
             path: "knowledge/hq-core/a.md".to_string(),
-            message: "code=ENOENT ENOENT: no such file or directory, rename 'a' -> 'b'"
-                .to_string(),
+            message: "code=ENOENT ENOENT: no such file or directory, rename 'a' -> 'b'".to_string(),
         });
         assert_eq!(
             totals.runner_error_rollup.tag_value().as_deref(),
@@ -4196,7 +4270,10 @@ mod tests {
         // The whole permission/authorization family classes AUTH, so none of them
         // can re-form the exit-2 catch-all the keyword matcher left them in.
         for (message, cause) in [
-            ("AccessDenied access is denied", RunnerErrorCause::AccessDenied),
+            (
+                "AccessDenied access is denied",
+                RunnerErrorCause::AccessDenied,
+            ),
             (
                 "VendDeniedError the vend was refused",
                 RunnerErrorCause::VendDenied,
@@ -4259,6 +4336,95 @@ mod tests {
         assert_eq!(
             classify_runner_error_class("Unauthorized: cognito rejected the request"),
             RunnerErrorClass::Auth
+        );
+    }
+
+    #[test]
+    fn auth_markers_match_as_bounded_tokens_not_in_word_substrings() {
+        // HQ-DESKTOP-67: a manual-route exit-2 reached Sentry with 96 path-led
+        // stderr breadcrumbs reading `identity` because the keyword matcher scanned
+        // for `auth`/`token` with an unbounded `contains`. A path segment, a package
+        // name, or a JSON key that merely SPELLS a marker in-word must now classify
+        // OTHER (breadcrumb `other`), while a marker standing as its own word still
+        // classifies AUTH (breadcrumb `identity`).
+
+        // In-word occurrences → OTHER. None of these carries a standalone marker.
+        for line in [
+            // `auth` inside `authors` (path segment).
+            "/Users/dev/hq/personal/library/authors/index.md",
+            // `token` inside the `token-providers` package name (hyphen connector).
+            "/Users/dev/.npm/_cacache/@aws-sdk/token-providers/dist/index.js",
+            // `token` inside the `tokenCount` JSON key (camelCase).
+            "tokenCount mismatch in manifest",
+            // `auth` as a whole path segment is still bounded by `/` connectors, so a
+            // bare path never reads as an identity failure.
+            "/var/run/auth/worker.sock is unavailable",
+        ] {
+            assert_eq!(
+                classify_runner_error_class(line),
+                RunnerErrorClass::Other,
+                "in-word marker must classify OTHER, not AUTH: {line:?}"
+            );
+        }
+        // The class the breadcrumb renders for the dominant path-led line is the
+        // denylist-safe `other`, NOT `identity` — the exact byte the event got wrong.
+        assert_eq!(
+            classify_runner_error_class("/Users/dev/hq/personal/library/authors/index.md")
+                .breadcrumb_token(),
+            "other"
+        );
+
+        // Standalone markers → AUTH, including `oauth` (which bounded matching would
+        // otherwise miss because `auth` inside `oauth` is itself in-word).
+        for line in [
+            "auth request failed",
+            "oauth handshake aborted",
+            "the request was unauthorized",
+            "forbidden",
+            "cognito refused the refresh",
+            "the token was rejected",
+        ] {
+            assert_eq!(
+                classify_runner_error_class(line),
+                RunnerErrorClass::Auth,
+                "standalone marker must still classify AUTH: {line:?}"
+            );
+        }
+        // A genuine identity failure keeps the denylist-safe `identity` spelling.
+        assert_eq!(
+            classify_runner_error_class("Unauthorized: cognito rejected the request")
+                .breadcrumb_token(),
+            "identity"
+        );
+
+        // Full-word and protocol auth forms that a bounded `auth`/`token` match alone
+        // would drop still classify AUTH: the `auth-error` protocol discriminator that
+        // runner_stderr_needs_reauth acts on, and `authentication`/`authorization`
+        // prose, are recognized by the unambiguous auth vocabulary — while
+        // `authors`/`token-providers`/`tokenCount` (checked above) stay OTHER.
+        for line in [
+            r#"{"type":"auth-error","message":"Sign in again"}"#,
+            "authentication failed",
+            "authorization denied for the company prefix",
+            "reauthentication required",
+        ] {
+            assert_eq!(
+                classify_runner_error_class(line),
+                RunnerErrorClass::Auth,
+                "genuine auth form must classify AUTH: {line:?}"
+            );
+        }
+
+        // The shared bounded-token refactor preserves the errno boundary exactly:
+        // a real errno rendering still classifies, `eexist` inside `preexisting` does
+        // not (the regression message_contains_errno_token was introduced to stop).
+        assert_eq!(
+            classify_runner_error_class("EEXIST: file already exists, mkdir 'x'"),
+            RunnerErrorClass::Eexist
+        );
+        assert_eq!(
+            classify_runner_error_class("failed to load cmp_preexisting entity"),
+            RunnerErrorClass::Other
         );
     }
 
@@ -4407,7 +4573,10 @@ mod tests {
             totals.runner_error_rollup.tag_value().as_deref(),
             Some("AUTH:1,OTHER:4")
         );
-        assert_eq!(totals.runner_error_ops.tag_value().as_deref(), Some("other:5"));
+        assert_eq!(
+            totals.runner_error_ops.tag_value().as_deref(),
+            Some("other:5")
+        );
         assert_eq!(totals.runner_error_rollup.fingerprint_token(), "other");
         assert!(totals.saw_alertable_error);
 
@@ -5192,7 +5361,9 @@ mod tests {
         // A bare node_modules/.bin marker line (no npm/shell own-prefix) keeps its
         // base class — it is not npm-prefixed, so it must not change.
         assert_eq!(
-            classify_runner_fatal_class("node_modules/.bin/hq-sync-runner: No such file or directory"),
+            classify_runner_fatal_class(
+                "node_modules/.bin/hq-sync-runner: No such file or directory"
+            ),
             RunnerFatalClass::ExecNotFound
         );
     }
@@ -5325,20 +5496,32 @@ mod tests {
         totals.record_stderr_line("ReadDirectoryChangesW: (5) Access is denied.");
         totals.record_stderr_line("    at fs.watch (node:fs:1:1)");
         // A later unclassified continuation line never clears the winning line.
-        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::LibuvFatalSyscall);
+        assert_eq!(
+            totals.runner_fatal_class,
+            RunnerFatalClass::LibuvFatalSyscall
+        );
         assert_eq!(totals.runner_fatal_syscall(), Some("ReadDirectoryChangesW"));
         assert_eq!(totals.runner_fatal_errno(), Some(5));
 
         // A later, different libuv-fatal line wins as a whole triple.
         totals.record_stderr_line("CreateIoCompletionPort: (1450) Insufficient resources.");
-        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::LibuvFatalSyscall);
-        assert_eq!(totals.runner_fatal_syscall(), Some("CreateIoCompletionPort"));
+        assert_eq!(
+            totals.runner_fatal_class,
+            RunnerFatalClass::LibuvFatalSyscall
+        );
+        assert_eq!(
+            totals.runner_fatal_syscall(),
+            Some("CreateIoCompletionPort")
+        );
         assert_eq!(totals.runner_fatal_errno(), Some(1450));
 
         // A non-libuv fatal class leaves syscall/errno cleared for that line.
         let mut assert_totals = RunTotals::default();
         assert_totals.record_stderr_line(r"Assertion failed: cond, file src\win\async.c, line 1");
-        assert_eq!(assert_totals.runner_fatal_class, RunnerFatalClass::LibuvAssert);
+        assert_eq!(
+            assert_totals.runner_fatal_class,
+            RunnerFatalClass::LibuvAssert
+        );
         assert_eq!(assert_totals.runner_fatal_syscall(), None);
         assert_eq!(assert_totals.runner_fatal_errno(), None);
     }
@@ -5351,10 +5534,7 @@ mod tests {
         for class in RunnerFatalClass::ALL {
             let token = class.as_str();
             assert!(
-                !token.is_empty()
-                    && token
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b == b'_'),
+                !token.is_empty() && token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
                 "fatal-class token must be a fixed lower_snake constant: {token:?}"
             );
             assert!(seen.insert(token), "duplicate fatal-class token: {token:?}");
@@ -6831,8 +7011,7 @@ mod tests {
                             // statuses and every signalled exit stay alertable.
                             watcher_exit_capture_policy(code, signal)
                         } else if latch.suppresses()
-                            || attribution
-                                == Some(WindowsTerminatorAttribution::SessionEndObserved)
+                            || attribution == Some(WindowsTerminatorAttribution::SessionEndObserved)
                         {
                             // Positive evidence at exit: a contemporaneous latch or
                             // an observed session-end message suppresses at once.
@@ -6877,7 +7056,10 @@ mod tests {
             WindowsTerminatorAttribution::ObserverUnavailable,
             WindowsTerminatorAttribution::ObserverFailed,
         ] {
-            assert!(attribution.is_deferrable_observer_reading(), "{attribution:?}");
+            assert!(
+                attribution.is_deferrable_observer_reading(),
+                "{attribution:?}"
+            );
             assert_eq!(
                 watcher_exit_capture_policy_with_attribution(
                     Some(WINDOWS_SESSION_TERMINATE_EXIT),
@@ -6910,9 +7092,15 @@ mod tests {
     // established (immediate) capture policy verbatim.
     #[test]
     fn terminal_resolution_states_and_none_never_redefer_on_the_session_terminate_shape() {
-        for latch in [SessionEndLatchReading::Absent, SessionEndLatchReading::Unavailable] {
+        for latch in [
+            SessionEndLatchReading::Absent,
+            SessionEndLatchReading::Unavailable,
+        ] {
             for attribution in TERMINAL_RESOLUTION_STATES {
-                assert!(!attribution.is_deferrable_observer_reading(), "{attribution:?}");
+                assert!(
+                    !attribution.is_deferrable_observer_reading(),
+                    "{attribution:?}"
+                );
                 assert_eq!(
                     watcher_exit_capture_policy_with_attribution(
                         Some(WINDOWS_SESSION_TERMINATE_EXIT),
@@ -7149,7 +7337,10 @@ mod tests {
             WindowsTerminatorAttribution::ObserverFailed,
             WindowsTerminatorAttribution::ObserverUnavailable,
         ] {
-            assert!(attribution.is_deferrable_observer_reading(), "{attribution:?}");
+            assert!(
+                attribution.is_deferrable_observer_reading(),
+                "{attribution:?}"
+            );
             assert_eq!(
                 deferred_session_end_outcome(
                     attribution,
@@ -7211,7 +7402,10 @@ mod tests {
         );
         // A COMMITTED System-channel record (the OS actually shut down) confirms
         // even with both flags negative.
-        for committed in [TeardownLogClass::KernelGeneral, TeardownLogClass::KernelPower] {
+        for committed in [
+            TeardownLogClass::KernelGeneral,
+            TeardownLogClass::KernelPower,
+        ] {
             assert!(committed.is_committed_teardown());
             assert_eq!(
                 verdict(Sd::No, Sd::No, Log::Record(committed)),
@@ -7231,7 +7425,11 @@ mod tests {
         // record is preserved for diagnostics rather than suppressing an alert.
         assert!(!TeardownLogClass::User32Initiated.is_committed_teardown());
         assert_eq!(
-            verdict(Sd::No, Sd::No, Log::Record(TeardownLogClass::User32Initiated)),
+            verdict(
+                Sd::No,
+                Sd::No,
+                Log::Record(TeardownLogClass::User32Initiated)
+            ),
             WindowsTeardownVerdict::Unknown,
             "a bare initiation must never suppress a coincident real crash"
         );
@@ -7354,7 +7552,10 @@ mod tests {
                 ),
                 WindowsTerminatorAttribution::SessionEndProbed
             );
-            for verdict in [WindowsTeardownVerdict::Absent, WindowsTeardownVerdict::Unknown] {
+            for verdict in [
+                WindowsTeardownVerdict::Absent,
+                WindowsTeardownVerdict::Unknown,
+            ] {
                 assert_eq!(
                     resolved_session_end_attribution(attribution, verdict, no_latch),
                     attribution,
@@ -7917,7 +8118,10 @@ mod tests {
         // pids, and module suffixes provably excluded from the digest).
         let mut a2 = RunTotals::default();
         feed_stderr(&mut a2, HEAP_OOM_FIXTURE_A);
-        assert_eq!(a2.runner_heap_oom_stack().unwrap().signature, stack_a.signature);
+        assert_eq!(
+            a2.runner_heap_oom_stack().unwrap().signature,
+            stack_a.signature
+        );
     }
 
     #[test]
@@ -7931,7 +8135,8 @@ mod tests {
         // must change even though every other frame is byte-identical.
         let mut swapped = RunTotals::default();
         for line in HEAP_OOM_FIXTURE_A {
-            swapped.record_stderr_line(&line.replace("Runtime_NewArray", "Runtime_StringSubstring"));
+            swapped
+                .record_stderr_line(&line.replace("Runtime_NewArray", "Runtime_StringSubstring"));
         }
         assert_ne!(
             swapped.runner_heap_oom_stack().unwrap().signature,
@@ -7943,7 +8148,8 @@ mod tests {
     fn heap_oom_evidence_banners_rounding_and_both_or_neither() {
         // Round-half-away-from-zero on the raw GC parser.
         assert_eq!(
-            parse_gc_heap_candidate("x -> 47.7 (80.5) MB, tail").map(|(u, t)| (round_mb(u), round_mb(t))),
+            parse_gc_heap_candidate("x -> 47.7 (80.5) MB, tail")
+                .map(|(u, t)| (round_mb(u), round_mb(t))),
             Some((48, 81))
         );
         assert_eq!(round_mb(47.4), 47);
@@ -7971,7 +8177,10 @@ mod tests {
         banner_only.record_stderr_line(
             "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
         );
-        assert_eq!(banner_only.runner_heap_oom_banner(), Some("reached_heap_limit"));
+        assert_eq!(
+            banner_only.runner_heap_oom_banner(),
+            Some("reached_heap_limit")
+        );
         assert_eq!(banner_only.runner_heap_used_total_mb(), None);
         assert_eq!(banner_only.runner_heap_oom_frame_count(), Some(0));
         assert_eq!(banner_only.runner_heap_oom_stack(), None);
@@ -8059,7 +8268,10 @@ mod tests {
         assert_eq!(stack.signature.len(), 16);
         for needle in ["/Users", "sk_live", "secret-plan", "AAAA"] {
             assert!(!stack.shape.contains(needle), "shape leaked {needle}");
-            assert!(!stack.signature.contains(needle), "signature leaked {needle}");
+            assert!(
+                !stack.signature.contains(needle),
+                "signature leaked {needle}"
+            );
         }
     }
 
@@ -8226,7 +8438,10 @@ mod tests {
         // Non-assertion fatal classes leave the assertion fields untouched.
         let mut totals = RunTotals::default();
         totals.record_stderr_line("ReadDirectoryChangesW: (5) Access is denied.");
-        assert_eq!(totals.runner_fatal_class, RunnerFatalClass::LibuvFatalSyscall);
+        assert_eq!(
+            totals.runner_fatal_class,
+            RunnerFatalClass::LibuvFatalSyscall
+        );
         assert_eq!(totals.runner_assert_source(), None);
         assert_eq!(totals.runner_assert_line(), None);
         assert_eq!(totals.runner_assert_signature(), None);
@@ -8370,7 +8585,9 @@ mod tests {
         );
         // A Rust panic whose text mentions ENOSPC stays RustPanic.
         assert_eq!(
-            classify_runner_fatal_class("thread 'main' panicked at 'ENOSPC: no space left on device'"),
+            classify_runner_fatal_class(
+                "thread 'main' panicked at 'ENOSPC: no space left on device'"
+            ),
             RunnerFatalClass::RustPanic
         );
         // Token + membership + non-crash classification.
@@ -8406,7 +8623,12 @@ mod tests {
         }
         // At the disposition level it keeps alerting: no exclusively-ENOSPC rollup.
         let empty = RunnerErrorRollup::default();
-        assert!(!runner_exit_is_disk_exhaustion(Some(1), None, false, &empty));
+        assert!(!runner_exit_is_disk_exhaustion(
+            Some(1),
+            None,
+            false,
+            &empty
+        ));
         assert_eq!(
             classify_runner_exit_disposition_with_fault(
                 Some(1),
@@ -8439,7 +8661,12 @@ mod tests {
     fn mixed_rollup_with_enospc_still_alerts() {
         // Presence of ENOSPC is not enough; a co-occurring EPERM keeps it alerting.
         let mixed = rollup_of(1, 1, 0);
-        assert!(!runner_exit_is_disk_exhaustion(Some(1), None, false, &mixed));
+        assert!(!runner_exit_is_disk_exhaustion(
+            Some(1),
+            None,
+            false,
+            &mixed
+        ));
         assert_eq!(
             classify_runner_exit_disposition_with_fault(
                 Some(1),
@@ -8468,7 +8695,10 @@ mod tests {
             RunnerFatalClass::HeapOom,
             RunnerFatalClass::RustPanic,
         ] {
-            assert!(crash.is_genuine_crash(), "{crash:?} must be a genuine crash");
+            assert!(
+                crash.is_genuine_crash(),
+                "{crash:?} must be a genuine crash"
+            );
         }
         for non_crash in [
             RunnerFatalClass::ExecPermissionDenied,
@@ -8478,7 +8708,10 @@ mod tests {
             RunnerFatalClass::NpmInstallRelay,
             RunnerFatalClass::None,
         ] {
-            assert!(!non_crash.is_genuine_crash(), "{non_crash:?} is not a crash");
+            assert!(
+                !non_crash.is_genuine_crash(),
+                "{non_crash:?} is not a crash"
+            );
         }
     }
 
@@ -8487,7 +8720,12 @@ mod tests {
         // The sticky crash flag blocks disk-full suppression even with an
         // exclusively-ENOSPC rollup.
         let enospc = rollup_of(1, 0, 0);
-        assert!(!runner_exit_is_disk_exhaustion(Some(1), None, true, &enospc));
+        assert!(!runner_exit_is_disk_exhaustion(
+            Some(1),
+            None,
+            true,
+            &enospc
+        ));
         assert_eq!(
             classify_runner_exit_disposition_with_fault(
                 Some(1),
@@ -8559,7 +8797,12 @@ mod tests {
             SIGILL_SIGNAL,
         ] {
             assert!(is_crash_signal(Some(signal)), "signal {signal} is a crash");
-            assert!(!runner_exit_is_disk_exhaustion(None, Some(signal), false, &enospc));
+            assert!(!runner_exit_is_disk_exhaustion(
+                None,
+                Some(signal),
+                false,
+                &enospc
+            ));
             assert_eq!(
                 classify_runner_exit_disposition_with_fault(
                     None,
@@ -8590,7 +8833,12 @@ mod tests {
         // cannot see npm's multi-line lifecycle markers).
         let empty = RunnerErrorRollup::default();
         assert!(!runner_fault_is_disk_exhaustion_content(false, &empty));
-        assert!(!runner_exit_is_disk_exhaustion(Some(1), None, false, &empty));
+        assert!(!runner_exit_is_disk_exhaustion(
+            Some(1),
+            None,
+            false,
+            &empty
+        ));
         assert_eq!(
             classify_runner_exit_disposition_with_fault(
                 Some(1),
@@ -8615,7 +8863,10 @@ mod tests {
         let enospc = rollup_of(1, 0, 0);
         for fault in [0xC000_0005u32, 0xC000_0409u32] {
             let code = Some(fault as i32);
-            assert!(is_windows_fault_exit(code), "0x{fault:08X} is a windows fault");
+            assert!(
+                is_windows_fault_exit(code),
+                "0x{fault:08X} is a windows fault"
+            );
             assert!(!runner_exit_is_disk_exhaustion(code, None, false, &enospc));
             assert_eq!(
                 classify_runner_exit_disposition_with_fault(
@@ -8627,7 +8878,12 @@ mod tests {
         }
         // A conventional small exit code is Ordinary, not a fault → suppressible.
         assert!(!is_windows_fault_exit(Some(1)));
-        assert!(runner_exit_is_disk_exhaustion(Some(1), None, false, &enospc));
+        assert!(runner_exit_is_disk_exhaustion(
+            Some(1),
+            None,
+            false,
+            &enospc
+        ));
     }
 
     #[test]
@@ -8706,18 +8962,17 @@ mod tests {
                                                     saw_alertable,
                                                     node_old,
                                                 );
-                                            let fault =
-                                                classify_runner_exit_disposition_with_fault(
-                                                    code,
-                                                    signal,
-                                                    cause,
-                                                    effected,
-                                                    saw_error,
-                                                    saw_alertable,
-                                                    node_old,
-                                                    saw_crash,
-                                                    rollup,
-                                                );
+                                            let fault = classify_runner_exit_disposition_with_fault(
+                                                code,
+                                                signal,
+                                                cause,
+                                                effected,
+                                                saw_error,
+                                                saw_alertable,
+                                                node_old,
+                                                saw_crash,
+                                                rollup,
+                                            );
                                             if fault == RunnerExitDisposition::DiskFull {
                                                 assert_eq!(
                                                     base,
@@ -8996,7 +9251,10 @@ mod tests {
         let ebusy = rollup_ebusy(1, 0, 0);
         for fault in [0xC000_0005u32, 0xC000_0409u32] {
             let code = Some(fault as i32);
-            assert!(is_windows_fault_exit(code), "0x{fault:08X} is a windows fault");
+            assert!(
+                is_windows_fault_exit(code),
+                "0x{fault:08X} is a windows fault"
+            );
             assert!(!runner_exit_is_file_lock(code, None, false, &ebusy));
             assert_eq!(
                 classify_runner_exit_disposition_with_fault(
@@ -9032,11 +9290,11 @@ mod tests {
         // own recognizer.
         let rollups = [
             RunnerErrorRollup::default(),
-            rollup_ebusy(1, 0, 0),   // exclusively file-locked
-            rollup_ebusy(1, 1, 0),   // ebusy + eperm (mixed)
-            rollup_of(1, 0, 0),      // exclusively disk-full
-            rollup_of_ebusy_enospc(),// ebusy + enospc (neither exclusive)
-            rollup_of(0, 0, 3),      // other-only
+            rollup_ebusy(1, 0, 0),    // exclusively file-locked
+            rollup_ebusy(1, 1, 0),    // ebusy + eperm (mixed)
+            rollup_of(1, 0, 0),       // exclusively disk-full
+            rollup_of_ebusy_enospc(), // ebusy + enospc (neither exclusive)
+            rollup_of(0, 0, 3),       // other-only
         ];
         let codes = [
             None,
@@ -9048,7 +9306,12 @@ mod tests {
             Some(243),
             Some(0xC000_0005u32 as i32),
         ];
-        let signals = [None, Some(SIGTERM_SIGNAL), Some(SIGSEGV_SIGNAL), Some(SIGKILL_SIGNAL)];
+        let signals = [
+            None,
+            Some(SIGTERM_SIGNAL),
+            Some(SIGSEGV_SIGNAL),
+            Some(SIGKILL_SIGNAL),
+        ];
         for &code in &codes {
             for &signal in &signals {
                 for &saw_error in &[false, true] {
@@ -9057,11 +9320,24 @@ mod tests {
                             for &saw_crash in &[false, true] {
                                 for rollup in &rollups {
                                     let base = classify_runner_exit_disposition_with_cancellation(
-                                        code, signal, None, false, saw_error, saw_alertable, node_old,
+                                        code,
+                                        signal,
+                                        None,
+                                        false,
+                                        saw_error,
+                                        saw_alertable,
+                                        node_old,
                                     );
                                     let fault = classify_runner_exit_disposition_with_fault(
-                                        code, signal, None, false, saw_error, saw_alertable, node_old,
-                                        saw_crash, rollup,
+                                        code,
+                                        signal,
+                                        None,
+                                        false,
+                                        saw_error,
+                                        saw_alertable,
+                                        node_old,
+                                        saw_crash,
+                                        rollup,
                                     );
                                     match fault {
                                         RunnerExitDisposition::DiskFull => {
@@ -9113,7 +9389,11 @@ mod tests {
         for (sentinel, token, scope_segment) in [
             ("(company)", "company:1", "company:1,file:0"),
             ("(discovery)", "discovery:1", "company:0,file:0,discovery:1"),
-            ("(local-state)", "local_state:1", "company:0,file:0,local_state:1"),
+            (
+                "(local-state)",
+                "local_state:1",
+                "company:0,file:0,local_state:1",
+            ),
             ("(runner)", "runner:1", "company:0,file:0,runner:1"),
             ("(scope)", "scope:1", "company:0,file:0,scope:1"),
             // The (auth) site renders `identity` (denylist-safe), never `auth`.
@@ -9241,7 +9521,10 @@ mod tests {
         assert_eq!(runner_stack_shape(&tail).shape, "all_redacted");
         assert_eq!(classify_runner_stack_input(&tail), RunnerStackInput::Mixed);
         let shape = runner_stack_shape_for_exit(&totals, &tail);
-        assert_ne!(shape.shape, "all_redacted", "embedded (runner) stack must be preferred");
+        assert_ne!(
+            shape.shape, "all_redacted",
+            "embedded (runner) stack must be preferred"
+        );
         assert!(
             shape.redacted_frames < shape.depth,
             "a recognised stack has fewer redacted frames than its depth"
@@ -9291,7 +9574,10 @@ mod tests {
         };
         // is_alertable_error reads only the message, so the verdict is identical
         // whether the path is the (auth) sentinel or a plain file path.
-        assert_eq!(is_alertable_error(&auth_err), is_alertable_error(&file_auth));
+        assert_eq!(
+            is_alertable_error(&auth_err),
+            is_alertable_error(&file_auth)
+        );
         assert!(is_alertable_error(&auth_err));
 
         let mut totals = RunTotals::default();

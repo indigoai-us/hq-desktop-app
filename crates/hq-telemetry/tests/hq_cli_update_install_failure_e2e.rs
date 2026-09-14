@@ -2350,3 +2350,160 @@ fn a_non_e404_default_env_carries_none_of_the_new_attribution_tags() {
         "a non-E404 npm_diagnostics string must be unchanged: {diagnostics}"
     );
 }
+
+// --- E404 npmjs tarball serving lag (HQ-DESKTOP-6D) --------------------------
+//
+// HQ-DESKTOP-6D (`[hq-cli-update] install failed (E404:npmjs:tarball)`) paged at
+// Error on four machines within +66 min .. +4 h 46 min of 5.109.6's publish,
+// every event pinned to 5.109.6, while registry.npmjs.org had already stored
+// (and still serves) that tarball object. registry.npmjs.org listed the version
+// the updater resolved but had not yet begun serving its tarball — the
+// tarball-layer twin of the ETARGET packument lag — so the E404 was a
+// self-healing serving transient the next scheduled check installs through, not
+// an updater defect. These artifact cases drive the real reporter through the
+// shipped `before_send` scrubber and assert on the emitted (or suppressed) event.
+
+/// The reproduced npmjs tarball serving-lag E404: npm's own 404 line names
+/// registry.npmjs.org and the `@indigoai-us/hq-cli` tarball object for the exact
+/// pinned version, plus npm's "not in this registry" tail. The exact stderr the
+/// HQ-DESKTOP-6D events carried (event 19321028763e4310936f1c831d357088).
+const NPMJS_TARBALL_E404_STDERR: &str = "npm error code E404\n\
+    npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us/hq-cli/-/hq-cli-5.109.6.tgz - Not found\n\
+    npm error 404\n\
+    npm error 404  '@indigoai-us/hq-cli@5.109.6' is not in this registry.";
+
+/// The install environment the reported HQ-DESKTOP-6D event
+/// 19321028763e4310936f1c831d357088 carried: managed toolchain (npm 10.9.2,
+/// Node 22.17.0, ABI 127), pinned to the freshly published 5.109.6.
+fn e404_tarball_env() -> InstallEnvironment {
+    InstallEnvironment {
+        node_version: Some("22.17.0".to_string()),
+        node_abi: Some("127".to_string()),
+        npm_version: Some("10.9.2".to_string()),
+        toolchain_source: NpmToolchainSource::Managed,
+        target_version: Some("5.109.6".to_string()),
+        requested_spec_kind: RequestedSpecKind::PinnedVersion,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_npmjs_tarball_404_for_the_pinned_target_version_emits_no_event() {
+    // The HQ-DESKTOP-6D reproduction: an npmjs tarball 404 for the EXACT pinned,
+    // freshly published version is the mid-publish serving transient, so the real
+    // reporter captures nothing and the repeat guard reports NotReportable — the
+    // same disposition ETARGET already earns.
+    let events = captured_events(|| {
+        report_install_failure_with_environment(
+            Some(1),
+            NPMJS_TARBALL_E404_STDERR,
+            None,
+            false,
+            &e404_tarball_env(),
+        )
+    });
+    assert!(
+        events.is_empty(),
+        "an npmjs tarball 404 for the pinned version must not page: {events:?}"
+    );
+    // The episode guard agrees: nothing reportable, so no key is ever persisted.
+    let episode_events = captured_events(|| {
+        assert_eq!(
+            report_install_failure_episode(
+                Some(1),
+                NPMJS_TARBALL_E404_STDERR,
+                None,
+                false,
+                &e404_tarball_env(),
+                "5.109.6",
+                &[],
+            ),
+            InstallFailureEpisode::NotReportable,
+        );
+    });
+    assert!(
+        episode_events.is_empty(),
+        "the episode guard must not capture either: {episode_events:?}"
+    );
+}
+
+#[test]
+fn an_npmjs_tarball_404_outside_the_pinned_window_stays_a_loud_attributed_error() {
+    // The HQ-DESKTOP-5Q anti-masking guard survives the HQ-DESKTOP-6D refinement:
+    // the SAME npmjs tarball stderr stays a loud Error whenever it is NOT the
+    // version the updater itself pinned — with no pin (default env) and with a pin
+    // for a DIFFERENT version. Only the version the updater just resolved is
+    // downgraded.
+    let cases = [
+        ("default env", InstallEnvironment::default(), None),
+        (
+            "mismatched pin",
+            InstallEnvironment {
+                toolchain_source: NpmToolchainSource::Managed,
+                target_version: Some("5.109.5".to_string()),
+                requested_spec_kind: RequestedSpecKind::PinnedVersion,
+                ..Default::default()
+            },
+            Some("5.109.5"),
+        ),
+    ];
+    for (label, env, expected_target_tag) in cases {
+        let event = single_event(captured_events(|| {
+            report_install_failure_with_environment(
+                Some(1),
+                NPMJS_TARBALL_E404_STDERR,
+                None,
+                false,
+                &env,
+            )
+        }));
+        assert_eq!(event.level, sentry::Level::Error, "{label}");
+        assert_eq!(
+            event.message.as_deref(),
+            Some("[hq-cli-update] install failed (E404:npmjs:tarball)"),
+            "{label}"
+        );
+        assert_eq!(
+            fingerprint(&event),
+            [
+                "hq-cli-update",
+                "install-failed",
+                "unexpected",
+                "E404:npmjs:tarball"
+            ],
+            "{label}"
+        );
+        assert_eq!(
+            tag(&event, "install_failure_kind"),
+            Some("unexpected"),
+            "{label}"
+        );
+        assert_eq!(tag(&event, "npm_error_code"), Some("E404"), "{label}");
+        assert_eq!(tag(&event, "npm_registry_origin"), Some("npmjs"), "{label}");
+        assert_eq!(tag(&event, "npm_404_resource"), Some("tarball"), "{label}");
+        assert_eq!(
+            tag(&event, "hq_cli_target_version"),
+            expected_target_tag,
+            "{label}"
+        );
+        let diagnostics = match event.extra.get("npm_diagnostics") {
+            Some(Value::String(text)) => text.clone(),
+            other => panic!("{label}: missing npm_diagnostics: {other:?}"),
+        };
+        assert!(
+            diagnostics.contains("registry_origin=npmjs npm_404_resource=tarball"),
+            "{label}: npm_diagnostics dropped the E404 attribution: {diagnostics}"
+        );
+        // No registry host, full tarball URL, raw requested spec, or raw npm output
+        // crosses the Sentry boundary.
+        assert_path_safe(
+            &event,
+            &[
+                "registry.npmjs.org",
+                "https://registry.npmjs.org/@indigoai-us/hq-cli/-/hq-cli-5.109.6.tgz",
+                "@indigoai-us/hq-cli@5.109.6",
+                "npm error",
+            ],
+        );
+    }
+}

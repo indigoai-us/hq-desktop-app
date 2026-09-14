@@ -47,10 +47,12 @@ function read(relative: string): string {
 const RUN_AT = Date.parse((SERVICE_EVIDENCE as { runAt: string }).runAt);
 
 describe('US-018 shipping path: the mounted shell is the one that gets the seams', () => {
-  it('mounts HqWorkWorkShell and nothing else', () => {
-    const boot = read('./boot.ts');
+  it('mounts HqWorkWorkShell and nothing else', async () => {
+    const { bootDesktopAltWindow } = await import('./boot');
+    let mounted = 0;
+    await bootDesktopAltWindow({ mountHqWork: () => { mounted += 1; } });
+    expect(mounted).toBe(1);
     const main = read('./main.ts');
-    expect(boot).toContain("return 'hq-work'");
     expect(main).toContain("import('./HqWorkWorkShell.svelte')");
     // If this ever gains a second mount, the plumbing below must be repeated
     // for it — or the Office becomes unreachable on that branch.

@@ -154,11 +154,16 @@ pub fn newest_engine_sync_at_in(state_dir: &Path) -> Option<String> {
         if !(name.starts_with("sync-journal.") && name.ends_with(".json")) {
             continue;
         }
-        let Some(stamp) = read_journal_head(&entry.path()).as_deref().and_then(extract_last_sync)
+        let Some(stamp) = read_journal_head(&entry.path())
+            .as_deref()
+            .and_then(extract_last_sync)
         else {
             continue;
         };
-        if newest.as_deref().map_or(true, |current| is_newer(&stamp, current)) {
+        if newest
+            .as_deref()
+            .map_or(true, |current| is_newer(&stamp, current))
+        {
             newest = Some(stamp);
         }
     }
@@ -176,7 +181,10 @@ pub fn newest_engine_sync_at() -> Option<String> {
 /// this app's own observations and stay as they were. The engine's stamp wins
 /// only when it is genuinely newer (or the app has never recorded one), so a
 /// fresh in-app sync is never rolled back to an older terminal run.
-pub fn merge_engine_sync_at(mut status: SyncStatus, engine_last_sync: Option<String>) -> SyncStatus {
+pub fn merge_engine_sync_at(
+    mut status: SyncStatus,
+    engine_last_sync: Option<String>,
+) -> SyncStatus {
     let Some(engine) = engine_last_sync else {
         return status;
     };
@@ -669,11 +677,12 @@ mod tests {
         // REGRESSION (B3): a machine whose daemon can never start has no
         // desktop journal at all, so the badge read "Never synced" even
         // straight after a successful `hq sync` in a terminal.
-        let merged = merge_engine_sync_at(
-            default_status(),
-            Some("2026-07-30T18:04:11Z".to_string()),
+        let merged =
+            merge_engine_sync_at(default_status(), Some("2026-07-30T18:04:11Z".to_string()));
+        assert_eq!(
+            merged.last_sync_at,
+            Some("2026-07-30T18:04:11Z".to_string())
         );
-        assert_eq!(merged.last_sync_at, Some("2026-07-30T18:04:11Z".to_string()));
         assert_eq!(merged.source, "cli");
     }
 
@@ -686,8 +695,7 @@ mod tests {
             daemon_running: true,
             source: "journal".to_string(),
         };
-        let merged =
-            merge_engine_sync_at(status.clone(), Some("2026-07-30T18:04:11Z".to_string()));
+        let merged = merge_engine_sync_at(status.clone(), Some("2026-07-30T18:04:11Z".to_string()));
         assert_eq!(merged, status, "an older engine stamp must not win");
     }
 
@@ -701,7 +709,10 @@ mod tests {
             source: "journal".to_string(),
         };
         let merged = merge_engine_sync_at(status, Some("2026-07-30T18:04:11Z".to_string()));
-        assert_eq!(merged.last_sync_at, Some("2026-07-30T18:04:11Z".to_string()));
+        assert_eq!(
+            merged.last_sync_at,
+            Some("2026-07-30T18:04:11Z".to_string())
+        );
         assert_eq!(merged.pending_files, 4);
         assert_eq!(merged.conflicts, 3);
         assert!(merged.daemon_running);

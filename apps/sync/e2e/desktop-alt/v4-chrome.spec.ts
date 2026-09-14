@@ -122,6 +122,51 @@ describe('desktop-alt V4 chrome (US-002 / DESKTOP-001)', () => {
     expect(titleBar).not.toContain('finish sync in Claude Code');
   });
 
+  it('exposes optional back/forward history controls without changing unsupported hosts', () => {
+    const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
+    const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+
+    expect(titleBar).toContain('canGoBack?: boolean');
+    expect(titleBar).toContain('canGoForward?: boolean');
+    expect(titleBar).toContain('backLabel?: string');
+    expect(titleBar).toContain('forwardLabel?: string');
+    expect(titleBar).toContain('onback?: () => void');
+    expect(titleBar).toContain('onforward?: () => void');
+    expect(titleBar).toContain('data-testid="titlebar-back"');
+    expect(titleBar).toContain('data-testid="titlebar-forward"');
+    expect(titleBar).toContain('data-testid="titlebar-history"');
+    expect(titleBar).toContain('data-tauri-drag-region="false"');
+    expect(titleBar).toContain('{#if showHistoryControls}');
+    expect(titleBar).toContain("aria-label=\"Back\"");
+    expect(titleBar).toContain("aria-label=\"Forward\"");
+    // Legacy desktop-alt DesktopApp does not wire history — chrome stays unchanged.
+    expect(desktopApp).not.toContain('onback=');
+    expect(desktopApp).not.toContain('onforward=');
+    expect(desktopApp).not.toContain('canGoBack=');
+  });
+
+  it('shared-shell title bar places Back/Forward immediately after the day-date', () => {
+    const sharedTitleBar = readRepoFile('../../packages/ui/src/home/V4TitleBar.svelte');
+    const sharedShell = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
+    const dateNeedle = 'data-testid="titlebar-day-date"';
+    const historyNeedle = 'data-testid="titlebar-history"';
+    const date = sharedTitleBar.indexOf(dateNeedle);
+    const history = sharedTitleBar.indexOf(historyNeedle);
+    expect(date).toBeGreaterThan(-1);
+    expect(history).toBeGreaterThan(date);
+    expect(sharedTitleBar.slice(date + dateNeedle.length, history)).not.toMatch(
+      /data-testid="titlebar-/,
+    );
+    expect(sharedTitleBar).toContain('data-tauri-drag-region="false"');
+    expect(sharedTitleBar).toContain('data-testid="titlebar-back"');
+    expect(sharedTitleBar).toContain('data-testid="titlebar-forward"');
+    expect(sharedShell).toContain('canGoBack={navigationCanGoBack}');
+    expect(sharedShell).toContain('canGoForward={navigationCanGoForward}');
+    expect(sharedShell).toContain('onback={() => void goBack()}');
+    expect(sharedShell).toContain('onforward={() => void goForward()}');
+    expect(sharedShell).toContain('consumeNavigationShortcut(event, {');
+  });
+
   it('the sidebar renders all companies directly instead of using an overflow row', () => {
     const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
     const harnessMocks = readRepoFile('dev-harness/mocks/core.ts');

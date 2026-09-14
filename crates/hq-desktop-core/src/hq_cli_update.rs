@@ -2,6 +2,7 @@
 //! reporting helpers plus its async single-flight boundary.
 
 use std::future::Future;
+#[cfg(not(unix))]
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -24,7 +25,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32, TH32CS_SNAPTHREAD,
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::JobObjects::{
@@ -120,6 +121,26 @@ const VERSION_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 const VERSION_OUTPUT_LIMIT: u64 = 64 * 1024;
 
+#[cfg(unix)]
+fn read_probe_output(file: std::fs::File) -> std::io::Result<Vec<u8>> {
+    use std::os::unix::fs::FileExt;
+    // The child inherits the same open file description. Seeking here would
+    // also rewind a descendant that is still writing during group shutdown.
+    let mut bytes = vec![0; VERSION_OUTPUT_LIMIT as usize];
+    let mut length = 0;
+    while length < bytes.len() {
+        match file.read_at(&mut bytes[length..], length as u64) {
+            Ok(0) => break,
+            Ok(count) => length += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    bytes.truncate(length);
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
 fn read_probe_output(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
     file.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
@@ -2936,8 +2957,7 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         // caller derives BUN_INSTALL from that same path before spawning.
         InstallExecutor::Bun => true,
         _ => pnpm.as_ref().is_some_and(|diagnostics| {
-            diagnostics.home_source != PnpmHomeSource::Undetermined
-                && diagnostics.path_has_shim_dir
+            diagnostics.home_source != PnpmHomeSource::Undetermined && diagnostics.path_has_shim_dir
         }),
     };
     // Delivery evidence: did the installer write the target version INTO the
@@ -3006,7 +3026,12 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
                     non_convergent_episode_key(latest, executor, kind, pnpm_home_source);
                 let first_episode =
                     !non_convergent_episode_reported(nonblocking_episode_keys, &episode_key);
-                (None, first_episode, false, first_episode.then_some(episode_key))
+                (
+                    None,
+                    first_episode,
+                    false,
+                    first_episode.then_some(episode_key),
+                )
             }
             // A removal ran and the machine is still shadowed (or a gate refused
             // it): fall back to the foreign-managed policy — one durable-record-
@@ -3032,7 +3057,12 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         let episode_key = non_convergent_episode_key(latest, executor, kind, pnpm_home_source);
         let first_episode =
             !non_convergent_episode_reported(nonblocking_episode_keys, &episode_key);
-        (None, first_episode, false, first_episode.then_some(episode_key))
+        (
+            None,
+            first_episode,
+            false,
+            first_episode.then_some(episode_key),
+        )
     } else if kind.is_installer_targeted() {
         (Some(latest.to_string()), true, false, None)
     } else if !foreign_verdict_may_block(
@@ -3054,7 +3084,12 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
         let episode_key = non_convergent_episode_key(latest, executor, kind, pnpm_home_source);
         let first_episode =
             !non_convergent_episode_reported(nonblocking_episode_keys, &episode_key);
-        (None, first_episode, false, first_episode.then_some(episode_key))
+        (
+            None,
+            first_episode,
+            false,
+            first_episode.then_some(episode_key),
+        )
     } else {
         // ForeignManaged, aimed-or-undrivable: a layout HQ provably aimed at and
         // could not move, or one it genuinely cannot drive in place — block
@@ -3963,6 +3998,14 @@ fn npm_error_code(detail: &str) -> String {
 /// Temporary npm registry and resolution failures already retry on the next
 /// scheduled update. Preserve this current-main classification while rebasing
 /// the permission diagnostics so a telemetry fix cannot make them noisy again.
+///
+/// This is the ENV-BLIND code allow-list and must stay one: it never contains
+/// E404. The env-aware [`classify_install_failure_with_environment`] separately
+/// maps a pinned npmjs tarball 404 to `ExpectedTransientRegistry` (HQ-DESKTOP-6D,
+/// the tarball-layer twin of the ETARGET lag) via
+/// [`is_npmjs_pinned_tarball_not_yet_served`], WITHOUT widening this list — so
+/// every env-blind caller and `InstallEnvironment::default()` keep today's exact
+/// behaviour.
 fn is_expected_transient_registry_failure(detail: &str) -> bool {
     matches!(
         npm_error_code(detail).as_str(),
@@ -4057,8 +4100,7 @@ fn npm_404_get_url(detail: &str) -> Option<&str> {
         let idx = lower.find(" - get ")?;
         let token = line[idx + " - get ".len()..].split_whitespace().next()?;
         let lower_token = token.to_ascii_lowercase();
-        (lower_token.starts_with("https://") || lower_token.starts_with("http://"))
-            .then_some(token)
+        (lower_token.starts_with("https://") || lower_token.starts_with("http://")).then_some(token)
     })
 }
 
@@ -4150,6 +4192,12 @@ fn foreign_registry_404_signature(detail: &str) -> String {
 /// definitionally `unknown`/`none` for a 404 and carry no discriminating power.
 /// Derived from the shared [`e404_discriminator`] so the group and the episode
 /// key agree.
+///
+/// An npmjs TARBALL 404 reaches this signature (`E404:npmjs:tarball`) ONLY when it
+/// is NOT the pinned-version serving lag — an unpinned/default env, or a pin for a
+/// different version — because [`classify_install_failure_with_environment`]
+/// reclassifies the pinned case to `ExpectedTransientRegistry` upstream
+/// (HQ-DESKTOP-6D), so it never stays `Unexpected` and never reaches here.
 fn unexpected_e404_signature(detail: &str) -> String {
     let (origin, resource) = e404_discriminator(detail);
     format!("E404:{}:{}", origin.tag_value(), resource.tag_value())
@@ -4186,6 +4234,45 @@ fn npm_404_names_hq_cli_packument(detail: &str) -> bool {
     path.ends_with("/@indigoai-us%2fhq-cli") || path.ends_with("/@indigoai-us/hq-cli")
 }
 
+/// Whether npm's 404 GET line names the requested `@indigoai-us/hq-cli` TARBALL
+/// object for EXACTLY `version` — a path ending in
+/// `/@indigoai-us/hq-cli/-/hq-cli-<version>.tgz` on whatever host the 404 line
+/// named. The tarball-layer companion to [`npm_404_names_hq_cli_packument`]:
+/// registry.npmjs.org lists a version in the packument only once its publish PUT
+/// landed, so a 404 for that same version's own tarball object is a serving lag
+/// (HQ-DESKTOP-6D), not an absent version. `version` is the exact string the
+/// updater pinned into [`install_argv`] (`env.target_version`); an empty version,
+/// or an absent/unparseable 404 URL, returns false. Uses the same line-prefix and
+/// path-parsing discipline as [`npm_404_names_hq_cli_packument`] — lowercase the
+/// URL, strip scheme+authority, drop any query/fragment and trailing slash — and
+/// lowercases `version` so a case difference cannot hide a match. The parsed path
+/// is consumed only for this boolean and never reaches Sentry.
+fn npm_404_names_hq_cli_tarball_for(detail: &str, version: &str) -> bool {
+    let version = version.trim().to_ascii_lowercase();
+    if version.is_empty() {
+        return false;
+    }
+    let Some(url) = npm_404_get_url(detail) else {
+        return false;
+    };
+    let lower = url.to_ascii_lowercase();
+    let Some(after_scheme) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let Some(slash) = after_scheme.find('/') else {
+        return false;
+    };
+    let path = after_scheme[slash..]
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    path.ends_with(&format!("/@indigoai-us/hq-cli/-/hq-cli-{version}.tgz"))
+}
+
 /// Whether a failed npm install is the "this machine's npm resolves the
 /// `@indigoai-us` scope through a registry that does not carry hq-cli" condition:
 /// an E404 whose own 404 line names a non-npmjs host AND the requested
@@ -4194,11 +4281,13 @@ fn npm_404_names_hq_cli_packument(detail: &str) -> bool {
 /// auth-gated 403 masked as a 404 — that no updater code change can install
 /// through, so it is reported at Warning under its own attributed group.
 ///
-/// Keyed on npm's OWN structured signals and disjoint from every other arm: no
-/// other classifier arm matches `code == E404` today, and the lifecycle
-/// exclusion keeps a third-party build failure whose stderr merely mentions 404
-/// on its own per-package lifecycle attribution. The packument gate is
-/// deliberately narrow: a foreign-host 404 for a TARBALL or a transitive
+/// Keyed on npm's OWN structured signals and disjoint from every other arm: it
+/// requires a FOREIGN origin, so it cannot overlap the env-aware npmjs-pinned
+/// tarball transient ([`is_npmjs_pinned_tarball_not_yet_served`], the only other
+/// arm that matches `code == E404`, which requires the npmjs origin); the
+/// lifecycle exclusion keeps a third-party build failure whose stderr merely
+/// mentions 404 on its own per-package lifecycle attribution. The packument gate
+/// is deliberately narrow: a foreign-host 404 for a TARBALL or a transitive
 /// DEPENDENCY (rather than the hq-cli package document itself) is NOT proof the
 /// configured registry lacks hq — it can be a broken published artifact — so it
 /// stays `Unexpected` at Error under its own `E404:foreign:<resource>` signature.
@@ -4206,6 +4295,36 @@ fn is_foreign_registry_package_missing(detail: &str) -> bool {
     npm_error_code(detail) == "E404"
         && npm_registry_origin(detail) == NpmRegistryOrigin::Foreign
         && npm_404_names_hq_cli_packument(detail)
+        && !has_npm_lifecycle_failure_marker(detail)
+        && !npm_lifecycle_failure(detail).failed
+}
+
+/// Whether a failed npm install is the "registry.npmjs.org lists the version the
+/// updater just resolved but is not yet serving its tarball object" condition
+/// (HQ-DESKTOP-6D): an E404 whose own 404 line names registry.npmjs.org AND the
+/// `@indigoai-us/hq-cli` TARBALL for the EXACT version the updater pinned
+/// (`env.target_version`), with no lifecycle failure. This is the tarball-layer
+/// twin of the ETARGET packument lag that [`is_expected_transient_registry_failure`]
+/// already absorbs: npm stores the tarball in the SAME publish PUT that updates
+/// the packument, so a listed-but-unserved tarball is a self-healing serving-lag
+/// transient by construction — the next scheduled check installs it, and no
+/// updater code change can install through a registry-served 404.
+///
+/// Deliberately confined to hq-cli's OWN tarball at the pinned version: an npmjs
+/// packument 404, a foreign-host 404, a tarball for any OTHER package or any
+/// version OTHER than the pin, a default (unpinned) environment, and any E404 with
+/// a lifecycle marker all fall outside this predicate and stay loud at Error. The
+/// pin requirement is what confines the downgrade to the version the updater
+/// itself resolved from `/latest`. Keyed on npm's OWN structured signals; the
+/// parsed URL is consumed only for the boolean and never reaches Sentry.
+fn is_npmjs_pinned_tarball_not_yet_served(detail: &str, env: &InstallEnvironment) -> bool {
+    npm_error_code(detail) == "E404"
+        && npm_registry_origin(detail) == NpmRegistryOrigin::Npmjs
+        && npm_404_resource(detail) == Npm404Resource::Tarball
+        && env
+            .target_version
+            .as_deref()
+            .is_some_and(|version| npm_404_names_hq_cli_tarball_for(detail, version))
         && !has_npm_lifecycle_failure_marker(detail)
         && !npm_lifecycle_failure(detail).failed
 }
@@ -4739,7 +4858,9 @@ pub fn is_disk_exhaustion_failure(detail: &str) -> bool {
     if npm_error_code(detail) == "ENOSPC" {
         return true;
     }
-    detail.to_ascii_lowercase().contains("no space left on device")
+    detail
+        .to_ascii_lowercase()
+        .contains("no space left on device")
         && !has_npm_lifecycle_failure_marker(detail)
         && !npm_lifecycle_failure(detail).failed
 }
@@ -4900,7 +5021,10 @@ pub fn classify_install_failure_with_final_attempt(
         // documents. npm resolved the `@indigoai-us` scope through a registry that
         // does not carry the package: a permanent local registry misconfiguration,
         // reported at Warning under its own attributed group. Disjoint from every
-        // other arm because no other arm matches `code == E404`.
+        // other arm in this env-blind ladder; the only other E404 arm — the
+        // env-aware npmjs-pinned tarball transient — lives in
+        // `classify_install_failure_with_environment` and requires the npmjs origin
+        // this Foreign arm excludes.
         InstallFailureKind::ForeignRegistryPackageMissing
     } else if is_missing_global_install_target(detail, prefix) {
         // Placed AFTER the lifecycle arm so a third-party build failure keeps its
@@ -4944,13 +5068,23 @@ fn probed_node_major(env: &InstallEnvironment) -> Option<u32> {
 
 /// Classify a failed npm install WITH the probed toolchain environment. A strict
 /// refinement of [`classify_install_failure_with_final_attempt`]: it delegates
-/// first and rewrites the result ONLY when the delegate returned exactly
-/// `Unexpected` AND the probed Node major parsed AND is strictly below
-/// [`MIN_NODE_MAJOR`] — a runtime the CLI's own `engines.node` makes install
-/// impossible on. Every expected/lifecycle kind is returned untouched, and a
-/// machine on a supported Node (or one whose probe was unparseable) is
-/// byte-identical to the env-blind classifier, so `InstallEnvironment::default()`
-/// reproduces today's behaviour for every existing caller.
+/// first and rewrites the result ONLY from a base of exactly `Unexpected`, in two
+/// disjoint cases —
+///   * [`is_npmjs_pinned_tarball_not_yet_served`] holds (HQ-DESKTOP-6D): an npmjs
+///     tarball 404 for the exact pinned version is the mid-publish serving-lag
+///     twin of ETARGET, so it becomes `ExpectedTransientRegistry`; OR
+///   * the probed Node major parsed AND is strictly below [`MIN_NODE_MAJOR`] — a
+///     runtime the CLI's own `engines.node` makes install impossible on — so it
+///     becomes `UnsupportedNode`.
+///
+/// The tarball refinement is checked FIRST: npm's own structured 404 proves npm
+/// ran and resolved the packument for this attempt, so the Node-floor inference
+/// (which fires when npm dies BEFORE emitting a structured block) does not apply;
+/// once the serving lag clears, the next check reclassifies exactly as today.
+/// Every expected/lifecycle kind is returned untouched, and because the tarball
+/// arm requires a pinned `target_version` (absent by default) and the Node arm a
+/// sub-floor probe, `InstallEnvironment::default()` stays byte-identical to the
+/// env-blind classifier and reproduces today's behaviour for every existing caller.
 pub fn classify_install_failure_with_environment(
     exit_code: Option<i32>,
     detail: &str,
@@ -4958,8 +5092,24 @@ pub fn classify_install_failure_with_environment(
     final_attempt_forced: bool,
     env: &InstallEnvironment,
 ) -> InstallFailureKind {
-    let base =
-        classify_install_failure_with_final_attempt(exit_code, detail, prefix, final_attempt_forced);
+    let base = classify_install_failure_with_final_attempt(
+        exit_code,
+        detail,
+        prefix,
+        final_attempt_forced,
+    );
+    if base == InstallFailureKind::Unexpected && is_npmjs_pinned_tarball_not_yet_served(detail, env)
+    {
+        // HQ-DESKTOP-6D: registry.npmjs.org lists the version the updater just
+        // resolved but is not yet serving its tarball object — the tarball-layer
+        // twin of the ETARGET packument lag. It self-heals on the next scheduled
+        // check and no updater change can install through it, so reuse the existing
+        // transient-registry disposition (no Sentry capture, transient UI copy,
+        // scheduled retry). Refined BEFORE the unsupported-Node arm: npm's own
+        // structured 404 proves npm ran for this attempt, so the Node-floor
+        // inference does not apply.
+        return InstallFailureKind::ExpectedTransientRegistry;
+    }
     if base == InstallFailureKind::Unexpected
         && probed_node_major(env).is_some_and(|major| major < MIN_NODE_MAJOR)
     {
@@ -6102,7 +6252,10 @@ pub fn report_install_failure_with_environment(
             // broken local npm prefix; the foreign-registry downgrade fires ONLY when
             // npm's own 404 line names a non-npmjs host, so a npmjs- or unknown-origin
             // E404 stays at Error (see report_install_failure_with_environment's E404
-            // arm and install_failure_signature).
+            // arm and install_failure_signature) — EXCEPT the pinned npmjs tarball
+            // serving lag (HQ-DESKTOP-6D), which classify_install_failure_with_environment
+            // reclassifies to ExpectedTransientRegistry upstream, so it returns None
+            // from the report and never reaches this level decision at all.
             let level = if matches!(
                 kind,
                 InstallFailureKind::ExpectedBinCollision
@@ -6218,7 +6371,9 @@ pub fn install_failure_episode_key_with_environment(
         // This preserves today's once-per-published-version cadence for E404 (the
         // reported HQ-DESKTOP-5Q count was bounded that way) while carrying the new
         // origin/resource attribution. E404 is never the shapeless `none` shape, so
-        // the carve-out below cannot swallow it.
+        // the carve-out below cannot swallow it. (The pinned npmjs tarball serving
+        // lag, HQ-DESKTOP-6D, is ExpectedTransientRegistry rather than Unexpected, so
+        // it is NotReportable and never mints a key here.)
         if npm_error_code(detail) == "E404" {
             let key = format!("{latest}|unexpected|{}", unexpected_e404_signature(detail));
             return Some(if env.managed_toolchain_retry {
@@ -6538,11 +6693,15 @@ pub fn is_bun_global_shim(hq_bin: &str) -> bool {
 
 /// Derive `BUN_INSTALL` from a resolved Bun global shim.
 pub fn bun_home_from_hq_bin(hq_bin: &Path) -> Option<std::path::PathBuf> {
-    let parent = hq_bin.parent().filter(|path| !path.as_os_str().is_empty())?;
+    let parent = hq_bin
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())?;
     if parent.file_name().and_then(|name| name.to_str()) != Some("bin") {
         return None;
     }
-    let home = parent.parent().filter(|path| !path.as_os_str().is_empty())?;
+    let home = parent
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())?;
     let is_default = home.file_name().and_then(|name| name.to_str()) == Some(".bun");
     let has_global_store = home.join("install").join("global").is_dir();
     (is_default || has_global_store).then(|| home.to_path_buf())
@@ -6611,7 +6770,10 @@ fn pnpm_home_from_hq_bin(hq_bin: &Path) -> Option<std::path::PathBuf> {
 /// numeric store on a migrated machine, which entrenched a stale reading. Both
 /// forms parse here; anything else scores 0 and sorts last.
 fn pnpm_store_generation(name: &str) -> u64 {
-    name.strip_prefix('v').unwrap_or(name).parse::<u64>().unwrap_or(0)
+    name.strip_prefix('v')
+        .unwrap_or(name)
+        .parse::<u64>()
+        .unwrap_or(0)
 }
 
 /// Closed telemetry token for the pnpm global-store layout family observed while
@@ -6718,7 +6880,9 @@ fn pnpm_store_package_json_candidates(pnpm_home: &Path) -> Vec<std::path::PathBu
 /// joins cover the others. Returns `None` when no manifest is readable — absence
 /// of evidence fails safe toward retrying, never toward a durable block.
 pub fn hq_cli_version_under_pnpm_root(root: &Path) -> Option<String> {
-    let pkg = Path::new("@indigoai-us").join("hq-cli").join("package.json");
+    let pkg = Path::new("@indigoai-us")
+        .join("hq-cli")
+        .join("package.json");
     let nm_pkg = Path::new("node_modules").join(&pkg);
     let mut candidates: Vec<std::path::PathBuf> = vec![root.join(&pkg), root.join(&nm_pkg)];
     if let Ok(entries) = std::fs::read_dir(root) {
@@ -7011,7 +7175,8 @@ pub fn repair_managed_shadow(
                 // Could not even stat it: fail safe.
                 Err(_) => shims_ok = false,
                 Ok(_) => {
-                    if shim_belongs_to_hq_cli(&path, shadow_prefix) && !remove_file_if_present(&path)
+                    if shim_belongs_to_hq_cli(&path, shadow_prefix)
+                        && !remove_file_if_present(&path)
                     {
                         shims_ok = false;
                     }
@@ -7272,6 +7437,21 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "the descendant's inherited handle must not hold the caller open"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reading_probe_output_preserves_the_inherited_writer_position() {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut writer = tempfile::tempfile().unwrap();
+        writer.write_all(b"5.103.34\n").unwrap();
+        writer.set_len(VERSION_OUTPUT_LIMIT + 10).unwrap();
+        writer.seek(SeekFrom::End(0)).unwrap();
+        let position = writer.stream_position().unwrap();
+        let bytes = read_probe_output(writer.try_clone().unwrap()).unwrap();
+        assert!(bytes.starts_with(b"5.103.34\n"));
+        assert_eq!(bytes.len(), VERSION_OUTPUT_LIMIT as usize);
+        assert_eq!(writer.stream_position().unwrap(), position);
     }
 
     #[cfg(unix)]
@@ -7785,7 +7965,10 @@ mod tests {
             outcome.non_convergence_kind,
             Some(NonConvergenceKind::InstallerUnaimed)
         );
-        assert_eq!(outcome.record_non_convergent, None, "npx copy must not block");
+        assert_eq!(
+            outcome.record_non_convergent, None,
+            "npx copy must not block"
+        );
         assert!(!outcome.capture_requires_durable_record);
         let key = non_convergent_episode_key(
             "5.103.18",
@@ -7812,22 +7995,28 @@ mod tests {
             None,
         );
         let seen = [key];
-        let outcome = decide_post_install(&PostInstallContext::npm(
-            npx_hq,
-            npx_hq,
-            Some("5.103.1"),
-            Some("5.103.1"),
-            "5.103.18",
-            Some("/managed/npm-global"),
-            "/opt/homebrew/bin/npm",
-            false,
-            Some("5.103.18"),
-        ).with_nonblocking_episode_keys(&seen));
+        let outcome = decide_post_install(
+            &PostInstallContext::npm(
+                npx_hq,
+                npx_hq,
+                Some("5.103.1"),
+                Some("5.103.1"),
+                "5.103.18",
+                Some("/managed/npm-global"),
+                "/opt/homebrew/bin/npm",
+                false,
+                Some("5.103.18"),
+            )
+            .with_nonblocking_episode_keys(&seen),
+        );
         assert_eq!(
             outcome.non_convergence_kind,
             Some(NonConvergenceKind::InstallerUnaimed)
         );
-        assert!(outcome.capture.is_none(), "a repeat episode captures nothing");
+        assert!(
+            outcome.capture.is_none(),
+            "a repeat episode captures nothing"
+        );
         assert_eq!(outcome.record_nonblocking_episode, None);
     }
 
@@ -7920,12 +8109,12 @@ mod tests {
         for hq_bin in [
             "hq",
             "",
-            "/Users/t/Library/pnpm/hq",      // flat
-            "/home/t/.local/share/pnpm/hq",  // flat linux
-            "/Users/t/Library/pnpm/bin/hq",  // pnpm >=11 nested
-            "/opt/homebrew/bin/hq",          // npm/homebrew
-            "/Users/t/.npm-global/bin/hq",   // npm global
-            "/Users/t/.asdf/shims/hq",       // asdf
+            "/Users/t/Library/pnpm/hq",     // flat
+            "/home/t/.local/share/pnpm/hq", // flat linux
+            "/Users/t/Library/pnpm/bin/hq", // pnpm >=11 nested
+            "/opt/homebrew/bin/hq",         // npm/homebrew
+            "/Users/t/.npm-global/bin/hq",  // npm global
+            "/Users/t/.asdf/shims/hq",      // asdf
         ] {
             assert_eq!(
                 is_pnpm_global_shim(hq_bin),
@@ -8230,7 +8419,10 @@ mod tests {
             })
         );
         // Not user-owned (a system/Homebrew or managed prefix) -> no user aim.
-        assert_eq!(user_prefix_aim_decision(Some("/opt/homebrew"), false, Some(npm)), None);
+        assert_eq!(
+            user_prefix_aim_decision(Some("/opt/homebrew"), false, Some(npm)),
+            None
+        );
         // User-owned but no co-located npm -> no user aim (ABI safety stays).
         assert_eq!(user_prefix_aim_decision(Some(prefix), true, None), None);
         // No derivable hq prefix -> no user aim.
@@ -8256,7 +8448,13 @@ mod tests {
 
         // Aimed at the executed copy's own prefix, running its own npm.
         assert_eq!(
-            executed_copy_aim_for(&hq_str, Some(&prefix_str), &npm_str, &managed_roots, Some(home)),
+            executed_copy_aim_for(
+                &hq_str,
+                Some(&prefix_str),
+                &npm_str,
+                &managed_roots,
+                Some(home)
+            ),
             ExecutedCopyAim::Aimed
         );
         // Drivable, but this run aimed at the managed prefix instead -> deferred.
@@ -8273,7 +8471,13 @@ mod tests {
         // A user prefix with no co-located npm -> undrivable.
         std::fs::remove_file(&npm).unwrap();
         assert_eq!(
-            executed_copy_aim_for(&hq_str, Some(&prefix_str), &npm_str, &managed_roots, Some(home)),
+            executed_copy_aim_for(
+                &hq_str,
+                Some(&prefix_str),
+                &npm_str,
+                &managed_roots,
+                Some(home)
+            ),
             ExecutedCopyAim::Undrivable
         );
         // A system prefix (outside home) -> undrivable.
@@ -8796,7 +9000,10 @@ mod tests {
         let detail = outcome.result.clone().unwrap_err();
         assert!(!detail.contains("managed outside npm's global prefix"));
         assert!(!detail.contains("Update it with the tool that installed it"));
-        assert!(outcome.capture.is_some(), "the shadow stays observable once");
+        assert!(
+            outcome.capture.is_some(),
+            "the shadow stays observable once"
+        );
         assert_eq!(
             outcome.capture.as_ref().unwrap().managed_shadow_repair,
             ManagedShadowRepairOutcome::NotAttempted
@@ -8884,10 +9091,7 @@ mod tests {
     }
 
     fn write_hq_cli_pkg(dir: &Path, version: &str) {
-        let pkg_dir = dir
-            .join("node_modules")
-            .join("@indigoai-us")
-            .join("hq-cli");
+        let pkg_dir = dir.join("node_modules").join("@indigoai-us").join("hq-cli");
         std::fs::create_dir_all(&pkg_dir).unwrap();
         std::fs::write(
             pkg_dir.join("package.json"),
@@ -8990,13 +9194,23 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            shadow_pkg.join("dist").join("bin").join("hq-auth-refresh.js"),
+            shadow_pkg
+                .join("dist")
+                .join("bin")
+                .join("hq-auth-refresh.js"),
             "#!/usr/bin/env node\nrequire('../auth.js');\n",
         )
         .unwrap();
-        symlink(shadow_pkg.join("dist").join("index.js"), node_bin.join("hq")).unwrap();
         symlink(
-            shadow_pkg.join("dist").join("bin").join("hq-auth-refresh.js"),
+            shadow_pkg.join("dist").join("index.js"),
+            node_bin.join("hq"),
+        )
+        .unwrap();
+        symlink(
+            shadow_pkg
+                .join("dist")
+                .join("bin")
+                .join("hq-auth-refresh.js"),
             node_bin.join("hq-auth-refresh"),
         )
         .unwrap();
@@ -9097,7 +9311,8 @@ mod tests {
         std::fs::remove_file(node_bin.join("hq")).unwrap();
         symlink(elsewhere.join("other"), node_bin.join("hq")).unwrap();
 
-        let action = repair_managed_shadow(&node_bin.join("hq"), &root.join("npm-global"), "5.103.20");
+        let action =
+            repair_managed_shadow(&node_bin.join("hq"), &root.join("npm-global"), "5.103.20");
         assert_eq!(action, ManagedShadowRepairAction::ProvenanceRefused);
         assert!(
             std::fs::symlink_metadata(node_bin.join("hq")).is_ok(),
@@ -9140,7 +9355,8 @@ mod tests {
         let root = tmp.path();
         build_unix_managed_shadow(root, "5.98.0", "5.103.19");
         let node_bin = root.join("node").join("bin");
-        let action = repair_managed_shadow(&node_bin.join("hq"), &root.join("npm-global"), "5.103.20");
+        let action =
+            repair_managed_shadow(&node_bin.join("hq"), &root.join("npm-global"), "5.103.20");
         assert_eq!(action, ManagedShadowRepairAction::ProvenanceRefused);
         assert!(
             std::fs::symlink_metadata(node_bin.join("hq")).is_ok(),
@@ -9356,7 +9572,14 @@ mod tests {
             "delivered target in a matching prefix is genuine shadowing"
         );
         assert_eq!(
-            non_convergence_kind(InstallExecutor::Npm, Some(prefix), false, hq_bin, false, &[]),
+            non_convergence_kind(
+                InstallExecutor::Npm,
+                Some(prefix),
+                false,
+                hq_bin,
+                false,
+                &[]
+            ),
             NonConvergenceKind::ResolutionShortfall,
             "an undelivered target in a matching prefix is a resolution shortfall"
         );
@@ -9485,8 +9708,7 @@ mod tests {
     fn bun_global_manifest_is_delivery_evidence() {
         let tmp = tempfile::TempDir::new().unwrap();
         let bun_home = tmp.path().join(".bun");
-        let package_dir = bun_home
-            .join("install/global/node_modules/@indigoai-us/hq-cli");
+        let package_dir = bun_home.join("install/global/node_modules/@indigoai-us/hq-cli");
         std::fs::create_dir_all(&package_dir).unwrap();
         std::fs::write(
             package_dir.join("package.json"),
@@ -9508,8 +9730,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let bun_home = tmp.path().join(".bun");
         let bun_bin = bun_home.join("bin");
-        let bun_package = bun_home
-            .join("install/global/node_modules/@indigoai-us/hq-cli");
+        let bun_package = bun_home.join("install/global/node_modules/@indigoai-us/hq-cli");
         std::fs::create_dir_all(&bun_bin).unwrap();
         std::fs::create_dir_all(&bun_package).unwrap();
         std::fs::write(bun_bin.join("hq"), b"#!/bin/sh\n").unwrap();
@@ -9524,8 +9745,7 @@ mod tests {
         );
 
         let brew_npm_prefix = tmp.path().join("homebrew-npm");
-        let brew_npm_package =
-            brew_npm_prefix.join("lib/node_modules/@indigoai-us/hq-cli");
+        let brew_npm_package = brew_npm_prefix.join("lib/node_modules/@indigoai-us/hq-cli");
         let brew_npm_bin = brew_npm_prefix.join("bin");
         std::fs::create_dir_all(&brew_npm_package).unwrap();
         std::fs::create_dir_all(&brew_npm_bin).unwrap();
@@ -9535,11 +9755,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(brew_npm_package.join("index.js"), b"#!/usr/bin/env node\n").unwrap();
-        symlink(
-            brew_npm_package.join("index.js"),
-            brew_npm_bin.join("hq"),
-        )
-        .unwrap();
+        symlink(brew_npm_package.join("index.js"), brew_npm_bin.join("hq")).unwrap();
         assert_eq!(
             install_executor_for_hq_bin(&brew_npm_bin.join("hq")),
             Some(InstallExecutor::Npm)
@@ -10022,14 +10238,26 @@ mod tests {
     #[test]
     fn pnpm_global_ls_parser_reads_both_majors_and_fails_soft() {
         let pnpm11 = r#"[{"name":"global","path":"/h/global/v11","dependencies":{"@indigoai-us/hq-cli":{"from":"@indigoai-us/hq-cli","version":"5.98.0","resolved":"file:","path":"/h/global/v11/abc/node_modules/@indigoai-us/hq-cli"}}}]"#;
-        assert_eq!(pnpm_global_ls_hq_cli_version(pnpm11).as_deref(), Some("5.98.0"));
+        assert_eq!(
+            pnpm_global_ls_hq_cli_version(pnpm11).as_deref(),
+            Some("5.98.0")
+        );
         let pnpm10 = r#"[{"dependencies":{"@indigoai-us/hq-cli":{"version":"5.97.2"}}}]"#;
-        assert_eq!(pnpm_global_ls_hq_cli_version(pnpm10).as_deref(), Some("5.97.2"));
+        assert_eq!(
+            pnpm_global_ls_hq_cli_version(pnpm10).as_deref(),
+            Some("5.97.2")
+        );
         // A bare object rather than a one-element array (seen on some setups).
         let obj = r#"{"dependencies":{"@indigoai-us/hq-cli":{"version":"5.96.0"}}}"#;
-        assert_eq!(pnpm_global_ls_hq_cli_version(obj).as_deref(), Some("5.96.0"));
+        assert_eq!(
+            pnpm_global_ls_hq_cli_version(obj).as_deref(),
+            Some("5.96.0")
+        );
         // No hq-cli present, empty, malformed, and a scalar all fail soft to None.
-        assert_eq!(pnpm_global_ls_hq_cli_version(r#"[{"dependencies":{}}]"#), None);
+        assert_eq!(
+            pnpm_global_ls_hq_cli_version(r#"[{"dependencies":{}}]"#),
+            None
+        );
         assert_eq!(pnpm_global_ls_hq_cli_version(""), None);
         assert_eq!(pnpm_global_ls_hq_cli_version("not json {"), None);
         assert_eq!(pnpm_global_ls_hq_cli_version("42"), None);
@@ -10202,7 +10430,9 @@ mod tests {
     /// version readable AND no binary found means the user simply has no CLI.
     #[test]
     fn install_is_needed_when_no_cli_is_installed_at_all() {
-        assert!(cli_install_needed(None, "5.103.1", /* hq_installed */ false));
+        assert!(cli_install_needed(
+            None, "5.103.1", /* hq_installed */ false
+        ));
     }
 
     /// A binary IS present but its version cannot be read. That is ambiguous —
@@ -10213,7 +10443,9 @@ mod tests {
     /// here would just retry fruitlessly on every check).
     #[test]
     fn an_unreadable_but_present_cli_is_left_alone() {
-        assert!(!cli_install_needed(None, "5.103.1", /* hq_installed */ true));
+        assert!(!cli_install_needed(
+            None, "5.103.1", /* hq_installed */ true
+        ));
     }
 
     #[test]
@@ -10557,7 +10789,8 @@ mod tests {
         // updater defect). The property THIS test guards — the permission arm does
         // not over-widen onto a non-permission failure — is preserved verbatim:
         // ENOSPC classifies as ExpectedDiskFull, explicitly NOT ExpectedPrefixPermission.
-        let enospc = "npm error code ENOSPC\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
+        let enospc =
+            "npm error code ENOSPC\nnpm error path /usr/local/lib/node_modules/@indigoai-us";
         assert_eq!(
             classify_install_failure(Some(1), enospc, None),
             InstallFailureKind::ExpectedDiskFull
@@ -10760,7 +10993,10 @@ mod tests {
             npm error path /usr/local/lib/node_modules/better-sqlite3\n\
             prebuild-install warn install No prebuilt binaries found";
         let lifecycle_kind = classify_install_failure(Some(1), lifecycle_with_eidletimeout, None);
-        assert_ne!(lifecycle_kind, InstallFailureKind::ExpectedTransientRegistry);
+        assert_ne!(
+            lifecycle_kind,
+            InstallFailureKind::ExpectedTransientRegistry
+        );
         assert_eq!(lifecycle_kind, InstallFailureKind::Unexpected);
 
         // The LEGACY `npm ERR!` spelling of a lifecycle failure carrying EIDLETIMEOUT
@@ -10772,11 +11008,14 @@ mod tests {
             npm ERR! command failed\n\
             npm ERR! command sh -c prebuild-install || node-gyp rebuild\n\
             npm ERR! path /usr/local/lib/node_modules/better-sqlite3";
-        let legacy_kind = classify_install_failure(Some(1), legacy_lifecycle_with_eidletimeout, None);
+        let legacy_kind =
+            classify_install_failure(Some(1), legacy_lifecycle_with_eidletimeout, None);
         assert_ne!(legacy_kind, InstallFailureKind::ExpectedTransientRegistry);
         assert_eq!(legacy_kind, InstallFailureKind::Unexpected);
         // And it is still reported (captured at Error), never dropped.
-        assert!(install_failure_report(Some(1), legacy_lifecycle_with_eidletimeout, None).is_some());
+        assert!(
+            install_failure_report(Some(1), legacy_lifecycle_with_eidletimeout, None).is_some()
+        );
     }
 
     #[test]
@@ -10871,7 +11110,8 @@ mod tests {
     }
 
     #[test]
-    fn derived_prefix_disk_full_failure_at_an_unmatched_global_target_is_disk_full_not_permission() {
+    fn derived_prefix_disk_full_failure_at_an_unmatched_global_target_is_disk_full_not_permission()
+    {
         // Formerly asserted ENOSPC -> Unexpected. ENOSPC now routes to the
         // dedicated disk-full arm, but the property this test guards is unchanged:
         // a non-permission failure at a global target that differs from the derived
@@ -12215,10 +12455,19 @@ mod tests {
             managed_toolchain_retry: false,
             ..Default::default()
         };
-        let key =
-            install_failure_episode_key_with_environment(Some(190), enotempty, None, false, latest, &env)
-                .expect("an unexpected ENOTEMPTY wedge mints an episode key");
-        assert_eq!(key, "5.103.17|unexpected|ENOTEMPTY|rename|global-lib-node-modules");
+        let key = install_failure_episode_key_with_environment(
+            Some(190),
+            enotempty,
+            None,
+            false,
+            latest,
+            &env,
+        )
+        .expect("an unexpected ENOTEMPTY wedge mints an episode key");
+        assert_eq!(
+            key,
+            "5.103.17|unexpected|ENOTEMPTY|rename|global-lib-node-modules"
+        );
 
         // A second identical report under the same target version is suppressed —
         // the noise bound the fix exists to add.
@@ -12238,7 +12487,10 @@ mod tests {
             bumped.as_deref(),
             Some("5.103.18|unexpected|ENOTEMPTY|rename|global-lib-node-modules")
         );
-        assert!(!install_failure_episode_blocked(&[key.clone()], bumped.as_deref().unwrap()));
+        assert!(!install_failure_episode_blocked(
+            &[key.clone()],
+            bumped.as_deref().unwrap()
+        ));
 
         // A different signature (here the syscall) is a different key.
         let different_syscall = "npm error code ENOTEMPTY\n\
@@ -12256,7 +12508,10 @@ mod tests {
             other.as_deref(),
             Some("5.103.17|unexpected|ENOTEMPTY|mkdir|global-lib-node-modules")
         );
-        assert!(!install_failure_episode_blocked(&[key.clone()], other.as_deref().unwrap()));
+        assert!(!install_failure_episode_blocked(
+            &[key.clone()],
+            other.as_deref().unwrap()
+        ));
 
         // Managed provenance mints a distinct key, so a managed-retry event never
         // collides with its user-path predecessor.
@@ -12915,7 +13170,10 @@ mod tests {
             result.probes.binary_anchor_shape,
             BinaryAnchorShape::NpmPrefix
         );
-        assert_eq!(result.probes.resolved_program_kind, ResolvedProgramKind::Exe);
+        assert_eq!(
+            result.probes.resolved_program_kind,
+            ResolvedProgramKind::Exe
+        );
     }
 
     /// The direct `<node> <program>` retry recovers when the shim names node but
@@ -13091,7 +13349,10 @@ mod tests {
             result.probes.interpreter_recovery,
             InterpreterRecovery::NotNeeded
         );
-        assert_eq!(result.probes.managed_runtime, ManagedRuntimeState::NotProbed);
+        assert_eq!(
+            result.probes.managed_runtime,
+            ManagedRuntimeState::NotProbed
+        );
     }
 
     /// The direct-node gate recognizes node entrypoints only — the exact set of
@@ -13102,8 +13363,16 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let cases = [
             ("env-node", "#!/usr/bin/env node\n", true),
-            ("abs-node", "#!/usr/local/bin/node --enable-source-maps\n", true),
-            ("env-dash-s", "#!/usr/bin/env -S node --experimental\n", true),
+            (
+                "abs-node",
+                "#!/usr/local/bin/node --enable-source-maps\n",
+                true,
+            ),
+            (
+                "env-dash-s",
+                "#!/usr/bin/env -S node --experimental\n",
+                true,
+            ),
             ("env-nodejs", "#!/usr/bin/env nodejs\n", true),
             ("env-other", "#!/usr/bin/env hq-fixture-node\n", false),
             ("sh", "#!/bin/sh\n", false),
@@ -14559,7 +14828,10 @@ mod tests {
         }
         // The default reproduces "no retry considered", so every pre-existing caller
         // that never sets the field tags itself not-armed and keeps today's shape.
-        assert_eq!(ManagedRetryOutcome::default(), ManagedRetryOutcome::NotArmed);
+        assert_eq!(
+            ManagedRetryOutcome::default(),
+            ManagedRetryOutcome::NotArmed
+        );
     }
 
     #[test]
@@ -14711,7 +14983,9 @@ mod tests {
         ];
         for (exit, detail, prefix, forced, expected) in cases {
             assert_eq!(
-                classify_install_failure_with_environment(*exit, detail, *prefix, *forced, &old_node),
+                classify_install_failure_with_environment(
+                    *exit, detail, *prefix, *forced, &old_node
+                ),
                 *expected,
                 "detail {detail:?} must keep its kind on a Node-6 machine"
             );
@@ -14982,7 +15256,10 @@ mod tests {
         // key `<latest>|unexpected|ENOENT|mkdir|global-lib-node-modules` (the planner's
         // executed byte-identical reproduction). On the candidate it earns its own
         // kind, fingerprint, and bounded signature and leaves the `unexpected` group.
-        assert!(is_missing_global_install_target(MISSING_TARGET_STDERR, None));
+        assert!(is_missing_global_install_target(
+            MISSING_TARGET_STDERR,
+            None
+        ));
         assert_eq!(
             classify_install_failure(Some(-4058), MISSING_TARGET_STDERR, None),
             InstallFailureKind::MissingGlobalInstallTarget,
@@ -15013,7 +15290,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_global_install_target_repeat_guard_pages_once_per_version_with_managed_discriminator() {
+    fn missing_global_install_target_repeat_guard_pages_once_per_version_with_managed_discriminator(
+    ) {
         let latest = "0.10.157";
         let key = install_failure_episode_key_with_environment(
             Some(-4058),
@@ -15087,7 +15365,10 @@ mod tests {
         //    AND carries a lifecycle marker, so BOTH guards exclude it.
         let enoent_command_failed = "npm error code ENOENT\nnpm error command failed\nnpm error path /tmp/lib/node_modules/better-sqlite3";
         assert!(!npm_lifecycle_failure(enoent_command_failed).failed);
-        assert!(!is_missing_global_install_target(enoent_command_failed, None));
+        assert!(!is_missing_global_install_target(
+            enoent_command_failed,
+            None
+        ));
         assert_eq!(
             classify_install_failure(Some(1), enoent_command_failed, None),
             InstallFailureKind::Unexpected
@@ -15381,6 +15662,231 @@ mod tests {
         );
     }
 
+    // --- E404 npmjs tarball serving lag (HQ-DESKTOP-6D) -------------------------
+
+    /// An npmjs tarball serving-lag E404 (HQ-DESKTOP-6D): npm's own 404 line names
+    /// registry.npmjs.org and the `@indigoai-us/hq-cli` tarball object for `version`,
+    /// plus the "not in this registry" tail. Parameterised on the line prefix so both
+    /// the modern `npm error` and legacy `npm err!` spellings are covered.
+    fn npmjs_tarball_e404_stderr(prefix: &str, version: &str) -> String {
+        format!(
+            "{prefix} code E404\n\
+             {prefix} 404 Not Found - GET https://registry.npmjs.org/@indigoai-us/hq-cli/-/hq-cli-{version}.tgz - Not found\n\
+             {prefix} 404\n\
+             {prefix} 404  '@indigoai-us/hq-cli@{version}' is not in this registry."
+        )
+    }
+
+    /// The install environment for a failure that pinned `version` — the version the
+    /// updater resolved from `/latest` and pinned into `install_argv`.
+    fn pinned_env(version: &str) -> InstallEnvironment {
+        InstallEnvironment::default().with_pinned_target_version(version)
+    }
+
+    #[test]
+    fn npmjs_tarball_404_for_the_pinned_version_is_an_expected_transient() {
+        // For both npm line prefixes and both toolchain sources, an npmjs tarball 404
+        // for the EXACT pinned version is the mid-publish serving transient: the same
+        // kind, suppressed report, transient UI copy, and non-reportable episode that
+        // ETARGET already earns.
+        for prefix in ["npm error", "npm err!"] {
+            for source in [NpmToolchainSource::Managed, NpmToolchainSource::UserPath] {
+                let stderr = npmjs_tarball_e404_stderr(prefix, "5.109.6");
+                let env = InstallEnvironment {
+                    toolchain_source: source,
+                    ..pinned_env("5.109.6")
+                };
+                assert_eq!(
+                    classify_install_failure_with_environment(Some(1), &stderr, None, false, &env),
+                    InstallFailureKind::ExpectedTransientRegistry,
+                    "{prefix} / {source:?}"
+                );
+                assert_eq!(
+                    install_failure_report_with_environment(Some(1), &stderr, None, false, &env),
+                    None,
+                    "{prefix} / {source:?}: a transient must not report"
+                );
+                let detail =
+                    install_failure_detail_with_environment(Some(1), &stderr, None, false, &env);
+                assert!(
+                    detail.contains("temporarily unavailable or was mid-publish")
+                        && detail.contains("retry automatically"),
+                    "{prefix} / {source:?}: transient UI copy: {detail}"
+                );
+                assert_eq!(
+                    report_install_failure_episode(
+                        Some(1),
+                        &stderr,
+                        None,
+                        false,
+                        &env,
+                        "5.109.6",
+                        &[],
+                    ),
+                    InstallFailureEpisode::NotReportable,
+                    "{prefix} / {source:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn npmjs_tarball_404_stays_loud_outside_the_pinned_window() {
+        let stderr = npmjs_tarball_e404_stderr("npm error", "5.109.6");
+        // No pin (default env) and a pin for a DIFFERENT version both stay a loud
+        // Unexpected E404 with the attributed signature and once-per-version key.
+        for env in [InstallEnvironment::default(), pinned_env("5.109.5")] {
+            let kind =
+                classify_install_failure_with_environment(Some(1), &stderr, None, false, &env);
+            assert_eq!(kind, InstallFailureKind::Unexpected);
+            assert_eq!(
+                install_failure_signature(kind, &stderr, None),
+                "E404:npmjs:tarball"
+            );
+            assert!(
+                install_failure_report_with_environment(Some(1), &stderr, None, false, &env)
+                    .is_some()
+            );
+            assert_eq!(
+                install_failure_episode_key_with_environment(
+                    Some(1),
+                    &stderr,
+                    None,
+                    false,
+                    "5.109.6",
+                    &env,
+                ),
+                Some("5.109.6|unexpected|E404:npmjs:tarball".to_string())
+            );
+        }
+        // A tarball for a DIFFERENT npmjs package under the matching pin is not
+        // hq-cli's own tarball, so it stays loud too.
+        let other_package = "npm error code E404\n\
+            npm error 404 Not Found - GET https://registry.npmjs.org/some-dep/-/some-dep-1.2.3.tgz - Not found";
+        let kind = classify_install_failure_with_environment(
+            Some(1),
+            other_package,
+            None,
+            false,
+            &pinned_env("5.109.6"),
+        );
+        assert_eq!(kind, InstallFailureKind::Unexpected);
+        assert_eq!(
+            install_failure_signature(kind, other_package, None),
+            "E404:npmjs:tarball"
+        );
+        // A lifecycle marker beside the same tarball 404 keeps it loud — the
+        // `!has_npm_lifecycle_failure_marker` clause is load-bearing, not incidental.
+        let with_lifecycle = format!(
+            "{}\nnpm error command failed\nnpm error command sh -c node-gyp rebuild",
+            npmjs_tarball_e404_stderr("npm error", "5.109.6")
+        );
+        assert_ne!(
+            classify_install_failure_with_environment(
+                Some(1),
+                &with_lifecycle,
+                None,
+                false,
+                &pinned_env("5.109.6"),
+            ),
+            InstallFailureKind::ExpectedTransientRegistry
+        );
+        assert!(install_failure_report_with_environment(
+            Some(1),
+            &with_lifecycle,
+            None,
+            false,
+            &pinned_env("5.109.6"),
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn e404_anti_masking_guard_survives_the_tarball_refinement() {
+        // Every other E404 shape keeps its pre-HQ-DESKTOP-6D classification and
+        // signature even under a matching pin — the tarball refinement is disjoint.
+        // The npmjs PACKUMENT 404 (not a tarball) stays Unexpected/`E404:npmjs:packument`.
+        let npmjs_packument = npmjs_e404_stderr("npm error");
+        let kind = classify_install_failure_with_environment(
+            Some(1),
+            &npmjs_packument,
+            None,
+            false,
+            &pinned_env("5.103.27"),
+        );
+        assert_eq!(kind, InstallFailureKind::Unexpected);
+        assert_eq!(
+            install_failure_signature(kind, &npmjs_packument, None),
+            "E404:npmjs:packument"
+        );
+        // A foreign-host TARBALL 404 stays Unexpected/`E404:foreign:tarball`.
+        let foreign_tarball = "npm error code E404\n\
+            npm error 404 Not Found - GET https://npm.internal.example.com/api/npm/npm-remote/@indigoai-us/hq-cli/-/hq-cli-5.109.6.tgz - Not found";
+        let kind = classify_install_failure_with_environment(
+            Some(1),
+            foreign_tarball,
+            None,
+            false,
+            &pinned_env("5.109.6"),
+        );
+        assert_eq!(kind, InstallFailureKind::Unexpected);
+        assert_eq!(
+            install_failure_signature(kind, foreign_tarball, None),
+            "E404:foreign:tarball"
+        );
+        // A foreign-host hq-cli PACKUMENT 404 stays ForeignRegistryPackageMissing.
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                &foreign_e404_stderr("npm error"),
+                None,
+                false,
+                &pinned_env("5.103.27"),
+            ),
+            InstallFailureKind::ForeignRegistryPackageMissing
+        );
+        // An unparseable E404 stays Unexpected/`E404:unknown:none`.
+        let unparseable = "npm error code E404\nnpm error 404 Not Found";
+        let kind = classify_install_failure_with_environment(
+            Some(1),
+            unparseable,
+            None,
+            false,
+            &pinned_env("5.109.6"),
+        );
+        assert_eq!(kind, InstallFailureKind::Unexpected);
+        assert_eq!(
+            install_failure_signature(kind, unparseable, None),
+            "E404:unknown:none"
+        );
+    }
+
+    #[test]
+    fn npmjs_tarball_transient_covers_a_prerelease_pin_and_gates_on_exact_version() {
+        // A valid SemVer prerelease the updater pinned is matched too (both sides are
+        // lowercased), and the legacy `npm err!` prefix is handled.
+        let stderr = npmjs_tarball_e404_stderr("npm err!", "6.0.0-beta.1");
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(1),
+                &stderr,
+                None,
+                false,
+                &pinned_env("6.0.0-beta.1"),
+            ),
+            InstallFailureKind::ExpectedTransientRegistry
+        );
+        // The exact-version gate holds: a different version, or an empty version,
+        // never matches hq-cli's own `<version>.tgz`.
+        assert!(npm_404_names_hq_cli_tarball_for(&stderr, "6.0.0-beta.1"));
+        assert!(!npm_404_names_hq_cli_tarball_for(&stderr, "6.0.0-beta.2"));
+        assert!(!npm_404_names_hq_cli_tarball_for(&stderr, ""));
+        // A trailing query on the tarball URL is dropped before the compare.
+        let with_query = "npm error code E404\n\
+            npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us/hq-cli/-/hq-cli-5.109.6.tgz?cache=1 - Not found";
+        assert!(npm_404_names_hq_cli_tarball_for(with_query, "5.109.6"));
+    }
+
     #[test]
     fn sanitized_target_version_token_preserves_valid_prereleases_but_rejects_free_text() {
         // A stable version passes through unchanged.
@@ -15510,20 +16016,10 @@ mod tests {
             ..Default::default()
         };
         let pinned = base.clone().with_pinned_target_version("5.103.27");
-        let kind_base = classify_install_failure_with_environment(
-            Some(1),
-            &e404,
-            None,
-            false,
-            &base,
-        );
-        let kind_pinned = classify_install_failure_with_environment(
-            Some(1),
-            &e404,
-            None,
-            false,
-            &pinned,
-        );
+        let kind_base =
+            classify_install_failure_with_environment(Some(1), &e404, None, false, &base);
+        let kind_pinned =
+            classify_install_failure_with_environment(Some(1), &e404, None, false, &pinned);
         assert_eq!(kind_base, kind_pinned);
         assert_eq!(
             install_failure_signature_with_environment(kind_base, &e404, None, &base),

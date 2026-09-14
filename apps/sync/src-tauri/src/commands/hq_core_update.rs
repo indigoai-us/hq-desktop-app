@@ -132,7 +132,7 @@ async fn fetch_latest() -> Result<String, String> {
     Ok(strip_v_prefix(parsed.tag_name.trim()).to_string())
 }
 
-/// Tauri command — cheap on-disk read of the local hq-core `hqVersion`.
+/// Tauri command — bounded, off-thread read of the local hq-core `hqVersion`.
 ///
 /// No network, no background loop — just `get_local_version()` exposed to
 /// the frontend so the popover footer can display "HQ vX.Y.Z" (or the
@@ -146,8 +146,23 @@ async fn fetch_latest() -> Result<String, String> {
 /// affordance" rather than hiding the row — silence here masks a broken
 /// install, which is exactly the case we want surfaced.
 #[tauri::command]
-pub fn get_hq_version() -> Option<String> {
-    get_local_version()
+pub async fn get_hq_version() -> Option<String> {
+    read_local_version_for_ui(get_local_version, std::time::Duration::from_secs(2)).await
+}
+
+async fn read_local_version_for_ui(
+    read: impl FnOnce() -> Option<String> + Send + 'static,
+    deadline: std::time::Duration,
+) -> Option<String> {
+    // Even opening a tiny local file can stall on a filesystem provider.
+    // Never hold the macOS event loop (or an async executor) while it does.
+    // A timed-out blocking read can finish later; the UI gets the existing
+    // unknown-version state and remains interactive in the meantime.
+    tokio::time::timeout(deadline, tauri::async_runtime::spawn_blocking(read))
+        .await
+        .ok()?
+        .ok()
+        .flatten()
 }
 
 /// Canonical owner/name of the prod hq-core repo. Mirrors the constant
@@ -497,6 +512,35 @@ async fn install_hq_core_update_inner() -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(flavor = "current_thread")]
+    async fn stalled_local_version_read_returns_without_waiting_for_the_file() {
+        let (release, stalled) = std::sync::mpsc::channel();
+        let result = super::read_local_version_for_ui(
+            move || {
+                stalled.recv_timeout(std::time::Duration::from_secs(1)).ok();
+                Some("15.0.0".into())
+            },
+            std::time::Duration::from_millis(20),
+        ).await;
+        // Release the real worker before asserting, including on a regression.
+        let _ = release.send(());
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_version_read_does_not_run_on_the_ui_executor() {
+        let caller = std::thread::current().id();
+        let result = super::read_local_version_for_ui(
+            move || Some(if std::thread::current().id() == caller {
+                "blocked caller".into()
+            } else {
+                "worker".into()
+            }),
+            std::time::Duration::from_secs(1),
+        ).await;
+        assert_eq!(result.as_deref(), Some("worker"));
+    }
+
     use super::*;
     use crate::commands::hq_core_staging::build_rescue_args;
     use std::ffi::OsString;

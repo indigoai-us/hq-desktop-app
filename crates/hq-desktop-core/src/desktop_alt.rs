@@ -1573,7 +1573,6 @@ pub fn workspace_grants_company_file_access(workspaces: &[Workspace], slug: &str
         return false;
     };
 
-
     match workspace.membership_status.as_deref() {
         Some("active") => true,
         // A genuinely local-only company is authored on this machine and has
@@ -1589,10 +1588,7 @@ pub fn workspace_grants_company_file_access(workspaces: &[Workspace], slug: &str
 ///
 /// Pausing stops sync and mutation work, but files already present on the
 /// device remain readable. All other membership rules stay fail-closed.
-pub fn workspace_grants_company_file_read_access(
-    workspaces: &[Workspace],
-    slug: &str,
-) -> bool {
+pub fn workspace_grants_company_file_read_access(workspaces: &[Workspace], slug: &str) -> bool {
     workspace_grants_company_file_access(workspaces, slug)
         || workspaces.iter().any(|workspace| {
             workspace.slug == slug
@@ -3909,7 +3905,10 @@ mod tests {
             "company 'acme' is not synced: manifest cloud_uid cmp_old not found in your cloud memberships"
                 .to_string(),
         );
-        assert_eq!(super::prefix_company_resolution_error(synced.clone()), synced);
+        assert_eq!(
+            super::prefix_company_resolution_error(synced.clone()),
+            synced
+        );
 
         let connected = super::prefix_company_resolution_error(
             "company 'cloud' is not connected to cloud".to_string(),
@@ -4330,8 +4329,8 @@ mod tests {
                 broken_reason: None,
                 invited_by: None,
                 invited_at: None,
-            branding_enabled: false,
-            brand: None,
+                branding_enabled: false,
+                brand: None,
             }
         }
 
@@ -4365,8 +4364,14 @@ mod tests {
             };
             let workspaces = vec![personal];
 
-            assert!(workspace_grants_company_file_access(&workspaces, "personal"));
-            assert!(workspace_grants_company_file_read_access(&workspaces, "personal"));
+            assert!(workspace_grants_company_file_access(
+                &workspaces,
+                "personal"
+            ));
+            assert!(workspace_grants_company_file_read_access(
+                &workspaces,
+                "personal"
+            ));
         }
 
         #[test]
@@ -4401,7 +4406,10 @@ mod tests {
                 "personal"
             ));
             personal.has_local_folder = true;
-            assert!(workspace_grants_company_file_access(&[personal], "personal"));
+            assert!(workspace_grants_company_file_access(
+                &[personal],
+                "personal"
+            ));
         }
 
         #[test]
@@ -4509,8 +4517,7 @@ mod tests {
         fn hq_relative_contract_cannot_express_the_hq_root() {
             // Absolute path: exactly what the renderer used to send, and
             // exactly the error seen live ("invalid HQ-relative path").
-            let err =
-                validate_hq_relative_path("/Users/someone/Documents/HQ", false).unwrap_err();
+            let err = validate_hq_relative_path("/Users/someone/Documents/HQ", false).unwrap_err();
             assert!(err.contains("invalid HQ-relative path"), "got: {err}");
 
             // A non-home, differently-named root is rejected just the same —
@@ -4836,8 +4843,7 @@ mod tests {
             fs::create_dir_all(root.join("companies/active")).unwrap();
 
             assert_eq!(
-                canonical_hq_directory_for_listing(&root, "companies/active/clients")
-                    .unwrap_err(),
+                canonical_hq_directory_for_listing(&root, "companies/active/clients").unwrap_err(),
                 "directory not found: \"companies/active/clients\""
             );
         }

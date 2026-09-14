@@ -936,3 +936,16 @@ describe("meetings-model", () => {
     });
   });
 });
+
+it('does not attach a completed recording to a later occurrence sharing its series or URL', () => {
+  const event = { id: 'next', recurringEventId: 'series', status: 'confirmed',
+    start: { dateTime: '2026-09-08T10:00:00Z' }, end: { dateTime: '2026-09-08T11:00:00Z' },
+    hangoutLink: 'https://meet.google.com/abc-defg-hij' };
+  const bot = { botId: 'old', calendarEventId: 'previous', calendarSeriesId: 'series',
+    meetingUrl: event.hangoutLink, platform: 'google_meet', status: 'completed',
+    autoScheduled: true, sourceLanded: true, scheduledStartTime: '2026-09-01T10:00:00Z' };
+  expect(botForEvent(event, new Map(), [bot])).toBeUndefined();
+  expect(botForEvent(event, new Map(), [{ ...bot, calendarSeriesId: null }])).toBeUndefined();
+  expect(botForEvent(event, new Map(), [{ ...bot, scheduledStartTime: event.start.dateTime }])?.botId).toBe('old');
+  expect(botForEvent(event, new Map([[event.id, { ...bot, calendarEventId: event.id }]]))?.botId).toBe('old');
+});

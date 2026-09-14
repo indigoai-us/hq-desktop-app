@@ -17,13 +17,15 @@
 
   interface Props {
     item: FileAttachmentModel;
+    /** Borrowed raster preview while the original loads; never used for download. */
+    thumbnailUrl?: string | null;
     resolveUrl?: (attachment: FileAttachmentModel) => Promise<string | null>;
     /** Releases a host-created object URL after this preview no longer uses it. */
     onreleaseurl?: (url: string) => void;
     compact?: boolean;
   }
 
-  let { item, resolveUrl, onreleaseurl, compact = false }: Props = $props();
+  let { item, resolveUrl, onreleaseurl, thumbnailUrl = null, compact = false }: Props = $props();
 
   const kind = $derived(
     attachmentPreviewKind({
@@ -33,6 +35,7 @@
     }),
   );
 
+  let thumbnailFailed = $state(false);
   let src = $state("");
   let text = $state("");
   let sheet = $state<string[][]>([]);
@@ -68,6 +71,7 @@
       releaseResolvedUrl();
       loadedKey = key;
       previewFailed = false;
+      thumbnailFailed = false;
       resolveFailed = false;
       src = previewUrl;
       text = "";
@@ -196,12 +200,13 @@
         />
       </svg>
     </button>
-    {#if kind === "image" && src}
+    {#if kind === "image" && (src || (!error && !thumbnailFailed && thumbnailUrl))}
       <img
         class="att-preview-image"
-        {src}
+        src={src || thumbnailUrl || ""}
         alt={item.name}
         onerror={() => {
+          if (!src) { thumbnailFailed = true; return; }
           if (!previewFailed && item.previewUrl && src === item.previewUrl) {
             previewFailed = true;
             src = "";

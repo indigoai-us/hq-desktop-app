@@ -215,11 +215,12 @@ describe("ChatSidebar create flow", () => {
 
     type(queryInput(), "Q4 board");
     await settleQuery();
-    document
-      .querySelector<HTMLButtonElement>(
-        '[data-testid="chat-create-channel-row"]',
-      )
-      ?.click();
+    const createRow = await vi.waitFor(() => {
+      const row = document.querySelector<HTMLButtonElement>('[data-testid="chat-create-channel-row"]');
+      expect(row).toBeTruthy();
+      return row!;
+    });
+    createRow.click();
     await tick();
 
     // Add one member from the full directory roster.
@@ -386,7 +387,7 @@ describe("ChatSidebar create flow", () => {
     await tick();
     await tick();
     // The rail itself still pins #welcome — only the create flow hides it.
-    expect(host.textContent).toMatch(/welcome/i);
+    await vi.waitFor(() => expect(host.textContent).toMatch(/welcome/i));
 
     openModal();
     await tick();

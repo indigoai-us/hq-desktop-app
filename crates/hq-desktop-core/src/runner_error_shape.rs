@@ -127,7 +127,69 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// class. The ledger does throw on a two-real-area duplicate, but as a plain
 /// `Error` carrying an `area-ledger:` message, so it lands in the generic
 /// bucket exactly as it did before and adds no identity.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.26";
+///
+/// The `~6.16.26` -> `~6.16.33` bump (the journal fingerprint write baseline,
+/// hq-cloud#513) was re-derived from both hq-cloud trees. The 52 distinct
+/// `this.name` identities remain 52 — matching the prior derivation — and the
+/// three `readonly name` identities (`InvalidSignalTypeError`,
+/// `InvalidSourceChannelError`, and `SignalNotFoundError`) also remain, for 55
+/// distinct identities across both declarations at each tag. There is no
+/// identity delta, and `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains
+/// (`error`, `auth-error`). The seven releases touch 43 files in aggregate,
+/// including journal, state-store, watcher, conflict, manifest, and ignore
+/// code; the #513 release itself changes only `src/journal.ts`, its baseline
+/// test, the package version, and its design note. No new vocabulary arm is
+/// needed, but the source-version marker moves with the verified runner pin.
+///
+/// The `~6.16.33` -> `~6.16.34` bump (terminal per-company cross-tenant push
+/// denial, hq-cloud#514) was re-derived from both hq-cloud trees. The
+/// `this.name` identities rise 52 -> 53 because
+/// `PushScopeForbiddenError` is new in `src/sync/push-transport.ts`; the three
+/// `readonly name` identities remain, so the total across both declarations is
+/// 55 -> 56. `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). The new error does not reach the runner event/error-identity
+/// surface: `PushEventEmitter` catches it, forbids that realtime company scope,
+/// and calls `onError` once; the event-sync callback logs `err.message` rather
+/// than serializing the error. The release touches eight files — the packed
+/// journal design note and package version, `journal-row-store` and its test,
+/// `push-transport` and its test, plus `watcher` and its test — so no new
+/// desktop vocabulary arm is needed, but the source-version marker moves with
+/// the verified runner pin.
+///
+/// The `~6.16.34` -> `~6.16.35` bump (packed `JournalStore` rows and frozen
+/// public-boundary rows, hq-cloud#516/#517) was re-derived from both hq-cloud
+/// trees: all 56 identities remain at each tag, with no identity-set diff, and
+/// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). The release touches 20 files for journal representation,
+/// public-row freezing, and related sync-runner memory behavior; it adds no
+/// runner event or error-emission change. No new vocabulary arm is needed, but
+/// the source-version marker moves with the verified runner pin.
+///
+/// The `~6.16.35` -> `~6.16.36` bump (streaming v3 snapshot-journal decoding,
+/// hq-cloud#529, and the reader-only HQSNAP4 snapshot format, hq-cloud#531)
+/// was re-derived from both hq-cloud trees: all 56 identities remain at each
+/// tag, with no identity-set diff, and `src/bin/sync-runner-events.ts`
+/// `ERROR_TYPES` remains (`error`, `auth-error`). HQSNAP4 validation adds new
+/// plain `Error` messages — for example, `HQSNAP4 payload has an invalid byte
+/// length` — rather than a named runner-error identity; if surfaced, they use
+/// the existing generic `error` event type. No new vocabulary arm is needed,
+/// but the source-version marker moves with the verified runner pin.
+///
+/// The `~6.16.36` -> `~6.16.38` bump (area-journal clone removal,
+/// manifest-build memory reduction, reporter upgrade, HQSNAP4 assertion
+/// streaming, and session-host modules, hq-cloud#537/#538/#539/#540/#541) was
+/// re-derived from both hq-cloud trees. The literal `this.name` set remains
+/// 53 and the three `readonly name` identities remain, so the raw source total
+/// remains 56 with no identity-set diff. `HQ_CLOUD_IDENTITIES` remains 52: it
+/// covers the `this.name` identities that can reach the desktop runner-error
+/// event surface, excluding the already-accounted-for
+/// `PushScopeForbiddenError`, which `PushEventEmitter` catches and reports via
+/// `onError` rather than serializing as an error identity. The new
+/// `session-host-*` modules add only plain `Error` throws, no named class or
+/// cause. `src/bin/sync-runner-events.ts` `ERROR_TYPES` also remains (`error`,
+/// `auth-error`). No new vocabulary arm is needed, but the source-version
+/// marker moves with the verified runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.38";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -1031,7 +1093,10 @@ fn take_exactly_three_digit_status(text: &str) -> Option<u16> {
     }
     // Require a field boundary after the third digit: end of input, or any byte
     // that is neither a digit (a longer number) nor a letter (a glued suffix).
-    if bytes.get(3).is_some_and(|byte| byte.is_ascii_alphanumeric()) {
+    if bytes
+        .get(3)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric())
+    {
         return None;
     }
     let status = u16::from(d0 - b'0') * 100 + u16::from(d1 - b'0') * 10 + u16::from(d2 - b'0');
@@ -1146,7 +1211,12 @@ impl RunnerErrorHttpRollup {
     /// Declaration-ordered `(token, count)` pairs — the stable tie-break for the
     /// bounded renderer.
     fn counts(&self) -> [(&'static str, u32); RunnerErrorHttpStatus::ALL.len()] {
-        core::array::from_fn(|index| (RunnerErrorHttpStatus::ALL[index].as_str(), self.counts[index]))
+        core::array::from_fn(|index| {
+            (
+                RunnerErrorHttpStatus::ALL[index].as_str(),
+                self.counts[index],
+            )
+        })
     }
 
     /// Render the top-N statuses by count as a bounded Sentry tag. `None` when no
@@ -1739,7 +1809,10 @@ pub fn classify_runner_error_cause(message: &str) -> RunnerErrorCause {
             syscall_value.get_or_insert(value);
         }
     }
-    for candidate in [code_value, cause_value, syscall_value].into_iter().flatten() {
+    for candidate in [code_value, cause_value, syscall_value]
+        .into_iter()
+        .flatten()
+    {
         if let Some(matched) = cause_from_identifier(candidate) {
             return matched;
         }
@@ -2686,23 +2759,44 @@ mod tests {
                 "AccessDenied http=403 The provided identity could not be validated",
                 RunnerErrorHttpStatus::Http403,
             ),
-            ("NoSuchKey http=404 the specified key does not exist", RunnerErrorHttpStatus::Http404),
-            ("InternalError http=500 we encountered an internal error", RunnerErrorHttpStatus::Http500),
-            ("SlowDown http=503 please reduce your request rate", RunnerErrorHttpStatus::Http503),
-            ("Error http=409 journal write conflict", RunnerErrorHttpStatus::Http409),
+            (
+                "NoSuchKey http=404 the specified key does not exist",
+                RunnerErrorHttpStatus::Http404,
+            ),
+            (
+                "InternalError http=500 we encountered an internal error",
+                RunnerErrorHttpStatus::Http500,
+            ),
+            (
+                "SlowDown http=503 please reduce your request rate",
+                RunnerErrorHttpStatus::Http503,
+            ),
+            (
+                "Error http=409 journal write conflict",
+                RunnerErrorHttpStatus::Http409,
+            ),
             // Presigned/HEAD-verify shape-anchored `: <status>` tail (per-file).
             (
                 "presigned GET failed for knowledge/a.md: 403 Forbidden",
                 RunnerErrorHttpStatus::Http403,
             ),
-            ("presigned HEAD failed for knowledge/a.md: 404 ", RunnerErrorHttpStatus::Http404),
+            (
+                "presigned HEAD failed for knowledge/a.md: 404 ",
+                RunnerErrorHttpStatus::Http404,
+            ),
             (
                 "tombstone HEAD verify failed (deferring): 500 Internal Server Error",
                 RunnerErrorHttpStatus::Http500,
             ),
             // Unmodelled statuses bucket to their class.
-            ("Error http=418 i am a teapot", RunnerErrorHttpStatus::Http4xx),
-            ("Error http=599 network connect timeout", RunnerErrorHttpStatus::Http5xx),
+            (
+                "Error http=418 i am a teapot",
+                RunnerErrorHttpStatus::Http4xx,
+            ),
+            (
+                "Error http=599 network connect timeout",
+                RunnerErrorHttpStatus::Http5xx,
+            ),
             // A presigned detail that itself contains ": <n>": the FIRST separator
             // after the key is the status, never the later one in the detail.
             (
@@ -2766,7 +2860,7 @@ mod tests {
         assert!(is_describe_error_header("code=ETIMEDOUT"));
         assert!(is_describe_error_header("UnknownError code=EAI_AGAIN"));
         assert!(is_describe_error_header("")); // no prefix at all
-        // Free prose is not a header — the anchor that stops a prose false positive.
+                                               // Free prose is not a header — the anchor that stops a prose false positive.
         assert!(!is_describe_error_header("download failed; retry"));
         assert!(!is_describe_error_header("please wait")); // two bare words
         assert!(!is_describe_error_header("cause=ENOENT")); // cause= never precedes http=
@@ -2806,10 +2900,19 @@ mod tests {
         use RunnerErrorCause::*;
         for (message, expected) in [
             // Leading hq-cloud class names — sampled across the completed vocabulary.
-            ("EntityPermissionError access is denied for cmp_x", EntityPermission),
-            ("OperationLockedError the operation lock is held", OperationLocked),
+            (
+                "EntityPermissionError access is denied for cmp_x",
+                EntityPermission,
+            ),
+            (
+                "OperationLockedError the operation lock is held",
+                OperationLocked,
+            ),
             ("DeltaGapError delta cursor gap detected", DeltaGap),
-            ("RealtimeConflictError concurrent mutation", RealtimeConflict),
+            (
+                "RealtimeConflictError concurrent mutation",
+                RealtimeConflict,
+            ),
             ("VaultAuthError session is not valid", VaultIdentity),
             // Newly covered identities — the classes the prior sample missed.
             ("VaultNotFoundError vault entry not found for company", VaultNotFound),
@@ -2820,16 +2923,28 @@ mod tests {
             ),
             ("StateStoreCorruptionError reducer state is corrupt", StateStoreCorruption),
             ("RateLimited too many requests", RateLimited),
-            ("CognitoAuthError identity could not be established", CognitoIdentity),
+            (
+                "CognitoAuthError identity could not be established",
+                CognitoIdentity,
+            ),
             ("AccessDeniedError company leg refused", AccessDenied),
             // Leading AWS error names.
             ("AccessDenied http=403 denied", AccessDenied),
             ("NoSuchKey http=404 missing", NoSuchKey),
-            ("UnknownError cause=EAI_AGAIN host=x.example.com", UnknownError),
+            (
+                "UnknownError cause=EAI_AGAIN host=x.example.com",
+                UnknownError,
+            ),
             // A key value when the leading name is generic/unrecognised.
             ("Error code=SlowDown request throttled", SlowDown),
-            ("WrapperError cause=InternalError upstream failed", InternalError),
-            ("StsError code=ExpiredToken the security token expired", ExpiredIdentity),
+            (
+                "WrapperError cause=InternalError upstream failed",
+                InternalError,
+            ),
+            (
+                "StsError code=ExpiredToken the security token expired",
+                ExpiredIdentity,
+            ),
             // A `code=<ERRNO>` value classifies to the matching errno cause; the
             // leading sentinel `Error` is not a name and `syscall=` is ignored,
             // and `code=` wins the key-value precedence.
@@ -2839,15 +2954,24 @@ mod tests {
             ("KaboomError the sky is falling", UnknownNamed),
             ("UndiciHeadersTimeoutError request timed out", UnknownNamed),
             // Lower-cased per-file pull-leg prose is not a class name → unnamed.
-            ("presigned GET failed for knowledge/a.md: 403 Forbidden", UnknownUnnamed),
+            (
+                "presigned GET failed for knowledge/a.md: 403 Forbidden",
+                UnknownUnnamed,
+            ),
             // A leading `code=<ERRNO>` (a plain Node system error) is read from
             // the `code=` value → the matching errno cause.
             ("code=ENOENT syscall=open no such file", Enoent),
             // A leading bare `ERRNO:` token (describeError's plain-Node rendering)
             // is read by trimming one trailing ':' → the matching errno cause.
-            ("ENOENT: no such file or directory, rename 'a' -> 'b'", Enoent),
+            (
+                "ENOENT: no such file or directory, rename 'a' -> 'b'",
+                Enoent,
+            ),
             // An unrecognised `code=<value>` is still never a nearest guess.
-            ("code=EWEIRD syscall=open unrecognised errno", UnknownUnnamed),
+            (
+                "code=EWEIRD syscall=open unrecognised errno",
+                UnknownUnnamed,
+            ),
             // A leading path/quote can never be a name → unnamed (and unhashable).
             ("'/vault/secret.env' could not be read", UnknownUnnamed),
         ] {
@@ -2865,7 +2989,10 @@ mod tests {
         // name's identity and must not carry a single byte of the hostname.
         let message =
             "AccessDenied http=403 host=hq-vault-cmp-acme-9f3.s3.us-east-1.amazonaws.com denied";
-        assert_eq!(classify_runner_error_cause(message), RunnerErrorCause::AccessDenied);
+        assert_eq!(
+            classify_runner_error_cause(message),
+            RunnerErrorCause::AccessDenied
+        );
 
         let mut rollup = RunnerErrorCauseRollup::default();
         rollup.record(message);
@@ -2901,11 +3028,14 @@ mod tests {
     }
 
     #[test]
-    fn cause_rollup_fingerprint_token_picks_the_dominant_cause_and_breaks_ties_by_declaration_order()
-    {
+    fn cause_rollup_fingerprint_token_picks_the_dominant_cause_and_breaks_ties_by_declaration_order(
+    ) {
         // Empty rollup → the "none" sentinel, mirroring the class rollup so a pass
         // with no runner error emits the same neutral group token both axes use.
-        assert_eq!(RunnerErrorCauseRollup::default().fingerprint_token(), "none");
+        assert_eq!(
+            RunnerErrorCauseRollup::default().fingerprint_token(),
+            "none"
+        );
 
         // A clear plurality wins by count.
         let mut dominant = RunnerErrorCauseRollup::default();
@@ -2964,7 +3094,13 @@ mod tests {
         // And the token carries none of the secret-looking bytes those messages held.
         let token = rollup.fingerprint_token();
         for fragment in [
-            "hq-vault", "SECRET", "amazonaws", "Users", "Ada", "passphrase", "internal",
+            "hq-vault",
+            "SECRET",
+            "amazonaws",
+            "Users",
+            "Ada",
+            "passphrase",
+            "internal",
         ] {
             assert!(
                 !token.contains(fragment),
@@ -2989,7 +3125,10 @@ mod tests {
         };
         let reversed_http = {
             let mut rollup = RunnerErrorHttpRollup::default();
-            messages.iter().rev().for_each(|message| rollup.record(message));
+            messages
+                .iter()
+                .rev()
+                .for_each(|message| rollup.record(message));
             rollup
         };
         assert_eq!(forward_http, reversed_http);
@@ -3001,7 +3140,10 @@ mod tests {
         };
         let reversed_cause = {
             let mut rollup = RunnerErrorCauseRollup::default();
-            messages.iter().rev().for_each(|message| rollup.record(message));
+            messages
+                .iter()
+                .rev()
+                .for_each(|message| rollup.record(message));
             rollup
         };
         assert_eq!(forward_cause, reversed_cause);
@@ -3025,10 +3167,13 @@ mod tests {
 
     // ── Completed vocabulary + residual signature (this reopen) ────────────────
 
-    /// The COMPLETE hq-cloud `this.name` identity set at
-    /// `CAUSE_VOCABULARY_SOURCE_VERSION`, derived mechanically from
-    /// `git grep -hoE 'this\.name = "[A-Za-z0-9]+"'` over the pinned hq-cloud
-    /// source. Re-derive when the pin bumps — the
+    /// The COMPLETE hq-cloud `this.name` identity set that can reach the
+    /// desktop runner-error event surface at `CAUSE_VOCABULARY_SOURCE_VERSION`.
+    /// It is derived mechanically from the literal `this.name` assignments in
+    /// the pinned hq-cloud source, then excludes `PushScopeForbiddenError`:
+    /// that internal error is caught by
+    /// `PushEventEmitter` and reaches `onError` without being serialized as an
+    /// error identity. Re-derive when the pin bumps — the
     /// `cause_vocabulary_source_version_is_pinned_to_the_runner` guard fails the
     /// build if the pin moves without this list (and the vocabulary) refreshed.
     const HQ_CLOUD_IDENTITIES: &[&str] = &[
@@ -3088,11 +3233,12 @@ mod tests {
 
     #[test]
     fn every_hq_cloud_identity_maps_to_a_distinct_named_cause() {
-        // Completeness over the FULL derived identity set (not a sample): every
-        // hq-cloud this.name must classify as a specific, non-residual cause, and
-        // the 52 identities must map to 52 DISTINCT tokens — the exact property
-        // the prior 16-name sample violated, collapsing every out-of-sample
-        // company fault to the flat residual and reopening this lane. The set
+        // Completeness over the FULL event-surface identity set (not a sample):
+        // every hq-cloud this.name that can reach the runner error event must
+        // classify as a specific, non-residual cause, and the 52 identities
+        // must map to 52 DISTINCT tokens — the exact property the prior 16-name
+        // sample violated, collapsing every out-of-sample company fault to the
+        // flat residual and reopening this lane. The set
         // grew from 45 to 46 when the runner pin moved to ~6.15.79 (added
         // ChildProcessSyncWorkerError), from 46 to 50 at ~6.16.0 (added
         // RealtimeUnavailableError, WindowsRenameBlockedError, and the two
@@ -3135,7 +3281,10 @@ mod tests {
         // stable signature. A plain-Error / prose / key=value message → unknown
         // _unnamed + NO signature. The two residuals are never conflated.
         let named = "FreshFleetError the fleet melted down";
-        assert_eq!(classify_runner_error_cause(named), RunnerErrorCause::UnknownNamed);
+        assert_eq!(
+            classify_runner_error_cause(named),
+            RunnerErrorCause::UnknownNamed
+        );
         let signature = runner_error_cause_signature(named).expect("named residual is signed");
         assert_eq!(signature.len(), SIGNATURE_HEX_LEN);
         let expected = format!("{:x}", Sha256::digest(b"FreshFleetError"));
@@ -3146,11 +3295,11 @@ mod tests {
         );
 
         for unnamed in [
-            "code=EWEIRD syscall=open unrecognised errno",  // leading key=value, unlisted errno
+            "code=EWEIRD syscall=open unrecognised errno", // leading key=value, unlisted errno
             "presigned GET failed for knowledge/a.md: 403", // lower-cased prose
-            "Error the generic error name is suppressed",   // literal Error
-            "'/vault/secret.env' unreadable",               // leading quote/path
-            "",                                             // empty
+            "Error the generic error name is suppressed",  // literal Error
+            "'/vault/secret.env' unreadable",              // leading quote/path
+            "",                                            // empty
         ] {
             assert_eq!(
                 classify_runner_error_cause(unnamed),
@@ -3181,7 +3330,11 @@ mod tests {
             "code=EAI_AGAIN dns failure",           // '='
             overlong.as_str(),                      // > 64 chars
         ] {
-            assert_eq!(leading_error_identity(refused), None, "gate must refuse: {refused:?}");
+            assert_eq!(
+                leading_error_identity(refused),
+                None,
+                "gate must refuse: {refused:?}"
+            );
             assert_eq!(
                 runner_error_cause_signature(refused),
                 None,
@@ -3190,7 +3343,10 @@ mod tests {
         }
         // The boundary: exactly 64 chars is admitted, 65 is not.
         let max = "A".repeat(64);
-        assert_eq!(leading_error_identity(&format!("{max} ok")), Some(max.as_str()));
+        assert_eq!(
+            leading_error_identity(&format!("{max} ok")),
+            Some(max.as_str())
+        );
         let over = "A".repeat(65);
         assert_eq!(leading_error_identity(&format!("{over} no")), None);
     }
@@ -3301,7 +3457,10 @@ mod tests {
         // the unlisted wrapper — the producer-vocabulary drift this axis exists for
         // must not be hidden behind the known cause.
         let message = "FutureVaultError cause=AccessDenied http=403 host=x.example.com denied";
-        assert_eq!(classify_runner_error_cause(message), RunnerErrorCause::AccessDenied);
+        assert_eq!(
+            classify_runner_error_cause(message),
+            RunnerErrorCause::AccessDenied
+        );
         let signature = runner_error_cause_signature(message).expect("unlisted wrapper is signed");
         let expected = format!("{:x}", Sha256::digest(b"FutureVaultError"));
         assert_eq!(signature, expected[..SIGNATURE_HEX_LEN]);
@@ -3309,7 +3468,10 @@ mod tests {
         // A LISTED leading identity that wraps a nested cause is already named, so
         // it carries no signature (the cause axis names it directly).
         let listed = "VaultNotFoundError cause=AccessDenied vault entry missing";
-        assert_eq!(classify_runner_error_cause(listed), RunnerErrorCause::VaultNotFound);
+        assert_eq!(
+            classify_runner_error_cause(listed),
+            RunnerErrorCause::VaultNotFound
+        );
         assert_eq!(runner_error_cause_signature(listed), None);
 
         // Recorded across both axes independently: one cause count, one signature.
@@ -3496,7 +3658,11 @@ mod tests {
         let mut tokens = HashSet::new();
         let mut sentinels = HashSet::new();
         for site in RunnerErrorSite::ALL {
-            assert!(tokens.insert(site.as_str()), "duplicate token {}", site.as_str());
+            assert!(
+                tokens.insert(site.as_str()),
+                "duplicate token {}",
+                site.as_str()
+            );
             match site.sentinel() {
                 Some(sentinel) => {
                     assert!(sentinels.insert(sentinel), "duplicate sentinel {sentinel}");
@@ -3533,7 +3699,11 @@ mod tests {
             "(Runner)",
             "runner",
         ] {
-            assert_eq!(classify_runner_error_site(path), RunnerErrorSite::File, "{path:?}");
+            assert_eq!(
+                classify_runner_error_site(path),
+                RunnerErrorSite::File,
+                "{path:?}"
+            );
         }
     }
 
@@ -3562,7 +3732,10 @@ mod tests {
         assert_eq!(rollup.fingerprint_token(), "file");
         // Content safety: no rendered token is ever a raw sentinel or path byte.
         for forbidden in ["(company)", "(local-state)", "knowledge"] {
-            assert!(!tag.contains(forbidden), "rollup tag leaked {forbidden:?}: {tag}");
+            assert!(
+                !tag.contains(forbidden),
+                "rollup tag leaked {forbidden:?}: {tag}"
+            );
         }
     }
 
@@ -3582,8 +3755,14 @@ mod tests {
         let described = runner_error_cause_signature("VaultShardError shard 7 unreadable")
             .expect("described-form identity is signed");
         assert_eq!(stack, described, "both forms sign identically");
-        assert_eq!(stack, "736cb6682b59", "sha256 hex12 of the trimmed identity");
-        assert_eq!(classify_runner_error_cause(stack_msg), RunnerErrorCause::UnknownNamed);
+        assert_eq!(
+            stack, "736cb6682b59",
+            "sha256 hex12 of the trimmed identity"
+        );
+        assert_eq!(
+            classify_runner_error_cause(stack_msg),
+            RunnerErrorCause::UnknownNamed
+        );
 
         // Colon-terminated FREE PROSE with NO stack frame keeps its colon and stays
         // unsigned — the privacy gate: a customer/company-derived first word is never
@@ -3593,7 +3772,11 @@ mod tests {
             "VaultShardError: shard 7 unreadable", // colon, but no frame line
             "Something: went wrong at the vault",  // "at" mid-line is not a frame
         ] {
-            assert_eq!(leading_error_identity(prose), None, "colon-prose must stay refused: {prose:?}");
+            assert_eq!(
+                leading_error_identity(prose),
+                None,
+                "colon-prose must stay refused: {prose:?}"
+            );
             assert_eq!(
                 runner_error_cause_signature(prose),
                 None,
@@ -3610,7 +3793,11 @@ mod tests {
             "/Users/x/dist/a.js:12: frame\n    at x (y:1:1)",
             "'quoted:' value\n    at x (y:1:1)",
         ] {
-            assert_eq!(leading_error_identity(refused), None, "must stay refused: {refused:?}");
+            assert_eq!(
+                leading_error_identity(refused),
+                None,
+                "must stay refused: {refused:?}"
+            );
             assert_eq!(
                 runner_error_cause_signature(refused),
                 None,

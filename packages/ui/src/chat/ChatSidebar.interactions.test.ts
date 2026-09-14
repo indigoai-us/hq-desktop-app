@@ -67,6 +67,50 @@ afterEach(async () => {
 });
 
 describe("ChatSidebar right-click context menu", () => {
+  it('uses only the disclosure arrow when a company-style channel has nested sessions', async () => {
+    const companyRow = { ...seedRow, type: 'company' as const, scope: 'company' as const };
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(), seedDirectory: [companyRow],
+        rowExtras: () => ({ children: [{ id: 'new', label: 'New session', kind: 'action', onselect: vi.fn() }] }),
+      },
+    });
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-row-children-toggle"]')).toBeTruthy());
+    const row = host.querySelector('[data-conversation-id="ch:chn_proj"]')!;
+    expect(row.querySelector('.chat-glyph-wrap')?.children).toHaveLength(0);
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-row-children-toggle"]')!.click();
+    await tick();
+    expect(row.querySelector('.chat-glyph-wrap')?.children).toHaveLength(0);
+  });
+  it("highlights the selected nested session, preserves its full title, and keeps disclosure independent", async () => {
+    const open = vi.fn();
+    const visibility = vi.fn();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(), seedDirectory: [seedRow], selectedId: 'ch:chn_proj',
+        rowExtras: (row) => row.id !== 'ch:chn_proj' ? null : ({ onChildrenVisibilityChange: visibility, childrenExpandedByDefault: true, childrenLabel: 'Sessions for launch', children: [
+          { id: 'session:one', label: 'A long saved session title that should remain readable on hover', selected: true, onselect: open },
+          { id: 'new', label: 'New session', kind: 'action', onselect: vi.fn() },
+        ] }),
+      },
+    });
+    await vi.waitFor(() => expect(host.querySelector('[aria-current="page"]')).toBeTruthy());
+    const child = host.querySelector<HTMLButtonElement>('[data-child-id="session:one"]')!;
+    expect(child.classList.contains('selected')).toBe(true);
+    expect(child.title).toBe(child.textContent?.trim());
+    expect(child.querySelector('svg')).toBeTruthy();
+    expect(host.querySelector('[data-conversation-id="ch:chn_proj"]')?.classList.contains('active')).toBe(false);
+    child.click();
+    expect(open).toHaveBeenCalledOnce();
+    expect(visibility).toHaveBeenCalledWith(true);
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-row-children-toggle"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-child-id="session:one"]')).toBeNull());
+    expect(visibility).toHaveBeenLastCalledWith(false);
+    expect(open).toHaveBeenCalledOnce();
+  });
+
   it("right-click opens a Pin menu instead of pinning outright; the menu pins on click", async () => {
     component = mount(ChatSidebar, {
       target: host,
@@ -491,6 +535,11 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
 
     const row = host.querySelector('[data-conversation-id="dm:agt_deacon"]');
     expect(row?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim()).toBe("1");
+    // The focused conversation reports a successful read without another rail click.
+    wakes.emit("conversation:read", { id: "dm:agt_deacon" });
+    await tick();
+    expect(row?.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
+    expect(row?.querySelector('[data-testid="chat-unread-dot"]')).toBeNull();
   });
 });
 
@@ -830,4 +879,53 @@ describe("ChatSidebar channel rail stamp on the owner's own send", () => {
     ).toBeTruthy();
     expect(sectionLabelFor("ch:chn_hq_dev")).toMatch(/^TODAY/);
   });
+});
+
+describe("conversation search keyboard navigation", () => {
+  it("selects results with arrows, ignores composing Enter, opens with Enter and restores focus on Escape", async () => {
+    const onselect = vi.fn();
+    component = mount(ChatSidebar, { target: host, props: {
+      api: stubApi(), seedDirectory: [seedRow], onselect,
+    }});
+    const trigger = host.querySelector<HTMLButtonElement>('button[aria-label="Search or jump to a conversation"]')!;
+    trigger.click();
+    await tick();
+    const input = document.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    input.value = 'launch';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await tick();
+    expect(document.querySelector('[role="option"][aria-selected="true"]')?.textContent).toContain('launch');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await tick();
+    expect(input.getAttribute('aria-activedescendant')).toBe('conversation-search-0');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }));
+    await tick();
+    expect(document.querySelector('[role="combobox"]')).toBeTruthy();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.waitFor(() => expect(onselect).toHaveBeenCalled());
+    expect(document.querySelector('[role="combobox"]')).toBeNull();
+    trigger.click();
+    await tick();
+    document.querySelector('[role="combobox"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await tick();
+    expect(document.querySelector('[role="combobox"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+});
+
+it('paints seeded rows immediately even while the directory fetch is still pending', async () => {
+  const directory = new Promise<any>(() => {});
+  component = mount(ChatSidebar, { target: host, props: { api: stubApi({ fetchChannelDirectory: () => directory }), seedDirectory: [seedRow] } });
+  await tick();
+  expect(host.querySelector('[data-testid="sidebar-loading"]')).toBeNull();
+  expect(host.textContent).toContain('launch');
+});
+
+it('keeps a populated rail clickable while project-session metadata is still loading', async () => {
+  component = mount(ChatSidebar, { target: host, props: { api: stubApi(), seedDirectory: [seedRow], rowExtrasLoading: true } });
+  await tick();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await tick();
+  expect(host.querySelector('[data-testid="sidebar-loading"]')).toBeNull();
+  expect(host.querySelector('.chat-row-title')).not.toBeNull();
 });

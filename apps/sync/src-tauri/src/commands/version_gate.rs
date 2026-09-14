@@ -218,7 +218,19 @@ pub async fn check_once(app: &AppHandle) -> Result<(), String> {
 /// Spawn the background loop. First check fires 5s after launch (before the
 /// soft updater's 10s), then every 6h. Errors are logged but never propagate
 /// — a flaky network must not break the loop.
+fn background_version_gate_disabled() -> bool {
+    crate::updater::background_updates_disabled()
+}
+
 pub fn setup_version_gate(app: &AppHandle) {
+    if background_version_gate_disabled() {
+        log(
+            "version-gate",
+            "background version gate disabled (dev build or HQ_DEV_NO_AUTO_UPDATE=1)",
+        );
+        return;
+    }
+
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_DELAY).await;
@@ -237,6 +249,11 @@ mod tests {
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn background_version_gate_is_disabled_in_dev_builds() {
+        assert!(background_version_gate_disabled());
+    }
 
     #[tokio::test]
     async fn fetch_decision_parses_update_required_response() {

@@ -280,6 +280,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         : this.call("list_contacts");
     },
     listDmRequests: () => this.call("list_dm_requests"),
+    respondDmRequest: ({ pairKey, action }) =>
+      this.call("respond_dm_request", { pairKey, action }),
     markChannelRead: (id) => this.call("mark_channel_read", { id }),
     markDmThreadRead: (personUid) =>
       this.call("mark_dm_thread_read", { personUid }),
@@ -662,6 +664,13 @@ export class TauriPlatformAdapter implements PlatformAdapter {
 
   readonly sessions: PlatformAdapter["sessions"] = {
     listAgentSessions: () => this.call("list_agent_sessions"),
+    preflight: () => this.call("agent_session_preflight"),
+    slashCommands: (tool) => this.call("agent_session_slash_commands", { tool }),
+    installProvider: (tool) =>
+      this.call<string>("install_session_provider", { tool }),
+    loginStart: (tool) => this.call("agent_provider_login_start", { tool }),
+    loginStatus: (tool) => this.call("agent_provider_login_status", { tool }),
+    loginCancel: (tool) => this.call("agent_provider_login_cancel", { tool }),
   };
 
   readonly settings: PlatformAdapter["settings"] = {
@@ -669,10 +678,19 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getSettings: () => this.call("get_settings"),
     updateSettings: (patch) => this.queueSettingsPatch(patch),
     getSetupStatus: () => this.call("get_setup_status"),
+    markWelcomeSetupComplete: () => this.call("mark_welcome_setup_complete"),
     getTelemetryConsent: () => this.call("get_telemetry_consent"),
   };
 
   readonly workMesh: PlatformAdapter["workMesh"] = {
+    createProjectStory: (projectId, companyUid, story) => this.hqProJson("POST",
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
+      { ...story, companyUid: companyUid.trim() },
+    ),
+    putProjectView: (projectId, companyUid, view) => this.hqProJson("PUT",
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}`,
+      { ...(view as object), companyUid: companyUid.trim() },
+    ),
     readLocalSnapshot: () => this.call("read_work_mesh_snapshot"),
     getProjectView: (projectId, companyUid) =>
       companyUid?.trim()

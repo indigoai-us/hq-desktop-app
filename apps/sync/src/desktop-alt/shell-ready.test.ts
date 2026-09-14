@@ -123,6 +123,24 @@ afterEach(async () => {
 });
 
 describe('HqWorkWorkShell shell_ready', () => {
+  it.each([undefined, false, true])('supplies New session with legacy flag %s', async (inAppSessions) => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn } = mockInvoke({ get_settings: () => ({ inAppSessions }) });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+    expect(host.querySelector('[data-testid="session-create-action"]')?.textContent).toBe('New session');
+  });
+
+  it('supplies New session even when settings never respond', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn } = mockInvoke({ get_settings: () => new Promise(() => {}) });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+    expect(host.querySelector('[data-testid="session-create-action"]')?.textContent).toBe('New session');
+  });
+
   it('invokes shell_ready after WorkShell reports its first successful paint', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);

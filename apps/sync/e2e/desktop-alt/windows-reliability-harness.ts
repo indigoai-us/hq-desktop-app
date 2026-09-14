@@ -1118,6 +1118,13 @@ export interface SessionEndLiveObservation {
   exitedWithinDeadline: boolean;
   /** True when the fatal tao panic text appeared in captured output. */
   observedDestroyedStatePanic: boolean;
+  /**
+   * True when the re-entrant-handler tao panic appeared in captured output — the
+   * panic raised when WM_ENDSESSION lands while tao's handler is already taken
+   * inside a nested message pump (HQ-DESKTOP-44 re-entrant path). This is the
+   * base-build failure the WH_CALLWNDPROC intercept exists to prevent.
+   */
+  observedReentrantHandlerPanic: boolean;
   /** True when any panic/abort marker appeared in captured output. */
   observedAbortMarker: boolean;
   /**
@@ -1235,8 +1242,18 @@ export function parseSessionEndOwnershipReport(
 /** The exact panic tao raises from `move_state_to` once the runner is destroyed. */
 export const DESTROYED_STATE_PANIC = 'cannot move state from Destroyed';
 
+// HQ-DESKTOP-44 (re-entrant path). The panic tao raises when WM_ENDSESSION is
+// delivered while its event handler is already taken (inside wry's nested
+// `wait_with_pump` during WebView2 creation): `call_event_handler` does
+// `event_handler.take().expect("either event handler is re-entrant (likely), or
+// no event handler is registered (very unlikely)")` on a `None`. The
+// WH_CALLWNDPROC intercept must beat this; the live proof is red on the base and
+// green on the candidate.
+export const REENTRANT_HANDLER_PANIC = 'either event handler is re-entrant';
+
 const ABORT_MARKERS = [
   DESTROYED_STATE_PANIC,
+  REENTRANT_HANDLER_PANIC,
   'panicked at',
   'STATUS_STACK_BUFFER_OVERRUN',
   '0xc0000409',
@@ -1449,6 +1466,19 @@ export interface DriveSessionEndOptions {
   queryOnlyFirst?: boolean;
   /** How long the app gets to prove it SURVIVED a bare query. */
   queryOnlySettleMs?: number;
+  /**
+   * HQ-DESKTOP-44 (re-entrant path). Arm the app's deterministic re-entrancy
+   * probe (compiled only under `--features e2e-automation`) via
+   * `HQ_SYNC_SESSION_END_REENTRANCY_PROBE`, so its MAIN thread parks inside a
+   * nested `GetMessageW` pump — the shape wry's `wait_with_pump` takes during
+   * WebView2 creation — BEFORE the committed session end is driven. The
+   * WM_ENDSESSION is then delivered re-entrantly, exactly reproducing the crash.
+   * On the pre-fix build tao panics `either event handler is re-entrant`; on the
+   * fixed build the WH_CALLWNDPROC intercept exits 0.
+   */
+  holdNestedPump?: boolean;
+  /** How long to wait for the nested pump to arm (marker file to appear). */
+  holdNestedPumpArmTimeoutMs?: number;
 }
 
 /**
@@ -1478,11 +1508,26 @@ export async function driveWindowsSessionEnd(
     join(tmpdir(), `hq-session-end-owned-${process.pid}-${Date.now()}.json`);
   rmSync(ownedPidsReportPath, { force: true });
 
+  // HQ-DESKTOP-44 (re-entrant path): when asked to hold a nested pump, hand the
+  // app a unique marker path. Its e2e-automation probe writes the marker once the
+  // main thread is parked in the pump, and clears it on release. Absent until
+  // then, so "marker present" is a real "pump is live" signal.
+  const reentrancyMarkerPath = options.holdNestedPump
+    ? join(tmpdir(), `hq-session-end-reentrancy-${process.pid}-${Date.now()}.marker`)
+    : null;
+  if (reentrancyMarkerPath) rmSync(reentrancyMarkerPath, { force: true });
+
   const child = spawn(options.appPath, [], {
     detached: false,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
-    env: { ...process.env, HQ_SYNC_SESSION_END_OWNED_PIDS: ownedPidsReportPath },
+    env: {
+      ...process.env,
+      HQ_SYNC_SESSION_END_OWNED_PIDS: ownedPidsReportPath,
+      ...(reentrancyMarkerPath
+        ? { HQ_SYNC_SESSION_END_REENTRANCY_PROBE: reentrancyMarkerPath }
+        : {}),
+    },
   });
 
   let captured = '';
@@ -1545,6 +1590,25 @@ export async function driveWindowsSessionEnd(
       throw new Error(
         `app under test never owned a top-level window (exited=${exited}, code=${exitCode})`,
       );
+    }
+
+    // HQ-DESKTOP-44 (re-entrant path): wait for the app's re-entrancy probe to
+    // park the MAIN thread inside its nested pump before driving the committed
+    // end, so WM_ENDSESSION is delivered re-entrantly. Bounded — the app writes
+    // the marker only once the pump is live.
+    if (reentrancyMarkerPath) {
+      const pumpArmed = await waitFor(
+        async () => exited || existsSync(reentrancyMarkerPath),
+        {
+          timeoutMs: options.holdNestedPumpArmTimeoutMs ?? 60_000,
+          intervalMs: 500,
+        },
+      );
+      if (!pumpArmed || exited) {
+        throw new Error(
+          `re-entrancy probe never armed its nested pump (exited=${exited}, code=${exitCode})`,
+        );
+      }
     }
 
     // How many top-level windows the app owns right now. Throws rather than
@@ -1623,6 +1687,13 @@ export async function driveWindowsSessionEnd(
       followUpPosted: number;
     };
 
+    // Release the nested pump so the app is never left parked. On the fixed build
+    // the intercept has already exited by now; this covers the base build and any
+    // path where no WM_ENDSESSION reached the pump, so it can never hang.
+    if (reentrancyMarkerPath) {
+      rmSync(reentrancyMarkerPath, { force: true });
+    }
+
     const exitedWithinDeadline = await waitFor(async () => exited, {
       timeoutMs: exitTimeoutMs,
       intervalMs: 250,
@@ -1670,6 +1741,7 @@ export async function driveWindowsSessionEnd(
       exitCode,
       exitedWithinDeadline,
       observedDestroyedStatePanic: captured.includes(DESTROYED_STATE_PANIC),
+      observedReentrantHandlerPanic: captured.includes(REENTRANT_HANDLER_PANIC),
       observedAbortMarker: findAbortMarker(captured) !== null,
       ownedPidsReportPresent,
       ownedPidsReportError,

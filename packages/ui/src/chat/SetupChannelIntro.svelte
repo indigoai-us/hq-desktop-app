@@ -20,6 +20,13 @@
    *
    * External links never navigate the webview: every resource row calls
    * `onopenurl` (host → system browser) and cancels the anchor default.
+   *
+   * NATIVE SETUP RUN: with a host `setupRun` API (apps/sync provides one on
+   * `extraPages.sessions`), Run Setup drives `/setup` inside this hero — a
+   * four-step card (`SetupRunCard`), the agent's latest plain sentence, and
+   * each question as a native card — instead of opening the Sessions page.
+   * Interpretation lives in `setup-run.ts`; the run is remembered in
+   * localStorage so a relaunch offers "Continue setup (N of 4)".
    */
   import { onMount } from "svelte";
   import type { SettingsApi, ShellApi } from "@hq/platform";
@@ -28,14 +35,30 @@
     type LaunchKey,
   } from "../settings/launch-actions";
   import {
+    SETUP_ADVANCED_LABEL,
+    SETUP_ADVANCED_TOOLS_NOTE,
     SETUP_DEEP_LINK_PROMPT,
-    SETUP_HERO,
+    SETUP_HOSTED_AGENT_NOTE,
     SETUP_LAUNCH_COMMANDS,
     SETUP_RESOURCES,
+    SETUP_RUN_LABEL,
+    SETUP_ROSTER_FAILED,
     SETUP_SUPPORT_NOTE,
-    type SetupResourceKind,
+    setupCompanies,
+    setupCompanyActionLabel,
+    setupHeroFor,
+    setupRosterLoading,
+    type SetupRosterStatus,
   } from "./setup-channel";
   import { SETUP_HERO_ART } from "./setup-welcome-art";
+  import { SETUP_RESOURCE_GLYPHS } from "./setup-resource-glyphs";
+  import SetupRunCard from "./SetupRunCard.svelte";
+  import SetupConnectStep from "./SetupConnectStep.svelte";
+  import SetupButton from "./SetupButton.svelte";
+  import { SETUP_RUN_STEPS } from "./setup-run";
+  import type { SetupAgent } from "./setup-agent.svelte";
+  import type { EntryPointResult } from "./lifecycle-entry-points";
+  import type { Workspace } from "./workspaces";
 
   interface Props {
     /** Platform seam slices (see @hq/platform PlatformAdapter). */
@@ -50,9 +73,95 @@
     >;
     /** Open an external URL via the host (system browser). */
     onopenurl?: (url: string) => void;
+    /** Present only when the host provides in-app Sessions. Opens a draft, never sends. */
+    onopensessions?: () => void;
+    /**
+     * The shell's company roster. When it holds any company (whatever its
+     * sync state), the hero leads with "Open <Company>" / "Continue setup for
+     * <Company>" instead of the create-a-company prompt.
+     */
+    companies?: readonly Workspace[] | null;
+    /** Open (or continue setting up) one of the roster's companies. */
+    onopencompany?: (company: Workspace) => void;
+    /**
+     * Secondary "Create another company" entry point, shown only next to an
+     * existing company. Same host callback the sidebar uses; a failure reason
+     * renders inline where the control was.
+     */
+    oncreatecompany?: (() => Promise<EntryPointResult>) | null;
+    /**
+     * Where the shell is in loading `companies` for this session. While
+     * `loading` (and no company is known yet) the hero shows a quiet
+     * "Loading your workspace…" line instead of the create prompt; `failed`
+     * adds a one-line retry under the create prompt. Omitted = ready.
+     */
+    rosterStatus?: SetupRosterStatus | null;
+    /** Re-run the roster fetch after a `failed` status. */
+    onretryroster?: () => void;
+    /**
+     * Fired when setup is started from this pane (Run Setup or one of the
+     * advanced launches). The shell records it so later boots land in the
+     * company channel instead of #welcome.
+     */
+    onsetupstarted?: () => void;
+    /**
+     * Host-provided guided run (see `SetupRunApi`). When present, Run Setup
+     * runs `/setup` natively inside this hero — stepper, one-line status,
+     * questions as cards — instead of opening the Sessions page. The Sessions
+     * page is still the fallback when the host's preflight says the provider
+     * or HQ on this Mac is not ready (its Connect / self-heal UI lives there).
+     */
+    /**
+     * The host's Setup Agent (see `setup-agent.svelte.ts`). With it, Run Setup
+     * starts the guided run that talks in this channel; the hero shows its
+     * stepper. Without it, Run Setup opens the host's Sessions draft.
+     */
+    agent?: SetupAgent | null;
+    /** "Show details": open the underlying session on the Sessions page. */
+    onopensessiondetails?: (sessionId: string) => void;
+    /**
+     * Fired once the native run reaches its finish. The shell records it so
+     * later boots land in the company channel instead of #welcome.
+     */
   }
 
-  let { settings, shell, onopenurl }: Props = $props();
+  let {
+    settings,
+    shell,
+    onopenurl,
+    onopensessions,
+    companies = null,
+    onopencompany,
+    oncreatecompany = null,
+    rosterStatus = null,
+    onretryroster,
+    onsetupstarted,
+    agent = null,
+    onopensessiondetails,
+  }: Props = $props();
+
+  const rosterCompanies = $derived(setupCompanies(companies));
+  const hasCompany = $derived(rosterCompanies.length > 0);
+  const rosterLoading = $derived(setupRosterLoading(companies, rosterStatus));
+  const rosterFailed = $derived(rosterStatus === "failed" && !hasCompany);
+  const hero = $derived(setupHeroFor(companies, rosterStatus));
+
+  let createAnotherBusy = $state(false);
+  let createAnotherError = $state<string | null>(null);
+
+  async function createAnotherCompany(): Promise<void> {
+    if (!oncreatecompany || createAnotherBusy) return;
+    createAnotherBusy = true;
+    createAnotherError = null;
+    try {
+      const result = await oncreatecompany();
+      if (!result.ok) createAnotherError = result.reason;
+    } catch (err) {
+      createAnotherError = err instanceof Error ? err.message : String(err);
+    } finally {
+      createAnotherBusy = false;
+    }
+  }
 
   let hqFolderPath = $state("");
   let launching = $state<LaunchKey | null>(null);
@@ -77,8 +186,9 @@
   );
 
   onMount(async () => {
-    const res = await settings.getSetupStatus();
-    if (res.ok) {
+    // Hosts without a settings surface (some shells, tests) just get no folder path.
+    const res = await settings?.getSetupStatus?.();
+    if (res?.ok) {
       const status = res.value as { hqFolderPath?: string } | null;
       hqFolderPath = status?.hqFolderPath?.trim() ?? "";
     }
@@ -88,8 +198,45 @@
     launchErrors = { ...launchErrors, [key]: message ?? undefined };
   }
 
+  /**
+   * The one primary action. With a host guided-run API, `/setup` runs right
+   * here in the hero. Otherwise open the host's Sessions draft with `/setup`
+   * prefilled; hosts without in-app Sessions fall back to Claude Code.
+   */
+  function runSetup(): void {
+    if (agent?.api) {
+      void startAgent();
+      return;
+    }
+    openSessionsForSetup();
+  }
+
+  /** The Setup Agent runs here; only a not-ready host hands off to Sessions. */
+  async function startAgent(): Promise<void> {
+    if (!agent) return;
+    const outcome = await agent.start();
+    if (outcome === "needs-sessions-page") openSessionsForSetup();
+  }
+
+  function openSessionsForSetup(): void {
+    if (onopensessions) {
+      onsetupstarted?.();
+      onopensessions();
+      return;
+    }
+    // runLaunch reports onsetupstarted itself.
+    void runLaunch("claude");
+  }
+
+  const runActive = $derived(Boolean(agent?.active));
+
+  function showRunDetails(): void {
+    if (agent?.sessionId) onopensessiondetails?.(agent.sessionId);
+  }
+
   async function runLaunch(key: LaunchKey): Promise<void> {
     if (!canLaunch || launching) return;
+    onsetupstarted?.();
     setLaunchError(key, null);
     launching = key;
     try {
@@ -110,7 +257,7 @@
     label: string;
     primary: boolean;
   }[] = [
-    { key: "claude", label: "Open setup in Claude Code", primary: true },
+    { key: "claude", label: "Open setup in Claude Code", primary: false },
     { key: "codex", label: "Open setup in Codex", primary: false },
     { key: "grok", label: "Open setup in Grok Build", primary: false },
   ];
@@ -121,15 +268,6 @@
     onopenurl?.(href);
   }
 
-  /** Inline stroke glyphs per resource kind (no emoji in product UI). */
-  const GLYPHS: Record<SetupResourceKind, string> = {
-    guide:
-      '<circle cx="8" cy="8" r="6.25"/><path d="M10.6 5.4 9.2 9.2 5.4 10.6 6.8 6.8z"/>',
-    book: '<path d="M2.75 3.25h4.1c.9 0 1.65.55 1.9 1.35.25-.8 1-1.35 1.9-1.35h4.1v9.5h-4.35c-.75 0-1.4.45-1.65 1.1-.25-.65-.9-1.1-1.65-1.1H2.75z"/><path d="M8.75 4.6v9.15"/>',
-    training:
-      '<rect x="2.25" y="3.25" width="11.5" height="10.5"/><path d="M2.25 6.75h11.5M5.25 1.75v3M10.75 1.75v3"/>',
-    docs: '<path d="M4 1.75h5.25L12.5 5v9.25H4z"/><path d="M9 1.75V5h3.5M6 8.25h4M6 10.75h4"/>',
-  };
 </script>
 
 <section
@@ -137,6 +275,9 @@
   aria-label="Getting started with HQ Desktop"
   data-testid="setup-channel-intro"
   data-setup-threads="none"
+  data-setup-has-company={hasCompany ? "true" : "false"}
+  data-setup-run={runActive ? agent!.mode : "idle"}
+  data-setup-roster-status={rosterStatus ?? "ready"}
 >
   <div class="hero" data-testid="setup-hero">
     <img
@@ -156,91 +297,236 @@
       draggable="false"
     />
     <div class="hero-scrim" aria-hidden="true"></div>
-    <div class="hero-copy">
-      <span class="eyebrow">{SETUP_HERO.eyebrow}</span>
-      <h2 class="hero-title">{SETUP_HERO.title}</h2>
-      <p class="hero-body">{SETUP_HERO.body}</p>
-
-      <div class="hero-actions" role="group" aria-label="Open setup">
-        {#each LAUNCHES as launch (launch.key)}
-          <div class="setup-action">
-            <button
-              type="button"
-              class="launch-btn"
-              class:primary={launch.primary}
-              data-testid={`setup-launch-${launch.key}`}
-              disabled={!canLaunch || launching !== null}
-              aria-busy={launching === launch.key}
-              onclick={() => void runLaunch(launch.key)}
-            >
-              {launching === launch.key ? "Opening…" : launch.label}
-            </button>
-            {#if launchErrors[launch.key]}
-              <p class="launch-error" role="alert">
-                {launchErrors[launch.key]}
-              </p>
-            {/if}
-          </div>
-        {/each}
+    {#if runActive && agent}
+      <div class="hero-copy hero-copy--run">
+        <SetupRunCard
+          variant="steps"
+          mode={agent.mode === "starting" ? "live" : agent.mode === "idle" ? "live" : agent.mode}
+          run={agent.state}
+          resumeStep={agent.resumeStep}
+          busy={agent.busy}
+          onshowdetails={onopensessiondetails && agent.sessionId && agent.mode !== "done" && !agent.state?.done
+            ? showRunDetails
+            : undefined}
+        />
       </div>
-    </div>
-  </div>
-
-  <ul class="resources" aria-label="Learn HQ">
-    {#each SETUP_RESOURCES as resource (resource.id)}
-      <li class="resource">
-        <a
-          class="resource-link"
-          href={resource.href}
-          target="_blank"
-          rel="noopener noreferrer"
-          data-testid={`setup-resource-${resource.id}`}
-          onclick={(event) => openResourceLink(event, resource.href)}
+    {:else}
+    <div class="hero-copy">
+      <span class="eyebrow">{hero.eyebrow}</span>
+      <h2 class="hero-title">{hero.title}</h2>
+      {#if rosterLoading}
+        <p
+          class="hero-body roster-loading"
+          role="status"
+          aria-live="polite"
+          data-testid="setup-roster-loading"
         >
-          <svg
-            class="resource-glyph"
-            viewBox="0 0 16 16"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            {@html GLYPHS[resource.kind]}
-          </svg>
-          <span class="resource-text">
-            <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
-            <span class="resource-title">{resource.title}</span>
-            <span class="resource-desc">{resource.description}</span>
-          </span>
-          <svg
-            class="resource-arrow"
-            viewBox="0 0 16 16"
-            width="14"
-            height="14"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" />
-          </svg>
-        </a>
-      </li>
-    {/each}
-  </ul>
+          {hero.body}
+        </p>
+      {:else}
+        <p class="hero-body">{hero.body}</p>
+      {/if}
+      {#if agent?.api}
+        <!-- What Run Setup will do, visible before the first click. -->
+        <ol class="steps-preview" aria-label="Setup steps" data-testid="setup-steps-preview">
+          {#each SETUP_RUN_STEPS as step, index (step.id)}
+            <li class="steps-preview-step">
+              <span class="steps-preview-index" aria-hidden="true">{index + 1}</span>
+              <span>{step.label}</span>
+            </li>
+          {/each}
+        </ol>
+      {/if}
+      {#if rosterFailed}
+        <p class="roster-failed" role="alert" data-testid="setup-roster-failed">
+          <span>{SETUP_ROSTER_FAILED.body}</span>
+          {#if onretryroster}
+            <SetupButton
+              variant="quiet"
+              data-testid="setup-roster-retry"
+              onclick={() => onretryroster?.()}
+            >
+              {SETUP_ROSTER_FAILED.retry}
+            </SetupButton>
+          {/if}
+        </p>
+      {/if}
 
-  <p class="support-note" data-testid="setup-support-note">
-    {SETUP_SUPPORT_NOTE}
-  </p>
+      {#if agent?.api && agent.providers && !agent.providersReady}
+        <!-- No signed-in agent on this Mac yet: connect one first. -->
+        <SetupConnectStep api={agent.api} providers={agent.providers} onrefresh={() => agent!.refreshProviders(true)} />
+      {:else}
+      <div class="hero-actions" role="group" aria-label="Set up this Mac">
+        <SetupButton
+          variant="primary"
+          data-testid="setup-run"
+          disabled={Boolean(agent?.busy) || (!agent?.api && !onopensessions && (!canLaunch || launching !== null))}
+          aria-busy={Boolean(agent?.busy) || (!onopensessions && launching === "claude")}
+          onclick={runSetup}
+        >
+          {agent?.busy ? "Starting…" : SETUP_RUN_LABEL}
+        </SetupButton>
+      </div>
+      {/if}
+      {#if !onopensessions && launchErrors.claude}
+        <p class="launch-error" role="alert">{launchErrors.claude}</p>
+      {/if}
+      {#if agent?.error && agent.mode === "idle"}
+        <p class="launch-error" role="alert" data-testid="setup-run-start-error">{agent?.error}</p>
+      {/if}
+
+      <details class="advanced" data-testid="setup-advanced">
+        <summary>{SETUP_ADVANCED_LABEL}</summary>
+        <div class="advanced-body">
+          <p>{SETUP_ADVANCED_TOOLS_NOTE}</p>
+          <div class="hero-actions" role="group" aria-label="Open setup in a separate tool">
+            {#each LAUNCHES as launch (launch.key)}
+              <div class="setup-action">
+                <SetupButton
+                  data-testid={`setup-launch-${launch.key}`}
+                  disabled={!canLaunch || launching !== null}
+                  aria-busy={launching === launch.key}
+                  onclick={() => void runLaunch(launch.key)}
+                >
+                  {launching === launch.key ? "Opening…" : launch.label}
+                </SetupButton>
+                {#if launchErrors[launch.key]}
+                  <p class="launch-error" role="alert">
+                    {launchErrors[launch.key]}
+                  </p>
+                {/if}
+              </div>
+            {/each}
+          </div>
+
+          {#if hasCompany}
+            <div
+              class="hero-actions company-actions"
+              role="group"
+              aria-label="Your companies"
+              data-testid="setup-company-actions"
+            >
+              {#each rosterCompanies as company (company.cloudUid ?? company.slug)}
+                <SetupButton
+                  data-testid={`setup-open-company-${company.slug}`}
+                  data-company-uid={company.cloudUid ?? ""}
+                  onclick={() => onopencompany?.(company)}
+                >
+                  {setupCompanyActionLabel(company)}
+                </SetupButton>
+              {/each}
+            </div>
+            {#if oncreatecompany}
+              <div class="setup-action">
+                <SetupButton
+                  variant="quiet"
+                  data-testid="setup-create-another-company"
+                  aria-busy={createAnotherBusy}
+                  disabled={createAnotherBusy}
+                  onclick={() => void createAnotherCompany()}
+                >
+                  {createAnotherBusy ? "Opening…" : "Create another company"}
+                </SetupButton>
+                {#if createAnotherError}
+                  <p
+                    class="launch-error"
+                    role="alert"
+                    data-testid="setup-create-another-company-error"
+                  >
+                    {createAnotherError}
+                  </p>
+                {/if}
+              </div>
+            {/if}
+          {/if}
+
+          <p data-testid="setup-hosted-agent-guidance">{SETUP_HOSTED_AGENT_NOTE}</p>
+
+          <ul class="resources" aria-label="Learn HQ">
+            {#each SETUP_RESOURCES as resource (resource.id)}
+              <li class="resource">
+                <a
+                  class="resource-link"
+                  href={resource.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid={`setup-resource-${resource.id}`}
+                  onclick={(event) => openResourceLink(event, resource.href)}
+                >
+                  <svg
+                    class="resource-glyph"
+                    viewBox="0 0 16 16"
+                    width="16"
+                    height="16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.25"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
+                  </svg>
+                  <span class="resource-text">
+                    <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
+                    <span class="resource-title">{resource.title}</span>
+                    <span class="resource-desc">{resource.description}</span>
+                  </span>
+                </a>
+              </li>
+            {/each}
+          </ul>
+          <p class="support-note" data-testid="setup-support-note">{SETUP_SUPPORT_NOTE}</p>
+        </div>
+      </details>
+    </div>
+    {/if}
+  </div>
 </section>
 
 <style>
+  .advanced {
+    margin-top: 14px;
+    font-size: 13px;
+  }
+  .advanced summary {
+    cursor: pointer;
+    width: fit-content;
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+  }
+  .advanced summary:hover {
+    color: #ffffff;
+  }
+  .advanced-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .advanced-body p {
+    margin: 0;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.72);
+  }
+  /* Learn-HQ rows live inside the dark hero now: keep them legible on it. */
+  .advanced-body .resources {
+    margin-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
+  }
+  .advanced-body .resource-link,
+  .advanced-body .resource-title {
+    color: #ffffff;
+  }
+  .advanced-body .resource-desc,
+  .advanced-body .eyebrow--muted,
+  .advanced-body .support-note {
+    color: rgba(255, 255, 255, 0.66);
+  }
+  .advanced-body .support-note {
+    font-size: 12px;
+  }
   .setup-intro {
     flex: 0 0 auto;
     overflow: visible;
@@ -265,6 +551,14 @@
        fallback color covers the frame before the art decodes. */
     background: #0a0b0d;
     color: #ffffff;
+    /* Buttons live on the wallpaper, so they are image-relative (white on
+       dark), not theme-relative — the same in light and dark shells. */
+    --setup-btn-fg: #fff;
+    --setup-btn-line: rgba(255, 255, 255, 0.6);
+    --setup-btn-primary-bg: #fff;
+    --setup-btn-primary-fg: #111;
+    --setup-btn-muted: rgba(255, 255, 255, 0.8);
+    --setup-btn-hover: rgba(255, 255, 255, 0.14);
   }
 
   .hero-art {
@@ -329,6 +623,17 @@
     justify-content: flex-end;
   }
 
+  .hero-copy--run {
+    justify-content: flex-end;
+    min-height: 168px;
+    padding-top: var(--space-4, 16px);
+  }
+
+  .hero--compact {
+    min-height: 168px;
+  }
+
+
   .eyebrow {
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: var(--text-micro, 11px);
@@ -356,12 +661,59 @@
     color: rgba(255, 255, 255, 0.74);
   }
 
+  .roster-loading {
+    color: rgba(255, 255, 255, 0.62);
+  }
+
+  .roster-failed {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: var(--text-base, 13px);
+    line-height: 1.4;
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  .steps-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.78);
+  }
+  .steps-preview-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .steps-preview-index {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Action rows: 8px between buttons; the hero-copy gap (8px) plus this
+     margin puts 12px between a message and its actions. */
   .hero-actions {
     display: flex;
     flex-wrap: wrap;
-    align-items: flex-start;
-    gap: var(--space-2, 8px);
-    margin-top: var(--space-2, 8px);
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .advanced-body .hero-actions {
+    margin-top: 2px;
   }
 
   .setup-action {
@@ -370,56 +722,12 @@
     gap: 0.25rem;
     max-width: 100%;
   }
-
-  /* Buttons live on the wallpaper, so they are image-relative (white on
-     dark), not theme-relative — the same in light and dark shells. */
-  .launch-btn {
-    display: inline-flex;
-    align-items: center;
+  .setup-action > :global(.setup-btn) {
     align-self: flex-start;
-    min-height: 30px;
-    padding: 0 12px;
-    border: 1px solid rgba(255, 255, 255, 0.38);
-    border-radius: 0;
-    background: rgba(6, 6, 6, 0.28);
-    color: #ffffff;
-    font: inherit;
-    font-size: var(--text-base, 13px);
-    font-weight: 500;
-    white-space: nowrap;
-    cursor: pointer;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    transition:
-      background 140ms ease,
-      color 140ms ease,
-      border-color 140ms ease;
   }
 
-  .launch-btn:hover:not(:disabled) {
-    border-color: rgba(255, 255, 255, 0.7);
-    background: rgba(255, 255, 255, 0.12);
-  }
-
-  .launch-btn.primary {
-    border-color: #ffffff;
-    background: #ffffff;
-    color: #0a0b0d;
-  }
-
-  .launch-btn.primary:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.9);
-    border-color: rgba(255, 255, 255, 0.9);
-  }
-
-  .launch-btn:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-
-  .launch-btn:focus-visible {
-    outline: 2px solid #ffffff;
-    outline-offset: 2px;
+  .company-actions {
+    margin-top: var(--space-3, 12px);
   }
 
   .launch-error {
@@ -529,7 +837,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .launch-btn,
     .resource-glyph,
     .resource-title,
     .resource-arrow {

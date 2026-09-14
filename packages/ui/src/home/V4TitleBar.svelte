@@ -61,6 +61,7 @@
     onOpenSettings?: (tab?: SettingsTab) => void;
     onopenMeetings?: () => void;
     onopenNotifications?: () => void;
+    primaryAction?: { label: string; onselect: () => void };
     /** Unread count drives monochrome bell dot only (no red pill). */
     unreadCount?: number;
     cloudPaused?: boolean;
@@ -88,6 +89,13 @@
      * navigate — never assign to location for these.
      */
     onopenurl?: (url: string) => void;
+    /** In-app history. Buttons stay visible and disable at stack endpoints. */
+    canGoBack?: boolean;
+    canGoForward?: boolean;
+    backLabel?: string;
+    forwardLabel?: string;
+    onback?: () => void;
+    onforward?: () => void;
   }
 
   let {
@@ -114,6 +122,7 @@
     ontogglesidebar,
     onopenMeetings,
     onopenNotifications,
+    primaryAction,
     unreadCount = 0,
     cloudPaused = false,
     conflicts = [],
@@ -125,9 +134,21 @@
     onopenLibrary,
     onopenMarketplace,
     onopenurl,
+    canGoBack = false,
+    canGoForward = false,
+    backLabel = "",
+    forwardLabel = "",
+    onback,
+    onforward,
   }: Props = $props();
 
   const dayDateLabel = $derived(titlebarDayDate());
+  const backHoverLabel = $derived(
+    canGoBack && backLabel.trim() ? backLabel : "Back",
+  );
+  const forwardHoverLabel = $derived(
+    canGoForward && forwardLabel.trim() ? forwardLabel : "Forward",
+  );
 
   /**
    * Platform capability seam (not hardcoded): only hosts that draw native
@@ -557,6 +578,61 @@
       data-testid="titlebar-day-date"
       data-tauri-drag-region>{dayDateLabel}</span
     >
+    <div
+      class="v4-history"
+      data-testid="titlebar-history"
+      data-no-drag
+      data-tauri-drag-region="false"
+    >
+      <Tooltip label={backHoverLabel} align="start">
+        {#snippet trigger(describedBy: string)}
+          <button
+            type="button"
+            class="v4-icon-btn"
+            data-testid="titlebar-back"
+            aria-label="Back"
+            title={backHoverLabel}
+            aria-describedby={describedBy || undefined}
+            disabled={!canGoBack}
+            onclick={() => onback?.()}
+          >
+            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M10 3.5 5.5 8 10 12.5"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        {/snippet}
+      </Tooltip>
+      <Tooltip label={forwardHoverLabel} align="start">
+        {#snippet trigger(describedBy: string)}
+          <button
+            type="button"
+            class="v4-icon-btn"
+            data-testid="titlebar-forward"
+            aria-label="Forward"
+            title={forwardHoverLabel}
+            aria-describedby={describedBy || undefined}
+            disabled={!canGoForward}
+            onclick={() => onforward?.()}
+          >
+            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M6 3.5 10.5 8 6 12.5"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        {/snippet}
+      </Tooltip>
+    </div>
   </div>
 
   <div
@@ -566,6 +642,14 @@
   ></div>
 
   <div class="v4-title-actions" data-no-drag data-tauri-drag-region="false">
+    {#if primaryAction}
+      <button type="button" class="v4-core-pill" data-testid="titlebar-primary-action" onclick={primaryAction.onselect}>
+        <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.3" />
+        </svg>
+        {primaryAction.label}
+      </button>
+    {/if}
     <div class="v4-launch-wrap" bind:this={launchContainer}>
       <Tooltip label="Open your HQ folder in an AI tool" align="start">
         {#snippet trigger(describedBy: string)}
@@ -838,6 +922,7 @@
     display: flex;
     align-items: center;
     flex: 0 0 auto;
+    flex-wrap: nowrap;
     gap: 8px;
     /* Leading gutter clears overlay traffic lights (macOS). Shared with
        sub-page headers via `--titlebar-leading-inset` (titlebar-layout.ts).
@@ -869,6 +954,15 @@
     letter-spacing: 0.08em;
     line-height: 1;
     text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .v4-history {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    flex-shrink: 0;
+    gap: 2px;
     white-space: nowrap;
   }
 

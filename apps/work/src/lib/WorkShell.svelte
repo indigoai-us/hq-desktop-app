@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { addChannelNotification, readChannelNotifications, saveChannelNotifications } from "./channel-notifications";
   /**
    * ROOT = the full V2 desktop shell (the sidebar-first windowed app), filling
    * 100vw/100vh. The channel rail + title bar ARE the navigation.
@@ -7,7 +8,7 @@
    *   session → direct hq-pro REST + MeshClient MQTT wakes → shallow cache.
    * Tauri selects its native adapter. Neither target reads ~/.hq here.
    */
-  import { onMount } from "svelte";
+  import { onMount, type Component, type ComponentProps } from "svelte";
   import {
     createSyncPlatformAdapter,
     resolveHostPlatform,
@@ -18,8 +19,10 @@
   import {
     DesktopApp,
     createChatWakeBus,
+    createRosterRefresher,
     createTenantStorage,
     resolveShellCompanies,
+    subscribeRosterRefreshEvents,
     settingsProfileFromSelf,
     statusForRow,
     identitiesFromContacts,
@@ -40,6 +43,9 @@
     type OfficeCallsHost,
     type PackagesEvents,
     type ReplyThreadScope,
+    type RosterStatus,
+    type RowExtrasResolver,
+    type SetupRunApi,
     type Workspace,
     type WorkMeshThread,
     conversationDeepLinkFromLocation,
@@ -158,6 +164,39 @@
           }
         | null,
     ) => void;
+    /** Native host-only full-column surfaces, forwarded to DesktopApp. */
+    extraPages?: Record<
+      string,
+      {
+        label: string;
+        createAction?: { label: string; param: () => string | null };
+        /** #welcome "Run Setup" destination (see DesktopApp extraPages). */
+        setupAction?: { label: string; param: () => string | null };
+        /** After setup: a fresh session with `/startwork <company>` as its first turn. */
+        startworkAction?: { label: string; param: (company: string | null) => string | null };
+        /** #welcome native guided run (see DesktopApp extraPages). */
+        setupRun?: SetupRunApi;
+        detail?: string;
+        component: Component<{
+          param?: string | null;
+          onnavigate?: (
+            param: string | null,
+            options?: { mode?: "push" | "replace" },
+          ) => void;
+        }>;
+      }
+    >;
+    /** Native host decorations for project-channel rows. */
+    rowExtrasLoading?: boolean;
+    rowExtrasError?: boolean;
+    rowExtras?: RowExtrasResolver | null;
+    onstartlivesession?: ComponentProps<typeof DesktopApp>["onstartlivesession"];
+    channelSessionBody?: ComponentProps<typeof DesktopApp>["channelSessionBody"];
+    /**
+     * Backoff between failed company-roster fetches (tests shorten it). The
+     * default is bounded; a roster that keeps failing stops retrying.
+     */
+    rosterRetryDelaysMs?: readonly number[];
   };
 
   // A non-SvelteKit host can supply its runtime kind and public API URL. The
@@ -188,6 +227,13 @@
     callsHost = null,
     onembeddednavigationready,
     onactivethreadchange,
+    extraPages,
+    rowExtrasLoading = false,
+    rowExtrasError = false,
+    rowExtras = null,
+    onstartlivesession,
+    channelSessionBody,
+    rosterRetryDelaysMs,
   }: WorkShellProps = $props();
 
   // Only a real desktop host gets the native command bridge. A phone runs a
@@ -216,11 +262,27 @@
       });
   const attachmentHandlers =
     adapter.kind === "desktop" ? createTauriAttachmentHandlers(nativeInvoke) : null;
-  const notificationsApi = createNotificationsApi(adapter);
   const wakes = hostWakes ?? createChatWakeBus();
+  let localNotificationRows = $state<Record<string, unknown>[]>([]);
+  const notificationsApi = createNotificationsApi(adapter, {
+    localNotifications: () => localNotificationRows,
+    ackLocalNotification: (id) => {
+      localNotificationRows = localNotificationRows.map((row) =>
+        row.id === id ? { ...row, status: "read" } : row,
+      );
+      saveChannelNotifications(conversationCacheStorage, localNotificationRows);
+    },
+    readAllLocalNotifications: () => {
+      localNotificationRows = localNotificationRows.map((row) => ({
+        ...row,
+        status: "read",
+      }));
+      saveChannelNotifications(conversationCacheStorage, localNotificationRows);
+    },
+  });
   let localNotificationWakeSeq = $state(0);
   const notificationWakeSeq = $derived(
-    hostNotificationWakeSeq ?? localNotificationWakeSeq,
+    (hostNotificationWakeSeq ?? 0) + localNotificationWakeSeq,
   );
   let externalLinkError = $state<string | null>(null);
 
@@ -257,6 +319,10 @@
     ),
   );
   $effect(() => {
+    void personUid;
+    localNotificationRows = personUid ? readChannelNotifications(conversationCacheStorage) : [];
+  });
+  $effect(() => {
     shallow = readShallowCache(personUid);
   });
   $effect(() => {
@@ -289,6 +355,14 @@
       authed: false,
     }),
   );
+  /**
+   * Where this session is in loading `companies`: `loading` until the first
+   * fetch settles, then `ready` (applied) or `failed` (retry budget spent).
+   * #welcome must not lead with "Create a company" while this is `loading`.
+   */
+  let rosterStatus = $state<RosterStatus>("loading");
+  /** True once `whoami` has replaced the host's account identity this tenant. */
+  let selfHydrated = false;
   let workThreads = $state<WorkMeshThread[]>([]);
   let projectMetaTick = $state(0);
   const projectMeta = createProjectMetaCache({
@@ -342,11 +416,14 @@
   function clearTenantState(): void {
     // This page-scoped cache survives the keyed DesktopApp remount. Clear it
     // at the auth-generation boundary before any next-tenant request starts.
+    rosterRefresher.cancel();
     projectMeta.invalidateAll();
     projectMetaTick += 1;
     self = null;
+    selfHydrated = false;
     shallow = readShallowCache("");
     companies = resolveShellCompanies({ authed: false });
+    rosterStatus = "loading";
     workThreads = [];
     selectedCompanyUid = null;
   }
@@ -355,31 +432,99 @@
     return generation === tenantGeneration && hydration === tenantHydration;
   }
 
-  async function bootstrapTenant(expectedGeneration: number): Promise<void> {
-    const hydration = ++tenantHydration;
-    const [hydratedSelf] = await Promise.all([
-      hydrateDesktopSelf(hostSelf, adapter),
-    ]);
-    if (!ownsTenant(expectedGeneration, hydration)) return;
-    self = hydratedSelf;
-    if (!self) return;
-    let roster: Workspace[];
+  function sameRoster(a: readonly Workspace[], b: readonly Workspace[]): boolean {
+    if (a.length !== b.length) return false;
+    return a.every((row, index) => {
+      const other = b[index];
+      return (
+        row.slug === other.slug &&
+        row.cloudUid === other.cloudUid &&
+        row.displayName === other.displayName &&
+        row.kind === other.kind &&
+        row.state === other.state &&
+        row.membershipStatus === other.membershipStatus &&
+        row.role === other.role &&
+        row.hasLocalFolder === other.hasLocalFolder
+      );
+    });
+  }
+
+  /**
+   * Fetch the company roster for the tenant that asked. Resolves `true` when
+   * the roster applied (or the tenant moved on — nothing left to retry) and
+   * `false` when the fetch failed, so the refresher can back off and retry.
+   * Never invents a roster: a failed fetch leaves the last good one in place.
+   */
+  async function loadRoster(
+    expectedGeneration: number,
+    hydration: number,
+  ): Promise<boolean> {
+    let res: Awaited<ReturnType<typeof adapter.identity.listWorkspaces>>;
     try {
-      const res = await adapter.identity.listWorkspaces();
-      if (!ownsTenant(expectedGeneration, hydration)) return;
-      roster = resolveShellCompanies({
-        authed: true,
-        membershipRows: res.ok ? res.value : undefined,
-      });
-      companies = roster;
+      res = await adapter.identity.listWorkspaces();
     } catch {
-      /* keep empty — never invent a roster */
-      return;
+      return false;
     }
+    if (!ownsTenant(expectedGeneration, hydration)) return true;
+    if (!res.ok) return false;
+    const roster = resolveShellCompanies({
+      authed: true,
+      membershipRows: res.value,
+    });
+    if (!sameRoster(companies, roster)) companies = roster;
 
     const threads = await loadWorkThreads(roster, workFetch);
-    if (!ownsTenant(expectedGeneration, hydration)) return;
+    if (!ownsTenant(expectedGeneration, hydration)) return true;
     workThreads = threads;
+    return true;
+  }
+
+  // A failed roster fetch used to leave `companies` empty for the whole
+  // session; the sync runner's company events never re-fetched it either.
+  // Both paths now go through one bounded refresher. Self hydration rides
+  // the same load: on a clean-VM first sign-in a null `whoami` used to end
+  // the bootstrap silently, with no retry, so #welcome offered "Create a
+  // company" to an owner whose company the backend already had.
+  const rosterRefresher = createRosterRefresher({
+    load: async () => {
+      const generation = tenantGeneration;
+      const hydration = tenantHydration;
+      if (!selfHydrated) {
+        // A hosted page with no session has nothing to hydrate or fetch.
+        if (adapter.kind === "web" && !hostSelf) return true;
+        const hydratedSelf = await hydrateDesktopSelf(hostSelf, adapter);
+        if (!ownsTenant(generation, hydration)) return true;
+        if (!hydratedSelf) return false;
+        self = hydratedSelf;
+        selfHydrated = true;
+      }
+      return loadRoster(generation, hydration);
+    },
+    onSettled: (outcome) => {
+      if (outcome === "applied") rosterStatus = "ready";
+      // A later refresh that gives up keeps the last good roster and its
+      // `ready` status; only a session that never loaded reads as failed.
+      else if (outcome === "exhausted" && rosterStatus === "loading") {
+        rosterStatus = "failed";
+      }
+    },
+    delaysMs: rosterRetryDelaysMs,
+  });
+
+  async function bootstrapTenant(expectedGeneration: number): Promise<void> {
+    tenantHydration += 1;
+    if (!ownsTenant(expectedGeneration, tenantHydration)) return;
+    rosterRefresher.cancel();
+    selfHydrated = false;
+    rosterStatus = "loading";
+    await rosterRefresher.refresh();
+  }
+
+  /** #welcome's "Couldn't load your companies — Retry": a fresh retry budget. */
+  function retryRoster(): void {
+    rosterRefresher.cancel();
+    rosterStatus = "loading";
+    void rosterRefresher.refresh();
   }
 
   function acceptAuthSession(
@@ -440,9 +585,39 @@
     };
   });
 
+  // The native sync runner provisions website-created companies after sign-in
+  // and announces them; re-read the roster so #welcome can lead with the
+  // company instead of waiting for a restart.
+  onMount(() => {
+    const unsubscribe =
+      adapter.kind === "desktop"
+        ? subscribeRosterRefreshEvents(nativeListen, () => {
+            void rosterRefresher.refresh();
+          })
+        : () => {};
+    return () => {
+      unsubscribe();
+      rosterRefresher.dispose();
+    };
+  });
+
   // `channel:updated` narrows to that channel; catch-up has no row identity
   // and can reconcile any project directory entry, so it invalidates broadly.
   onMount(() => subscribeProjectMetaInvalidations(wakes, projectMeta));
+
+  // Channel unread deltas arrive through the desktop poller independently of
+  // the NOTIF store. Bridge that wake into the visible feed immediately.
+  onMount(() =>
+    wakes.on("channel:new-message", (wake) => {
+      if (!personUid) return;
+      const channel = shallow.directory.find((row) => row.channelId === wake.channelId);
+      const next = addChannelNotification(localNotificationRows, wake, personUid, channel?.name?.trim() || "");
+      if (next === localNotificationRows) return;
+      localNotificationRows = next;
+      saveChannelNotifications(conversationCacheStorage, next);
+      localNotificationWakeSeq += 1;
+    }),
+  );
 
   $effect(() => {
     if (!self) return;
@@ -656,6 +831,8 @@
       onopenurl={hostOpenUrl ?? openUrl}
       {wakes}
       {companies}
+      {rosterStatus}
+      onretryroster={retryRoster}
       {self}
       tenantAccountId={effectiveTenantAccountId}
       tenantGeneration={effectiveTenantGeneration}
@@ -677,6 +854,12 @@
       {updateWakeSeq}
       {refreshAppVersion}
       {onactivethreadchange}
+      {extraPages}
+      {rowExtrasLoading}
+      {rowExtrasError}
+      {rowExtras}
+      {onstartlivesession}
+      {channelSessionBody}
     />
   {/key}
   {#if externalLinkError}

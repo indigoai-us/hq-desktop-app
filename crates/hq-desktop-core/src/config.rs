@@ -90,8 +90,7 @@ pub struct MenubarPrefs {
     /// upload within seconds of the filesystem event rather than waiting for
     /// the next 10-minute poll. When false, the runner stays poll-only.
     ///
-    /// This is an ADDITIONAL opt-in layered on top of `event_push_eligible()`:
-    /// ineligible users never get `--event-push` regardless of this flag.
+    /// This is an additional opt-in layered on top of runner capability.
     /// Defaults to true (matching the `realtime_sync` default-on convention)
     /// so eligible users get instant push without discovering the toggle; an
     /// explicit `false` written by `save_settings` still wins. Absent in
@@ -303,6 +302,10 @@ pub struct MenubarPrefs {
     /// strip in `merge_prefs_over_existing`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hq_work_handoff: Option<bool>,
+    /// Retired rollout preference, retained for settings wire compatibility.
+    /// Sessions are always available, including when an old install stored false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_app_sessions: Option<bool>,
     /// Master switch for **native** (OS) notification banners. When true
     /// (default), DM / share / meeting events may fire an OS banner (subject to
     /// the per-event and focus rules below). When false, no OS banner fires at

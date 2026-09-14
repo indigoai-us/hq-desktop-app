@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use tokio::io::AsyncReadExt;
 use tokio::time::{timeout_at, Instant};
 
 use crate::logfile::log;
@@ -299,8 +300,118 @@ pub async fn inspect_spawn_failure(
     }
 }
 
+/// Runtime evidence gathered after a child EXIT (not a spawn failure). Carries
+/// the same provenance + probe classification as [`inspect_spawn_failure`] plus
+/// the node major parsed from the version probe. Used only on the no-output arm
+/// of a provision exit, where the child left no diagnostic of its own.
+#[derive(Debug, Clone)]
+pub struct ChildExitDiagnosis {
+    pub runtime: RuntimeDiagnosisInput,
+    pub node_major: Option<u32>,
+}
+
+/// Capture runtime evidence after a child exited with no output. Mirrors
+/// [`inspect_spawn_failure`] — same managed-root/provenance classification and
+/// the same single shared 3-second probe deadline — but records
+/// `spawn_error_kind = ErrorKind::Other` (the child DID spawn) and keeps the
+/// node major from the version probe so the reporter can slice by runtime.
+pub async fn inspect_child_exit(attempted_program: String) -> ChildExitDiagnosis {
+    let managed_roots = paths::managed_toolchain_roots_checked();
+    let program_provenance = program_provenance(
+        &attempted_program,
+        managed_roots.as_deref().unwrap_or_default(),
+    );
+    let managed_runtime = crate::toolchain::classify_runtime_from_discovery(managed_roots);
+    let deadline = Instant::now() + TOTAL_PROBE_TIMEOUT;
+    let (node_probe, node_major) = probe_node_version(deadline).await;
+    let npx_probe = probe_version("npx", deadline).await;
+    ChildExitDiagnosis {
+        runtime: RuntimeDiagnosisInput {
+            attempted_program,
+            program_provenance,
+            spawn_error_kind: ErrorKind::Other,
+            node_probe,
+            npx_probe,
+            managed_runtime,
+        },
+        node_major,
+    }
+}
+
 async fn probe_version(program: &str, deadline: Instant) -> ProbeOutcome {
     probe_command(program, &["--version"], deadline).await
+}
+
+/// Bytes captured from `node --version` — enough for a SemVer line with slack,
+/// never more, so a hostile `node` cannot stream unboundedly into the probe.
+const NODE_VERSION_CAP: u64 = 64;
+
+/// Probe `node --version`, capturing its stdout so the caller can record the
+/// major. Same deadline discipline as [`probe_command`]; the version line is a
+/// few bytes, so reading it after the child exits cannot wedge on a full pipe.
+async fn probe_node_version(deadline: Instant) -> (ProbeOutcome, Option<u32>) {
+    let Some(run_deadline) = deadline.checked_sub(PROBE_CLEANUP_RESERVE) else {
+        return (ProbeOutcome::Timeout, None);
+    };
+    if Instant::now() >= run_deadline {
+        return (ProbeOutcome::Timeout, None);
+    }
+
+    let mut command = paths::tokio_spawn_command("node", &["--version"]);
+    command
+        .env("PATH", paths::child_path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return (
+                match error.kind() {
+                    ErrorKind::NotFound => ProbeOutcome::NotFound,
+                    ErrorKind::PermissionDenied => ProbeOutcome::PermissionDenied,
+                    other => ProbeOutcome::ProbeError(other.to_string()),
+                },
+                None,
+            );
+        }
+    };
+    let stdout = child.stdout.take();
+
+    match timeout_at(run_deadline, child.wait()).await {
+        Ok(Ok(status)) if status.success() => {
+            let major = match stdout {
+                Some(pipe) => {
+                    let mut buf = Vec::new();
+                    // The child has exited; the version line is already buffered
+                    // and bounded, so this read completes immediately.
+                    let _ = pipe.take(NODE_VERSION_CAP).read_to_end(&mut buf).await;
+                    parse_node_major(&String::from_utf8_lossy(&buf))
+                }
+                None => None,
+            };
+            (ProbeOutcome::Ok, major)
+        }
+        Ok(Ok(status)) => (ProbeOutcome::NonZeroExit(status.code().unwrap_or(-1)), None),
+        Ok(Err(error)) => (
+            match error.kind() {
+                ErrorKind::NotFound => ProbeOutcome::NotFound,
+                ErrorKind::PermissionDenied => ProbeOutcome::PermissionDenied,
+                other => ProbeOutcome::ProbeError(other.to_string()),
+            },
+            None,
+        ),
+        Err(_) => (terminate_and_reap(child, deadline).await, None),
+    }
+}
+
+/// Parse the major version from a `node --version` line (`v26.8.2` → 26).
+/// Returns None for anything that is not `v<digits>[…]`.
+fn parse_node_major(version: &str) -> Option<u32> {
+    let trimmed = version.trim();
+    let digits = trimmed.strip_prefix('v').unwrap_or(trimmed);
+    digits.split('.').next()?.parse::<u32>().ok()
 }
 
 async fn probe_command(program: &str, args: &[&str], deadline: Instant) -> ProbeOutcome {
@@ -882,5 +993,38 @@ mod tests {
             status.success(),
             "the Windows probe must be gone after timeout"
         );
+    }
+
+    #[test]
+    fn node_major_parses_v26_8_2_and_reports_unknown_on_probe_failure() {
+        assert_eq!(parse_node_major("v26.8.2\n"), Some(26));
+        assert_eq!(parse_node_major("v22.11.0"), Some(22));
+        assert_eq!(parse_node_major("  v18.19.1  "), Some(18));
+        // Anything that isn't `v<digits>` maps to None → the reporter emits the
+        // closed "unknown" tag value rather than free-form text.
+        assert_eq!(parse_node_major(""), None);
+        assert_eq!(parse_node_major("not-a-version"), None);
+        assert_eq!(parse_node_major("v"), None);
+    }
+
+    #[tokio::test]
+    async fn probe_node_version_times_out_on_an_expired_deadline() {
+        // An already-past deadline short-circuits to Timeout without spawning —
+        // the node/npx probes share one absolute deadline so a broken laptop
+        // cannot pay the timeout twice.
+        let (outcome, major) = probe_node_version(Instant::now()).await;
+        assert_eq!(outcome, ProbeOutcome::Timeout);
+        assert_eq!(major, None);
+    }
+
+    #[tokio::test]
+    async fn inspect_child_exit_classifies_provenance_and_runtime_without_spawn_error() {
+        // Probes run against the host, so assert only the deterministic
+        // structure: a child EXIT is not a spawn NotFound, and a bare program
+        // name is BareName whether or not node/npx exist on this machine.
+        let diag = inspect_child_exit("npx".to_string()).await;
+        assert_eq!(diag.runtime.spawn_error_kind, ErrorKind::Other);
+        assert_eq!(diag.runtime.program_provenance, ProgramProvenance::BareName);
+        assert_eq!(diag.runtime.attempted_program, "npx");
     }
 }

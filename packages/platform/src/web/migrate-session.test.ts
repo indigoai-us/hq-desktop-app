@@ -83,8 +83,9 @@ describe("workMesh.migrateSession", () => {
     });
     // INVARIANT: migrateSession is the ONLY method on the work-mesh surface
     // that may rebind a session's company. Every other entry below is a
-    // read-only projection — it takes companyUid as a SCOPE it must already be
-    // authorized for, and never writes it.
+    // scoped operation — it takes companyUid as a SCOPE it must already be
+    // authorized for, and never rebinds an existing session. createProjectStory
+    // only appends a story to that scoped project.
     //
     // This list is exhaustive on purpose: adding a work-mesh method makes this
     // test fail until someone adds it here, which is the moment to ask "does
@@ -97,12 +98,16 @@ describe("workMesh.migrateSession", () => {
     // handlers that ENFORCE the company boundary rather than cross it —
     // handleListEvents 403s when the thread's companyUid does not match the
     // requested one.
+    // putProjectView PUTs a view onto one companyUid+projectId; it does not
+    // rebind a session across companies.
     const workMeshKeys = Object.keys(adapter.workMesh).sort();
     expect(workMeshKeys).toEqual([
+      "createProjectStory",
       "getProjectView",
       "listProjectThreads",
       "listThreadEvents",
       "migrateSession",
+      "putProjectView",
       "readLocalSnapshot",
     ]);
     expect(workMeshKeys).not.toContain("organizeSession");
@@ -119,4 +124,15 @@ describe("workMesh.migrateSession", () => {
       "destinationCompanyUid",
     );
   });
+});
+
+it('creates a story only under the requested company and encoded project', async () => {
+  let request: {url: string; method?: string; body: unknown} | undefined;
+  const adapter = new WebPlatformAdapter({baseUrl: 'https://api.test', fetch: async (url, init) => {
+    request = {url: String(url), method: init?.method, body: JSON.parse(String(init?.body))};
+    return new Response('{}', {status: 200});
+  }});
+  const story = {id: 'task-1', title: 'A task', description: '', status: 'queued', passes: false};
+  expect((await adapter.workMesh.createProjectStory!('project / one', 'cmp_selected', story)).ok).toBe(true);
+  expect(request).toEqual({url:'https://api.test/v1/work-mesh/projects/project%20%2F%20one/stories',method:'POST',body:{...story,companyUid:'cmp_selected'}});
 });

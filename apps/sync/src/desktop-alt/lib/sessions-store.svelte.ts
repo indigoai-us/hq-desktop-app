@@ -3,11 +3,22 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { safeUnlisten } from '../../lib/listener-registry';
 import {
   SESSIONS_UPDATED_EVENT,
+  clearSessionsCache,
+  loadSessionsCache,
+  saveSessionsCache,
   type AgentSession,
   type HistoryEvent,
   type MissionControlSnapshot,
   type OutpostStatus,
 } from './sessions';
+
+function browserStorage(): Storage | null {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Mission Control sessions store (US-007).
@@ -61,6 +72,22 @@ function applySnapshot(snapshot: MissionControlSnapshot): void {
   history = snapshot.history ?? [];
   outpost = snapshot.outpost ?? null;
   loading = false;
+  saveSessionsCache(
+    { snapshot: { sessions: next, history, outpost }, cachedAt: Date.now() },
+    browserStorage(),
+  );
+}
+
+function hydrateFromCache(): void {
+  const cached = loadSessionsCache(browserStorage());
+  if (!cached) return;
+  const next = cached.snapshot.sessions ?? [];
+  const nextOutpostCount = next.filter((s) => s.origin === 'outpost').length;
+  lastOutpostCount = nextOutpostCount;
+  sessions = next;
+  history = cached.snapshot.history ?? [];
+  outpost = cached.snapshot.outpost ?? null;
+  loading = false;
 }
 
 /**
@@ -89,6 +116,7 @@ async function refresh(): Promise<void> {
 export function startSessionsStore(): void {
   if (started) return;
   started = true;
+  hydrateFromCache();
 
   void listen<MissionControlSnapshot>(SESSIONS_UPDATED_EVENT, (event) => {
     applySnapshot(event.payload);
@@ -115,6 +143,7 @@ export function stopSessionsStore(): void {
   lastOutpostCount = 0;
   loading = true;
   error = '';
+  clearSessionsCache(browserStorage());
 }
 
 /** Reactive read surface — getters keep consumers subscribed to the $state. */

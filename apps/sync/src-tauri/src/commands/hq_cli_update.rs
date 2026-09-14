@@ -83,35 +83,32 @@ use hq_desktop_core::toolchain::{classify_runtime, ManagedRuntime};
 #[allow(unused_imports)]
 pub use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, auto_install_allowed, auto_update_enabled,
-    classify_install_failure, cli_below_floor, cli_below_floor_of, launch_cli_check,
-    launch_cli_check_with_floor, LaunchCliCheck, HQ_CLI_MIN_VERSION,
     bun_home_from_hq_bin, bun_install_argv, classify_install_failure_with_environment,
     classify_install_failure_with_final_attempt,
-    cli_auto_update_enabled, cli_install_needed, cmp_semver,
-    decide_post_install, dismissed_cli_version, get_local_version, get_local_version_diagnostics,
+    classify_install_failure, cli_auto_update_enabled, cli_below_floor, cli_below_floor_of,
+    cli_install_needed, cmp_semver, colocated_npm_path, decide_post_install,
+    delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for, get_local_version,
+    get_local_version_diagnostics, launch_cli_check, launch_cli_check_with_floor, LaunchCliCheck,
+    HQ_CLI_MIN_VERSION,
     hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
-    install_failure_detail, install_failure_detail_with_environment,
-    install_failure_detail_with_final_attempt, install_failure_report,
-    install_executor_for_first_install, install_executor_for_hq_bin,
-    installed_hq_cli_version_in_bun_global,
+    install_executor_for_first_install, install_executor_for_hq_bin, install_failure_detail,
+    install_failure_detail_with_environment, install_failure_detail_with_final_attempt,
+    install_failure_report, installed_hq_cli_version_in_bun_global,
     installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
     is_cli_update_dismissed, is_missing_global_install_target, is_npm_bin_collision,
-    is_pnpm_global_shim,
-    is_prefix_permission_failure, is_windows_locked_binary_failure, legacy_marker_needs_recovery,
-    non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
-    non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
-    managed_retry_start_decision, non_convergent_episode_reported, npm_install_attempt_summary,
-    npm_lifecycle_cause,
-    colocated_npm_path, delivered_prefix_shim_for, executed_copy_aim_for, user_prefix_aim_decision,
-    DeliveredPrefixShim, ExecutedCopyAim, UserPrefixAim,
-    npm_prefix_from_hq_bin, partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path,
-    pnpm_global_env,
-    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family,
-    read_installed_version, redact_home, redact_home_in, report_install_failure,
+    is_pnpm_global_shim, is_prefix_permission_failure, is_windows_locked_binary_failure,
+    legacy_marker_needs_recovery, managed_retry_start_decision, non_convergent_cli_contract,
+    non_convergent_cli_version, non_convergent_detail, non_convergent_episode_blocked,
+    non_convergent_episode_key, non_convergent_episode_record, non_convergent_episode_reported,
+    npm_install_attempt_summary, npm_lifecycle_cause, npm_prefix_from_hq_bin,
+    partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path, pnpm_global_env,
+    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family, read_installed_version,
+    redact_home, redact_home_in, repair_managed_shadow, report_install_failure,
     report_install_failure_episode, report_install_failure_with_environment,
     report_install_failure_with_final_attempt, report_non_convergent_install,
     report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
-    report_unreadable_version, repair_managed_shadow, resolved_hq_version, should_auto_install,
+    report_unreadable_version, resolved_hq_version, should_auto_install,
+    user_prefix_aim_decision, DeliveredPrefixShim, ExecutedCopyAim, UserPrefixAim,
     should_report_unreadable_version, suppress_for_dismissal, unattributed_install_stderr_origin,
     version_from_hq_binary,
     version_if_hq_cli, AsyncSingleFlight, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
@@ -3300,9 +3297,7 @@ fn managed_prefix_for_shadow(active_prefix: &str, roots: &[PathBuf]) -> Option<P
         // distinct shadow.
         let same_dir =
             paths::path_is_within(active, &prefix) && paths::path_is_within(&prefix, active);
-        (paths::path_is_within(active, root)
-            && paths::path_is_within(&prefix, root)
-            && !same_dir)
+        (paths::path_is_within(active, root) && paths::path_is_within(&prefix, root) && !same_dir)
             .then_some(prefix)
     })
 }
@@ -3929,7 +3924,11 @@ mod tests {
         // And the managed-npm ABI guarantee is unchanged.
         let managed = "/managed/toolchain/npm-global".to_string();
         assert_eq!(
-            prefer_managed_prefix(true, Some(managed.clone()), Some("/opt/homebrew".to_string())),
+            prefer_managed_prefix(
+                true,
+                Some(managed.clone()),
+                Some("/opt/homebrew".to_string())
+            ),
             Some(managed)
         );
     }
@@ -4306,14 +4305,23 @@ exit 0
 
         // The debris is gone; the sibling package, the loose file, and the scope
         // directory itself all survive.
-        assert!(!scope.join("hq-cli").exists(), "partial package dir removed");
+        assert!(
+            !scope.join("hq-cli").exists(),
+            "partial package dir removed"
+        );
         assert!(
             !scope.join(".hq-cli-0DY3ww6z").exists(),
             "temp staging dir removed"
         );
         assert!(scope.join("hq-other").exists(), "sibling package preserved");
-        assert!(scope.join("keep.txt").exists(), "loose scope file preserved");
-        assert!(scope.exists(), "the scope directory itself is never removed");
+        assert!(
+            scope.join("keep.txt").exists(),
+            "loose scope file preserved"
+        );
+        assert!(
+            scope.exists(),
+            "the scope directory itself is never removed"
+        );
     }
 
     #[cfg(unix)]
@@ -4888,7 +4896,10 @@ exit 0
         assert!(!scope.exists());
         let state = create_missing_install_scope(&scope);
         // Creation only: the scope and every absent ancestor now exist...
-        assert!(scope.exists(), "the scope and its ancestors must be created");
+        assert!(
+            scope.exists(),
+            "the scope and its ancestors must be created"
+        );
         // ...and the reported state names which ancestor was missing.
         assert_eq!(state, MissingTargetState::NodeModulesMissing);
         let _ = fs::remove_dir_all(&base);
@@ -5022,10 +5033,7 @@ exit 0
     }
 
     fn write_hq_cli_manifest(dir: &Path, version: &str) {
-        let pkg = dir
-            .join("node_modules")
-            .join("@indigoai-us")
-            .join("hq-cli");
+        let pkg = dir.join("node_modules").join("@indigoai-us").join("hq-cli");
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(
             pkg.join("package.json"),

@@ -146,6 +146,62 @@ pub fn check_hq_hooks_ready(hq_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// What the in-app Sessions page has to do before a session can run against
+/// `hq_root`. Three states, because they have three different remedies: a
+/// root without the template needs the same install the onboarding wizard
+/// runs; a root with the template but a missing/broken `.claude` layer needs
+/// `hq rescue`; anything else is ready.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HqSetupReadiness {
+    Ready,
+    /// No `core/core.yaml` (or legacy `core.yaml`): the HQ template was never
+    /// installed here, even if the sync runner already materialized
+    /// `.claude/skills`, `companies/` or `sync-manifests/`.
+    NeedsInstall,
+    /// The template is present but `.claude/settings.json` is missing,
+    /// unparsable, or lacks the command hooks a session depends on.
+    NeedsRescue,
+}
+
+/// A readiness verdict plus the exact technical reason (for the support log,
+/// never for the screen).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HqSetupProbe {
+    pub readiness: HqSetupReadiness,
+    pub detail: Option<String>,
+}
+
+impl HqSetupProbe {
+    pub fn is_ready(&self) -> bool {
+        self.readiness == HqSetupReadiness::Ready
+    }
+}
+
+/// Classify `hq_root` for the Sessions self-heal. Pure filesystem reads; safe
+/// to call repeatedly and from a blocking thread.
+pub fn probe_hq_setup(hq_root: &Path) -> HqSetupProbe {
+    if !crate::lifecycle::hq_root_valid(hq_root) {
+        return HqSetupProbe {
+            readiness: HqSetupReadiness::NeedsInstall,
+            detail: Some(format!(
+                "HQ template not installed at {} (no core/core.yaml or core.yaml)",
+                hq_root.display()
+            )),
+        };
+    }
+    match check_hq_hooks_ready(hq_root) {
+        Ok(()) => HqSetupProbe {
+            readiness: HqSetupReadiness::Ready,
+            detail: None,
+        },
+        Err(detail) => HqSetupProbe {
+            readiness: HqSetupReadiness::NeedsRescue,
+            detail: Some(detail),
+        },
+    }
+}
+
 /// Resolve the HQ root that should back a Claude deep link, preferring an
 /// upward walk from the URL folder and falling back to the configured HQ path.
 pub fn bind_hq_root_for_claude_launch(folder: Option<&Path>) -> Result<PathBuf, String> {
@@ -312,6 +368,77 @@ mod tests {
         write_settings(root);
         fs::create_dir_all(root.join("companies")).unwrap();
         fs::write(root.join("companies/manifest.yaml"), "companies: []\n").unwrap();
+    }
+
+    #[test]
+    fn probe_installed_root_is_ready() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_hq(tmp.path());
+        let probe = probe_hq_setup(tmp.path());
+        assert_eq!(probe.readiness, HqSetupReadiness::Ready);
+        assert!(probe.is_ready());
+        assert_eq!(probe.detail, None);
+    }
+
+    /// The fresh-machine shape: the sync runner materialized `.claude/skills`,
+    /// `.hq`, `companies/` and `sync-manifests/`, but the template never
+    /// landed. That is an install, not a rescue — `hq rescue` reads
+    /// `core/core.yaml` for its version floor and cannot help here.
+    #[test]
+    fn probe_skills_only_root_needs_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        for dir in [".claude/skills/setup", ".hq", "companies/acme", "sync-manifests"] {
+            fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        fs::write(tmp.path().join(".claude/skills/setup/SKILL.md"), "# setup\n").unwrap();
+        let probe = probe_hq_setup(tmp.path());
+        assert_eq!(probe.readiness, HqSetupReadiness::NeedsInstall);
+        assert!(!probe.is_ready());
+        assert!(probe.detail.as_deref().unwrap_or("").contains("not installed"));
+    }
+
+    #[test]
+    fn probe_missing_root_needs_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let probe = probe_hq_setup(&tmp.path().join("never-created"));
+        assert_eq!(probe.readiness, HqSetupReadiness::NeedsInstall);
+    }
+
+    #[test]
+    fn probe_settings_without_hooks_needs_rescue() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_core_yaml(tmp.path());
+        fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        fs::write(
+            tmp.path().join(".claude/settings.json"),
+            r#"{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo"}]}]}}"#,
+        )
+        .unwrap();
+        let probe = probe_hq_setup(tmp.path());
+        assert_eq!(probe.readiness, HqSetupReadiness::NeedsRescue);
+        assert!(probe.detail.as_deref().unwrap_or("").contains("PreToolUse"));
+    }
+
+    #[test]
+    fn probe_installed_root_without_settings_needs_rescue() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_core_yaml(tmp.path());
+        let probe = probe_hq_setup(tmp.path());
+        assert_eq!(probe.readiness, HqSetupReadiness::NeedsRescue);
+        assert!(probe.detail.as_deref().unwrap_or("").contains("settings.json"));
+    }
+
+    #[test]
+    fn probe_readiness_serializes_snake_case_for_the_page() {
+        assert_eq!(serde_json::to_string(&HqSetupReadiness::Ready).unwrap(), "\"ready\"");
+        assert_eq!(
+            serde_json::to_string(&HqSetupReadiness::NeedsInstall).unwrap(),
+            "\"needs_install\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HqSetupReadiness::NeedsRescue).unwrap(),
+            "\"needs_rescue\""
+        );
     }
 
     #[test]

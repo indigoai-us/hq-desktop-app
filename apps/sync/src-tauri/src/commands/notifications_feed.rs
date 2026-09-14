@@ -57,6 +57,11 @@ pub struct NotificationRecord {
     pub actionable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub company_uid: Option<String>,
+    /// Durable event identity from the NOTIF writer. The web UI uses this to
+    /// merge a store row with the equivalent inbox/share event, so it must
+    /// survive this Rust wire boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_event_id: Option<String>,
 }
 
 fn default_status() -> String {
@@ -96,12 +101,7 @@ pub struct NotificationActionEvent {
 }
 
 /// Pure helper: build the list query URL (unit-tested).
-pub fn build_list_url(
-    base: &str,
-    limit: u32,
-    cursor: Option<&str>,
-    unread_only: bool,
-) -> String {
+pub fn build_list_url(base: &str, limit: u32, cursor: Option<&str>, unread_only: bool) -> String {
     let base = base.trim_end_matches('/');
     let mut url = format!("{base}/v1/notify/notifications?limit={limit}");
     if unread_only {
@@ -150,11 +150,7 @@ async fn auth_and_base(code: &str) -> Result<(String, String), String> {
     Ok((base, token))
 }
 
-async fn get_feed(
-    url: &str,
-    token: &str,
-    code: &str,
-) -> Result<NotificationsFeedResponse, String> {
+async fn get_feed(url: &str, token: &str, code: &str) -> Result<NotificationsFeedResponse, String> {
     let resp = build_client()
         .get(url)
         .header("authorization", format!("Bearer {token}"))
@@ -401,6 +397,7 @@ mod tests {
                 action_kind: None,
                 actionable: None,
                 company_uid: None,
+                source_event_id: None,
             },
             NotificationRecord {
                 id: "  ".into(),
@@ -418,6 +415,7 @@ mod tests {
                 action_kind: None,
                 actionable: None,
                 company_uid: None,
+                source_event_id: None,
             },
         ];
         let filtered = filter_valid_records(rows);
@@ -431,5 +429,22 @@ mod tests {
         assert!(empty.notifications.is_empty());
         assert_eq!(empty.unread_count, 0);
         assert!(empty.next_cursor.is_none());
+    }
+
+    #[test]
+    fn notification_record_preserves_source_event_id_on_the_wire() {
+        let row: NotificationRecord = serde_json::from_value(serde_json::json!({
+            "id": "notif_1",
+            "type": "dm",
+            "sourceEventId": "evt_123"
+        }))
+        .expect("notification row should deserialize");
+
+        assert_eq!(row.source_event_id.as_deref(), Some("evt_123"));
+        assert_eq!(
+            serde_json::to_value(row)
+                .expect("notification row should serialize")["sourceEventId"],
+            "evt_123"
+        );
     }
 }

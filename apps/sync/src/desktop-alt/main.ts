@@ -27,6 +27,9 @@ window.addEventListener('pagehide', () => { transcriptDrain.dispose(); transcrip
 installDesktopZoom();
 installAppearancePreferences({
   applyNativeTheme: (theme) => setTheme(theme),
+  // Pre-Tahoe Macs get the vibrancy fallback, not Liquid Glass; the surfaces
+  // must stay nearly solid there or the whole window reads as washed-out grey.
+  readMaterial: () => invoke<string>('window_material_capability'),
 });
 
 const target = document.getElementById('desktop-alt');

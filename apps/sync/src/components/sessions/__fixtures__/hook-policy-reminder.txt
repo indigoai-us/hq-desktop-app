@@ -1,0 +1,24 @@
+<policy-reminder>
+> Policy `hq-git-discipline` (HARD — binding rule from `core/policies/hq-git-discipline.md`):
+> # HQ git discipline
+>
+> Every git or gh mutation carries its own explicit repo anchor in the same command.
+> Never push the HQ root. Only repos under `repos/` get pushed.
+> Policy `hq-share-session-urls-are-capabilities` (HARD — binding rule from `core/policies/hq-share-session-urls-are-capabilities.md`):
+> **Never** paste a share-session URL into a later turn, summary, journal, commit, or handoff.
+> Policy `quiet-by-default-narration` applies here: Default to quiet, plain-language status; surface only completion, blockers, decisions, irreversible actions, and security signals.
+> Policy `image-context-isolation` applies here: Never accumulate more than 10 images in the parent session — delegate image inspection to a sub-agent that returns text only.
+> Policy `quiet-by-default-narration` applies here: (repeated on a later trigger; must dedupe by slug)
+> Full-text budget of 16384 bytes reached: these HARD policies were shortened to one-line summaries — credential-access-protocol. Read each in full at its own file before acting on it.
+> Policy `credential-access-protocol` applies here: Identify the company from context, read its policies, and use only its configured services and credentials. HARD.
+> Read the full rule(s) at `core/policies/{slug}.md` if you need rationale.
+</policy-reminder>
+
+<company-policy-digest co="indigo">
+# indigo hard-enforcement policies (auto-surfaced on company bind)
+> Company context just bound mid-session. These HARD rules now apply.
+> Full text: open the file path shown on each policy line. Browse `companies/indigo/policies/` for the full set.
+
+- [hard] **indigo-no-client-data-in-commits**: Never commit client data, exports, or credentials to any repo. Full text: `companies/indigo/policies/indigo-no-client-data-in-commits.md`.
+- [hard] **hq-git-discipline**: Anchor every git mutation (already surfaced above; must dedupe). Full text: `companies/indigo/policies/hq-git-discipline.md`.
+</company-policy-digest>

@@ -101,10 +101,7 @@ impl SessionEndTracker {
 
     /// A tracker whose committed session ends also write `latch`. Production
     /// passes the durable process-global sink; a test may pass a recorder.
-    pub fn with_latch(
-        clock: Arc<dyn MonotonicClock>,
-        latch: Arc<dyn SessionEndLatchSink>,
-    ) -> Self {
+    pub fn with_latch(clock: Arc<dyn MonotonicClock>, latch: Arc<dyn SessionEndLatchSink>) -> Self {
         Self {
             clock,
             latch,
@@ -1537,13 +1534,25 @@ mod tests {
         let latch = Arc::new(RecordingSessionEndLatch::default());
         let tracker = SessionEndTracker::with_latch(Arc::new(TestClock::default()), latch.clone());
         tracker.note_query_end_session();
-        assert_eq!(latch.writes(), 0, "a bare WM_QUERYENDSESSION must not latch");
+        assert_eq!(
+            latch.writes(),
+            0,
+            "a bare WM_QUERYENDSESSION must not latch"
+        );
         tracker.note_end_session(false);
-        assert_eq!(latch.writes(), 0, "a vetoed WM_ENDSESSION(FALSE) must not latch");
+        assert_eq!(
+            latch.writes(),
+            0,
+            "a vetoed WM_ENDSESSION(FALSE) must not latch"
+        );
 
         // A committed WM_ENDSESSION(TRUE) latches exactly once.
         tracker.note_end_session(true);
-        assert_eq!(latch.writes(), 1, "a committed WM_ENDSESSION(TRUE) must latch");
+        assert_eq!(
+            latch.writes(),
+            1,
+            "a committed WM_ENDSESSION(TRUE) must latch"
+        );
 
         // A same-session WTS logoff latches too.
         tracker.note_wts_logoff_same_session();

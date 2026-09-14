@@ -23,11 +23,33 @@ interface AppearanceRoot {
   style: Pick<CSSStyleDeclaration, 'setProperty' | 'removeProperty'>;
 }
 
+/** What backs the window natively — see `window_material_capability` (Rust). */
+export type WindowMaterial = 'glass' | 'vibrancy' | 'none';
+
+/**
+ * Without real Liquid Glass (macOS 26+), the translucent surfaces tuned for
+ * it sit on a far more see-through vibrancy material and read as washed-out
+ * grey (reported on Sequoia Macs and in VMs). Cap how much of the desktop
+ * can show through in that case; the person's own preference is kept and
+ * comes back untouched on a glass-capable machine.
+ */
+export const MAX_WINDOW_TRANSPARENCY_WITHOUT_GLASS = 15;
+
+export function effectiveWindowTransparency(
+  requested: number,
+  material: WindowMaterial | null | undefined,
+): number {
+  if (material === 'glass' || material == null) return requested;
+  return Math.min(requested, MAX_WINDOW_TRANSPARENCY_WITHOUT_GLASS);
+}
+
 interface AppearancePreferenceOptions {
   target?: Window;
   storage?: AppearanceStorage | null;
   root?: AppearanceRoot;
   applyNativeTheme?: (theme: NativeTheme) => Promise<void> | void;
+  /** Resolve the native window material; re-applies the preference once known. */
+  readMaterial?: () => Promise<WindowMaterial | string | null | undefined>;
   onError?: (error: unknown) => void;
 }
 
@@ -125,6 +147,7 @@ export function writeAppearancePreferences(
 export function applyAppearancePreferences(
   root: AppearanceRoot,
   preferences: AppearancePreferences,
+  material: WindowMaterial | null | undefined = normalizeWindowMaterial(root.dataset.material),
 ): void {
   const normalized = normalizeAppearancePreferences(preferences);
   if (normalized.colorTheme === 'system') {
@@ -133,18 +156,21 @@ export function applyAppearancePreferences(
     root.dataset.forceTheme = normalized.colorTheme;
   }
 
-  const lightAlpha = Math.max(
-    0.15,
-    1 - normalized.windowTransparency / 100,
-  );
+  const transparency = effectiveWindowTransparency(normalized.windowTransparency, material);
+  const lightAlpha = Math.max(0.15, 1 - transparency / 100);
   const darkAlpha = Math.min(1, lightAlpha + 0.13);
   root.style.setProperty(
     '--hq-window-transparency-factor',
-    (normalized.windowTransparency / 100).toFixed(2),
+    (transparency / 100).toFixed(2),
   );
   root.style.setProperty('--hq-window-alpha-light', lightAlpha.toFixed(2));
   root.style.setProperty('--hq-window-alpha-dark', darkAlpha.toFixed(2));
   root.dataset.windowTransparency = String(normalized.windowTransparency);
+  if (material) root.dataset.material = material;
+}
+
+export function normalizeWindowMaterial(value: unknown): WindowMaterial | null {
+  return value === 'glass' || value === 'vibrancy' || value === 'none' ? value : null;
 }
 
 export function requestAppearancePreferenceChange(
@@ -227,10 +253,11 @@ export function installAppearancePreferences(
     });
   };
 
+  let material: WindowMaterial | null = normalizeWindowMaterial(root.dataset.material);
   const apply = (preferences: AppearancePreferences): void => {
     current = normalizeAppearancePreferences(preferences);
     currentAppearanceByTarget.set(target, current);
-    applyAppearancePreferences(root, current);
+    applyAppearancePreferences(root, current, material);
     desiredNativeTheme = current.colorTheme === 'system' ? null : current.colorTheme;
     nativeRequestRevision += 1;
     drainNativeTheme();
@@ -252,6 +279,18 @@ export function installAppearancePreferences(
   apply(current);
   target.addEventListener(APPEARANCE_REQUEST_EVENT, onRequest);
   target.addEventListener('storage', onStorage);
+  if (options.readMaterial && material === null) {
+    void Promise.resolve()
+      .then(() => options.readMaterial!())
+      .then((value) => {
+        if (disposed) return;
+        const next = normalizeWindowMaterial(value);
+        if (!next || next === material) return;
+        material = next;
+        apply(current);
+      })
+      .catch(onError);
+  }
 
   return () => {
     disposed = true;

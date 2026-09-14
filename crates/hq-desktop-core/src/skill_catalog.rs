@@ -41,10 +41,7 @@ struct SkillFrontmatter {
 /// company slug. When `company_slug` is set, company skills are enumerated
 /// first so they shadow root/package names on collision — matching the shell
 /// catalog's precedence.
-pub fn export_skill_catalog(
-    hq_root: &Path,
-    company_slug: Option<&str>,
-) -> SkillCatalogExport {
+pub fn export_skill_catalog(hq_root: &Path, company_slug: Option<&str>) -> SkillCatalogExport {
     export_skill_catalog_with_limit(hq_root, company_slug, DEFAULT_MAX_BYTES)
 }
 
@@ -157,9 +154,7 @@ mod tests {
         fs::create_dir_all(dir).unwrap();
         fs::write(
             dir.join("SKILL.md"),
-            format!(
-                "---\nname: {name}\ndescription: {description}\n---\n\nbody\n"
-            ),
+            format!("---\nname: {name}\ndescription: {description}\n---\n\nbody\n"),
         )
         .unwrap();
     }
@@ -167,8 +162,7 @@ mod tests {
     fn scaffold_hq(root: &Path) {
         fs::create_dir_all(root.join("companies/indigo/skills")).unwrap();
         fs::create_dir_all(root.join(".claude/skills")).unwrap();
-        fs::create_dir_all(root.join("core/packages/hq-pack-engineering/skills"))
-            .unwrap();
+        fs::create_dir_all(root.join("core/packages/hq-pack-engineering/skills")).unwrap();
     }
 
     #[test]
@@ -176,7 +170,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         scaffold_hq(root);
-        write_skill(&root.join("companies/indigo/skills/startwork"), "startwork", "company");
+        write_skill(
+            &root.join("companies/indigo/skills/startwork"),
+            "startwork",
+            "company",
+        );
         write_skill(&root.join(".claude/skills/startwork"), "startwork", "root");
         let catalog = export_skill_catalog(root, Some("indigo"));
         assert_eq!(catalog.skills_available, 1);
@@ -206,7 +204,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         scaffold_hq(root);
-        write_skill(&root.join(".claude/skills/handoff"), "handoff", "wrap sessions");
+        write_skill(
+            &root.join(".claude/skills/handoff"),
+            "handoff",
+            "wrap sessions",
+        );
         write_skill(
             &root.join("core/packages/hq-pack-engineering/skills/land"),
             "land",

@@ -12,6 +12,7 @@ import BannerNotification from './components/BannerNotification.svelte';
 import Widget from './components/Widget.svelte';
 import GlobalErrorBoundary from './components/GlobalErrorBoundary.svelte';
 import { mount } from 'svelte';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { setTheme } from '@tauri-apps/api/app';
 import { beforeSend } from "./sentry-before-send";
@@ -38,11 +39,12 @@ document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
 // One persisted preference governs every HQ WebView: desktop, Messages,
 // meetings, detail sheets, the widget, and the compact menubar surface.
 installDesktopZoom();
-installAppearancePreferences(
-  windowLabel === 'main'
-    ? { applyNativeTheme: (theme) => setTheme(theme) }
-    : {},
-);
+installAppearancePreferences({
+  ...(windowLabel === 'main' ? { applyNativeTheme: (theme) => setTheme(theme) } : {}),
+  // Pre-Tahoe Macs get the vibrancy fallback, not Liquid Glass; the surfaces
+  // then stay near-opaque instead of reading as washed-out grey.
+  readMaterial: () => invoke<string>('window_material_capability'),
+});
 
 let Component: typeof App;
 if (windowLabel === 'meetings-window') {

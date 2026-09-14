@@ -64,11 +64,6 @@ export default defineConfig({
             "vault-test.auth.us-east-1.amazoncognito.com",
           PUBLIC_APP_ORIGIN: "http://localhost:4173",
           PUBLIC_HQ_PRO_API_URL: "https://hqapi.example.test",
-          // Isolate E2E from the developer's real ~/.hq/work-mesh/cache so
-          // the empty/"No data" path is what the suite asserts.
-          HQ_WORK_MESH_CACHE: "off",
-          // /setup always redirects to the shell (no local install card).
-          HQ_WORK_MESH_SKIP_SETUP: "1",
         },
       },
 });

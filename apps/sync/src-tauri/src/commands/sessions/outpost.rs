@@ -501,6 +501,7 @@ mod tests {
             tool: AgentTool::Claude,
             // Deliberately LOCAL on the wire so we prove the store re-stamps it.
             origin: AgentOrigin::Local,
+            title: "Thing session".to_string(),
             cwd: "/home/outpost/repos/thing".to_string(),
             project: "thing".to_string(),
             company: "indigo".to_string(),
@@ -509,6 +510,7 @@ mod tests {
             started_at: "2026-06-15T18:00:00Z".to_string(),
             last_activity_at: "2026-06-15T18:43:20Z".to_string(),
             source: "outpost-heartbeat".to_string(),
+            remote_control_session_id: None,
         }
     }
 

@@ -11,10 +11,47 @@ import {
   SETUP_CHANNEL,
   SETUP_CHANNEL_DISPLAY_NAME,
   SETUP_CHANNEL_ID,
+  SETUP_HERO,
+  SETUP_HERO_RETURNING,
+  hasRunWelcomeSetup,
+  withoutCompaniesSummaryCards,
+  markWelcomeSetupRun,
   SETUP_ROW_ID,
+  setupCompanies,
+  setupCompanyActionLabel,
+  setupHeroFor,
+  withoutSeededCreateCompanyCards,
   withSetupChannel,
   withSetupPin,
 } from "./setup-channel.js";
+import type { Workspace } from "./workspaces.js";
+
+const workspace = (over: Partial<Workspace> = {}): Workspace => ({
+  slug: "acme",
+  displayName: "Acme",
+  kind: "company",
+  state: "cloud-only",
+  cloudUid: "cmp_acme",
+  bucketName: null,
+  hasLocalFolder: false,
+  localPath: null,
+  membershipStatus: "active",
+  role: "owner",
+  lastSyncedAt: null,
+  brokenReason: null,
+  invitedBy: null,
+  invitedAt: null,
+  ...over,
+});
+
+const PERSONAL = workspace({
+  slug: "personal",
+  displayName: "Personal",
+  kind: "personal",
+  state: "personal",
+  cloudUid: "prs_me",
+  hasLocalFolder: true,
+});
 
 const realChannel = (over: Partial<Channel> = {}): Channel => ({
   channelId: "ch_1",
@@ -176,5 +213,122 @@ describe("setup row through the sidebar derivation", () => {
       pinnedIds: withSetupPin([], { dismissed: true }),
     });
     expect(groupByDay(rows).lastWeek.map((r) => r.id)).toEqual([SETUP_ROW_ID]);
+  });
+});
+
+describe("setup roster helpers", () => {
+  it("counts every company workspace, whatever its sync state", () => {
+    expect(setupCompanies(null)).toEqual([]);
+    expect(setupCompanies([PERSONAL])).toEqual([]);
+    const cloudOnly = workspace();
+    const pending = workspace({
+      slug: "beta",
+      displayName: "Beta",
+      cloudUid: "cmp_beta",
+      membershipStatus: "pending",
+    });
+    const broken = workspace({
+      slug: "gamma",
+      displayName: "Gamma",
+      cloudUid: "cmp_gamma",
+      state: "broken",
+      hasLocalFolder: true,
+    });
+    expect(
+      setupCompanies([PERSONAL, cloudOnly, pending, broken]).map((c) => c.slug),
+    ).toEqual(["acme", "beta", "gamma"]);
+  });
+
+  it("switches the hero copy once the roster has a company", () => {
+    expect(setupHeroFor(null)).toBe(SETUP_HERO);
+    expect(setupHeroFor([PERSONAL])).toBe(SETUP_HERO);
+    expect(setupHeroFor([PERSONAL, workspace()])).toBe(SETUP_HERO_RETURNING);
+    expect(SETUP_HERO_RETURNING.body).not.toMatch(/cmp_|prs_/);
+  });
+
+  it("labels a settled company Open and anything else Continue setup", () => {
+    expect(
+      setupCompanyActionLabel(
+        workspace({ state: "synced", hasLocalFolder: true }),
+      ),
+    ).toBe("Open Acme");
+    expect(setupCompanyActionLabel(workspace())).toBe(
+      "Continue setup for Acme",
+    );
+    expect(
+      setupCompanyActionLabel(
+        workspace({ state: "synced", hasLocalFolder: true, membershipStatus: "pending" }),
+      ),
+    ).toBe("Continue setup for Acme");
+    expect(
+      setupCompanyActionLabel(workspace({ displayName: "", slug: "ramen-bae" })),
+    ).toBe("Continue setup for Ramen Bae");
+  });
+
+  it("hides the seeded create_company card only while a company exists and none was requested", () => {
+    const createCard = {
+      eventId: "evt_create",
+      systemEvent: { v: 1, type: "lifecycle_card", kind: "create_company" },
+    };
+    const summary = {
+      eventId: "evt_summary",
+      systemEvent: { v: 1, type: "lifecycle_card", kind: "companies_summary" },
+    };
+    const plain = { eventId: "evt_hello", systemEvent: undefined };
+    const messages = [plain, createCard, summary];
+
+    expect(
+      withoutSeededCreateCompanyCards(messages, {
+        hasCompany: true,
+        createRequested: false,
+      }).map((m) => m.eventId),
+    ).toEqual(["evt_hello", "evt_summary"]);
+    expect(
+      withoutSeededCreateCompanyCards(messages, {
+        hasCompany: false,
+        createRequested: false,
+      }),
+    ).toEqual(messages);
+    expect(
+      withoutSeededCreateCompanyCards(messages, {
+        hasCompany: true,
+        createRequested: true,
+      }),
+    ).toEqual(messages);
+  });
+});
+
+describe("welcome-first boot persistence", () => {
+  it("is off until Run Setup is used, then sticks", () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    };
+    expect(hasRunWelcomeSetup(storage)).toBe(false);
+    markWelcomeSetupRun(storage);
+    expect(hasRunWelcomeSetup(storage)).toBe(true);
+  });
+
+  it("tolerates unavailable storage", () => {
+    const broken = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    expect(hasRunWelcomeSetup(broken)).toBe(false);
+    expect(() => markWelcomeSetupRun(broken)).not.toThrow();
+  });
+});
+
+describe("withoutCompaniesSummaryCards", () => {
+  it("drops the companies_summary card and keeps everything else", () => {
+    const summary = { systemEvent: { type: "lifecycle_card", kind: "companies_summary" } };
+    const create = { systemEvent: { type: "lifecycle_card", kind: "create_company" } };
+    const chat = { systemEvent: undefined };
+    expect(withoutCompaniesSummaryCards([summary, create, chat])).toEqual([create, chat]);
   });
 });

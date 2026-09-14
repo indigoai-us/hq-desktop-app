@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseMeshCachedMessage,
+  parseCachedReactions,
   parseMeshDirectoryRow,
   parseMeshProjectView,
   parseWorkMeshSnapshot,
@@ -573,4 +574,19 @@ describe("work-mesh snapshot overlay", () => {
     );
     expect(overlay.rows).toEqual([]);
   });
+});
+
+it('does not assign every story to the person who last updated the board', () => {
+  const board = projectViewToBoard({
+    companyUid: 'cmp_demo', projectId: 'demo', repos: [],
+    updatedBy: 'prs_last_editor',
+    stories: [{ id: 'US-001', title: 'Unassigned task', status: 'queued' }],
+  });
+  expect(board.stories['US-001']?.fields.assignee).toBe('Unassigned');
+});
+
+
+it('preserves reaction attribution in the work mesh cache', () => {
+  const reactors = [{personUid:'prs_ada',displayName:'Ada'}];
+  expect(parseCachedReactions([{emoji:'👍',count:1,reactedByMe:false,reactors}])[0]?.reactors).toEqual(reactors);
 });

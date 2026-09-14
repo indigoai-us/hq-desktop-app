@@ -4,6 +4,7 @@ import {
   parseShelfViewer,
   parseSkillPath,
   scopedSkillsFromShelf,
+  skillMetadataFromShelf,
   skillDetailFromShelf,
   skillVisibleToViewer,
 } from "./library-shelf.js";
@@ -15,6 +16,21 @@ const viewer = {
 };
 
 const company = { uid: "cmp_acme", slug: "acme", name: "Acme" };
+
+describe("skillMetadataFromShelf", () => {
+  it("keeps company-wide and named-group metadata and tolerates malformed sections", () => {
+    expect(skillMetadataFromShelf({ grouped: {
+      companyWide: [{ skillUid: "skl_all", name: "All", tags: ["ops", null] }],
+      departments: [
+        { groupId: "grp_eng", name: "Engineering", skills: [{ skillUid: "skl_eng", name: "Review", tags: ["code"] }] },
+        { name: "Broken", skills: "not-an-array" },
+      ],
+    } })).toEqual([
+      { skillUid: "skl_all", tags: ["ops"], groupId: null, groupName: null, companyWide: true },
+      { skillUid: "skl_eng", tags: ["code"], groupId: "grp_eng", groupName: "Engineering", companyWide: false },
+    ]);
+  });
+});
 
 function shelf(skills: unknown[], acls: unknown[] = []) {
   return {

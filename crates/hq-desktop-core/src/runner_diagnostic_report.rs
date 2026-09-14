@@ -317,6 +317,26 @@ pub fn parse_runner_report_memory_class(bytes: &[u8]) -> RunnerReportMemoryClass
     }
 }
 
+/// Pure: whether a Node diagnostic report's raw bytes are a COMPLETE document, so a
+/// caller polling for a signal-triggered report can tell "truncated, retry" apart
+/// from "complete but has no memory class" (this reopen, HQ-DESKTOP-60). Empty bytes
+/// are not yet complete (the file is still being written); an oversized payload is
+/// terminal (retrying will not shrink it) so it counts as complete; otherwise the
+/// bytes are complete iff they parse as a single JSON document. A complete document
+/// with no `javascriptHeap` section still parses, so it reads as complete here while
+/// [`parse_runner_report_memory_class`] returns the honest empty decomposition — the
+/// two together let the caller record `report_unreadable` (complete, no class) rather
+/// than the mid-write `report_never_completed`.
+pub fn runner_report_is_complete(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    if bytes.len() > RUNNER_REPORT_MAX_BYTES {
+        return true;
+    }
+    serde_json::from_slice::<Value>(bytes).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +596,35 @@ mod tests {
         // Three handles reported is_active:true (two fs_event + one check).
         assert_eq!(m.libuv_active_handles, Some(3));
         assert!(m.is_present());
+    }
+
+    #[test]
+    fn runner_report_completeness_separates_truncated_from_complete_but_empty() {
+        // The distinguishing predicate that lets the supervisor's bounded read loop tell
+        // "mid-write, retry" (report_never_completed) apart from "complete, no memory
+        // class" (report_unreadable) rather than mis-recording the mid-write race as
+        // terminally unreadable (this reopen, HQ-DESKTOP-60).
+        let complete = signal_report_with_memory_class();
+        // A complete document carrying a memory class is complete AND present.
+        assert!(runner_report_is_complete(complete.as_bytes()));
+        assert!(parse_runner_report_memory_class(complete.as_bytes()).is_present());
+
+        // A truncated (mid-write) document is NOT complete — the caller must retry.
+        let truncated = &complete.as_bytes()[..complete.len() / 2];
+        assert!(!runner_report_is_complete(truncated));
+        assert!(!parse_runner_report_memory_class(truncated).is_present());
+
+        // A COMPLETE document with no javascriptHeap section is complete but honestly
+        // empty — the caller records report_unreadable, never report_never_completed.
+        let complete_no_heap = br#"{"header":{"trigger":"Signal"}}"#;
+        assert!(runner_report_is_complete(complete_no_heap));
+        assert!(!parse_runner_report_memory_class(complete_no_heap).is_present());
+
+        // Empty bytes are not yet complete (still being written); an oversized payload
+        // is terminal (retrying will not shrink it) so it reads as complete.
+        assert!(!runner_report_is_complete(b""));
+        let oversized = vec![b'{'; RUNNER_REPORT_MAX_BYTES + 1];
+        assert!(runner_report_is_complete(&oversized));
     }
 
     #[test]

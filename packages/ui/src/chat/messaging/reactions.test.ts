@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   mergeReactionMaps,
+  reactionAttribution,
   messageScopeForRow,
   reactionMapFromMessages,
   reactionsFromPayload,
@@ -119,4 +120,13 @@ describe("reactionsFromPayload — reactor identities", () => {
       { personUid: "prs_x", displayName: "prs_x" },
     ]);
   });
+});
+
+
+it('attributes self and known people without leaking raw IDs or hiding unknown reactors', () => {
+  expect(reactionAttribution({ emoji: '👍', count: 3, reactedByMe: true, reactors: [
+    {personUid: 'prs_me', displayName: 'Stefan'}, {personUid: 'prs_ada', displayName: 'prs_ada'}
+  ]}, 'prs_me', {prs_ada: 'Ada'})).toBe('You, Ada and 1 other person reacted with 👍');
+  expect(reactionAttribution({emoji: '👍', count: 1, reactedByMe: true})).toBe('You reacted with 👍');
+  expect(reactionAttribution({emoji: '👍', count: 1, reactedByMe: false, reactors: [{personUid:'prs_unknown',displayName:'prs_unknown'}]})).toBe('Someone reacted with 👍');
 });

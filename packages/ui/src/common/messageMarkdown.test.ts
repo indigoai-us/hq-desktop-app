@@ -8,6 +8,29 @@ import {
 } from "./messageMarkdown.js";
 
 describe("heavy message bodies", () => {
+  it("keeps a long, clearly written Markdown reply as Markdown", () => {
+    const body = [
+      "All set — you're done. Here's where you landed.",
+      "",
+      "**Everything's working:**",
+      "- All your tools are installed and healthy.",
+      "- You're signed in to HQ Cloud.",
+      "",
+      "**Run these next:**",
+      "1. `/startwork acme` — pick up work in your company.",
+      "2. `/personal-interview` — fill in your profile.",
+      "",
+      "Some closing prose. ".repeat(80),
+    ].join("\n");
+    expect(body.length).toBeGreaterThan(1_200);
+    expect(isHeavyMessageBody(body)).toBe(false);
+    expect(renderMessageBodyMarkdown(body)).toMatch(/<strong>Everything(?:&#39;|')s working:<\/strong>/);
+    // But not without limit: past the hard cap it renders plain.
+    expect(isHeavyMessageBody(`${body}\n${"More prose. ".repeat(600)}`)).toBe(true);
+    // And a long dump with no Markdown cues still renders plain.
+    expect(isHeavyMessageBody("log line without cues\n".repeat(80))).toBe(true);
+  });
+
   it("treats large JSON dumps as heavy and renders them as a plain pre", () => {
     const body =
       `${JSON.stringify({ outcome: "doc-wrong", commandsRun: ["a"] })}\n`.repeat(

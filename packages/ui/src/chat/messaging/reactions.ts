@@ -223,3 +223,28 @@ export function mergeReactionMaps(
 ): ReactionMap {
   return { ...cached, ...live };
 }
+
+/** Human-readable attribution, including incomplete legacy identity lists. */
+export function reactionAttribution(
+  reaction: ReactionAggregate,
+  selfPersonUid: string | null = null,
+  displayNameByUid: Record<string, string> = {},
+): string {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const person of reaction.reactors ?? []) {
+    if (seen.has(person.personUid)) continue;
+    seen.add(person.personUid);
+    if (person.personUid === selfPersonUid) {
+      if (reaction.reactedByMe) names.push('You');
+      continue;
+    }
+    const name = (displayNameByUid[person.personUid] || person.displayName || '').trim();
+    names.push(!name || name === person.personUid || /^(prs_|agt_|agent:)/.test(name) ? 'Someone' : name);
+  }
+  if (reaction.reactedByMe && !names.includes('You')) names.unshift('You');
+  const missing = Math.max(0, reaction.count - names.length);
+  if (missing) names.push(missing === 1 ? '1 other person' : `${missing} other people`);
+  const who = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0] || 'Someone';
+  return `${who} reacted with ${reaction.emoji}`;
+}

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it } from "vitest";
-import { flushSync, mount, unmount } from "svelte";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { flushSync, mount, unmount, tick } from "svelte";
 import BoardTab from "./BoardTab.svelte";
 import type {
   BoardColumnModel,
@@ -129,4 +129,27 @@ describe("BoardTab column filter", () => {
         ?.textContent,
     ).toContain("No tasks");
   });
+});
+
+
+it("creates in the selected column, blocks duplicate submits, and preserves a failed draft", async () => {
+  host = document.createElement("div"); document.body.appendChild(host);
+  let rejectCreate!: (error: Error) => void;
+  const onCreateTask = vi.fn((_task: unknown) => new Promise<void>((_resolve, reject) => { rejectCreate = reject; }));
+  component = mount(BoardTab, {target: host, props: {columns, stories, onCreateTask}});
+  host.querySelector<HTMLButtonElement>('[aria-label="Create task in To do"]')!.click();
+  await tick();
+  const input = host.querySelector<HTMLInputElement>('input')!;
+  input.value = "New task"; input.dispatchEvent(new Event("input", {bubbles:true}));
+  await tick();
+  const form = host.querySelector('form')!;
+  form.dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));
+  form.dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));
+  await tick();
+  expect(onCreateTask).toHaveBeenCalledTimes(1);
+  expect(onCreateTask.mock.calls[0]?.[0]).toMatchObject({title:"New task",status:"queued"});
+  expect(host.textContent).toContain("Creating…");
+  rejectCreate(new Error("offline"));
+  await vi.waitFor(() => expect(host.textContent).toContain("Your draft is saved here"));
+  expect(input.value).toBe("New task");
 });
