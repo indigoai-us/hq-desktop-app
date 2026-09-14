@@ -21,16 +21,19 @@ set -euo pipefail
 APP="${1:-}"
 IDENTITY="${2:-HQ Installer Dev}"
 # Optional isolated signing keychain; do not mutate the user's search list.
-KEYCHAIN_ARGS=()
 if [ -n "${HQ_SIGN_KEYCHAIN:-}" ]; then
   if [ ! -f "$HQ_SIGN_KEYCHAIN" ]; then
     echo "ERROR: HQ_SIGN_KEYCHAIN does not exist" >&2
     exit 1
   fi
-  KEYCHAIN_ARGS+=("$HQ_SIGN_KEYCHAIN")
 fi
 find_signing_identities() {
-  security find-identity -v -p codesigning "${KEYCHAIN_ARGS[@]}"
+  # Bash 3.2 treats an empty array expansion as unset under nounset.
+  if [ -n "${HQ_SIGN_KEYCHAIN:-}" ]; then
+    security find-identity -v -p codesigning "$HQ_SIGN_KEYCHAIN"
+  else
+    security find-identity -v -p codesigning
+  fi
 }
 
 if [ -z "$APP" ] || [ ! -d "$APP" ]; then
