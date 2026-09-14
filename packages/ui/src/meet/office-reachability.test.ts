@@ -225,7 +225,7 @@ describe("US-018 reachability: the shipping shell mounts the same panel", () => 
 
   it("renders the shared OfficePanel for the office tab", () => {
     expect(shell).toContain('import OfficePanel from "../meet/OfficePanel.svelte"');
-    expect(shell).toContain('{#if companyTab === "office"}');
+    expect(shell).toContain('companyTab === "office"');
     expect(shell).toContain('data-testid="company-tab-panel-office"');
     expect(shell).toContain("<OfficePanel");
     // The panel gets the adapter AND the host seams; without both it cannot

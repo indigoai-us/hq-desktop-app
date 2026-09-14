@@ -1,8 +1,7 @@
 /**
  * Company-channel tab models (US-015).
  *
- * Chat is the feed. Atlas / Team / Settings swap the feed
- * for current-state rows returned by GET /v1/companies/{uid}/tabs/{tab}.
+ * Chat is the feed. Team / Settings live in the HQ console.
  */
 
 import {
@@ -14,11 +13,6 @@ import { parseAtlasGraph, type AtlasGraph } from "./atlas-model.js";
 
 export const COMPANY_CHANNEL_TABS = [
   { id: "chat", label: "Chat" },
-  { id: "atlas", label: "Atlas" },
-  { id: "team", label: "Team" },
-  // Integrations deliberately has no desktop tab: apps are connected in the
-  // HQ console (companies/{slug}/integrations), never inside the desktop app.
-  { id: "settings", label: "Settings" },
 ] as const;
 
 /**
@@ -32,9 +26,13 @@ export const COMPANY_CHANNEL_TABS = [
  */
 export const COMPANY_OFFICE_TAB = { id: "office", label: "Office" } as const;
 
+/** Chat is the default surface. Team/settings/atlas remap; Office is gated. */
 export type CompanyChannelTabId =
   | (typeof COMPANY_CHANNEL_TABS)[number]["id"]
-  | typeof COMPANY_OFFICE_TAB.id;
+  | typeof COMPANY_OFFICE_TAB.id
+  | "team"
+  | "settings"
+  | "atlas";
 
 /** Tabs whose content comes from the company-tab endpoint. */
 export type CompanyTabSurfaceId = Exclude<
@@ -52,7 +50,8 @@ export interface CompanyTabCapabilities {
  * The company tabs to render for a host. Office is appended ONLY when the
  * platform adapter reports native calling, so a browser (or a build without
  * it) never advertises a door it cannot open. The default is closed: a caller
- * that forgets to pass capabilities gets the ungated four.
+ * that forgets to pass capabilities gets Chat only. Team and Settings live
+ * in the HQ console.
  */
 export function companyChannelTabsFor(
   capabilities: CompanyTabCapabilities = {},

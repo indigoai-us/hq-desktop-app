@@ -112,15 +112,11 @@
   import BoardTab from "../chat/messaging/BoardTab.svelte";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import CompanyTabs from "../chat/CompanyTabs.svelte";
-  import TeamTab from "../chat/tabs/TeamTab.svelte";
-  import SettingsTab from "../chat/tabs/SettingsTab.svelte";
-  import AtlasTab from "../chat/tabs/AtlasTab.svelte";
   import CompanyHero from "../chat/CompanyHero.svelte";
   import {
     companyChannelTabsFor,
     parseCompanyTab,
     type CompanyChannelTabId,
-    type CompanyTabActionEvent,
     type CompanyTabModel,
   } from "../chat/tabs/tab-model.js";
   import OfficePanel from "../meet/OfficePanel.svelte";
@@ -172,7 +168,7 @@
     setMeetingsViewActive,
     startMeetingsStore,
   } from "../meetings/meetings-store.svelte";
-  import { AtlasPage, createGoChord } from "../atlas/index.js";
+
   import LibraryOverlay from "../library/LibraryOverlay.svelte";
   import type { PackagesEvents } from "../library/packages-events.js";
   import type { LibraryTab } from "../library/library-overlay-model.js";
@@ -745,7 +741,6 @@
     | "notifications"
     | "settings"
     | "meetings"
-    | "atlas"
     | "library"
     | "shared-files"
     | "extra"
@@ -992,15 +987,6 @@
           void navigate({ kind: "meetings" });
         },
       },
-      {
-        id: "command-go-atlas",
-        label: "Atlas",
-        detail: "People and agents on projects, live",
-        shortcut: "g a",
-        action: () => {
-          void navigate({ kind: "atlas" });
-        },
-      },
     ];
     nav.push({
       id: "command-go-library",
@@ -1074,22 +1060,14 @@
     selectedRow?.kind === "channel" &&
       (selectedRow.channelScope ?? "").trim() === "company",
   );
-
-  /** Company for Atlas — selected conversation company, else first cloud workspace. */
-  const atlasCompanyUid = $derived.by(() => {
-    const fromRow = (selectedRow?.companyUid ?? "").trim();
-    if (fromRow) return fromRow;
-    for (const company of companies ?? []) {
-      const uid = (company.cloudUid ?? "").trim();
-      if (uid) return uid;
-    }
-    return "";
+  const selectedCompanySlug = $derived.by(() => {
+    const uid = (selectedRow?.companyUid ?? "").trim();
+    if (!uid) return "";
+    return (
+      (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid)?.slug ??
+      ""
+    );
   });
-  const atlasCompanyLabel = $derived(
-    companyDisplayName(atlasCompanyUid, companyNames) ||
-      companies?.find((c) => c.cloudUid === atlasCompanyUid)?.displayName ||
-      null,
-  );
 
   /** "Indigo · project channel" style subtitle under the channel name. */
   const channelSubtitle = $derived.by(() => {
@@ -1913,16 +1891,6 @@
       selectedRow?.companyUid?.trim() ?? "",
     ),
   );
-  const canMigrateAtlasSessions = $derived(
-    canMigrateCompanySession({
-      companyUid: atlasCompanyUid,
-      companies,
-    }),
-  );
-  const migrateDestinationsForAtlas = $derived(
-    migrateDestinationCompanies(companies, atlasCompanyUid),
-  );
-
   /** personUid → live display name from the channel roster (the profile
    *  display-name override), so chat/thread show the current name instead of
    *  the full name baked into each message at send time. */
@@ -2972,30 +2940,6 @@
     if (uid) void loadCompanyTeamCanAct(uid);
   });
 
-  async function handleTeamAction(event: CompanyTabActionEvent): Promise<void> {
-    const run = conversationApi.runCompanyTabAction;
-    if (!run) return;
-    const result = await submitLifecycleCardAction({
-      event,
-      store: cardActionKeys,
-      run: (args) =>
-        run({
-          companyUid: event.companyUid,
-          tab: event.tab,
-          cardId: args.cardId,
-          actionId: args.actionId,
-          values: args.values,
-          idempotencyKey: args.idempotencyKey,
-        }),
-      onFailure: () => {},
-    });
-    if (result?.navigateTo === "chat") {
-      pushConversationSurface({ companyTab: "chat" });
-      return;
-    }
-    await loadCompanyTabSurface(companyTab);
-  }
-
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
     const actionRow = selectedRow;
     oncardaction?.(event);
@@ -3552,8 +3496,6 @@
           kind: "meetings",
           meetingId: meetingFocusRequest?.meetingId ?? null,
         };
-      case "atlas":
-        return { kind: "atlas" };
       case "library":
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
@@ -3834,7 +3776,7 @@
         }
         break;
       case "atlas":
-        view = "atlas";
+        view = "conversation";
         settingsSection = null;
         extraPageId = null;
         extraPageParam = null;
@@ -3902,7 +3844,7 @@
         }
         if (next.kind === "channel") {
           tab = next.tab ?? "chat";
-          companyTab = next.companyTab ?? "chat";
+          companyTab = next.companyTab === "office" ? "office" : "chat";
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
         } else {
@@ -5073,13 +5015,6 @@
     startMeetingsStore();
     void prefetchMeetings();
 
-    // US-016: `g a` opens Atlas (Slack-style go chord).
-    const goChord = createGoChord((letter) => {
-      if (letter !== "a") return false;
-      void navigate({ kind: "atlas" });
-      return true;
-    });
-
     function onKey(event: KeyboardEvent) {
       if (
         consumeNavigationShortcut(event, {
@@ -5091,7 +5026,6 @@
           },
         })
       ) {
-        goChord.reset();
         return;
       }
       const meta = event.metaKey || event.ctrlKey;
@@ -5100,7 +5034,6 @@
         if (key === "k") {
           event.preventDefault();
           paletteOpen = !paletteOpen;
-          goChord.reset();
         } else if (key === ",") {
           // macOS-standard ⌘, opens Settings.
           event.preventDefault();
@@ -5121,9 +5054,6 @@
         return;
       }
       if (paletteOpen) return;
-      if (goChord.handleKeydown(event)) {
-        event.preventDefault();
-      }
     }
     window.addEventListener("keydown", onKey);
 
@@ -5484,22 +5414,6 @@
             openExternal={onopenurl}
             focusRequest={meetingFocusRequest}
           />
-        {:else if view === "atlas"}
-          <AtlasPage
-            companyUid={atlasCompanyUid}
-            companyLabel={atlasCompanyLabel}
-            featureEnabled={true}
-            headerVariant="embedded"
-            canMigrate={canMigrateAtlasSessions &&
-              migrateDestinationsForAtlas.length > 0}
-            migrateDestinations={migrateDestinationsForAtlas}
-            onmigratesession={(sessionId) =>
-              openMigrateSession(sessionId, atlasCompanyUid)}
-            migratingSessionId={migratingSessionId}
-            onback={() => {
-              void leaveCurrentDestination();
-            }}
-          />
         {:else if view === "conversation" && selectedRow}
           <header
             class="channel-header chat-shell"
@@ -5672,6 +5586,8 @@
                   </button>
                 {/if}
                 <CompanyTabs
+                  slug={selectedCompanySlug}
+                  {onopenurl}
                   active={companyTab}
                   tabs={companyTabsForHost}
                   onselect={(id) => pushConversationSurface({ companyTab: id })}
@@ -5910,51 +5826,11 @@
               onsaveavatar={saveOpenAgentAvatar}
               onclose={() => void leaveCurrentDestination()}
             />
-          {:else if isCompanyChannel && companyTab !== "chat"}
-            {#if companyTab === "office"}
-              <!--
-                US-018: the shipping Office surface. One implementation, shared
-                with every other host — see packages/ui/src/meet/OfficePanel.
-              -->
-
-            {:else if companyTab === "team"}
-              <TeamTab
-                data={companyTabData ?? {
-                  tab: "team",
-                  companyUid: selectedRow.companyUid ?? "",
-                  viewer: { canAct: false },
-                  sections: [],
-                }}
-                onaction={handleTeamAction}
-              />
-            {:else if companyTab === "atlas"}
-              <AtlasTab
-                graph={companyTabData?.graph ?? { nodes: [], edges: [] }}
-              />
-            {:else if companyTab === "settings"}
-              <SettingsTab
-                data={companyTabData ?? {
-                  tab: "settings",
-                  companyUid: selectedRow.companyUid ?? "",
-                  viewer: { canAct: false },
-                  sections: [],
-                }}
-                onaction={handleTeamAction}
-              />
-            {:else}
-              <div
-                class="company-tab-placeholder"
-                data-testid={`company-tab-panel-${companyTab}`}
-              >
-                {#if companyTabLoading}
-                  Loading…
-                {:else if (companyTabData?.sections[0]?.rows.length ?? 0) > 0}
-                  <TeamTab data={companyTabData!} onaction={handleTeamAction} />
-                {:else}
-                  {String(companyTab).charAt(0).toUpperCase() + String(companyTab).slice(1)}
-                {/if}
-              </div>
-            {/if}
+          {:else if isCompanyChannel && companyTab === "office"}
+            <!--
+              US-018: the shipping Office surface. One implementation, shared
+              with every other host — see packages/ui/src/meet/OfficePanel.
+            -->
           {:else if activeTab === "chat"}
             <div
               class="chat-stage"
@@ -6829,15 +6705,6 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-  }
-
-  .company-tab-placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 120px;
-    color: var(--t3);
-    font-size: 13px;
   }
 
   .project-tabs {

@@ -204,9 +204,8 @@ describe("DesktopApp company header: Add agent", () => {
     expect(button.textContent?.trim()).toBe("Add agent");
     expect(button.getAttribute("aria-label")).toMatch(/^Add an agent to /);
     expect(button.classList.contains("header-ghost-btn")).toBe(true);
-    // Sits in the header row next to the company tabs.
     expect(
-      button.parentElement?.querySelector('[data-testid="company-channel-tabs"]'),
+      button.parentElement?.querySelector('[data-testid="company-console-gear"]'),
     ).toBeTruthy();
 
     button.click();
@@ -268,7 +267,7 @@ describe("DesktopApp company header: Add agent", () => {
       { timeout: 10_000, interval: 50 },
     );
     await settle(12);
-    expect(host.querySelector('[data-testid="company-channel-tabs"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="company-console-gear"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="company-add-agent"]')).toBeNull();
   }, 30_000);
 
