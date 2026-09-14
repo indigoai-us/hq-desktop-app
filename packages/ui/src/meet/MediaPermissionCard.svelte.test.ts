@@ -13,14 +13,14 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { flushSync, mount, unmount } from "svelte";
+import { flushSync, mount, unmount, type ComponentProps } from "svelte";
 
 import MediaPermissionCard from "./MediaPermissionCard.svelte";
 
 let target: HTMLElement | null = null;
 let app: Record<string, unknown> | null = null;
 
-function render(props: Record<string, unknown>) {
+function render(props: ComponentProps<typeof MediaPermissionCard>) {
   target = document.createElement("div");
   document.body.append(target);
   app = mount(MediaPermissionCard, { target, props }) as Record<string, unknown>;
