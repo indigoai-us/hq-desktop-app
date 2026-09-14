@@ -115,6 +115,7 @@
   import TeamTab from "../chat/tabs/TeamTab.svelte";
   import SettingsTab from "../chat/tabs/SettingsTab.svelte";
   import AtlasTab from "../chat/tabs/AtlasTab.svelte";
+  import IdeasTab from "../chat/tabs/ideas/IdeasTab.svelte";
   import CompanyHero from "../chat/CompanyHero.svelte";
   import {
     parseCompanyTab,
@@ -1118,6 +1119,16 @@
       !isAgentChannel,
   );
   const activeTab = $derived(isProjectChannel ? tab : "chat");
+
+  /**
+   * Company SLUG (not cloud uid) for the open company channel. The Ideas board
+   * is scoped by slug because captures are filed on disk under it.
+   */
+  const companyChannelSlug = $derived(
+    (companies ?? []).find(
+      (c) => (c.cloudUid ?? "").trim() === (selectedRow?.companyUid ?? "").trim(),
+    )?.slug ?? "",
+  );
 
   const headerTitle = $derived(resolveConversationTitle(selectedRow, railRows));
 
@@ -2888,6 +2899,9 @@
       companyTabData = null;
       return;
     }
+    // Ideas is served wholly from local captures (adapter.ideas); there is no
+    // server tab surface to fetch, and asking for one would 404 every switch.
+    if (tabId === "ideas") return;
     const getTab = conversationApi.getCompanyTab;
     const fetchId = tabId === "chat" ? "settings" : tabId;
     if (!getTab) {
@@ -5886,6 +5900,8 @@
               <AtlasTab
                 graph={companyTabData?.graph ?? { nodes: [], edges: [] }}
               />
+            {:else if companyTab === "ideas"}
+              <IdeasTab {adapter} slug={companyChannelSlug} />
             {:else if companyTab === "settings"}
               <SettingsTab
                 data={companyTabData ?? {

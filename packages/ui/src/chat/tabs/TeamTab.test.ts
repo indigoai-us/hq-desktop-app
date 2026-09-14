@@ -215,7 +215,7 @@ function memberTab(): CompanyTabModel {
 }
 
 describe("CompanyTabs", () => {
-  it("switches Chat · Atlas · Team · Settings", () => {
+  it("switches Chat · Atlas · Team · Settings · Ideas", () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     let active: CompanyChannelTabId = "chat";
@@ -236,6 +236,7 @@ describe("CompanyTabs", () => {
       "Atlas",
       "Team",
       "Settings",
+      "Ideas",
     ]);
     flushSync(() =>
       host.querySelector<HTMLButtonElement>('[data-testid="company-tab-team"]')?.click(),

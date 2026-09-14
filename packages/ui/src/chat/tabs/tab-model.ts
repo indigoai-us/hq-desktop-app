@@ -3,6 +3,7 @@
  *
  * Chat is the feed. Atlas / Team / Settings swap the feed
  * for current-state rows returned by GET /v1/companies/{uid}/tabs/{tab}.
+ * Ideas swaps it for the locally-captured Idea Board.
  */
 
 import {
@@ -19,6 +20,9 @@ export const COMPANY_CHANNEL_TABS = [
   // Integrations deliberately has no desktop tab: apps are connected in the
   // HQ console (companies/{slug}/integrations), never inside the desktop app.
   { id: "settings", label: "Settings" },
+  // Ideas is local-only: unlike the tabs above it reads captures from this
+  // machine through `adapter.ideas`, not the server-driven tab sections.
+  { id: "ideas", label: "Ideas" },
 ] as const;
 
 export type CompanyChannelTabId = (typeof COMPANY_CHANNEL_TABS)[number]["id"];

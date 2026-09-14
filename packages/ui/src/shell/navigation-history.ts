@@ -127,6 +127,7 @@ const COMPANY_TABS = new Set<CompanyChannelTabId>([
   "atlas",
   "team",
   "settings",
+  "ideas",
 ]);
 const LIBRARY_TABS = new Set<LibraryTab>([
   "skills",
