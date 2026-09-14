@@ -313,7 +313,7 @@ describe("promotion failure handling", () => {
     await vi.waitFor(() => expect(button.disabled).toBe(false));
     button.click();
     await vi.waitFor(() => expect(button.disabled).toBe(true));
-    expect(button.textContent).toContain("Continuing promotion");
+    expect(button.textContent).toContain("Preparing cloud promotion");
     button.click();
     expect(promote).toHaveBeenCalledTimes(1);
     finish(failure("unknown", "Temporary promotion failure"));
@@ -330,7 +330,7 @@ it("reopens a held bot with local controls disabled and the saved destination", 
   expect(select.value).toBe("cmp_TEST");
   expect(select.disabled).toBe(true);
   expect(q<HTMLButtonElement>('[data-testid="local-bot-detail-stop"]')!.disabled).toBe(true);
-  expect(host.textContent).toContain("Continue promotion");
+  expect(host.textContent).toContain("Check progress");
 });
 
 it("automatically continues held promotion and stops polling after activation", async () => {
@@ -364,4 +364,17 @@ it("shows a worker failure and stops automatic retries", async () => {
     expect(promote).toHaveBeenCalledTimes(1);
     expect(q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button')!.disabled).toBe(false);
   } finally { vi.useRealTimers(); }
+});
+
+
+it("explains a blocked file transfer beside promotion without exposing paths as the main message", async () => {
+  const current = bot({ promotionHold: { companyUid: "cmp_TEST" } });
+  const promote = vi.fn(async () => failure("unknown", "Bot continuity: unsafe or private path: ../Library/private-template"));
+  mountPanel({ bot: current, bots: botsApi({ promote }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
+  await tick();
+  q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button')!.click();
+  await vi.waitFor(() => expect(host.textContent).toContain("This requires an HQ update"));
+  expect(q('[data-testid="local-bot-promotion-error"] details')?.hasAttribute("open")).toBe(false);
+  expect(q('[data-testid="local-bot-detail-actions"]')?.textContent).not.toContain("unsafe or private path");
+  expect(host.textContent).toContain("files are still on this Mac");
 });

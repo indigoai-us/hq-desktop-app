@@ -70,6 +70,27 @@ pub struct LifecycleVerdict {
     pub needs_first_run_backfill: bool,
 }
 
+/// A synced workspace is not proof that this computer has the executables
+/// required by setup. Missing tools must return to installation, without
+/// backfilling completion markers from cloud-synced files.
+pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -> LifecycleVerdict {
+    if tools_present {
+        verdict
+    } else {
+        LifecycleVerdict {
+            state: LifecycleState::NeedsInstall,
+            needs_install_backfill: false,
+            needs_first_run_backfill: false,
+        }
+    }
+}
+
+/// Desktop activation may not bypass the install wizard. This is distinct
+/// from the retired notification popover: completed installs open desktop.
+pub fn installation_required(state: LifecycleState) -> bool {
+    matches!(state, LifecycleState::NeedsInstall | LifecycleState::InstallResume | LifecycleState::NeedsAuthForInstall)
+}
+
 /// Pure helper: extract LifecycleInputs' menubar-derived flags from a parsed
 /// menubar.json object. (config_valid/hq_root_valid/has_auth/install_in_progress
 /// still come from the caller; this only reads the menubar map.)
@@ -570,5 +591,32 @@ mod tests {
         let missing = dir.path().join("missing");
 
         assert!(!hq_root_valid(&missing));
+    }
+}
+
+#[cfg(test)]
+mod toolchain_readiness_tests {
+    use super::*;
+    #[test]
+    fn synced_workspace_without_local_tools_must_install_without_backfill() {
+        for state in [LifecycleState::NeedsInstall, LifecycleState::InstallResume,
+            LifecycleState::NeedsAuthForInstall, LifecycleState::InstalledFirstRun,
+            LifecycleState::InstalledLegacyUpdate, LifecycleState::SteadyState] {
+            let original = LifecycleVerdict { state, needs_install_backfill: true, needs_first_run_backfill: true };
+            assert_eq!(require_local_toolchain(original, true), original);
+            let missing = require_local_toolchain(original, false);
+            assert_eq!(missing.state, LifecycleState::NeedsInstall);
+            assert!(!missing.needs_install_backfill && !missing.needs_first_run_backfill);
+            assert!(installation_required(missing.state));
+        }
+    }
+    #[test]
+    fn completed_install_opens_desktop_and_incomplete_install_resumes_wizard() {
+        for state in [LifecycleState::NeedsInstall, LifecycleState::InstallResume, LifecycleState::NeedsAuthForInstall] {
+            assert!(installation_required(state));
+        }
+        for state in [LifecycleState::InstalledFirstRun, LifecycleState::InstalledLegacyUpdate, LifecycleState::SteadyState] {
+            assert!(!installation_required(state));
+        }
     }
 }

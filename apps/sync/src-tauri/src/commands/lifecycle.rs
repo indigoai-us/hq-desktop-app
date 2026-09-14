@@ -114,7 +114,14 @@ pub fn setup_lifecycle(app: &AppHandle) {
         install_in_progress: crate::commands::install_manifest::install_in_progress_from_disk(),
         consent_answered,
     };
-    let verdict = classify_lifecycle(inputs);
+    let tools_present = ["hq", "node"].iter().all(|name| {
+        paths::resolve_bin_with_kind(name).kind != paths::ResolvedProgramKind::NotResolved
+    });
+    #[cfg(not(windows))]
+    let tools_present = tools_present && crate::commands::install_deps::bundled_hq_cli_ready(app);
+    let verdict = hq_desktop_core::lifecycle::require_local_toolchain(
+        classify_lifecycle(inputs), tools_present,
+    );
 
     if verdict.needs_install_backfill {
         match menubar_path.as_ref() {

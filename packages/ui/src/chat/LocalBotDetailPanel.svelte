@@ -49,24 +49,27 @@
   let promotionCompany = $state("");
   let promoting = $state(false);
   let promotionPhase = $state("");
+  let promotionError = $state<string | null>(null);
   let pairing = $state<{ url: string; code: string } | null>(null);
+  const transferBlocked = $derived(Boolean(promotionError?.startsWith("Bot continuity:")));
+  const promotionStatus = $derived(pairing ? "Action needed: connect ChatGPT" : promotionPhase === "active" ? "Running in the cloud" : ["imported", "cloud-ready"].includes(promotionPhase) ? "Starting your cloud bot" : "Preparing your bot for the cloud");
   async function promote(): Promise<void> {
     const uid = bot.agentUid;
     if (!adapter.bots?.promote || promoting || !promotionCompany) return;
-    promoting = true; actionError = null;
+    promoting = true; promotionError = null;
     try {
       const result = await adapter.bots.promote(bot.name, promotionCompany);
       if (bot.agentUid !== uid) return;
-      if (!result.ok) { actionError = result.message || "Could not continue promotion."; return; }
+      if (!result.ok) { promotionError = result.message || "Could not continue promotion."; return; }
       const state = result.value.promotion as { agentUid?: string; phase?: string } | undefined;
       if (state?.agentUid !== uid || !state.phase) throw new Error("Promotion returned an unexpected bot identity.");
       promotionPhase = state.phase;
-      if (typeof result.value.failure === "string") actionError = result.value.failure;
+      if (typeof result.value.failure === "string") promotionError = result.value.failure;
       const candidate = result.value.pairing as { url?: string; code?: string } | null;
       pairing = candidate && ["https://auth.openai.com/codex/device", "https://auth.openai.com/device"].includes(candidate.url ?? "") && /^[A-Z0-9]{4,8}-[A-Z0-9]{4,8}$/.test(candidate.code ?? "")
         ? { url: candidate.url!, code: candidate.code! } : null;
       await onchanged?.();
-    } catch (error) { if (bot.agentUid === uid) actionError = error instanceof Error ? error.message : "Could not continue promotion."; }
+    } catch (error) { if (bot.agentUid === uid) promotionError = error instanceof Error ? error.message : "Could not continue promotion."; }
     finally { if (bot.agentUid === uid) promoting = false; }
   }
   let displayedUid = $state("");
@@ -76,6 +79,7 @@
       promotionCompany = bot.promotionHold?.companyUid ?? "";
       promotionPhase = bot.promotionHold ? "pending" : "";
       pairing = null;
+      promotionError = null;
       promoting = false;
     } else if (bot.promotionHold && !promotionPhase) {
       promotionCompany = bot.promotionHold.companyUid ?? "";
@@ -85,7 +89,7 @@
   // Provisioning continues while this profile is open. Each call only queues a
   // bounded cloud step; closing the profile stops polling but preserves the hold.
   $effect(() => {
-    if (!promotionPhase || promotionPhase === "active" || promoting || actionError || !promotionCompany) return;
+    if (!promotionPhase || promotionPhase === "active" || promoting || promotionError || !promotionCompany) return;
     const timer = window.setTimeout(() => void promote(), 15_000);
     return () => window.clearTimeout(timer);
   });
@@ -324,24 +328,33 @@
     {#if adapter.bots?.promote && companies.length}
       <section class="ad-section" data-testid="local-bot-promotion">
         <h3 class="ad-kicker">Cloud hosting</h3>
-        <p class="ad-muted">Keep the same bot, conversation, role, skills, and memory. Connect its ChatGPT subscription on the cloud computer.</p>
+        <p class="ad-muted">Your bot keeps its identity, conversation, skills, and memory. We prepare its cloud computer, ask you to connect ChatGPT, then move this conversation over.</p>
         <label class="ad-field"><span>Company</span>
           <select value={promotionCompany} onchange={(event) => { promotionCompany = event.currentTarget.value; }} disabled={promoting || Boolean(promotionPhase)} aria-label="Promotion company">
             <option value="">Choose company</option>
             {#each companies as company (company.uid)}<option value={company.uid}>{company.name}</option>{/each}
           </select>
         </label>
+        {#if promotionPhase || promoting}
+          <p role="status"><strong>{promotionError ? "Promotion paused" : promotionStatus}</strong></p>
+        {/if}
         {#if pairing}
-          <p class="ad-muted">Connect ChatGPT using code <strong>{pairing.code}</strong>.</p>
+          <p class="ad-muted">Open the sign-in page and enter <strong>{pairing.code}</strong>. Sign in with the ChatGPT subscription you want this cloud bot to use. Return here afterward; we will continue automatically.</p>
           <button class="ad-btn" onclick={() => onopenurl?.(pairing!.url)} disabled={!onopenurl}>Connect ChatGPT</button>
         {/if}
         {#if promotionPhase === "active"}
           <p role="status">Promoted. Continue in this conversation.</p>
         {:else}
           <button class="ad-btn" disabled={promoting || !promotionCompany || Boolean(busy)} onclick={() => void promote()}>
-            {promoting ? "Continuing promotion…" : promotionPhase ? "Continue promotion" : "Promote to cloud"}
+            {promoting ? "Preparing cloud promotion…" : promotionError ? "Retry promotion" : promotionPhase ? "Check progress" : "Promote to cloud"}
           </button>
-          {#if promotionPhase}<p class="ad-muted" role="status">{actionError ? "Promotion needs attention. Continue promotion to retry." : "Promotion continues automatically while this profile is open."} Your local bot stays paused during the handoff.</p>{/if}
+          {#if promotionError}
+            <div role="alert" data-testid="local-bot-promotion-error">
+              <p>{transferBlocked ? "HQ could not prepare this bot’s files for transfer. This requires an HQ update; retrying the same version will not fix it." : "This step did not finish. Retry promotion to continue from the saved step."}</p>
+              <details><summary>Technical details</summary><p class="ad-error">{promotionError}</p></details>
+            </div>
+          {/if}
+          {#if promotionPhase}<p class="ad-muted">{promotionError ? "Your bot has not moved to the cloud. Its local run is paused and its files are still on this Mac." : "Keep this profile open while we finish. Your local bot is paused so only one copy can answer."}</p>{/if}
         {/if}
       </section>
     {/if}
