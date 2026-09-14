@@ -71,3 +71,34 @@ visual acceptance also passed. Final host/VM executable SHA-256:
 Gateway restart on the same disk is verified; instance replacement/disaster
 recovery, cancellation/rollback, and old queued-message migration are not
 certified. This is not a production deployment or a notarized release.
+
+## Fresh onboarding follow-up — September 14
+
+The earlier Juniper results and executable hash above describe the original
+acceptance run. A separate fresh-local-state VM run now verifies automatic setup
+registration and its first real Claude reply without retry messages or repairs.
+The setup conversation creates Cedar QA, which recalls its saved marker and
+uses its authored checklist before and after Stop → Start through desktop controls.
+
+This required fixing the connected-provider setup gate, installing missing
+provider runtimes before connecting, exposing automatic setup failures, and
+opening the desktop directly from the menu bar and Dock. Companion CLI PR575
+packages the setup template and both skills and includes managed runtime bins
+in the launchd PATH. The successful attempt uses the complete installed package,
+without an externally staged setup worker.
+
+The run reuses test-account, company, provider authorizations, and dependencies;
+it does not re-certify fresh signup or dependency installation. Cedar's cloud
+promotion reaches subscription pairing automatically and renews expired codes
+without clicks. Cloud continuity and restart are still pending provider
+authorization. Its first cloud candidate was replaced by the ordinary updater;
+the isolated test fixture now invokes an immutable importer outside that global
+installation. This repaired cloud attempt is not a clean end-to-end pass.
+Release the companion CLI importer before enabling promotion in production.
+
+Latest native checks: 1,233 menubar tests pass (two existing ignored tests), and
+2,367 core tests plus the runner integration pass with four test threads. The
+initial core run and a focused rerun during concurrent native testing failed a
+one-second version probe; a subsequent focused test and full four-thread run
+passed. Assertions and production timeouts are unchanged; diagnostic assertion
+output was added. Native UI typecheck remains zero errors and 76 warnings.
