@@ -242,12 +242,13 @@ describe('US-SESSIONS-A — chat-first: no setup screen anywhere', () => {
   });
 
   it('names the exact remedy for each preflight blocker', () => {
-    expect(PAGE).toContain('claude login');
-    expect(PAGE).toContain('grok login');
+    expect(PAGE).toContain('Settings → Agents');
     expect(PAGE).toContain('claudeAvailable');
-    expect(PAGE).toContain('claudeLoggedIn');
-    expect(PAGE).toContain('grokLoggedIn');
+    expect(PAGE).toContain('codexAvailable');
+    expect(PAGE).toContain('grokAvailable');
     expect(PAGE).toContain('hooksReady');
+    // Login is not a Sessions-page blocker: Sign in lives on the live
+    // session card (ProviderReauthCard), not a preflight notice here.
     // HQ setup on this Mac is the page's own job (the self-heal card), never a
     // raw rescue command or a config path on screen; the technical
     // `hooksError` is for the support log.
@@ -917,7 +918,7 @@ describe('company / project start-work — the first send orients the session', 
     const fn = PAGE.slice(PAGE.indexOf('async function handleSend('));
     const body = fn.slice(0, fn.indexOf('\n  }\n'));
     // A setup chat is never oriented, so the page passes the effective flag.
-    expect(body).toContain('planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)');
+    expect(body).toContain('!embedded && startworkEnabled && !setupChat');
     const planAt = body.indexOf('const first = planFirstSend(');
     const wordsAt = body.indexOf('started = await liveSessionStore.startAndSend(');
     const routeAt = body.indexOf('onopensession?.(encodeLiveSessionParam(started, company)', wordsAt);

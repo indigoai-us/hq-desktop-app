@@ -340,11 +340,55 @@ export function createChatSidebarApi(
         await call<unknown>(adapter.messaging.listContacts({ companyUid })),
       ),
     }),
+    // Both platform adapters answer a bare array (the web adapter unwraps
+    // the route's `{ requests }` envelope itself); this is the ONLY wrap.
     listDmRequests: async () => ({
       requests: await call<NonNullable<RequestsResponse["requests"]>>(
         adapter.messaging.listDmRequests(),
       ),
     }),
+    ...(adapter.messaging.respondDmRequest
+      ? {
+          respondDmRequest: async (args: {
+            pairKey: string;
+            action: "accept" | "decline" | "block";
+          }) => {
+            await call<unknown>(adapter.messaging.respondDmRequest!(args));
+          },
+        }
+      : {}),
+    // Optional-preserving: the UI hides every email-invite affordance when
+    // the platform adapter lacks the seam, so never stub it with a thrower.
+    ...(adapter.messaging.sendDmToEmail
+      ? {
+          sendDmToEmail: async (args: {
+            toEmail?: string;
+            toPersonUid?: string;
+            body: string;
+          }) => {
+            const value = await call<unknown>(
+              adapter.messaging.sendDmToEmail!(args),
+            );
+            const rec =
+              value && typeof value === "object" && !Array.isArray(value)
+                ? (value as Record<string, unknown>)
+                : {};
+            const personUid =
+              typeof rec.personUid === "string" && rec.personUid.trim()
+                ? rec.personUid.trim()
+                : typeof rec.toPersonUid === "string" && rec.toPersonUid.trim()
+                  ? rec.toPersonUid.trim()
+                  : null;
+            return {
+              state:
+                rec.state === "connectionRequested"
+                  ? ("connectionRequested" as const)
+                  : ("delivered" as const),
+              personUid,
+            };
+          },
+        }
+      : {}),
     listChannels: async (args) => {
       const native = await call<
         ChannelsResponse | NonNullable<ChannelsResponse["channels"]>

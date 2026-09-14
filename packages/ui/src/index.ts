@@ -6,6 +6,7 @@ export * from "./onboarding/index.js";
 
 // Chat shell (US-007, ported from desktop-alt)
 export { default as ChatSidebar } from "./chat/ChatSidebar.svelte";
+export { default as DmRequestsPanel } from "./chat/DmRequestsPanel.svelte";
 export { default as ChannelStatusPopover } from "./chat/ChannelStatusPopover.svelte";
 export { default as AgentDetailPanel } from "./chat/AgentDetailPanel.svelte";
 export { default as AvatarPickerSlot } from "./chat/AvatarPickerSlot.svelte";

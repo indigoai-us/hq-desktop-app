@@ -447,6 +447,7 @@ mod tests {
             started_at: "2026-09-02T22:23:32Z".into(),
             last_activity_at: "2026-09-02T22:30:00Z".into(),
             source: "codex-rollout".into(),
+            remote_control_session_id: None,
         }];
 
         enrich_project_session_rows(&mut rows, &observed);
@@ -500,6 +501,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: PermissionMode::Prompt,
+            hidden: false,
         };
         test_registry()
             .lock()

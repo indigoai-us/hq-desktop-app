@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { parseMeshProjectView, projectViewToBoard } from "@hq/core";
+  import {
+    parseMeshProjectView,
+    projectViewToBoard,
+  } from "@hq/core";
   /**
    * DesktopApp — the windowed V2 shell (design source: hq-sync desktop-alt +
    * its dev-harness ?view=v2 preview).
@@ -26,6 +29,7 @@
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import ChatSidebar from "../chat/ChatSidebar.svelte";
   import type { RowExtrasResolver } from "../chat/row-extras.js";
+  import DmRequestsPanel from "../chat/DmRequestsPanel.svelte";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
@@ -93,6 +97,16 @@
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
+  import SessionThreadPanel from "../chat/messaging/SessionThreadPanel.svelte";
+  import {
+    coalesceWorkSessionWires,
+    contextPromptForThread,
+    createSessionThread,
+    excerptFromBody,
+    isDesktopLiveSessionId,
+    type SessionThread,
+  } from "../chat/messaging/session-thread.js";
+  import type { Snippet } from "svelte";
   import ArtifactPanel from "../chat/messaging/ArtifactPanel.svelte";
   import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
   import BoardTab from "../chat/messaging/BoardTab.svelte";
@@ -330,15 +344,18 @@
   } from "../chat/live-catchup.js";
   import {
     OPEN_CHANNEL_EVENT,
+    OPEN_DM_REQUESTS_EVENT,
     OPEN_SETTINGS_EVENT,
     conversationDeepLinkFromLocation,
     conversationRowForDeepLink,
     requestChannelOpen,
     shouldOpenReplyDeepLink,
     takePendingChannelOpen,
+    takePendingDmRequests,
     type ConversationDeepLink,
     type PendingChannelOpen,
   } from "../chat/open-target.js";
+  import type { DmRequest, RequestAction } from "../chat/dm-requests.js";
   import {
     MESSAGE_PERSON_EVENT,
     takePendingConversation,
@@ -561,6 +578,19 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
+    /**
+     * Desktop host starts the real agent session for an in-channel pane.
+     * Web omits this; the pane falls back to a notice.
+     */
+    onstartlivesession?: (input: {
+      thread: SessionThread;
+      companySlug: string;
+      projectId: string;
+      taskId: string;
+      contextPrompt: string;
+      channelId?: string | null;
+    }) => Promise<{ sessionId: string }>;
+    channelSessionBody?: Snippet<[SessionThread]>;
   }
 
   let {
@@ -616,6 +646,8 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
+    onstartlivesession,
+    channelSessionBody,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -707,9 +739,12 @@
     | "library"
     | "shared-files"
     | "extra"
+    | "dm-requests"
   >("conversation");
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
+  /** Which pending request the Requests panel should bring into view first. */
+  let dmRequestsFocusPairKey = $state<string | null>(null);
   let libraryTab = $state<LibraryTab>("skills");
   let libraryItemId = $state<string | null>(null);
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
@@ -740,6 +775,10 @@
   /** Company display name from the settings tab appearance, when fetched. */
   let companyAppearanceName = $state<string | null>(null);
   let openReplyRootId = $state<string | null>(null);
+  /** In-channel session pane (spike) — same column as Thread. */
+  let openSessionThread = $state<SessionThread | null>(null);
+  let sessionThreadsById = $state<Record<string, SessionThread>>({});
+  let localSessionWires = $state<ConversationMessageWire[]>([]);
   /** Right side pane in ARTIFACT mode. Supersedes thread/profile while open;
    *  closing it falls back to whatever pane was open underneath. */
   let openArtifactView = $state<ChatArtifact | null>(null);
@@ -750,6 +789,55 @@
   let replyPreviewByRoot = $state<Record<string, ReplyPreview>>({});
   let replyCountOverride = $state<Record<string, number>>({});
   let narrowViewport = $state(false);
+  let threadWidth = $state<number | null>(null);
+  let threadDrag: { x: number; width: number } | null = null;
+
+  function resizeThread(handle: HTMLElement, width: number) {
+    const stageWidth =
+      handle.parentElement?.parentElement?.getBoundingClientRect().width ?? 0;
+    if (!stageWidth) return;
+    const minimum = Math.min(280, stageWidth / 2);
+    const maximum = stageWidth - Math.min(360, stageWidth / 2);
+    threadWidth = Math.round(Math.max(minimum, Math.min(maximum, width)));
+  }
+
+  function startThreadDrag(event: PointerEvent) {
+    if (event.button !== 0) return;
+    const handle = event.currentTarget as HTMLElement;
+    threadDrag = {
+      x: event.clientX,
+      width: handle.parentElement!.getBoundingClientRect().width,
+    };
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function moveThreadDrag(event: PointerEvent) {
+    if (!threadDrag) return;
+    resizeThread(
+      event.currentTarget as HTMLElement,
+      threadDrag.width + threadDrag.x - event.clientX,
+    );
+  }
+
+  function stopThreadDrag(event: PointerEvent) {
+    threadDrag = null;
+    const handle = event.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(event.pointerId)) {
+      handle.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function resizeThreadKey(event: KeyboardEvent) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const handle = event.currentTarget as HTMLElement;
+    resizeThread(
+      handle,
+      handle.parentElement!.getBoundingClientRect().width +
+        (event.key === "ArrowLeft" ? 20 : -20),
+    );
+    event.preventDefault();
+  }
   /**
    * On a phone the channel list is an overlay, so it must start closed —
    * otherwise the first thing the app shows is a list covering the
@@ -1053,7 +1141,11 @@
   // Starting is not finishing: a relaunch mid-run must still land on
   // #welcome, so only the finish graduates welcome-first boot.
   const setupAgent = new SetupAgent(extraPages?.sessions?.setupRun ?? null, {
-    onfinished: recordWelcomeSetupRun,
+    onfinished: () => {
+      recordWelcomeSetupRun();
+      // On disk too: the window's memory does not survive a reinstall.
+      void adapter.settings.markWelcomeSetupComplete?.();
+    },
   });
   $effect(() => () => setupAgent.dispose());
   const inSetupChannelWithAgent = $derived(
@@ -1234,7 +1326,27 @@
     const handle = window.setInterval(() => {
       agentThinking = tick(agentThinking, Date.now());
     }, AGENT_THINKING_TICK_MS);
-    return () => clearInterval(handle);
+    const onSessionStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; status?: string }>)
+        .detail;
+      const sessionId = detail?.sessionId?.trim();
+      const status = detail?.status?.trim();
+      if (!sessionId || !status) return;
+      const thread =
+        sessionThreadsById[sessionId] ??
+        Object.values(sessionThreadsById).find((row) => row.liveSessionId === sessionId);
+      upsertLocalWorkSession({
+        sessionId,
+        title: thread?.title ?? "Session",
+        status,
+        actorName: thread?.actorName ?? self?.displayName?.trim() ?? "You",
+      });
+    };
+    window.addEventListener("hq-channel-session-status", onSessionStatus);
+    return () => {
+      clearInterval(handle);
+      window.removeEventListener("hq-channel-session-status", onSessionStatus);
+    };
   });
 
   /** Clear thinking rows when those agents appear in a freshly fetched page
@@ -1608,19 +1720,20 @@
       projectActivityRows.length > 0
         ? mergeActivityIntoTimeline(timeline, projectActivityRows)
         : timeline;
-    if (!selectedRow || !isSetupChannel(selectedRow.channelId)) return merged;
-    // #welcome must not lead with "Create a company" for an account whose
-    // roster already holds one (created on the website / another machine).
-    const welcome = withoutCompaniesSummaryCards(
-      withoutSeededCreateCompanyCards(merged, {
-        hasCompany: hasRosterCompany,
-        createRequested: createCompanyRequested,
-        rosterLoading: setupRosterLoading(companies, rosterStatus),
-      }),
-    );
-    // The Setup Agent's turns are local to this Mac: they render in the
-    // channel but are never posted to it.
-    return setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
+    let rows = merged;
+    if (selectedRow && isSetupChannel(selectedRow.channelId)) {
+      const welcome = withoutCompaniesSummaryCards(
+        withoutSeededCreateCompanyCards(merged, {
+          hasCompany: hasRosterCompany,
+          createRequested: createCompanyRequested,
+          rosterLoading: setupRosterLoading(companies, rosterStatus),
+        }),
+      );
+      rows =
+        setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
+    }
+    if (localSessionWires.length === 0) return coalesceWorkSessionWires(rows);
+    return coalesceWorkSessionWires([...rows, ...localSessionWires]);
   });
 
   /**
@@ -1678,31 +1791,6 @@
     })) };
   });
 
-  async function createBoardTask(task: {id: string; title: string; description: string; status: string}): Promise<void> {
-    const row = selectedRow;
-    const companyUid = row?.companyUid?.trim();
-    const projectId = row ? projectIdForRow(row) : null;
-    const create = adapter.workMesh.createProjectStory;
-    if (!row || !companyUid || !projectId || !create) throw new Error("Project unavailable");
-    const key = activityKeyForRow(row);
-    const account = self?.uid;
-    // A retry after a lost response must not append the same task twice.
-    const before = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
-    if (!before || before.companyUid !== companyUid || before.projectId !== projectId) throw new Error("Project unavailable");
-    const existing = before.stories.find(story => story.id === task.id);
-    if (existing && existing.title !== task.title) throw new Error("Task ID already exists");
-    if (!existing) unwrapAdapter(await create(projectId, companyUid, {...task, passes: task.status === "done"}));
-    const saved = parseMeshProjectView(unwrapAdapter(await adapter.workMesh.getProjectView(projectId, companyUid)));
-    const story = saved?.stories.find(story => story.id === task.id);
-    if (!saved || saved.companyUid !== companyUid || saved.projectId !== projectId || !story) throw new Error("Task not confirmed");
-    if (self?.uid !== account) return;
-    const prior = createdTasks[key];
-    const added = projectViewToBoard({...saved, stories: [story]});
-    createdTasks = {...createdTasks, [key]: prior ? {
-      ...added, stories: {...prior.stories, ...added.stories},
-      columns: added.columns.map(column => ({...column, cards: [...(prior.columns.find(c => c.id === column.id)?.cards ?? []).filter(card => card.storyId !== story.id), ...column.cards]})),
-    } : added};
-  }
   const files = $derived<ChannelFileItemModel[]>(
     overlayFiles.length > 0 ? overlayFiles : (liveTabs?.files ?? []),
   );
@@ -1838,6 +1926,7 @@
   function openMemberProfile(row: StatusPersonRow): void {
     // One right panel at a time — a profile/agent pane supersedes a reply.
     openReplyRootId = null;
+    openSessionThread = null;
     openArtifactView = null;
     if (isAgentUid(row.personUid)) {
       openProfileMember = null;
@@ -2637,6 +2726,39 @@
    */
   let welcomeSetupRun = $state(hasRunWelcomeSetup());
   /**
+   * Whether this machine is still owed the welcome channel's guided setup,
+   * from the host's setup status. A person who set HQ up before the welcome
+   * flow existed (Caio: "I previously ran setup, but it showed me this") is
+   * not: boot goes to their channels and #welcome shows the finished state.
+   * Unknown until the host answers; unknown means owed, as before.
+   */
+  let welcomeSetupOwed = $state<boolean | null>(null);
+  /** The boot pick never waits longer than this for the host's answer. */
+  const WELCOME_OWED_TIMEOUT_MS = 2000;
+  onMount(() => {
+    let settled = false;
+    const resolve = (owed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      welcomeSetupOwed = owed;
+      if (owed) return;
+      welcomeSetupRun = true;
+      setupAgent.markAlreadySetUp();
+    };
+    const timer = window.setTimeout(() => resolve(true), WELCOME_OWED_TIMEOUT_MS);
+    void (async () => {
+      try {
+        const res = await adapter.settings.getSetupStatus();
+        const owed = res.ok ? (res.value as { welcomeSetupOwed?: unknown } | null)?.welcomeSetupOwed : undefined;
+        // Only an explicit "not owed" skips the welcome; anything else keeps today's behaviour.
+        resolve(owed !== false);
+      } catch {
+        resolve(true);
+      }
+    })();
+    return () => clearTimeout(timer);
+  });
+  /**
    * An explicit conversation deep link (`?channel=` / `?person=`) is a
    * stronger intent than first landing: it must never be swallowed by the
    * welcome-first boot pick.
@@ -2905,12 +3027,216 @@
     }
   }
 
+  function revealSessionThread(thread: SessionThread): void {
+    openReplyRootId = null;
+    openProfileMember = null;
+    openAgentMember = null;
+    openArtifactView = null;
+    openSessionThread = thread;
+    sessionThreadsById = {
+      ...sessionThreadsById,
+      [thread.id]: thread,
+      ...(thread.liveSessionId ? { [thread.liveSessionId]: thread } : {}),
+    };
+    if (tab !== "chat") tab = "chat";
+  }
+
+  function patchSessionThread(id: string, patch: Partial<SessionThread>): void {
+    const current = sessionThreadsById[id];
+    if (!current) return;
+    const next = { ...current, ...patch };
+    const byId: Record<string, SessionThread> = { ...sessionThreadsById, [id]: next };
+    if (next.liveSessionId) byId[next.liveSessionId] = next;
+    sessionThreadsById = byId;
+    if (openSessionThread?.id === id || openSessionThread?.liveSessionId === id) {
+      openSessionThread = next;
+    }
+  }
+
+  function upsertLocalWorkSession(input: {
+    sessionId: string;
+    title: string;
+    status: string;
+    actorName: string;
+    harness?: string;
+  }): void {
+    const eventId = `local-session-${input.sessionId}`;
+    const wire: ConversationMessageWire = {
+      eventId,
+      createdAt: new Date().toISOString(),
+      messageKind: "system",
+      fromDisplayName: input.actorName,
+      fromPersonUid: self?.uid ?? null,
+      body: "",
+      systemEvent: {
+        v: 1,
+        type: "work_session",
+        title: input.title,
+        note: input.title,
+        status: input.status,
+        harness: input.harness ?? "hq-desktop",
+        actorType: "human",
+        displayName: input.actorName,
+        sessionId: input.sessionId,
+      },
+    };
+    const index = localSessionWires.findIndex((row) => row.eventId === eventId);
+    if (index < 0) {
+      localSessionWires = [...localSessionWires, wire];
+      return;
+    }
+    const prev = localSessionWires[index];
+    const prevStatus =
+      prev?.systemEvent && typeof prev.systemEvent === "object"
+        ? String((prev.systemEvent as { status?: unknown }).status ?? "")
+        : "";
+    if (prevStatus === input.status) return;
+    localSessionWires = localSessionWires.map((row, i) =>
+      i === index ? { ...wire, createdAt: row.createdAt } : row,
+    );
+  }
+
+  function liveThreadMatching(match: (thread: SessionThread) => boolean): SessionThread | null {
+    const seen = new Set<string>();
+    for (const thread of Object.values(sessionThreadsById)) {
+      if (seen.has(thread.id)) continue;
+      seen.add(thread.id);
+      if (
+        (thread.status === "starting" || thread.status === "running") &&
+        match(thread)
+      ) {
+        return thread;
+      }
+    }
+    return null;
+  }
+
+  async function bindLiveSession(thread: SessionThread): Promise<void> {
+    patchSessionThread(thread.id, { status: "starting" });
+    const row = selectedRow;
+    const companyUid = row?.companyUid?.trim();
+    const projectId = row ? projectIdForRow(row) : null;
+    const companySlug =
+      (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyUid)
+        ?.slug ?? "";
+    try {
+      if (!onstartlivesession || !projectId || !companySlug) {
+        patchSessionThread(thread.id, { status: "idle" });
+        return;
+      }
+      const started = await onstartlivesession({
+        thread,
+        companySlug,
+        projectId,
+        taskId: thread.taskId ?? "",
+        contextPrompt: contextPromptForThread(thread),
+        channelId: row?.channelId ?? null,
+      });
+      patchSessionThread(thread.id, {
+        liveSessionId: started.sessionId,
+        status: "running",
+      });
+      upsertLocalWorkSession({
+        sessionId: started.sessionId,
+        title: thread.title,
+        status: "started",
+        actorName: thread.actorName,
+      });
+    } catch (err) {
+      patchSessionThread(thread.id, {
+        status: "idle",
+        startError: err instanceof Error ? err.message : String(err),
+      });
+      console.error("[hq-desktop] channel session", err);
+    }
+  }
+
+  function startSessionFromMessage(eventId: string): void {
+    const row = selectedRow;
+    if (!row) return;
+    const existing = liveThreadMatching(
+      (thread) => thread.origin.kind === "message" && thread.origin.eventId === eventId,
+    );
+    if (existing) {
+      revealSessionThread(existing);
+      return;
+    }
+    const msg = timelineWithActivity.find((m) => m.eventId === eventId);
+    const thread = createSessionThread({
+      origin: {
+        kind: "message",
+        eventId,
+        excerpt: excerptFromBody(msg?.body ?? ""),
+        author:
+          (msg?.fromDisplayName ?? "").trim() ||
+          displayNameByUid[msg?.fromPersonUid ?? ""] ||
+          "Message",
+      },
+      actorKind: "human",
+      actorName: self?.displayName?.trim() || "You",
+    });
+    revealSessionThread(thread);
+    void bindLiveSession(thread);
+  }
+
+  function startSessionFromChannel(): void {
+    const row = selectedRow;
+    if (!row?.channelId) return;
+    const existing = liveThreadMatching(
+      (thread) => thread.origin.kind === "channel" && thread.origin.channelId === row.channelId,
+    );
+    if (existing) {
+      revealSessionThread(existing);
+      return;
+    }
+    const thread = createSessionThread({
+      origin: {
+        kind: "channel",
+        channelId: row.channelId,
+        channelTitle: row.title || "channel",
+      },
+      actorKind: "human",
+      actorName: self?.displayName?.trim() || "You",
+    });
+    revealSessionThread(thread);
+    void bindLiveSession(thread);
+  }
+
+  function openSessionFromCard(sessionId: string): void {
+    const id = sessionId.trim();
+    if (!id) return;
+    const known =
+      sessionThreadsById[id] ??
+      Object.values(sessionThreadsById).find((row) => row.liveSessionId === id);
+    if (known?.liveSessionId && isDesktopLiveSessionId(known.liveSessionId)) {
+      revealSessionThread(known);
+      return;
+    }
+    if (!isDesktopLiveSessionId(id)) return;
+    const row = selectedRow;
+    const thread = createSessionThread({
+      origin: {
+        kind: "channel",
+        channelId: row?.channelId ?? "",
+        channelTitle: row?.title || "channel",
+      },
+      actorKind: "human",
+      actorName: self?.displayName?.trim() || "You",
+    });
+    thread.id = id;
+    thread.liveSessionId = id;
+    thread.status = "running";
+    sessionThreadsById = { ...sessionThreadsById, [id]: thread };
+    revealSessionThread(thread);
+  }
+
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
     if (!id || !selectedRow) return;
     openProfileMember = null;
     openAgentMember = null;
     openArtifactView = null;
+    openSessionThread = null;
     openReplyRootId = id;
     pushConversationSurface({
       replyRootEventId: id,
@@ -3501,6 +3827,13 @@
         extraPageId = null;
         extraPageParam = null;
         break;
+      case "dm-requests":
+        dmRequestsFocusPairKey = next.pairKey ?? null;
+        view = "dm-requests";
+        settingsSection = null;
+        extraPageId = null;
+        extraPageParam = null;
+        break;
       case "extra":
         extraPageId = next.page;
         extraPageParam = next.param ?? null;
@@ -3753,6 +4086,41 @@
       },
       { preserveView: target.automatic === true && view !== "conversation" },
     );
+  }
+
+  /** The sidebar's "Connection requests" row (and any host deep link). */
+  function openDmRequests(pairKey?: string | null): void {
+    void navigate({ kind: "dm-requests", pairKey: pairKey?.trim() || null });
+  }
+
+  /**
+   * A request was answered. The panel already pruned it and emitted
+   * `dm:request-update`; refresh the rail (accept promotes a new contact) and,
+   * on accept, open the conversation with the requester through the same
+   * pending-conversation path a deep link uses.
+   */
+  function handleDmRequestResolved(
+    request: DmRequest,
+    action: RequestAction,
+  ): void {
+    rosterWakeSeq += 1;
+    if (action !== "accept") return;
+    const personUid = request.fromPersonUid?.trim() ?? "";
+    if (!personUid) return;
+    const target: ConversationTarget = {
+      personUid,
+      email: request.fromEmail ?? "",
+      displayName: request.fromDisplayName ?? "",
+      replyRootEventId: null,
+    };
+    const known = conversationRowForDeepLink(
+      { channelId: null, personUid, replyRootEventId: null },
+      [...searchRows, ...railRows],
+    );
+    // The rail may not list the new contact yet; fall back to the messages
+    // home rather than leaving the (now empty) request in view.
+    if (known) applyPendingConversation(target);
+    else void navigate({ kind: "messages" });
   }
 
   /**
@@ -4772,8 +5140,14 @@
         return;
       applyPendingConversation({ ...detail, automatic: detail.automatic === true });
     }
-  function onOpenSettingsEvent(): void {
+    function onOpenSettingsEvent(): void {
       openSettings();
+    }
+    function onOpenDmRequests(event: Event): void {
+      const detail = (event as CustomEvent<{ pairKey?: string | null }>).detail;
+      // Consume the stash so a later mount does not replay this open.
+      takePendingDmRequests();
+      openDmRequests(detail?.pairKey ?? null);
     }
     function onEmbeddedNavigation(event: Event): void {
       const target = (event as CustomEvent<EmbeddedNavigationTarget>).detail;
@@ -4783,6 +5157,7 @@
     window.addEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
     window.addEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
     window.addEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+    window.addEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
     window.addEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
 
     applyConversationDeepLink(conversationDeepLinkFromLocation());
@@ -4790,6 +5165,8 @@
     if (pendingChannel) applyPendingChannelOpen(pendingChannel);
     const pendingDm = takePendingConversation();
     if (pendingDm) applyPendingConversation(pendingDm);
+    const pendingRequests = takePendingDmRequests();
+    if (pendingRequests) openDmRequests(pendingRequests.pairKey);
     const detachEmbeddedNavigation = onembeddednavigationready?.();
 
     return () => {
@@ -4799,6 +5176,7 @@
       if (syncTimer !== undefined) window.clearInterval(syncTimer);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
+      window.removeEventListener(OPEN_DM_REQUESTS_EVENT, onOpenDmRequests);
       window.removeEventListener(OPEN_CHANNEL_EVENT, onOpenChannel);
       window.removeEventListener(MESSAGE_PERSON_EVENT, onMessagePerson);
       window.removeEventListener(EMBEDDED_NAVIGATION_EVENT, onEmbeddedNavigation);
@@ -4983,6 +5361,7 @@
           {seedDirectory}
           {avatarByUid}
           {rosterWakeSeq}
+          requestsWakeSeq={notificationWakeSeq}
           onavatarmap={(map) => (contactAvatarByUid = map)}
           onselect={(row, options) =>
             handleSelect(row, {
@@ -5003,7 +5382,7 @@
             directorySettled = true;
           }}
           {bootTimeoutMs}
-          welcomeFirst={!welcomeSetupRun && !hasBootDeepLink && !initialRow}
+          welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
           {rowExtrasLoading}
@@ -5057,6 +5436,16 @@
               />
             {/key}
           </div>
+        {:else if view === "dm-requests"}
+          <DmRequestsPanel
+            api={sidebarApi}
+            {wakes}
+            focusPairKey={dmRequestsFocusPairKey}
+            onback={() => {
+              void leaveCurrentDestination();
+            }}
+            onresolved={handleDmRequestResolved}
+          />
         {:else if view === "meetings"}
           <MeetingsPage
             {adapter}
@@ -5527,6 +5916,7 @@
               class:is-setup={isSetupChannel(selectedRow.channelId)}
               data-testid="chat-stage"
               data-reply-open={openReplyRootId ||
+                openSessionThread ||
                 openProfileMember ||
                 openAgentMember
                 ? "true"
@@ -5680,6 +6070,11 @@
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
+                  onstartsession={startSessionFromMessage}
+                  onopensession={openSessionFromCard}
+                  onstartchannelsession={
+                    selectedRow.channelId ? startSessionFromChannel : undefined
+                  }
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
                   onopenartifact={openArtifact}
@@ -5765,13 +6160,80 @@
                     onclose={closeMemberProfile}
                   />
                 </div>
+              {:else if openSessionThread}
+                <div
+                  class="reply-column"
+                  class:overlay={narrowViewport}
+                  class:resizable-thread={!narrowViewport}
+                  style:--thread-width={threadWidth === null ? "50%" : `${threadWidth}px`}
+                  data-testid="session-thread-column"
+                  data-reply-layout={narrowViewport ? "overlay" : "column"}
+                >
+                  {#if !narrowViewport}
+                    <div
+                      class="thread-resize-handle"
+                      role="separator"
+                      aria-label="Resize thread panel"
+                      aria-orientation="vertical"
+                      aria-valuenow={threadWidth ?? undefined}
+                      tabindex="0"
+                      onpointerdown={startThreadDrag}
+                      onpointermove={moveThreadDrag}
+                      onpointerup={stopThreadDrag}
+                      onpointercancel={stopThreadDrag}
+                      onlostpointercapture={() => {
+                        threadDrag = null;
+                      }}
+                      onkeydown={resizeThreadKey}
+                    ></div>
+                  {/if}
+                  <SessionThreadPanel
+                    thread={openSessionThread}
+                    onclose={() => (openSessionThread = null)}
+                    onexpand={
+                      extraPages?.sessions?.createAction
+                        ? (thread) => {
+                            const param =
+                              thread.liveSessionId ??
+                              extraPages!.sessions.createAction!.param();
+                            void navigate({
+                              kind: "extra",
+                              page: "sessions",
+                              param,
+                            });
+                          }
+                        : undefined
+                    }
+                    body={channelSessionBody}
+                  />
+                </div>
               {:else if openReplyRootId && replyScope}
                 <div
                   class="reply-column"
                   class:overlay={narrowViewport}
+                  class:resizable-thread={!narrowViewport}
+                  style:--thread-width={threadWidth === null ? "50%" : `${threadWidth}px`}
                   data-testid="reply-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
+                  {#if !narrowViewport}
+                    <div
+                      class="thread-resize-handle"
+                      role="separator"
+                      aria-label="Resize thread panel"
+                      aria-orientation="vertical"
+                      aria-valuenow={threadWidth ?? undefined}
+                      tabindex="0"
+                      onpointerdown={startThreadDrag}
+                      onpointermove={moveThreadDrag}
+                      onpointerup={stopThreadDrag}
+                      onpointercancel={stopThreadDrag}
+                      onlostpointercapture={() => {
+                        threadDrag = null;
+                      }}
+                      onkeydown={resizeThreadKey}
+                    ></div>
+                  {/if}
                   <ReplyPanel
                     api={conversationApi}
                     rootEventId={openReplyRootId}
@@ -5807,7 +6269,6 @@
             </div>
           {:else if activeTab === "board"}
             <BoardTab
-              onCreateTask={adapter.workMesh?.createProjectStory && selectedRow?.companyUid ? createBoardTask : undefined}
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
               onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}
@@ -6007,6 +6468,7 @@
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
+    overflow: hidden;
   }
 
   /* Synthetic #setup channel stacks the getting-started intro above the
@@ -6048,7 +6510,7 @@
     flex-direction: column;
     min-height: 0;
     border-left: 1px solid var(--line);
-    background: var(--v4-ground, #161618);
+    background: var(--v4-reading-surface, var(--v4-ground, #161618));
     transition: width 150ms ease;
   }
 
@@ -6060,6 +6522,28 @@
     width: auto;
     flex: 1 1 0;
     min-width: 360px;
+  }
+
+  .reply-column.resizable-thread {
+    flex: 0 0 clamp(280px, var(--thread-width, 50%), calc(100% - 360px));
+    min-width: min(280px, 50%);
+  }
+
+  .thread-resize-handle {
+    position: absolute;
+    left: -4px;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    z-index: 10;
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .thread-resize-handle:hover,
+  .thread-resize-handle:focus-visible {
+    background: var(--line);
+    outline: 1px solid var(--t2);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -6075,7 +6559,7 @@
     bottom: 0;
     width: min(100%, 420px);
     z-index: 5;
-    background: var(--v4-ground, #161618);
+    background: var(--v4-reading-surface, var(--v4-ground, #161618));
   }
 
   /* Channel header — ported from the real ChannelView: title left, tabs +

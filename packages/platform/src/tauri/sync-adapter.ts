@@ -442,6 +442,10 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['requests']));
       },
+      // Tauri command args are camelCase: `respond_dm_request(pair_key, action)`
+      // is invoked as `{ pairKey, action }`.
+      respondDmRequest: ({ pairKey, action }) =>
+        call('respond_dm_request', { pairKey, action }),
       markChannelRead: (id) => call('mark_channel_read', { channelId: id }),
       markDmThreadRead: (personUid) =>
         call('mark_dm_thread_read', { withPersonUid: personUid }),
@@ -1093,6 +1097,10 @@ export function createSyncPlatformAdapter(
       createProjectStory: (projectId, companyUid, story) => hqProJson(
         'POST', `${WEB_PATHS.workMeshProject(projectId.trim())}/stories`,
         { ...story, companyUid: companyUid.trim() },
+      ),
+      putProjectView: (projectId, companyUid, view) => hqProJson(
+        'PUT', WEB_PATHS.workMeshProject(projectId.trim()),
+        { ...(view as object), companyUid: companyUid.trim() },
       ),
       readLocalSnapshot: async () => NOT_MAPPED,
       getProjectView: (projectId, companyUid) =>

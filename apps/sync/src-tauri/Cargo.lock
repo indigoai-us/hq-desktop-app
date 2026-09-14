@@ -2786,7 +2786,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.10.239"
+version = "0.10.253"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -2815,6 +2815,7 @@ dependencies = [
  "notify",
  "objc2",
  "objc2-core-foundation",
+ "os_info",
  "reqwest 0.12.28",
  "rfd",
  "rumqttc",

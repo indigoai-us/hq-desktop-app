@@ -566,6 +566,7 @@ mod tests {
             effort: None,
             resume: resume.map(str::to_owned),
             permission_mode,
+            hidden: false,
         }
     }
 

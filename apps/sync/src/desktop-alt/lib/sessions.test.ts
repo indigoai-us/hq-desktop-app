@@ -3,6 +3,7 @@ import {
   SESSION_KINDS,
   SESSION_STATUSES,
   SESSIONS_CACHE_KEY,
+  claudeCodeSessionUrl,
   clearSessionsCache,
   deriveEventTool,
   loadSessionsCache,
@@ -552,5 +553,59 @@ describe('sessions cache', () => {
     expect(loaded?.snapshot.sessions[0]?.id).toBe(snap.sessions[0].id);
     clearSessionsCache(storage);
     expect(loadSessionsCache(storage)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Outpost Remote Control sessions (title + claude.ai/code link).
+//
+// The outpost heartbeat publishes a session's Claude title and, for a session
+// under Remote Control, its `cse_<id>` pairing id. claude.ai serves that same
+// session at `https://claude.ai/code/session_<id>`, so a Live Sessions row can
+// open it there — the Sessions drawer uses this instead of trying to load a
+// transcript that lives on the box.
+// ---------------------------------------------------------------------------
+
+const RC_ID = 'cse_01Ws49UWqv58e8poUSC6E4tu';
+
+describe('claudeCodeSessionUrl (open a Remote Control session on claude.ai)', () => {
+  it('maps the cse_ pairing id to its claude.ai/code session page', () => {
+    expect(claudeCodeSessionUrl(session({ origin: 'outpost', remoteControlSessionId: RC_ID }))).toBe(
+      'https://claude.ai/code/session_01Ws49UWqv58e8poUSC6E4tu',
+    );
+  });
+
+  it('is null for a session that is not under Remote Control', () => {
+    expect(claudeCodeSessionUrl(session())).toBeNull();
+    expect(claudeCodeSessionUrl(session({ remoteControlSessionId: '' }))).toBeNull();
+  });
+
+  it('is null for anything that is not the cse_ id shape (never builds a URL from junk)', () => {
+    for (const bad of [
+      'cse_',
+      'cse_short',
+      'cse_../../evil',
+      'cse_01Ws49UWqv58e8poUSC6E4tu/extra',
+      'cse_01Ws49UWqv58e8po?x=1',
+      'cse_01Ws49UWqv58e8po#frag',
+      'session_01Ws49UWqv58e8poUSC6E4tu',
+      'CSE_01Ws49UWqv58e8poUSC6E4tu',
+      ` ${RC_ID}`,
+      `cse_${'a'.repeat(200)}`,
+    ]) {
+      expect(claudeCodeSessionUrl(session({ remoteControlSessionId: bad }))).toBeNull();
+    }
+  });
+
+  it('only links Claude sessions', () => {
+    expect(claudeCodeSessionUrl(session({ tool: 'codex', remoteControlSessionId: RC_ID }))).toBeNull();
+  });
+
+  it('survives the JSON round-trip the Rust bridge and sessions cache put it through', () => {
+    const wire = JSON.parse(
+      JSON.stringify(session({ origin: 'outpost', remoteControlSessionId: RC_ID })),
+    ) as AgentSession;
+    expect(wire.remoteControlSessionId).toBe(RC_ID);
+    expect(claudeCodeSessionUrl(wire)).toBe('https://claude.ai/code/session_01Ws49UWqv58e8poUSC6E4tu');
   });
 });

@@ -510,6 +510,7 @@ mod tests {
             started_at: "2026-06-15T18:00:00Z".to_string(),
             last_activity_at: "2026-06-15T18:43:20Z".to_string(),
             source: "outpost-heartbeat".to_string(),
+            remote_control_session_id: None,
         }
     }
 

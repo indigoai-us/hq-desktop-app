@@ -61,6 +61,8 @@ export type NavigationDestination =
   | { kind: "library"; tab: LibraryTab; itemId?: string | null }
   | { kind: "settings"; section?: EmbeddedSettingsSection | null }
   | { kind: "shared-files" }
+  /** The DM connection-requests panel; `pairKey` is the request to bring into view. */
+  | { kind: "dm-requests"; pairKey?: string | null }
   | {
       kind: "extra";
       page: string;
@@ -282,6 +284,8 @@ export function canonicalizeDestination(
         kind: "settings",
         section: asSettingsSection(destination.section),
       };
+    case "dm-requests":
+      return { kind: "dm-requests", pairKey: trimId(destination.pairKey) };
     case "extra": {
       const companyUid =
         trimId(destination.companyUid) ?? extraParamCompanyKey(destination.param);
@@ -359,6 +363,8 @@ export function canonicalDestinationKey(
       return `library:${dest.tab}:${dest.itemId ?? ""}`;
     case "settings":
       return `settings:${dest.section ?? ""}`;
+    case "dm-requests":
+      return `dm-requests:${dest.pairKey ?? ""}`;
     case "extra":
       return `extra:${dest.page}:${dest.param ?? ""}:${dest.companyUid ?? ""}`;
     case "setup-checkout":
@@ -426,6 +432,8 @@ export function destinationLabel(destination: NavigationDestination): string {
       return dest.section ? `Settings · ${titleCase(dest.section)}` : "Settings";
     case "shared-files":
       return "Shared files";
+    case "dm-requests":
+      return "Connection requests";
     case "extra":
       return extraPageLabel(dest.page, dest.param ?? null);
     case "setup-checkout":

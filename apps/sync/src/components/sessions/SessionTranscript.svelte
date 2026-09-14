@@ -31,6 +31,7 @@
   import { readQuestionReplies } from './question-replies';
   import PermissionCard from './PermissionCard.svelte';
   import QuestionCard from './QuestionCard.svelte';
+  import ProviderReauthCard from './ProviderReauthCard.svelte';
   import ToolGroupRow from './ToolGroupRow.svelte';
   import type { ArtifactActions } from './session-artifacts';
   import type { ChatBlock } from './transcript-adapter';
@@ -70,6 +71,11 @@
      * offer the fix.
      */
     onchoosemodel?: () => void;
+    onreauth?: () => void;
+    reauthTool?: string | null;
+    reauthPending?: boolean;
+    reauthMessage?: string;
+    reauthRecovery?: 'idle' | 'checking' | 'needed' | 'recovered';
     restoreScroll?: NavigationScrollState | null;
   }
 
@@ -88,6 +94,11 @@
     ondenypermission,
     onanswerquestion,
     onchoosemodel,
+    onreauth,
+    reauthTool = 'claude',
+    reauthPending = false,
+    reauthMessage = '',
+    reauthRecovery = 'idle',
     restoreScroll = null,
   }: Props = $props();
 
@@ -322,6 +333,17 @@
             busy={busyRequestId === block.requestId}
             onsubmit={onanswerquestion}
           />
+        {:else if block.type === 'error' && block.action === 'reauth'}
+          {#if reauthRecovery === 'checking'}
+            <p class="thinking" data-testid="session-auth-check" role="status">Checking sign-in…</p>
+          {:else if reauthRecovery !== 'recovered'}
+            <ProviderReauthCard
+              tool={reauthTool}
+              pending={reauthPending}
+              message={reauthMessage}
+              onsignin={() => onreauth?.()}
+            />
+          {/if}
         {:else if block.type === 'error'}
           <p
             class="inline-error"
@@ -554,10 +576,55 @@
     overflow-wrap: anywhere;
   }
 
-  .prose :global(table) {
-    display: block;
+  .prose :global(.markdown-table-scroll) {
+    width: 100%;
     max-width: 100%;
+    margin: 0.7em 0;
     overflow-x: auto;
+    border: 0;
+    background: transparent;
+    scrollbar-width: thin;
+    scrollbar-color: var(--v4-hairline) transparent;
+  }
+
+  .prose :global(.markdown-table-scroll:focus-visible) {
+    outline: 2px solid var(--v4-text-2);
+    outline-offset: 2px;
+  }
+
+  .prose :global(table) {
+    width: 100%;
+    min-width: max-content;
+    border-spacing: 0;
+    border-collapse: collapse;
+    color: inherit;
+    font-size: 0.92em;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .prose :global(th),
+  .prose :global(td) {
+    padding: 0.4em 0.65em;
+    border-right: 1px solid var(--v4-hairline);
+    border-bottom: 1px solid var(--v4-hairline);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .prose :global(th) {
+    color: var(--v4-text-3);
+    font-weight: 500;
+  }
+
+  .prose :global(th:first-child),
+  .prose :global(td:first-child) {
+    padding-left: 0;
+  }
+
+  .prose :global(th:last-child),
+  .prose :global(td:last-child) {
+    border-right: 0;
   }
 
   @container (max-width: 520px) {

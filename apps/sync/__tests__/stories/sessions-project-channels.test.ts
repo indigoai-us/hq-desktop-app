@@ -105,10 +105,8 @@ describe('expand a project channel → its nested sessions', () => {
     );
     expect(extras?.children?.map((child) => child.id)).toEqual([
       'session:s-live',
-      'session:s-done',
       'new-session',
     ]);
-    expect(extras?.children?.find((child) => child.id === 'session:s-done')?.meta).toBeNull();
     extras?.children?.[0]?.onselect();
     extras?.children?.at(-1)?.onselect();
     expect(opened).toEqual(['s-live']);
@@ -124,6 +122,9 @@ describe('expand a project channel → its nested sessions', () => {
     expect(STORE).toContain("invoke<ProjectLink[]>('session_project_links'".replace('invoke<ProjectLink[]>', '').slice(0, 0) + 'loadSessionProjectLinks(company)');
     expect(STORE).toContain("const PHASE_EVENT = 'agent-session:phase'");
     expect(STORE).toContain('export const LINKS_REFRESH_MS = 30_000');
+    expect(STORE).toContain("area: 'session-project-links'");
+    expect(UI_SIDEBAR).not.toContain('Some project sessions');
+    expect(SHELL).not.toContain('rowExtrasError={Boolean(workspaceError)');
     expect(MAIN_RS).toContain('commands::session_project_links::session_project_links,');
     expect(LINKS_RS).toContain('pub const CACHE_TTL: Duration = Duration::from_secs(10)');
   });
@@ -149,7 +150,7 @@ describe('spawn a session from a channel, bound to that project', () => {
     expect(PAGE).toContain('project = projectNameFor(projects, slug) ?? slug;');
     // The first send orients with `/startwork {company} {project}`, and the
     // spec carries the directory slug the channel is named from.
-    expect(PAGE).toContain('planFirstSend(wire, { company, project }, startworkEnabled && !setupChat)');
+    expect(PAGE).toContain('!embedded && startworkEnabled && !setupChat');
     expect(PAGE).toContain('project: projectSlugFor(projects, project),');
     expect(AGENT_RS).toContain('spec.project.as_deref(),');
   });

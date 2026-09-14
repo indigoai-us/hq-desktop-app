@@ -47,6 +47,12 @@ import { readRepoFile } from './harness';
 const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
 const processSource = readRepoFile('src-tauri/src/commands/process.rs');
 const mainSource = readRepoFile('src-tauri/src/main.rs');
+// HQ-DESKTOP-44 (re-entrant path): the Windows session-end teardown moved out of
+// main.rs into the shared fn both RunEvent::Exit and the WH_CALLWNDPROC intercept
+// call, so the session-end flush now lives here.
+const sessionEndInterceptSource = readRepoFile(
+  'src-tauri/src/commands/session_end_intercept.rs',
+);
 const coreDaemonSource = readRepoFile('../../crates/hq-desktop-core/src/daemon.rs');
 const coreWatcherFaultSource = readRepoFile('../../crates/hq-desktop-core/src/watcher_fault.rs');
 const telemetrySource = readRepoFile('../../crates/hq-telemetry/src/lib.rs');
@@ -96,7 +102,7 @@ describe('windows indeterminate-status attribution — source contracts', () => 
     expect(mainSource).toContain(
       'flush_pending_runner_report_captures("app_quit_flush")',
     );
-    expect(mainSource).toContain(
+    expect(sessionEndInterceptSource).toContain(
       'flush_pending_runner_report_captures("session_end_flush")',
     );
   });

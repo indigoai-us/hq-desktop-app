@@ -1048,6 +1048,14 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     );
     let runner_hq_cloud_version =
         hq_desktop_core::runner_target::runner_hq_cloud_version(&runner_spawn_target);
+    // Whether this spawn ALSO mirrors the report flags into argv — true only on the
+    // bare-`node` local-runner path. Both production routes (npx/cmd_shim) deliver
+    // through NODE_OPTIONS only, so this is the one bit distinguishing `env_escaped`
+    // from `env_and_argv` for the delivery provenance at exit (HQ-DESKTOP-5W).
+    let report_delivers_argv = matches!(
+        &runner_spawn_target,
+        hq_desktop_core::runner_target::RunnerSpawnTarget::Local { .. }
+    );
 
     log("daemon", "spawn: hq-sync-runner --watch");
     // Stamp the spawn so the Exit handler can tell a fast crash-loop failure
@@ -1310,6 +1318,18 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             );
                         exit_context.runner_report_read =
                             report_request.seed_read_token().to_string();
+                        // Delivery provenance (HQ-DESKTOP-5W): the SAME request, crossed
+                        // with whether this spawn route also mirrored the flags into
+                        // argv, resolves how the report directory was delivered to the
+                        // child — so a future `report_absent` is attributable to a
+                        // correctly-armed channel rather than a broken one.
+                        exit_context.runner_report_dir_delivery =
+                            hq_desktop_core::daemon::resolve_runner_report_dir_delivery(
+                                report_request,
+                                report_delivers_argv,
+                            )
+                            .as_str()
+                            .to_string();
                         let deferred_report_dir = matches!(
                             report_request,
                             hq_desktop_core::daemon::RunnerReportRequest::Requested
@@ -1596,6 +1616,14 @@ struct WatcherExitCaptureContext {
     /// upgrades this in-place to `report_read`/`report_absent`/`report_unreadable`
     /// after it reads the report; other exits keep the seed. Diagnostic-only.
     runner_report_read: String,
+    /// Where this generation's report directory was delivered to the child
+    /// (HQ-DESKTOP-5W): `env_escaped` on the production npx/cmd_shim path,
+    /// `env_and_argv` on the bare-`node` local path, `disabled_by_user_options`, or
+    /// `not_requested`. Seeded `not_requested`; the exit callback overwrites it from
+    /// the resolved request + spawn route. Additive to `runner_report_read`, it lets
+    /// the next occurrence tell "Node was asked correctly and still wrote nothing"
+    /// from "Node was never asked correctly". Fixed vocabulary; diagnostic-only.
+    runner_report_dir_delivery: String,
     runner_stack_shape: String,
     runner_stack_signature: String,
     runner_stack_depth: u8,
@@ -1794,6 +1822,7 @@ impl Default for WatcherExitCaptureContext {
             runner_phase_elapsed_bucket: "under_1m".to_string(),
             watcher_launch_origin: "renderer".to_string(),
             runner_report_read: "report_not_requested".to_string(),
+            runner_report_dir_delivery: "not_requested".to_string(),
             runner_stack_shape: "all_redacted".to_string(),
             runner_stack_signature: "unknown".to_string(),
             runner_stack_depth: 0,
@@ -1982,6 +2011,8 @@ fn watcher_exit_capture_context(
         // generation's report directory) overwrites it with the resolved request,
         // and the deferred worker upgrades it after the report read.
         runner_report_read: "report_not_requested".to_string(),
+        // Same seeding discipline (HQ-DESKTOP-5W delivery provenance).
+        runner_report_dir_delivery: "not_requested".to_string(),
         runner_stack_shape: stack.shape,
         runner_stack_signature: stack.signature,
         runner_stack_depth: stack.depth,
@@ -4081,6 +4112,16 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         if runner_fatal_class_seen { "stderr" } else { "none" }.to_string(),
     ));
     tags.push(("runner_report_read", context.runner_report_read.clone()));
+    // Report-directory delivery provenance (HQ-DESKTOP-5W): how the per-generation
+    // report directory was delivered to the child (env_escaped on the production npx
+    // path, env_and_argv on the bare-`node` path, disabled_by_user_options, or
+    // not_requested). Makes a `report_absent` recurrence decisive — a correctly-armed
+    // channel that still wrote nothing vs. a channel that never reached Node. Fixed
+    // vocabulary, re-validated at the telemetry egress; diagnostic-only.
+    tags.push((
+        "runner_report_dir_delivery",
+        context.runner_report_dir_delivery.clone(),
+    ));
     // Name the terminating signal's disposition as a fixed, closed-vocabulary
     // token so a signal-only watcher exit — e.g. a macOS SIGHUP — is filterable in
     // Sentry without parsing the message text. Always present (`none` for a
@@ -5206,6 +5247,9 @@ struct FootprintDecisionOutcome {
     /// toward the floor as the measured runaway rate rises, so a fast runaway is
     /// caught mid-tick instead of racing the OS across a fixed 30s gap.
     next_sample_delay_secs: u64,
+    /// Why the rate-aware projection did or did not arm on this sample, so a pre-empt
+    /// capture can attribute the decision on the wire (HQ-DESKTOP-60).
+    arm_reason: hq_desktop_core::daemon::WatcherProjectionArmReason,
 }
 
 fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisionOutcome {
@@ -5242,6 +5286,10 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
             prev_comparable_sample_kb,
             sample_gap_secs,
             heap_ceiling_kb,
+            // The largest single tree member gates the re-scoped projection arm: the
+            // whole-tree sum is never compared against a single-process cap
+            // (HQ-DESKTOP-60). `None` on a Single/withheld sample keeps the arm inert.
+            sample.tree_largest_member_kb,
             SUPERVISOR_INTERVAL.as_secs(),
             hq_desktop_core::daemon::WATCHER_FOOTPRINT_MIN_WATCH_SECS,
         );
@@ -5253,6 +5301,10 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
         hq_desktop_core::daemon::WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
         projection,
     );
+    // Classify WHY the projection did or did not arm, from the same inputs the
+    // decision used, so a pre-empt capture ships the re-scoped gate's verdict.
+    let arm_reason =
+        hq_desktop_core::daemon::projection_arm_reason(Some(sample.kb), comparable, projection);
     st.footprint_over_ceiling_streak = streak;
     FootprintDecisionOutcome {
         decision,
@@ -5260,6 +5312,7 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
         // Report a gap only when there was a usable prior comparable sample.
         sample_gap_secs: prev_comparable_sample_kb.and(sample_gap_secs),
         next_sample_delay_secs,
+        arm_reason,
     }
 }
 
@@ -5281,6 +5334,10 @@ struct SupervisorPreemptEvidence {
     /// Why the memory-class decomposition is or is not present — a fixed-vocabulary
     /// token so an absent report degrades honestly instead of guessing.
     memory_class_source: hq_desktop_core::daemon::WatcherMemoryClassSource,
+    /// Why the rate-aware projection did or did not arm on the pre-empt sample — the
+    /// re-scoped gate's verdict, so a pre-empt is self-describing on the wire
+    /// (HQ-DESKTOP-60).
+    projection_arm_reason: hq_desktop_core::daemon::WatcherProjectionArmReason,
 }
 
 /// Hard ceiling on how long a supervisor pre-empt waits for a signal-triggered Node
@@ -5293,6 +5350,67 @@ const SUPERVISOR_MEMORY_REPORT_WAIT: Duration = Duration::from_secs(2);
 /// Poll interval while waiting for the signal-triggered report to appear. Unix-only.
 #[cfg(unix)]
 const SUPERVISOR_MEMORY_REPORT_POLL: Duration = Duration::from_millis(50);
+
+/// Poll a report path to a hard `deadline` for a FRESH, readable memory-class
+/// decomposition, factored out of [`resolve_watcher_memory_class`] so the bounded
+/// read discipline is unit-testable without signalling a live PID (HQ-DESKTOP-60).
+/// A fresh-but-INCOMPLETE (mid-write) report is retried to the deadline rather than
+/// recorded as terminally unreadable — r1's bug, which lost the decomposition on
+/// 100% of post-fix occurrences. It ends early ONLY on a present class
+/// (`report_read`) or a COMPLETE document with no class (`report_unreadable`); a
+/// report that appeared but never completed within the window degrades to
+/// `report_never_completed`, distinct from one that never appeared (`report_absent`).
+/// Never blocks past `deadline`.
+#[cfg(unix)]
+fn read_fresh_memory_class_within(
+    report_path: &Path,
+    before: Option<SystemTime>,
+    deadline: Instant,
+) -> (
+    hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
+    hq_desktop_core::daemon::WatcherMemoryClassSource,
+) {
+    use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
+    use hq_desktop_core::runner_diagnostic_report::{
+        parse_runner_report_memory_class, runner_report_is_complete, RunnerReportMemoryClass,
+    };
+    let mut saw_fresh = false;
+    while Instant::now() < deadline {
+        if let Ok(meta) = std::fs::metadata(report_path) {
+            let modified = meta.modified().ok();
+            let is_fresh = match (before, modified) {
+                (Some(b), Some(m)) => m > b,
+                (None, Some(_)) => true,
+                _ => false,
+            };
+            if is_fresh {
+                saw_fresh = true;
+                if let Ok(bytes) = std::fs::read(report_path) {
+                    let mc = parse_runner_report_memory_class(&bytes);
+                    if mc.is_present() {
+                        // The report carried a memory class: done.
+                        return (mc, Src::ReportRead);
+                    }
+                    if runner_report_is_complete(&bytes) {
+                        // A COMPLETE document with no memory class: honestly empty, and
+                        // retrying will not help.
+                        return (RunnerReportMemoryClass::default(), Src::ReportUnreadable);
+                    }
+                    // Fresh but still mid-write: re-poll to the deadline.
+                }
+                // A transient read error is treated the same as still-being-written.
+            }
+        }
+        thread::sleep(SUPERVISOR_MEMORY_REPORT_POLL);
+    }
+    // The window closed. A fresh report that appeared but never completed is distinct
+    // from one that never appeared at all.
+    if saw_fresh {
+        (RunnerReportMemoryClass::default(), Src::ReportNeverCompleted)
+    } else {
+        (RunnerReportMemoryClass::default(), Src::ReportAbsent)
+    }
+}
 
 /// Best-effort: signal the largest tree member for a LIVE Node diagnostic report and
 /// read the memory-class decomposition it writes, so a footprint pre-empt can NAME
@@ -5311,9 +5429,7 @@ fn resolve_watcher_memory_class(
     hq_desktop_core::daemon::WatcherMemoryClassSource,
 ) {
     use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
-    use hq_desktop_core::runner_diagnostic_report::{
-        parse_runner_report_memory_class, RunnerReportMemoryClass,
-    };
+    use hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass;
     // Only a comparable tree sample yields a member PID to signal.
     let Some(pid) = sample.tree_largest_member_pid.filter(|p| *p != 0) else {
         return (RunnerReportMemoryClass::default(), Src::ReportAbsent);
@@ -5338,33 +5454,11 @@ fn resolve_watcher_memory_class(
     if !signalled {
         return (RunnerReportMemoryClass::default(), Src::ReportAbsent);
     }
-    // Poll for a FRESH report within the hard-bounded window; never block beyond it.
+    // Poll for a FRESH report to the hard-bounded deadline; never block beyond it.
+    // The bounded read discipline (retry a mid-write report, name a never-completed
+    // one honestly) lives in the unit-testable helper.
     let deadline = Instant::now() + SUPERVISOR_MEMORY_REPORT_WAIT;
-    while Instant::now() < deadline {
-        if let Ok(meta) = std::fs::metadata(&report_path) {
-            let modified = meta.modified().ok();
-            let is_fresh = match (before, modified) {
-                (Some(b), Some(m)) => m > b,
-                (None, Some(_)) => true,
-                _ => false,
-            };
-            if is_fresh {
-                return match std::fs::read(&report_path) {
-                    Ok(bytes) => {
-                        let mc = parse_runner_report_memory_class(&bytes);
-                        if mc.is_present() {
-                            (mc, Src::ReportRead)
-                        } else {
-                            (mc, Src::ReportUnreadable)
-                        }
-                    }
-                    Err(_) => (RunnerReportMemoryClass::default(), Src::ReportUnreadable),
-                };
-            }
-        }
-        thread::sleep(SUPERVISOR_MEMORY_REPORT_POLL);
-    }
-    (RunnerReportMemoryClass::default(), Src::ReportAbsent)
+    read_fresh_memory_class_within(&report_path, before, deadline)
 }
 
 /// Windows (and any non-signal platform) has no live-signal report path, so the
@@ -5483,6 +5577,10 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
             "watcher_memory_class_source",
             evidence.memory_class_source.as_str().to_string(),
         ),
+        (
+            "watcher_projection_arm_reason",
+            evidence.projection_arm_reason.as_str().to_string(),
+        ),
     ];
     let extras = [
         ("runner_heap_ceiling_mb", num(u64::from(heap_ceiling.mb))),
@@ -5567,6 +5665,7 @@ fn watch_watcher_footprint_slice(sample_pid: Option<u32>) -> (bool, u64) {
         gap_secs: footprint.sample_gap_secs,
         memory_class,
         memory_class_source,
+        projection_arm_reason: footprint.arm_reason,
     });
     terminate_daemon_generation_once(generation, DaemonFailureCategory::RunnerMemory);
     (true, footprint.next_sample_delay_secs)
@@ -12863,6 +12962,72 @@ mod tests {
                 largest_member_pid: 200
             })
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_fresh_memory_class_retries_a_mid_write_report_then_reads_it() {
+        // The bounded read discipline behind resolve_watcher_memory_class (HQ-DESKTOP-60):
+        // a mid-write report is RETRIED to the deadline and read once complete, rather
+        // than mis-recorded as terminally unreadable the way r1 did on 100% of post-fix
+        // events; a report that never completes is named honestly; and the wait never
+        // blocks past its deadline.
+        use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("report.json");
+        let complete = serde_json::json!({
+            "header": { "trigger": "Signal" },
+            "javascriptHeap": { "totalMemory": 3_758_096_384u64, "usedMemory": 3_221_225_472u64 }
+        })
+        .to_string();
+
+        // 1) A complete report already carrying a class -> report_read immediately.
+        std::fs::write(&path, &complete).unwrap();
+        let (mc, src) =
+            read_fresh_memory_class_within(&path, None, Instant::now() + Duration::from_secs(2));
+        assert_eq!(src, Src::ReportRead);
+        assert_eq!(mc.js_heap_total_mb, Some(3584));
+
+        // 2) A complete document with no memory class -> report_unreadable (honestly empty).
+        std::fs::write(&path, br#"{"header":{"trigger":"Signal"}}"#).unwrap();
+        let (_, src) =
+            read_fresh_memory_class_within(&path, None, Instant::now() + Duration::from_secs(2));
+        assert_eq!(src, Src::ReportUnreadable);
+
+        // 3) A report that stays truncated until the deadline -> report_never_completed,
+        //    NOT report_unreadable (r1's bug), and it never blocks past the deadline.
+        std::fs::write(&path, &complete.as_bytes()[..complete.len() / 2]).unwrap();
+        let start = Instant::now();
+        let (_, src) =
+            read_fresh_memory_class_within(&path, None, start + Duration::from_millis(300));
+        assert_eq!(src, Src::ReportNeverCompleted);
+        assert!(start.elapsed() < Duration::from_secs(2), "must not block past the deadline");
+
+        // 4) Mid-write on first observation, complete before the deadline -> report_read.
+        std::fs::write(&path, &complete.as_bytes()[..complete.len() / 2]).unwrap();
+        let path_writer = path.clone();
+        let complete_writer = complete.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(120));
+            let mut f = std::fs::File::create(&path_writer).unwrap();
+            f.write_all(complete_writer.as_bytes()).unwrap();
+            f.flush().unwrap();
+        });
+        let (mc, src) =
+            read_fresh_memory_class_within(&path, None, Instant::now() + Duration::from_secs(2));
+        writer.join().unwrap();
+        assert_eq!(src, Src::ReportRead, "a mid-write report that completes must resolve to report_read");
+        assert_eq!(mc.js_heap_total_mb, Some(3584));
+
+        // 5) No fresh report ever appears -> report_absent (distinct from never-completed).
+        let empty_dir = TempDir::new().unwrap();
+        let missing = empty_dir.path().join("nope.json");
+        let (_, src) =
+            read_fresh_memory_class_within(&missing, None, Instant::now() + Duration::from_millis(150));
+        assert_eq!(src, Src::ReportAbsent);
     }
 
     #[cfg(unix)]

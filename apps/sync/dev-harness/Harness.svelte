@@ -378,7 +378,8 @@
   <MeetingPermissionsWindow />
 {:else if view === 'onboarding'}
   <!-- First-run onboarding at its real 780x620 transparent-window size.
-       Pass ?step=0..3 to inspect every reachable lifecycle screen directly. -->
+       Pass ?step=0..3 to inspect every reachable lifecycle screen directly;
+       continuation=on previews the verified-browser-account offer. -->
   <OnboardingWizard initialStep={onboardingStep} onfinish={() => {}} />
 {:else if view === 'global-error'}
   <!-- Deterministic render failure for visually verifying the production

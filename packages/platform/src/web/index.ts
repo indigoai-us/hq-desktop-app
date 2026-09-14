@@ -55,6 +55,9 @@ export const WEB_PATHS = {
   channelDirectory: "/v1/notify/channels",
   contacts: "/v1/notify/contacts",
   dmRequests: "/v1/notify/connections/requests",
+  /** POST body `{ pairKey }` — accept / decline / block a pending request. */
+  dmRequestRespond: (action: "accept" | "decline" | "block") =>
+    `/v1/notify/connections/${action}`,
   markChannelRead: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/read`,
   /** GET two-way DM history. */
@@ -585,7 +588,23 @@ export class WebPlatformAdapter implements PlatformAdapter {
           : WEB_PATHS.contacts,
       );
     },
-    listDmRequests: () => this.get(WEB_PATHS.dmRequests),
+    // The route answers `{ requests: [...] }`. Unwrap here so the web and
+    // Tauri adapters return the same bare array — the chat bridge wraps it
+    // once more into `{ requests }`, and a double-wrapped envelope read as
+    // "no pending requests" forever.
+    listDmRequests: async () => {
+      const result = await this.get<unknown>(WEB_PATHS.dmRequests);
+      if (!result.ok) return result;
+      return ok(unwrapNamedArray(result.value, ["requests"]));
+    },
+    respondDmRequest: async ({ pairKey, action }) => {
+      const key = pairKey.trim();
+      if (!key) return failure("bad-argument", "pairKey required");
+      if (action !== "accept" && action !== "decline" && action !== "block") {
+        return failure("bad-argument", "unsupported request action");
+      }
+      return this.post(WEB_PATHS.dmRequestRespond(action), { pairKey: key });
+    },
     markChannelRead: (id) => this.post(WEB_PATHS.markChannelRead(id), {}),
     markDmThreadRead: async (uid) => {
       const withPersonUid = uid.trim();
@@ -658,6 +677,31 @@ export class WebPlatformAdapter implements PlatformAdapter {
           ? { attachments: extras.attachments }
           : {}),
       }),
+    // Mirrors the Rust `build_compose_payload` contract: exactly one
+    // recipient key travels (personUid wins when both are given), and the
+    // server's 202 `{ state: "connection_requested" }` is folded into the
+    // `connectionRequested` discriminant the UI already understands.
+    sendDmToEmail: async ({ toEmail, toPersonUid, body }) => {
+      const personUid = toPersonUid?.trim() ?? "";
+      const email = toEmail?.trim() ?? "";
+      const text = body.trim();
+      if (!text) return failure("invalid", "Message body must not be empty");
+      if (!personUid && !email) {
+        return failure("invalid", "A recipient (email or personUid) is required");
+      }
+      const result = await this.post<Json>(WEB_PATHS.dmSend, {
+        ...(personUid ? { toPersonUid: personUid } : { toEmail: email }),
+        body: text,
+      });
+      if (!result.ok) return result;
+      const rec = asRecord(result.value) ?? {};
+      const state =
+        rec.state === "connection_requested" ||
+        rec.state === "connectionRequested"
+          ? "connectionRequested"
+          : "delivered";
+      return ok({ ...rec, state } as Json);
+    },
     fetchReplyThread: async (args) => {
       const invalid = validateFetchReplyThread(args);
       if (invalid) return invalid;
@@ -1065,6 +1109,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
     createProjectStory: (projectId, companyUid, story) => this.post(
       `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
       { ...story, companyUid: companyUid.trim() },
+    ),
+    putProjectView: (projectId, companyUid, view) => this.request(
+      "PUT",
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}`,
+      { ...(view as object), companyUid: companyUid.trim() },
     ),
     readLocalSnapshot: async () => DESKTOP_ONLY,
     getProjectView: (projectId, companyUid) => {

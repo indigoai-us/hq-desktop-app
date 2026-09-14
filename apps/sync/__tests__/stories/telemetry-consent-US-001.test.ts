@@ -62,6 +62,14 @@ async function flush() {
   flushSync();
 }
 
+async function flushUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await flush();
+    if (predicate()) return;
+  }
+  throw new Error('Timed out waiting for the onboarding sign-in fallback.');
+}
+
 /** Default invoke stub: resolve the handful of onMount commands the wizard fires. */
 function stubInvoke() {
   invoke.mockImplementation(async (command: string) => {
@@ -228,7 +236,9 @@ describe('US-001 consent step UI', () => {
     expect(signin).not.toBeNull();
     const checkboxes = signin!.querySelectorAll('input[type="checkbox"]');
     expect(checkboxes).toHaveLength(0);
-    // Sign-in still offers its provider buttons.
+    // Native continuation is unavailable in this fixture. Its silent
+    // first-run fallback still offers the pre-existing provider buttons.
+    await flushUntil(() => (signin!.textContent ?? '').includes('Log in with Google'));
     expect(signin!.textContent).toContain('Log in with Google');
   });
 });

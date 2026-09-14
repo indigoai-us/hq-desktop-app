@@ -27,6 +27,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DESTROYED_STATE_PANIC,
+  REENTRANT_HANDLER_PANIC,
   decideSessionEndExit,
   driveWindowsSessionEnd,
   findAbortMarker,
@@ -113,6 +114,14 @@ describe('Windows session-end exit decision (HQ-DESKTOP-44)', () => {
     expect(findAbortMarker(`thread panicked at ${DESTROYED_STATE_PANIC}`)).toBe(
       DESTROYED_STATE_PANIC,
     );
+    // HQ-DESKTOP-44 (re-entrant path): the second, previously-untouched tao
+    // panic must be recognised as an abort too, or a red base run would read as
+    // green and the intercept would ship unproven.
+    expect(
+      findAbortMarker(
+        'thread panicked at either event handler is re-entrant (likely), or no event handler is registered (very unlikely)',
+      ),
+    ).toBe(REENTRANT_HANDLER_PANIC);
     // The Windows fast-fail status a Rust abort produces, as seen on this fleet.
     expect(findAbortMarker('exited with 0xC0000409')).not.toBeNull();
     expect(findAbortMarker('sync complete; 12 files changed')).toBeNull();
@@ -206,6 +215,72 @@ describe('Windows session-end live artifact proof (HQ-DESKTOP-44)', () => {
     expect(
       observed.survivingOwnedPidCount,
       `children the app declared it owns survived the session end; ${diagnostics}`,
+    ).toBe(0);
+  });
+
+  // HQ-DESKTOP-44 (re-entrant path). The prior fix only covers a WM_ENDSESSION
+  // that arrives while tao's handler is free. This drives one that arrives while
+  // the MAIN thread is parked in a nested GetMessageW pump — the shape wry's
+  // `wait_with_pump` takes during WebView2 creation — so tao's WM_ENDSESSION arm
+  // runs re-entrantly. On the base build tao panics `either event handler is
+  // re-entrant` and the process dies non-zero with no ownership report; the
+  // WH_CALLWNDPROC intercept must exit 0 with the report written instead.
+  it('exits cleanly when WM_ENDSESSION lands inside a nested message pump (re-entrant tao handler)', async () => {
+    if (live.blockedReason) {
+      throw new Error(
+        `live session-end proof was requested but cannot run: ${live.blockedReason}`,
+      );
+    }
+    if (!live.enabled || !live.appPath) {
+      return;
+    }
+
+    const observed = await driveWindowsSessionEnd({
+      appPath: live.appPath,
+      holdNestedPump: true,
+    });
+
+    const diagnostics = [
+      `windows=${observed.windowCount}`,
+      `query_delivered=${observed.queryEndSessionDelivered}`,
+      `end_delivered=${observed.endSessionDelivered}`,
+      `exit=${observed.exitCode}`,
+      `exited_in_deadline=${observed.exitedWithinDeadline}`,
+      `reentrant_panic=${observed.observedReentrantHandlerPanic}`,
+      `destroyed_panic=${observed.observedDestroyedStatePanic}`,
+      `abort_marker=${observed.observedAbortMarker}`,
+      `owned_report=${observed.ownedPidsReportPresent}`,
+      `owned=${observed.ownedPidCount}`,
+      `owned_alive=${observed.survivingOwnedPidCount}`,
+      `owned_report_error=${observed.ownedPidsReportError ?? 'none'}`,
+    ].join(' ');
+    // eslint-disable-next-line no-console
+    console.log(`[session-end] re-entrant ${diagnostics}`);
+
+    // The query is the honest delivery check (see the idle case). It must reach
+    // the window even while the main thread is parked in the nested pump.
+    expect(observed.windowCount).toBeGreaterThan(0);
+    expect(observed.queryEndSessionDelivered).toBeGreaterThan(0);
+
+    // The re-entrant crash must NOT happen, stated every way it could surface.
+    expect(observed.observedReentrantHandlerPanic, diagnostics).toBe(false);
+    expect(observed.observedDestroyedStatePanic, diagnostics).toBe(false);
+    expect(observed.observedAbortMarker, diagnostics).toBe(false);
+    expect(observed.exitedWithinDeadline, diagnostics).toBe(true);
+    expect(observed.exitCode, diagnostics).toBe(0);
+
+    // The intercept ran its bounded teardown: the ownership report exists and no
+    // owned child survived. On the base build this file is absent (tao aborted
+    // before any teardown ran), so it also proves the intercept — not luck —
+    // exited the process.
+    expect(observed.ownedPidsReportError, diagnostics).toBeNull();
+    expect(
+      observed.ownedPidsReportPresent,
+      `the app wrote no session-end ownership report — the WH_CALLWNDPROC intercept teardown did not run; ${diagnostics}`,
+    ).toBe(true);
+    expect(
+      observed.survivingOwnedPidCount,
+      `children the app declared it owns survived the re-entrant session end; ${diagnostics}`,
     ).toBe(0);
   });
 

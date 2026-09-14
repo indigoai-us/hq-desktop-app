@@ -49,6 +49,54 @@ function harnessScenario(): string | null {
   return null;
 }
 
+// `?scenario=outpost-sessions` — two sessions reported by the user's outpost:
+// one under Remote Control (opens on claude.ai/code) and one plain session on a
+// second Claude account.
+function harnessOutpostSessions(): unknown[] {
+  if (harnessScenario() !== 'outpost-sessions') return [];
+  const now = Date.now();
+  return [
+    {
+      id: '0c4f3a52-9d1e-4b7a-8f0e-2a6d5c1b9e77',
+      tool: 'claude',
+      origin: 'outpost',
+      title: 'open PRs',
+      remoteControlSessionId: 'cse_01Ws49UWqv58e8poUSC6E4tu',
+      cwd: '/home/ec2-user/hq',
+      project: 'hq',
+      company: 'indigo',
+      model: 'claude-opus-5',
+      status: 'running',
+      startedAt: new Date(now - 25 * 60_000).toISOString(),
+      lastActivityAt: new Date(now - 20_000).toISOString(),
+      source: '/home/ec2-user/.claude/projects/-home-ec2-user-hq/0c4f3a52-9d1e-4b7a-8f0e-2a6d5c1b9e77.jsonl',
+    },
+    {
+      id: '7b2e91d4-3c5a-4f18-a6e2-9d0c4b7f1a35',
+      tool: 'claude',
+      origin: 'outpost',
+      title: 'nightly backfill',
+      cwd: '/home/ec2-user/hq/repos/private/hq-cloud',
+      project: 'hq-cloud',
+      company: 'indigo',
+      model: 'claude-opus-5',
+      status: 'awaiting_input',
+      startedAt: new Date(now - 3 * 3_600_000).toISOString(),
+      lastActivityAt: new Date(now - 4 * 60_000).toISOString(),
+      source:
+        '/home/ec2-user/.claude-accounts/account-2/.claude/projects/-home-ec2-user-hq-repos-private-hq-cloud/7b2e91d4-3c5a-4f18-a6e2-9d0c4b7f1a35.jsonl',
+    },
+  ];
+}
+
+function onboardingContinuationVariant(): 'control' | 'continuation' {
+  if (typeof window === 'undefined') return 'control';
+  const params = new URLSearchParams(window.location.search);
+  return params.get('view') === 'onboarding' && params.get('continuation') === 'on'
+    ? 'continuation'
+    : 'control';
+}
+
 function isOnboardingCaptureScenario(): boolean {
   const scenario = harnessScenario();
   return (
@@ -943,6 +991,7 @@ This final paragraph verifies spacing after a thematic break.
         lastActivityAt: new Date(Date.now() - 2 * 60_000).toISOString(),
         source: 'claude-jsonl',
       },
+      ...harnessOutpostSessions(),
     ],
     history: [],
     outpost: null,
@@ -1172,6 +1221,27 @@ This final paragraph verifies spacing after a thematic break.
     harnessScenario() === 'onboarding-capture-completion-failed-required-stage'
       ? new Promise<never>(() => {})
       : null,
+  // The first-run sign-in preview supports both real rollout arms. The
+  // continuation arm uses display-only fixture text rather than an address so
+  // screenshots can demonstrate the account affordance without exposing an
+  // email-shaped value.
+  desktop_continuation_context: () => ({
+    installAttemptId: 'preview-installation',
+    appVersion: '0.10.229',
+    apiBase: 'https://api.preview.invalid',
+  }),
+  desktop_continuation_config: () => ({
+    protocolVersion: 1,
+    minimumDesktopVersion: '0.10.229',
+    variant: onboardingContinuationVariant(),
+    rolloutPercent: 100,
+  }),
+  desktop_continuation_may_start: () => null,
+  desktop_continuation_start: () => ({ attemptId: 'preview-continuation-attempt' }),
+  desktop_continuation_await_identity: () => ({ email: 'your browser account' }),
+  desktop_continuation_confirm: () => null,
+  desktop_continuation_cancel: () => null,
+  desktop_continuation_deliver: () => 200,
   // Scenarios let the Ready screen be inspected in every machine state the
   // real detector can produce: `?scenario=tools-claude-only` (the fresh-VM
   // case that has only Claude Code), `?scenario=tools-codex-only`, and

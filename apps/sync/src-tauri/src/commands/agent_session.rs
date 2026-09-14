@@ -167,6 +167,57 @@ pub fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
+/// Pay Node's one-time cold-start cost before a session fixture begins one of
+/// its short behavioral waits. All provider fixtures use the same Node child
+/// shape, so this is shared across their test modules and runs once per test
+/// binary.
+#[cfg(test)]
+pub(crate) async fn warm_up_agent_session_node() {
+    static NODE_WARM_UP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+    NODE_WARM_UP
+        .get_or_init(|| async {
+            const WARM_UP_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+            let started = std::time::Instant::now();
+            let result = tokio::time::timeout(WARM_UP_BUDGET, async {
+                let dir = tempfile::tempdir().expect("create agent-session warm-up tempdir");
+                let script = dir.path().join("agent-session-warm-up.cjs");
+                std::fs::write(&script, "process.exit(0);\n")
+                    .expect("write agent-session warm-up script");
+
+                let launch = hq_desktop_core::stdio::StdioLaunch {
+                    program: hq_desktop_core::paths::resolve_bin("node"),
+                    args: vec![script.to_string_lossy().into_owned()],
+                    env: vec![],
+                    env_remove: vec![],
+                    cwd: dir.path().to_path_buf(),
+                };
+                let mut child = hq_desktop_core::stdio::StdioChild::spawn(&launch)
+                    .await
+                    .expect("spawn agent-session warm-up Node child");
+                let status = child
+                    .wait_for_exit(WARM_UP_BUDGET)
+                    .await
+                    .expect("agent-session warm-up Node child did not exit");
+                assert!(
+                    status.success(),
+                    "agent-session warm-up Node child exited unsuccessfully: {status}"
+                );
+            })
+            .await;
+            println!(
+                "agent-session warm-up: {} ms",
+                started.elapsed().as_millis()
+            );
+
+            if result.is_err() {
+                panic!("agent-session warm-up spawn never completed within 60 seconds");
+            }
+        })
+        .await;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Wire payloads
 // ─────────────────────────────────────────────────────────────────────────────
@@ -587,10 +638,12 @@ pub async fn agent_session_start(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     state.lock().await.set_channel(&session_id, tx);
 
-    if let Err(error) = super::project_session_sharing::prepare(&app, &spec, project_channel_id.as_deref()).await {
-        use tauri::Emitter;
-        // Sharing is independent of running the owner's local conversation.
-        let _ = app.emit("project-session:sharing-status", serde_json::json!({ "sessionId": session_id, "error": error }));
+    if !spec.hidden {
+        if let Err(error) = super::project_session_sharing::prepare(&app, &spec, project_channel_id.as_deref()).await {
+            use tauri::Emitter;
+            // Sharing is independent of running the owner's local conversation.
+            let _ = app.emit("project-session:sharing-status", serde_json::json!({ "sessionId": session_id, "error": error }));
+        }
     }
 
     let sink: Arc<dyn SessionEventSink> = Arc::new(claude::AppSink(app));
@@ -602,6 +655,8 @@ pub async fn agent_session_start(
         Spawned::Codex(_, handshake) => Some(handshake.thread_id.clone()),
         Spawned::Grok(_, handshake) => Some(handshake.session_id.clone()),
     };
+    // Hidden jobs stay out of the Sessions list via registry snapshot, but
+    // they still need meta so the native CLI id is on disk if the child dies.
     if let Err(e) = write_session_meta(
         &hq_root,
         &session_id,
@@ -991,6 +1046,7 @@ pub async fn agent_session_end(session_id: String) -> Result<(), String> {
     let mut guard = state.lock().await;
     guard.close_channel(&session_id);
     guard.registry.remove(&session_id);
+    crate::commands::session_project_links::invalidate_links_cache();
     log(LOG_TAG, &format!("session={session_id} ended"));
     Ok(())
 }
@@ -1534,6 +1590,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: PermissionMode::Prompt,
+            hidden: false,
         };
         registry
             .insert(LiveSession::new(spec, "2026-09-02T00:00:00Z".into()))
@@ -1754,6 +1811,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: PermissionMode::Prompt,
+            hidden: false,
         };
         state()
             .lock()

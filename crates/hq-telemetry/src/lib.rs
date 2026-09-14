@@ -12,6 +12,52 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 const UI_SEAM_CATEGORY: &str = "ui.seam";
 const NATIVE_PANIC_PHASE_TAG: &str = "native_panic_phase";
 
+/// Maximum bytes retained from either raw process-output stream on a setup
+/// failure. The end of a process stream contains its actionable failure text.
+pub const SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES: usize = 16 * 1024;
+
+/// Return the tail of a diagnostic stream without splitting a UTF-8 codepoint.
+pub fn setup_diagnostic_tail(value: &str) -> String {
+    if value.len() <= SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES {
+        return value.to_string();
+    }
+
+    let mut start = value.len() - SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    value[start..].to_string()
+}
+
+/// The exact Sentry issue grouping for setup dependency failures. Correlation
+/// fields deliberately stay outside this pair so retries and people do not
+/// fragment a single dependency/category root cause into separate issues.
+pub fn setup_failure_fingerprint<'a>(dependency: &'a str, category: &'a str) -> [&'a str; 2] {
+    [dependency, category]
+}
+
+/// Isolate best-effort Sentry reporting from an interactive command. A failed
+/// thread launch, slow transport, or panic is intentionally a silent no-op for
+/// the caller; product work must never wait on diagnostics.
+pub fn dispatch_sentry_report(report: impl FnOnce() + Send + 'static) {
+    let _ = std::thread::Builder::new()
+        .name("sentry-diagnostic-reporter".to_string())
+        .spawn(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(report));
+        });
+}
+
+/// Emit a bounded, best-effort Sentry warning from a static message. Runs
+/// off-thread via [`dispatch_sentry_report`] (never blocks the caller) and is a
+/// no-op when Sentry is disabled (empty DSN on dev/PR CI). Used for
+/// fleet-visibility signals such as a failed native-hook install, where losing
+/// the signal is acceptable but blocking the caller is not.
+pub fn capture_warning(message: &'static str) {
+    dispatch_sentry_report(move || {
+        sentry::capture_message(message, sentry::Level::Warning);
+    });
+}
+
 /// Lifecycle state recorded with native-panic reports. The state is deliberately
 /// small and static because it is updated from the native event-loop thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +103,14 @@ pub enum NativePanicSeam {
     /// `AppSessionEndExit`, so a residual report shows whether the two signals
     /// agreed.
     AppSessionEndObserved = 11,
+    /// The Windows `WH_CALLWNDPROC` session-end intercept fired: a committed
+    /// `WM_ENDSESSION(TRUE)` was seen at the window-procedure boundary *before*
+    /// tao's own handler, so the bounded teardown and the process exit ran from
+    /// the intercept rather than from `RunEvent::Exit` (HQ-DESKTOP-44 re-entrant
+    /// path). This is the primary session-end seam on builds that carry the
+    /// intercept; `AppSessionEndExit` stays the fallback marker for the
+    /// `RunEvent::Exit` arm on the non-re-entrant path.
+    AppSessionEndIntercepted = 12,
 }
 
 impl NativePanicSeam {
@@ -73,6 +127,7 @@ impl NativePanicSeam {
             9 => Some(Self::AppExitRequested),
             10 => Some(Self::AppSessionEndExit),
             11 => Some(Self::AppSessionEndObserved),
+            12 => Some(Self::AppSessionEndIntercepted),
             _ => None,
         }
     }
@@ -90,6 +145,7 @@ impl NativePanicSeam {
             Self::AppExitRequested => "app.exit-requested",
             Self::AppSessionEndExit => "app.session-end-exit",
             Self::AppSessionEndObserved => "app.session-end-observed",
+            Self::AppSessionEndIntercepted => "app.session-end-intercept",
         }
     }
 }
@@ -189,11 +245,18 @@ fn append_native_panic_context(event: &mut Event<'static>, phase: NativePanicPha
 
 const SENSITIVE_FIELD_NAMES: &[&str] = &[
     "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
     "password",
     "secret",
     "apikey",
     "api_key",
+    "x-api-key",
     "token",
+    "access_token",
+    "client_secret",
+    "private_key",
 ];
 
 /// Mirror of `hq_desktop_core::sync_outcome::RUNNER_STACK_TOKENS`. The two must
@@ -233,6 +296,259 @@ fn is_sensitive_key(k: &str) -> bool {
     SENSITIVE_FIELD_NAMES
         .iter()
         .any(|name| k.eq_ignore_ascii_case(name))
+}
+
+const FILTERED: &str = "[Filtered]";
+
+fn has_ascii_case_insensitive_prefix_at(value: &str, start: usize, prefix: &str) -> bool {
+    value.as_bytes().get(start..start.saturating_add(prefix.len()))
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix.as_bytes()))
+}
+
+fn replace_ranges(value: &str, ranges: Vec<(usize, usize)>, replacement: &str) -> String {
+    if ranges.is_empty() {
+        return value.to_string();
+    }
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if start < cursor || end <= start {
+            continue;
+        }
+        output.push_str(&value[cursor..start]);
+        output.push_str(replacement);
+        cursor = end;
+    }
+    output.push_str(&value[cursor..]);
+    output
+}
+
+fn redact_home_path_accounts(value: &str) -> String {
+    let mut ranges = Vec::new();
+    let prefixes = ["C:\\Users\\", "C:/Users/", "/Users/", "/home/"];
+    for index in 0..value.len() {
+        for prefix in prefixes {
+            if !has_ascii_case_insensitive_prefix_at(value, index, prefix) {
+                continue;
+            }
+            let account_start = index + prefix.len();
+            let account_end = value[account_start..]
+                .find(['/', '\\'])
+                .map(|offset| account_start + offset)
+                .unwrap_or(value.len());
+            if account_start < account_end {
+                ranges.push((account_start, account_end));
+            }
+            break;
+        }
+    }
+    replace_ranges(value, ranges, "[user]")
+}
+
+fn redact_url_credentials(value: &str) -> String {
+    let mut ranges = Vec::new();
+    let mut offset = 0;
+    while let Some(scheme_offset) = value[offset..].find("://") {
+        let authority_start = offset + scheme_offset + 3;
+        let authority_end = value[authority_start..]
+            .find(|character: char| character.is_whitespace() || matches!(character, '/' | '?' | '#'))
+            .map(|relative| authority_start + relative)
+            .unwrap_or(value.len());
+        if let Some(at_relative) = value[authority_start..authority_end].rfind('@') {
+            let credential_end = authority_start + at_relative;
+            if !value[authority_start..credential_end].is_empty() {
+                ranges.push((authority_start, credential_end));
+            }
+        }
+        offset = authority_end.max(authority_start);
+        if offset == value.len() {
+            break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_labeled_secret_values(value: &str) -> String {
+    const LABELS: &[&str] = &[
+        "authorization",
+        "proxy-authorization",
+        "api_key",
+        "api-key",
+        "apikey",
+        "x-api-key",
+        "token",
+        "access_token",
+        "client_secret",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "private_key",
+        "private-key",
+        "cookie",
+        "set-cookie",
+    ];
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    for index in 0..bytes.len() {
+        for label in LABELS {
+            if !has_ascii_case_insensitive_prefix_at(value, index, label)
+                || (index > 0 && bytes[index - 1].is_ascii_alphanumeric()) {
+                continue;
+            }
+            let mut value_start = index + label.len();
+            while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                value_start += 1;
+            }
+            // JSON and shell-style quoted keys put a closing quote between the
+            // label and separator: `"password":"value"` / `PASSWORD="value"`.
+            if matches!(bytes.get(value_start), Some(b'\'') | Some(b'"')) {
+                value_start += 1;
+                while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                    value_start += 1;
+                }
+            }
+            if !matches!(bytes.get(value_start), Some(b'=') | Some(b':')) {
+                continue;
+            }
+            value_start += 1;
+            while bytes.get(value_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                value_start += 1;
+            }
+            let value_end = match bytes.get(value_start) {
+                Some(quote @ (b'\'' | b'"')) => {
+                    let mut cursor = value_start + 1;
+                    let mut escaped = false;
+                    while let Some(byte) = bytes.get(cursor) {
+                        if *byte == *quote && !escaped {
+                            cursor += 1;
+                            break;
+                        }
+                        escaped = *byte == b'\\' && !escaped;
+                        if *byte != b'\\' {
+                            escaped = false;
+                        }
+                        cursor += 1;
+                    }
+                    cursor
+                }
+                _ if (label.eq_ignore_ascii_case("authorization")
+                    || label.eq_ignore_ascii_case("proxy-authorization"))
+                    && has_ascii_case_insensitive_prefix_at(value, value_start, "basic")
+                    && bytes
+                        .get(value_start + "basic".len())
+                        .is_some_and(|byte| byte.is_ascii_whitespace()) => {
+                    let mut token_start = value_start + "basic".len();
+                    while bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+                        token_start += 1;
+                    }
+                    value[token_start..]
+                        .find(|character: char| {
+                            character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"')
+                        })
+                        .map(|relative| token_start + relative)
+                        .unwrap_or(value.len())
+                }
+                _ => value[value_start..]
+                    .find(|character: char| {
+                        character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"')
+                    })
+                    .map(|relative| value_start + relative)
+                    .unwrap_or(value.len()),
+            };
+            if value_start < value_end {
+                ranges.push((value_start, value_end));
+            }
+            break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_bearer_tokens(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !has_ascii_case_insensitive_prefix_at(value, index, "bearer") {
+            index += 1;
+            continue;
+        }
+        let mut token_start = index + "bearer".len();
+        if !bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            index += 1;
+            continue;
+        }
+        while bytes.get(token_start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            token_start += 1;
+        }
+        let token_end = value[token_start..]
+            .find(|character: char| character.is_whitespace() || matches!(character, ',' | ';' | '\'' | '"'))
+            .map(|relative| token_start + relative)
+            .unwrap_or(value.len());
+        if token_start < token_end {
+            ranges.push((token_start, token_end));
+            index = token_end;
+        } else {
+            index += 1;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_prefixed_api_keys(value: &str) -> String {
+    const PREFIXES: &[&str] = &["sk-", "sk_", "AKIA", "AIza", "ghp_", "github_pat_", "xoxb-", "xoxp-"];
+    let mut ranges = Vec::new();
+    for index in 0..value.len() {
+        for prefix in PREFIXES {
+            if !has_ascii_case_insensitive_prefix_at(value, index, prefix) {
+                continue;
+            }
+            let end = value[index..]
+                .find(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-')))
+                .map(|relative| index + relative)
+                .unwrap_or(value.len());
+            if end.saturating_sub(index) >= prefix.len() + 12 {
+                ranges.push((index, end));
+            }
+            break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_npm_prefixed_tokens(value: &str) -> String {
+    let mut ranges = Vec::new();
+    for index in 0..value.len() {
+        if !has_ascii_case_insensitive_prefix_at(value, index, "npm_") {
+            continue;
+        }
+        let end = value[index..]
+            .find(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-')))
+            .map(|relative| index + relative)
+            .unwrap_or(value.len());
+        if end.saturating_sub(index) >= "npm_".len() + 12 {
+            ranges.push((index, end));
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+/// Remove credentials and account names from raw setup diagnostics at the
+/// shared Sentry egress boundary, rather than relying on callers to sanitize.
+fn scrub_sensitive_text(value: &str) -> String {
+    let value = redact_url_credentials(value);
+    let value = redact_bearer_tokens(&value);
+    let value = redact_labeled_secret_values(&value);
+    let value = redact_prefixed_api_keys(&value);
+    redact_home_path_accounts(&value)
+}
+
+/// Setup diagnostics intentionally contain raw command output. Apply the
+/// setup-only npm-token shape here so closed legacy `npm_*` telemetry labels
+/// remain stable while a bare npm access token cannot leave this channel.
+fn scrub_setup_diagnostic_text(value: &str) -> String {
+    redact_npm_prefixed_tokens(&scrub_sensitive_text(value))
 }
 
 fn valid_runner_stack_shape(value: &str) -> bool {
@@ -779,8 +1095,18 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
             "report_read"
                 | "report_absent"
                 | "report_unreadable"
+                | "report_never_completed"
                 | "report_not_requested"
                 | "report_unsupported_platform"
+        )),
+        // Why the rate-aware footprint projection did or did not ARM on the pre-empt
+        // sample (this reopen, HQ-DESKTOP-60), mirroring
+        // `WatcherProjectionArmReason::as_str`: the final-approach band and per-process
+        // breach that re-scoped the r1 gate are self-describing on the wire. Fixed
+        // vocabulary; an off-vocabulary token degrades to `[Filtered]`.
+        "watcher_projection_arm_reason" => Some(matches!(
+            value,
+            "inert" | "below_final_approach_band" | "no_per_process_breach" | "armed"
         )),
         // The runner package version comes from a local package manifest, not
         // runner stderr. Accept only bounded plain SemVer (including its optional
@@ -937,6 +1263,19 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "report_not_requested"
                 | "report_disabled_by_user_options"
         )),
+        // Report-directory delivery provenance (HQ-DESKTOP-5W): whether the
+        // crash-surviving report directory was delivered to the child through the
+        // escaped NODE_OPTIONS value only (production), through both NODE_OPTIONS and an
+        // argv mirror (bare-`node` path), withheld by a user `--report-*`, or not
+        // requested. Fixed producer vocabulary; this independent egress check degrades a
+        // producer bug that shipped a path or raw byte to `[Filtered]` instead of
+        // projecting it into a tag. Mirrors `RunnerReportDirDelivery::as_str` in
+        // hq-desktop-core (kept an independent local mirror, like the other
+        // runner-diagnostic axes above).
+        "runner_report_dir_delivery" => Some(matches!(
+            value,
+            "env_escaped" | "env_and_argv" | "disabled_by_user_options" | "not_requested"
+        )),
         _ => None,
     }
 }
@@ -1070,13 +1409,50 @@ fn is_content_safe_runner_stderr_message(category: Option<&str>, message: Option
         )
     };
 
-    if let Some((error_class, fatal_class)) = class.split_once(';') {
-        is_error_class(error_class) && is_fatal_class(fatal_class) && !fatal_class.contains(';')
-    } else {
-        // Keep the previously shipped exact grammar sendable while clients
-        // update. New producers always include the second fatal-class token.
-        is_error_class(class)
+    // One-, two-, and three-token grammars are all sendable. Older in-flight
+    // clients still emit the one-token `(class)` and two-token `(class;fatal)`
+    // forms; current producers append the structural shape as a third token
+    // (`(class;fatal;shape)`, HQ-DESKTOP-67) so the retained breadcrumb window is
+    // self-describing. A fourth token, or any unknown token in any position, fails
+    // closed to [Filtered].
+    let mut parts = class.split(';');
+    let Some(error_class) = parts.next() else {
+        return false;
+    };
+    if !is_error_class(error_class) {
+        return false;
     }
+    let Some(fatal_class) = parts.next() else {
+        return true;
+    };
+    if !is_fatal_class(fatal_class) {
+        return false;
+    }
+    let Some(shape) = parts.next() else {
+        return true;
+    };
+    is_unmatched_stderr_shape_token(shape) && parts.next().is_none()
+}
+
+/// The closed unmatched-stderr shape vocabulary, mirrored from
+/// `hq_desktop_core::watcher_fault::UnmatchedStderrShape::as_str`. Kept local so
+/// the egress guard stays independent of the producer crate, exactly as the other
+/// mirrors here; the `#[cfg(test)]` parity check below drives every
+/// `UnmatchedStderrShape::ALL` token through this set, so a producer that adds a
+/// shape variant without extending the mirror fails CI rather than silently
+/// blanking the new breadcrumb to [Filtered].
+fn is_unmatched_stderr_shape_token(value: &str) -> bool {
+    matches!(
+        value,
+        "ndjson_record"
+            | "stack_frame"
+            | "hash_frame"
+            | "key_colon"
+            | "path_like"
+            | "blank"
+            | "word"
+            | "other"
+    )
 }
 
 fn scrub_sensitive_in_value(v: &mut Value) {
@@ -1095,6 +1471,28 @@ fn scrub_sensitive_in_value(v: &mut Value) {
                 scrub_sensitive_in_value(child);
             }
         }
+        Value::String(value) => *value = scrub_sensitive_text(value),
+        _ => {}
+    }
+}
+
+fn scrub_setup_diagnostic_in_value(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if is_sensitive_key(key) {
+                    *child = Value::String(FILTERED.into());
+                } else {
+                    scrub_setup_diagnostic_in_value(child);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for child in items.iter_mut() {
+                scrub_setup_diagnostic_in_value(child);
+            }
+        }
+        Value::String(value) => *value = scrub_setup_diagnostic_text(value),
         _ => {}
     }
 }
@@ -1366,6 +1764,15 @@ fn before_send_with_native_context(
         for k in sensitive_keys {
             request.headers.insert(k, "[Filtered]".into());
         }
+        if let Some(url) = request.url.as_mut() {
+            if let Ok(scrubbed) = url::Url::parse(&scrub_sensitive_text(url.as_str())) {
+                *url = scrubbed;
+            }
+        }
+    }
+
+    if let Some(message) = event.message.as_mut() {
+        *message = scrub_sensitive_text(message);
     }
 
     // event.extra is BTreeMap<String, Value>; recurse into each value and
@@ -1373,11 +1780,16 @@ fn before_send_with_native_context(
     for (k, v) in event.extra.iter_mut() {
         if is_sensitive_key(k) {
             *v = Value::String("[Filtered]".into());
+        } else if k.starts_with("setup_") {
+            scrub_setup_diagnostic_in_value(v);
         } else {
             scrub_sensitive_in_value(v);
         }
     }
     scrub_runner_diagnostic_fields(&mut event);
+    for value in event.tags.values_mut() {
+        *value = scrub_sensitive_text(value);
+    }
 
     // event.contexts is BTreeMap<String, Context>; `Context` is a typed enum
     // (`Device`, `Os`, `Runtime`, `App`, `Browser`, `Gpu`, `Trace`, `Other`).
@@ -1400,6 +1812,9 @@ fn before_send_with_native_context(
             )
         {
             breadcrumb.message = Some("[Filtered]".into());
+        }
+        if let Some(message) = breadcrumb.message.as_mut() {
+            *message = scrub_sensitive_text(message);
         }
 
         // event.breadcrumbs[].data is BTreeMap<String, Value> — same pattern
@@ -1556,9 +1971,87 @@ mod tests {
         assert!(is_sensitive_key("token"));
         assert!(is_sensitive_key("apikey"));
         assert!(is_sensitive_key("api_key"));
-        assert!(!is_sensitive_key("x-api-key"));
+        assert!(is_sensitive_key("x-api-key"));
+        assert!(is_sensitive_key("Cookie"));
         assert!(!is_sensitive_key("url"));
         assert!(!is_sensitive_key("note"));
+    }
+
+    /// Setup diagnostics retain raw process text; this proves the shared
+    /// egress scrubber removes several independently shaped credentials from
+    /// environment, command-line, and stderr fields.
+    #[test]
+    fn setup_diagnostic_secret_shapes_are_scrubbed_at_egress() {
+        let mut event = Event::default();
+        event.extra.insert("setup_environment".into(), Value::String("API_KEY=sk_live_abcdefghijklmnopqrstuv npm_abcdefghijklmnopqrstuvwxyz".into()));
+        event.extra.insert("setup_command".into(), Value::String(r#"npm --token=Bearer-token-value-123456 PASSWORD="quoted-password-value" {"token":"json-token-value"}"#.into()));
+        event.extra.insert("setup_stderr".into(), Value::String("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature\nAuthorization: Basic YWRhOnNlY3JldA==\nhttps://ada:hunter2@registry.example/private".into()));
+
+        let result = before_send(event).expect("event remains sendable");
+        let sent = result.extra.values().map(|value| match value {
+            Value::String(text) => text.as_str(),
+            _ => "",
+        }).collect::<Vec<_>>().join("\n");
+        for secret in ["sk_live_abcdefghijklmnopqrstuv", "npm_abcdefghijklmnopqrstuvwxyz", "Bearer-token-value-123456", "quoted-password-value", "json-token-value", "eyJhbGciOiJIUzI1NiJ9.payload.signature", "YWRhOnNlY3JldA==", "ada:hunter2"] {
+            assert!(!sent.contains(secret), "credential-shaped text {secret:?} must not leave the process");
+        }
+    }
+
+    /// Absolute paths retain their useful layout without the local account;
+    /// the cap retains the output tail where commands write failure details.
+    #[test]
+    fn setup_diagnostic_paths_are_anonymized_and_streams_keep_the_16kib_tail() {
+        let mut event = Event::default();
+        event.extra.insert("setup_stderr".into(), Value::String(r"C:\Users\Ada\AppData\Local\HQ\error.log /Users/ada/.npm/_logs/error.log".into()));
+        let result = before_send(event).expect("event remains sendable");
+        let Value::String(paths) = &result.extra["setup_stderr"] else {
+            panic!("setup stderr remains text");
+        };
+        assert!(paths.contains(r"C:\Users\[user]\AppData\Local\HQ\error.log"));
+        assert!(paths.contains("/Users/[user]/.npm/_logs/error.log"));
+        assert!(!paths.contains("Ada"));
+        assert!(!paths.contains("/Users/ada"));
+
+        let input = format!("discard-me-{}diagnostic-tail", "x".repeat(SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES));
+        let tail = setup_diagnostic_tail(&input);
+        assert_eq!(tail.len(), SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+        assert!(tail.ends_with("diagnostic-tail"));
+        assert!(!tail.contains("discard-me-"), "the leading output is discarded");
+    }
+
+    /// Correlation is event context, never part of the issue key: one failed
+    /// dependency/category stays one root cause across retries and people.
+    #[test]
+    fn setup_failure_fingerprint_is_only_dependency_and_closed_category() {
+        assert_eq!(
+            setup_failure_fingerprint("node", "exit-nonzero"),
+            ["node", "exit-nonzero"],
+        );
+    }
+
+    /// Diagnostic reporting remains fire-and-forget even when its work is
+    /// slow or panics, which models a stalled or failed Sentry transport.
+    #[test]
+    fn setup_diagnostic_reporter_never_blocks_on_slow_or_failing_work() {
+        let (slow_started, slow_started_rx) = std::sync::mpsc::channel();
+        let start = std::time::Instant::now();
+        dispatch_sentry_report(move || {
+            let _ = slow_started.send(());
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        });
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        slow_started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("detached report should start");
+
+        let (failed_started, failed_started_rx) = std::sync::mpsc::channel();
+        dispatch_sentry_report(move || {
+            let _ = failed_started.send(());
+            panic!("simulated Sentry transport failure");
+        });
+        failed_started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("failed detached report should remain isolated");
     }
 
     #[test]
@@ -1850,8 +2343,80 @@ mod tests {
     }
 
     #[test]
+    fn every_unmatched_stderr_shape_token_round_trips_through_the_content_safe_allowlist() {
+        use hq_desktop_core::sync_outcome::{RunnerErrorClass, RunnerFatalClass};
+        use hq_desktop_core::watcher_fault::UnmatchedStderrShape;
+
+        // The three-token breadcrumb grammar (HQ-DESKTOP-67): every shape the
+        // producer can emit, crossed with every error/fatal class, must survive
+        // egress. Enumerate the emitter's OWN shape set — never a hand-copied list —
+        // so a future UnmatchedStderrShape variant the local mirror forgets fails
+        // THIS parity test instead of silently blanking the new breadcrumb.
+        for shape in UnmatchedStderrShape::ALL {
+            assert!(
+                is_unmatched_stderr_shape_token(shape.as_str()),
+                "shape token {:?} missing from the egress mirror",
+                shape.as_str()
+            );
+            for error_class in RunnerErrorClass::ALL {
+                for fatal_class in RunnerFatalClass::ALL {
+                    let message = format!(
+                        "runner stderr #42 ({};{};{})",
+                        error_class.breadcrumb_token(),
+                        fatal_class.as_str(),
+                        shape.as_str()
+                    );
+                    assert!(
+                        is_content_safe_runner_stderr_message(
+                            Some("runner.stderr"),
+                            Some(&message)
+                        ),
+                        "three-token breadcrumb rejected by allowlist: {message}"
+                    );
+                }
+            }
+        }
+
+        // The exact corrected HQ-DESKTOP-67 breadcrumb: a path-led line now reads
+        // `other` (not `identity`) and carries its structural shape, and it survives
+        // before_send verbatim rather than being blanked to [Filtered].
+        let mut event = Event::default();
+        event.breadcrumbs.values.push(Breadcrumb {
+            category: Some("runner.stderr".into()),
+            message: Some("runner stderr #161 (other;none;path_like)".into()),
+            ..Default::default()
+        });
+        let result = before_send(event).expect("event remains sendable");
+        assert_eq!(
+            result.breadcrumbs.values[0].message.as_deref(),
+            Some("runner stderr #161 (other;none;path_like)")
+        );
+
+        // The legacy one- and two-token grammars stay accepted for in-flight clients.
+        assert!(is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #7 (other)")
+        ));
+        assert!(is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #8 (eperm;none)")
+        ));
+
+        // Fails closed: an unknown shape token, and a fourth token, are rejected.
+        assert!(!is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #1 (other;none;bogus_shape)")
+        ));
+        assert!(!is_content_safe_runner_stderr_message(
+            Some("runner.stderr"),
+            Some("runner stderr #1 (other;none;path_like;extra)")
+        ));
+    }
+
+    #[test]
     fn no_emitter_breadcrumb_token_contains_a_sentry_denylist_substring() {
         use hq_desktop_core::sync_outcome::{RunnerErrorClass, RunnerFatalClass};
+        use hq_desktop_core::watcher_fault::UnmatchedStderrShape;
 
         // The guard that would have caught the destroyed HQ-DESKTOP-4T breadcrumb
         // at authoring time: no token the breadcrumb renderer can emit may contain
@@ -1877,6 +2442,14 @@ mod tests {
                 RunnerFatalClass::ALL
                     .into_iter()
                     .map(|fatal| fatal.as_str()),
+            )
+            // The breadcrumb now carries a third structural-shape token
+            // (HQ-DESKTOP-67); every shape the renderer can emit is held to the
+            // same denylist-safety bar as the class and fatal tokens.
+            .chain(
+                UnmatchedStderrShape::ALL
+                    .into_iter()
+                    .map(|shape| shape.as_str()),
             );
         for token in tokens {
             for denied in DENYLIST {
@@ -1986,6 +2559,33 @@ mod tests {
                 valid_runner_diagnostic_field(key, leak),
                 Some(false),
                 "{key} must reject raw event-log text"
+            );
+        }
+    }
+
+    #[test]
+    fn every_report_dir_delivery_token_survives_and_lookalikes_fail_closed() {
+        use hq_desktop_core::daemon::RunnerReportDirDelivery;
+        // Driven from the producer's OWN vocabulary (HQ-DESKTOP-5W) so the egress check
+        // can never fall behind a newly-added delivery token.
+        for token in RunnerReportDirDelivery::ALL.map(|d| d.as_str()) {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_dir_delivery", token),
+                Some(true),
+                "delivery token {token:?} must survive egress"
+            );
+        }
+        // A path, a raw report byte, or any off-vocabulary value fails closed.
+        for bad in [
+            r#"C:\Users\ada\.hq\runner-reports\watcher\12"#,
+            "env_escaped_plus_extra",
+            "report_absent",
+            "",
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field("runner_report_dir_delivery", bad),
+                Some(false),
+                "off-vocabulary delivery value {bad:?} must fail closed"
             );
         }
     }
@@ -3095,6 +3695,67 @@ mod tests {
         reset_native_panic_context_for_test();
     }
 
+    // Every static seam id must round-trip through `from_id`/`message`, and an id
+    // outside the closed set must map to `None`. Locks the HQ-DESKTOP-44
+    // re-entrant intercept seam (id 12, `app.session-end-intercept`) and proves a
+    // future unmapped id cannot silently materialize an empty breadcrumb.
+    #[test]
+    fn native_panic_seam_ids_round_trip_and_reject_unmapped_ids() {
+        let seams = [
+            (1u8, NativePanicSeam::TrayLeftClick, "tray.left-click"),
+            (2, NativePanicSeam::TrayBlurHide, "tray.blur-hide"),
+            (
+                3,
+                NativePanicSeam::GlobalShortcutTogglePopover,
+                "global-shortcut.toggle-popover",
+            ),
+            (
+                4,
+                NativePanicSeam::GlobalShortcutToggleDesktop,
+                "global-shortcut.toggle-desktop",
+            ),
+            (
+                5,
+                NativePanicSeam::WindowCloseRequestedHide,
+                "window.close-requested-hide",
+            ),
+            (6, NativePanicSeam::WindowThemeChanged, "window.theme-changed"),
+            (
+                7,
+                NativePanicSeam::WindowForceForeground,
+                "window-focus.force-foreground",
+            ),
+            (
+                8,
+                NativePanicSeam::SingleInstanceSurfaceExisting,
+                "single-instance.surface-existing",
+            ),
+            (9, NativePanicSeam::AppExitRequested, "app.exit-requested"),
+            (10, NativePanicSeam::AppSessionEndExit, "app.session-end-exit"),
+            (
+                11,
+                NativePanicSeam::AppSessionEndObserved,
+                "app.session-end-observed",
+            ),
+            (
+                12,
+                NativePanicSeam::AppSessionEndIntercepted,
+                "app.session-end-intercept",
+            ),
+        ];
+
+        for (id, seam, message) in seams {
+            assert_eq!(NativePanicSeam::from_id(id), Some(seam), "id {id} round-trip");
+            assert_eq!(seam as u8, id, "variant {seam:?} keeps its stable id");
+            assert_eq!(seam.message(), message, "id {id} message is stable");
+        }
+
+        // The intercept seam is the newest, so the first unmapped id is 13.
+        assert_eq!(NativePanicSeam::from_id(0), None);
+        assert_eq!(NativePanicSeam::from_id(13), None);
+        assert_eq!(NativePanicSeam::from_id(u8::MAX), None);
+    }
+
     #[test]
     fn test_public_native_panic_entry_points_bound_history_to_latest_eight() {
         let _guard = NATIVE_PANIC_TEST_LOCK
@@ -3549,6 +4210,11 @@ mod tests {
             ("watcher_footprint_growth_bucket", "50_to_120mbs"),
             ("watcher_footprint_growth_bucket", "over_120mbs"),
             ("watcher_footprint_growth_bucket", "unknown"),
+            // The projection arm-reason token (HQ-DESKTOP-60): fixed vocabulary.
+            ("watcher_projection_arm_reason", "inert"),
+            ("watcher_projection_arm_reason", "below_final_approach_band"),
+            ("watcher_projection_arm_reason", "no_per_process_breach"),
+            ("watcher_projection_arm_reason", "armed"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -3570,6 +4236,8 @@ mod tests {
             ("watcher_tree_process_count", "12 processes /Users/Ada"),
             ("watcher_footprint_growth_bucket", "40mbs"),
             ("watcher_footprint_growth_bucket", "50_to_120mbs:/Users/Ada"),
+            ("watcher_projection_arm_reason", "armed /Users/Ada"),
+            ("watcher_projection_arm_reason", "sort_of_armed"),
         ] {
             let mut event = Event::default();
             event.tags.insert(key.to_string(), value.to_string());
@@ -3602,6 +4270,7 @@ mod tests {
             ("watcher_memory_class_source", "report_read"),
             ("watcher_memory_class_source", "report_absent"),
             ("watcher_memory_class_source", "report_unreadable"),
+            ("watcher_memory_class_source", "report_never_completed"),
             ("watcher_memory_class_source", "report_not_requested"),
             ("watcher_memory_class_source", "report_unsupported_platform"),
         ] {

@@ -363,6 +363,29 @@ describe('historical conversations', () => {
     expect(invoke).not.toHaveBeenCalledWith('agent_session_replay', expect.anything());
     expect(invoke).not.toHaveBeenCalledWith('agent_session_start', expect.anything());
   });
+
+  it('detaches the view without dropping a buffered session', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'agent_session_history_page') {
+        return Promise.resolve({
+          events: [{ receivedAtMs: T0, event: { kind: 'assistantMessage', text: 'Persisted' } }],
+          before: null,
+        });
+      }
+      if (command === 'agent_session_list') return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+    await liveSessionStore.openHistory(history);
+    expect(proseText()).toEqual(['Persisted']);
+
+    liveSessionStore.activate(null);
+    expect(liveSessionStore.activeSessionId).toBeNull();
+    expect(proseText()).toEqual([]);
+    expect(liveSessionStore.isOpen(history.id)).toBe(true);
+
+    liveSessionStore.activate(history.id);
+    expect(proseText()).toEqual(['Persisted']);
+  });
 });
 
 describe('liveSessionStore seq gaps', () => {
@@ -902,6 +925,22 @@ describe('liveSessionStore.startAndSend', () => {
 
     await expect(liveSessionStore.startAndSend({ ...spec }, 'hello')).rejects.toThrow('no CLI');
     expect(bubbleText()).toEqual([]);
+  });
+
+  it('keeps the first live event when it lands at seq 1 with no replay yet', async () => {
+    mockStart();
+    await liveSessionStore.startAndSend({ ...spec }, 'hello');
+    emit(AGENT_SESSION_EVENT, {
+      sessionId: 'fresh',
+      seq: 1,
+      receivedAtMs: T0,
+      event: { kind: 'assistantMessage', text: 'on it' },
+    });
+    expect(proseText()).toContain('on it');
+    expect(invoke).not.toHaveBeenCalledWith(
+      'agent_session_replay',
+      expect.objectContaining({ sessionId: 'fresh', sinceSeq: 0 }),
+    );
   });
 
   it('keeps the bubble across the remount that follows the first send', async () => {

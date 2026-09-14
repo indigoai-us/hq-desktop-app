@@ -268,6 +268,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         : this.call("list_contacts");
     },
     listDmRequests: () => this.call("list_dm_requests"),
+    respondDmRequest: ({ pairKey, action }) =>
+      this.call("respond_dm_request", { pairKey, action }),
     markChannelRead: (id) => this.call("mark_channel_read", { id }),
     markDmThreadRead: (personUid) =>
       this.call("mark_dm_thread_read", { personUid }),
@@ -664,6 +666,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getSettings: () => this.call("get_settings"),
     updateSettings: (patch) => this.queueSettingsPatch(patch),
     getSetupStatus: () => this.call("get_setup_status"),
+    markWelcomeSetupComplete: () => this.call("mark_welcome_setup_complete"),
     getTelemetryConsent: () => this.call("get_telemetry_consent"),
   };
 
@@ -671,6 +674,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     createProjectStory: (projectId, companyUid, story) => this.hqProJson("POST",
       `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
       { ...story, companyUid: companyUid.trim() },
+    ),
+    putProjectView: (projectId, companyUid, view) => this.hqProJson("PUT",
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}`,
+      { ...(view as object), companyUid: companyUid.trim() },
     ),
     readLocalSnapshot: () => this.call("read_work_mesh_snapshot"),
     getProjectView: (projectId, companyUid) =>
