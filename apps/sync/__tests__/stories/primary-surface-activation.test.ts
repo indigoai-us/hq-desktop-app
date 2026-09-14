@@ -39,7 +39,8 @@ fn main() {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-});
+  // Compiles the dispatcher with rustc, which takes several seconds on CI runners.
+}, 60_000);
 
 it('does not substitute the popover if desktop opening fails', () => {
   const show = tray.slice(tray.indexOf('pub fn show_desktop_window('), tray.indexOf('pub fn activate_primary_surface('));
