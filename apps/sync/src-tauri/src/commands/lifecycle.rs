@@ -115,14 +115,17 @@ pub fn setup_lifecycle(app: &AppHandle) {
         consent_answered,
     };
     // macOS only: a synced workspace without local hq/node (or with a CLI that
-    // does not match the bundled one) goes back to installation. Not applied
-    // on Windows, where this readiness check is not certified.
+    // does not match the bundled one) goes back to installation, unless this
+    // machine already recorded finishing setup. Not applied on Windows, where
+    // this readiness check is not certified.
+    #[cfg(not(windows))]
+    let setup_recorded_locally = inputs.install_completed || inputs.first_run_completed;
     #[cfg(not(windows))]
     let verdict = {
         let tools_present = ["hq", "node"].iter().all(|name| {
             paths::resolve_bin_with_kind(name).kind != paths::ResolvedProgramKind::NotResolved
         }) && crate::commands::install_deps::bundled_hq_cli_ready(app);
-        hq_desktop_core::lifecycle::require_local_toolchain(classify_lifecycle(inputs), tools_present)
+        hq_desktop_core::lifecycle::require_local_toolchain(classify_lifecycle(inputs), tools_present, setup_recorded_locally)
     };
     #[cfg(windows)]
     let verdict = classify_lifecycle(inputs);
