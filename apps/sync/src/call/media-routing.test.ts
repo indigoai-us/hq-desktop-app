@@ -23,9 +23,11 @@ vi.mock('svelte', async () => {
 import { flushSync, mount, unmount } from 'svelte';
 
 import CallShell from './CallShell.svelte';
-import { addTileTrack, clearRemoteTiles, clearTile } from './media-sinks';
+import { addTileTrack, clearRemoteTiles, clearTile, applyStream, setTileTracks } from './media-sinks';
 import { initialCallViewState } from './bootstrap';
 import { callView } from './view.svelte';
+import { initialTranscript } from './live-transcript';
+import { initialTranscriptSave } from './transcript-save';
 
 beforeAll(() => {
   // happy-dom ships a `MediaStream` class (its `srcObject` setter type-checks
@@ -77,6 +79,13 @@ function streamIds(element: HTMLVideoElement | null): string[] {
 }
 
 beforeEach(() => {
+  callView.transcript = initialTranscript();
+  callView.startTranscriptionSession = null;
+  callView.pauseTranscriptionSession = null;
+  callView.resumeTranscriptionSession = null;
+  callView.endTranscriptionSession = null;
+  callView.transcriptSave = initialTranscriptSave();
+  callView.showSavedTranscript = null;
   callView.state = {
     ...initialCallViewState(),
     status: 'joined',
@@ -205,7 +214,7 @@ describe('the shell has exactly one control surface', () => {
     expect(ids('control-camera')).toBe(1);
     expect(ids('control-leave')).toBe(1);
 
-    // The footer keeps the transcription consent + status strip.
+    // One transcript-panel toggle remains; it does not request recognition consent.
     expect(ids('toggle-transcription')).toBe(1);
     expect(ids('call-status')).toBe(1);
   });
@@ -219,4 +228,82 @@ describe('the shell has exactly one control surface', () => {
     expect(camera?.getAttribute('aria-pressed')).toBe('true');
     expect(camera?.textContent?.trim()).toBe('Start video');
   });
+});
+
+it('resumes a paused preview when camera tracks restart in the same stream', () => {
+  const video = document.createElement('video');
+  const play = vi.spyOn(video, 'play').mockResolvedValue(undefined);
+  setTileTracks('self', [track('camera-first', 'video')]);
+  applyStream(video, 'self');
+  play.mockClear();
+  setTileTracks('self', []);
+  setTileTracks('self', [track('camera-restarted', 'video')]);
+  applyStream(video, 'self');
+  expect(streamIds(video)).toEqual(['camera-restarted']);
+  expect(play).toHaveBeenCalled();
+});
+
+it('opens session setup before a first transcript without changing microphone or consent', () => {
+  const button=document.querySelector<HTMLButtonElement>('[data-testid="toggle-transcription"]')!;
+  expect(button.getAttribute('aria-label')).toBe('Live transcript');
+  button.click();flushSync();
+  expect(document.querySelector('[data-testid="live-transcript-panel"]')).toBeNull();
+  expect(document.querySelector<HTMLDialogElement>('.session-dialog')?.open).toBe(true);
+  expect(document.body.textContent).toContain('Where should this session live?');
+  expect(document.body.textContent).not.toContain('Allow transcription');
+  expect(callView.state.media.microphone.active).toBe(false);
+});
+
+
+it('shows vault receipts for room transcripts and keeps personal notes private', () => {
+  const show = vi.fn(async () => {});
+  callView.showSavedTranscript = show;
+  callView.transcript={...callView.transcript,session:sessionFixture()};
+  callView.transcriptSave = {status:'saved',detail:'Saved to company vault',sourcePath:'sources/meetings/native-test.md'};
+  document.querySelector<HTMLButtonElement>('[data-testid="toggle-transcription"]')!.click();
+  flushSync();
+  expect(document.querySelector('.transcript-footer')?.textContent).toContain('Saved to company vault');
+  document.querySelector<HTMLButtonElement>('.show-transcript')!.click();
+  expect(show).toHaveBeenCalledTimes(1);
+  callView.transcript = {...callView.transcript,mode:'personal'};
+  flushSync();
+  expect(document.querySelector('.show-transcript')).toBeNull();
+  expect(document.querySelector('.transcript-footer')?.textContent).toContain('never shared');
+});
+
+
+function sessionFixture(ownerPersonUid='prs_self', state:'active'|'paused'|'ended'='active') {
+  return {id:'session',scope:'company' as const,ownerPersonUid,state,startedAt:1000,activeSince:state==='active'?1000:null,elapsedMs:0,pausedAt:state==='paused'?1000:null,endedAt:state==='ended'?1000:null,interval:1};
+}
+it.each(['personal','company'] as const)('starts the selected %s destination only on explicit submit',async scope=>{
+  const start=vi.fn(async()=>{});callView.startTranscriptionSession=start;
+  document.querySelector<HTMLButtonElement>('[data-testid="toggle-transcription"]')!.click();flushSync();
+  document.querySelector<HTMLInputElement>(`input[name="vault-destination"][value="${scope}"]`)!.click();flushSync();
+  expect(start).not.toHaveBeenCalled();expect(callView.state.media.microphone.active).toBe(false);
+  document.querySelector<HTMLFormElement>('.session-dialog form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+  await Promise.resolve();await Promise.resolve();await Promise.resolve();flushSync();expect(start).toHaveBeenCalledWith(scope);expect(callView.state.media.microphone.active).toBe(false);
+  expect(document.querySelector('[data-testid="live-transcript-panel"]')).not.toBeNull();
+});
+it('offers pause and end to the session owner, then resume while paused',async()=>{
+  const pause=vi.fn(async()=>{}),resume=vi.fn(async()=>{}),end=vi.fn(async()=>{});
+  callView.pauseTranscriptionSession=pause;callView.resumeTranscriptionSession=resume;callView.endTranscriptionSession=end;
+  callView.transcript={...callView.transcript,session:sessionFixture()};flushSync();
+  document.querySelector<HTMLButtonElement>('[data-testid="toggle-transcription"]')!.click();flushSync();
+  document.querySelector<HTMLButtonElement>('.session-actions button')!.click();await Promise.resolve();await Promise.resolve();await Promise.resolve();flushSync();expect(pause).toHaveBeenCalledOnce();
+  callView.transcript={...callView.transcript,session:sessionFixture('prs_self','paused')};flushSync();
+  expect(document.querySelector('.session-actions button')?.textContent).toContain('Resume');
+  document.querySelector<HTMLButtonElement>('.session-actions button')!.click();await Promise.resolve();await Promise.resolve();await Promise.resolve();flushSync();expect(resume).toHaveBeenCalledOnce();
+  document.querySelector<HTMLButtonElement>('.end-session')!.click();await Promise.resolve();await Promise.resolve();await Promise.resolve();flushSync();expect(end).toHaveBeenCalledOnce();
+});
+it('does not expose owner controls to another participant',()=>{
+  callView.transcript={...callView.transcript,session:sessionFixture('prs_alice')};flushSync();
+  document.querySelector<HTMLButtonElement>('[data-testid="toggle-transcription"]')!.click();flushSync();
+  expect(document.querySelector('.session-actions')).toBeNull();expect(document.querySelector('.session-strip')?.textContent).toContain('only they can pause or end');
+});
+
+it('has no Copy Text control or copy recovery instruction',()=>{
+ callView.transcript={...initialTranscript(),mode:'personal',session:{id:'personal-test',scope:'personal',ownerPersonUid:'prs_alice',state:'ended',startedAt:1,activeSince:null,elapsedMs:1,pausedAt:null,endedAt:2,interval:1}};
+ flushSync();document.querySelector<HTMLButtonElement>('[data-testid="toggle-transcription"]')!.click();flushSync();
+ expect(document.querySelector('.copy-transcript')).toBeNull();
+ expect(document.body.textContent).not.toMatch(/copy text|copy the text/i);
 });

@@ -166,6 +166,7 @@ function roster(
 // ── panel harness ────────────────────────────────────────────────────────────
 
 interface PanelOptions {
+  visible?: boolean;
   selfWillingness?: string;
   peerWillingness?: string;
   /** `null` → PEER has no live room at all. */
@@ -177,6 +178,7 @@ interface PanelOptions {
   respondToKnock?: (knockId: string, action: string) => Promise<unknown>;
   createKnock?: (input: Record<string, unknown>) => Promise<unknown>;
   createRoom?: () => Promise<unknown>;
+  getRoom?: () => Promise<unknown>;
   sendDm?: (to: string, body: string) => Promise<unknown>;
   osNotifications?: boolean;
 }
@@ -243,7 +245,7 @@ async function renderPanel(options: PanelOptions = {}): Promise<PanelHarness> {
       setOfficePreference: async () => ok({} as Json),
       setOfficeConnectivity: async () => ok({} as Json),
       createRoom,
-      getRoom: async () => ok({ call: { callId: "call_peer", epoch: 4 } } as unknown as Json),
+      getRoom: options.getRoom ?? (async () => ok({ call: { callId: "call_peer", epoch: 4 } } as unknown as Json)),
       createKnock: async (input: Record<string, unknown>) => {
         created.push(input);
         return options.createKnock
@@ -286,6 +288,7 @@ async function renderPanel(options: PanelOptions = {}): Promise<PanelHarness> {
       adapter,
       callsHost,
       companyUid: COMPANY,
+      visible: options.visible ?? true,
       knockPollMs: 1_000,
     } as never,
   });
@@ -992,4 +995,31 @@ describe("US-019 e2e 3: defer, reply and dismiss end the knock without a call", 
     expect(testid(root, "office-knocks-empty")).not.toBeNull();
     expect(root.textContent).not.toContain("two minutes on pricing?");
   });
+});
+
+
+describe("Ambient office outside the Office tab", () => {
+  it("keeps authoritative knock delivery and actions mounted while the map is hidden", async () => {
+    const h = await renderPanel({ visible: false, listings: [[knockWire()]] });
+    expect(h.root.querySelector('[data-testid="office-self"]')).toBeNull();
+    expect(h.root.querySelector('[aria-label="At your office door"]')).not.toBeNull();
+    expect(h.notifications).toHaveLength(1);
+  });
+  it("keeps do-not-disturb quiet while working elsewhere", async () => {
+    const h = await renderPanel({ visible: false, selfWillingness: "dnd", listings: [[knockWire()]] });
+    expect(h.root.querySelector('[aria-label="At your office door"]')).toBeNull();
+    expect(h.notifications).toHaveLength(0);
+  });
+});
+
+
+it("starts a new room when the cached call has sealed after leaving", async () => {
+  const harness = await renderPanel({getRoom: async () => ok({room:{state:'sealed'},call:{callId:'call_self_1',epoch:1,state:'sealed'}} as unknown as Json)});
+  testid(harness.root, 'office-start-room')!.click();
+  await settle();
+  expect(harness.createRoom).toHaveBeenCalledTimes(1);
+  testid(harness.root, 'office-start-room')!.click();
+  await settle();
+  expect(harness.createRoom).toHaveBeenCalledTimes(2);
+  expect(harness.openCallWindow.mock.calls[1][0].callId).toBe('call_self_2');
 });

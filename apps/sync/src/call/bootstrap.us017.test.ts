@@ -347,6 +347,12 @@ describe("capture is explicit", () => {
     await handle.leave("leave-button");
     expect(stop).toHaveBeenCalled();
     expect(handle.content.open()).toBe(false);
+    const departure = harness.calls.find(c => c.command === 'hq_pro_fetch' && String(c.args?.url).endsWith('/leave'));
+    expect(departure).toBeDefined();
+    expect(JSON.parse(String(departure!.args?.body))).toMatchObject({
+      companyUid: target().companyUid, callId: target().callId,
+      deviceId: target().self.deviceId, grantId: 'grant-1',
+    });
     await handle.close();
   });
 });
@@ -716,6 +722,56 @@ describe("the content gate survives a recoverable traffic stop", () => {
     await handle.close();
   });
 
+  it("does not mistake a nonzero grant revision for a reconciled empty roster", async () => {
+    const harness = liveBench({
+      grantOverrides: { rosterRevision: 7 },
+      roster: (_tick, key) => ({
+        rosterRevision: 7,
+        peers: [{ personUid: "prs_1", deviceId: "dev-1", peerKey: key }],
+        expiresAt: Date.now() + 600_000,
+      }),
+    });
+    const handle = await startCallWindow(harness.deps);
+    try {
+      await until(() => handle.session?.snapshot().admitted.length === 1, "initial authoritative solo roster");
+      expect(handle.state().status).toBe("joined");
+      expect(handle.state().identityResolved).toBe(true);
+      expect(handle.content.open()).toBe(true);
+      expect(handle.state().code).not.toBe("ADMISSION_REVOKED");
+    } finally {
+      await handle.leave();
+      await handle.close();
+    }
+  });
+
+  it("recovers a healthy self-only roster without requiring a remote transport", async () => {
+    let quiet = false;
+    const harness = liveBench({
+      grant: { trafficStopMs: 30, controlPollMs: 5 },
+      roster: (_tick, key) => quiet ? null : {
+        rosterRevision: 1,
+        peers: [{ personUid: "prs_1", deviceId: "dev-1", peerKey: key }],
+        expiresAt: Date.now() + 600_000,
+        trafficStopMs: 30,
+      },
+    });
+    const handle = await startCallWindow(harness.deps);
+    try {
+      await until(() => handle.session?.snapshot().admitted.length === 1, "self admission");
+      expect(handle.session?.snapshot().peers).toEqual([]);
+      quiet = true;
+      await until(() => handle.session?.snapshot().trafficStopped === true, "solo traffic stop");
+      expect(handle.content.open()).toBe(false);
+      quiet = false;
+      await until(() => handle.session?.snapshot().trafficStopped === false, "healthy solo reconciliation");
+      expect(handle.content.open()).toBe(true);
+      expect(handle.session?.snapshot().peers).toEqual([]);
+    } finally {
+      await handle.leave();
+      await handle.close();
+    }
+  });
+
   it("stays closed for good when the grant itself expired", async () => {
     // Long enough that content is reliably established first even on a loaded
     // machine, short enough that the expiry still lands inside `until`'s bound.
@@ -1024,6 +1080,19 @@ describe("the call window admits itself", () => {
     // window is in its terminal account-changed state.
     expect(handle.session).toBeNull();
     expect(handle.state().code).toBe("ACCOUNT_CHANGED");
+    await handle.close();
+  });
+});
+
+describe('same-account reconnect classification',()=>{
+  it('keeps network fences but distinguishes reconnect from tenant change',async()=>{
+    const harness=bench();const handle=await startCallWindow(harness.deps);
+    harness.emit(AUTH_SESSION_EVENT,{accountId:'acct-1',generation:2,status:'active',reason:null});
+    await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    expect(handle.account?.invalidated).toBe(true);
+    expect(handle.content.open()).toBe(false);
+    expect(handle.state().code).toBe('ACCOUNT_RECONNECT_REQUIRED');
+    expect(handle.state().recoverable).toBe(false);
     await handle.close();
   });
 });

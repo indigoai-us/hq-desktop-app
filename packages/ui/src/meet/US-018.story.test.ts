@@ -742,7 +742,7 @@ describe("US-018 e2e-3: keyboard-only office hours, room opening, and understand
     );
     const section = root.querySelector("section")!;
     expect(section.getAttribute("aria-labelledby")).toBe("office-title");
-    expect(root.querySelector("#office-title")?.textContent).toBe("Office");
+    expect(root.querySelector("#office-title")?.textContent).toBe("A place to find each other.");
     // The willingness segmented control is a labelled group, not loose buttons.
     const group = root.querySelector('[role="group"]')!;
     expect(group.getAttribute("aria-label")).toContain("willingness");

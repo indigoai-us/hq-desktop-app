@@ -21,7 +21,10 @@
    */
   import type { PlatformAdapter } from "@hq/platform";
   import { presenceSnapshot } from "../chat/presence-store.svelte.js";
+  import KnockCard from "./KnockCard.svelte";
   import OfficeHours from "./OfficeHours.svelte";
+  import { parseOfficeMembers, type OfficeMember } from "./office-map.js";
+  let directory = $state<OfficeMember[]>([]);
   import {
     createOfficeStore,
     type OfficePerson,
@@ -36,6 +39,8 @@
   interface Props {
     /** Platform backend seam. `calls`, `identity` and `capabilities` are used. */
     adapter: PlatformAdapter;
+    /** Keep reconciliation mounted when the Office tab is not visible. */
+    visible?: boolean;
     /** Native seams from the host. Absent → the surface refuses, explicitly. */
     callsHost?: OfficeCallsHost | null;
     /** Cloud company uid. Null when this company is not cloud-backed. */
@@ -60,6 +65,7 @@
 
   let {
     adapter,
+    visible = true,
     callsHost = null,
     companyUid = null,
     companyLabel = "This company",
@@ -74,6 +80,30 @@
   let actionError = $state<string | null>(null);
   /** A quiet confirmation, for the answers that succeed silently otherwise. */
   let actionNote = $state<string | null>(null);
+  let chimeEnabled = $state(true);
+  let chimeContext: AudioContext | null = null;
+  $effect(() => {
+    const unlock = () => {
+      if (typeof AudioContext === "undefined" || !chimeEnabled) return;
+      chimeContext ??= new AudioContext();
+      void chimeContext.resume().catch(() => undefined);
+    };
+    window.addEventListener("pointerdown", unlock);
+    return () => { window.removeEventListener("pointerdown", unlock); void chimeContext?.close().catch(() => undefined); chimeContext = null; };
+  });
+  function playKnockChime(): void {
+    if (!chimeEnabled || !chimeContext || chimeContext.state !== "running") return;
+    const context = chimeContext;
+    [0, .18].forEach((delay, index) => {
+      const tone = context.createOscillator(), gain = context.createGain(), start = context.currentTime + delay;
+      tone.frequency.value = index ? 660 : 520;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(.05, start + .015);
+      gain.gain.exponentialRampToValueAtTime(.001, start + .3);
+      tone.connect(gain); gain.connect(context.destination); tone.start(start); tone.stop(start + .32);
+      tone.onended = () => { tone.disconnect(); gain.disconnect(); };
+    });
+  }
   let opening = $state(false);
   let ready = $state(false);
 
@@ -91,6 +121,7 @@
 
   const store = createOfficeStore({
     calls: adapter.calls,
+    allPages: true,
     get selfPersonUid() {
       return selfPersonUid;
     },
@@ -163,6 +194,7 @@
   $effect(() => {
     const target = companyUid;
     store.reset(target);
+    directory = [];
     // Same tick as the office reset: a knock from the company we just left
     // must never render under the new company's heading.
     knocks.bind(target);
@@ -175,6 +207,10 @@
     void (async () => {
       if (!(await prepare())) return;
       if (cancelled) return;
+      const members = adapter.company?.listMembers
+        ? await adapter.company.listMembers(target).catch(() => null) : null;
+      if (cancelled) return;
+      directory = members?.ok ? parseOfficeMembers(members.value) : [];
       await store.load(target);
       if (cancelled) return;
       // Seed DND from the office self row BEFORE the first knock read. The
@@ -217,11 +253,15 @@
   $effect(() => {
     const target = companyUid;
     if (!target || knockPollMs <= 0) return;
-    const handle = setInterval(() => {
-      if (document.visibilityState === "hidden") return;
-      void knocks.refresh();
-    }, knockPollMs);
-    const onFocus = () => void knocks.refresh();
+    let disposed = false;
+    const reconcile = async () => {
+      await store.refresh();
+      if (disposed || companyUid !== target) return;
+      knocks.setDnd(store.visibleSelf()?.willingness === "dnd");
+      await knocks.refresh();
+    };
+    const handle = setInterval(() => void reconcile(), knockPollMs);
+    const onFocus = () => void reconcile();
     // Becoming HIDDEN is not a reason to spend a request: only the transition
     // back to visible can have missed something.
     const onVisible = () => {
@@ -231,6 +271,7 @@
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
+      disposed = true;
       clearInterval(handle);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
@@ -298,12 +339,13 @@
   }
 
   /**
-   * A knock banner is a nudge, never a ring: no sound, no window steal. On do
+   * A knock is a nudge: one optional gentle chime, never a repeated ring or window steal. On do
    * not disturb nothing is shown at all — but the knock itself stays in the
    * store, so the server's record and the in-app card are untouched.
    */
   function notifyKnock(knock: Knock): void {
     if (knocks.state.dnd) return;
+    playKnockChime();
     if (adapter.capabilities?.osNotifications !== true) return;
     const note = knock.note ? ` — “${knock.note}”` : "";
     void adapter.appShell
@@ -391,16 +433,24 @@
    */
   async function ensureSelfRoom(): Promise<KnockRoomBinding | null> {
     if (!companyUid) return null;
-    const mine = store.visibleSelf()?.room;
-    if (mine) {
-      selfRoom = {
-        roomId: mine.roomId,
-        callId: mine.callId,
-        epoch: mine.epoch,
-      };
-      return selfRoom;
+    const existing = store.visibleSelf()?.room ?? selfRoom;
+    if (existing) {
+      // Presence and this panel can outlive a call. Revalidate before reopening
+      // so Leave followed by Start cannot keep targeting a sealed call.
+      const result = await adapter.calls.getRoom(existing.roomId, companyUid);
+      if (!result.ok) {
+        if (!["CALL_SEALED", "ROOM_NOT_FOUND", "NOT_FOUND"].includes(result.code ?? "")) return null;
+      } else {
+        const payload = asRecord(result.value);
+        const room = asRecord(payload.room);
+        const call = asRecord(payload.call);
+        if (room.state !== "sealed" && call.state !== "sealed" && typeof call.callId === "string" && typeof call.epoch === "number") {
+          selfRoom = { roomId: existing.roomId, callId: call.callId, epoch: call.epoch };
+          return selfRoom;
+        }
+      }
+      selfRoom = null;
     }
-    if (selfRoom) return selfRoom;
     const created = await adapter.calls.createRoom({
       companyUid,
       // Company-visible: an open door people can see is the whole point.
@@ -553,6 +603,8 @@
   }
 </script>
 
+{#if visible}
+
 {#if !companyUid}
   <div class="office-host-notice" data-testid="office-not-connected">
     <strong>{companyLabel} is not connected to HQ cloud</strong>
@@ -586,7 +638,10 @@
   <OfficeHours
     {store}
     {selfPersonUid}
-    {displayName}
+    {directory}
+    {chimeEnabled}
+    ontogglechime={()=>chimeEnabled=!chimeEnabled}
+    displayName={(uid) => directory.find(p => p.personUid === uid)?.displayName || displayName(uid)}
     {knocks}
     onstartroom={enterOwnRoom}
     onopendoor={openDoor}
@@ -606,7 +661,24 @@
   />
 {/if}
 
+{/if}
+{#if !visible && ready && !knocks.state.dnd && knocks.visibleReceived().some(k=>k.state === "pending" || (k.state === "accepted" && !selfInRoom))}
+  <aside class="ambient-knock" aria-label="At your office door">
+    <span class="ambient-label">MEET / AT YOUR DOOR</span>
+    {#each knocks.visibleReceived().filter(k=>k.state === "pending" || (k.state === "accepted" && !selfInRoom)).slice(0,1) as knock (knock.knockId)}
+      <KnockCard {knock} direction="received" {displayName} busy={knocks.state.busy}
+        onaccept={acceptKnock} ongoto={selfInRoom ? undefined : goToOwnRoom}
+        onreply={replyToKnock} ondefer={(k)=>void knocks.defer(k.knockId)}
+        ondismiss={(k)=>void knocks.decline(k.knockId)}
+        replySuggestion={cannedReply(knock,displayName)} />
+    {/each}
+  </aside>
+{/if}
+
 <style>
+  .office-sound-control{display:flex;justify-content:flex-end;padding:10px 24px 0}.office-sound-control button{font:inherit;font-size:11px;border:1px solid var(--v4-hairline,#ffffff20);border-radius:7px;padding:7px 10px;background:var(--v4-inset,#ffffff05);color:var(--v4-text-2,#b4c1b8);cursor:pointer}
+  .ambient-knock{position:fixed;top:84px;right:24px;z-index:1000;width:min(360px,calc(100vw - 48px));padding:16px;background:var(--v4-popover-strong,#262e29);color:var(--v4-text-1,#edf2ed);border:1px solid var(--v4-hairline,#ffffff25);border-radius:16px;box-shadow:0 24px 70px #0005;backdrop-filter:blur(30px)}.ambient-label{font:11px ui-monospace,monospace;letter-spacing:1px;color:var(--v4-text-3,#a2b1a7)}
+
   .office-host-notice {
     display: flex;
     flex-direction: column;

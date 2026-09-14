@@ -1220,6 +1220,9 @@ export interface CallsApi {
   /** Body is a signed `iceConfig` envelope. Credentials never enter logs. */
   iceConfig(request: Json): AdapterPromise<Json>;
 
+  /** Durable native live transcript ingress; bearer stays in the native host. */
+  liveTranscript(operation: "begin" | "append" | "read" | "list" | "session", request: Json): AdapterPromise<Json>;
+
   /** Body is a signed `consentControl` envelope. */
   completionConsent(control: Json): AdapterPromise<Json>;
   /** Body is a signed `completionControl` envelope. */

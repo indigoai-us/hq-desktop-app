@@ -19,9 +19,12 @@
    *    operable with no key handlers of our own
    *  - the ring animation is dropped under `prefers-reduced-motion`
    */
+  import { initials } from "./office-map.js";
+  import ParticipantActions from "./ParticipantActions.svelte";
   import MediaControls from "./MediaControls.svelte";
   import {
     deriveCallView,
+    canModerate,
     type CallRole,
     type CallSnapshotView,
     type CallTile,
@@ -32,6 +35,7 @@
   } from "./call-view-model.js";
 
   interface Props {
+    extraControls?: import("svelte").Snippet;
     snapshot: CallSnapshotView;
     self: SelfMediaView;
     role?: CallRole;
@@ -70,6 +74,7 @@
   }
 
   let {
+    extraControls,
     snapshot,
     self,
     role = "participant",
@@ -172,6 +177,9 @@
           tile.connection
         ]}"
       >
+        {#if !tile.self && canModerate(role)}
+          <ParticipantActions {tile} disabled={busy || controlsDisabled || tile.connection==='removed'} {onmuterequest} {onmuteforce} {onremovepeer}/>
+        {/if}
         <!-- svelte-ignore a11y_media_has_caption -->
         <video
           class="video"
@@ -183,18 +191,19 @@
           use:media={tile}
         ></video>
         {#if tile.cameraOff}
-          <p class="placeholder" data-testid="call-tile-placeholder">
-            Camera off
+          <p class="placeholder">
+            <span class="call-avatar" aria-hidden="true">{initials(tile.label)}</span>
+            <span data-testid="call-tile-placeholder">Camera off</span>
           </p>
         {/if}
         <footer class="meta">
-          <span class="name" data-testid="call-tile-name">{tile.label}</span>
+          <span class="name" data-testid="call-tile-name">{tile.label}{tile.self && tile.label!=="You" ? " (You)" : ""}</span>
           {#if tile.role !== "participant"}
             <span class="chip" data-testid="call-tile-role"
               >{ROLE_LABEL[tile.role]}</span
             >
           {/if}
-          <span class="chip" data-testid="call-tile-connection"
+          <span class="chip" class:sr-only={tile.connection === "connected"} data-testid="call-tile-connection"
             >{CONNECTION_LABEL[tile.connection]}</span
           >
           {#if tile.micMuted}
@@ -247,6 +256,8 @@
   {/if}
 
   <MediaControls
+    {extraControls}
+    participantActionsInTiles={true}
     {role}
     micMuted={self.micMuted}
     cameraOff={self.cameraOff}
@@ -401,4 +412,6 @@
     font: inherit;
     cursor: pointer;
   }
-</style>
+
+  .call{gap:14px;min-height:360px}.gallery{gap:16px;padding:20px;grid-auto-rows:minmax(240px,1fr)}.tile{border:1px solid var(--v4-hairline,#ffffff20);border-radius:16px;background:radial-gradient(ellipse at 50% 35%,#74857422,transparent 65%),var(--v4-raised,#1b211d);min-height:240px}.tile:nth-child(even){background:radial-gradient(ellipse at 50% 35%,#82657420,transparent 65%),var(--v4-raised,#211e20)}.placeholder{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:18px;color:var(--v4-text-2,#a6b5aa);font-size:12px}.call-avatar{display:grid;place-items:center;width:86px;height:86px;border:1px solid var(--v4-hairline,#ffffff25);border-radius:50%;background:var(--v4-popover-strong,#36473d);color:var(--v4-text-1,#edf3ed);font-size:26px;box-shadow:0 15px 45px #0003}.meta{background:linear-gradient(transparent,#0006);padding:18px;gap:8px;color:var(--v4-text-1,#edf3ed)}.chip{border-color:var(--v4-hairline,#ffffff18);border-radius:5px;font-size:11px;padding:3px 7px}.recovery{background:var(--v4-raised,#252c27);padding:10px 18px}.notice{border:1px solid var(--v4-hairline,#ffffff18);border-radius:10px;margin:0 20px;padding:14px}
+.call{position:relative;gap:0;min-height:0}.gallery{padding:12px;gap:10px;grid-auto-rows:minmax(170px,1fr)}.tile{min-height:170px;border-radius:12px}.meta{padding:12px;gap:7px}.name{font-size:12px;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chip{border:0;padding:0;font-size:10px;color:#a7b7ad}.call-avatar{width:72px;height:72px;font-size:24px}.notice{margin:0 12px 10px;padding:10px}.gallery[data-columns="1"] .tile{max-width:1100px;width:100%;justify-self:center}@media(max-height:550px){.tile{min-height:140px}.gallery{grid-auto-rows:minmax(140px,1fr)}.call-avatar{width:52px;height:52px;font-size:20px}}.gallery{padding:0;gap:4px}.gallery[data-columns="1"] .tile{max-width:none;border:0;border-radius:0}.meta{bottom:76px}.notice{position:absolute;top:40px;left:12px;right:12px;z-index:20}</style>

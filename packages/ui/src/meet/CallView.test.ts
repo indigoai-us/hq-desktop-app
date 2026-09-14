@@ -423,3 +423,20 @@ describe("helpers", () => {
     });
   });
 });
+
+
+it("puts moderation on the selected participant preview and confirms removal", () => {
+  const force=vi.fn(),remove=vi.fn();
+  const root=render(CallView,{snapshot:snapshot(2),self:SELF_MEDIA,role:'host',onmuteforce:force,onremovepeer:remove});
+  expect(testid(root,'moderation-target')).toBeNull();
+  const tile=root.querySelectorAll('[data-testid="call-tile"]')[1] as HTMLElement;
+  const tileId=tile.dataset.tileId;
+  testid(tile,'participant-actions-trigger')!.click();flushSync();
+  testid(tile,'participant-mute-force')!.click();flushSync();
+  expect(force.mock.calls[0][0].id).toBe(tileId);
+  testid(tile,'participant-actions-trigger')!.click();flushSync();
+  testid(tile,'participant-remove')!.click();flushSync();
+  expect(remove).not.toHaveBeenCalled();
+  testid(tile,'participant-remove-confirm')!.click();flushSync();
+  expect(remove.mock.calls[0][0].id).toBe(tileId);
+});

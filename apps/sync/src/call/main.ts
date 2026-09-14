@@ -14,6 +14,13 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { mount } from 'svelte';
 
 import CallShell from './CallShell.svelte';
+import { createLiveTranscript } from './live-transcript';
+import {initialTranscriptSave} from './transcript-save';
+import {createPersonalTranscriptSave} from './personal-transcript-save';
+let personalSave:ReturnType<typeof createPersonalTranscriptSave>|null=null;
+import { createTranscriptSave } from './transcript-save';
+let transcriptSave: ReturnType<typeof createTranscriptSave> | null = null;
+let liveTranscript: ReturnType<typeof createLiveTranscript> | null = null;
 import { safeUnlisten } from '../lib/listener-registry';
 import { handleCloseRequested, startCallWindow, type CallWindowHandle } from './bootstrap';
 import { windowPreferenceStorage } from './permissions';
@@ -104,6 +111,8 @@ const started = startCallWindow({
   mediaDevices: browserMediaDevices(),
   onState: (state) => {
     callView.state = state;
+    liveTranscript?.update(state);
+    if (state.code === "ACCOUNT_CHANGED") callView.names = {};
   },
   onTrack: (track, peerId) => {
     callView.remoteTracks = [...callView.remoteTracks, track];
@@ -131,6 +140,38 @@ const started = startCallWindow({
   .then((ready) => {
     handle = ready;
     callView.handle = ready;
+    transcriptSave = createTranscriptSave(invoke, ready, state => { callView.transcriptSave = state; });
+    callView.showSavedTranscript = () => transcriptSave!.showInVault();
+    personalSave=createPersonalTranscriptSave(invoke,ready,state=>{callView.personalSave=state;});
+    callView.showPersonalTranscript=()=>personalSave!.showInVault();
+    callView.retryPersonalSave=()=>personalSave!.flush();
+    liveTranscript = createLiveTranscript(ready, invoke, state => {
+      if(callView.transcript.session?.scope==='personal' && callView.transcript.session.state!=='ended' && (state.session?.scope!=='personal' || state.session.state==='ended'))void personalSave?.end();
+      callView.transcript = state;
+    }, windowPreferenceStorage() ?? undefined, {...transcriptSave,enqueuePersonal:row=>personalSave!.enqueue(row)});
+    callView.startTranscriptionSession=async scope=>{
+      if(!liveTranscript)throw new Error('Call is not ready');
+      if(scope==='personal'){
+        await personalSave?.end();
+        if(personalSave?.hasUnsaved())throw new Error('Save your current personal notes before starting another session.');
+        personalSave?.dispose();
+        callView.personalSave={...initialTranscriptSave(),detail:'Personal notes save to this device'};
+        personalSave=createPersonalTranscriptSave(invoke,ready,state=>{callView.personalSave=state;});
+      }
+      await liveTranscript.startSession(scope);
+    };
+    callView.pauseTranscriptionSession=async()=>{await liveTranscript?.pauseSession();if(callView.transcript.session?.scope==='personal')await personalSave?.setPaused(true);};
+    callView.resumeTranscriptionSession=async()=>{await liveTranscript?.resumeSession();if(callView.transcript.session?.scope==='personal')await personalSave?.setPaused(false);};
+    callView.endTranscriptionSession=async()=>{
+      const personal=callView.transcript.session?.scope==='personal';
+      await liveTranscript?.endSession();
+      if(personal)await personalSave?.end();
+    };
+    const companyUid = ready.target?.companyUid;
+    if (companyUid) void invoke<{contacts?:Array<{personUid:string;displayName?:string}>}>('list_company_members',{companyUid}).then(result=>{
+      if(callView.handle!==ready || callView.state.code === "ACCOUNT_CHANGED")return;
+      callView.names=Object.fromEntries((result.contacts??[]).filter(p=>p.personUid&&p.displayName).map(p=>[p.personUid,p.displayName!]));
+    }).catch(()=>{});
     return ready;
   })
   .catch((error) => {
@@ -158,7 +199,13 @@ let tornDown = false;
 void getCurrentWindow().onCloseRequested(async (event) => {
   // Teardown already happened — do NOT prevent this one.
   if (tornDown) return;
+  event.preventDefault();
   try {
+    liveTranscript?.dispose();
+    await personalSave?.end();
+    if(personalSave?.hasUnsaved())return;
+    personalSave?.dispose();
+    transcriptSave?.dispose();
     await handleCloseRequested({
       handle: () => handle,
       started,
@@ -176,7 +223,7 @@ void getCurrentWindow().onCloseRequested(async (event) => {
       },
     });
   } finally {
-    tornDown = true;
+    if(!personalSave?.hasUnsaved())tornDown = true;
   }
 });
 

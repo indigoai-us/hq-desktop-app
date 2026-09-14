@@ -78,6 +78,8 @@ export interface OfficeRoom {
 
 export interface OfficePerson {
   personUid: string;
+  /** Directory-only entry: no live office facts have been published. */
+  presenceUnknown?: boolean;
   connectivity: OfficeConnectivity;
   connectivityExpiresAt: number | null;
   willingness: OfficeWillingness;
@@ -127,6 +129,8 @@ export interface OfficeStoreOptions {
   now?: () => number;
   /** Page size; clamped to the service maximum. */
   pageLimit?: number;
+  /** Commit a complete discovery snapshot, including every page, atomically. */
+  allPages?: boolean;
 }
 
 /** Refusals that mean "this host cannot do native calling at all". */
@@ -330,6 +334,7 @@ export function createOfficeStore(options: OfficeStoreOptions): OfficeStore {
    * company. This is what keeps a slow company-A response out of company B.
    */
   let generation = 0;
+  let writeGeneration = 0;
 
   function current(gen: number, companyUid: string): boolean {
     return gen === generation && state.companyUid === companyUid;
@@ -361,35 +366,35 @@ export function createOfficeStore(options: OfficeStoreOptions): OfficeStore {
     gen: number,
     cursor: string | null,
   ): Promise<void> {
-    const result = await options.calls.discoverOffice(companyUid, {
-      limit,
-      ...(cursor ? { cursor } : {}),
-    });
-    if (!current(gen, companyUid)) return;
-    if (!result.ok) {
-      applyFailure(result);
-      return;
-    }
-    const body = isRecord(result.value) ? result.value : {};
-    // The service answers with the company it acted on; a mismatch is a stale
-    // or mis-routed response and is dropped rather than merged.
-    const answered = str(body.companyUid);
-    if (answered !== null && answered !== companyUid) return;
-    const rows = Array.isArray(body.people) ? body.people : [];
-    const parsed = rows
-      .map(parseOfficePerson)
-      .filter((person): person is OfficePerson => person !== null);
-    const merged = cursor ? [...state.people, ...parsed] : parsed;
+    const collected: OfficePerson[] = cursor ? [...state.people] : [];
+    const seen = new Set<string>();
+    let next = cursor;
+    let observedAt = now();
+    do {
+      const result = await options.calls.discoverOffice(companyUid, {
+        limit,
+        ...(next ? { cursor: next } : {}),
+      });
+      if (!current(gen, companyUid)) return;
+      if (!result.ok) { applyFailure(result); return; }
+      const body = isRecord(result.value) ? result.value : {};
+      const answered = str(body.companyUid);
+      if (answered !== null && answered !== companyUid) return;
+      const rows = Array.isArray(body.people) ? body.people : [];
+      collected.push(...rows.map(parseOfficePerson).filter((p): p is OfficePerson => p !== null));
+      observedAt = finite(body.observedAt) ?? now();
+      next = str(body.nextCursor) ?? str(body.cursor);
+      if (next && seen.has(next)) {
+        state = { ...state, status: "error", error: { code: "OFFICE_PAGING_LOOP", message: "The office directory could not finish loading. Try again." }, people: [], self: null, nextCursor: null };
+        return;
+      }
+      if (next) seen.add(next);
+    } while (options.allPages && next);
+    const merged = [...new Map(collected.map(p => [p.personUid, p])).values()];
     state = {
-      ...state,
-      status: "ready",
-      people: merged,
+      ...state, status: "ready", people: merged,
       self: selfOf(merged) ?? (cursor ? state.self : null),
-      observedAt: finite(body.observedAt) ?? now(),
-      error: null,
-      // The controller returns `cursor`; `nextCursor` is accepted too so a
-      // future rename of the wire field does not silently drop paging.
-      nextCursor: str(body.nextCursor) ?? str(body.cursor),
+      observedAt, error: null, nextCursor: next,
     };
   }
 
@@ -401,15 +406,16 @@ export function createOfficeStore(options: OfficeStoreOptions): OfficeStore {
    */
   function begin(companyUid: string | null, keepRoster: boolean): number {
     const gen = ++generation;
+    if (!keepRoster) writeGeneration += 1;
     state = {
-      status: companyUid ? "loading" : "idle",
+      status: companyUid ? (keepRoster && state.status === "ready" ? "ready" : "loading") : "idle",
       companyUid,
       people: keepRoster ? state.people : [],
       self: keepRoster ? state.self : null,
       observedAt: keepRoster ? state.observedAt : null,
       error: null,
-      nextCursor: null,
-      saving: false,
+      nextCursor: keepRoster ? state.nextCursor : null,
+      saving: keepRoster ? state.saving : false,
     };
     return gen;
   }
@@ -475,21 +481,31 @@ export function createOfficeStore(options: OfficeStoreOptions): OfficeStore {
     const companyUid = state.companyUid;
     if (!companyUid) return;
     const gen = generation;
+    const writeId = ++writeGeneration;
     state = { ...state, saving: true };
-    const result = await run(companyUid);
-    if (!current(gen, companyUid)) return;
-    if (!result.ok) {
-      const error = failureOf(result);
-      state = {
-        ...state,
-        saving: false,
-        error,
-        ...(error.code === DISABLED_CODE ? { status: "disabled" as const } : {}),
-      };
-      return;
+    try {
+      const result = await run(companyUid);
+      if (!current(gen, companyUid)) return;
+      if (!result.ok) {
+        const error = failureOf(result);
+        state = { ...state, error,
+          ...(error.code === DISABLED_CODE ? { status: "disabled" as const } : {}),
+        };
+        return;
+      }
+      applyOwnState(result.value, gen, companyUid);
+      state = { ...state, error: null };
+    } catch {
+      if (writeId === writeGeneration && state.companyUid === companyUid) {
+        state = { ...state, error: { code: "OFFICE_SAVE_FAILED", message: "Your office preference could not be saved. Try again." } };
+      }
+    } finally {
+      // Discovery has its own generation. It must not strand a completed save,
+      // nor may a prior company's save unlock a newer company's pending write.
+      if (writeId === writeGeneration && state.companyUid === companyUid) {
+        state = { ...state, saving: false };
+      }
     }
-    applyOwnState(result.value, gen, companyUid);
-    state = { ...state, saving: false, error: null };
   }
 
   function clampTtl(ttlMs: number | undefined): number {

@@ -440,7 +440,7 @@ pub async fn calls_open_window(
 }
 
 fn build_call_window(app: &AppHandle) -> Result<(), String> {
-    tauri::WebviewWindowBuilder::new(
+    let builder = tauri::WebviewWindowBuilder::new(
         app,
         CALL_WINDOW_LABEL,
         tauri::WebviewUrl::App("call.html".into()),
@@ -448,8 +448,10 @@ fn build_call_window(app: &AppHandle) -> Result<(), String> {
     .title("HQ Call")
     .inner_size(960.0, 640.0)
     .min_inner_size(560.0, 400.0)
-    .resizable(true)
-    .build()
+    .resizable(true);
+    #[cfg(target_os = "macos")]
+    let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    builder.build()
     .map(|_| ())
     .map_err(|error| error.to_string())
 }

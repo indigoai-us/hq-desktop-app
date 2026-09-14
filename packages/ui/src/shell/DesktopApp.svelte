@@ -4377,6 +4377,18 @@
             />
           {/if}
 
+          <!-- One selected-company listener survives view/tab changes. Office UI is only visible on its tab. -->
+          {#if selectedRow.companyUid}
+            <div class="company-office-stage" class:office-background={!(isCompanyChannel && companyTab === "office")} data-testid="company-tab-panel-office">
+              <OfficePanel {adapter} {callsHost}
+                companyUid={selectedRow.companyUid}
+                companyLabel={selectedRow.title ?? "This company"}
+                displayName={(uid) => displayNameByUid[uid] || identities?.[uid] || uid}
+                visible={isCompanyChannel && companyTab === "office"}
+              />
+            </div>
+          {/if}
+
           {#if isAgentChannel && agentSurface === "details" && agentChannelUid}
             <AgentDetailPanel
               agentUid={agentChannelUid}
@@ -4399,14 +4411,7 @@
                 US-018: the shipping Office surface. One implementation, shared
                 with every other host — see packages/ui/src/meet/OfficePanel.
               -->
-              <div class="company-office-stage" data-testid="company-tab-panel-office">
-                <OfficePanel
-                  {adapter}
-                  {callsHost}
-                  companyUid={selectedRow.companyUid ?? null}
-                  companyLabel={selectedRow.title ?? "This company"}
-                />
-              </div>
+
             {:else if companyTab === "team"}
               <TeamTab
                 data={companyTabData ?? {
@@ -5092,6 +5097,7 @@
     outline-offset: 2px;
   }
 
+  .company-office-stage.office-background { flex: none; height: 0; min-height: 0; overflow: visible; }
   .company-office-stage {
     flex: 1;
     min-height: 0;

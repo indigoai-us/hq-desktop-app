@@ -5,6 +5,12 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_IGNORES: &[&str] = &[
+    // Solo native transcript notes are local-only.
+    "/personal/sources/meetings/native-*.md",
+    "/personal/sources/meetings/native-*.raw.json",
+    // Participant-authorized native meeting projections are server-owned.
+    "/companies/*/sources/meetings/native-*.md",
+    "/companies/*/sources/meetings/native-*.raw.json",
     // VCS + OS
     ".git/",
     ".git",
@@ -233,6 +239,13 @@ mod tests {
         assert!(filter.should_sync(&root.join("docs/pnpm-store-notes.md")));
     }
 
+    #[test]
+    fn native_meeting_projections_are_not_uploaded() {
+        let tmp=TempDir::new().unwrap();let root=tmp.path();let filter=IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(!filter.should_sync(&root.join("companies/indigo/sources/meetings/native-abc.md")));
+        assert!(!filter.should_sync(&root.join("companies/indigo/sources/meetings/native-abc.raw.json")));
+        assert!(filter.should_sync(&root.join("companies/indigo/sources/meetings/manual-notes.md")));
+    }
     #[test]
     fn hqignore_pattern_is_ignored() {
         let tmp = TempDir::new().unwrap();

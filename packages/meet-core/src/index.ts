@@ -28,6 +28,7 @@ export {
   type CallSnapshot,
   type CallStateEvent,
   type ModerationEvent,
+  type TranscriptEvent,
   type RemoteTrackEvent,
 } from "./session.js";
 export {
@@ -70,3 +71,5 @@ export {
   type ContentDeliveryGate,
   type ContentGateEvent,
 } from "./content-gate.js";
+
+export { encodeTranscript, parseTranscript, TRANSCRIPT_MAX_BYTES, TRANSCRIPT_MAX_TEXT_LENGTH, type TranscriptMessage } from "./transcript.js";

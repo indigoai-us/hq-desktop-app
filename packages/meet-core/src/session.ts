@@ -42,6 +42,8 @@ import {
   type ModerationMessage,
 } from "./moderation.js";
 
+import { parseTranscript, TRANSCRIPT_MAX_BYTES, type TranscriptMessage } from "./transcript.js";
+
 export type CallPhase =
   | "idle"
   | "joining"
@@ -117,6 +119,14 @@ export interface ModerationEvent {
   message: ModerationMessage;
 }
 
+/** Identity is authenticated by the admitted transport, never by message text. */
+export interface TranscriptEvent {
+  sessionId: string;
+  generation: number;
+  from: PeerIdentity;
+  message: TranscriptMessage;
+}
+
 export interface CallStateEvent {
   sessionId: string;
   generation: number;
@@ -128,6 +138,7 @@ export interface CallSessionEvents {
   track: RemoteTrackEvent;
   error: CallErrorEvent;
   moderation: ModerationEvent;
+  transcript: TranscriptEvent;
 }
 
 export type CallSessionEvent = keyof CallSessionEvents;
@@ -179,6 +190,8 @@ export interface CallSession {
    * There is no action that enables remote media.
    */
   sendModeration(peerId: string, action: ModerationAction, track?: "audio" | "video"): boolean;
+  /** Text-only delivery to an admitted peer; false means it was not sent. */
+  sendTranscript(peerId: string, message: TranscriptMessage): boolean;
   on<E extends CallSessionEvent>(
     event: E,
     listener: (payload: CallSessionEvents[E]) => void,
@@ -432,10 +445,30 @@ class Session implements CallSession {
     return false;
   }
 
+  sendTranscript(peerId: string, message: TranscriptMessage): boolean {
+    if (this.phase !== "joined" || !this.controlAllowed()) return false;
+    const parsed = parseTranscript(message);
+    if (!parsed) { this.count("transcriptRejected"); return false; }
+    for (const transport of this.transports.values()) {
+      if (peerLabelOf(transport.remote) !== peerId) continue;
+      if (!this.isAdmitted(transport.remote)) return false;
+      const sent = transport.sendControl(parsed);
+      if (!sent) this.count("transcriptUndeliverable");
+      return sent;
+    }
+    this.count("transcriptPeerUnknown");
+    return false;
+  }
+
+  private controlAllowed(): boolean {
+    return !this.trafficStopped && this.grant !== null && this.isAdmitted(this.self) &&
+      (this.grantExpiresAt === null || this.ports.clock.now() < this.grantExpiresAt);
+  }
+
   /**
-   * An inbound control-channel message. The engine refuses everything that is
-   * not a mute action and COUNTS every attempt to enable remote media, so an
-   * "unmute" can never reach a host that might act on it.
+   * Dispatch bounded control messages by kind after admission and grant checks.
+   * Transcript text never enters moderation; remote enable attempts are counted
+   * but never emitted as moderation actions.
    */
   private onControl(generation: number, from: PeerIdentity, data: unknown): void {
     if (!this.current(generation)) {
@@ -448,6 +481,20 @@ class Session implements CallSession {
     }
     if (!this.isAdmitted(from)) {
       this.count("unadmittedPeer");
+      return;
+    }
+    if (!this.controlAllowed()) { this.count("controlGateClosed"); return; }
+    // Bound the shared wire before any JSON parser, including moderation.
+    if (typeof data !== "string" || data.length > TRANSCRIPT_MAX_BYTES ||
+        new TextEncoder().encode(data).byteLength > TRANSCRIPT_MAX_BYTES) {
+      this.count("controlRejected"); return;
+    }
+    let envelope: unknown;
+    try { envelope = JSON.parse(data); } catch { this.count("controlRejected"); return; }
+    if (envelope && typeof envelope === "object" && (envelope as { kind?: unknown }).kind === "transcript") {
+      const transcript = parseTranscript(envelope);
+      if (!transcript) { this.count("transcriptRejected"); return; }
+      this.emit("transcript", { sessionId: this.sessionId, generation, from: { ...from }, message: transcript });
       return;
     }
     const message = parseModeration(data);
@@ -681,16 +728,25 @@ class Session implements CallSession {
     if (this.trafficStopMs !== null) deadlines.push(now + this.trafficStopMs);
     if (deadlines.length === 0) return;
     const deadline = Math.min(...deadlines);
+    const stopAtDeadline = () => {
+      this.trafficStopTimer = undefined;
+      if (this.phase !== "joined" && this.phase !== "joining") return;
+      // Timer scheduling and the wall clock need not advance in lockstep.
+      // An early callback is not expiry. Preserve the ORIGINAL deadline when
+      // rearming, especially for the relative control-quiet watchdog.
+      const remaining = deadline - this.ports.clock.now();
+      if (remaining > 0) {
+        this.trafficStopTimer = this.ports.timers.setTimeout(stopAtDeadline, remaining);
+        return;
+      }
+      this.trafficStopped = true;
+      this.count("trafficStop");
+      this.dropAllTransports();
+      this.recordError("GRANT_EXPIRED", "Admission grant expired.");
+      this.emitState();
+    };
     this.trafficStopTimer = this.ports.timers.setTimeout(
-      () => {
-        this.trafficStopTimer = undefined;
-        if (this.phase !== "joined" && this.phase !== "joining") return;
-        this.trafficStopped = true;
-        this.count("trafficStop");
-        this.dropAllTransports();
-        this.recordError("GRANT_EXPIRED", "Admission grant expired.");
-        this.emitState();
-      },
+      stopAtDeadline,
       Math.max(0, deadline - now),
     );
   }

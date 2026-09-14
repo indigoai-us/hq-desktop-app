@@ -11,6 +11,8 @@
    * The component owns no network: it renders an injected `OfficeStore` and
    * calls back out for the room actions the host performs.
    */
+  import OfficeMap from "./OfficeMap.svelte";
+  import { memberLabel, initials, humanOfficePeople, type OfficeMember } from "./office-map.js";
   import KnockCard from "./KnockCard.svelte";
   import { isNoteTooLong, KNOCK_LIMITS, type Knock } from "./knocks.js";
   import type { KnockStore } from "./knocks.svelte.js";
@@ -27,6 +29,9 @@
 
   interface Props {
     store: OfficeStore;
+    directory?: readonly OfficeMember[];
+    chimeEnabled?: boolean;
+    ontogglechime?: () => void;
     /** This device's person uid — the row that renders the own controls. */
     selfPersonUid: string;
     /** Optional display names, keyed by person uid. */
@@ -78,6 +83,9 @@
 
   let {
     store,
+    directory = [],
+    chimeEnabled = true,
+    ontogglechime,
     selfPersonUid,
     displayName = (personUid: string) => personUid,
     now = () => Date.now(),
@@ -99,6 +107,10 @@
   }: Props = $props();
 
   /** Re-render heartbeat: countdowns and lease expiry are time-dependent. */
+  let mapMode = $state(true);
+  let query = $state("");
+  let selectedUid = $state<string | null>(null);
+  const named = (uid: string) => memberLabel(uid, displayName);
   let tick = $state(0);
   $effect(() => {
     if (tickMs <= 0) return;
@@ -115,14 +127,17 @@
   });
   const people = $derived.by(() => {
     void tick;
-    return store
-      .visiblePeople()
+    return humanOfficePeople(store.visiblePeople(), directory, selfPersonUid)
       .filter((person) => person.personUid !== selfPersonUid);
   });
   const self = $derived.by(() => {
     void tick;
-    return store.visibleSelf();
+    return store.visibleSelf() ?? humanOfficePeople([], [], selfPersonUid)[0] ?? null;
   });
+
+  const filteredPeople = $derived(people.filter(p => named(p.personUid).toLowerCase().includes(query.toLowerCase())));
+  const mapPeople = $derived(self ? [self, ...filteredPeople] : filteredPeople);
+  const activeUid = $derived(filteredPeople.some(p=>p.personUid===selectedUid) ? selectedUid : filteredPeople[0]?.personUid ?? null);
 
   const CONNECTIVITY_LABEL: Record<OfficeConnectivity, string> = {
     online: "Reachable",
@@ -239,11 +254,11 @@
 
 <section class="office" aria-labelledby="office-title">
   <header class="office-header">
-    <h1 id="office-title">Office</h1>
+    <div><span class="office-eyebrow">MEET / THE OFFICE</span><h1 id="office-title">A place to find each other.</h1>
     <p class="office-lede">
-      Reachability, willingness and whether someone is already in a room are
-      separate. Being online does not mean being available.
-    </p>
+      See who’s around. Drop in, or knock first.
+    </p></div>
+    <div class="office-view-tools">{#if ontogglechime}<button class="office-button sound-toggle" aria-pressed={chimeEnabled} onclick={ontogglechime} aria-label="Knock sound">{chimeEnabled?"♪":"♩"}</button>{/if}<label><span class="sr-live">Find a person</span><input aria-label="Find a person" bind:value={query} placeholder="Find someone…" /></label><button class="office-button" aria-pressed={mapMode} onclick={()=>mapMode=true}>Map</button><button class="office-button" aria-pressed={!mapMode} onclick={()=>mapMode=false}>People</button></div>
   </header>
 
   <p class="sr-live" role="status" aria-live="polite">
@@ -271,7 +286,7 @@
     </div>
   {:else}
     <div class="office-self" data-testid="office-self">
-      <h2>Your office hours</h2>
+      <h2><span class="self-avatar">{initials(named(selfPersonUid))}</span> Your office hours</h2>
       <div
         class="office-segmented"
         role="group"
@@ -359,7 +374,7 @@
     </div>
 
     {#if knocks}
-      <section class="office-knocks" aria-labelledby="office-knocks-title">
+      <section class="office-knocks" class:quiet={received.length === 0 && sent.length === 0 && !sendFeedback && !knocks.state.error && !knocks.state.actionError} aria-labelledby="office-knocks-title">
         <h2 id="office-knocks-title">Knocks</h2>
         {#if sendFeedback}
           <p
@@ -426,16 +441,24 @@
 
     {#if view.status === "loading" && people.length === 0}
       <p class="office-empty" data-testid="office-loading">Loading the office…</p>
-    {:else if people.length === 0}
+    {:else if mapPeople.length === 0}
       <p class="office-empty" data-testid="office-empty">
         Nobody else has office hours in this company yet. Open your door so
         teammates know they can walk in.
       </p>
     {:else}
-      <ul class="office-list" data-testid="office-list">
+      {#if people.length === 0}<p class="office-empty" data-testid="office-empty">Open your door so teammates know they can walk in.</p>{/if}
+      <div class="office-discovery" class:people-mode={!mapMode}>
+        {#if mapMode}<OfficeMap selfUid={selfPersonUid} people={mapPeople} displayName={(uid)=>uid===selfPersonUid?"You":named(uid)} selected={selectedUid===selfPersonUid ? selfPersonUid : activeUid} onselect={(uid)=>{selectedUid=uid;if(uid===selfPersonUid)document.querySelector('[data-testid="office-self"]')?.scrollIntoView({block:'nearest'});}} />{/if}
+      <ul class="office-list" data-testid="office-list" aria-label={mapMode?"Selected office details":"People in this company"}>
+        {#if mapMode && selectedUid===selfPersonUid}
+          <li class="office-row"><span class="office-room-eyebrow">YOUR HOME BASE</span><span class="office-person-avatar" aria-hidden="true">{initials(named(selfPersonUid))}</span><span class="office-name">Your office</span><span class="office-badges"><span>{WILLINGNESS_LABEL[self?.willingness ?? "knock"]}</span><span>{CONNECTIVITY_LABEL[self?.connectivity ?? "offline"]}</span></span><p class="office-empty">Your door stays with you while you work.</p><button class="office-button" onclick={()=>document.querySelector('[data-testid="office-self"]')?.scrollIntoView({block:'nearest'})}>Manage your door</button></li>
+        {/if}
         {#each people as person (person.personUid)}
-          <li class="office-row" data-testid={`office-row-${person.personUid}`}>
-            <span class="office-name">{displayName(person.personUid)}</span>
+          <li class="office-row" hidden={!filteredPeople.includes(person) || (mapMode && (selectedUid===selfPersonUid || person.personUid!==activeUid))} data-testid={`office-row-${person.personUid}`}>
+            <span class="office-room-eyebrow">{mapMode?"ROOM OVERVIEW":"TEAM MEMBER"}</span>
+            <div class="office-room-art" aria-hidden="true"><span class="office-person-avatar">{initials(named(person.personUid))}</span></div>
+            <span class="office-name">{person.room ? "Conversation" : named(person.personUid)+"’s office"}</span>
 
             <span class="office-badges">
               <span
@@ -444,7 +467,7 @@
                 data-value={person.connectivity}
                 data-testid={`office-connectivity-${person.personUid}`}
               >
-                {CONNECTIVITY_LABEL[person.connectivity]}
+                {person.presenceUnknown ? "Availability not shared" : CONNECTIVITY_LABEL[person.connectivity]}
                 {#if remaining(person.connectivityExpiresAt)}
                   <span class="office-expiry">
                     · {remaining(person.connectivityExpiresAt)}
@@ -457,7 +480,7 @@
                 data-value={person.willingness}
                 data-testid={`office-willingness-badge-${person.personUid}`}
               >
-                {WILLINGNESS_LABEL[person.willingness]}
+                {person.presenceUnknown ? "Door status not shared" : WILLINGNESS_LABEL[person.willingness]}
                 {#if remaining(person.willingnessExpiresAt)}
                   <span class="office-expiry">
                     · {remaining(person.willingnessExpiresAt)}
@@ -470,7 +493,7 @@
                 data-value={person.occupancy}
                 data-testid={`office-occupancy-${person.personUid}`}
               >
-                {OCCUPANCY_LABEL[person.occupancy]}
+                {person.presenceUnknown ? "No room shared" : OCCUPANCY_LABEL[person.occupancy]}
                 {#if remaining(person.occupancyExpiresAt)}
                   <span class="office-expiry">
                     · {remaining(person.occupancyExpiresAt)}
@@ -479,6 +502,12 @@
               </span>
             </span>
 
+            <p class="room-description">{person.presenceUnknown ? "Their office is here. Live availability hasn’t been shared yet." : person.room ? "A conversation is happening here. Check the door before joining." : "A home base for working independently. A call starts when people join a room."}</p>
+            <div class="room-occupants"><span class="office-room-eyebrow">{person.room ? "IN THIS ROOM" : "OFFICE OWNER"}</span>
+              {#each (person.room ? person.room.participants.filter(uid=>!uid.startsWith('agt_') && !uid.startsWith('agent:')) : [person.personUid]) as uid}
+                <div class="occupant"><span class="self-avatar">{initials(named(uid))}</span><span>{named(uid)}</span></div>
+              {/each}
+            </div>
             <span class="office-actions">
               {#if knocks && walkIn(person)}
                 <!--
@@ -581,7 +610,13 @@
                     That note is too long. Shorten it and knock again.
                   </span>
                 {/if}
-                <span class="office-actions">
+                <p class="room-description">{person.presenceUnknown ? "Their office is here. Live availability hasn’t been shared yet." : person.room ? "A conversation is happening here. Check the door before joining." : "A home base for working independently. A call starts when people join a room."}</p>
+            <div class="room-occupants"><span class="office-room-eyebrow">{person.room ? "IN THIS ROOM" : "OFFICE OWNER"}</span>
+              {#each (person.room ? person.room.participants.filter(uid=>!uid.startsWith('agt_') && !uid.startsWith('agent:')) : [person.personUid]) as uid}
+                <div class="occupant"><span class="self-avatar">{initials(named(uid))}</span><span>{named(uid)}</span></div>
+              {/each}
+            </div>
+            <span class="office-actions">
                   <button
                     type="button"
                     class="office-button office-button-primary"
@@ -608,6 +643,9 @@
           </li>
         {/each}
       </ul>
+      <p class="office-presence-note">Being online does not mean being available. Each door shows its own entry policy.</p>
+      {#if filteredPeople.length===0}<p class="office-empty">No people match your search.</p>{/if}
+      </div>
 
       {#if view.nextCursor}
         <button
@@ -871,4 +909,12 @@
     color: var(--v4-text-3);
     font-size: var(--type-secondary, 14px);
   }
+
+  .office{padding:24px;gap:20px;min-height:680px;background:var(--v4-ground,#151817);font-family:var(--font-sans,system-ui)}
+  .office-header{display:flex;align-items:center;justify-content:space-between;gap:18px;order:0}.office-header h1{font-weight:500;letter-spacing:-.6px;margin:7px 0;font-size:var(--type-detail,24px)}.office-eyebrow,.office-room-eyebrow{font:11px ui-monospace,monospace;letter-spacing:1.3px;color:var(--v4-text-3,#8f9d93)}.office-view-tools{display:flex;gap:5px;align-items:center}.office-view-tools input{width:155px;padding:9px 12px;border:1px solid var(--v4-hairline,#ffffff16);border-radius:7px;background:var(--v4-inset,#ffffff04);color:inherit;font:inherit;font-size:12px}.office-lede{color:var(--v4-text-2,#a4b0a8);font-size:13px}
+  .office-duration select{padding:8px;border-radius:7px;border:1px solid var(--v4-hairline,#ffffff20);background:var(--v4-inset,#ffffff05);color:inherit;font:inherit;font-size:12px}
+  .office-presence-note{grid-column:1/-1;font-size:11px;color:var(--v4-text-3,#9aa99e);margin:10px 0 0}.office-discovery{display:grid;grid-template-columns:minmax(350px,1fr) 260px;gap:0;order:1;min-height:520px}.office-discovery.people-mode{display:block}.office-list{padding:24px;border:1px solid var(--v4-hairline,#ffffff14);border-radius:12px;background:var(--v4-ground,#191e1b);gap:15px}.office-row{border:0;padding:0;flex-direction:column;align-items:flex-start;gap:18px}.office-row[hidden]{display:none}.office-name{font-size:21px;font-weight:500;overflow-wrap:anywhere}.office-badges{flex-direction:column;gap:8px}.office-badge{border:0;padding:0;font-size:12px;color:var(--v4-text-2,#b5c2b9)}.office-person-avatar,.self-avatar{display:inline-grid;place-items:center;background:var(--v4-inset,#6f88732a);border:1px solid var(--v4-hairline,#ffffff20);border-radius:50%;width:54px;height:54px;font-size:17px}.office-person-avatar{margin:14px 0;box-shadow:0 12px 35px #0002}.office-actions{flex-wrap:wrap}.office-button-primary{background:var(--v4-text-1,#e0e9e2);color:var(--v4-ground,#18221b);border-color:transparent}.office-button,.office-segment{font-size:12px;padding:9px 12px;border-color:var(--v4-hairline,#ffffff20);border-radius:7px}.office-actions .office-soon{white-space:normal;line-height:1.7}.office-self{order:3;flex-direction:row;align-items:center;flex-wrap:wrap;gap:12px;background:var(--v4-raised,#191e1b);border-color:var(--v4-hairline,#ffffff16)}.office-self h2{font-size:13px;display:flex;align-items:center;gap:10px;margin-right:auto}.self-avatar{width:32px;height:32px;font-size:11px}.office-self-state{font-size:12px}.office-self-actions{flex-basis:100%;justify-content:flex-end}.office-knocks{order:2;border:1px solid var(--v4-hairline,#ffffff14);padding:16px;border-radius:10px}.office-knocks h2{font-size:14px}.office-empty{font-size:12px}.office-notice{order:1}.people-mode .office-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}.people-mode .office-row{border:1px solid var(--v4-hairline,#ffffff14);border-radius:10px;padding:16px}.people-mode .office-person-avatar{margin:0}.people-mode .office-name{font-size:16px}
+  .office{--v4-ground:#111413;--v4-raised:#1c2521;--v4-inset:#101513;--v4-text-1:#f0f3f1;--v4-text-2:#a5b3aa;--v4-text-3:#809087;--v4-hairline:#ffffff14;color:var(--v4-text-1);padding:22px 28px;gap:16px;min-height:0}.office-discovery{min-height:470px;grid-template-columns:minmax(350px,1fr) 250px}.office-list{border-radius:0 12px 12px 0;background:#151a17;padding:26px}.office-knocks.quiet{display:flex;align-items:center;gap:16px;padding:0;border:0}.office-knocks.quiet h2{font-size:12px;margin:0}.office-knocks.quiet p{margin:0;color:#829087}.office-self{padding:14px 18px;background:#191e1b}.office-self-actions{flex-basis:auto}.office-header h1{font-size:26px}.office-self-state{margin:0}.office-presence-note{margin:0}
+  .office{height:100%;box-sizing:border-box;overflow:hidden;padding:0;gap:0;min-height:550px}.office-header{padding:20px 26px;border-bottom:1px solid #ffffff12;flex-shrink:0}.office-header h1{font-size:24px}.office-discovery{flex:1;min-height:0;overflow:hidden;grid-template-columns:minmax(350px,1fr) 290px}.office-list{border:0;border-left:1px solid #ffffff12;border-radius:0;overflow:auto;display:block}.office-row{gap:14px}.office-room-art{height:112px;width:100%;display:grid;place-items:center;position:relative;background:radial-gradient(ellipse,#55756322,transparent 70%);flex-shrink:0}.office-room-art:before{content:"";position:absolute;width:110px;height:74px;transform:rotate(-28deg) skew(25deg);background:linear-gradient(135deg,#344c3e55,#1c2922);border:1px solid #93ae9c55;box-shadow:-10px -10px 0 -9px #9cb9a060,8px 10px 0 #18241e}.office-room-art .office-person-avatar{z-index:1;width:44px;height:44px;margin:0;background:#48584d}.office-name{font-size:22px}.office-badges{gap:5px}.room-description{font-size:12px;line-height:1.7;color:#a5b3aa;margin:0}.room-occupants{border-block:1px solid #ffffff12;width:100%;padding:16px 0;display:grid;gap:12px}.occupant{display:flex;align-items:center;gap:10px;font-size:12px}.office-actions{width:100%;margin-top:auto}.office-actions button{width:100%}.office-self{border:0;border-top:1px solid #ffffff14;border-radius:0;flex-shrink:0;padding:12px 22px;gap:10px}.office-self-actions{gap:6px}.office-self h2{margin:0 auto 0 0}.office-knocks.quiet{display:none;height:28px;flex-shrink:0;padding:0 24px;background:#111714}.office-knocks:not(.quiet){max-height:180px;overflow:auto;margin:0;border-radius:0}.office-presence-note{display:none}.office-expiry{font-variant-numeric:tabular-nums}.people-mode .office-room-art{display:none}.people-mode .room-description,.people-mode .room-occupants{display:none}
+  @media(max-width:950px){.office-discovery{grid-template-columns:1fr}.office-header{flex-wrap:wrap}.office-row{flex-direction:row;align-items:center}.office-badges{flex-direction:row}.office-room-eyebrow{flex-basis:100%}.office-self-actions{justify-content:flex-start}}
 </style>

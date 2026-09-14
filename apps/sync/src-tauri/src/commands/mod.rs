@@ -83,3 +83,9 @@ pub mod version_gate;
 pub mod widget;
 pub mod windows_teardown_probe;
 pub mod workspaces;
+
+pub mod meet_transcription;
+
+pub mod meet_transcript_outbox;
+
+pub mod meet_transcript_projection;

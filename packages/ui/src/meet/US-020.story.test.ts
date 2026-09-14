@@ -324,6 +324,19 @@ describe("US-020 e2e 3: only an authorized host sees a moderation control", () =
     expect(testid(root, "control-leave")).not.toBeNull();
   });
 
+  it("dismisses call options outside the menu while preserving inside interaction", () => {
+    const root = render(MediaControls, { role: "participant", micMuted: true, cameraOff: true });
+    const menu = root.querySelector("details") as HTMLDetailsElement;
+    menu.open = true;
+    menu.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect(menu.open).toBe(true);
+    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect(menu.open).toBe(false);
+    menu.open = true;
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(menu.open).toBe(false);
+  });
+
   it("gives a host and a cohost the same moderation surface, with no unmute", () => {
     for (const role of ["host", "cohost"] as const) {
       expect(canModerate(role)).toBe(true);

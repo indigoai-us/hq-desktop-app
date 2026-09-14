@@ -179,6 +179,11 @@ export interface CallWindowHandle {
   readonly consent: ConsentGate | null;
   readonly content: ContentDeliveryGate;
   state(): CallViewState;
+  /** Authoritative room policy and conversation projection. */
+  readConversation?(): Promise<unknown>;
+  /** Mint a bounded upload grant while this device is admitted. */
+  beginTranscriptSave?(conversationId: string, streamId: string, recordingInterval?: number): Promise<unknown>;
+  transcriptionSession?(operation: "start"|"pause"|"resume"|"end"|"read", sessionId?: string): Promise<unknown>;
   /** Re-run the identity gate after a recoverable refusal. */
   retryIdentity(): Promise<void>;
   /** Explicit join controls. The only paths to `getUserMedia`. */
@@ -621,8 +626,11 @@ export async function startCallWindow(
       if (envelope) account.accept(envelope);
     }),
   );
-  account.onInvalidate(() => {
-    void invalidate();
+  account.onInvalidate((change) => {
+    // A refreshed same-account generation still invalidates all network grants,
+    // but it is not a tenant switch and must not erase private local notes.
+    const reconnect = change.status === "active" && account.accountId !== null && change.accountId === account.accountId;
+    void invalidate(reconnect);
   });
   listeners.push(
     account.onAuthorityChange((paused) => publish({ authorityPaused: paused })),
@@ -633,7 +641,7 @@ export async function startCallWindow(
    * order that never leaves capture running: tracks first, then the session,
    * then the registry entry.
    */
-  async function invalidate(): Promise<void> {
+  async function invalidate(reconnect = false): Promise<void> {
     if (finished) return;
     finished = true;
     stopSpeaking();
@@ -642,7 +650,7 @@ export async function startCallWindow(
     content.closeAll("account-changed");
     publish({
       status: "error",
-      code: "ACCOUNT_CHANGED",
+      code: reconnect ? "ACCOUNT_RECONNECT_REQUIRED" : "ACCOUNT_CHANGED",
       recoverable: false,
       peerCount: 0,
     });
@@ -672,6 +680,20 @@ export async function startCallWindow(
     }
   }
 
+  let departureSent = false;
+  async function releaseAdmission(): Promise<void> {
+    if (departureSent || !currentGrantId || !account.isCurrent(generation)) return;
+    departureSent = true;
+    // Local signaling teardown does not release the server's participant lease.
+    // Use the most recently reconciled grant, scoped to this exact call/device.
+    const result = await adapter.calls.roomLifecycle(target!.roomId, "leave", {
+      companyUid: target!.companyUid, roomId: target!.roomId,
+      callId: target!.callId, epoch: target!.epoch,
+      deviceId: target!.self.deviceId, grantId: currentGrantId,
+    } as never).catch(() => null);
+    if (!result?.ok) publish({ notice: "Your devices are off. The server could not confirm your departure yet." });
+  }
+
   async function leave(reason = "user-left"): Promise<void> {
     if (finished) return;
     finished = true;
@@ -682,6 +704,7 @@ export async function startCallWindow(
     try {
       await session?.leave();
     } finally {
+      await releaseAdmission();
       publish({ status: "left", peerCount: 0 });
       try {
         await deps.invoke("calls_release", {
@@ -705,6 +728,7 @@ export async function startCallWindow(
     try {
       await session?.dispose();
     } finally {
+      await releaseAdmission();
       publish({ status: "left", peerCount: 0 });
       try {
         await deps.invoke("calls_disposed", { sessionId: target!.sessionId });
@@ -894,8 +918,13 @@ export async function startCallWindow(
     // to prevent.
     const notAdmitted = snapshot.diagnostics.selfNotAdmitted ?? 0;
     const selfId = `${snapshot.self.personUid} ${snapshot.self.deviceId}`;
+    // A grant carries a roster revision but NOT a roster. join() emits that
+    // revision with no admitted entries before the first reconcile. Only the
+    // engine's selfNotAdmitted diagnostic proves an authoritative empty roster;
+    // a populated roster can also be checked directly. Do not permanently
+    // revoke content while waiting for that first roster.
     const rosterKnowsSelf =
-      snapshot.rosterRevision < 1 ||
+      snapshot.admitted.length === 0 ||
       snapshot.admitted.some(
         (entry) => `${entry.personUid} ${entry.deviceId}` === selfId,
       );
@@ -926,7 +955,9 @@ export async function startCallWindow(
       contentPaused &&
       !contentTerminated &&
       !snapshot.trafficStopped &&
-      snapshot.peers.length > 0
+      snapshot.admitted.some(
+        (entry) => `${entry.personUid} ${entry.deviceId}` === selfId,
+      )
     ) {
       contentPaused = false;
       currentPeers = [];
@@ -945,7 +976,9 @@ export async function startCallWindow(
     content.admit(peerIds);
 
     // ---- traffic stop -----------------------------------------------------
-    if (snapshot.trafficStopped && content.open()) {
+    // Re-evaluate even a latched gate: a recoverable quiet stop can outlive
+    // the grant. That later expiry must become permanent before recovery.
+    if (snapshot.trafficStopped) {
       // Two very different conditions arrive as one flag. An expired or
       // terminally refused grant cannot be renewed, so its close is permanent.
       // A control-quiet stop is the watchdog firing while the grant is still
@@ -1262,6 +1295,41 @@ export async function startCallWindow(
 
   const handle: CallWindowHandle = {
     target,
+    async readConversation() {
+      if(finished || !account.isCurrent(generation)) return null;
+      const result = await adapter.calls.getRoom(target!.roomId,target!.companyUid);
+      if(finished || !account.isCurrent(generation)) return null;
+      if(!result.ok)return null;
+      const value=record(result.value);
+      const room=record(value?.room);const call=record(value?.call);
+      if(room?.currentCallId!==target!.callId || call?.epoch!==target!.epoch || call?.callId!==target!.callId)return null;
+      return result.value;
+    },
+    async transcriptionSession(operation, sessionId) {
+      if (finished || !account.isCurrent(generation) || account.authorityPaused || !state.identityResolved || !content.open() || !deviceSigner || !currentGrantId) return null;
+      const envelope = {version:CALLS_VERSION,kind:"transcriptionSession",companyUid:target!.companyUid,roomId:target!.roomId,callId:target!.callId,epoch:target!.epoch,personUid:target!.self.personUid,deviceId:target!.self.deviceId,peerKey:deviceSigner.peerKey,grantId:currentGrantId,sentAt:Date.now(),requestId:crypto.randomUUID(),operation,...(sessionId?{sessionId}:{})};
+      const signature=await deviceSigner.sign(envelope);
+      if(finished || !account.isCurrent(generation) || account.authorityPaused)return null;
+      const result=await adapter.calls.liveTranscript("session",{...envelope,signature});
+      if(finished || !account.isCurrent(generation))return null;
+      return result.ok?result.value:null;
+    },
+    async beginTranscriptSave(conversationId, streamId, recordingInterval) {
+      if (finished || !account.isCurrent(generation) || account.authorityPaused ||
+          !state.identityResolved || !content.open() || !deviceSigner || !currentGrantId) return null;
+      const envelope = {
+        version: CALLS_VERSION, kind: "liveTranscriptBegin", companyUid: target!.companyUid,
+        roomId: target!.roomId, callId: target!.callId, epoch: target!.epoch,
+        personUid: target!.self.personUid, deviceId: target!.self.deviceId,
+        peerKey: deviceSigner.peerKey, grantId: currentGrantId, sentAt: Date.now(),
+        conversationId, streamId, ...(recordingInterval === undefined ? {} : {recordingInterval}),
+      };
+      const signature = await deviceSigner.sign(envelope);
+      if (finished || !account.isCurrent(generation) || account.authorityPaused) return null;
+      const result = await adapter.calls.liveTranscript("begin", { ...envelope, signature });
+      if (finished || !account.isCurrent(generation)) return null;
+      return result.ok ? result.value : null;
+    },
     get session(): CallSession | null {
       return session;
     },

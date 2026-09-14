@@ -56,6 +56,7 @@ export const CALLS_PATHS = {
     `/v1/meet-native/knocks/${encodeURIComponent(knockId)}/${action}`,
   signaling: (operation: string) => `/v1/meet-native/signaling/${operation}`,
   iceConfig: "/v1/meet-native/ice-config",
+  liveTranscript: (operation: string) => `/v1/meet-native/live/${operation}`,
   completionConsent: "/v1/meet-native/completion/consent",
   completion: (operation: string) => `/v1/meet-native/completion/${operation}`,
 } as const;
@@ -117,6 +118,7 @@ export function createUnsupportedCallsApi(
     signalingControl: () => refuse(),
     sendSignal: () => refuse(),
     iceConfig: () => refuse(),
+    liveTranscript: () => refuse(),
     completionConsent: () => refuse(),
     completion: () => refuse(),
   };
@@ -312,6 +314,9 @@ export function createCallsApi(transport: CallsTransport): CallsApi {
           versioned({ ...request }),
         ),
       ),
+
+    liveTranscript: (operation, request) =>
+      guarded(() => transport<Json>("POST", CALLS_PATHS.liveTranscript(operation), request)),
 
     completionConsent: (control) =>
       guarded(() =>

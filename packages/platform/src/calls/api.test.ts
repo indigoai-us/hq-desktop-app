@@ -211,6 +211,14 @@ describe("native calls transport", () => {
     return made;
   }
 
+  it("routes explicit transcription sessions through authorized native fetch", async () => {
+    const {adapter,invocations}=await unlocked();
+    await adapter.calls.liveTranscript("session", {version:"hq-meet/1",operation:"read",signature:"fixture"});
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0].cmd).toBe("hq_pro_fetch");
+    expect(JSON.stringify(invocations[0].args)).toContain("/v1/meet-native/live/session");
+  });
+
   it("invokes the authorized hq-pro routes through hq_pro_fetch", async () => {
     const { adapter, invocations } = await unlocked();
     await adapter.calls.discoverOffice("company_a");

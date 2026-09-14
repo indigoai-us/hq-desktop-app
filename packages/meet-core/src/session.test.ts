@@ -529,3 +529,37 @@ describe("inbound signal dedupe", () => {
     expect(session.snapshot().diagnostics.duplicateSignal).toBe(1);
   });
 });
+
+
+describe("traffic deadline clock alignment", () => {
+  it.each(["grant", "quiet"])("does not classify an early %s timer as expiry or extend its deadline", async (reason) => {
+    let now = 1000;
+    let timer: (() => void) | undefined;
+    let delay = 0;
+    const session = createCallSession({
+      binding, self: alice,
+      ports: {
+        clock: { now: () => now },
+        timers: {
+          setTimeout: (fn, ms) => { timer = fn; delay = ms; return 1; },
+          clearTimeout: () => { timer = undefined; },
+        },
+        signaling: { start: async () => {}, stop: async () => {}, send: async () => {} },
+        media: new FakeMediaPort([]), connections: new FakeConnectionFactory(), random: () => 0,
+      },
+    });
+    await session.join({ ...grantFor(1, reason === "grant" ? 1100 : 10000),
+      ...(reason === "quiet" ? { trafficStopMs: 100 } : {}) });
+    expect(delay).toBe(100);
+    now = 1099;
+    timer!();
+    expect(session.snapshot().trafficStopped).toBe(false);
+    expect(session.snapshot().diagnostics.trafficStop).toBeUndefined();
+    expect(delay).toBe(1);
+    now = 1100;
+    timer!();
+    expect(session.snapshot().trafficStopped).toBe(true);
+    expect(session.snapshot().diagnostics.trafficStop).toBe(1);
+    await session.dispose();
+  });
+});

@@ -37,6 +37,8 @@ import {
   type ModerationMessage,
 } from "./moderation.js";
 
+import { encodeTranscript, type TranscriptMessage } from "./transcript.js";
+
 /** App-level status the UI renders, derived from RTC state plus restarts. */
 export type PeerStatus = "connecting" | "connected" | "reconnecting" | "failed";
 
@@ -253,14 +255,14 @@ export class PeerTransport {
   }
 
   /**
-   * Send one moderation message to this peer over `hq-meet-control`.
+   * Send one moderation or text transcript message to this peer over `hq-meet-control`.
    * Returns false when there is no open channel — the caller surfaces that
    * rather than pretending the request landed.
    */
-  sendControl(message: ModerationMessage): boolean {
+  sendControl(message: ModerationMessage | TranscriptMessage): boolean {
     if (this.closed || this.control?.readyState !== "open") return false;
     try {
-      this.control.send(encodeModeration(message));
+      this.control.send(message.kind === "transcript" ? encodeTranscript(message) : encodeModeration(message));
       return true;
     } catch {
       this.deps.count("controlSendFailed");

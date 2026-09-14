@@ -354,3 +354,38 @@ describe("office store", () => {
     );
   });
 });
+
+it('loads every page atomically and retains the ready layout during refresh', async () => {
+ const h=harness();
+ const s=createOfficeStore({calls:{discoverOffice:h.discover as never,setOfficePreference:h.preference as never,setOfficeConnectivity:h.connectivity as never},selfPersonUid:'prs_self',allPages:true});
+ h.discover.mockResolvedValueOnce(page([person()],{cursor:'second'})).mockResolvedValueOnce(page([person({personUid:'prs_self'})]));
+ await s.load('cmp_a');
+ expect(s.state.people).toHaveLength(2);
+ expect(s.state.self?.personUid).toBe('prs_self');
+ expect(s.state.nextCursor).toBeNull();
+ const pending=deferred<AdapterResult<Json>>();
+ h.discover.mockResolvedValueOnce(page([person({personUid:'prs_new'})],{cursor:'second'})).mockReturnValueOnce(pending.promise);
+ const refresh=s.refresh();
+ await Promise.resolve(); await Promise.resolve();
+ expect(s.state.status).toBe('ready');
+ expect(s.state.people.map(p=>p.personUid)).toEqual(['prs_a','prs_self']);
+ expect(s.state.nextCursor).toBeNull();
+ pending.resolve(page([person({personUid:'prs_self'})])); await refresh;
+ expect(s.state.people.map(p=>p.personUid)).toEqual(['prs_new','prs_self']);
+});
+
+it('clears saving when a background refresh supersedes a preference response', async () => {
+  const h = harness();
+  h.discover.mockResolvedValue(page([person({personUid:'prs_self'})]));
+  const s = store(h);
+  await s.load('cmp_a');
+  const pending = deferred<AdapterResult<Json>>();
+  h.preference.mockReturnValueOnce(pending.promise);
+  const saving = s.setWillingness('open', 90000);
+  expect(s.state.saving).toBe(true);
+  await s.refresh();
+  pending.resolve(ok({}));
+  await saving;
+  expect(s.state.status).toBe('ready');
+  expect(s.state.saving).toBe(false);
+});

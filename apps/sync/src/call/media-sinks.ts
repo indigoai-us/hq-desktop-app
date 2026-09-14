@@ -126,7 +126,11 @@ export function clearRemoteTiles(): void {
  */
 export function applyStream(element: HTMLMediaElement, tileId: string): void {
   const stream = callView.streams[tileId] ?? null;
-  if (element.srcObject === stream) return;
-  element.srcObject = stream;
-  if (stream) void element.play?.()?.catch?.(() => {});
+  const changed = element.srcObject !== stream;
+  if (changed) element.srcObject = stream;
+  // Camera toggles mutate a stream in place. An empty/hidden stream may pause
+  // the element, so stream identity alone is not proof that playback is live.
+  if (stream && (changed || element.paused || element.ended)) {
+    void element.play?.()?.catch?.(() => {});
+  }
 }

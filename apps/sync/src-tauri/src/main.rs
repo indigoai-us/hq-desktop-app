@@ -556,6 +556,13 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::meet_transcript_projection::meet_transcript_project,
+            commands::meet_transcript_projection::meet_personal_transcript_project,
+            commands::meet_transcript_outbox::meet_transcript_outbox_enqueue,
+            commands::meet_transcript_outbox::meet_transcript_outbox_read,
+            commands::meet_transcript_outbox::meet_transcript_outbox_ack,
+            commands::meet_transcription::meet_transcription_status,
+            commands::meet_transcription::meet_transcribe_pcm,
             commands::app::quit_app,
             commands::app::bring_main_window_to_front,
             commands::app::open_settings_window,
