@@ -840,3 +840,29 @@ describe("US-017 e2e 5: the consent-roster barrier tracks audio admission", () =
     await handle.close();
   });
 });
+
+
+describe("US-017 pending capture authority", () => {
+  it.each(["leave", "account-switch", "mute"] as const)("does not resurrect capture after %s", async action => {
+    let resolve!: (value: { getTracks: () => Array<{id: string; kind: string; stop: () => void}> }) => void;
+    const getUserMedia = vi.fn(() => new Promise(r => { resolve = r; }));
+    const harness = bench({ getUserMedia: getUserMedia as never });
+    const handle = await startCallWindow(harness.deps);
+    const capture = handle.setDevice("microphone", true);
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    if (action === "leave") await handle.leave();
+    else if (action === "mute") await handle.setDevice("microphone", false);
+    else {
+      harness.emit(AUTH_SESSION_EVENT, { accountId: "acct-other", generation: 2, status: "active", reason: null });
+      await settle();
+    }
+    const stop = vi.fn();
+    resolve({ getTracks: () => [{ id: "late-audio", kind: "audio", stop }] });
+    await capture;
+    expect(stop).toHaveBeenCalledOnce();
+    expect(handle.media?.tracks()).toEqual([]);
+    expect(handle.state().media.microphone.active).toBe(false);
+    if (action === "mute") expect(handle.session?.mutedKinds()).toContain("audio");
+    await handle.close();
+  });
+});

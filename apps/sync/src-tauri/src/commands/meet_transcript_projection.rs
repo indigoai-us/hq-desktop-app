@@ -8,6 +8,23 @@ use std::{
 };
 use tokio::sync::Mutex;
 static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+async fn require_account(account_id: &str) -> Result<(), String> {
+    let tokens = super::cognito::get_tokens().await
+        .map_err(|_| "Cannot resolve account")?.ok_or("Not signed in")?;
+    if account_id.is_empty() || super::auth::notification_identity_from_tokens(&tokens) != account_id {
+        return Err("Meeting projection account changed".into());
+    }
+    Ok(())
+}
+
+/// Authorization is evaluated after the queue wait, never cached ahead of it.
+async fn lock_authorized<F, Fut>(lock: Arc<Mutex<()>>, authorize: F) -> Result<tokio::sync::OwnedMutexGuard<()>, String>
+where F: FnOnce() -> Fut, Fut: std::future::Future<Output = Result<(), String>> {
+    let guard = lock.lock_owned().await;
+    authorize().await?;
+    Ok(guard)
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Projection {
@@ -286,23 +303,28 @@ pub async fn meet_transcript_project(
             "{}.json",
             hash(format!("{account_id}\0{company_uid}\0{}", projection.source_id).as_bytes())
         ));
-    let guard = LOCK
-        .get_or_init(|| Arc::new(Mutex::new(())))
-        .clone()
-        .lock_owned()
-        .await;
-    tokio::task::spawn_blocking(move || {
+    let guard = lock_authorized(
+        LOCK.get_or_init(|| Arc::new(Mutex::new(()))).clone(),
+        || require_account(&account_id),
+    ).await?;
+    let result_account = account_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
         let _guard = guard;
+        // The blocking pool can queue this work too. Recheck at execution time.
+        tauri::async_runtime::block_on(require_account(&account_id))?;
         protect_sync(&root, &sync_prefix)?;
         protect_sync(&company_path, "/sources/meetings")?;
         let result = project(&company_path, &ledger, projection)?;
         if reveal.unwrap_or(false) {
+            tauri::async_runtime::block_on(require_account(&account_id))?;
             super::desktop_alt::reveal_file_in_manager(Path::new(&result.markdown_path))?;
         }
-        Ok(result)
+        Ok::<Projected, String>(result)
     })
     .await
-    .map_err(|_| "Meeting projection worker failed")?
+    .map_err(|_| "Meeting projection worker failed")??;
+    require_account(&result_account).await?;
+    Ok(result)
 }
 /// Private local solo notes. These never enter the shared upload outbox.
 #[tauri::command]
@@ -337,27 +359,51 @@ pub async fn meet_personal_transcript_project(
             "{}.json",
             hash(format!("{account_id}\0personal-local\0{}", projection.source_id).as_bytes())
         ));
-    let guard = LOCK
-        .get_or_init(|| Arc::new(Mutex::new(())))
-        .clone()
-        .lock_owned()
-        .await;
-    tokio::task::spawn_blocking(move || {
+    let guard = lock_authorized(
+        LOCK.get_or_init(|| Arc::new(Mutex::new(()))).clone(),
+        || require_account(&account_id),
+    ).await?;
+    let result_account = account_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
         let _guard = guard;
+        // The blocking pool can queue this work too. Recheck at execution time.
+        tauri::async_runtime::block_on(require_account(&account_id))?;
         protect_sync(&root, "/personal/sources/meetings")?;
         protect_sync(&personal, "/sources/meetings")?;
         let result = project(&personal, &ledger, projection)?;
         if reveal.unwrap_or(false) {
+            tauri::async_runtime::block_on(require_account(&account_id))?;
             super::desktop_alt::reveal_file_in_manager(Path::new(&result.markdown_path))?;
         }
-        Ok(result)
+        Ok::<Projected, String>(result)
     })
     .await
-    .map_err(|_| "Personal transcript worker failed")?
+    .map_err(|_| "Personal transcript worker failed")??;
+    require_account(&result_account).await?;
+    Ok(result)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn queued_projection_rechecks_identity_before_work() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let lock = Arc::new(Mutex::new(()));
+        let held = lock.clone().lock_owned().await;
+        let current = Arc::new(AtomicBool::new(true));
+        let checked = current.clone();
+        let waiting = tokio::spawn(async move {
+            lock_authorized(lock, || async move {
+                if checked.load(Ordering::SeqCst) { Ok(()) }
+                else { Err("Meeting projection account changed".to_string()) }
+            }).await.map(|_| ())
+        });
+        tokio::task::yield_now().await;
+        current.store(false, Ordering::SeqCst);
+        drop(held);
+        assert_eq!(waiting.await.unwrap(), Err("Meeting projection account changed".to_string()));
+    }
+
     fn input(revision: u64) -> Projection {
         Projection {
             source_id: format!("native-{}", "a".repeat(64)),

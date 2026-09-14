@@ -32,6 +32,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick as svelteTick, unmount } from "svelte";
+import { createSubscriber } from "svelte/reactivity";
 import { failure, ok, type Json } from "@hq/platform";
 
 import { meet } from "../index.js";
@@ -178,6 +179,7 @@ interface PanelOptions {
   respondToKnock?: (knockId: string, action: string) => Promise<unknown>;
   createKnock?: (input: Record<string, unknown>) => Promise<unknown>;
   createRoom?: () => Promise<unknown>;
+  setOfficePreference?: () => Promise<unknown>;
   getRoom?: () => Promise<unknown>;
   sendDm?: (to: string, body: string) => Promise<unknown>;
   osNotifications?: boolean;
@@ -192,6 +194,7 @@ interface PanelHarness {
   createRoom: ReturnType<typeof vi.fn>;
   created: Array<Record<string, unknown>>;
   listCalls: () => number;
+  switchCompany: (companyUid: string) => Promise<void>;
 }
 
 /**
@@ -242,7 +245,7 @@ async function renderPanel(options: PanelOptions = {}): Promise<PanelHarness> {
           options.peerRoom === undefined ? PEER_ROOM : options.peerRoom,
           options.selfRoom,
         ),
-      setOfficePreference: async () => ok({} as Json),
+      setOfficePreference: options.setOfficePreference ?? (async () => ok({} as Json)),
       setOfficeConnectivity: async () => ok({} as Json),
       createRoom,
       getRoom: options.getRoom ?? (async () => ok({ call: { callId: "call_peer", epoch: 4 } } as unknown as Json)),
@@ -282,12 +285,15 @@ async function renderPanel(options: PanelOptions = {}): Promise<PanelHarness> {
 
   host = document.createElement("div");
   document.body.appendChild(host);
+  let boundCompany = COMPANY;
+  let notifyCompany = () => {};
+  const subscribeCompany = createSubscriber(update => { notifyCompany = update; return () => { notifyCompany = () => {}; }; });
   component = mount(OfficePanel as never, {
     target: host,
     props: {
       adapter,
       callsHost,
-      companyUid: COMPANY,
+      get companyUid() { subscribeCompany(); return boundCompany; },
       visible: options.visible ?? true,
       knockPollMs: 1_000,
     } as never,
@@ -303,6 +309,7 @@ async function renderPanel(options: PanelOptions = {}): Promise<PanelHarness> {
     createRoom,
     created,
     listCalls: () => listCount,
+    switchCompany: async (companyUid) => { boundCompany = companyUid; notifyCompany(); flushSync(); await settle(); },
   };
 }
 
@@ -1022,4 +1029,35 @@ it("starts a new room when the cached call has sealed after leaving", async () =
   await settle();
   expect(harness.createRoom).toHaveBeenCalledTimes(2);
   expect(harness.openCallWindow.mock.calls[1][0].callId).toBe('call_self_2');
+});
+
+
+describe("company-fenced room actions", () => {
+  it("does not enter another company after a pending preference resolves", async () => {
+    let resolve!: (value: unknown) => void;
+    const h = await renderPanel({setOfficePreference: () => new Promise(r => { resolve=r; })});
+    testid(h.root, 'office-open-door')!.click();
+    await settle();
+    await h.switchCompany('cmp_b');
+    resolve(ok({} as Json));
+    await settle();
+    expect(h.createRoom).not.toHaveBeenCalled();
+    expect(h.openCallWindow).not.toHaveBeenCalled();
+  });
+  it("discards late rooms after switching away and back without caching them", async () => {
+    let resolve!: (value: unknown) => void;
+    let count=0;
+    const h = await renderPanel({createRoom: () => ++count===1 ? new Promise(r => {resolve=r;}) : Promise.resolve(ok({room:{roomId:'new'},call:{callId:'new-call',epoch:2}} as Json))});
+    testid(h.root, 'office-start-room')!.click();
+    await settle();
+    await h.switchCompany('cmp_b');
+    await h.switchCompany(COMPANY);
+    resolve(ok({room:{roomId:'old'},call:{callId:'old-call',epoch:1}} as Json));
+    await settle();
+    expect(h.openCallWindow).not.toHaveBeenCalled();
+    testid(h.root, 'office-start-room')!.click();
+    await settle();
+    expect(h.createRoom).toHaveBeenCalledTimes(2);
+    expect(h.openCallWindow).toHaveBeenCalledWith(expect.objectContaining({companyUid:COMPANY,roomId:'new'}));
+  });
 });

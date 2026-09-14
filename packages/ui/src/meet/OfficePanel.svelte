@@ -105,6 +105,14 @@
     });
   }
   let opening = $state(false);
+  let roomActionGeneration = 0;
+  function roomAction() {
+    const generation = roomActionGeneration;
+    const company = companyUid;
+    const person = selfPersonUid;
+    const device = deviceId;
+    return { company, current: () => generation === roomActionGeneration && company === companyUid && person === selfPersonUid && device === deviceId };
+  }
   let ready = $state(false);
 
   /**
@@ -193,6 +201,8 @@
    */
   $effect(() => {
     const target = companyUid;
+    roomActionGeneration++;
+    opening = false;
     store.reset(target);
     directory = [];
     // Same tick as the office reset: a knock from the company we just left
@@ -222,6 +232,7 @@
     })();
     return () => {
       cancelled = true;
+      roomActionGeneration++;
     };
   });
 
@@ -431,13 +442,14 @@
    * room on load — an empty room is sealed by the server a minute later, and a
    * room nobody asked for is a call nobody agreed to.
    */
-  async function ensureSelfRoom(): Promise<KnockRoomBinding | null> {
-    if (!companyUid) return null;
+  async function ensureSelfRoom(action: ReturnType<typeof roomAction>): Promise<KnockRoomBinding | null> {
+    if (!action.company || !action.current()) return null;
     const existing = store.visibleSelf()?.room ?? selfRoom;
     if (existing) {
       // Presence and this panel can outlive a call. Revalidate before reopening
       // so Leave followed by Start cannot keep targeting a sealed call.
-      const result = await adapter.calls.getRoom(existing.roomId, companyUid);
+      const result = await adapter.calls.getRoom(existing.roomId, action.company);
+      if (!action.current()) return null;
       if (!result.ok) {
         if (!["CALL_SEALED", "ROOM_NOT_FOUND", "NOT_FOUND"].includes(result.code ?? "")) return null;
       } else {
@@ -452,11 +464,11 @@
       selfRoom = null;
     }
     const created = await adapter.calls.createRoom({
-      companyUid,
+      companyUid: action.company,
       // Company-visible: an open door people can see is the whole point.
       visibility: "company",
     });
-    if (!created.ok) return null;
+    if (!action.current() || !created.ok) return null;
     const payload = asRecord(created.value);
     const room = asRecord(payload.room);
     const call = asRecord(payload.call);
@@ -482,30 +494,33 @@
    * room that does not exist, so this creates (or reuses) the room and walks us
    * into it. No capability: it is ours, and we are its host.
    */
-  async function enterOwnRoom(): Promise<void> {
-    if (opening || !companyUid) return;
+  async function enterOwnRoom(action = roomAction()): Promise<void> {
+    if (opening || !action.company || !action.current()) return;
     opening = true;
     actionError = null;
     try {
-      const room = await ensureSelfRoom();
+      const room = await ensureSelfRoom(action);
+      if (!action.current()) return;
       if (!room) {
         actionError = "The room could not be started. Try again.";
         return;
       }
       await openWindow(room);
       // The roster is what tells everyone else the door is open.
-      void store.refresh();
+      if (action.current()) void store.refresh();
     } catch {
+      if (!action.current()) return;
       actionError = "The call window could not be opened.";
     } finally {
-      opening = false;
+      if (action.current()) opening = false;
     }
   }
 
   /** Say the door is open, then actually open one. */
   async function openDoor(ttlMs: number): Promise<void> {
+    const action = roomAction();
     await store.setWillingness("open", ttlMs);
-    await enterOwnRoom();
+    if (action.current()) await enterOwnRoom(action);
   }
 
   async function knockPerson(

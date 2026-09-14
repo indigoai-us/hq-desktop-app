@@ -1351,6 +1351,7 @@ export async function startCallWindow(
 
     async setDevice(kind: MediaDeviceKind, on: boolean): Promise<void> {
       if (finished) return;
+      if (on && (!account.isCurrent(generation) || account.authorityPaused || contentTerminated)) return;
       const trackKind = kind === "microphone" ? "audio" : "video";
       if (!on) {
         // Order matters: tell the ENGINE first, so no attach between the stop
@@ -1365,7 +1366,12 @@ export async function startCallWindow(
           : mediaController.enableCamera());
         // Unmuting is only ever the LOCAL user's act, and only when the
         // capture actually succeeded.
-        if (state.active) {
+        if (finished || !account.isCurrent(generation) || account.authorityPaused || contentTerminated) {
+          if (kind === "microphone") mediaController.disableMicrophone();
+          else mediaController.disableCamera();
+          return;
+        }
+        if (state.active && mediaController.state()[kind].active) {
           session?.setLocalTrackEnabled(trackKind, true);
           if (kind === "microphone") {
             const [track] = mediaController.tracksFor("microphone");
@@ -1382,9 +1388,14 @@ export async function startCallWindow(
     },
 
     async selectDevice(kind: MediaDeviceKind, deviceId: string): Promise<void> {
-      if (finished) return;
+      if (finished || !account.isCurrent(generation) || account.authorityPaused || contentTerminated) return;
       const before = mediaController.state()[kind].active;
       const state = await mediaController.selectDevice(kind, deviceId);
+      if (finished || !account.isCurrent(generation) || account.authorityPaused || contentTerminated) {
+        if (kind === "microphone") mediaController.disableMicrophone();
+        else mediaController.disableCamera();
+        return;
+      }
       publish({ devices: mediaController.devices() });
       if (!before || !state.active) {
         // The choice is remembered; nothing was opened, and nothing is sent.

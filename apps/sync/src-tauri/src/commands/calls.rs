@@ -230,6 +230,23 @@ impl CallRegistry {
         }
     }
 
+    /// Decide and reserve under the same registry lock. The timestamp identifies
+    /// this reservation so a failed delivery cannot remove a later replacement.
+    fn reserve_open(&mut self, window_exists: bool, target: &CallWindowTarget) -> (OpenDecision, Option<Instant>) {
+        let decision = self.decide_open(window_exists, target);
+        let reservation = if matches!(decision, OpenDecision::Cold | OpenDecision::Warm) {
+            self.arm(target.clone());
+            Some(self.entries[&target.session_id].opened_at)
+        } else { None };
+        (decision, reservation)
+    }
+
+    fn rollback_open(&mut self, session_id: &str, reservation: Instant) {
+        if self.entries.get(session_id).is_some_and(|entry| entry.opened_at == reservation) {
+            self.release(session_id);
+        }
+    }
+
     pub fn arm(&mut self, target: CallWindowTarget) {
         self.entries.insert(
             target.session_id.clone(),
@@ -325,6 +342,8 @@ pub fn release_all_sessions() -> Vec<String> {
 }
 
 static REGISTRY: OnceLock<Mutex<CallRegistry>> = OnceLock::new();
+// Serialize the full reservation/window-creation transaction, including duplicate opens.
+static OPEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn registry() -> &'static Mutex<CallRegistry> {
     REGISTRY.get_or_init(|| Mutex::new(CallRegistry::default()))
@@ -405,10 +424,11 @@ pub async fn calls_open_window(
 ) -> Result<CallOpenResult, String> {
     validate_target(&target)?;
 
+    let _opening = OPEN_LOCK.lock().await;
     let window = app.get_webview_window(CALL_WINDOW_LABEL);
-    let decision = with_registry(|registry| registry.decide_open(window.is_some(), &target));
-
-    match decision {
+    let (decision, reservation) = with_registry(|registry| registry.reserve_open(window.is_some(), &target));
+    let session_id = target.session_id.clone();
+    let result = match decision {
         OpenDecision::Conflict => Err(CALL_ACTIVE.to_string()),
         OpenDecision::Focus => {
             if let Some(window) = window {
@@ -417,26 +437,28 @@ pub async fn calls_open_window(
             Ok(CallOpenResult { focused: true })
         }
         OpenDecision::Warm => {
-            // Store first so a window that is mid-reload still drains exactly
-            // one target, then push it live. Scoped to the call window only.
-            with_registry(|registry| registry.arm(target.clone()));
             app.emit_to(CALL_WINDOW_LABEL, "calls:target", &target)
-                .map_err(|error| error.to_string())?;
-            if let Some(window) = window {
-                let _ = window.set_focus();
-            }
-            Ok(CallOpenResult { focused: false })
+                .map_err(|error| error.to_string())
+                .map(|_| {
+                    if let Some(window) = window { let _ = window.set_focus(); }
+                    CallOpenResult { focused: false }
+                })
         }
         OpenDecision::Cold => {
-            with_registry(|registry| registry.arm(target));
             if let Some(window) = window {
                 let _ = window.set_focus();
-                return Ok(CallOpenResult { focused: false });
+                Ok(CallOpenResult { focused: false })
+            } else {
+                build_call_window(&app).map(|_| CallOpenResult { focused: false })
             }
-            build_call_window(&app)?;
-            Ok(CallOpenResult { focused: false })
+        }
+    };
+    if result.is_err() {
+        if let Some(reservation) = reservation {
+            with_registry(|registry| registry.rollback_open(&session_id, reservation));
         }
     }
+    result
 }
 
 fn build_call_window(app: &AppHandle) -> Result<(), String> {
@@ -559,6 +581,44 @@ mod tests {
             },
             knock: None,
         }
+    }
+
+    #[test]
+    fn simultaneous_open_reservations_choose_one_owner() {
+        let registry = std::sync::Arc::new(Mutex::new(CallRegistry::default()));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = ["s-1", "s-2"].into_iter().map(|id| {
+            let registry = registry.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                registry.lock().unwrap().reserve_open(false, &target(id)).0
+            })
+        }).collect();
+        let decisions: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+        assert_eq!(decisions.iter().filter(|d| **d == OpenDecision::Cold).count(), 1);
+        assert_eq!(decisions.iter().filter(|d| **d == OpenDecision::Conflict).count(), 1);
+        assert_eq!(registry.lock().unwrap().entries.len(), 1);
+    }
+
+    #[test]
+    fn reservation_excludes_other_targets_and_failure_allows_retry() {
+        let mut registry = CallRegistry::default();
+        let (decision, reservation) = registry.reserve_open(false, &target("s-1"));
+        assert_eq!(decision, OpenDecision::Cold);
+        assert_eq!(registry.reserve_open(false, &target("s-2")).0, OpenDecision::Conflict);
+        registry.rollback_open("s-1", reservation.unwrap());
+        assert!(registry.take_pending().is_none());
+        assert_eq!(registry.reserve_open(false, &target("s-2")).0, OpenDecision::Cold);
+    }
+
+    #[test]
+    fn failed_reservation_does_not_remove_replacement() {
+        let mut registry = CallRegistry::default();
+        let (_, reservation) = registry.reserve_open(true, &target("s-1"));
+        registry.entries.get_mut("s-1").unwrap().opened_at = reservation.unwrap() + Duration::from_secs(1);
+        registry.rollback_open("s-1", reservation.unwrap());
+        assert!(registry.entries.contains_key("s-1"));
     }
 
     #[test]

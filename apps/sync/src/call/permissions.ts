@@ -210,6 +210,7 @@ export function createMediaController(
   const storage = options.storage ?? null;
   const state: MediaControllerState = { microphone: idle(), camera: idle() };
   const live = new Map<MediaDeviceKind, TrackLike[]>();
+  const captureGeneration: Record<MediaDeviceKind, number> = { microphone: 0, camera: 0 };
   let preferences = readPreferences(storage);
   let devices = readDevices(storage);
 
@@ -269,6 +270,7 @@ export function createMediaController(
     if (state[kind].status === "requesting") return { ...state[kind] };
     if (state[kind].active && !force) return { ...state[kind] };
 
+    const requestGeneration = ++captureGeneration[kind];
     const pinned = deviceId ?? chosen(kind);
     state[kind] = { status: "requesting", active: false, code: null, recovery: null };
     publish();
@@ -280,6 +282,14 @@ export function createMediaController(
       const stream = await options.getUserMedia(
         kind === "microphone" ? { audio: pin } : { video: pin },
       );
+      // Permission prompts can resolve after mute, leave, or account removal.
+      // Every returned track still belongs to us and must be stopped if obsolete.
+      if (requestGeneration !== captureGeneration[kind]) {
+        for (const track of stream.getTracks()) {
+          try { track.stop(); } catch { /* Already ended. */ }
+        }
+        return idle();
+      }
       const tracks = stream
         .getTracks()
         .filter((track) =>
@@ -303,6 +313,7 @@ export function createMediaController(
       publish();
       return { ...state[kind] };
     } catch (error) {
+      if (requestGeneration !== captureGeneration[kind]) return idle();
       const denied = isDenial(error);
       state[kind] = {
         status: denied ? "denied" : "error",
@@ -316,6 +327,7 @@ export function createMediaController(
   }
 
   function disable(kind: MediaDeviceKind): void {
+    captureGeneration[kind]++;
     stop(kind);
     state[kind] = idle();
     remember(kind, false);
@@ -349,6 +361,7 @@ export function createMediaController(
 
     stopAll(): void {
       for (const kind of ["microphone", "camera"] as const) {
+        captureGeneration[kind]++;
         stop(kind);
         // The remembered intent survives: the user's choice is not revoked by
         // the call ending, an account change, or a permission loss.

@@ -240,3 +240,52 @@ describe("media controller", () => {
     });
   });
 });
+
+
+describe("capture cancellation", () => {
+  it.each(["microphone", "camera"] as const)("discards a late %s after stopAll", async kind => {
+    let resolve!: (value: MediaStreamLike) => void;
+    const { media } = controller(() => new Promise(r => { resolve = r; }));
+    const pending = kind === "microphone" ? media.enableMicrophone() : media.enableCamera();
+    media.stopAll("account-changed");
+    const late = track(kind === "microphone" ? "audio" : "video");
+    resolve({ getTracks: () => [late] });
+    expect((await pending).active).toBe(false);
+    expect(late.stop).toHaveBeenCalledOnce();
+    expect(media.tracks()).toEqual([]);
+    expect(media.state()[kind].active).toBe(false);
+  });
+
+  it("does not let a canceled capture replace a newer explicit capture", async () => {
+    const resolves: Array<(value: MediaStreamLike) => void> = [];
+    const { media } = controller(() => new Promise(r => { resolves.push(r); }));
+    const old = media.enableMicrophone();
+    media.disableMicrophone();
+    const current = media.enableMicrophone();
+    const fresh = track("audio", "fresh"), obsolete = track("audio", "obsolete");
+    resolves[1]({ getTracks: () => [fresh] });
+    await current;
+    resolves[0]({ getTracks: () => [obsolete] });
+    expect((await old).active).toBe(false);
+    expect(obsolete.stop).toHaveBeenCalledOnce();
+    expect(fresh.stop).not.toHaveBeenCalled();
+    expect(media.tracks()).toEqual([fresh]);
+  });
+
+  it("ignores an obsolete rejection after a newer request succeeds", async () => {
+    let reject!: (error: Error) => void;
+    let first = true;
+    const fresh = track("audio");
+    const { media } = controller(() => {
+      if (first) { first = false; return new Promise((_resolve, r) => { reject = r; }); }
+      return Promise.resolve({ getTracks: () => [fresh] });
+    });
+    const old = media.enableMicrophone();
+    media.disableMicrophone();
+    await media.enableMicrophone();
+    reject(new Error("old request failed"));
+    await old;
+    expect(media.state().microphone.active).toBe(true);
+    expect(media.tracks()).toEqual([fresh]);
+  });
+});
