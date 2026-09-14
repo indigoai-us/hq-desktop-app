@@ -3,6 +3,13 @@
   export const EVENT_SHOW = 'capture-toast:show';
   /** App-wide event; only applied when payload.id matches the shown record. */
   export const EVENT_UPDATED = 'capture:updated';
+  /**
+   * Native undo, emitted by the transient ⌘Z/Ctrl+Z global binding Rust arms
+   * while this toast is up. The toast window is non-activating, so it is
+   * never the key window and the DOM `onkeydown` below can never see ⌘Z —
+   * this event is the real delivery path for the advertised shortcut.
+   */
+  export const EVENT_UNDO = 'capture-toast:undo';
 
   /** Auto-dismiss timeout (ms) after `capture-toast:show`, per the design mock. */
   export const AUTO_DISMISS_MS = 6000;
@@ -48,6 +55,14 @@
   let thumbFailed = $state(false);
   /** Why the thumbnail failed — surfaced so a broken preview is never silent. */
   let thumbError = $state<string | null>(null);
+
+  /**
+   * True once the user has actually reached into the toast (clicked it, or
+   * started a note), which is what makes the window focusable and therefore
+   * what makes its DOM key handling reachable at all. The key hints are gated
+   * on this so the toast never advertises a shortcut it cannot receive.
+   */
+  let engaged = $state(false);
 
   let noteEditing = $state(false);
   let noteValue = $state('');
@@ -166,6 +181,7 @@
     thumbSrc = null;
     thumbFailed = false;
     thumbError = null;
+    engaged = false;
     noteEditing = false;
     noteValue = '';
     pickerOpen = false;
@@ -258,6 +274,7 @@
 
   async function startNoteEdit(): Promise<void> {
     if (!record || noteEditing) return;
+    engaged = true;
     beginInteraction();
     await setFocusable(true);
     noteValue = record.note ?? '';
@@ -350,6 +367,7 @@
   }
 
   function onToastClick() {
+    engaged = true;
     beginInteraction();
     void setFocusable(true);
   }
@@ -407,11 +425,20 @@
     if (!hasTauri()) return;
     let unlistenShow: UnlistenFn | undefined;
     let unlistenUpdated: UnlistenFn | undefined;
+    let unlistenUndo: UnlistenFn | undefined;
     void listen<IdeaCapture>(EVENT_SHOW, (ev) => onShow(ev.payload)).then((fn) => {
       unlistenShow = safeUnlisten(fn);
     });
     void listen<IdeaCapture>(EVENT_UPDATED, (ev) => onUpdated(ev.payload)).then((fn) => {
       unlistenUpdated = safeUnlisten(fn);
+    });
+    void listen(EVENT_UNDO, () => {
+      // Same guard the DOM handler applies: no record, or already undone,
+      // means there is nothing to undo.
+      if (!record || phase === 'undone') return;
+      void undo();
+    }).then((fn) => {
+      unlistenUndo = safeUnlisten(fn);
     });
     void invoke('capture_toast_ready').catch(() => {});
     return () => {
@@ -419,6 +446,7 @@
       if (undoneTimer !== undefined) clearTimeout(undoneTimer);
       safeUnlisten(unlistenShow)();
       safeUnlisten(unlistenUpdated)();
+      safeUnlisten(unlistenUndo)();
     };
   });
 </script>
@@ -504,11 +532,23 @@
         <div class="toast-error" data-testid="capture-toast-error" role="alert">{writeError}</div>
       {/if}
 
-      <div class="toast-keys">
+      <!--
+        HONEST AFFORDANCES. ⌘Z is always shown because Rust arms a real
+        transient global binding for it while this toast is up. The bare-key
+        actions (N / ⌘⌥ / ⏎) travel over the DOM handler, which only works
+        once the window is focusable — so they are only advertised once the
+        user has engaged the toast. Advertising them before that is the lie
+        that sent the owner's ⌘Z into their editor.
+      -->
+      <div class="toast-keys" data-testid="capture-toast-keys" data-engaged={engaged}>
         <div class="tkey"><kbd>⌘Z</kbd>Undo</div>
-        <div class="tkey"><kbd>N</kbd>Add note</div>
-        <div class="tkey"><kbd>⌘⌥</kbd>Reassign</div>
-        <div class="tkey"><kbd>⏎</kbd>Open</div>
+        {#if engaged}
+          <div class="tkey"><kbd>N</kbd>Add note</div>
+          <div class="tkey"><kbd>⌘⌥</kbd>Reassign</div>
+          <div class="tkey"><kbd>⏎</kbd>Open</div>
+        {:else}
+          <div class="tkey" data-testid="capture-toast-engage-hint">Click for note, reassign, open</div>
+        {/if}
       </div>
     {/if}
   </div>

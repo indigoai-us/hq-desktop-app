@@ -468,6 +468,18 @@ fn main() {
                         && commands::capture::is_overlay_escape(shortcut)
                     {
                         commands::capture::on_escape(app);
+                    } else if event.state() == ShortcutState::Pressed
+                        && commands::capture::is_toast_undo(shortcut)
+                    {
+                        // US-005: ⌘Z/Ctrl+Z while the capture toast is up.
+                        // The toast is a non-activating panel and never
+                        // receives keyDown, so this transient registration is
+                        // the only path the advertised undo can arrive on —
+                        // and registering (rather than monitoring) is what
+                        // keeps the keystroke from ALSO undoing in whatever
+                        // app is frontmost. `is_toast_undo` is false the
+                        // instant the toast is gone.
+                        commands::capture::on_toast_undo(app);
                     } else if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {
                         // Toggle the popover: hides it if already up, else shows
                         // it (and hides the desktop window — one at a time).

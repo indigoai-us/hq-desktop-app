@@ -63,6 +63,49 @@ describe('US-005 capture toast (source contract)', () => {
     }
   });
 
+  it('delivers the advertised undo natively, since the toast window can never receive keyDown', () => {
+    // LIVE DEFECT: the toast is built .focusable(false) (non-activating
+    // NSPanel), so its DOM onkeydown is unreachable and the owner's ⌘Z went
+    // to their editor. The fix is a transient global registration — the only
+    // mechanism that both reaches a background app and CONSUMES the key so
+    // the frontmost app does not also act on it.
+    expect(captureRs).toContain('pub fn toast_undo_shortcut()');
+    expect(captureRs).toContain('pub fn is_toast_undo(');
+    expect(captureRs).toContain('capture-toast:undo');
+    expect(mainRs).toContain('commands::capture::is_toast_undo(shortcut)');
+    expect(mainRs).toContain('commands::capture::on_toast_undo(app)');
+    expect(toastSvelte).toContain("'capture-toast:undo'");
+    expect(toastSvelte).toContain('listen(EVENT_UNDO');
+  });
+
+  it('arms the undo binding only on a shown toast and disarms it on dismiss', () => {
+    // A leaked global ⌘Z would eat the user's undo in every other app.
+    expect(captureRs).toContain('set_toast_visible(&app_main, true)');
+    expect(captureRs).toContain('set_toast_visible(&app, false)');
+    const dismissIdx = captureRs.indexOf('pub async fn dismiss_capture_toast');
+    const disarmIdx = captureRs.indexOf('set_toast_visible(&app, false)', dismissIdx);
+    const hideIdx = captureRs.indexOf('window.hide()', dismissIdx);
+    expect(disarmIdx).toBeGreaterThan(dismissIdx);
+    expect(disarmIdx).toBeLessThan(hideIdx);
+    // Backstop: the reconciler force-disarms whenever the toast is off screen.
+    expect(captureRs).toContain('fn apply_toast_binding(');
+    const apply = captureRs.slice(captureRs.indexOf('fn apply_toast_binding('));
+    expect(apply.slice(0, 900)).toContain('is_visible()');
+  });
+
+  it('never advertises a key action it cannot receive', () => {
+    // ⌘Z is unconditional (native binding); the bare keys are gated on the
+    // window actually being focusable.
+    expect(toastSvelte).toContain('data-testid="capture-toast-keys"');
+    expect(toastSvelte).toContain('{#if engaged}');
+    const keysIdx = toastSvelte.indexOf('data-testid="capture-toast-keys"');
+    const block = toastSvelte.slice(keysIdx, keysIdx + 700);
+    expect(block.indexOf('⌘Z')).toBeLessThan(block.indexOf('{#if engaged}'));
+    for (const gated of ['Add note', 'Reassign', '<kbd>⏎</kbd>']) {
+      expect(block.indexOf(gated)).toBeGreaterThan(block.indexOf('{#if engaged}'));
+    }
+  });
+
   it('grants the capture-toast window the minimum capability set', () => {
     // App-defined commands need no per-command token and the window drives no
     // core window/webview API itself, so anything beyond core:default +

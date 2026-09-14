@@ -470,6 +470,130 @@ describe('CaptureToast (hq-idea-board US-005)', () => {
   });
 });
 
+describe('CaptureToast key delivery (live defect: ⌘Z never reached the toast)', () => {
+  /**
+   * THE REGRESSION. The toast window is built `.focusable(false)`, so it is
+   * never the key window and AppKit sends it no keyDown at all. Every prior
+   * test "passed" by dispatching a synthetic DOM keydown onto `window` — a
+   * thing that cannot happen in production. The owner's real ⌘Z went to their
+   * editor and undid real text.
+   *
+   * This test forbids the synthetic keydown and asserts the undo arrives the
+   * way it actually arrives in production: as the `capture-toast:undo` event
+   * the Rust transient global binding emits.
+   */
+  it('undoes from the native capture-toast:undo event, with no DOM keydown at all', async () => {
+    const target = mountToast();
+    show(target, baseRecord());
+    invokeMock.mockClear();
+
+    // Guard the point of the test: if a DOM keydown listener were the only
+    // path, this test would have to dispatch one, and it never does.
+    const undoFn = handlerFor('capture-toast:undo');
+    expect(undoFn, 'the toast must subscribe to the native undo event').toBeTypeOf('function');
+
+    undoFn!({ payload: null });
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-undone"]')?.textContent).toBe(
+        'Undone',
+      );
+    });
+    expect(invokeMock).toHaveBeenCalledWith('ideas_delete_capture', { id: 'rec-1' });
+
+    // And the teardown still funnels through dismiss_capture_toast, which is
+    // what disarms the global binding on the Rust side.
+    invokeMock.mockClear();
+    vi.advanceTimersByTime(1200);
+    flushSync();
+    expect(invokeMock).toHaveBeenCalledWith('dismiss_capture_toast');
+  });
+
+  it('ignores a native undo once the toast is down, so a late event cannot delete a second record', async () => {
+    const target = mountToast();
+    show(target, baseRecord());
+    const undoFn = handlerFor('capture-toast:undo');
+
+    vi.advanceTimersByTime(6000);
+    flushSync();
+    expect(target.querySelector('[data-testid="capture-toast"]')).toBeNull();
+
+    invokeMock.mockClear();
+    undoFn!({ payload: null });
+    flushSync();
+    expect(invokeMock).not.toHaveBeenCalledWith('ideas_delete_capture', expect.anything());
+  });
+
+  it('every dismissal path invokes dismiss_capture_toast — the one call that disarms the binding', async () => {
+    // Auto-dismiss after 6s.
+    let target = mountToast();
+    show(target, baseRecord());
+    invokeMock.mockClear();
+    vi.advanceTimersByTime(6000);
+    flushSync();
+    expect(invokeMock).toHaveBeenCalledWith('dismiss_capture_toast');
+
+    unmount(mounted!);
+    mounted = null;
+    document.body.innerHTML = '';
+    listenMock.mockClear();
+    invokeMock.mockClear();
+
+    // Undo, then its "Undone" confirmation closing.
+    target = mountToast();
+    show(target, baseRecord());
+    handlerFor('capture-toast:undo')!({ payload: null });
+    await vi.waitFor(() => {
+      expect(target.querySelector('[data-testid="capture-toast-undone"]')).not.toBeNull();
+    });
+    invokeMock.mockClear();
+    vi.advanceTimersByTime(1200);
+    flushSync();
+    expect(invokeMock).toHaveBeenCalledWith('dismiss_capture_toast');
+
+    unmount(mounted!);
+    mounted = null;
+    document.body.innerHTML = '';
+    listenMock.mockClear();
+    invokeMock.mockClear();
+
+    // Open-board (⏎ after engaging) also ends in a dismiss.
+    target = mountToast();
+    const toast = show(target, baseRecord());
+    toast.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('dismiss_capture_toast');
+    });
+  });
+
+  /**
+   * HONEST AFFORDANCES. The toast used to advertise four single-key actions
+   * while able to receive none of them. ⌘Z is now real (native binding); the
+   * bare-key actions only work once the window has been made focusable, so
+   * they are only advertised from that point.
+   */
+  it('advertises only ⌘Z until engaged, then the bare-key actions too', async () => {
+    const target = mountToast();
+    const toast = show(target, baseRecord());
+
+    const keys = () => target.querySelector('[data-testid="capture-toast-keys"]') as HTMLElement;
+    expect(keys().dataset.engaged).toBe('false');
+    expect(keys().textContent).toContain('⌘Z');
+    expect(keys().textContent).not.toContain('Add note');
+    expect(keys().textContent).not.toContain('Reassign');
+    expect(target.querySelector('[data-testid="capture-toast-engage-hint"]')).not.toBeNull();
+
+    toast.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(keys().dataset.engaged).toBe('true');
+    expect(keys().textContent).toContain('Add note');
+    expect(keys().textContent).toContain('Reassign');
+    expect(keys().textContent).toContain('Open');
+    expect(target.querySelector('[data-testid="capture-toast-engage-hint"]')).toBeNull();
+  });
+});
+
 describe('CaptureToast thumbnail (live-capture fix BUG 3)', () => {
   it('hq-idea-board loads the thumbnail through the ideas-aware command, never the desktop-scoped one', async () => {
     // The owner's capture landed at companies/indigo/ideas/<id>/image.png and

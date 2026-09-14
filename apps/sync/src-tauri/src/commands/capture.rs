@@ -1911,6 +1911,127 @@ pub fn setup_capture_toast_window(app: &AppHandle) {
     );
 }
 
+/// True while the capture toast is actually on screen. Authoritative source
+/// for the transient undo binding below — the exact shape `OVERLAY_VISIBLE`
+/// has for the overlay's Escape.
+static TOAST_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+/// Asks the toast webview to run its undo path. The keystroke is caught
+/// natively (the toast window is a non-key NSPanel and receives no `keyDown`),
+/// but the *work* stays in the component that already owns the delete, its
+/// "Undone" phase, and its error surface.
+pub const EVENT_TOAST_UNDO: &str = "capture-toast:undo";
+
+/// Undo accelerator, registered **only** while the toast is visible.
+///
+/// THE DEFECT THIS FIXES: the toast advertises ⌘Z but is built
+/// `.focusable(false)` (policy `hq-desktop-app-nonactivating-window-toggle-
+/// focusable-for-input`), so it is never the key window and its DOM
+/// `onkeydown` is unreachable. The owner's ⌘Z went to their editor and undid
+/// real text. A registered hotkey is the only mechanism that both *reaches*
+/// us while another app is frontmost and *consumes* the keystroke so it does
+/// not also reach that app — an `NSEvent` local monitor never sees it, and a
+/// global monitor sees it but cannot swallow it.
+pub fn toast_undo_shortcut() -> Shortcut {
+    #[cfg(target_os = "macos")]
+    {
+        Shortcut::new(Some(Modifiers::META), Code::KeyZ)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Shortcut::new(Some(Modifiers::CONTROL), Code::KeyZ)
+    }
+}
+
+/// True when `shortcut` is the toast's transient undo binding **and** the
+/// toast is up. Gate for the global-shortcut handler in `main.rs`.
+pub fn is_toast_undo(shortcut: &Shortcut) -> bool {
+    shortcut == &toast_undo_shortcut() && TOAST_VISIBLE.load(Ordering::SeqCst)
+}
+
+/// Undo handler entry point (global shortcut, only registered while visible).
+pub fn on_toast_undo(app: &AppHandle) {
+    log(LOG_TAG, MARK_TOAST_UNDO_KEY);
+    if let Err(e) = app.emit_to(TOAST_WINDOW_LABEL, EVENT_TOAST_UNDO, ()) {
+        log(LOG_TAG, &format!("toast undo emit FAILED: {e}"));
+    }
+}
+
+/// Mark: the native undo binding fired for the toast.
+pub const MARK_TOAST_UNDO_KEY: &str = "idea.capture.toast_undo_key";
+
+/// Record whether the toast is up and reconcile the undo binding.
+///
+/// Arming and disarming are the *same* call, so they cannot drift apart.
+pub fn set_toast_visible(app: &AppHandle, visible: bool) {
+    TOAST_VISIBLE.store(visible, Ordering::SeqCst);
+    defer_toast_binding(app);
+}
+
+/// Single worker serializing every toast (un)bind request.
+static TOAST_BINDING_QUEUE: OnceLock<Mutex<Sender<AppHandle>>> = OnceLock::new();
+
+/// Reconcile the transient undo binding off the shortcut callback's stack —
+/// same deadlock reasoning as [`defer_escape_binding`]: the plugin invokes our
+/// handler while holding its shortcuts mutex, and on macOS that handler runs
+/// on the main thread, where `run_on_main_thread` executes inline.
+fn defer_toast_binding(app: &AppHandle) {
+    let queue = TOAST_BINDING_QUEUE.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<AppHandle>();
+        std::thread::Builder::new()
+            .name("hq-capture-toast-binding".into())
+            .spawn(move || {
+                for app in rx {
+                    let app_main = app.clone();
+                    let _ = app.run_on_main_thread(move || apply_toast_binding(&app_main));
+                }
+            })
+            .expect("spawn toast-binding worker");
+        Mutex::new(tx)
+    });
+    let sent = match queue.lock() {
+        Ok(tx) => tx.send(app.clone()).is_ok(),
+        Err(_) => false,
+    };
+    if !sent {
+        log(LOG_TAG, "toast binding: worker queue unavailable, applying inline");
+        let app_main = app.clone();
+        let _ = app.run_on_main_thread(move || apply_toast_binding(&app_main));
+    }
+}
+
+/// MAIN THREAD ONLY. Make the global undo registration match the toast.
+///
+/// The window-visibility cross-check is the teardown backstop: a global ⌘Z
+/// that outlives the toast would eat the user's undo in every other app, so
+/// the flag is never trusted on its own — if the toast window is not actually
+/// on screen the binding goes, whatever any queued task intended.
+fn apply_toast_binding(app: &AppHandle) {
+    let on_screen = app
+        .get_webview_window(TOAST_WINDOW_LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+    if !on_screen {
+        TOAST_VISIBLE.store(false, Ordering::SeqCst);
+    }
+    let want = TOAST_VISIBLE.load(Ordering::SeqCst);
+    let gs = app.global_shortcut();
+    let registered = gs.is_registered(toast_undo_shortcut());
+    match transient_binding_op(want, registered) {
+        EscapeBindingOp::Register => {
+            if let Err(e) = gs.register(toast_undo_shortcut()) {
+                log(LOG_TAG, &format!("toast show: undo register FAILED: {e}"));
+            }
+        }
+        EscapeBindingOp::Unregister => {
+            if let Err(e) = gs.unregister(toast_undo_shortcut()) {
+                log(LOG_TAG, &format!("toast hide: undo unregister FAILED: {e}"));
+            }
+        }
+        EscapeBindingOp::Noop => {}
+    }
+}
+
 /// Bottom-right anchored logical origin for a `w`x`h` window on `display`,
 /// inset by `margin` on both edges. Pure so it is unit-testable without a
 /// live window; `show_capture_toast` is the only caller.
@@ -1959,7 +2080,13 @@ fn show_capture_toast(app: &AppHandle, record: &CaptureRecord) {
         }
 
         match window.show() {
-            Ok(()) => log(LOG_TAG, MARK_TOAST_SHOWN),
+            Ok(()) => {
+                log(LOG_TAG, MARK_TOAST_SHOWN);
+                // Arm the transient undo binding only once the window really
+                // came up: a binding armed for a toast that failed to show
+                // would be a leak from birth.
+                set_toast_visible(&app_main, true);
+            }
             Err(e) => log(LOG_TAG, &format!("toast show FAILED: {e}")),
         }
         let _ = app_main.emit_to(TOAST_WINDOW_LABEL, EVENT_TOAST_SHOW, value.clone());
@@ -2034,7 +2161,16 @@ pub enum EscapeBindingOp {
 /// order-independent: the last task to run always leaves the binding matching
 /// the overlay.
 pub fn escape_binding_op(overlay_visible: bool, currently_registered: bool) -> EscapeBindingOp {
-    match (overlay_visible, currently_registered) {
+    transient_binding_op(overlay_visible, currently_registered)
+}
+
+/// The same reconcile rule, named for every transient global binding that
+/// follows this shape (overlay Escape, capture-toast undo). Re-deriving the op
+/// from the *current* want-state at apply time is what makes a leaked binding
+/// impossible: whichever task runs last leaves the registration matching
+/// reality, regardless of the order show/hide tasks were queued in.
+pub fn transient_binding_op(want: bool, currently_registered: bool) -> EscapeBindingOp {
+    match (want, currently_registered) {
         (true, false) => EscapeBindingOp::Register,
         (false, true) => EscapeBindingOp::Unregister,
         _ => EscapeBindingOp::Noop,
@@ -2201,6 +2337,7 @@ pub fn capture_toast_ready(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     if let Some(window) = app.get_webview_window(TOAST_WINDOW_LABEL) {
         window.show().map_err(|e| e.to_string())?;
+        set_toast_visible(&app, true);
     }
     Ok(())
 }
@@ -2215,6 +2352,12 @@ pub async fn dismiss_capture_toast(app: AppHandle) -> Result<(), String> {
     if let Ok(mut slot) = PENDING_TOAST.lock() {
         *slot = None;
     }
+    // Disarm FIRST. Every dismissal path funnels through this command —
+    // auto-dismiss after 6s, the undo confirmation, open-board, and an
+    // interaction that ends the toast — so this one call is the only place
+    // the undo binding has to be torn down, and it runs before the hide so a
+    // slow main-thread hop cannot leave ⌘Z registered in the meantime.
+    set_toast_visible(&app, false);
     let app_main = app.clone();
     app.run_on_main_thread(move || {
         let Some(window) = app_main.get_webview_window(TOAST_WINDOW_LABEL) else {
@@ -3551,6 +3694,9 @@ mod hq_idea_board_capture_tests {
 
     // ── US-005: capture toast ────────────────────────────────────────────
 
+    /// This file's own source, for the source-contract assertions below.
+    const CAPTURE_SRC: &str = include_str!("capture.rs");
+
     #[test]
     fn hq_idea_board_toast_position_anchors_bottom_right() {
         let display = d(0.0, 0.0, 1440.0, 900.0);
@@ -3650,6 +3796,134 @@ mod hq_idea_board_capture_tests {
         assert!(
             guide_calls >= 2,
             "expected the guide's hide + focusable-toggle call sites, found {guide_calls}"
+        );
+    }
+
+    /// REGRESSION (live defect): the toast advertised ⌘Z but had no way to
+    /// receive it. Its only key handling was a DOM `onkeydown` in a window
+    /// built `.focusable(false)` — never the key window, never sent keyDown —
+    /// so the owner's ⌘Z fell through to their editor and undid real text.
+    ///
+    /// Every prior test passed while the feature was completely unreachable
+    /// because they all dispatched a synthetic DOM event. This one asserts the
+    /// *delivery mechanism*: a real global registration exists, it is gated on
+    /// the toast being visible, and the handler in main.rs routes it.
+    #[test]
+    fn hq_idea_board_toast_undo_is_delivered_by_a_transient_global_binding() {
+        // A registered hotkey (not an NSEvent monitor) is the mechanism: it is
+        // the only one that both reaches a background app and consumes the
+        // keystroke so the frontmost app does not also act on it.
+        let sc = toast_undo_shortcut();
+        assert_eq!(sc.key, Code::KeyZ);
+        // `Modifiers::META` normalizes to SUPER in this crate; compare against
+        // a freshly built shortcut so the assertion tracks the real binding.
+        #[cfg(target_os = "macos")]
+        assert_eq!(sc.mods, Shortcut::new(Some(Modifiers::META), Code::KeyZ).mods);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(sc.mods, Shortcut::new(Some(Modifiers::CONTROL), Code::KeyZ).mods);
+        // Whatever it normalizes to, it must be a *modified* Z — a bare `Z`
+        // (or a bare N/Enter) registered globally would swallow the user's
+        // typing for the toast's whole 6-second life.
+        assert!(!sc.mods.is_empty(), "the undo binding must carry a modifier");
+
+        // Gated on visibility: the binding is inert the instant the toast goes.
+        TOAST_VISIBLE.store(false, Ordering::SeqCst);
+        assert!(
+            !is_toast_undo(&toast_undo_shortcut()),
+            "undo must not fire while the toast is down"
+        );
+        TOAST_VISIBLE.store(true, Ordering::SeqCst);
+        assert!(is_toast_undo(&toast_undo_shortcut()));
+        // Not some other chord.
+        assert!(!is_toast_undo(&capture_shortcut()));
+        TOAST_VISIBLE.store(false, Ordering::SeqCst);
+
+        // The handler actually routes it, and the toast actually receives it.
+        let main_rs = include_str!("../main.rs");
+        assert!(
+            main_rs.contains("commands::capture::is_toast_undo(shortcut)")
+                && main_rs.contains("commands::capture::on_toast_undo(app)"),
+            "main.rs must route the toast undo binding"
+        );
+        let body = fn_body(CAPTURE_SRC, "pub fn on_toast_undo(app: &AppHandle)");
+        assert!(
+            body.contains("EVENT_TOAST_UNDO") && body.contains("emit_to(TOAST_WINDOW_LABEL"),
+            "on_toast_undo must reach the toast window"
+        );
+        let toast_svelte = include_str!("../../../src/components/capture/CaptureToast.svelte");
+        assert!(
+            toast_svelte.contains("'capture-toast:undo'")
+                && toast_svelte.contains("listen(EVENT_UNDO"),
+            "the toast component must listen for the native undo event"
+        );
+    }
+
+    /// SAFETY: a leaked global ⌘Z would eat the user's undo in every app —
+    /// worse than the bug being fixed. Arming and disarming must be exactly
+    /// balanced across every dismissal path.
+    #[test]
+    fn hq_idea_board_toast_undo_binding_cannot_leak_past_dismissal() {
+        // Every (want, registered) pair resolves to a state matching `want`.
+        assert_eq!(transient_binding_op(true, false), EscapeBindingOp::Register);
+        assert_eq!(transient_binding_op(false, true), EscapeBindingOp::Unregister);
+        assert_eq!(transient_binding_op(true, true), EscapeBindingOp::Noop);
+        assert_eq!(transient_binding_op(false, false), EscapeBindingOp::Noop);
+
+        // Order-independence: whatever order queued tasks land in, the last
+        // one applies the *current* want-state, so no interleaving strands a
+        // registration on. Simulate by folding arbitrary apply-order over a
+        // want-state that has already settled to "toast is down".
+        let mut registered = true;
+        for _ in 0..5 {
+            registered = match transient_binding_op(false, registered) {
+                EscapeBindingOp::Register => true,
+                EscapeBindingOp::Unregister => false,
+                EscapeBindingOp::Noop => registered,
+            };
+        }
+        assert!(!registered, "a settled-down toast must end unregistered");
+
+        // ONE teardown funnel: dismiss_capture_toast disarms, and it disarms
+        // before the hide hop so a slow/failed hop cannot strand the binding.
+        let dismiss = fn_body(
+            CAPTURE_SRC,
+            "pub async fn dismiss_capture_toast(app: AppHandle)",
+        );
+        assert!(
+            dismiss.contains("set_toast_visible(&app, false)"),
+            "dismiss_capture_toast must disarm the undo binding"
+        );
+        let disarm_at = dismiss.find("set_toast_visible(&app, false)").unwrap();
+        let hide_at = dismiss.find("window.hide()").unwrap();
+        assert!(disarm_at < hide_at, "disarm must precede the hide hop");
+
+        // The frontend routes auto-dismiss (6s), undo, and open-board through
+        // that same command — so all three teardown paths disarm.
+        let toast_svelte = include_str!("../../../src/components/capture/CaptureToast.svelte");
+        assert!(toast_svelte.contains("invoke('dismiss_capture_toast')"));
+        for path in ["AUTO_DISMISS_MS", "UNDONE_DISMISS_MS"] {
+            assert!(
+                toast_svelte.contains(&format!("}}, {path});")),
+                "{path} timer must land on dismiss()"
+            );
+        }
+
+        // BACKSTOP: the reconciler never trusts the flag alone — a toast that
+        // is not on screen forces the binding off regardless of any queued
+        // intent, so even a webview that dies without calling dismiss cannot
+        // leave ⌘Z registered.
+        let apply = fn_body(CAPTURE_SRC, "fn apply_toast_binding(app: &AppHandle)");
+        assert!(
+            apply.contains("is_visible()") && apply.contains("TOAST_VISIBLE.store(false"),
+            "apply_toast_binding must force-disarm when the toast is not visible"
+        );
+
+        // And arming only happens on a show that actually succeeded.
+        let show = fn_body(CAPTURE_SRC, "fn show_capture_toast(app: &AppHandle, record: &CaptureRecord)");
+        let arm_at = show.find("set_toast_visible(&app_main, true)").expect("show arms");
+        assert!(
+            show[..arm_at].contains("Ok(()) =>"),
+            "arm only on a successful window.show()"
         );
     }
 
