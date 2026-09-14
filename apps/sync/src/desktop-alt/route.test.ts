@@ -45,15 +45,8 @@ function company(overrides: Partial<Workspace>): Workspace {
 }
 
 describe('US-016 Atlas route', () => {
-  it('resolves atlas pending routes and keys the surface', () => {
-    expect(resolvePendingDesktopRoute('atlas')).toEqual({ kind: 'atlas' });
-    expect(getDesktopRouteKey({ kind: 'atlas' })).toBe('atlas');
-    expect(
-      isDesktopRouteActive({ kind: 'atlas' }, { kind: 'atlas' }),
-    ).toBe(true);
-    expect(
-      isDesktopRouteActive({ kind: 'atlas' }, { kind: 'home' }),
-    ).toBe(false);
+  it('sends leftover atlas deep-links to Home', () => {
+    expect(resolvePendingDesktopRoute('atlas')).toEqual({ kind: 'home' });
   });
 });
 

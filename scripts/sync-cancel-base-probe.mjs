@@ -154,6 +154,13 @@ try {
     symlinkSync(sidecarNodeModules, baseSidecarNodeModules, "junction");
   }
   const processSource = readFileSync(processPath, "utf8");
+  // After HQ-DESKTOP-48 the merge-base already has pid-tree cancellation.
+  // Running the injected red-proof exe on that base hangs on Windows CI
+  // (telemetry starts, JSON never prints, spawnSync times out). Skip the
+  // historical red half; the candidate still has its own regressions.
+  if (processSource.includes("HQ-DESKTOP-48")) {
+    console.log("merge-base already contains HQ-DESKTOP-48; skipping red-proof exe");
+  } else {
   const processMarker = "// Tauri commands";
   if (!processSource.includes(processMarker)) {
     throw new Error("base process source has no Tauri-command insertion marker");
@@ -182,7 +189,7 @@ try {
   const output = execFileSync(artifact, ["--sync-cancel-base-probe"], {
     cwd: worktreeRoot,
     encoding: "utf8",
-    timeout: 60_000,
+    timeout: 180_000,
   });
   const raw = output.trim().split(/\r?\n/).at(-1);
   const probe = JSON.parse(raw);
@@ -218,6 +225,7 @@ try {
   } else {
     process.stdout.write(`${JSON.stringify({ ...probe, base: mergeBase })}
 `);
+  }
   }
 } finally {
   try {

@@ -10,14 +10,11 @@ import {
 import { parseLifecycleCard } from "./messaging/channelMessageModels.js";
 
 describe("US-015: Company channel tabs and the Team tab", () => {
-  it("exposes Chat · Atlas · Team · Settings in that order (no Integrations tab)", () => {
-    expect(COMPANY_CHANNEL_TABS.map((t) => t.label)).toEqual([
-      "Chat",
-      "Atlas",
-      "Team",
-      "Settings",
-    ]);
-    // Apps are connected in the HQ console, never in the desktop app.
+  it("exposes only Chat as a desktop company-channel tab", () => {
+    expect(COMPANY_CHANNEL_TABS.map((t) => t.label)).toEqual(["Chat"]);
+    expect(COMPANY_CHANNEL_TABS.some((t) => (t.id as string) === "team")).toBe(false);
+    expect(COMPANY_CHANNEL_TABS.some((t) => (t.id as string) === "settings")).toBe(false);
+    expect(COMPANY_CHANNEL_TABS.some((t) => (t.id as string) === "atlas")).toBe(false);
     expect(COMPANY_CHANNEL_TABS.some((t) => (t.id as string) === "integrations")).toBe(false);
   });
 

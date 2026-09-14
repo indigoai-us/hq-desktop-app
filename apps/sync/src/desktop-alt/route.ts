@@ -441,7 +441,7 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
     case 'mission-control':
       return { kind: 'mission-control' };
     case 'atlas':
-      return { kind: 'atlas' };
+      return { kind: 'home' };
     case 'inbox':
       return { kind: 'inbox' };
     case 'messages':

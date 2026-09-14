@@ -726,7 +726,7 @@ function routeTarget(route: string): EmbeddedNavigationTarget {
       if (!detail) return { kind: 'meetings' };
       break;
     case 'atlas':
-      if (!detail) return { kind: 'atlas' };
+      if (!detail) return { kind: 'home' };
       break;
     case 'library':
       if (!hasExtraSegments && (!detail || detail === 'skills')) {
