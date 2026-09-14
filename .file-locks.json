@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "locks": [
+    {
+      "file": "apps/sync/src/desktop-alt/ideas/IdeaDetail.svelte",
+      "owner": {
+        "project": "hq-idea-board",
+        "story": "US-010",
+        "pid": 62802
+      },
+      "acquired_at": "2026-09-11T08:43:41Z"
+    },
+    {
+      "file": "apps/sync/src/stores/ideaCaptures.ts",
+      "owner": {
+        "project": "hq-idea-board",
+        "story": "US-010",
+        "pid": 62802
+      },
+      "acquired_at": "2026-09-11T08:43:41Z"
+    },
+    {
+      "file": "apps/sync/src-tauri/src/commands/capture.rs",
+      "owner": {
+        "project": "hq-idea-board",
+        "story": "US-010",
+        "pid": 62802
+      },
+      "acquired_at": "2026-09-11T08:43:41Z"
+    }
+  ]
+}

@@ -704,4 +704,23 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         `/v1/work-mesh/threads/${encodeURIComponent(threadId.trim())}/events?companyUid=${encodeURIComponent(companyUid.trim())}${since?.trim() ? `&since=${encodeURIComponent(since.trim())}` : ""}`,
       ),
   };
+
+  readonly ideas: PlatformAdapter["ideas"] = {
+    listCaptures: () => this.call("ideas_list_captures"),
+    setKind: (id, kind, status) =>
+      this.call("ideas_set_kind", { id, kind, status }),
+    correctKind: (id, kind) => this.call("ideas_correct_kind", { id, kind }),
+    setNote: (id, note) => this.call("ideas_set_note", { id, note }),
+    setTags: (id, tags) => this.call("ideas_set_tags", { id, tags }),
+    moveCapture: (id, toCompany) =>
+      this.call("ideas_move_capture", { id, toCompany }),
+    deleteCapture: (id) => this.call("ideas_delete_capture", { id }),
+    listCompanies: () => this.call("ideas_list_companies"),
+    getSettings: () => this.call("ideas_get_settings"),
+    // `get_authorized_file_preview` is the REGISTERED command name
+    // (commands::desktop_alt::get_authorized_file_preview, main.rs
+    // invoke_handler). Note `files.getAuthorizedPreview` above calls
+    // `get_authorized_preview`, which has never been registered.
+    filePreview: (path) => this.call("get_authorized_file_preview", { path }),
+  };
 }

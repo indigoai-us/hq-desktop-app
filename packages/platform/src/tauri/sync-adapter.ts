@@ -1135,6 +1135,28 @@ export function createSyncPlatformAdapter(
           }),
         ),
     },
+
+    /**
+     * Idea Board captures. These are LOCAL native commands — the captures live
+     * on this machine's disk and are written by the capture pipeline, so there
+     * is no hq-pro route behind any of them.
+     */
+    ideas: {
+      listCaptures: () => call('ideas_list_captures'),
+      setKind: (id, kind, status) =>
+        call('ideas_set_kind', { id, kind, status }),
+      correctKind: (id, kind) => call('ideas_correct_kind', { id, kind }),
+      setNote: (id, note) => call('ideas_set_note', { id, note }),
+      setTags: (id, tags) => call('ideas_set_tags', { id, tags }),
+      moveCapture: (id, toCompany) =>
+        call('ideas_move_capture', { id, toCompany }),
+      deleteCapture: (id) => call('ideas_delete_capture', { id }),
+      listCompanies: () => call('ideas_list_companies'),
+      getSettings: () => call('ideas_get_settings'),
+      // `get_authorized_file_preview` is the registered command
+      // (commands::desktop_alt::get_authorized_file_preview).
+      filePreview: (path) => call('get_authorized_file_preview', { path }),
+    },
   };
 
   return adapter;

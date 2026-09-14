@@ -1133,4 +1133,21 @@ export class WebPlatformAdapter implements PlatformAdapter {
         `${WEB_PATHS.workMeshThreadEvents(threadId.trim())}?companyUid=${encodeURIComponent(companyUid.trim())}${since?.trim() ? `&since=${encodeURIComponent(since.trim())}` : ""}`,
       ),
   };
+  /**
+   * Captures are written by the native capture pipeline to the local disk, so
+   * there is nothing for the browser to read. Every call fails closed and the
+   * board renders its error surface rather than an empty-looking board.
+   */
+  readonly ideas: PlatformAdapter["ideas"] = {
+    listCaptures: async () => DESKTOP_ONLY,
+    setKind: async () => DESKTOP_ONLY,
+    correctKind: async () => DESKTOP_ONLY,
+    setNote: async () => DESKTOP_ONLY,
+    setTags: async () => DESKTOP_ONLY,
+    moveCapture: async () => DESKTOP_ONLY,
+    deleteCapture: async () => DESKTOP_ONLY,
+    listCompanies: async () => DESKTOP_ONLY,
+    getSettings: async () => DESKTOP_ONLY,
+    filePreview: async () => DESKTOP_ONLY,
+  };
 }

@@ -1115,6 +1115,103 @@ export interface WorkMeshApi {
   ): AdapterPromise<Json>;
 }
 
+
+// ---------------------------------------------------------------------------
+// Ideas (Idea Board)
+// ---------------------------------------------------------------------------
+
+/** Capture classification produced by the extractor (or corrected by the user). */
+export type IdeaKind =
+  | "unknown"
+  | "x_post"
+  | "article"
+  | "image"
+  | "quote"
+  | "product"
+  | "color";
+
+/** Where a capture sits in the extraction lifecycle. */
+export type IdeaStatus = "pending" | "extracted" | "low_confidence" | "plain";
+
+/** Mirrors the Rust `CaptureProvenance` (serde snake_case). */
+export interface IdeaProvenance {
+  app: string;
+  window_title: string;
+  url: string | null;
+  captured_at: string;
+  display_id: number;
+}
+
+/** Mirrors the Rust `CaptureRecord` (serde snake_case). */
+export interface IdeaCapture {
+  id: string;
+  company_slug: string;
+  kind: IdeaKind;
+  status: IdeaStatus;
+  confidence: number | null;
+  image_path: string;
+  ocr_text: string | null;
+  extracted: Record<string, unknown> | null;
+  tags: string[];
+  extraction_source?: "local" | "model" | "user";
+  provenance: IdeaProvenance;
+  note: string | null;
+  cited_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Authorized preview payload for a capture's on-disk screenshot. */
+export interface IdeaCapturePreview {
+  mimeType?: string;
+  dataBase64?: string;
+}
+
+/**
+ * Idea Board settings, as far as the BOARD needs them. The full settings panel
+ * shape (chord rebinding, image sizing) stays in the host; the board only reads
+ * the sync posture that drives the "local only" badge.
+ */
+export interface IdeaBoardSettings {
+  syncEnabled?: boolean;
+  capturesRoot?: string;
+}
+
+/**
+ * Idea Board captures.
+ *
+ * Desktop-only in practice (captures live on the local disk and are written by
+ * the native capture pipeline), but it is an adapter group like any other so
+ * `packages/ui` never reaches for `invoke` — the web adapter answers
+ * `unavailable` and the board renders its error surface.
+ */
+export interface IdeasApi {
+  /** Every capture for the active company, unsorted. */
+  listCaptures(): AdapterPromise<IdeaCapture[]>;
+  /** Low-confidence verdict: keep or demote the guessed kind. */
+  setKind(
+    id: string,
+    kind: IdeaKind,
+    status: IdeaStatus,
+  ): AdapterPromise<IdeaCapture | null>;
+  /** Authoritative user correction (confidence 1.0, source `user`). */
+  correctKind(id: string, kind: IdeaKind): AdapterPromise<IdeaCapture | null>;
+  setNote(id: string, note: string): AdapterPromise<IdeaCapture | null>;
+  setTags(id: string, tags: string[]): AdapterPromise<IdeaCapture | null>;
+  /** Reassign a capture to another company; it leaves this board. */
+  moveCapture(id: string, toCompany: string): AdapterPromise<void>;
+  deleteCapture(id: string): AdapterPromise<void>;
+  /** Company slugs a capture can be moved to. */
+  listCompanies(): AdapterPromise<string[]>;
+  /** Board-relevant settings; drives the persistent "local only" badge. */
+  getSettings(): AdapterPromise<IdeaBoardSettings>;
+  /**
+   * Authorized data-URL source for a capture's screenshot. Packaged builds
+   * refuse `file://`, so a thumbnail has to come back through the host.
+   */
+  filePreview(path: string): AdapterPromise<IdeaCapturePreview | null>;
+}
+
 // ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
@@ -1147,4 +1244,5 @@ export interface PlatformAdapter {
   readonly sessions: SessionsApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
+  readonly ideas: IdeasApi;
 }

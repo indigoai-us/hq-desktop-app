@@ -88,5 +88,9 @@ export function createDesktopAdapter(
       listThreadEvents: web.workMesh.listThreadEvents,
       migrateSession: web.workMesh.migrateSession,
     },
+
+    // Captures are files on THIS machine, written by the native capture
+    // pipeline — there is no cloud route, so Ideas is wholly local.
+    ideas: tauri.ideas,
   };
 }
