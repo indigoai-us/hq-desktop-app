@@ -95,7 +95,7 @@ describe("channel-status-model (US-005 status popover)", () => {
     );
     expect(row.storyId).toBe("US-005");
     expect(row.progressPercent).toBe(40);
-    expect(row.label).toBe("Agent running · US-005 · 40%");
+    expect(row.label).toBe("Bot running · US-005 · 40%");
     // cwd US-005 must not win when storyId is absent — fall back to open story.
     const fromCwdOnly = liveAgentRowFromSession(
       {
@@ -202,7 +202,7 @@ describe("channel-status-model (US-005 status popover)", () => {
     expect(model.project.previewUrl).toBe("https://preview.example/hq");
     expect(model.liveAgents.length).toBe(1);
     expect(model.liveAgents[0]?.label).toMatch(
-      /^Agent running · US-002 · 25%$/,
+      /^Bot running · US-002 · 25%$/,
     );
     expect(model.activeSessions).toHaveLength(1);
     expect(model.activeSessions[0]?.taskId).toBe("US-002");

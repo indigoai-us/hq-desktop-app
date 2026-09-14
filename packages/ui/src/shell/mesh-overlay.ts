@@ -738,7 +738,7 @@ export function liveAgentsFromWorkThreads(
     out.push({
       id: thread.threadId,
       label: running
-        ? `Agent running${storyId ? ` · ${storyId}` : ""}`
+        ? `Bot running${storyId ? ` · ${storyId}` : ""}`
         : thread.status === "blocked"
           ? `Blocked${storyId ? ` · ${storyId}` : ""}`
           : displayName,

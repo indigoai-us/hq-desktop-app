@@ -79,11 +79,16 @@
     message = "";
     const token = ++generation;
     try {
+      if (!available(tool) && api.providerInstall) {
+        message = `Installing ${TOOLS.find((entry) => entry.id === tool)?.name}…`;
+        await api.providerInstall(tool);
+        await onrefresh();
+      }
       await apply(await api.providerLoginStart(tool), tool, token);
     } catch {
       if (token === generation) {
         loginState = "error";
-        message = "Could not open sign-in. Check that the app is installed, then try again.";
+        message = "Could not connect the coding tool. Please try again.";
       }
     } finally {
       if (token === generation) busy = false;
@@ -118,7 +123,7 @@
     message = "";
     try {
       await onrefresh();
-      if (!TOOLS.some((tool) => connected(tool.id))) message = "No sign-in found yet.";
+      if (!TOOLS.some((tool) => connected(tool.id))) message = "Connect Claude or ChatGPT below to set up its coding tool. Signing in to the desktop app alone may not connect it to HQ.";
     } finally {
       busy = false;
     }
@@ -140,8 +145,8 @@
   });
 </script>
 
-<div class="connect" class:connect--surface={variant === "surface"} data-testid="setup-connect-step" aria-label="Connect an agent">
-  <p class="lead">{lead ?? "Setup runs through your own coding agent. Connect one to continue — you only need one."}</p>
+<div class="connect" class:connect--surface={variant === "surface"} data-testid="setup-connect-step" aria-label="Connect an AI tool">
+  <p class="lead">{lead ?? "Setup runs through your own coding tool. Connect one to continue — you only need one."}</p>
   {#if detail}
     <p class="detail" data-testid="setup-connect-detail">{detail}</p>
   {/if}
@@ -151,7 +156,7 @@
         <span class="provider-text">
           <span class="provider-name">{tool.name}</span>
           <span class="provider-state">
-            {connected(tool.id) ? "Connected" : available(tool.id) ? "Installed, not signed in" : `Not installed — it comes with the ${tool.app} app`}
+            {connected(tool.id) ? "Connected" : available(tool.id) ? "Installed, not signed in" : "Coding tool not installed"}
           </span>
         </span>
         {#if connected(tool.id) && onrun}
@@ -165,14 +170,14 @@
           </SetupButton>
         {:else if connected(tool.id)}
           <span class="provider-check" aria-hidden="true">✓</span>
-        {:else if available(tool.id)}
+        {:else if available(tool.id) || api.providerInstall}
           <SetupButton
             variant="primary"
             data-testid={`setup-connect-${tool.id}-signin`}
             disabled={busy || loginState === "waiting"}
             onclick={() => void connect(tool.id)}
           >
-            {busy && active === tool.id ? "Opening sign-in…" : `Connect ${tool.app}`}
+            {busy && active === tool.id ? "Connecting…" : `Connect ${tool.app}`}
           </SetupButton>
         {:else}
           <SetupButton data-testid={`setup-connect-${tool.id}-install`} onclick={() => void install(tool.id)}>

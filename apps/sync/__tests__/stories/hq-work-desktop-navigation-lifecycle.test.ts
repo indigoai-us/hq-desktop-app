@@ -183,6 +183,12 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
       return options.nativeResults?.[command];
     }
     switch (command) {
+      case 'local_bots_list':
+        return { bots: [] };
+      case 'local_bots_workers':
+        return { workers: [] };
+      case 'agent_session_preflight':
+        return { claudeAvailable: false, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false, grokAvailable: false, grokLoggedIn: false };
       case 'get_auth_session':
         return options.authSession ?? null;
       case 'get_auth_state':

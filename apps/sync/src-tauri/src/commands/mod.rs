@@ -8,6 +8,7 @@ pub mod app;
 pub mod auth;
 pub mod autostart;
 pub mod banner;
+pub mod bots;
 pub mod calls;
 /// US-016 story acceptance tests (test builds only).
 #[cfg(test)]

@@ -6,14 +6,19 @@
     type MentionTarget,
   } from "../mentions.js";
   import { agentAvatarFor } from "./agent-avatars";
+  import type { LocalBotRow } from "@hq/platform";
+  import BotKindChip from "../BotKindChip.svelte";
+  import { botKindFor } from "../bot-kind.js";
 
   interface Props {
     hits: MentionTarget[];
     highlight: number;
     onpick: (t: MentionTarget) => void;
+    /** The user's local bots — tells the Cloud / Local chip which is which. */
+    localBots?: ReadonlyArray<LocalBotRow> | null;
   }
 
-  let { hits, highlight, onpick }: Props = $props();
+  let { hits, highlight, onpick, localBots = null }: Props = $props();
 </script>
 
 <div
@@ -58,7 +63,18 @@
                 data-testid="mention-disambiguator">{pill}</span
               >{/if}</span
           >
-          <span class="mention-sub">{mentionRowSubtitle(hit)}</span>
+          <span class="mention-sub-row">
+            <span class="mention-sub">{mentionRowSubtitle(hit)}</span>
+            {#if hit.participantType === "agent"}
+              {@const kind = botKindFor(hit.participantUid, localBots)}
+              {#if kind}
+                <BotKindChip
+                  {kind}
+                  runtime={localBots?.find((b) => b.agentUid === hit.participantUid)?.runtime ?? null}
+                />
+              {/if}
+            {/if}
+          </span>
         </span>
       </button>
     {/each}
@@ -167,6 +183,13 @@
     letter-spacing: 0.02em;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  .mention-sub-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
   }
 
   .mention-sub {

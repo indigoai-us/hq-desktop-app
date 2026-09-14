@@ -20,10 +20,12 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
+  import type { LocalBotRow } from "@hq/platform";
   import AgentThinkingRow from "./AgentThinkingRow.svelte";
   import {
     clearFromMessages,
     isAgentUid,
+    newestMessageAtFrom,
     startThinking,
     tick,
     type ThinkingEntry,
@@ -169,6 +171,8 @@
     selfPersonUid?: string | null;
     /** Platform seam for opening an external URL from a message-body link. */
     onopenurl?: (url: string) => void;
+    /** The user's local bots — tells the Cloud / Local chip which is which. */
+    localBots?: ReadonlyArray<LocalBotRow> | null;
   }
 
   let {
@@ -200,6 +204,7 @@
     mentionCandidates = [],
     onopenurl,
     tasks = [],
+    localBots = null,
   }: Props = $props();
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -306,13 +311,17 @@
     if (mentions.some((m) => m.participantType === "agent")) return;
     // A 1:1 agent DM thread: the counterpart uid is the agent.
     if (scope === "dm" && withPersonUid && isAgentUid(withPersonUid.trim())) {
+      const uid = withPersonUid.trim();
       agentThinking = startThinking(
         agentThinking,
         {
-          agentUid: withPersonUid.trim(),
-          agentName: root ? messageAuthor(root) : "Agent",
+          agentUid: uid,
+          agentName: root ? messageAuthor(root) : "Bot",
         },
         Date.now(),
+        // Fast responders (local bots): only a reply newer than their last
+        // one may clear the row; see agent-thinking.ts `afterMs`.
+        { afterMs: newestMessageAtFrom([...(root ? [root] : []), ...replies], uid) },
       );
       return;
     }
@@ -1133,6 +1142,7 @@
         <MentionPicker
           hits={mentionHits}
           highlight={mentionHighlight}
+          {localBots}
           onpick={applyMention}
         />
       {/if}
@@ -1616,9 +1626,9 @@
     gap: 6px;
     flex: 0 0 auto;
     margin: 0 12px 16px;
-    padding: 12px 8px 8px 14px;
+    padding: 14px 10px 10px 16px;
     border: 1px solid var(--line2, var(--pop-border));
-    border-radius: 10px;
+    border-radius: 12px;
     background: var(--raised, var(--pop-hover));
     transition: border-color 0.12s;
   }
@@ -1638,7 +1648,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--t1, var(--pop-text));
-    font: 400 14px/1.5 var(--font-ui, inherit);
+    font: 400 13px/1.5 var(--font-ui, inherit);
     caret-color: var(--t1, #f4f4f5);
     box-sizing: border-box;
   }

@@ -17,6 +17,7 @@ export const EMBEDDED_SETTINGS_SECTIONS = [
   'companies',
   'general',
   'agents',
+  'bots',
   'appearance',
   'notifications',
   'sync',

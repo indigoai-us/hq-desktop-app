@@ -389,7 +389,7 @@ describe("buildFindResults", () => {
     const deacon = out.rows.find((r) => r.label === "Deacon");
     expect(ada?.kind).toBe("person");
     expect(deacon?.kind).toBe("agent");
-    expect(deacon?.sublabel).toBe("Agent");
+    expect(deacon?.sublabel).toBe("Bot");
   });
 
   it("does not let a DM title suppress the create row", () => {
@@ -524,7 +524,7 @@ describe("buildPickerCandidates", () => {
       allowEmail: false,
     });
     expect(out.map((c) => c.type)).toEqual(["person", "agent"]);
-    expect(out[1]?.sublabel).toBe("Agent");
+    expect(out[1]?.sublabel).toBe("Bot");
   });
 
   it("labels a nameless agent with the shared fallback", () => {
@@ -535,7 +535,7 @@ describe("buildPickerCandidates", () => {
       picked: [],
       allowEmail: false,
     });
-    expect(out[0]?.label).toBe("Agent scouty01");
+    expect(out[0]?.label).toBe("Bot scouty01");
   });
 
   it("appends an email row only when allowed, valid, and unmatched", () => {
@@ -863,7 +863,7 @@ describe("buildFindResults · welcome-channel exclusion and disambiguation", () 
     expect(byKey.get("dm:prs_jacob1")?.sublabel).toBe("jacob@indigo.ai");
     expect(byKey.get("dm:prs_jacob2")?.sublabel).toBe("jacob@sender.agency");
     expect(byKey.get("dm:agt_jacob")?.kind).toBe("agent");
-    expect(byKey.get("dm:agt_jacob")?.sublabel).toBe("Agent");
+    expect(byKey.get("dm:agt_jacob")?.sublabel).toBe("Bot");
     expect(byKey.get("ch:chn_a")?.sublabel).toBe("Indigo");
     expect(byKey.get("ch:chn_b")?.sublabel).toBe("Sender Agency");
   });

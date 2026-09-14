@@ -207,6 +207,27 @@ describe("SetupChannelIntro with a Setup Agent", () => {
 });
 
 describe("SetupChannelIntro Connect step", () => {
+  it("shows automatic setup creation failures without needing a second click", async () => {
+    await mountIntro({ setupBot: { existing: false, ready: true, starting: false, error: "Setup template unavailable", start: vi.fn() } });
+    await settle();
+    expect(q('[data-testid="setup-bot-error"]')?.textContent).toContain("Setup template unavailable");
+    expect(q('[data-testid="setup-bot-retry"]')).not.toBeNull();
+  });
+  it("offers the setup bot after provider login even when HQ is not configured", async () => {
+    const api = fakeSetupRun({ providers: vi.fn(async () => ({ hqReady: false, claudeAvailable: true, claudeLoggedIn: true, codexAvailable: true, codexLoggedIn: true })) });
+    const start = vi.fn(async () => ({ ok: true as const }));
+    const agent = new SetupAgent(api);
+    await mountIntro({ agent, setupBot: { start, starting: false, existing: null } });
+    await settle();
+    expect(q('[data-testid="setup-connect-step"]')).toBeNull();
+    const run = q('[data-testid="setup-run"]') as HTMLButtonElement;
+    expect(run).not.toBeNull();
+    expect(run.disabled).toBe(false);
+    run.click();
+    await settle();
+    expect(start).toHaveBeenCalledOnce();
+  });
+
   it("asks to connect an agent before Run Setup when none is signed in, then offers Run Setup", async () => {
     const providers = vi.fn(async () => ({ hqReady: true, claudeAvailable: true, claudeLoggedIn: false, codexAvailable: false, codexLoggedIn: false }));
     const providerLoginStart = vi.fn(async () => ({ state: "connected" as const }));

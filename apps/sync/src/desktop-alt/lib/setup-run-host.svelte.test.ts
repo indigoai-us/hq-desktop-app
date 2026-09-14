@@ -297,6 +297,13 @@ describe('createSetupRunApi', () => {
     expect(calls('agent_provider_login_start')[0]).toEqual({ tool: 'claude' });
   });
 
+  it('installs a missing coding runtime through the managed desktop installer', async () => {
+    invoke.mockResolvedValue('installed');
+    const api = createSetupRunApi();
+    await api.providerInstall!('claude');
+    expect(calls('install_session_provider')).toEqual([{ tool: 'claude' }]);
+  });
+
   it('storeSecret hands the value to the Rust side only, never to the session', async () => {
     mockBackend({ list: [summary(SETUP)], preflight: preflight(), commands: ['setup'] });
     const api = createSetupRunApi();

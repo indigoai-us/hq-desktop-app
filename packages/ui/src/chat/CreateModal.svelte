@@ -16,6 +16,12 @@
    */
   import type { Channel } from "./channels.js";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
+  import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
+  import type { LocalBotEntryResult } from "./local-bots.js";
+  import type { AvatarPack } from "../avatars/types.js";
+  import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import type { BotRuntime } from "./create-bot/create-bot-model.js";
+  import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type { SelfIdentity } from "../identity/self.js";
   import {
@@ -103,6 +109,27 @@
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
     /**
+     * Personal local bot (local-bots): the host creates it through the desktop
+     * adapter and opens its DM; the modal collects name + settings. Unset on
+     * hosts without local bots (web) and the row is hidden.
+     */
+    oncreatebot?:
+      | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
+      | null;
+    /** `{ claude: true, codex: false, … }` — which runtimes are signed in here. */
+    botRuntimeReady?: Record<string, boolean> | null;
+    /** Workers a bot can be created from (the flow offers company workers only; none → blank bot only). */
+    botWorkers?: readonly LocalBotWorkerOption[] | null;
+    /** Names the user's local bots already use (availability check). */
+    existingBotNames?: readonly string[] | null;
+    /** Inline runtime sign-in (browser login + status poll) for the Home step. */
+    botSignIn?: RuntimeSignInApi | null;
+    /** A runtime just signed in — the host refreshes `botRuntimeReady`. */
+    onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
+    /** Avatar packs for the Details step; `loadAvatarPacks` fetches lazily. */
+    avatarPacks?: AvatarPack[] | null;
+    loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
+    /**
      * What to create inside a company: a company channel (default) or a
      * project channel — an invite-only channel that is the home of one
      * project (its files, work, and people). #welcome's "Start a project
@@ -125,26 +152,37 @@
     oncreatecompany = null,
     oncreateagent = null,
     agentCompanies = null,
+    oncreatebot = null,
+    botRuntimeReady = null,
+    botWorkers = null,
+    existingBotNames = null,
+    botSignIn = null,
+    onbotsignedin = null,
+    avatarPacks = null,
+    loadAvatarPacks = null,
     initialKind = "channel",
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
   let channelKind = $state<"channel" | "project">(initialKind);
 
-  // ── lifecycle entry points (New company / New agent) ─────────────────────
+  // ── lifecycle entry points (New company / New bot) ───────────────────────
   const agentTargets = $derived<ScopeCompany[]>(
     (agentCompanies ?? scopeCompanies).filter((c) => c.companyUid.trim()),
   );
+  /** A Cloud bot can be added: the host wired it and there is a company to add it to. */
+  const canCreateCloudBot = $derived(!!oncreateagent && agentTargets.length > 0);
+  /** A Local bot can be created on this Mac. */
+  const canCreateLocalBot = $derived(!!oncreatebot);
   const showEntryPoints = $derived(
-    !!oncreatecompany || (!!oncreateagent && agentTargets.length > 0),
+    !!oncreatecompany || canCreateCloudBot || canCreateLocalBot,
   );
-  let entryBusy = $state<"company" | "agent" | null>(null);
+  let entryBusy = $state<"company" | "agent" | "bot" | null>(null);
   let entryError = $state<string | null>(null);
-  let agentPickerOpen = $state(false);
 
   async function runEntry(
-    kind: "company" | "agent",
-    run: () => Promise<EntryPointResult>,
+    kind: "company" | "agent" | "bot",
+    run: () => Promise<EntryPointResult | LocalBotEntryResult>,
   ): Promise<void> {
     if (entryBusy) return;
     entryBusy = kind;
@@ -152,7 +190,6 @@
     try {
       const result = await run();
       if (result.ok) {
-        agentPickerOpen = false;
         onclose();
         return;
       }
@@ -169,20 +206,23 @@
     void runEntry("company", oncreatecompany);
   }
 
-  /** One company: go straight to it. Several: open the inline picker. */
-  function newAgent(): void {
-    if (!oncreateagent) return;
-    if (agentTargets.length === 1) {
-      void runEntry("agent", () => oncreateagent!(agentTargets[0]!.companyUid));
-      return;
-    }
-    entryError = null;
-    agentPickerOpen = !agentPickerOpen;
-  }
-
+  /** Cloud bot: the company's team action posts the create step in its channel. */
   function newAgentFor(companyUid: string): void {
     if (!oncreateagent) return;
     void runEntry("agent", () => oncreateagent!(companyUid));
+  }
+
+  // ── New bot: the create-bot flow (kind → home → details) ──────────────────
+  function newBot(): void {
+    if (!canCreateLocalBot && !canCreateCloudBot) return;
+    entryError = null;
+    step = "bot";
+  }
+
+  /** Local: the flow hands us the CLI input (+ avatar pick); we run the entry. */
+  function submitLocalBot(input: LocalBotCreateInput, extras: CreateBotExtras): Promise<void> {
+    if (!oncreatebot) return Promise.resolve();
+    return runEntry("bot", () => oncreatebot!(input, extras));
   }
 
   function onEntryPickerKey(event: KeyboardEvent): void {
@@ -203,7 +243,7 @@
   }
 
   /** `email` — compose a first message to an address the picker cannot match. */
-  type Step = "find" | "create" | "summary" | "email";
+  type Step = "find" | "create" | "summary" | "bot" | "email";
 
   interface MemberChip {
     key: string;
@@ -426,7 +466,7 @@
             ? "Channels"
             : row.kind === "person"
               ? "People"
-              : "Agents";
+              : "Bots";
         if (label !== heading) {
           items.push({ kind: "heading", label });
           heading = label;
@@ -682,7 +722,7 @@
    * The picker list lives in a nested scroller inside `.create-body`, and at
    * the app's 600px minimum height most of it is below the fold. `nearest`
    * scrolls both ancestors, so the highlighted candidate — including the whole
-   * "Agents" group — is always visible.
+   * "Bots" group — is always visible.
    */
   function scrollPickIntoView(): void {
     scrollOptionIntoView(suggestionsEl, `create-pick-${pickerHighlight}`);
@@ -932,6 +972,12 @@
         backToFind();
         return;
       }
+      if (step === "bot") {
+        if (entryBusy) return;
+        entryError = null;
+        step = "find";
+        return;
+      }
       if (step === "email" && !emailOutcome) {
         backFromEmail();
         return;
@@ -963,6 +1009,7 @@
         event.preventDefault();
         void sendEmailMessage();
       }
+      // The bot flow handles its own ⌘↵ (it knows when the draft is complete).
       return;
     }
     if (event.key !== "Tab") return;
@@ -1179,7 +1226,7 @@
         : "couldn't add them — they're not reachable from here.";
     }
     if (reason === "member-agent-scope") {
-      return "agents can only join channels in a workspace they belong to.";
+      return "bots can only join channels in a workspace they belong to.";
     }
     return "couldn't add them.";
   }
@@ -1557,6 +1604,7 @@
   <div
     bind:this={dialogEl}
     class="create-card"
+    class:create-card--wide={step === "bot"}
     role="dialog"
     aria-modal="true"
     aria-labelledby="create-modal-title"
@@ -1594,8 +1642,8 @@
           role="combobox"
           data-testid="chat-create-query"
           use:focusOnMount
-          placeholder="Search people, agents, and channels — or type a new channel name"
-          aria-label="Search people, agents, and channels, or type a new channel name"
+          placeholder="Search people, bots, and channels — or type a new channel name"
+          aria-label="Search people, bots, and channels, or type a new channel name"
           aria-expanded={flatCount > 0}
           aria-controls="create-results"
           aria-autocomplete="list"
@@ -1606,14 +1654,20 @@
           onkeydown={onFindKey}
         />
       {:else}
-        {#if step === "create" || (step === "email" && !emailOutcome)}
+        {#if step === "create" || step === "bot" || (step === "email" && !emailOutcome)}
           <button
             type="button"
             class="create-back"
             data-testid="chat-create-back"
             aria-label="Back to search"
-            disabled={creating || emailSending}
-            onclick={step === "email" ? backFromEmail : backToFind}
+            disabled={creating || emailSending || entryBusy !== null}
+            onclick={() => {
+              if (step === "bot") {
+                entryError = null;
+                step = "find";
+              } else if (step === "email") backFromEmail();
+              else backToFind();
+            }}
           >
             <span aria-hidden="true">‹</span>
           </button>
@@ -1621,13 +1675,15 @@
         <h2 id="create-modal-title" class="create-title">
           {step === "create"
             ? "New channel"
-            : step === "email"
-              ? emailOutcome
-                ? emailOutcome.state === "delivered"
-                  ? "Message sent"
-                  : "Request sent"
-                : `Message ${emailTarget}`
-              : "Channel created"}
+            : step === "bot"
+              ? "New bot"
+              : step === "email"
+                ? emailOutcome
+                  ? emailOutcome.state === "delivered"
+                    ? "Message sent"
+                    : "Request sent"
+                  : `Message ${emailTarget}`
+                : "Channel created"}
         </h2>
         <span class="create-spacer"></span>
       {/if}
@@ -1774,19 +1830,14 @@
               <span class="create-entry-hint">Opens the setup step in #setup</span>
             </button>
           {/if}
-          {#if oncreateagent && agentTargets.length > 0}
+          {#if canCreateLocalBot || canCreateCloudBot}
             <button
               type="button"
               class="create-row create-entry-row"
-              data-testid="chat-create-new-agent"
-              aria-busy={entryBusy === "agent" ? "true" : undefined}
-              aria-haspopup={agentTargets.length > 1 ? "listbox" : undefined}
-              aria-expanded={agentTargets.length > 1 ? agentPickerOpen : undefined}
-              aria-controls={agentTargets.length > 1
-                ? "create-agent-company-picker"
-                : undefined}
+              data-testid="chat-create-new-bot"
+              aria-busy={entryBusy === "bot" || entryBusy === "agent" ? "true" : undefined}
               disabled={entryBusy !== null}
-              onclick={newAgent}
+              onclick={newBot}
             >
               <span class="create-entry-ic" aria-hidden="true">
                 <svg viewBox="0 0 16 16" fill="none">
@@ -1807,42 +1858,17 @@
                   />
                 </svg>
               </span>
-              <span class="create-entry-label">New agent</span>
+              <span class="create-entry-label">New bot</span>
               <span class="create-entry-hint">
-                {agentTargets.length === 1
-                  ? `In ${agentTargets[0]?.label}`
-                  : "Pick a company"}
+                {canCreateLocalBot && canCreateCloudBot
+                  ? "Runs on this Mac or in the cloud"
+                  : canCreateLocalBot
+                    ? "Runs on this Mac"
+                    : agentTargets.length === 1
+                      ? `In ${agentTargets[0]?.label}`
+                      : "Pick a company"}
               </span>
             </button>
-            {#if agentPickerOpen && agentTargets.length > 1}
-              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-              <div
-                id="create-agent-company-picker"
-                class="create-entry-picker"
-                role="listbox"
-                aria-label="Add an agent to which company?"
-                data-testid="chat-create-agent-picker"
-                onkeydown={onEntryPickerKey}
-              >
-                {#each agentTargets as company (company.companyUid)}
-                  <button
-                    type="button"
-                    class="create-row create-entry-sub"
-                    role="option"
-                    aria-selected="false"
-                    data-testid="chat-create-agent-company"
-                    data-company={company.companyUid}
-                    disabled={entryBusy !== null}
-                    onclick={() => newAgentFor(company.companyUid)}
-                  >
-                    <span class="create-entry-tile" aria-hidden="true">
-                      {company.label.trim().slice(0, 1).toUpperCase()}
-                    </span>
-                    <span class="create-entry-label">{company.label}</span>
-                  </button>
-                {/each}
-              </div>
-            {/if}
           {/if}
           {#if entryError}
             <p
@@ -1855,6 +1881,25 @@
           {/if}
         </div>
       {/if}
+    {:else if step === "bot"}
+      <CreateBotFlow
+        {botRuntimeReady}
+        {botWorkers}
+        existingNames={existingBotNames}
+        agentTargets={canCreateCloudBot ? agentTargets : []}
+        onCloudCreate={canCreateCloudBot ? newAgentFor : null}
+        oncreate={canCreateLocalBot ? submitLocalBot : null}
+        onback={() => {
+          entryError = null;
+          step = "find";
+        }}
+        {entryBusy}
+        {entryError}
+        signInApi={botSignIn}
+        onsignedin={onbotsignedin}
+        {avatarPacks}
+        {loadAvatarPacks}
+      />
     {:else if step === "email"}
       {#if emailOutcome}
         <div
@@ -2095,7 +2140,7 @@
                       <!-- D10: agent-vs-person is THE distinction, so it gets
                            the legible pill; "external" stays secondary. -->
                       {#if chip.type === "agent"}
-                        <span class="create-tag create-tag-strong">agent</span>
+                        <span class="create-tag create-tag-strong">bot</span>
                       {:else if chip.type === "email"}
                         <span class="create-tag">not on hq</span>
                       {/if}
@@ -2120,7 +2165,7 @@
                     role="combobox"
                     data-testid="chat-channel-participants"
                     placeholder={members.length === 0
-                      ? "Add people, agents, or an email…"
+                      ? "Add people, bots, or an email…"
                       : ""}
                     aria-labelledby="create-with-label"
                     aria-expanded={pickerCandidates.length > 0}
@@ -2157,10 +2202,10 @@
                 {#each pickerCandidates as candidate, i (candidate.key)}
                   {#if i === 0 && candidate.type !== "email"}
                     <div class="create-group" role="presentation">
-                      {candidate.type === "agent" ? "Agents" : "People"}
+                      {candidate.type === "agent" ? "Bots" : "People"}
                     </div>
                   {:else if candidate.type === "agent" && pickerCandidates[i - 1]?.type !== "agent"}
-                    <div class="create-group" role="presentation">Agents</div>
+                    <div class="create-group" role="presentation">Bots</div>
                   {/if}
                   <button
                     type="button"
@@ -2372,6 +2417,12 @@
     background: var(--v4-surface-solid, #fff);
     box-shadow: var(--v4-shadow-window, var(--panel-shadow));
     outline: none;
+  }
+
+  /* The bot flow needs room for three cards and a preview rail. */
+  .create-card--wide {
+    width: min(880px, 100%);
+    max-height: min(88vh, 720px);
   }
 
   .create-head {
@@ -2609,14 +2660,12 @@
     min-height: 32px;
   }
 
-  .create-entry-row:disabled,
-  .create-entry-sub:disabled {
+  .create-entry-row:disabled {
     cursor: default;
     opacity: 0.6;
   }
 
-  .create-entry-row:focus-visible,
-  .create-entry-sub:focus-visible {
+  .create-entry-row:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
     outline-offset: -2px;
   }
@@ -2647,31 +2696,6 @@
     flex: 0 0 auto;
     color: var(--t3);
     font-size: 11px;
-  }
-
-  .create-entry-picker {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding-left: 24px;
-  }
-
-  .create-entry-sub {
-    min-height: 28px;
-    padding-top: 4px;
-    padding-bottom: 4px;
-  }
-
-  .create-entry-tile {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 5px;
-    background: var(--raised);
-    color: var(--t2);
-    font: 600 10px/1 var(--font-ui);
-    flex: 0 0 auto;
   }
 
   .create-entry-error {
@@ -2727,6 +2751,11 @@
     outline: none;
   }
 
+  .create-select {
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+  }
   .create-input::placeholder {
     color: var(--t3);
   }

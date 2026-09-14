@@ -39,6 +39,14 @@
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
   import type { ChatSidebarApi, ChatWakeBus } from "./chat-api";
   import type { EntryPointResult } from "./lifecycle-entry-points.js";
+  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption } from "@hq/platform";
+  import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
+  import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import type { BotRuntime } from "./create-bot/create-bot-model.js";
+  import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
+  import type { AvatarPack } from "../avatars/types.js";
+  import { botKindFor } from "./bot-kind.js";
+  import BotKindChip from "./BotKindChip.svelte";
   import {
     shouldArmDirectorySafety,
     shouldBumpDmUnread,
@@ -198,6 +206,24 @@
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
     oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
+    /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
+    oncreatebot?:
+      | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
+      | null;
+    botRuntimeReady?: Record<string, boolean> | null;
+    botWorkers?: readonly LocalBotWorkerOption[] | null;
+    /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
+    existingBotNames?: readonly string[] | null;
+    botSignIn?: RuntimeSignInApi | null;
+    onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
+    avatarPacks?: AvatarPack[] | null;
+    loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
+    /**
+     * The user's own local bots. GET /v1/notify/contacts never lists them, so
+     * they are merged into the contacts the "+" modal searches and invites
+     * from — otherwise a bot could not be added to a channel or group chat.
+     */
+    localBots?: readonly LocalBotRow[] | null;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
@@ -232,6 +258,12 @@
      * in that project is online via the presence store — never from timestamps.
      */
     projectHasPresence?: (row: ConversationRow) => boolean;
+    /**
+     * Host-owned presence for DM rows with a personal local bot (local-bots
+     * US-009): "online" / "offline" from the server's heartbeat verdict, null
+     * for every other row. Never derived from timestamps here.
+     */
+    dmPresence?: (row: ConversationRow) => "online" | "offline" | null;
     /** Host decoration per row: badge, hover card, context-menu actions.
      *  Session metadata may still be loading — never hide the rail for it. */
     rowExtrasLoading?: boolean;
@@ -264,12 +296,22 @@
     onsignout,
     oncreatecompany = null,
     oncreateagent = null,
+    oncreatebot = null,
+    botRuntimeReady = null,
+    botWorkers = null,
+    existingBotNames = null,
+    botSignIn = null,
+    onbotsignedin = null,
+    avatarPacks = null,
+    loadAvatarPacks = null,
+    localBots = null,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     welcomeFirst = false,
     offscreen = false,
     onShellReady,
     projectHasPresence = () => false,
+    dmPresence = () => null,
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
@@ -403,6 +445,11 @@
    * new-channel modals.
    */
   let createOpen = $state(false);
+  const createButtonLabel = $derived(
+    oncreatebot || oncreatecompany || oncreateagent
+      ? "New message, channel, company, or bot"
+      : "New message or channel",
+  );
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
@@ -552,10 +599,10 @@
   );
 
   /**
-   * Companies an agent can be added to: the workspace list, plus any company
+   * Companies a Cloud bot can be added to: the workspace list, plus any company
    * the directory already shows a company channel for. A company created a
    * moment ago has its channel before the workspace list refreshes, and the
-   * "New agent" row must not lag behind it.
+   * "New bot" step must not lag behind it.
    */
   const agentCompanies = $derived.by<ScopeCompany[]>(() => {
     const out = new Map<string, ScopeCompany>();
@@ -643,8 +690,9 @@
 
   // Full people directory (contacts WITHOUT a conversation included) — used
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
+  // The user's own local bots ride along so they can be found and invited.
   const directoryRows = $derived(
-    normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots), {
       pinnedIds: pinsWithSetup,
       dmDots,
       includeContactsWithoutConversation: true,
@@ -1971,12 +2019,8 @@
         class="chat-icon-btn"
         bind:this={plusBtnEl}
         data-testid="chat-new-message"
-        aria-label={oncreatecompany || oncreateagent
-          ? "New message, channel, company, or agent"
-          : "New message or channel"}
-        title={oncreatecompany || oncreateagent
-          ? "New message, channel, company, or agent"
-          : "New message or channel"}
+        aria-label={createButtonLabel}
+        title={createButtonLabel}
         aria-haspopup="dialog"
         aria-expanded={createOpen}
         onclick={openCreateFromButton}
@@ -2687,7 +2731,7 @@
     <CreateModal
       {api}
       rows={[...directoryRows, ...browseRows]}
-      {contacts}
+      contacts={localBotsAsContacts(contacts, localBots)}
       {scopeCompanies}
       createCompanies={createScopeCompanies}
       activeScope={scope}
@@ -2702,6 +2746,14 @@
       {oncreatecompany}
       {oncreateagent}
       {agentCompanies}
+      {oncreatebot}
+      {botRuntimeReady}
+      {botWorkers}
+      {existingBotNames}
+      {botSignIn}
+      {onbotsignedin}
+      {avatarPacks}
+      {loadAvatarPacks}
       initialKind={createKind}
     />
   {/if}
@@ -2817,16 +2869,28 @@
           </span>
         {:else}
           {@const avatar = rowAvatar(row, avatarByUid)}
-          <span
-            class="chat-avatar"
-            aria-hidden="true"
-            data-testid="chat-dm-avatar"
-            data-avatar={avatar.kind}
-          >
-            {#if avatar.src}
-              <img src={avatar.src} alt="" />
-            {:else}
-              {avatar.initials}
+          {@const botPresence = dmPresence(row)}
+          <span class="chat-avatar-wrap" aria-hidden="true">
+            <span
+              class="chat-avatar"
+              data-testid="chat-dm-avatar"
+              data-avatar={avatar.kind}
+              data-bot-presence={botPresence ?? undefined}
+            >
+              {#if avatar.src}
+                <img src={avatar.src} alt="" />
+              {:else}
+                {avatar.initials}
+              {/if}
+            </span>
+            {#if botPresence}
+              <span
+                class="chat-presence-dot"
+                class:offline={botPresence === "offline"}
+                data-testid="chat-bot-presence-dot"
+                data-presence={botPresence}
+                aria-label={botPresence === "online" ? "Bot online" : "Bot offline"}
+              ></span>
             {/if}
           </span>
         {/if}
@@ -2835,6 +2899,15 @@
         {/if}
         <span class="chat-row-copy">
           <span class="chat-row-title">{row.title}</span>
+          {#if row.kind === "dm"}
+            {@const botKind = botKindFor(row.personUid, localBots)}
+            {#if botKind}
+              <BotKindChip
+                kind={botKind}
+                runtime={localBotForRow(localBots ?? [], row)?.runtime ?? null}
+              />
+            {/if}
+          {/if}
           {#if extras?.badge}
             <span class="chat-row-extra-badge" data-testid="chat-row-extra-badge">
               {extras.badge}
@@ -2955,10 +3028,13 @@
     height: auto;
     overflow: hidden;
     border-right: 1px solid var(--line);
+    /* One glass pass only. The window already blurs what is behind it; a
+       second backdrop-filter here re-blurred and re-saturated that result, so
+       `--side-bg` at 18% white painted as near-opaque white instead of the
+       translucent rail the design draws. The concept's `.sidebar` is a flat
+       `var(--side-bg)` over the window glass with no filter and no inner
+       highlight — match it. */
     background: var(--side-bg);
-    backdrop-filter: var(--v4-glass-filter);
-    -webkit-backdrop-filter: var(--v4-glass-filter);
-    box-shadow: inset 1px 0 0 var(--v4-glass-highlight);
     font-family: var(--font-ui);
     color: var(--t1);
     /* border-box is load-bearing: without it, height + padding overflow the
@@ -3243,7 +3319,9 @@
     color: var(--t3);
     font-family: var(--font-mono, inherit);
     font-size: 10px;
+    font-weight: 400;
     font-variant-numeric: tabular-nums;
+    letter-spacing: normal;
   }
 
   /* Real box so the pin control can sit beside the row (not nested in it). */
@@ -3566,6 +3644,16 @@
     background: var(--v4-ok, #42d77d);
   }
 
+  .chat-avatar-wrap {
+    position: relative;
+    display: inline-grid;
+    flex: 0 0 16px;
+  }
+
+  .chat-presence-dot.offline {
+    background: var(--t3, #8a8a8a);
+  }
+
   .chat-avatar {
     display: grid;
     place-items: center;
@@ -3576,6 +3664,13 @@
     background: var(--line2);
     color: var(--t2);
     font: 600 9px var(--font-ui);
+    /* `line-height: 1`, as IdentityMark does. The `font:` shorthand resets
+       line-height to `normal`, and `normal` is the font's own line box —
+       WebKit folds the line gap into it where Chromium does not, so a
+       centred all-caps monogram sat visibly high in the app and looked
+       fine in the browser harness. An explicit number removes the
+       variable. */
+    line-height: 1;
     letter-spacing: 0.02em;
   }
 

@@ -305,7 +305,7 @@ function findRowSublabel(
   label: string,
   companyLabel: CompanyLabelResolver,
 ): string {
-  if (kind === "agent") return "Agent";
+  if (kind === "agent") return "Bot";
   // The email is the one disambiguator two same-named people cannot share.
   if (kind === "person") return row.email?.trim() ?? "";
   if (row.kind === "group") {
@@ -537,7 +537,7 @@ export function buildPickerCandidates(args: {
       personUid: draft.personUid,
       email: draft.email,
       label: draft.label,
-      sublabel: agent ? "Agent" : (draft.email ?? ""),
+      sublabel: agent ? "Bot" : (draft.email ?? ""),
       companyUid: draft.companyUid,
     };
     (agent ? agents : people).push(candidate);

@@ -113,14 +113,11 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
   });
 
   describe('Dock click', () => {
-    it('routes Reopen through the primary surface (desktop window unless setup still owns main)', () => {
+    it('routes Reopen through the primary surface (desktop window even during setup)', () => {
       const src = readMain();
       expect(src).toMatch(/tauri::RunEvent::Reopen/);
       expect(src).toMatch(/ActivationSource::DockIconClick/);
-      // Regression: a Dock click used to call `show_desktop_window` directly,
-      // bypassing the onboarding guard every other activation source honours.
-      // A machine whose lifecycle is still NeedsInstall landed in a workspace
-      // with no HQ tree underneath it and hit the Sessions dead end.
+      // Keep Dock, tray, and second-launch activation on the same dispatcher.
       expect(src).toMatch(/RunEvent::Reopen[\s\S]{0,1200}?tray::activate_primary_surface\(_app_handle\)/);
       expect(src).not.toMatch(/RunEvent::Reopen[\s\S]{0,1200}?tray::show_desktop_window\(_app_handle\)/);
       expect(src).not.toMatch(/RunEvent::Reopen[\s\S]{0,900}?show_window_at_tray/);
@@ -157,10 +154,12 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       expect(body.slice(0, body.indexOf('\n}\n'))).not.toMatch(/\.hide\(\)/);
     });
 
-    it('falls back to the popover sign-in surface when the desktop gate rejects', () => {
+    it('logs desktop opening failure without replacing it with the popover', () => {
       const src = readRepo('src-tauri/src/tray.rs');
       const body = src.slice(src.indexOf('pub fn show_desktop_window'));
-      expect(body.slice(0, body.indexOf('\n}\n'))).toMatch(/show_popover_window/);
+      const show = body.slice(0, body.indexOf('\n}\n'));
+      expect(show).not.toMatch(/show_popover_window/);
+      expect(show).toContain('desktop activation failed: {e}');
     });
 
     it('ignores has_visible_windows — the always-on-top widget would mask it', () => {

@@ -33,7 +33,7 @@ export function automatedAgentJoinNoticeKey(
 
   const body = normalizedNoticeBody(candidate.body);
   const match = body.match(
-    /^🤖\s+(.+?)\s+\(an agent\)\s+just joined\s+.+\.\s*$/iu,
+    /^🤖\s+(.+?)\s+\((?:an agent|a bot)\)\s+just joined\s+.+\.\s*$/iu,
   );
   if (!match) return null;
   const trustedEmail =

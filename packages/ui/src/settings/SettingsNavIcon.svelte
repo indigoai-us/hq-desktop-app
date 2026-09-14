@@ -6,6 +6,7 @@
       | "companies"
       | "general"
       | "agents"
+      | "bots"
       | "appearance"
       | "notifications"
       | "sync"
@@ -83,6 +84,22 @@
     />
     <path
       d="M6.2 4v7.2M9.6 12V4.8"
+      stroke="currentColor"
+      stroke-width="1.3"
+      stroke-linecap="round"
+    />
+  {:else if name === "bots"}
+    <rect
+      x="3"
+      y="5.4"
+      width="10"
+      height="7.6"
+      rx="2"
+      stroke="currentColor"
+      stroke-width="1.3"
+    />
+    <path
+      d="M8 2.6v2.8M6 9.2h.01M10 9.2h.01M6.4 11.4h3.2"
       stroke="currentColor"
       stroke-width="1.3"
       stroke-linecap="round"

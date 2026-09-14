@@ -29,6 +29,8 @@ use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
+#[cfg(not(windows))]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 #[cfg(windows)]
@@ -2602,6 +2604,7 @@ async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Stri
     Ok(format!("node installed at {}", node_bin.display()))
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // install_git
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2903,7 +2906,6 @@ async fn install_yq_via_binary(app: &AppHandle) -> Result<String, String> {
     Ok(format!("yq installed at {}", target.display()))
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // install_jq (direct binary, macOS)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3159,7 +3161,63 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
 // install_hq_cli
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Install the HQ CLI via `npm install -g @indigoai-us/hq-cli`.
+#[cfg(not(windows))]
+const HQ_CLI_REGISTRY_SPEC: &str = "@indigoai-us/hq-cli";
+#[cfg(not(windows))]
+const BUNDLED_HQ_CLI_RESOURCE_PATH: &str = "hq-cli/hq-cli.tgz";
+
+/// Pick the fixed, app-bundled HQ CLI tarball when it exists.
+///
+/// Canonicalizing both paths rejects a symlink at the fixed resource slot that
+/// escapes the signed application resources directory. Missing resources and
+/// path-resolution failures deliberately preserve the ordinary release path.
+#[cfg(not(windows))]
+fn hq_cli_install_spec(resource_dir: Option<&Path>) -> String {
+    let Some(resource_dir) = resource_dir.and_then(|path| path.canonicalize().ok()) else {
+        return HQ_CLI_REGISTRY_SPEC.to_string();
+    };
+    let Some(package) = resource_dir
+        .join(BUNDLED_HQ_CLI_RESOURCE_PATH)
+        .canonicalize()
+        .ok()
+    else {
+        return HQ_CLI_REGISTRY_SPEC.to_string();
+    };
+
+    if package.is_file() && package.starts_with(&resource_dir) {
+        package
+            .into_os_string()
+            .into_string()
+            .unwrap_or_else(|_| HQ_CLI_REGISTRY_SPEC.to_string())
+    } else {
+        HQ_CLI_REGISTRY_SPEC.to_string()
+    }
+}
+
+/// A test/release bundle can require its own CLI version. Keep the marker
+/// alongside the package inside signed resources; never consult a neighboring kit.
+#[cfg(not(windows))]
+pub fn bundled_hq_cli_ready(app: &AppHandle) -> bool {
+    let resource_dir = app.path().resource_dir().ok();
+    let spec = hq_cli_install_spec(resource_dir.as_deref());
+    if spec == HQ_CLI_REGISTRY_SPEC { return true; }
+    let expected = Path::new(&spec).parent()
+        .and_then(|dir| std::fs::read_to_string(dir.join("version.txt")).ok());
+    let actual = check_dep_impl("hq", None).version;
+    bundled_cli_version_matches(expected.as_deref(), actual.as_deref())
+}
+
+#[cfg(not(windows))]
+fn bundled_cli_version_matches(expected: Option<&str>, actual: Option<&str>) -> bool {
+    match (expected, actual) {
+        (Some(expected), Some(actual)) if !expected.trim().is_empty() =>
+            expected.trim() == actual.trim(),
+        _ => false,
+    }
+}
+
+/// Install the HQ CLI from the app-bundled package when present, otherwise via
+/// `npm install -g @indigoai-us/hq-cli`.
 ///
 /// Errors if npm is not available.
 #[cfg(not(windows))]
@@ -3195,7 +3253,19 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
             return Err(msg.to_string());
         }
     };
-    npm_install_global_managed(&app, npm.to_str().unwrap_or("npm"), &prefix, "@indigoai-us/hq-cli", "hq").await
+    let resource_dir = app.path().resource_dir().ok();
+    let install_spec = hq_cli_install_spec(resource_dir.as_deref());
+    if install_spec != HQ_CLI_REGISTRY_SPEC {
+        emit_preflight_line(&app, "[hq] installing the CLI bundled with this HQ app");
+    }
+    npm_install_global_managed(
+        &app,
+        npm.to_str().unwrap_or("npm"),
+        &prefix,
+        &install_spec,
+        "hq",
+    )
+    .await
 }
 
 // NOTE (2026-04-21): `install_hq_cloud` was removed along with the
@@ -5848,7 +5918,9 @@ pub fn is_managed_toolchain_path(path: &std::path::Path) -> bool {
     path.starts_with(&root)
 }
 
-fn dep_is_satisfied(dep: &DepDef) -> bool {
+fn dep_is_satisfied(app: &AppHandle, dep: &DepDef) -> bool {
+    #[cfg(not(windows))]
+    if dep.id == "hq-cli" && !bundled_hq_cli_ready(app) { return false; }
     dep_status_satisfies(dep, &check_dep_impl(dep.binary, None))
 }
 
@@ -5868,7 +5940,7 @@ fn finish_orchestrated_dep_install(
 }
 
 async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
-    if dep_is_satisfied(dep) {
+    if dep_is_satisfied(app, dep) {
         return Ok(());
     }
 
@@ -5886,7 +5958,7 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         _ => Err(format!("no installer registered for {}", dep.id)),
     };
 
-    finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(dep))
+    finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(app, dep))
 }
 
 #[tauri::command]
@@ -8408,6 +8480,69 @@ mod npm_bin_cleanup_tests {
         std::os::unix::fs::symlink(&target, bin.join("qmd")).unwrap();
         assert!(!clear_unusable_npm_bin(prefix, "qmd"));
         assert!(bin.join("qmd").exists());
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod bundled_hq_cli_tests {
+    use super::*;
+
+    #[test]
+    fn bundled_cli_requires_its_version_not_merely_a_managed_install() {
+        assert!(bundled_cli_version_matches(Some("5.199.0-local.0\n"), Some("5.199.0-local.0")));
+        assert!(!bundled_cli_version_matches(Some("5.199.0-local.0"), Some("5.109.16")));
+        assert!(!bundled_cli_version_matches(Some("5.199.0-local.0"), None));
+        assert!(!bundled_cli_version_matches(None, Some("5.199.0-local.0")));
+    }
+
+    #[test]
+    fn exact_bundled_resource_is_selected() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_dir = temp.path().join("Resources");
+        let package = resource_dir.join(BUNDLED_HQ_CLI_RESOURCE_PATH);
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, b"package bytes").unwrap();
+
+        assert_eq!(
+            hq_cli_install_spec(Some(&resource_dir)),
+            package.canonicalize().unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn absent_bundle_preserves_the_registry_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_dir = temp.path().join("Resources");
+        std::fs::create_dir_all(&resource_dir).unwrap();
+
+        assert_eq!(
+            hq_cli_install_spec(Some(&resource_dir)),
+            HQ_CLI_REGISTRY_SPEC
+        );
+        assert_eq!(hq_cli_install_spec(None), HQ_CLI_REGISTRY_SPEC);
+    }
+
+    #[test]
+    fn neighboring_or_symlinked_user_file_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_dir = temp.path().join("HQ.app/Contents/Resources");
+        let package_dir = resource_dir.join("hq-cli");
+        std::fs::create_dir_all(&package_dir).unwrap();
+
+        let neighboring_package = temp.path().join("hq-cli.tgz");
+        std::fs::write(&neighboring_package, b"untrusted package bytes").unwrap();
+        assert_eq!(
+            hq_cli_install_spec(Some(&resource_dir)),
+            HQ_CLI_REGISTRY_SPEC,
+            "a package beside the app must not be discovered"
+        );
+
+        std::os::unix::fs::symlink(&neighboring_package, package_dir.join("hq-cli.tgz")).unwrap();
+        assert_eq!(
+            hq_cli_install_spec(Some(&resource_dir)),
+            HQ_CLI_REGISTRY_SPEC,
+            "the fixed resource slot must not escape via symlink"
+        );
     }
 }
 

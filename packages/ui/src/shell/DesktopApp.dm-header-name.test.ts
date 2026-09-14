@@ -140,7 +140,7 @@ describe("DesktopApp DM header name from widget open", () => {
         '[data-testid="conversation-composer"]',
       ) ?? host.querySelector("textarea");
     expect(hydratedComposer?.placeholder).toBe(
-      `Message ${AGENT_NAME} — or type @ to mention an agent…`,
+      `Message ${AGENT_NAME} — or type @ to mention a bot…`,
     );
 
     const railTitle = host.querySelector(

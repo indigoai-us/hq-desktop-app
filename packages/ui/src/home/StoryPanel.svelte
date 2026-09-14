@@ -342,7 +342,7 @@
         <section
           class="live-monitor"
           data-testid="task-agent-activity"
-          aria-label="Agent activity"
+          aria-label="Bot activity"
         >
           <div class="live-run-head">
             <span class="live-run-phase">
@@ -385,7 +385,7 @@
           class="section agent-empty"
           data-testid="task-agent-activity-empty"
         >
-          <h3>Agent activity</h3>
+          <h3>Bot activity</h3>
           <p>No active run</p>
         </section>
       {/if}

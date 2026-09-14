@@ -1,0 +1,47 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { expect, it } from 'vitest';
+
+const tray = readFileSync('src-tauri/src/tray.rs', 'utf8');
+
+it('opens desktop during onboarding and on repeated activation', () => {
+  // Run the actual Rust dispatcher with recording adapters, without a GUI.
+  const start = tray.indexOf('pub fn activate_primary_surface(');
+  const end = tray.indexOf('\n}\n', start) + 2;
+  expect(start).toBeGreaterThan(-1);
+  const dir = mkdtempSync(join(tmpdir(), 'hq-primary-activation-'));
+  try {
+    const source = join(dir, 'activation.rs');
+    const binary = join(dir, 'activation');
+    writeFileSync(source, `
+use std::cell::RefCell;
+pub struct AppHandle { pinned: bool, calls: RefCell<Vec<&'static str>> }
+fn onboarding_window_requires_blur_suppression(app: &AppHandle) -> bool { app.pinned }
+fn show_popover_window(app: &AppHandle) { app.calls.borrow_mut().push("popover"); }
+fn show_desktop_window(app: &AppHandle) { app.calls.borrow_mut().push("desktop"); }
+${tray.slice(start, end)}
+fn main() {
+    for pinned in [false, true] {
+        let app = AppHandle { pinned, calls: RefCell::new(vec![]) };
+        activate_primary_surface(&app);
+        activate_primary_surface(&app);
+        assert_eq!(*app.calls.borrow(), vec!["desktop", "desktop"], "onboarding pinned: {pinned}");
+    }
+}
+`);
+    const compile = spawnSync('rustc', ['--edition=2021', source, '-o', binary], { encoding: 'utf8' });
+    expect(compile.status, compile.stderr).toBe(0);
+    const run = spawnSync(binary, [], { encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('does not substitute the popover if desktop opening fails', () => {
+  const show = tray.slice(tray.indexOf('pub fn show_desktop_window('), tray.indexOf('pub fn activate_primary_surface('));
+  expect(show).toContain('open_desktop_alt_window_inner');
+  expect(show).not.toContain('show_popover_window(');
+});

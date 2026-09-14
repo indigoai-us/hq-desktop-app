@@ -757,6 +757,14 @@ fn main() {
             commands::drift_detail::open_drift_detail,
             commands::drift_detail::drift_window_ready,
             commands::feedback::submit_bug_report,
+            commands::bots::local_bots_list,
+            commands::bots::local_bots_create,
+            commands::bots::local_bots_start,
+            commands::bots::local_bots_stop,
+            commands::bots::local_bots_remove,
+            commands::bots::local_bots_configure,
+            commands::bots::local_bots_promote,
+            commands::bots::local_bots_workers,
             commands::packages::list_packages,
             commands::packages::list_packages_cached,
             commands::packages::check_package_updates,
@@ -1591,10 +1599,9 @@ fn main() {
             // US-004 WindowRouter: `DockIconClick` resolves to ShowDesktop, so
             // this opens the full desktop window — a Dock icon is the
             // affordance users associate with an application's main window,
-            // while the menu-bar icon stays the compact popover's affordance.
+            // and the menu-bar icon opens the same desktop workspace.
             // Show, never toggle: a Dock click that hides the window reads as a
-            // no-op. Signed-out users fall back to the popover's SignInPrompt
-            // inside `show_desktop_window`.
+            // no-op. Signed-out users can sign in inside the desktop workspace.
             //
             // `has_visible_windows` is deliberately ignored: the always-on-top
             // floating widget counts as a visible window, so honouring the flag
@@ -1606,9 +1613,8 @@ fn main() {
                 let _ = commands::desktop_alt::activation_policy(
                     commands::desktop_alt::ActivationSource::DockIconClick,
                 );
-                // Same rule as every other activation source: while setup
-                // still owns `main`, a Dock click must land on the setup card,
-                // not on a workspace with no HQ tree underneath it.
+                // Same desktop destination as tray and second-launch activation,
+                // including while onboarding is incomplete.
                 tray::activate_primary_surface(_app_handle);
                 util::logfile::log("dock", "dock icon clicked: opening primary surface");
             }

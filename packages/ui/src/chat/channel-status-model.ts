@@ -159,7 +159,7 @@ export type AgentLiveStatus = "running" | "awaiting_input" | "idle" | "ended";
 
 export interface LiveAgentStatusRow {
   id: string;
-  /** "Agent running · US-003 · 40%" */
+  /** "Bot running · US-003 · 40%" */
   label: string;
   storyId: string | null;
   progressPercent: number;
@@ -469,11 +469,11 @@ export function liveAgentRowFromSession(
           ? "ended"
           : "idle";
   const storyPart = storyId ? ` · ${storyId}` : "";
-  const label = `Agent ${verb}${storyPart} · ${progress}%`;
+  const label = `Bot ${verb}${storyPart} · ${progress}%`;
   const displayName =
     [session.tool, session.model].filter(Boolean).join(" · ") ||
     session.project ||
-    "Agent";
+    "Bot";
   const boundId = (session.serverSessionId ?? "").trim();
   return {
     id:
@@ -522,10 +522,10 @@ function liveAgentRowFromLiveSession(
     optionalString(session.displayName) ||
     optionalString(session.harness) ||
     optionalString(session.actorUid) ||
-    "Agent";
+    "Bot";
   return {
     id: session.sessionId,
-    label: `Agent ${verb}${storyPart} · ${progress}%`,
+    label: `Bot ${verb}${storyPart} · ${progress}%`,
     storyId,
     progressPercent: progress,
     status,

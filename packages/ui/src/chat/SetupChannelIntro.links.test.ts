@@ -113,7 +113,7 @@ describe("SetupChannelIntro welcome experience", () => {
       expect(host.querySelector(`[data-testid="setup-launch-${key}"]`)?.closest("details")).toBe(advanced);
     }
     expect(host.querySelector('[data-testid="setup-hosted-agent-guidance"]')?.closest("details")).toBe(advanced);
-    expect(host.textContent).toContain("Hosted agents require a paid plan");
+    expect(host.textContent).toContain("Cloud bots require a paid plan");
   });
   it("Run Setup opens the host's Sessions draft without launching an external tool", async () => {
     const openSessions = vi.fn();
@@ -139,12 +139,9 @@ describe("SetupChannelIntro welcome experience", () => {
     const hero = host.querySelector('[data-testid="setup-hero"]');
     expect(hero?.textContent).toContain(SETUP_HERO.title);
     expect(hero?.textContent).toContain(SETUP_HERO.eyebrow);
-    const arts = hero?.querySelectorAll<HTMLImageElement>("img.hero-art") ?? [];
-    expect(arts).toHaveLength(2);
-    for (const art of arts) {
-      expect(art.getAttribute("alt")).toBe("");
-      expect(art.getAttribute("src")).toBeTruthy();
-    }
+    // The supplied reference puts welcome copy on the window ground,
+    // without a decorative wallpaper; all setup and resource actions remain.
+    expect(hero?.querySelector("img.hero-art")).toBeNull();
 
     for (const resource of SETUP_RESOURCES) {
       const link = host.querySelector<HTMLAnchorElement>(

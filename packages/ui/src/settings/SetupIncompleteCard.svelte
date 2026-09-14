@@ -29,6 +29,7 @@
     SETUP_PROMPT,
     type AiTools,
   } from "./setup-launch";
+  import { SETUP_BOT_COPY, type SetupBotLauncher } from "../chat/setup-bot";
 
   interface Props {
     /** Platform seam slices (see @hq/platform PlatformAdapter). */
@@ -40,9 +41,36 @@
       | "launchClaudeCode"
       | "launchCliInTerminal"
     >;
+    /**
+     * SETUP AS A BOT (bots v2, step 3). With a launcher, the card's primary
+     * action opens the setup bot's conversation — or creates it when this Mac
+     * has a coding tool signed in. The tool launches below stay as they are:
+     * they are the way through when no runtime is signed in (or the create
+     * fails), and the card must never dead-end.
+     */
+    setupBot?: SetupBotLauncher | null;
   }
 
-  let { settings, shell }: Props = $props();
+  let { settings, shell, setupBot = null }: Props = $props();
+
+  /** The bot path can act: open the one that exists, or make one. */
+  const botAction = $derived(Boolean(setupBot && (setupBot.existing || setupBot.ready)));
+  let botBusy = $state(false);
+  let botError = $state<string | null>(null);
+
+  async function runSetupBot(): Promise<void> {
+    if (!setupBot || botBusy) return;
+    botBusy = true;
+    botError = null;
+    try {
+      const result = await setupBot.start();
+      if (!result.ok) botError = result.reason;
+    } catch (err) {
+      botError = err instanceof Error ? err.message : String(err);
+    } finally {
+      botBusy = false;
+    }
+  }
 
   interface SetupStatus {
     hqRootValid: boolean;
@@ -150,18 +178,37 @@
   >
     <div class="setup-copy">
       <h2 class="setup-title">Finish setting up HQ</h2>
-      <p class="setup-body">
-        Your HQ folder isn't ready yet. Open your agent and run
-        <code>/setup</code> to finish — the prompt comes pre-entered.
-      </p>
+      {#if botAction}
+        <p class="setup-body" data-testid="setup-card-bot-body">{SETUP_BOT_COPY.cardBody}</p>
+      {:else}
+        <p class="setup-body">
+          Your HQ folder isn't ready yet. Open your coding tool and run
+          <code>/setup</code> to finish — the prompt comes pre-entered.
+        </p>
+      {/if}
+      {#if botError}
+        <p class="setup-error" role="alert" data-testid="setup-card-bot-error">{botError}</p>
+      {/if}
       {#if launchError}
         <p class="setup-error" role="alert">{launchError}</p>
       {/if}
     </div>
     <div class="setup-actions">
+      {#if botAction}
+        <button
+          type="button"
+          class="setup-btn primary"
+          disabled={botBusy}
+          onclick={() => void runSetupBot()}
+          data-testid="setup-open-bot"
+        >
+          {botBusy ? SETUP_BOT_COPY.starting : setupBot!.existing ? SETUP_BOT_COPY.open : SETUP_BOT_COPY.create}
+        </button>
+      {/if}
       <button
         type="button"
-        class="setup-btn primary"
+        class="setup-btn"
+        class:primary={!botAction}
         disabled={launching !== null}
         onclick={launchClaude}
         data-testid="setup-open-claude"

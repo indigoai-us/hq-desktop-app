@@ -185,7 +185,7 @@
       <span class="sys-summary" title={[cardActor, cardVerb, cardTitle].filter(Boolean).join(" · ")}>
         <span class="sys-who">{cardActor}</span>
         {#if cardIsAgent}
-          <span class="agent-mark" aria-label="agent" title="Agent">✦</span>
+          <span class="agent-mark" aria-label="bot" title="Bot">✦</span>
         {/if}
         <span class="sys-sep"> </span><span class="sys-meta">{cardVerb}</span>
         {#if cardTitle}

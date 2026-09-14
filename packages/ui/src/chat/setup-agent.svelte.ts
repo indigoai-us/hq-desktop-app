@@ -41,7 +41,7 @@ export interface SetupAgentTurn {
   seq: number;
 }
 
-export const SETUP_AGENT_NAME = "Setup Agent";
+export const SETUP_AGENT_NAME = "Setup bot";
 /** An `agt_` id so the channel draws it with the agent identity mark. */
 export const SETUP_AGENT_UID = "agt_setup-agent";
 /** How long a stuck process gets to go before a transient stop is retried. */

@@ -114,6 +114,17 @@ pub fn setup_lifecycle(app: &AppHandle) {
         install_in_progress: crate::commands::install_manifest::install_in_progress_from_disk(),
         consent_answered,
     };
+    // macOS only: a synced workspace without local hq/node (or with a CLI that
+    // does not match the bundled one) goes back to installation. Not applied
+    // on Windows, where this readiness check is not certified.
+    #[cfg(not(windows))]
+    let verdict = {
+        let tools_present = ["hq", "node"].iter().all(|name| {
+            paths::resolve_bin_with_kind(name).kind != paths::ResolvedProgramKind::NotResolved
+        }) && crate::commands::install_deps::bundled_hq_cli_ready(app);
+        hq_desktop_core::lifecycle::require_local_toolchain(classify_lifecycle(inputs), tools_present)
+    };
+    #[cfg(windows)]
     let verdict = classify_lifecycle(inputs);
 
     if verdict.needs_install_backfill {

@@ -799,6 +799,18 @@ pub async fn open_desktop_alt_window_inner(
     app: AppHandle,
     route: Option<&str>,
 ) -> Result<(), String> {
+    // Dock, tray, OAuth completion and explicit opens share this entry point.
+    // None may hide the installer before the local toolchain is ready.
+    // macOS only: the toolchain gate is not certified on Windows, where a
+    // signed-out user still opens the desktop workspace to sign in.
+    #[cfg(not(windows))]
+    if crate::commands::lifecycle::current_lifecycle_state(&app)
+        .is_some_and(hq_desktop_core::lifecycle::installation_required)
+    {
+        crate::tray::show_window_centered(&app);
+        return Ok(());
+    }
+
     // US-103: intercept is a no-op (always false). Combined-app embed still
     // opens THIS desktop-alt window; the webview always mounts @hq/ui DesktopApp.
     if crate::commands::hq_work::maybe_intercept_desktop_alt_handoff(&app, route)? {
