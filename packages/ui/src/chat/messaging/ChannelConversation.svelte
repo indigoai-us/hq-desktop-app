@@ -63,6 +63,7 @@
   } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
   import { richContentForMessage } from "./richMessageContent";
@@ -136,6 +137,12 @@
     mentionCandidates?: MentionTarget[];
     /** Open ReplyPanel for this root eventId. */
     onreply?: (rootEventId: string) => void;
+    /** Start an in-channel session from this message. */
+    onstartsession?: (rootEventId: string) => void;
+    /** Open an existing in-channel session from a work-session card. */
+    onopensession?: (sessionId: string) => void;
+    /** Start a channel-level session (posts a card). */
+    onstartchannelsession?: () => void;
     /** Host-owned attachment modal (must render outside this column). */
     onopenattachment?: (
       item: FileAttachmentModel,
@@ -254,6 +261,9 @@
     onpresign,
     mentionCandidates = [],
     onreply,
+    onstartsession,
+    onopensession,
+    onstartchannelsession,
     onopenattachment,
     onopenartifact,
     onreleaseurl,
@@ -1149,6 +1159,7 @@
                   messageAuthor(msg),
                 msg,
               )}
+              {onopensession}
             />
           {:else if systemModel?.kind === "line"}
             <SystemEventLine
@@ -1449,6 +1460,18 @@
                   >
                     Reply
                   </button>
+                  {#if onstartsession}
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn"
+                      data-testid="message-start-session"
+                      aria-label="Start a session from this message"
+                      title="Start session"
+                      onclick={() => onstartsession(msg.eventId)}
+                    >
+                      Session
+                    </button>
+                  {/if}
                 </div>
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
@@ -1551,6 +1574,18 @@
     </div>
     <div class="dm-reply-footer">
       <div class="dm-reply-tools">
+        {#if onstartchannelsession}
+          <button
+            type="button"
+            class="dm-tool-btn"
+            data-testid="composer-start-session"
+            aria-label="Start a session in this channel"
+            title="Start session"
+            onclick={() => onstartchannelsession()}
+          >
+            Session
+          </button>
+        {/if}
         <label
           class="dm-tool-btn composer-attach"
           title="Attach a file"
@@ -1757,6 +1792,8 @@
   }
 
   .dm-thread-wrap {
+    min-width: 0;
+    overflow: hidden;
     position: relative;
     flex: 1;
     min-height: 0;
@@ -2652,4 +2689,5 @@
     opacity: 0.4;
     cursor: default;
   }
+
 </style>

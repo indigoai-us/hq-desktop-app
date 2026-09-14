@@ -128,7 +128,7 @@ pub(crate) fn get_settings_at(path: &Path) -> Result<MenubarPrefs, String> {
         personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
         // Instant sync (event-driven) defaults ON, mirroring `realtime_sync`
         // and `is_instant_sync_enabled` in daemon.rs. Only ever takes effect
-        // for `event_push_eligible()` users (Phase 1: @getindigo.ai).
+        // when the local runner supports event-driven sync.
         instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
         // Pass through as persisted; absent means the built-in default percent
         // (bandwidth::DEFAULT_BANDWIDTH_PERCENT) governs — see bandwidth.rs.

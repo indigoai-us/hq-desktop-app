@@ -140,8 +140,8 @@ agent-authored HTML/JS is a real security surface and is **NOT shipped here**.
 ### Status in this PR
 
 - A `genui` block **kind is reserved** in the schema, and the parser **drops it**
-  whenever `GENUI_ENABLED` is `false` (its value in this PR). A test asserts the
-  flag is off and that a `genui` payload never renders any markup.
+  because arbitrary agent-authored UI is unsupported. A test asserts that a
+  `genui` payload never renders any markup.
 - Nothing agent-authored is rendered as markup anywhere.
 
 ### Proposed sandbox (needs owner security sign-off before enabling)
@@ -169,12 +169,12 @@ Two candidate designs, in order of preference:
 > (option 2) that can render arbitrary agent-authored HTML under a strict CSP —
 > and if so, under what per-company / per-agent-trust gating?**
 
-`GENUI_ENABLED` stays `false` until that decision is signed off.
+Arbitrary GenUI stays unsupported until that decision is signed off.
 
 ## Files
 
 - `packages/ui/src/chat/messaging/richMessageContent.ts` — contract, parser,
-  sanitizers, `hq-block` fence extraction, `GENUI_ENABLED` flag.
+  sanitizers and `hq-block` fence extraction.
 - `packages/ui/src/chat/messaging/RichMessageContent.svelte` — trusted renderer.
 - `packages/ui/src/chat/chat-api.ts` — `richContent` wire field.
 - Wired into `ChannelConversation.svelte` and `ReplyPanel.svelte`.

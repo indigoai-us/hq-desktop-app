@@ -315,6 +315,25 @@ describe("SetupAgent", () => {
     expect(agent.providersReady).toBe(false);
   });
 
+  it("a machine set up before the welcome flow reads as done without a session, unless it remembers a run of its own", async () => {
+    const fresh = new SetupAgent(fakeSetupRun());
+    fresh.markAlreadySetUp();
+    expect(fresh.mode).toBe("done");
+    expect(fresh.active).toBe(true);
+    expect(fresh.sessionId).toBeNull();
+    expect(fresh.transcript).toEqual([]);
+    expect(loadSetupRunRecord()).toBeNull();
+
+    saveSetupRunRecord({ sessionId: "sess-9", step: 2, status: "running" });
+    const api = fakeSetupRun();
+    api.exists("sess-9");
+    const remembered = new SetupAgent(api);
+    await settle();
+    remembered.markAlreadySetUp();
+    expect(remembered.mode).toBe("live");
+    expect(remembered.sessionId).toBe("sess-9");
+  });
+
   const REFRESH_CLASH = "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh";
 
   it("a sign-in refresh clash ends the stuck process and retries once on its own, thinking meanwhile", async () => {

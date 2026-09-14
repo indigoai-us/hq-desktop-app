@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 import { afterEach, expect, it, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
+const captureException = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
+vi.mock('@sentry/svelte', () => ({ captureException }));
 import { projectLinksStore } from './project-links-store.svelte';
 import type { ProjectLink } from './session-project-links';
 
@@ -36,6 +38,7 @@ it('fetches teammate rows only when expanded and removes them on denied refresh'
 afterEach(() => {
   projectLinksStore.stop();
   invoke.mockReset();
+  captureException.mockReset();
   try { window.localStorage?.removeItem('hq.session-project-links.v1'); } catch { /* happy-dom */ }
 });
 
@@ -118,5 +121,17 @@ it('holds initial loading until enriched links settle and bounds a hung boot', a
     await vi.advanceTimersByTimeAsync(10000);
     expect(projectLinksStore.loading).toBe(false);
     expect(projectLinksStore.initialError).toBe(true);
+    expect(captureException.mock.calls.some(([, ctx]) => ctx?.tags?.stage === 'boot')).toBe(true);
   } finally { vi.useRealTimers(); }
+});
+
+it('reports a failed lookup once, without a second capture on retry', async () => {
+  invoke.mockRejectedValue(new Error('offline'));
+  projectLinksStore.start(['indigo']);
+  await projectLinksStore.refresh();
+  await vi.waitFor(() => expect(captureException).toHaveBeenCalled());
+  expect(captureException.mock.calls.some(([, ctx]) => ctx?.tags?.stage === 'local')).toBe(true);
+  const n = captureException.mock.calls.length;
+  await projectLinksStore.refresh();
+  expect(captureException).toHaveBeenCalledTimes(n);
 });

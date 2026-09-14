@@ -21,9 +21,8 @@
  * ARBITRARY GENUI IS NOT SHIPPED HERE. A `genui` block (arbitrary
  * agent-authored HTML/JS or a free component tree) is a distinct security
  * surface that needs a sandbox (iframe + strict CSP or a constrained component
- * schema) and owner sign-off. It is DESIGNED (see docs) but gated behind
- * {@link GENUI_ENABLED}, which is `false`. While the flag is off the parser
- * drops any `genui` block, so no agent markup can render.
+ * schema) and owner sign-off. It is not supported: the parser drops every
+ * `genui` block, so no agent markup can render.
  *
  * PLAIN-TEXT FALLBACK GUARANTEE. Rich content is always ADDITIVE to a message
  * `body`. Old clients (and notifications, and any non-desktop surface) ignore
@@ -36,17 +35,6 @@
 
 /** Envelope version. A present, non-1 version is rejected (unknown). */
 export const RICH_CONTENT_VERSION = 1;
-
-/**
- * GenUI (arbitrary agent-authored markup / free component tree) feature flag.
- *
- * DISABLED. Enabling it ships a security surface — semi-trusted agent output
- * rendered as UI — and MUST NOT be turned on without the owner's security
- * sign-off on the sandbox design (iframe + strict CSP, or a constrained,
- * allow-listed component schema). While this is `false` the parser drops every
- * `genui` block and nothing agent-authored is rendered as markup.
- */
-export const GENUI_ENABLED = false as boolean;
 
 /** The fenced-code language an agent uses to emit a block inside a body. */
 export const HQ_BLOCK_FENCE_LANG = "hq-block";
@@ -204,7 +192,7 @@ export interface RichContentModel {
   blocks: RichBlock[];
 }
 
-/** Block-type names the schema knows about (informational; genui is gated). */
+/** Block-type names the schema knows about (informational; genui is unsupported). */
 export const KNOWN_BLOCK_KINDS = new Set<string>([
   "stat",
   "table",
@@ -493,8 +481,7 @@ function parseBlock(raw: unknown): RichBlock | null {
       return parseCalloutBlock(raw);
     case "decision":
       return parseDecisionBlock(raw);
-    // `genui` (and any future arbitrary-markup kind) is DESIGN-ONLY and gated.
-    // While GENUI_ENABLED is false it is dropped here so nothing renders.
+    // `genui` (and any future arbitrary-markup kind) is unsupported and drops.
     case "genui":
       return null;
     default:

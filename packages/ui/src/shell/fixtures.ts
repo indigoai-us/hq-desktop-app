@@ -555,6 +555,7 @@ export function createFixtureChatSidebarApi(): ChatSidebarApi {
       contacts: CONTACTS,
     }),
     listDmRequests: async (): Promise<RequestsResponse> => ({ requests: [] }),
+    respondDmRequest: async () => {},
     listChannels: async () => ({ channels: [] }),
     markDmThreadRead: async () => {},
     markChannelRead: async () => {},

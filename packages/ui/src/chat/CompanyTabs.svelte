@@ -2,6 +2,10 @@
   /**
    * Company channel header tabs (US-015): Chat · Atlas · Team · Settings.
    * (Integrations was removed — apps are connected in the HQ console.)
+   *
+   * US-018 adds a capability-gated Office tab. The gate is resolved by the
+   * host (`companyChannelTabsFor(adapter.capabilities)`) and handed in as
+   * `tabs`, so this component never decides what a host can do.
    */
   import {
     COMPANY_CHANNEL_TABS,
@@ -10,10 +14,12 @@
 
   interface Props {
     active: CompanyChannelTabId;
+    /** Tabs to render. Defaults to the ungated set. */
+    tabs?: ReadonlyArray<{ id: CompanyChannelTabId; label: string }>;
     onselect: (id: CompanyChannelTabId) => void;
   }
 
-  let { active, onselect }: Props = $props();
+  let { active, tabs = COMPANY_CHANNEL_TABS, onselect }: Props = $props();
 </script>
 
 <nav
@@ -21,7 +27,7 @@
   aria-label="Company channel views"
   data-testid="company-channel-tabs"
 >
-  {#each COMPANY_CHANNEL_TABS as t (t.id)}
+  {#each tabs as t (t.id)}
     <button
       type="button"
       class="company-tab"

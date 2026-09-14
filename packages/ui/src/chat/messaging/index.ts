@@ -18,6 +18,8 @@ export { default as SystemEventLine } from "./SystemEventLine.svelte";
 export { default as RichMessageContent } from "./RichMessageContent.svelte";
 export * from "./richMessageContent";
 export { default as WorkMeshActivityRow } from "./WorkMeshActivityRow.svelte";
+export { default as SessionThreadPanel } from "./SessionThreadPanel.svelte";
+export * from "./session-thread";
 export * from "./workSessionEvent";
 export * from "./channelMessageModels";
 export * from "./channelTabModels";

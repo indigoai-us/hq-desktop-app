@@ -226,6 +226,7 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
       .sort();
     expect(sessionsPageMounts).toEqual([
       'desktop-alt/DesktopApp.svelte',
+      'desktop-alt/components/LiveChannelSessionPane.svelte',
       'desktop-alt/pages/SessionsExtraPage.svelte',
     ]);
     const extraPageMounts = sources

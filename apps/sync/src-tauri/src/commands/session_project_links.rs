@@ -24,7 +24,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use hq_desktop_core::agent_session::types::SessionPhase;
-use hq_desktop_core::agent_session_flags::ensure_in_app_sessions_allowed;
 use hq_desktop_core::hq_context::projects::{
     find_company_project, list_company_projects, ProjectEntry,
 };
@@ -271,7 +270,6 @@ fn local_links_from_rows(hq_root: &std::path::Path, company: &str, rows: &[Sessi
 /// Every project of `company` with its channel and its sessions.
 #[tauri::command]
 pub async fn session_project_links(app: AppHandle, company: String, local_only: Option<bool>) -> Result<Vec<ProjectLink>, String> {
-    ensure_in_app_sessions_allowed()?;
     let company = company.trim().to_string();
     if company.is_empty() {
         return Err("company must not be empty".to_string());
@@ -449,6 +447,7 @@ mod tests {
             started_at: "2026-09-02T22:23:32Z".into(),
             last_activity_at: "2026-09-02T22:30:00Z".into(),
             source: "codex-rollout".into(),
+            remote_control_session_id: None,
         }];
 
         enrich_project_session_rows(&mut rows, &observed);
@@ -502,6 +501,7 @@ mod tests {
             effort: None,
             resume: None,
             permission_mode: PermissionMode::Prompt,
+            hidden: false,
         };
         test_registry()
             .lock()

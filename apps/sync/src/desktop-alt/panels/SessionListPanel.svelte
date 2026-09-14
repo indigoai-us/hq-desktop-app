@@ -7,7 +7,7 @@
   const motionDuration = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180;
   import { liveSessionStore, type SessionPhase } from '../lib/live-session-store.svelte';
   import { sessionsStore, startSessionsStore } from '../lib/sessions-store.svelte';
-  import { relativeActivity, type AgentSession } from '../lib/sessions';
+  import { claudeCodeSessionUrl, relativeActivity, type AgentSession } from '../lib/sessions';
 
   interface Props {
     activeSessionId?: string;
@@ -61,6 +61,7 @@
       lastActivityAt: session.lastActivityAt,
       phase: session.phase,
       pendingCount: session.pendingCount,
+      external: false,
     })),
     ...history.map((session) => ({
       key: `history:${session.id}`,
@@ -72,6 +73,8 @@
       lastActivityAt: session.lastActivityAt,
       phase: null,
       pendingCount: 0,
+      // Remote Control sessions open on claude.ai rather than in the app.
+      external: claudeCodeSessionUrl(session) !== null,
     })),
   ].sort((left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt)));
   const visibleRows = $derived(rows.slice(0, sessionLimit));
@@ -134,6 +137,7 @@
                 data-session-id={row.sessionId ?? row.history?.id}
                 aria-current={row.sessionId === activeSessionId ? 'true' : undefined}
                 aria-busy={openingId === row.history?.id ? 'true' : undefined}
+                title={row.external ? 'Opens on claude.ai' : undefined}
                 disabled={openingId !== null}
                 onclick={() => row.history ? void openHistory(row.history) : choose(row.sessionId!)}
               >
@@ -143,6 +147,9 @@
                       aria-label={PHASE_LABEL[row.phase]}></span>
                   {/if}
                   <span class="row-title">{row.title}</span>
+                  {#if row.external}
+                    <span class="external" aria-hidden="true">↗</span>
+                  {/if}
                   {#if row.pendingCount > 0}
                     <span class="pending-chip">{row.pendingCount}</span>
                   {/if}
@@ -317,6 +324,12 @@
   .dot.phase-ended {
     background: transparent;
     box-shadow: inset 0 0 0 1px var(--v4-text-3);
+  }
+
+  .external {
+    flex: none;
+    font-size: 11px;
+    color: var(--v4-text-3);
   }
 
   .pending-chip {

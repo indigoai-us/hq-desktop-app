@@ -113,7 +113,9 @@ describe('watcher stall-teardown attribution — source contracts', () => {
       'handle_watcher_exit_with_effects',
     );
     // Cancellation — and nothing else — is the early return.
-    expect(decision).toMatch(/if cancelled \{[\s\S]*?return;\n {4}\}/);
+    expect(decision).toMatch(
+      /if cancelled \{[\s\S]*?return RunnerReportDirDisposition::DeleteOnExitPath;\n {4}\}/,
+    );
     // The stall flag must never gate capture; it stays a diagnostic extra only.
     expect(decision).not.toContain('HEARTBEAT_STALL_TERMINATION_IN_FLIGHT');
 
@@ -143,7 +145,9 @@ describe('watcher stall-teardown attribution — source contracts', () => {
     );
     // The ephemeral early return stays intact, and a SECOND early return
     // attributes through the durable record — never through the stall flag.
-    expect(decision).toMatch(/if cancelled \{[\s\S]*?return;\n {4}\}/);
+    expect(decision).toMatch(
+      /if cancelled \{[\s\S]*?return RunnerReportDirDisposition::DeleteOnExitPath;\n {4}\}/,
+    );
     expect(decision).toContain('attributed_to_app_teardown(code, signal)');
     expect(decision).not.toContain('HEARTBEAT_STALL_TERMINATION_IN_FLIGHT');
   });

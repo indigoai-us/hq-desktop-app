@@ -74,6 +74,12 @@ export interface AgentSession {
    * the observation channel and aids debugging.
    */
   source: string;
+  /**
+   * Remote Control pairing id (`cse_…`) of a Claude session that can be driven
+   * from claude.ai/code. Published by the outpost heartbeat; absent otherwise.
+   * Turn it into a link with {@link claudeCodeSessionUrl}.
+   */
+  remoteControlSessionId?: string;
 }
 
 /** Type guard: is `value` a member of the status taxonomy? */
@@ -88,6 +94,21 @@ export function isSessionStatus(value: unknown): value is SessionStatus {
  */
 export function isLiveStatus(status: SessionStatus): boolean {
   return status === 'running' || status === 'awaiting_input';
+}
+
+/** The `cse_<id>` shape Remote Control writes. Nothing else is ever linked. */
+const REMOTE_CONTROL_SESSION_ID = /^cse_([A-Za-z0-9]{8,64})$/;
+
+/**
+ * The claude.ai page for a Remote Control session: `cse_<id>` is served at
+ * `https://claude.ai/code/session_<id>`. `null` when the session is not a
+ * Claude session under Remote Control, or when its id has any other shape — the
+ * id arrives from the outpost, so it is validated before it becomes a URL.
+ */
+export function claudeCodeSessionUrl(session: AgentSession): string | null {
+  if (session.tool !== 'claude') return null;
+  const match = REMOTE_CONTROL_SESSION_ID.exec(session.remoteControlSessionId ?? '');
+  return match ? `https://claude.ai/code/session_${match[1]}` : null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

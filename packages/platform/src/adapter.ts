@@ -23,6 +23,10 @@
  */
 
 import type { Capabilities, Capability } from "./capabilities.js";
+import type {
+  EvidenceOptions,
+  ServiceEvidence,
+} from "./calls/evidence.js";
 
 export type AdapterResult<T> = { ok: true; value: T } | AdapterFailure;
 
@@ -344,6 +348,9 @@ export interface MessageSearchOptions {
  * global compose picker, WRONG for a channel-scoped mention roster, which must
  * only ever offer members of the channel's own company.
  */
+/** Recipient-side answer to a pending DM connection request. */
+export type DmRequestAction = "accept" | "decline" | "block";
+
 export interface ListContactsOptions {
   /** Restrict the roster to one company (`GET /v1/notify/contacts?companyUid=`). */
   companyUid?: string | null;
@@ -569,6 +576,15 @@ export interface MessagingApi {
   deleteChannel(channelId: string): AdapterPromise<Json>;
   listContacts(opts?: ListContactsOptions): AdapterPromise<Json[]>;
   listDmRequests(): AdapterPromise<Json[]>;
+  /**
+   * POST /v1/notify/connections/{accept|decline|block} body `{ pairKey }` —
+   * desktop `respond_dm_request`. Optional: hosts without the route omit it
+   * and the Requests panel shows the request as read-only.
+   */
+  respondDmRequest?(args: {
+    pairKey: string;
+    action: DmRequestAction;
+  }): AdapterPromise<Json>;
   markChannelRead(id: string): AdapterPromise<void>;
   markDmThreadRead(personUid: string): AdapterPromise<void>;
   searchMessages(
@@ -1128,6 +1144,11 @@ export interface SettingsApi {
   /** Persist a minimal patch over the latest host settings. */
   updateSettings(patch: Json): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
+  /**
+   * The welcome channel's guided setup finished on this machine. Optional:
+   * hosts without a native settings store have nothing to record.
+   */
+  markWelcomeSetupComplete?(): AdapterPromise<void>;
   getTelemetryConsent(): AdapterPromise<boolean | null>;
 }
 
@@ -1165,6 +1186,7 @@ export interface WorkMeshApi {
   createProjectStory?(projectId: string, companyUid: string, story: {
     id: string; title: string; description: string; status: string; passes: boolean;
   }): AdapterPromise<Json>;
+  putProjectView?(projectId: string, companyUid: string, view: Json): AdapterPromise<Json>;
   readLocalSnapshot(): AdapterPromise<Json>;
   /** hq-pro GET /v1/work-mesh/projects/{id}?companyUid= is required. */
   getProjectView(projectId: string, companyUid?: string): AdapterPromise<Json>;
@@ -1195,6 +1217,149 @@ export interface WorkMeshApi {
     threadId: string,
     companyUid: string,
     since?: string,
+  ): AdapterPromise<Json>;
+}
+
+// ---------------------------------------------------------------------------
+// Calls (native Meet, contract "hq-meet/1") — US-014
+// ---------------------------------------------------------------------------
+
+/** Room lifecycle POSTs under /v1/meet-native/rooms/{roomId}/{action}. */
+export type RoomLifecycleAction = "renew" | "leave" | "end" | "start";
+
+/** Knock responses under /v1/meet-native/knocks/{knockId}/{action}. */
+export type KnockAction = "accept" | "decline" | "defer" | "cancel";
+
+/** Signed control operations under /v1/meet-native/signaling/{operation}. */
+export type SignalingOperation = "admit" | "renew" | "reconcile" | "revoke";
+
+/** Signed completion operations under /v1/meet-native/completion/{operation}. */
+export type CompletionOperation =
+  | "create"
+  | "claim"
+  | "status"
+  | "upload"
+  | "finalize";
+
+/** Paging controls for `discoverOffice`. Both are optional. */
+export interface OfficeDiscoverOptions {
+  /** 1..OFFICE page size (25). Omit for the service default. */
+  limit?: number;
+  /** Opaque continuation token from a previous page's `cursor`. */
+  cursor?: string;
+}
+
+export interface OfficePreferenceInput {
+  companyUid: string;
+  willingness: string;
+  ttlMs?: number;
+}
+
+export interface OfficeConnectivityInput {
+  companyUid: string;
+  connectivity: string;
+  ttlMs?: number;
+}
+
+export interface CreateRoomInput {
+  companyUid: string;
+  visibility: "company" | "private";
+  /** Defaults to [] — the service rejects more than 7. */
+  cohosts?: string[];
+}
+
+export interface KnockCreateInput {
+  companyUid: string;
+  roomId: string;
+  callId: string;
+  epoch: number;
+  target: string;
+  note: string;
+  idempotencyKey: string;
+}
+
+/** POST /v1/meet-native/signaling/send — a signed signal envelope. */
+export interface SendSignalRequest {
+  signal: Json;
+  signature: string;
+}
+
+/**
+ * Native calling (hq-pro "hq-meet/1").
+ *
+ * Two invariants the type cannot express but every implementation honours:
+ *
+ *  1. `preflight()` must record a passing US-011 service evidence receipt on
+ *     this adapter instance before any other method does anything. Until then
+ *     they all resolve `unavailable` with code "CALLS_PREFLIGHT_REQUIRED".
+ *  2. Hosts without native calling (browsers) implement the whole group as
+ *     `unavailable` with code "CALLS_UNSUPPORTED_HOST" — never a stub `ok()`.
+ *
+ * Request bodies carry `version: "hq-meet/1"`; failures preserve the backend
+ * error `code` (COMPANY_ACCESS_DENIED, STALE_EPOCH, CALL_SEALED, ...).
+ */
+export interface CallsApi {
+  /** The contract version this adapter speaks. */
+  readonly contractVersion: "hq-meet/1";
+  /**
+   * Validate a US-011 service evidence receipt and, on success, unlock this
+   * adapter instance. A failing receipt clears any previous pass.
+   */
+  preflight(
+    evidence: unknown,
+    options?: EvidenceOptions,
+  ): AdapterPromise<ServiceEvidence>;
+  /** The recorded evidence, or the standard refusal when preflight has not passed. */
+  preflightStatus(): AdapterResult<ServiceEvidence>;
+
+  /**
+   * One page of the company office directory. `options.cursor` continues a
+   * previous page; `options.limit` is bounded by the service page size.
+   */
+  discoverOffice(
+    companyUid: string,
+    options?: OfficeDiscoverOptions,
+  ): AdapterPromise<Json>;
+  setOfficePreference(input: OfficePreferenceInput): AdapterPromise<Json>;
+  setOfficeConnectivity(input: OfficeConnectivityInput): AdapterPromise<Json>;
+
+  createRoom(input: CreateRoomInput): AdapterPromise<Json>;
+  getRoom(roomId: string, companyUid: string): AdapterPromise<Json>;
+  /** Body is an `admission` envelope. */
+  joinRoom(roomId: string, admission: Json): AdapterPromise<Json>;
+  roomLifecycle(
+    roomId: string,
+    action: RoomLifecycleAction,
+    body: Json,
+  ): AdapterPromise<Json>;
+
+  createKnock(input: KnockCreateInput): AdapterPromise<Json>;
+  listKnocks(companyUid: string, limit?: number): AdapterPromise<Json>;
+  getKnock(knockId: string, companyUid: string): AdapterPromise<Json>;
+  respondToKnock(
+    knockId: string,
+    action: KnockAction,
+    companyUid: string,
+  ): AdapterPromise<Json>;
+
+  /** Body is a signed `control` envelope. */
+  signalingControl(
+    operation: SignalingOperation,
+    control: Json,
+  ): AdapterPromise<Json>;
+  sendSignal(request: SendSignalRequest): AdapterPromise<Json>;
+  /** Body is a signed `iceConfig` envelope. Credentials never enter logs. */
+  iceConfig(request: Json): AdapterPromise<Json>;
+
+  /** Durable native live transcript ingress; bearer stays in the native host. */
+  liveTranscript(operation: "begin" | "append" | "read" | "list" | "session", request: Json): AdapterPromise<Json>;
+
+  /** Body is a signed `consentControl` envelope. */
+  completionConsent(control: Json): AdapterPromise<Json>;
+  /** Body is a signed `completionControl` envelope. */
+  completion(
+    operation: CompletionOperation,
+    control: Json,
   ): AdapterPromise<Json>;
 }
 
@@ -1232,4 +1397,6 @@ export interface PlatformAdapter {
   readonly bots?: LocalBotsApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
+  /** Native calling (US-014). Unsupported hosts implement it as refusals. */
+  readonly calls: CallsApi;
 }

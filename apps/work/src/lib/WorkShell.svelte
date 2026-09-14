@@ -8,7 +8,7 @@
    *   session → direct hq-pro REST + MeshClient MQTT wakes → shallow cache.
    * Tauri selects its native adapter. Neither target reads ~/.hq here.
    */
-  import { onMount, type Component } from "svelte";
+  import { onMount, type Component, type ComponentProps } from "svelte";
   import {
     createSyncPlatformAdapter,
     resolveHostPlatform,
@@ -40,6 +40,7 @@
     type ChannelFilePreview,
     type ChannelStatusModel,
     type ChatSidebarApi,
+    type OfficeCallsHost,
     type PackagesEvents,
     type ReplyThreadScope,
     type RosterStatus,
@@ -143,6 +144,12 @@
     /** Native external-browser seam for Settings and rendered links. */
     onOpenConsole?: (url: string) => Promise<void> | void;
     onopenurl?: (url: string) => void;
+    /**
+     * US-018 native calling seams (bundled service evidence, call-window open,
+     * device id). A desktop host supplies these; the web build has none, and
+     * the Office tab stays unadvertised there.
+     */
+    callsHost?: OfficeCallsHost | null;
     /** Native route bridge, attached after DesktopApp listeners are ready. */
     onembeddednavigationready?: () => void | (() => void);
     /** Native active-thread bridge for reply realtime optimization. */
@@ -183,6 +190,8 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
+    onstartlivesession?: ComponentProps<typeof DesktopApp>["onstartlivesession"];
+    channelSessionBody?: ComponentProps<typeof DesktopApp>["channelSessionBody"];
     /**
      * Backoff between failed company-roster fetches (tests shorten it). The
      * default is bounded; a roster that keeps failing stops retrying.
@@ -215,12 +224,15 @@
     onShellReady,
     onOpenConsole: hostOnOpenConsole,
     onopenurl: hostOpenUrl,
+    callsHost = null,
     onembeddednavigationready,
     onactivethreadchange,
     extraPages,
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
+    onstartlivesession,
+    channelSessionBody,
     rosterRetryDelaysMs,
   }: WorkShellProps = $props();
 
@@ -801,6 +813,7 @@
   {#key shellEpoch}
     <DesktopApp
       {adapter}
+      {callsHost}
       version={hostVersion ?? displayVersion(`v${workPackage.version}`)}
       sidebarApi={liveSidebarApi}
       {notificationsApi}
@@ -845,6 +858,8 @@
       {rowExtrasLoading}
       {rowExtrasError}
       {rowExtras}
+      {onstartlivesession}
+      {channelSessionBody}
     />
   {/key}
   {#if externalLinkError}

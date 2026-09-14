@@ -50,6 +50,7 @@ export type CompanyTab =
   | 'knowledge'
   | 'clients'
   | 'team'
+  | 'office'
   | 'activity'
   | 'deployments'
   | 'secrets'
@@ -77,6 +78,7 @@ export type CompanyPrimarySectionId =
   | 'knowledge'
   | 'clients'
   | 'team'
+  | 'office'
   | 'more';
 
 /**
@@ -128,6 +130,7 @@ export function companyPrimarySectionForTab(
     case 'knowledge':
     case 'clients':
     case 'team':
+    case 'office':
       return resolved;
     case 'activity':
     case 'deployments':
@@ -217,6 +220,7 @@ export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> 
   { id: 'knowledge', label: 'Knowledge' },
   { id: 'clients', label: 'Clients' },
   { id: 'team', label: 'Team' },
+  { id: 'office', label: 'Office' },
   { id: 'activity', label: 'Activity' },
   { id: 'deployments', label: 'Deployments' },
   { id: 'secrets', label: 'Secrets' },
@@ -258,6 +262,7 @@ export const COMPANY_PRIMARY_SECTIONS: ReadonlyArray<{
   { id: 'knowledge', label: 'Knowledge' },
   { id: 'clients', label: 'Clients' },
   { id: 'team', label: 'Team' },
+  { id: 'office', label: 'Office' },
   { id: 'more', label: 'More' },
 ];
 

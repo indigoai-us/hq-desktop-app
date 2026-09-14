@@ -108,6 +108,10 @@ pub fn mark_first_run_complete(app: AppHandle) -> Result<(), String> {
             ("autoSyncNoticeShown", Value::Bool(true)),
             ("realtimeSync", Value::Bool(true)),
             ("personalSyncEnabled", Value::Bool(true)),
+            // A brand-new install is owed the welcome channel's guided setup.
+            // An updating user (`mark_auto_sync_notice_shown`, the lifecycle
+            // backfill) is not: they were set up before this flow existed.
+            ("welcomeSetupPending", Value::Bool(true)),
         ],
     )?;
     // Setup is done for this process too: window routing must stop treating

@@ -102,6 +102,7 @@ describe('DESKTOP-001: compact native shell', () => {
       'knowledge',
       'clients',
       'team',
+      'office',
       'more',
     ]);
     expect(V4_COMPANY_PRIMARY_ITEMS.map((s) => s.id)).toEqual(
@@ -111,6 +112,8 @@ describe('DESKTOP-001: compact native shell', () => {
     const model = getV4SidebarModel({ kind: 'company', slug: 'indigo' }, companies);
     const active = model.companies.find((row) => row.slug === 'indigo');
     expect(active?.expanded).toBe(true);
+    // US-018: Office is capability-gated, so it is absent unless the host says
+    // it can place native calls. Everything else is unconditional.
     expect(active?.children.map((c) => c.id)).toEqual([
       'overview',
       'goals',
@@ -122,6 +125,16 @@ describe('DESKTOP-001: compact native shell', () => {
       'team',
       'more',
     ]);
+    const withCalls = getV4SidebarModel(
+      { kind: 'company', slug: 'indigo' },
+      companies,
+      { nativeCalls: true },
+    );
+    expect(
+      withCalls.companies
+        .find((row) => row.slug === 'indigo')
+        ?.children.map((c) => c.id),
+    ).toContain('office');
     expect(active?.children.find((c) => c.id === 'overview')?.active).toBe(true);
 
     const other = model.companies.find((row) => row.slug === 'liverecover');

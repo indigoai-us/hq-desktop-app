@@ -24,6 +24,7 @@ import {
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
+import { createCallsApi } from "../calls/api.js";
 import {
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -192,6 +193,17 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     return ok(raw.value as T);
   }
 
+  /**
+   * Native calling (US-014). This adapter already proxies hq-pro through the
+   * Rust `hq_pro_fetch` command exactly like the Sync adapter does, so it gets
+   * the real implementation rather than a refusal — the evidence preflight,
+   * not the host, is what gates it.
+   */
+  readonly calls: PlatformAdapter["calls"] = createCallsApi(
+    <T,>(method: "GET" | "POST", path: string, body?: unknown) =>
+      this.hqProJson<T>(method, path, body),
+  );
+
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
@@ -269,6 +281,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         : this.call("list_contacts");
     },
     listDmRequests: () => this.call("list_dm_requests"),
+    respondDmRequest: ({ pairKey, action }) =>
+      this.call("respond_dm_request", { pairKey, action }),
     markChannelRead: (id) => this.call("mark_channel_read", { id }),
     markDmThreadRead: (personUid) =>
       this.call("mark_dm_thread_read", { personUid }),
@@ -686,6 +700,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getSettings: () => this.call("get_settings"),
     updateSettings: (patch) => this.queueSettingsPatch(patch),
     getSetupStatus: () => this.call("get_setup_status"),
+    markWelcomeSetupComplete: () => this.call("mark_welcome_setup_complete"),
     getTelemetryConsent: () => this.call("get_telemetry_consent"),
   };
 
@@ -693,6 +708,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     createProjectStory: (projectId, companyUid, story) => this.hqProJson("POST",
       `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}/stories`,
       { ...story, companyUid: companyUid.trim() },
+    ),
+    putProjectView: (projectId, companyUid, view) => this.hqProJson("PUT",
+      `/v1/work-mesh/projects/${encodeURIComponent(projectId.trim())}`,
+      { ...(view as object), companyUid: companyUid.trim() },
     ),
     readLocalSnapshot: () => this.call("read_work_mesh_snapshot"),
     getProjectView: (projectId, companyUid) =>

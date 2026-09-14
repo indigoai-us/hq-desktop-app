@@ -9,8 +9,13 @@ import {
   loadVaultFilePreview,
   type ChannelFileItemModel,
   type ChannelFilePreview,
+  type OfficeCallsHost,
 } from '@hq/ui';
 import { getVaultObject } from './vault-s3-put';
+import {
+  BUNDLED_EVIDENCE_MAX_AGE_MS,
+  SERVICE_EVIDENCE,
+} from '../call/service-evidence';
 
 export type NativeInvokeFn = <T>(
   command: string,
@@ -48,6 +53,35 @@ export interface NativeWorkShellCapabilities {
     email?: string;
     name?: string;
   } | null;
+  /** US-018 native calling seams handed to the shell's Office surface. */
+  calls: OfficeCallsHost;
+}
+
+/**
+ * The native calling seams (US-018) the shared Office surface cannot own.
+ *
+ * @hq/ui must not import `@tauri-apps/*`, read a bundled build artifact, or
+ * open an OS window, so this host supplies all three: the build-time US-011
+ * receipt with its own bundled lifetime, the `calls_open_window` invoke, and
+ * this device's fingerprint. The target crossing `calls_open_window` is ids
+ * and timings only — no token, key or secret.
+ */
+export function createNativeCallsHost(
+  invoke: NativeInvokeFn,
+): OfficeCallsHost {
+  return {
+    serviceEvidence: SERVICE_EVIDENCE,
+    evidenceMaxAgeMs: BUNDLED_EVIDENCE_MAX_AGE_MS,
+    openCallWindow: async (target) => {
+      await invoke<void>('calls_open_window', { target });
+    },
+    resolveDeviceId: async () => {
+      const fingerprint = await invoke<unknown>('device_fingerprint').catch(
+        () => '',
+      );
+      return typeof fingerprint === 'string' ? fingerprint : '';
+    },
+  };
 }
 
 function requestUrl(input: RequestInfo | URL): string {
@@ -171,5 +205,6 @@ export async function createNativeWorkShellCapabilities(options: {
       options.getVaultObject ?? getVaultObject,
     ),
     hostIdentity: options.hostIdentity ?? await nativeHostIdentity(options.invoke),
+    calls: createNativeCallsHost(options.invoke),
   };
 }

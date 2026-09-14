@@ -45,14 +45,16 @@ import { missingInheritedPrefix, type SessionContext } from './session-context';
  * window) and writes those errors to the console once per session, not once
  * per render.
  */
+import { isAuthFailureText } from '../../components/sessions/transcript-adapter';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { WEB_PATHS, skillMetadataFromShelf, type ShelfSkillMetadata } from '@hq/platform';
 import { safeUnlisten } from '../../lib/listener-registry';
-import type {
-  ImageAttachment,
-  SessionCommand,
-  SessionEvent,
+import {
+  contentToText,
+  type ImageAttachment,
+  type SessionCommand,
+  type SessionEvent,
 } from '../../components/sessions/session-events';
 import {
   emptyTranscript,
@@ -115,6 +117,8 @@ export interface SessionSpec {
   /** Existing CLI session id to resume. */
   resume: string | null;
   permissionMode: PermissionMode;
+  /** Background jobs (task generate) stay out of the session list. */
+  hidden?: boolean;
 }
 
 /** The user's answer to one parked permission request (Rust `PermissionDecision`). */
@@ -416,10 +420,16 @@ function applyEvent(
   if (!entry) return; // Not a session this store has open — nothing to fold into.
   if (seq < entry.nextSeq) return; // Duplicate (a replay already covered it).
   if (seq > entry.nextSeq) {
-    // A gap. Rendering the newer event would silently drop the missing span,
-    // so catch up from the last contiguous seq instead.
-    void replayFrom(sessionId, entry.nextSeq);
-    return;
+    // startAndSend never replays: the first live event is often seq 1 against
+    // nextSeq 0. Treating that as a gap wipes the transcript with an empty
+    // replay (flash, then a dead pane). Accept the first event as the start
+    // of the stream; only hole-fill once we already have events.
+    if (entry.events.length === 0) {
+      entry.nextSeq = seq;
+    } else {
+      void replayFrom(sessionId, entry.nextSeq);
+      return;
+    }
   }
   entry.events.push(event);
   // The backend's stamp is authoritative — it is the same instant a later
@@ -429,6 +439,15 @@ function applyEvent(
   entry.nextSeq = seq + 1;
   adoptBackendTurns(sessionId, [event]);
   resolveTurnWaiters(sessionId);
+  if (
+    (event.kind === 'error' &&
+      (event.code === 'authentication_failed' || isAuthFailureText(event.message))) ||
+    (event.kind === 'turnDone' &&
+      event.status !== 'success' &&
+      isAuthFailureText(event.error))
+  ) {
+    void recoverProviderAuth(sessionId);
+  }
   revision += 1;
 }
 
@@ -896,6 +915,46 @@ async function startAndSend(
   }
 }
 
+/** Start a hidden session, send one prompt, and do not open it in the Sessions list. */
+async function startBackground(spec: SessionSpec, text: string): Promise<string> {
+  await ensureListeners();
+  const started = await invoke<{ sessionId: string }>('agent_session_start', {
+    spec: { ...spec, hidden: true, title: spec.title ?? null, projectChannelId: undefined },
+  });
+  const sessionId = started.sessionId;
+  if (!entries[sessionId]) entries[sessionId] = newEntry(sessionId);
+  const entry = entries[sessionId]!;
+  entry.loading = false;
+  try {
+    await invoke('agent_session_send', { sessionId, text, images: [], overrides: null });
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : `Could not start the background session: ${String(err)}`,
+    );
+  }
+  return sessionId;
+}
+
+function eventsFor(sessionId: string): SessionEvent[] {
+  return entries[sessionId]?.events ?? [];
+}
+
+/** Replay a hidden job and treat a vanished registry entry as failure. */
+async function backgroundStatus(sessionId: string): Promise<{ events: SessionEvent[]; gone: boolean }> {
+  try {
+    const replay = await invoke<{ events: Array<{ event: SessionEvent }> }>(
+      'agent_session_replay',
+      { sessionId, sinceSeq: 0 },
+    );
+    const events = replay.events.map((row) => row.event);
+    if (entries[sessionId]) entries[sessionId]!.events = events;
+    return { events, gone: false };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { events: eventsFor(sessionId), gone: /no session/i.test(message) };
+  }
+}
+
 /**
  * Continue a dormant provider conversation. Opening history is read-only;
  * this first new turn is the precise point where a live runtime is needed.
@@ -1146,6 +1205,94 @@ export interface ProviderLoginState {
   message?: string;
 }
 let preflightCache: { at: number; promise: Promise<Preflight> } | null = null;
+/** CLI `auth status` can stay true after a 401; treat those tools as signed out until login. */
+const staleLogin = new Set<SessionTool>();
+
+function applyStaleLogin(preflight: Preflight): Preflight {
+  if (staleLogin.size === 0) return preflight;
+  return {
+    ...preflight,
+    claudeLoggedIn: staleLogin.has('claude') ? false : preflight.claudeLoggedIn,
+    codexLoggedIn: staleLogin.has('codex') ? false : preflight.codexLoggedIn,
+    grokLoggedIn: staleLogin.has('grok') ? false : preflight.grokLoggedIn,
+  };
+}
+
+export type AuthRecovery = 'idle' | 'checking' | 'needed' | 'recovered';
+const authRecoveryById: Record<string, AuthRecovery> = {};
+const authRetried = new Set<string>();
+
+function toolForSession(sessionId: string): SessionTool {
+  const started = entries[sessionId]?.events.find((event) => event.kind === 'started');
+  if (started?.kind === 'started' && (started.tool === 'codex' || started.tool === 'grok')) {
+    return started.tool;
+  }
+  return 'claude';
+}
+
+function noteStaleLogin(sessionId: string): void {
+  staleLogin.add(toolForSession(sessionId));
+  preflightCache = null;
+}
+
+function lastUserText(sessionId: string): string {
+  const events = entries[sessionId]?.events ?? [];
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event.kind === 'userMessage') return contentToText(event.text);
+  }
+  return '';
+}
+
+function loggedInOn(preflight: Preflight, tool: SessionTool): boolean {
+  if (tool === 'codex') return preflight.codexLoggedIn;
+  if (tool === 'grok') return preflight.grokLoggedIn;
+  return preflight.claudeLoggedIn;
+}
+
+/** Probe CLI auth status; retry the last turn if it looks signed in. Browser login only if that fails. */
+async function recoverProviderAuth(sessionId: string): Promise<void> {
+  const current = authRecoveryById[sessionId] ?? 'idle';
+  if (current === 'checking') return;
+  if (current === 'needed') return;
+  authRecoveryById[sessionId] = 'checking';
+  revision += 1;
+  const tool = toolForSession(sessionId);
+  preflightCache = null;
+  let loggedIn = false;
+  try {
+    loggedIn = loggedInOn(await preflight(), tool);
+  } catch {
+    loggedIn = false;
+  }
+  if (loggedIn && !authRetried.has(sessionId)) {
+    authRetried.add(sessionId);
+    const text = lastUserText(sessionId);
+    const entry = entries[sessionId];
+    if (text && entry) {
+      const after = entry.events.length;
+      try {
+        await invoke('agent_session_send', {
+          sessionId,
+          text,
+          images: [],
+          overrides: null,
+        });
+        const done = await waitForTurnDone(sessionId, after, 120_000);
+        if (done.status === 'success') {
+          authRecoveryById[sessionId] = 'recovered';
+          revision += 1;
+          return;
+        }
+      } catch {
+        /* still need the browser */
+      }
+    }
+  }
+  authRecoveryById[sessionId] = 'needed';
+  noteStaleLogin(sessionId);
+  revision += 1;
+}
 const CATALOG_TTL_MS = 5 * 60_000;
 let catalogCache = new Map<SessionTool, { at: number; promise: Promise<CommandCatalog> }>();
 
@@ -1155,7 +1302,7 @@ async function preflight(): Promise<Preflight> {
   if (preflightCache && now - preflightCache.at < PREFLIGHT_TTL_MS) {
     return preflightCache.promise;
   }
-  const promise = invoke<Preflight>('agent_session_preflight');
+  const promise = invoke<Preflight>('agent_session_preflight').then(applyStaleLogin);
   preflightCache = { at: now, promise };
   // A failed probe must not poison the cache for the next attempt.
   promise.catch(() => {
@@ -1475,6 +1622,12 @@ export const liveSessionStore = {
     return userTurnsById[entry.sessionId] ?? [];
   },
   /** The latest "this session is blocked on you" notice, or null. */
+  get authRecovery(): AuthRecovery {
+    const id = activeId;
+    if (!id) return 'idle';
+    void revision;
+    return authRecoveryById[id] ?? 'idle';
+  },
   get needsYou(): NeedsYouNotice | null {
     return needsYou;
   },
@@ -1551,8 +1704,23 @@ export const liveSessionStore = {
     if (live?.company) return live.company;
     return entries[sessionId]?.history?.company || null;
   },
-  activate: (sessionId: string): void => {
-    if (entries[sessionId]) activeId = sessionId;
+  /**
+   * Point the view at a buffered session, or `null` to show a blank new chat
+   * without dropping buffers (Back can re-activate them).
+   */
+  activate: (sessionId: string | null): void => {
+    if (sessionId == null) {
+      if (activeId == null) return;
+      activeId = null;
+      foldCache = null;
+      revision += 1;
+      return;
+    }
+    if (entries[sessionId] && activeId !== sessionId) {
+      activeId = sessionId;
+      foldCache = null;
+      revision += 1;
+    }
   },
   open,
   deselect,
@@ -1562,6 +1730,9 @@ export const liveSessionStore = {
   loadEarlier,
   start,
   startAndSend,
+  startBackground,
+  eventsFor,
+  backgroundStatus,
   resumeAndSend,
   waitForTurnDone,
   send,
@@ -1574,8 +1745,25 @@ export const liveSessionStore = {
   shareToChannel,
   preflight,
   repairHqSetup,
-  providerLoginStart: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_start', { tool }),
-  providerLoginStatus: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_status', { tool }),
+  providerLoginStart: async (tool: SessionTool, opts?: { force?: boolean }) => {
+    const result = await invoke<ProviderLoginState>('agent_provider_login_start', {
+      tool,
+      ...(opts?.force ? { force: true } : {}),
+    });
+    if (result.state === 'connected') {
+      staleLogin.delete(tool);
+      preflightCache = null;
+    }
+    return result;
+  },
+  providerLoginStatus: async (tool: SessionTool) => {
+    const result = await invoke<ProviderLoginState>('agent_provider_login_status', { tool });
+    if (result.state === 'connected') {
+      staleLogin.delete(tool);
+      preflightCache = null;
+    }
+    return result;
+  },
   providerLoginCancel: (tool: SessionTool) => invoke<ProviderLoginState>('agent_provider_login_cancel', { tool }),
   invalidatePreflight: () => { preflightCache = null; },
   /** Install a sessions CLI in-app (npm, Node first if needed). Streams `install:progress`. */

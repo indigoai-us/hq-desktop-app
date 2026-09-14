@@ -85,6 +85,12 @@ pub struct AgentSession {
     #[serde(default, deserialize_with = "null_as_default")]
     pub last_activity_at: String,
     pub source: String,
+    /// Remote Control pairing id (`cse_…`) of a Claude session that can be
+    /// driven from claude.ai/code. Published by the outpost heartbeat
+    /// (hq-cloud ≥ 6.16.38); the frontend turns it into a claude.ai link.
+    /// Absent everywhere else, so `None` is omitted from the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_control_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -551,6 +557,7 @@ mod tests {
             started_at: "2026-06-15T18:00:00Z".to_string(),
             last_activity_at: "2026-06-15T18:43:20Z".to_string(),
             source: "claude-jsonl".to_string(),
+            remote_control_session_id: None,
         }
     }
 
@@ -771,6 +778,7 @@ mod tests {
             started_at: "2026-06-15T18:00:00Z".to_string(),
             last_activity_at: last_activity_at.to_string(),
             source: "test".to_string(),
+            remote_control_session_id: None,
         }
     }
 

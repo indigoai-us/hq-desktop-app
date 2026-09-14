@@ -248,6 +248,7 @@ mod tests {
             started_at: "2026-06-15T18:00:00Z".to_string(),
             last_activity_at: last_activity_at.to_string(),
             source: "test".to_string(),
+            remote_control_session_id: None,
         }
     }
 

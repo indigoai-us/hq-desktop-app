@@ -1145,6 +1145,68 @@ pub fn sample_watcher_job_pids_for_generation(handle: &str, generation: u64) {
 #[cfg(not(target_os = "windows"))]
 pub fn sample_watcher_job_pids_for_generation(_handle: &str, _generation: u64) {}
 
+/// Sample the images of the EXACT `generation`'s retained Job Object processes that
+/// are STILL LIVE at the exit boundary — the shim-vs-runner discriminator
+/// (HQ-DESKTOP-66). One read-only
+/// `QueryInformationJobObject(JobObjectBasicProcessIdList)` on the same retained
+/// handle [`watcher_job_accounting_for_generation`] reads, resolved by generation so
+/// a replacement watcher's job is never returned. The live-PID list is read while
+/// the registry lock is held (so a concurrent `deregister`/`close_process_entry`
+/// cannot close the job between lookup and query); the lock is then DROPPED before
+/// any per-PID `OpenProcess` image work. A failed/absent query — or a non-Windows
+/// build — yields `unavailable`. Strictly diagnostic and read-only: it never closes,
+/// terminates, duplicates, or takes the Job Object, and never gates capture, the
+/// fingerprint, or lifecycle.
+#[cfg(target_os = "windows")]
+pub fn watcher_job_survivors_for_generation(
+    handle: &str,
+    generation: u64,
+) -> hq_desktop_core::watcher_fault::WatcherJobSurvivors {
+    use hq_desktop_core::watcher_fault::{WatcherFaultBinary, WatcherJobSurvivors};
+    let registry = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let job = registry
+        .active
+        .get(handle)
+        .filter(|entry| entry.generation == generation)
+        .or_else(|| {
+            registry
+                .retired
+                .get(&generation)
+                .filter(|retired| retired.handle == handle)
+                .map(|retired| &retired.entry)
+        })
+        .and_then(|entry| entry.job_handle);
+    let Some(job) = job else {
+        return WatcherJobSurvivors::unavailable();
+    };
+    // SAFETY: `job` is this app's own retained Job Object handle and the registry
+    // lock is held for the duration of the read, so it cannot be closed here. The
+    // query is read-only; it never closes, terminates, or duplicates the handle.
+    let pids = unsafe { query_job_live_pids(job) };
+    drop(registry);
+    let Some(pids) = pids else {
+        return WatcherJobSurvivors::unavailable();
+    };
+    // Resolve each live PID's image AFTER dropping the registry lock (a PID is just
+    // an integer; the image query needs no lock). An unresolvable PID contributes to
+    // the count only — never a named survivor.
+    let images: Vec<Option<WatcherFaultBinary>> = pids
+        .iter()
+        .map(|pid| resolve_process_image_token(*pid))
+        .collect();
+    WatcherJobSurvivors::from_live_images(&images)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn watcher_job_survivors_for_generation(
+    _handle: &str,
+    _generation: u64,
+) -> hq_desktop_core::watcher_fault::WatcherJobSurvivors {
+    hq_desktop_core::watcher_fault::WatcherJobSurvivors::unavailable()
+}
+
 /// Best-effort working-set (KB) of one live PID via `OpenProcess` +
 /// `GetProcessMemoryInfo`. Read-only: it opens the process for limited query,
 /// reads `WorkingSetSize`, and closes the handle on every path. `None` when the

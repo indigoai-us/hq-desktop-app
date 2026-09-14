@@ -279,6 +279,36 @@ describe("destination equality and labels", () => {
     ).toBe("Channel");
   });
 
+  it("models the DM connection-requests panel as a history destination", () => {
+    expect(destinationLabel({ kind: "dm-requests" })).toBe("Connection requests");
+    expect(canonicalizeDestination({ kind: "dm-requests", pairKey: "  " })).toEqual(
+      { kind: "dm-requests", pairKey: null },
+    );
+    expect(
+      canonicalizeDestination({ kind: "dm-requests", pairKey: " pair_1 " }),
+    ).toEqual({ kind: "dm-requests", pairKey: "pair_1" });
+    expect(
+      destinationsEqual(
+        { kind: "dm-requests" },
+        { kind: "dm-requests", pairKey: null },
+      ),
+    ).toBe(true);
+    expect(
+      destinationsEqual(
+        { kind: "dm-requests", pairKey: "pair_1" },
+        { kind: "dm-requests", pairKey: "pair_2" },
+      ),
+    ).toBe(false);
+    expect(canonicalDestinationKey({ kind: "dm-requests" })).not.toBe(
+      canonicalDestinationKey({ kind: "messages" }),
+    );
+    expect(() =>
+      assertSerializableNavigationEntry(
+        entry({ kind: "dm-requests", pairKey: "pair_1" }),
+      ),
+    ).not.toThrow();
+  });
+
   it("rejects component-like or presigned payloads", () => {
     expect(() =>
       assertSerializableNavigationEntry({
@@ -423,4 +453,11 @@ describe("navigation history stack", () => {
       /localStorage|sessionStorage|indexedDB/i,
     );
   });
+});
+
+
+it("preserves Office as a distinct company destination through history serialization", () => {
+  const office = entry({kind:"channel",channelId:"company-channel",companyTab:"office"});
+  expect(canonicalizeDestination(JSON.parse(JSON.stringify(office.destination)))).toMatchObject({companyTab:"office"});
+  expect(destinationsEqual(office.destination,{kind:"channel",channelId:"company-channel",companyTab:"chat"})).toBe(false);
 });

@@ -180,6 +180,13 @@
     avatarByUid?: Record<string, string> | null;
     /** Bump to refetch contacts (after an agent profile save). */
     rosterWakeSeq?: number;
+    /**
+     * Bump to re-read pending connection requests only. Hosts tie this to
+     * their notification wake (native poll or `notifications:*` MQTT
+     * reconcile) so a request that arrives without a `dm:request-new` wake
+     * — the web path has none — still surfaces without a remount.
+     */
+    requestsWakeSeq?: number;
     /** Contact-roster avatar URLs, including agents once hq-pro sends them. */
     onavatarmap?: (map: Record<string, string>) => void;
     oncommand?: () => void;
@@ -229,7 +236,12 @@
      * Land on #welcome at boot even when live channels exist (setup has not
      * been run on this machine yet). See `hasRunWelcomeSetup`.
      */
-    welcomeFirst?: boolean;
+    /**
+     * `true`: #welcome wins the boot pick (setup not run here yet). `false`:
+     * real conversations win. `"pending"`: the host has not yet said whether
+     * setup is owed — hold the boot pick, briefly, rather than guess.
+     */
+    welcomeFirst?: boolean | "pending";
     /**
      * Phone-width shells keep this mounted while it is closed — it is what
      * loads the roster and falls back to #setup — and move it off screen
@@ -274,6 +286,7 @@
     seedDirectory = null,
     avatarByUid = null,
     rosterWakeSeq = 0,
+    requestsWakeSeq = 0,
     onavatarmap,
     oncommand,
     onnavigateMessages,
@@ -303,6 +316,8 @@
     rowExtrasError = false,
     rowExtras = null,
   }: Props = $props();
+  // Host still reports load failures; the sidebar no longer paints them.
+  void rowExtrasError;
 
   interface PairUnreadEntry {
     withPersonUid: string;
@@ -765,6 +780,9 @@
       return;
     }
     if (autoOpenRequestedId) return;
+    // The host has not said yet whether setup is owed here: opening either
+    // #welcome or a company channel now would be a guess the person sees.
+    if (welcomeFirst === "pending") return;
     // Until setup has been run on this machine, #welcome wins the boot pick:
     // the person needs Run Setup before a company channel is useful.
     if (welcomeFirst) {
@@ -1297,6 +1315,11 @@
           bootTimeoutMs,
           "list_dm_requests",
         ).catch((err) => {
+          sidebarLog("boot-error", {
+            source: "list_dm_requests",
+            timeout: err instanceof BootTimeoutError,
+            message: err instanceof Error ? err.message : String(err),
+          });
           console.error("chat-sidebar: list_dm_requests failed", err);
           return { requests: pendingRequests };
         }),
@@ -1363,6 +1386,33 @@
     if (seq <= 0) return;
     untrack(() => {
       void refreshLists();
+    });
+  });
+
+  /** Re-read pending connection requests alone (no directory/contacts churn). */
+  async function refreshRequests(): Promise<void> {
+    try {
+      const resp = await raceTimeout(
+        api.listDmRequests(),
+        bootTimeoutMs,
+        "list_dm_requests",
+      );
+      pendingRequests = Array.isArray(resp?.requests) ? resp.requests : [];
+    } catch (err) {
+      sidebarLog("boot-error", {
+        source: "list_dm_requests",
+        timeout: err instanceof BootTimeoutError,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      console.error("chat-sidebar: list_dm_requests failed", err);
+    }
+  }
+
+  $effect(() => {
+    const seq = requestsWakeSeq;
+    if (seq <= 0) return;
+    untrack(() => {
+      void refreshRequests();
     });
   });
 
@@ -2200,7 +2250,6 @@
         {/each}
       </div>
     {:else}
-    {#if rowExtrasError}<div role="status" class="chat-empty">Some project sessions couldn’t load. Retrying…</div>{/if}
     {#if pendingRequestCount > 0}
       <button
         type="button"

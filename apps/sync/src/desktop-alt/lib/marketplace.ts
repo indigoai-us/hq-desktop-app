@@ -376,7 +376,7 @@ export type ModerationDecision = 'approve' | 'reject';
 /**
  * Load the moderation queue (pending_review listings). Admin-gated SERVER-SIDE;
  * a non-admin caller gets a clear "admin only" error (the panel locks). The UI
- * admin gate (`isAdminGate`) is UX only — this is not the authorization boundary.
+ * authorization is enforced server-side; this is not the authorization boundary.
  */
 export async function loadModerationQueue(): Promise<ModerationQueueItem[]> {
   const queue = await invoke<unknown>('list_moderation_queue');
@@ -400,18 +400,6 @@ export async function decideModerationListing(
     note: note?.trim() ? note.trim() : null,
     versionLock: versionLock?.trim() ? versionLock.trim() : null,
   });
-}
-
-/**
- * UI admin gate (UX ONLY — the server is the real authority). Default-DENY:
- * returns true only when the email is positively known to end in
- * `@getindigo.ai`. An unknown / absent / malformed email → false (panel locked).
- * The leading `@` blocks look-alikes like `forgetindigo.ai`. Kept in lockstep
- * with the Rust `feature_gate::is_allowed_email`.
- */
-export function isAdminGate(email: string | null | undefined): boolean {
-  const e = (email ?? '').trim().toLowerCase();
-  return e.length > 0 && e.endsWith('@getindigo.ai');
 }
 
 /**
@@ -682,7 +670,7 @@ export type ApplicationDecision = 'approve' | 'deny';
 /**
  * Load pending creator-access applications (admin-gated SERVER-SIDE; a non-admin
  * gets a clear "admin only" error so the panel locks its Requests view). The UI
- * admin gate (`isAdminGate`) is UX only — this is not the authorization boundary.
+ * authorization is enforced server-side; this is not the authorization boundary.
  */
 export async function loadCreatorApplications(): Promise<CreatorApplication[]> {
   const applications = await invoke<unknown>('list_creator_applications');

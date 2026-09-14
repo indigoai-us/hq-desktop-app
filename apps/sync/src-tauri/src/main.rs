@@ -3,6 +3,9 @@
 use std::sync::Mutex;
 use tauri::Manager;
 
+#[cfg(feature = "meet-native-webdriver")]
+mod meet_native;
+
 mod boot_watchdog;
 mod commands;
 mod deep_link;
@@ -230,6 +233,14 @@ where
 /// `cleanup_before_exit()` (`tauri/src/app.rs`). No pump iteration intervenes,
 /// so exiting here is guaranteed to beat the fatal dispatch.
 ///
+/// This callback is the FALLBACK seam: it only fires when tao's handler was free
+/// at `WM_ENDSESSION` (the non-re-entrant path). When the handler is already
+/// taken — a `WM_ENDSESSION` delivered inside wry's `wait_with_pump` during
+/// WebView2 creation — tao panics re-entrantly before `RunEvent::Exit` can run,
+/// so that path is caught earlier by the `WH_CALLWNDPROC` intercept in
+/// `commands::session_end_intercept`. Both seams route through the same
+/// idempotent `windows_session_end_teardown`.
+///
 /// `app_initiated` is the discriminator, and it is sound in both directions:
 /// tauri-runtime-wry emits `RunEvent::ExitRequested` only when the last window
 /// is destroyed or on `Message::RequestExit` (which `AppHandle::exit` sends),
@@ -257,6 +268,12 @@ where
     terminate();
 }
 
+#[cfg(feature = "meet-native-webdriver")]
+fn main() {
+    meet_native::run();
+}
+
+#[cfg(not(feature = "meet-native-webdriver"))]
 fn main() {
     // The copied Windows update helper must run before Sentry, Tauri, and the
     // single-instance plugin. It waits for the real app to exit, then launches
@@ -295,6 +312,16 @@ fn main() {
         SENTRY_IDENTITY,
     );
     hq_telemetry::set_native_panic_phase(hq_telemetry::NativePanicPhase::Running);
+
+    // HQ-DESKTOP-44 (re-entrant path): install the thread-local WH_CALLWNDPROC
+    // session-end intercept on THIS (event-loop) thread now — BEFORE
+    // `tauri::Builder::build()` — so it is armed for a `WM_ENDSESSION` that lands
+    // during the config-window / widget WebView2 creation tauri runs inside the
+    // `RunEvent::Ready` dispatch, where tao's handler is already taken and
+    // `RunEvent::Exit` can never fire. Do NOT move this after `build()`. See
+    // `commands::session_end_intercept` and the "Exit Lifecycle" doc.
+    #[cfg(target_os = "windows")]
+    commands::session_end_intercept::install_session_end_intercept();
 
     // Wire the foundation crate's injected dependencies before anything reads them:
     //  - the user-facing client version (from build-time APP_VERSION), and
@@ -340,7 +367,7 @@ fn main() {
         }
     }
 
-    crate::recovery::register_protocol(tauri::Builder::default())
+    let builder = crate::recovery::register_protocol(tauri::Builder::default())
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
             webview_asset_cache::handle_page_load(webview.label(), payload.event());
@@ -385,7 +412,9 @@ fn main() {
             }
 
             surface_existing_instance(app);
-        }))
+        }));
+
+    builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(
@@ -509,6 +538,21 @@ fn main() {
                 if window.label() == crate::recovery::WINDOW_LABEL {
                     crate::recovery::on_recovery_closed(window.app_handle());
                 }
+                // US-016: the call window — and ONLY the call window — owns the
+                // call registry. Once it is destroyed (user close, crash, kill)
+                // the session is gone with it, so drop every entry and any
+                // undrained pending target. Without this a crashed call window
+                // would leave the registry hot and refuse the next open with
+                // CALL_ACTIVE forever.
+                if crate::commands::calls::owns_window_label(window.label()) {
+                    let released = crate::commands::calls::release_all_sessions();
+                    if !released.is_empty() {
+                        crate::util::logfile::log(
+                            "calls",
+                            &format!("window destroyed; released={}", released.join(",")),
+                        );
+                    }
+                }
             }
             // No eager standalone-install probe here. `refresh_hq_work_install_cache`
             // force-probes with no TTL — on macOS that falls through to a fresh
@@ -534,6 +578,13 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::meet_transcript_projection::meet_transcript_project,
+            commands::meet_transcript_projection::meet_personal_transcript_project,
+            commands::meet_transcript_outbox::meet_transcript_outbox_enqueue,
+            commands::meet_transcript_outbox::meet_transcript_outbox_read,
+            commands::meet_transcript_outbox::meet_transcript_outbox_ack,
+            commands::meet_transcription::meet_transcription_status,
+            commands::meet_transcription::meet_transcribe_pcm,
             commands::app::quit_app,
             commands::app::frontend_log,
             commands::app::bring_main_window_to_front,
@@ -582,8 +633,6 @@ fn main() {
             commands::hq_work::install_hq_work,
             commands::hq_work::get_hq_work_handoff_card_shown,
             commands::hq_work::mark_hq_work_handoff_card_shown,
-            commands::config::get_hq_work_handoff,
-            commands::config::set_hq_work_handoff,
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
@@ -597,6 +646,7 @@ fn main() {
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
             commands::lifecycle::get_setup_status,
+            commands::lifecycle::mark_welcome_setup_complete,
             commands::session_end_observer::session_end_observer_status,
             commands::windows_teardown_probe::session_end_teardown_probe_status,
             commands::session_end_latch::session_end_latch_status,
@@ -846,11 +896,20 @@ fn main() {
             commands::meetings::meetings_cancel_bot,
             commands::meetings::meetings_set_company,
             commands::meetings::meetings_take_pending_focus,
+            commands::calls::calls_open_window,
+            commands::calls::calls_take_pending_target,
+            commands::calls::calls_window_ready,
+            commands::calls::calls_release,
+            commands::calls::calls_persist_pending,
+            commands::calls::calls_take_recovered,
+            commands::calls::calls_disposed,
             commands::meetings::open_meetings_window,
             commands::meetings::meetings_check_bot_for_url,
             commands::meetings::meetings_notify_detected,
             commands::meetings::meetings_clear_prompt_badge,
             commands::permissions::permissions_open_settings,
+            commands::permissions::call_media_permissions,
+            commands::permissions::call_media_permission_request,
             commands::permissions::permissions_force_native_register,
             commands::permissions::meetings_permissions_state,
             commands::permissions::open_meeting_permissions_window,
@@ -997,6 +1056,14 @@ fn main() {
                 app.manage(commands::session_end_observer::SessionEndObserverHandle::start(
                     tracker,
                 ));
+                // HQ-DESKTOP-44 (re-entrant path): give the WH_CALLWNDPROC
+                // intercept the app handle so its bounded teardown can reach the
+                // session-end observer, and — only under the e2e-automation
+                // feature and the marker env var — arm the deterministic
+                // re-entrancy proof that parks the main thread in a nested pump.
+                commands::session_end_intercept::set_app_handle(app.handle().clone());
+                #[cfg(feature = "e2e-automation")]
+                commands::session_end_intercept::maybe_arm_reentrancy_probe(app.handle());
             }
             // Classify this launch (FirstRun / ExistingUpdate / Normal) and
             // cache it in managed state. MUST run before anything that can
@@ -1467,107 +1534,58 @@ fn main() {
                 // with its honest `deferred` provenance rather than lose it to the
                 // deferral horizon. Bounded, panic-free, no Event Log work.
                 commands::daemon::flush_pending_watcher_fault_captures("app_quit_flush");
+                // Likewise a NON-fault capture whose deferred report read is still in
+                // flight (HQ-DESKTOP-66) names a measured crash — read + emit it now
+                // (a fast local-file read) rather than lose it to the deferral horizon.
+                commands::daemon::flush_pending_runner_report_captures("app_quit_flush");
                 #[cfg(target_os = "windows")]
                 if let Some(observer) = _app_handle
                     .try_state::<commands::session_end_observer::SessionEndObserverHandle>()
                 {
                     observer.shutdown(std::time::Duration::from_millis(500));
                 }
+                // US-016: a live call owns its own window. Give it a bounded
+                // chance to dispose its session (stopping camera + microphone
+                // and flushing pending completion work) before the process
+                // tears down. Never blocks the quit past its own budget.
+                commands::calls::dispose_call_windows_for_exit(
+                    _app_handle,
+                    commands::calls::DISPOSE_WAIT,
+                );
                 commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
             }
 
             if matches!(&event, tauri::RunEvent::Exit) {
                 hq_telemetry::set_native_panic_phase(hq_telemetry::NativePanicPhase::Destroyed);
 
-                // Windows only, and only when no ExitRequested preceded this:
-                // the OS is ending the desktop session, tao's event-loop runner
-                // is already latched in `Destroyed`, and the very next message
-                // its still-live pump dispatches would panic out of an
-                // `extern "system"` window procedure and abort the process.
-                // Run the teardown that ExitRequested would have run, then
-                // leave before the pump gets another iteration.
+                // Windows only, and only when no `ExitRequested` preceded this:
+                // the OS is ending the desktop session while tao's handler is
+                // FREE, so tao's runner is latched in `Destroyed` and the next
+                // message its still-live pump dispatches would panic out of an
+                // `extern "system"` window procedure and abort the process. Run
+                // the shared teardown, then leave before the pump gets another
+                // iteration.
                 //
-                // Every step is individually capped and the total is ~1.75s
-                // against Windows' 5s default `WaitToKillAppTimeout`. Children
-                // are terminated BEFORE the Sentry flush: at shutdown the
-                // network may already be down, and an orphaned sync daemon is a
-                // worse outcome than a dropped report.
+                // This arm is the FALLBACK seam for the non-re-entrant path. The
+                // re-entrant path — a `WM_ENDSESSION` delivered while the handler
+                // is already taken, inside wry's `wait_with_pump` during WebView2
+                // creation — panics before `RunEvent::Exit` can ever run, so it is
+                // caught earlier by the `WH_CALLWNDPROC` intercept installed in
+                // `main()` (`commands::session_end_intercept`). Both seams call the
+                // SAME `windows_session_end_teardown`, which is idempotent (a
+                // process-wide once-latch): whichever fires first wins and a second
+                // entry is a no-op. Every step is individually capped (~1.75s total
+                // against Windows' 5s default `WaitToKillAppTimeout`), children are
+                // terminated BEFORE the Sentry flush, and the owned-pid report is
+                // written BEFORE termination — ordering pinned by
+                // `scripts/native-seam-wiring.test.ts`.
                 #[cfg(target_os = "windows")]
                 handle_run_event_exit(
                     commands::process::app_initiated_exit(),
                     || {
-                        use commands::session_end_observer::SessionEndObserverHandle;
-                        use hq_desktop_core::sync_outcome::WindowsTerminatorAttribution;
-
-                        // FIRST, before anything else in the session-end teardown:
-                        // reaching this arm is unambiguous OS evidence that the
-                        // session is ending (tao raises `RunEvent::Exit` without a
-                        // preceding `ExitRequested` only on `WM_ENDSESSION`). Make
-                        // that durable in the process-global latch BEFORE the
-                        // one-shot `drop_pending_session_end_captures` sweep runs,
-                        // so a watcher capture built microseconds later — after the
-                        // sweep, during its own grace — still sees positive
-                        // evidence at resolution and suppresses (HQ-DESKTOP r3).
-                        // Bounded, allocation-free and panic-free: one monotonic
-                        // read and one atomic store, safe inside this window
-                        // procedure.
-                        commands::session_end_latch::note_windows_session_end();
-
-                        hq_telemetry::record_native_panic_seam(
-                            hq_telemetry::NativePanicSeam::AppSessionEndExit,
-                        );
-
-                        // Reaching this arm IS the affirmation a deferred
-                        // session-end watcher capture was waiting for: the OS told
-                        // this app directly that the session is ending. Drop the
-                        // held-back (benign) event instead of letting it race the
-                        // teardown. Bounded and allocation-only — it adds no
-                        // uncapped work to a teardown that runs inside a window
-                        // procedure.
-                        commands::daemon::drop_pending_session_end_captures();
-                        // A deferred FAULT capture is different: it names a real
-                        // 0xC0000409-class crash, not a benign session end, so it
-                        // must NOT be dropped here. Flush it immediately with its
-                        // honest `deferred` provenance, ahead of the capped Sentry
-                        // flush below. Bounded, panic-free, no Event Log work.
-                        commands::daemon::flush_pending_watcher_fault_captures("session_end_flush");
-
-                        // Corroborating signal, read BEFORE the observer is shut
-                        // down (shutdown moves its readiness out of the
-                        // affirming states). Recorded alongside — never instead
-                        // of — the branch marker, so a residual report shows
-                        // whether the two independent signals agreed.
-                        if let Some(observer) = _app_handle.try_state::<SessionEndObserverHandle>()
-                        {
-                            if observer.tracker().attribution_now()
-                                == WindowsTerminatorAttribution::SessionEndObserved
-                            {
-                                hq_telemetry::record_native_panic_seam(
-                                    hq_telemetry::NativePanicSeam::AppSessionEndObserved,
-                                );
-                            }
-                            observer.shutdown(std::time::Duration::from_millis(500));
-                        }
-
-                        // Ownership report, emitted while the registry still
-                        // holds the children about to be terminated. Env-gated
-                        // (`HQ_SYNC_SESSION_END_OWNED_PIDS`), so this is inert
-                        // in every shipped build; the live session-end proof
-                        // points it at a temp file. Its existence is what tells
-                        // that proof this teardown actually ran, and the pids
-                        // it lists are what the proof then requires to be dead
-                        // — the app declares what it owns instead of the test
-                        // guessing from process names.
-                        commands::process::report_session_end_owned_pids();
-
-                        commands::process::terminate_all_for_exit(
-                            std::time::Duration::from_millis(500),
-                        );
-
-                        // Leaving the process here skips the
-                        // `ClientInitGuard` drop that normally flushes Sentry,
-                        // so flush by hand under a hard cap.
-                        hq_telemetry::flush_within(std::time::Duration::from_millis(750));
+                        commands::session_end_intercept::windows_session_end_teardown(Some(
+                            _app_handle,
+                        ))
                     },
                     || std::process::exit(0),
                 );

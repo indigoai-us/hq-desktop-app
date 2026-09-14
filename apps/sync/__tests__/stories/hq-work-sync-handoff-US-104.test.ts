@@ -16,7 +16,6 @@ import {
 } from '@hq/ui';
 import { applyDesktopAltRoute } from '../../src/desktop-alt/hq-work-host';
 import {
-  hqWorkHandoffEnabled,
   hqworkQueryToken,
   isValidHqWorkDeepLink,
   parseHqWorkOpenUrl,
@@ -33,13 +32,6 @@ afterEach(() => {
 });
 
 describe('US-104 internal notification + deep-link routing', () => {
-  it('hq_work_handoff still defaults false', () => {
-    expect(hqWorkHandoffEnabled(undefined)).toBe(true);
-    expect(hqWorkHandoffEnabled(null)).toBe(true);
-    expect(hqWorkHandoffEnabled(false)).toBe(true);
-    expect(hqWorkHandoffEnabled(true)).toBe(true);
-  });
-
   describe('Given a channel-message notification, when clicked', () => {
     it('then the embedded UI opens that channel', () => {
       notificationClick('hqwork://open?channel=chn_proj');

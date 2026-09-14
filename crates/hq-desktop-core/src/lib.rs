@@ -79,4 +79,3 @@ pub mod workspaces;
 pub(crate) mod test_support;
 
 pub mod agent_session;
-pub mod agent_session_flags;

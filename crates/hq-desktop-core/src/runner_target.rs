@@ -884,6 +884,14 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.35"),
             "c3b811c41ec7452d",
         );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.36"),
+            "787177c427ceedf8",
+        );
+        assert_eq!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.38"),
+            "eccfcfc8a1b089f8",
+        );
         assert_ne!(
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.6"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.11"),
@@ -935,13 +943,23 @@ mod tests {
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.33"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.34"),
         );
-        // The packed-resident-journal bump (hq-cloud#516/#517): 6.16.35
-        // SATISFIES `~6.16.34`, so a desktop that already resolved 6.16.34
-        // would retain the larger runner representation on semver admission
-        // alone. Moving the requested spec is what delivers the reduction.
+        // The streaming-HQSNAP4-reader bump (hq-cloud#529/#531): 6.16.36
+        // SATISFIES `~6.16.35`, so a desktop that already resolved 6.16.35
+        // would retain the pre-streaming reader on semver admission alone.
+        // Moving the requested spec is what delivers the lower peak memory and
+        // the HQSNAP4 reader before a future release enables its writer.
         assert_ne!(
-            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.34"),
             npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.35"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.36"),
+        );
+        // The area-journal, manifest-memory, reporter, HQSNAP4, and
+        // session-host bump (hq-cloud#537/#538/#539/#540/#541): 6.16.38
+        // SATISFIES `~6.16.36`, so a desktop that already resolved 6.16.36
+        // would retain its cached runner on semver admission alone. Moving the
+        // requested spec is what delivers the new runner.
+        assert_ne!(
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.36"),
+            npx_cache_entry_hash("@indigoai-us/hq-cloud@~6.16.38"),
         );
     }
 

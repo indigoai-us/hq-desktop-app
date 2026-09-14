@@ -8,6 +8,10 @@
 
 import type { AdapterResult, PlatformAdapter } from '@hq/platform';
 import {
+  isPermissionGranted as isNotifyPermissionGranted,
+  sendNotification,
+} from '@tauri-apps/plugin-notification';
+import {
   normalizeDirectoryFeed,
   dispatchEmbeddedNavigation,
   destinationFromEmbeddedTarget,
@@ -25,12 +29,20 @@ import {
   type EmbeddedNavigationTarget,
   type NavigationDestination,
   type ChatWakeBus,
+  type DmRequest,
   type PackagesDone,
   type PackagesEvents,
   type PackagesProgress,
   type PackagesView,
 } from '@hq/ui';
 import { parseHqWorkOpenUrl, type HqWorkOpenTarget } from '../lib/hq-work';
+import {
+  enrichRequestFromContacts,
+  requestBannerBody,
+  requestBannerTitle,
+  requestHasHumanLabel,
+  type DmRequestContact,
+} from '../lib/dmRequests';
 
 function unwrap<T>(result: AdapterResult<T>): T {
   if (result.ok) return result.value;
@@ -70,6 +82,46 @@ export interface HqWorkNativeWakesConfig {
   wakes: ChatWakeBus;
   scope: () => HqWorkRealtimeScope | null;
   onNotificationWake: () => void;
+  /**
+   * Contacts used to label an incoming connection request whose payload only
+   * carries uids (the banner must never read "prs_… wants to connect").
+   * Optional: without it the request is announced with whatever label it has.
+   */
+  listContacts?: () => Promise<DmRequestContact[]>;
+  /**
+   * Native banner seam. Defaults to the Tauri notification plugin, guarded by
+   * its permission check; tests inject a recorder.
+   */
+  notify?: (banner: { title: string; body: string }) => Promise<void>;
+}
+
+/** "{name} wants to connect" through the OS notification centre, best-effort. */
+export async function sendNativeRequestBanner(banner: {
+  title: string;
+  body: string;
+}): Promise<void> {
+  if (!(await isNotifyPermissionGranted())) return;
+  sendNotification(banner);
+}
+
+/** The Rust `DmRequest` wire shape (camelCase) — tolerate snake_case stubs. */
+function asDmRequest(payload: unknown): DmRequest | null {
+  const row = nativeRecords(payload)[0];
+  if (!row) return null;
+  const pairKey = nativeString(row.pairKey ?? row.pair_key);
+  const fromPersonUid = nativeString(row.fromPersonUid ?? row.from_person_uid);
+  if (!pairKey || !fromPersonUid) return null;
+  const message = row.message ?? null;
+  const sharedCompany = row.sharedCompany ?? row.shared_company ?? null;
+  return {
+    pairKey,
+    fromPersonUid,
+    fromEmail: nativeString(row.fromEmail ?? row.from_email),
+    fromDisplayName: nativeString(row.fromDisplayName ?? row.from_display_name),
+    message: typeof message === 'string' ? message : null,
+    sharedCompany: typeof sharedCompany === 'string' ? sharedCompany : null,
+    createdAt: nativeString(row.createdAt ?? row.created_at),
+  };
 }
 
 type NativeRecord = Record<string, unknown>;
@@ -188,6 +240,28 @@ export async function subscribeHqWorkNativeWakes(
     return true;
   }
 
+  async function announceRequest(request: DmRequest): Promise<void> {
+    let labelled = request;
+    if (!requestHasHumanLabel(request) && config.listContacts) {
+      try {
+        labelled = enrichRequestFromContacts(request, await config.listContacts());
+      } catch (err) {
+        console.warn('dm-request: contact label lookup failed', err);
+      }
+    }
+    // Only an authenticated, still-mounted session announces; a sign-out
+    // during the lookup must not surface the previous account's request.
+    if (disposed || !config.scope()) return;
+    try {
+      await (config.notify ?? sendNativeRequestBanner)({
+        title: requestBannerTitle(labelled),
+        body: requestBannerBody(labelled),
+      });
+    } catch (err) {
+      console.error('dm-request: banner failed', err);
+    }
+  }
+
   async function register(
     name: string,
     handler: (payload: unknown) => void,
@@ -226,6 +300,25 @@ export async function subscribeHqWorkNativeWakes(
       config.onNotificationWake();
     }),
     register('share:new-events', () => config.onNotificationWake()),
+    // Incoming connection request (US-011). The poll diffs the pending set:
+    // `dm:request-new` for a brand-new request (rail badge + Requests panel +
+    // a DISTINCT native banner, "{name} wants to connect"), and
+    // `dm:request-update` when a pending request leaves the set (accepted /
+    // declined / blocked here or elsewhere).
+    register('dm:request-new', (payload) => {
+      const request = asDmRequest(payload);
+      if (!request) return;
+      config.wakes.emit?.('dm:request-new', request);
+      config.onNotificationWake();
+      void announceRequest(request);
+    }),
+    register('dm:request-update', (payload) => {
+      const row = nativeRecords(payload)[0];
+      const pairKey = nativeString(row?.pairKey ?? row?.pair_key);
+      if (!pairKey) return;
+      config.wakes.emit?.('dm:request-update', { pairKey });
+      config.onNotificationWake();
+    }),
     register('channel:new-message', (payload) => {
       const row = nativeRecords(payload)[0];
       const channelId = nativeString(row?.channelId ?? row?.channel_id);
@@ -382,6 +475,16 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
         adapter.messaging.listDmRequests(),
       ),
     }),
+    ...(adapter.messaging.respondDmRequest
+      ? {
+          respondDmRequest: async (args: {
+            pairKey: string;
+            action: 'accept' | 'decline' | 'block';
+          }) => {
+            await call<unknown>(adapter.messaging.respondDmRequest!(args));
+          },
+        }
+      : {}),
     listChannels: async (args) => {
       const channels = await call<unknown>(adapter.messaging.listChannels(args));
       if (Array.isArray(channels)) {

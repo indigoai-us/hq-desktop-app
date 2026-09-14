@@ -33,6 +33,7 @@ import {
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
+import { createCallsApi } from '../calls/api.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -265,9 +266,21 @@ export function createSyncPlatformAdapter(
     return ok(slug);
   }
 
+  /**
+   * Native calling (US-014) over the same authenticated `hq_pro_fetch` seam
+   * every other cloud call uses — the bearer stays in Rust and this webview
+   * never grows a second fetch stack. Refuses everything until the US-011
+   * service evidence preflight passes on this instance.
+   */
+  const calls = createCallsApi(
+    <T,>(method: 'GET' | 'POST', path: string, body?: unknown) =>
+      hqProJson<T>(method, path, body),
+  );
+
   const adapter: PlatformAdapter = {
     kind: 'desktop',
     capabilities: TAURI_CAPABILITIES,
+    calls,
     isAvailable: (cap: Capability): boolean => TAURI_CAPABILITIES[cap],
 
     identity: {
@@ -443,6 +456,10 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['requests']));
       },
+      // Tauri command args are camelCase: `respond_dm_request(pair_key, action)`
+      // is invoked as `{ pairKey, action }`.
+      respondDmRequest: ({ pairKey, action }) =>
+        call('respond_dm_request', { pairKey, action }),
       markChannelRead: (id) => call('mark_channel_read', { channelId: id }),
       markDmThreadRead: (personUid) =>
         call('mark_dm_thread_read', { withPersonUid: personUid }),
@@ -1120,6 +1137,10 @@ export function createSyncPlatformAdapter(
       createProjectStory: (projectId, companyUid, story) => hqProJson(
         'POST', `${WEB_PATHS.workMeshProject(projectId.trim())}/stories`,
         { ...story, companyUid: companyUid.trim() },
+      ),
+      putProjectView: (projectId, companyUid, view) => hqProJson(
+        'PUT', WEB_PATHS.workMeshProject(projectId.trim()),
+        { ...(view as object), companyUid: companyUid.trim() },
       ),
       readLocalSnapshot: async () => NOT_MAPPED,
       getProjectView: (projectId, companyUid) =>

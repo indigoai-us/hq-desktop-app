@@ -1,4 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
+import { createTranscriptOutboxDrain } from '../call/transcript-save';
+import { createTranscriptSourceSync } from '../call/transcript-source-sync';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { setTheme } from '@tauri-apps/api/app';
 import { mount } from 'svelte';
@@ -19,6 +21,9 @@ document.documentElement.dataset.window = windowLabel;
 // Layouts; HQ toolbar sits below — US-003).
 const isWindows = /Windows/i.test(navigator.userAgent);
 document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
+const transcriptSources = createTranscriptSourceSync(invoke);
+const transcriptDrain = createTranscriptOutboxDrain(invoke, () => { void transcriptSources.sync(); });
+window.addEventListener('pagehide', () => { transcriptDrain.dispose(); transcriptSources.dispose(); }, {once:true});
 installDesktopZoom();
 installAppearancePreferences({
   applyNativeTheme: (theme) => setTheme(theme),
