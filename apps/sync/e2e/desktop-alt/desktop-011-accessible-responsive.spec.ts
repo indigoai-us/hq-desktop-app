@@ -188,12 +188,12 @@ describe('DESKTOP-011: accessible responsive native behavior', () => {
     );
     // Open thread pane opens at half the conversation width: the thread
     // column and the sibling .conversation both flex 1 1 0 for a 50/50 split,
-    // with a min-width so neither side collapses on a narrow window.
+    // with a min-width (360px, or half the stage when narrower) so neither side collapses.
     expect(uiDesktopApp).toMatch(
-      /\.reply-column:not\(\.profile-column\):not\(\.overlay\)\s*\{[\s\S]*?flex:\s*1\s+1\s+0;[\s\S]*?min-width:\s*360px;/,
+      /\.reply-column:not\(\.profile-column\):not\(\.overlay\)\s*\{[\s\S]*?flex:\s*1\s+1\s+0;[\s\S]*?min-width:\s*min\(360px,\s*50%\);/,
     );
     expect(uiDesktopApp).toMatch(
-      /\.chat-stage:has\(\.reply-column:not\(\.profile-column\):not\(\.overlay\)\)[\s\S]*?:global\(\.conversation\)\s*\{[\s\S]*?flex:\s*1\s+1\s+0;[\s\S]*?min-width:\s*360px;/,
+      /\.chat-stage:has\(\.reply-column:not\(\.profile-column\):not\(\.overlay\)\)[\s\S]*?:global\(\.conversation\)\s*\{[\s\S]*?flex:\s*1\s+1\s+0;[\s\S]*?min-width:\s*min\(360px,\s*50%\);/,
     );
     expect(chatSidebar).toMatch(
       /\.chat-header\s*\{[\s\S]*?flex:\s*0\s+0\s+auto/,

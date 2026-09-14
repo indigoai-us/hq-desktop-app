@@ -801,6 +801,9 @@ pub async fn open_desktop_alt_window_inner(
 ) -> Result<(), String> {
     // Dock, tray, OAuth completion and explicit opens share this entry point.
     // None may hide the installer before the local toolchain is ready.
+    // macOS only: the toolchain gate is not certified on Windows, where a
+    // signed-out user still opens the desktop workspace to sign in.
+    #[cfg(not(windows))]
     if crate::commands::lifecycle::current_lifecycle_state(&app)
         .is_some_and(hq_desktop_core::lifecycle::installation_required)
     {
