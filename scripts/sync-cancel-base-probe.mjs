@@ -185,7 +185,7 @@ try {
   const output = execFileSync(artifact, ["--sync-cancel-base-probe"], {
     cwd: worktreeRoot,
     encoding: "utf8",
-    timeout: 60_000,
+    timeout: 180_000,
   });
   const raw = output.trim().split(/\r?\n/).at(-1);
   const probe = JSON.parse(raw);
