@@ -1,7 +1,8 @@
 //! System tray icon with state-driven icon swapping.
 //!
 //! Visual states: **idle**, **syncing**, **reauth**, **error**, **conflict**.
-//! Left-click always opens the desktop workspace, including during onboarding.
+//! Left-click opens the desktop workspace (setup still uses the installer card
+//! on `main` until HQ is installed).
 //! Right-click shows a context menu with "Sync Now",
 //! "Open desktop view", and "Quit". Opt+Shift+H still toggles the status popover.
 
@@ -459,8 +460,8 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     ..
                 } = event
                 {
-                    // Tray left-click always opens the desktop workspace,
-                    // including while onboarding is incomplete.
+                    // Tray left-click opens the desktop workspace; while setup
+                    // still owns `main` it brings back the installer card.
                     let _ = crate::commands::desktop_alt::activation_policy(
                         crate::commands::desktop_alt::ActivationSource::TrayLeftClick,
                     );
@@ -851,7 +852,7 @@ pub fn show_window_centered(app: &AppHandle) {
 //
 // WindowRouter activation policy:
 //   Tray left-click / taskbar second-process / Dock → desktop workspace
-//   Activation opens the workspace regardless of onboarding state
+//   Setup still owns `main` (installer card) until HQ is installed
 //   Opt+Shift+H → toggle compact status popover
 // Press again with the target open and it hides (toggle sources only).
 
@@ -915,9 +916,15 @@ pub fn show_desktop_window(app: &AppHandle) {
     });
 }
 
-/// Open the desktop workspace regardless of onboarding, lifecycle, or OAuth state.
-/// Blur suppression only governs dismissal of an explicitly opened popover.
+/// Open the desktop workspace, unless setup still owns `main`: while HQ is not
+/// installed on this computer (or first-run onboarding or sign-in is in
+/// flight), tray left-click, the Dock icon and a second launch bring back the
+/// installer card instead of a workspace with nothing installed underneath.
 pub fn activate_primary_surface(app: &AppHandle) {
+    if onboarding_window_requires_blur_suppression(app) {
+        show_popover_window(app);
+        return;
+    }
     show_desktop_window(app);
 }
 

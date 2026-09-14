@@ -1613,8 +1613,8 @@ fn main() {
                 let _ = commands::desktop_alt::activation_policy(
                     commands::desktop_alt::ActivationSource::DockIconClick,
                 );
-                // Same desktop destination as tray and second-launch activation,
-                // including while onboarding is incomplete.
+                // Same rule as every other activation source: while setup
+                // still owns `main`, a Dock click lands on the installer card.
                 tray::activate_primary_surface(_app_handle);
                 util::logfile::log("dock", "dock icon clicked: opening primary surface");
             }
