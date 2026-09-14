@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
    * Company channel header: optional in-app tabs (Office) plus a gear that
-   * opens the company in the HQ console. Team / Settings / Atlas are not
-   * desktop tabs.
+   * opens the company in the HQ console. Team and Settings are not desktop
+   * tabs.
    */
   import { companyConsoleUrl } from "../common/hq-console.js";
   import {

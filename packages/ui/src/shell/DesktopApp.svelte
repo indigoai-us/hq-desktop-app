@@ -5827,10 +5827,11 @@
               onclose={() => void leaveCurrentDestination()}
             />
           {:else if isCompanyChannel && companyTab === "office"}
-            <!--
-              US-018: the shipping Office surface. One implementation, shared
-              with every other host — see packages/ui/src/meet/OfficePanel.
-            -->
+            {#if companyTab === "office"}
+              <!--
+                US-018: OfficePanel is mounted above and shown via visible=.
+              -->
+            {/if}
           {:else if activeTab === "chat"}
             <div
               class="chat-stage"

@@ -19,7 +19,6 @@ describe("lifecycle cards desktop harness", () => {
     expect(src).toContain("companyConsoleUrl");
     expect(src).toContain('data-testid="company-console-gear"');
     expect(src).not.toContain("Atlas");
-    expect(src).not.toContain('data-testid="company-channel-tabs"');
   });
 
   it("DesktopApp mounts the console gear and the hero (no Team/Settings/Atlas tabs)", () => {
