@@ -353,6 +353,39 @@ Settings › Privacy & Security › Screen Recording and enable HQ."
     });
 }
 
+/// Banner action id for a capture failure. There is nothing to open, so a
+/// body click just dismisses — the banner router treats an unknown id as a
+/// no-op dismiss, same as every other informational banner.
+pub const BANNER_ACTION_CAPTURE_FAILED: &str = "capture-failed";
+
+/// A capture that failed used to be a log line and nothing else: the user
+/// dragged a region, the overlay vanished, and no toast ever came. They had
+/// no way to tell "it failed" from "it is still thinking", so the idea was
+/// silently gone.
+///
+/// `reason` is the machine-readable mark suffix (unchanged, the bench keys on
+/// it); `body` is what the human reads.
+fn fail_capture(app: &AppHandle, reason: &str, body: &str) {
+    log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason={reason}"));
+    let app = app.clone();
+    let body = body.to_string();
+    tauri::async_runtime::spawn(async move {
+        let payload = crate::commands::banner::BannerPayload {
+            kind: BANNER_KIND.to_string(),
+            title: "Capture failed".to_string(),
+            body,
+            icon_text: Some("●".to_string()),
+            action_label: None,
+            action_id: None,
+            click_action_id: BANNER_ACTION_CAPTURE_FAILED.to_string(),
+            data: serde_json::json!({}),
+        };
+        if let Err(e) = crate::commands::banner::show_banner(app, payload).await {
+            log(LOG_TAG, &format!("capture failure banner FAILED: {e}"));
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // US-014: guided screen-recording permission onboarding (macOS)
 // ---------------------------------------------------------------------------
@@ -2658,18 +2691,30 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
     let shot = match screenshot::capture_region(&region, exclude_window) {
         Ok(s) => s,
         Err(e) => {
-            log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason={e}"));
+            fail_capture(
+                app,
+                &e.to_string(),
+                "HQ couldn't read that part of the screen. Try the capture again.",
+            );
             return;
         }
     };
     let Some(img) = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba) else {
-        log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=pixel_buffer_mismatch"));
+        fail_capture(
+            app,
+            "pixel_buffer_mismatch",
+            "HQ couldn't read that part of the screen. Try the capture again.",
+        );
         return;
     };
     let (hq_root, company_slug) = match resolve_vault_target(app) {
         Ok(v) => v,
         Err(e) => {
-            log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=unconfigured detail={e}"));
+            fail_capture(
+                app,
+                &format!("unconfigured detail={e}"),
+                "HQ has nowhere to file that idea yet. Set up a company in HQ, then capture again.",
+            );
             return;
         }
     };
@@ -2721,7 +2766,11 @@ fn capture_and_store(app: &AppHandle, region: CaptureRegion, exclude_window: Opt
                 snapshot,
             );
         }
-        Err(e) => log(LOG_TAG, &format!("{MARK_CAPTURE_FAILED} reason=store detail={e}")),
+        Err(e) => fail_capture(
+            app,
+            &format!("store detail={e}"),
+            "HQ couldn't save that capture. The idea wasn't filed.",
+        ),
     }
 }
 
@@ -3925,6 +3974,29 @@ mod hq_idea_board_capture_tests {
             show[..arm_at].contains("Ok(()) =>"),
             "arm only on a successful window.show()"
         );
+    }
+
+    /// A failed capture used to be a log line and nothing else — the overlay
+    /// vanished and no toast ever came, so the user could not tell failure
+    /// from "still thinking". Every failure arm must now reach the user.
+    #[test]
+    fn hq_idea_board_a_failed_capture_is_never_silent() {
+        let body = fn_body(CAPTURE_SRC, "fn capture_and_store(");
+        let bare = body.matches("MARK_CAPTURE_FAILED").count();
+        assert_eq!(
+            bare, 0,
+            "every capture failure must go through fail_capture, not a bare log"
+        );
+        // Four failure arms: grab, pixel buffer, unconfigured vault, store.
+        assert_eq!(
+            body.matches("fail_capture(").count(),
+            4,
+            "every early return on the capture path must surface a reason"
+        );
+        // The mark itself is unchanged so the bench still scores it.
+        let helper = fn_body(CAPTURE_SRC, "fn fail_capture(app: &AppHandle, reason: &str, body: &str)");
+        assert!(helper.contains("{MARK_CAPTURE_FAILED} reason={reason}"));
+        assert!(helper.contains("show_banner"), "and it must reach the user");
     }
 
     #[test]
