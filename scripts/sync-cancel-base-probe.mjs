@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { injectBaseProbeMain } from "./sync-cancel-base-probe-main.mjs";
 
 const repo = process.cwd();
 const run = (program, args, options = {}) =>
@@ -164,11 +165,7 @@ try {
   );
 
   const mainSource = readFileSync(mainPath, "utf8");
-  const mainMarker = "fn main() {";
-  if (!mainSource.includes(mainMarker)) {
-    throw new Error("base main source has no main-function insertion marker");
-  }
-  writeFileSync(mainPath, mainSource.replace(mainMarker, `${mainMarker}\n${baseProbeMain}`), "utf8");
+  writeFileSync(mainPath, injectBaseProbeMain(mainSource, baseProbeMain), "utf8");
 
   run(
     "cargo",
