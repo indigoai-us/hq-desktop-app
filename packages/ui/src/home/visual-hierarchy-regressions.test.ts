@@ -55,15 +55,15 @@ describe("desktop visual hierarchy regressions", () => {
     );
   });
 
-  it("keeps detached menus legible with the refreshed neutral material", () => {
+  it("keeps detached menus legible with the PR772 reference material", () => {
     expect(tokens).toContain(
       "--v4-glass-filter-popover: blur(40px) saturate(124%) contrast(104%);",
     );
     expect(tokens).toContain(
-      "--v4-popover-strong: rgb(252 252 252 / clamp(0.90, calc(0.96 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));",
+      "--v4-popover-strong: rgb(252 252 253 / clamp(0.90, calc(0.96 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));",
     );
     expect(tokens).toContain(
-      "--v4-popover-strong: rgb(44 44 44 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));",
+      "--v4-popover-strong: rgb(44 44 54 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));",
     );
   });
 });

@@ -296,12 +296,17 @@ describe("#welcome Run Setup creates the setup bot", () => {
     }));
     const scripted = fakeSetupRun();
     await mountWelcome(adapter({ bots: { create } }), scripted);
-    // The automatic start tried once and failed quietly; #welcome still offers Run Setup.
+    // The automatic start tried once; its failure is shown with the same
+    // recovery UI (no silent dead end), and Run Setup stays available.
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
-    expect(q('[data-testid="setup-bot-error"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="setup-bot-error"]')?.textContent).toContain("not signed in"));
 
     q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="setup-bot-error"]')?.textContent).toContain("not signed in"));
+    // The error from the automatic start is already on screen, so wait for
+    // this click's own attempt to finish before reading the recovery UI.
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(q('[data-testid="setup-bot-retry"]')).toBeTruthy());
+    expect(q('[data-testid="setup-bot-error"]')?.textContent).toContain("not signed in");
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBeNull();
 
     // Retry runs the same create again.
