@@ -776,7 +776,7 @@ export interface SetupProviderLoginState {
 
 /** True when at least one signed-in agent can run setup here. */
 export function setupProvidersReady(status: SetupProviderStatus | null | undefined): boolean {
-  if (!status || !status.hqReady) return false;
+  if (!status) return false;
   return (status.claudeAvailable && status.claudeLoggedIn) || (status.codexAvailable && status.codexLoggedIn);
 }
 
@@ -792,6 +792,8 @@ export interface SetupRunApi {
   providerLoginCancel?(tool: SetupProviderTool): Promise<SetupProviderLoginState>;
   /** Where to get the provider's app; opened in the system browser by the host. */
   providerInstallUrl?(tool: SetupProviderTool): string;
+  /** Install the coding runtime through the desktop-managed installer. */
+  providerInstall?(tool: SetupProviderTool): Promise<unknown>;
   openExternal?(url: string): Promise<void>;
   /**
    * Can the run start here, or must the Sessions page's Connect / self-heal

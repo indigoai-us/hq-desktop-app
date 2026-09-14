@@ -942,11 +942,12 @@
   let setupBotAutoStarted = false;
   /** True while startSetupBot is creating the bot, so #welcome can say so. */
   let setupBotStarting = $state(false);
+  let setupBotStartError = $state<string | null>(null);
   const existingSetupBot = $derived(findSetupBot(localBots));
   const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
   const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
     adapter.bots && SETUP_BOT_MODE
-      ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, starting: setupBotStarting, start: startSetupBot }
+      ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, starting: setupBotStarting, error: setupBotStartError, start: startSetupBot }
       : null,
   );
   /** Open a setup bot's DM; setup counts as run from that moment. */
@@ -973,8 +974,14 @@
    */
   async function startSetupBot(): Promise<SetupBotStart> {
     setupBotStarting = true;
+    setupBotStartError = null;
     try {
-      return await startSetupBotNow();
+      const result = await startSetupBotNow();
+      if (!result.ok) setupBotStartError = result.reason;
+      return result;
+    } catch {
+      setupBotStartError = "Could not start your setup bot. Please try again.";
+      return { ok: false, reason: setupBotStartError };
     } finally {
       setupBotStarting = false;
     }

@@ -192,6 +192,7 @@ export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunAp
     stop,
     storeSecret,
     providers,
+    providerInstall: (tool) => store.installProvider(tool),
     providerLoginStart: (tool) => store.providerLoginStart(tool),
     providerLoginStatus: (tool) => store.providerLoginStatus(tool),
     providerLoginCancel: (tool) => store.providerLoginCancel(tool),

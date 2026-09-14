@@ -132,6 +132,8 @@ export interface SetupBotLauncher {
   ready: boolean;
   /** The setup bot is being created right now (e.g. the automatic first-open start). */
   starting?: boolean;
+  /** Failure from an automatic start, displayed by the same recovery UI. */
+  error?: string | null;
   /** Open the existing bot's DM, or create it and open the new one. */
   start(): Promise<SetupBotStart>;
 }

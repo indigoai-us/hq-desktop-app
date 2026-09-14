@@ -227,6 +227,7 @@
   /** Creating the setup bot, or opening the one that is already here. */
   let botBusy = $state(false);
   let botError = $state<string | null>(null);
+  const visibleBotError = $derived(botError ?? setupBot?.error);
   /** The bot could not be made: the scripted run takes over from the next click. */
   let scriptedFallback = $state(false);
 
@@ -418,11 +419,11 @@
               : runLabel}
         </SetupButton>
       </div>
-      {#if botError}
+      {#if visibleBotError}
         <!-- The bot could not be created: say why, offer another go, and
              keep the old scripted run one click away. -->
         <div class="bot-failure" data-testid="setup-bot-failure">
-          <p class="launch-error" role="alert" data-testid="setup-bot-error">{botError}</p>
+          <p class="launch-error" role="alert" data-testid="setup-bot-error">{visibleBotError}</p>
           <div class="hero-actions" role="group" aria-label="Setup bot recovery">
             <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
               {SETUP_BOT_COPY.retry}
