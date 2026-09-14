@@ -36,6 +36,11 @@ pub(crate) enum OnboardingErrorCategory {
     Timeout,
     SpawnFailed,
     ExitNonzero,
+    /// The cross-process cli-update file lock was held by a concurrent installer
+    /// (in practice the app's own background CLI auto-updater), so this install
+    /// cycle was skipped by design rather than failing. It is deliberately kept
+    /// out of the error-level Sentry paging path — see `install_deps`.
+    ConcurrentInstall,
     UnsupportedPlatform,
     Disk,
     Unknown,
@@ -51,6 +56,7 @@ impl OnboardingErrorCategory {
             Self::Timeout => "timeout",
             Self::SpawnFailed => "spawn-failed",
             Self::ExitNonzero => "exit-nonzero",
+            Self::ConcurrentInstall => "concurrent-install",
             Self::UnsupportedPlatform => "unsupported-platform",
             Self::Disk => "disk",
             Self::Unknown => "unknown",

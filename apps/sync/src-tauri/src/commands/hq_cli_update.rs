@@ -76,7 +76,8 @@ use crate::util::logfile::log;
 use crate::util::paths;
 
 use hq_desktop_core::cli_update_lock::{
-    acquire_cli_update_lock, CliUpdateLockAttempt, CliUpdateLockGuard,
+    acquire_cli_update_lock, acquire_cli_update_lock_waiting, CliUpdateLockAttempt,
+    CliUpdateLockGuard, CLI_INSTALL_LOCK_WAIT_BACKOFF,
 };
 use hq_desktop_core::toolchain::{classify_runtime, ManagedRuntime};
 
@@ -1659,8 +1660,82 @@ pub(crate) fn acquire_cli_install_lock(
     match acquire_cli_update_lock(tool, &app.package_info().version.to_string())? {
         CliUpdateLockAttempt::Acquired(guard) => Ok(guard),
         CliUpdateLockAttempt::Held { holder } => {
+            let msg = cli_install_lock_skip_message(&holder);
+            log("hq-cli-update", &msg);
+            Err(msg)
+        }
+    }
+}
+
+/// The single skip-message prefix. The `Held` branches build their message from
+/// this literal and `install_deps`'s suppression predicate matches on it, so the
+/// producer and every consumer share ONE constant and cannot drift. Pinned by
+/// `install_deps::cli_install_lock_skip_tests`.
+pub(crate) const CLI_INSTALL_LOCK_SKIP_PREFIX: &str = "another hq-cli install is already running";
+
+/// Render the cross-process lock-skip message from the shared prefix. Exposed to
+/// `install_deps`'s tests so producer/consumer parity is pinned against the exact
+/// message this builder emits.
+pub(crate) fn cli_install_lock_skip_message(holder: &str) -> String {
+    format!("{CLI_INSTALL_LOCK_SKIP_PREFIX} ({holder}); skipping this cycle")
+}
+
+/// Inter-attempt backoff for the setup-deps waiting acquire. Hermetic (zero, no
+/// sleep) under `cfg(test)` unless `HQ_CLI_LOCK_TEST_BACKOFF_MS` opts into a real
+/// window for the artifact E2E — mirroring `install_deps::swap_backoff` /
+/// `download_backoff`. Production (never compiled with cfg(test)) always uses the
+/// fixed table constant.
+fn cli_install_lock_wait_backoff() -> Duration {
+    if cfg!(test) {
+        return std::env::var("HQ_CLI_LOCK_TEST_BACKOFF_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::ZERO);
+    }
+    CLI_INSTALL_LOCK_WAIT_BACKOFF
+}
+
+/// Waiting variant of `acquire_cli_install_lock` for the SETUP deps path only.
+///
+/// A held lock here is almost always a collision with the app's OWN background
+/// CLI auto-updater. The non-waiting helper turns that benign, by-design skip
+/// into a terminal setup failure (HQ-DESKTOP-6J). This variant rides the holder
+/// out for a bounded `budget` (kept well inside the 600s stale ceiling) so the
+/// overwhelming majority of collisions converge and setup proceeds; only if the
+/// budget expires does it return the SAME skip `Err` the non-waiting helper does
+/// (so the user-facing failure, the log line and the product-telemetry row are
+/// all preserved — only the false error-level Sentry page disappears).
+///
+/// `on_wait` is invoked once per retry with the in-progress skip line so the
+/// caller can keep the setup UI visibly moving. The background auto-updater path
+/// deliberately keeps the immediate (non-waiting) helper — its scheduled checker
+/// retries naturally and it pages nothing.
+pub(crate) fn acquire_cli_install_lock_waiting(
+    app: &AppHandle,
+    tool: &str,
+    budget: Duration,
+    mut on_wait: impl FnMut(&str),
+) -> Result<CliUpdateLockGuard, String> {
+    let version = app.package_info().version.to_string();
+    let backoff = cli_install_lock_wait_backoff();
+    let attempt = acquire_cli_update_lock_waiting(tool, &version, budget, backoff, |holder| {
+        let line = format!(
+            "{CLI_INSTALL_LOCK_SKIP_PREFIX} ({holder}); waiting for it to finish before installing the HQ CLI…"
+        );
+        log("hq-cli-update", &line);
+        on_wait(&line);
+    })?;
+    match attempt {
+        CliUpdateLockAttempt::Acquired(guard) => Ok(guard),
+        CliUpdateLockAttempt::Held { holder } => {
+            // Budget expired. Still an Err — setup honestly reports the HQ CLI as
+            // not installed — but reworded for the user: a concurrent install is
+            // in progress and re-running setup will finish it. Starts with
+            // CLI_INSTALL_LOCK_SKIP_PREFIX so the suppression predicate still
+            // keeps it off the error-level Sentry paging path.
             let msg = format!(
-                "another hq-cli install is already running ({holder}); skipping this cycle"
+                "{CLI_INSTALL_LOCK_SKIP_PREFIX} ({holder}); it should finish shortly — run setup again to finish installing the HQ CLI"
             );
             log("hq-cli-update", &msg);
             Err(msg)
