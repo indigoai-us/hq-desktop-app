@@ -70,21 +70,12 @@ pub struct LifecycleVerdict {
     pub needs_first_run_backfill: bool,
 }
 
-/// A synced workspace is not proof that this computer has the executables
-/// required by setup. Missing tools must return to installation, without
-/// backfilling completion markers from cloud-synced files.
-///
-/// Only a machine that never recorded finishing setup (`installCompleted` or
-/// `firstRunCompleted` in its local menubar.json) is sent back. A machine that
-/// finished setup keeps opening the app even when `hq` or `node` cannot be
-/// found: updating the app must never lock a set-up person into the installer
-/// (the release artifact smoke launches exactly that person).
-pub fn require_local_toolchain(
-    verdict: LifecycleVerdict,
-    tools_present: bool,
-    setup_recorded_locally: bool,
-) -> LifecycleVerdict {
-    if tools_present || setup_recorded_locally {
+/// HQ is installed on this computer only when its tools are here too. A synced
+/// workspace or a completion marker is not proof that this computer has the
+/// executables setup needs: missing tools return to installation, without
+/// backfilling completion markers. The installer then puts back what is missing.
+pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -> LifecycleVerdict {
+    if tools_present {
         verdict
     } else {
         LifecycleVerdict {
@@ -656,32 +647,27 @@ mod toolchain_readiness_tests {
             LifecycleState::NeedsAuthForInstall, LifecycleState::InstalledFirstRun,
             LifecycleState::InstalledLegacyUpdate, LifecycleState::SteadyState] {
             let original = LifecycleVerdict { state, needs_install_backfill: true, needs_first_run_backfill: true };
-            assert_eq!(require_local_toolchain(original, true, false), original);
-            let missing = require_local_toolchain(original, false, false);
+            assert_eq!(require_local_toolchain(original, true), original);
+            let missing = require_local_toolchain(original, false);
             assert_eq!(missing.state, LifecycleState::NeedsInstall);
             assert!(!missing.needs_install_backfill && !missing.needs_first_run_backfill);
             assert!(installation_required(missing.state));
         }
     }
     #[test]
-    fn machine_that_finished_setup_opens_without_local_tools() {
-        for state in [LifecycleState::InstalledFirstRun, LifecycleState::InstalledLegacyUpdate, LifecycleState::SteadyState] {
-            let original = LifecycleVerdict { state, needs_install_backfill: true, needs_first_run_backfill: false };
-            assert_eq!(require_local_toolchain(original, false, true), original);
-            assert!(!installation_required(require_local_toolchain(original, false, true).state));
-        }
-    }
-    #[test]
-    fn release_smoke_profile_reaches_the_shell_without_local_tools() {
-        // scripts/macos-artifact-smoke.mjs: firstRunCompleted + machineId + auth, no hq on PATH.
+    fn finished_setup_without_local_tools_still_returns_to_the_installer() {
+        // Completion markers and a synced HQ folder (the 2026-09-14 fresh-VM
+        // case) do not make HQ installed when hq or node is missing here.
         let inputs = LifecycleInputs {
-            install_completed: false, first_run_completed: true, had_machine_id: true,
-            config_valid: false, hq_root_valid: true, has_auth: true,
-            install_in_progress: false, consent_answered: false,
+            install_completed: true, first_run_completed: true, had_machine_id: true,
+            config_valid: true, hq_root_valid: true, has_auth: true,
+            install_in_progress: false, consent_answered: true,
         };
-        let recorded = inputs.install_completed || inputs.first_run_completed;
-        let verdict = require_local_toolchain(classify_lifecycle(inputs), false, recorded);
-        assert!(!installation_required(verdict.state));
+        assert_eq!(classify_lifecycle(inputs).state, LifecycleState::SteadyState);
+        let verdict = require_local_toolchain(classify_lifecycle(inputs), false);
+        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
+        assert!(installation_required(verdict.state));
+        assert_eq!(require_local_toolchain(classify_lifecycle(inputs), true).state, LifecycleState::SteadyState);
     }
     #[test]
     fn completed_install_opens_desktop_and_incomplete_install_resumes_wizard() {

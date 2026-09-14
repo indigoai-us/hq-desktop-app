@@ -6,7 +6,7 @@ import { expect, it } from 'vitest';
 
 const tray = readFileSync('src-tauri/src/tray.rs', 'utf8');
 
-it('opens desktop during onboarding and on repeated activation', () => {
+it('keeps the installer card while setup owns main, and opens desktop once HQ is installed', () => {
   // Run the actual Rust dispatcher with recording adapters, without a GUI.
   const start = tray.indexOf('pub fn activate_primary_surface(');
   const end = tray.indexOf('\n}\n', start) + 2;
@@ -27,7 +27,8 @@ fn main() {
         let app = AppHandle { pinned, calls: RefCell::new(vec![]) };
         activate_primary_surface(&app);
         activate_primary_surface(&app);
-        assert_eq!(*app.calls.borrow(), vec!["desktop", "desktop"], "onboarding pinned: {pinned}");
+        let expected = if pinned { vec!["popover", "popover"] } else { vec!["desktop", "desktop"] };
+        assert_eq!(*app.calls.borrow(), expected, "setup owns main: {pinned}");
     }
 }
 `);
