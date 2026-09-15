@@ -6060,6 +6060,11 @@ fn send_setup_cancellation_cleanup_failure(
                 sentry_scope.set_tag("setup_attempt", scope.attempt_count.to_string());
                 sentry_scope.set_tag("setup_os", os.os_type().to_string());
                 sentry_scope.set_tag("setup_architecture", std::env::consts::ARCH);
+                sentry_scope.set_tag("setup_cancel_signal", cleanup.signal.as_str());
+                sentry_scope.set_tag(
+                    "setup_cancel_os_error_kind",
+                    os_error_kind.clone(),
+                );
                 sentry_scope.set_extra(
                     "setup_run_id",
                     sentry::protocol::Value::String(setup_correlation_id(&scope.setup_run_id)),
