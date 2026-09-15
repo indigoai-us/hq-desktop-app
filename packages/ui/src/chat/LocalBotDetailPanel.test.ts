@@ -291,6 +291,17 @@ describe("bot kinds (personal vs company)", () => {
     expect(q('[data-testid="local-bot-promotion-personal"]')).toBeNull();
   });
 
+  it("a company bot can only be promoted into a company it belongs to", async () => {
+    const companies = [
+      { uid: "cmp_INDIGO", name: "Indigo", slug: "indigo" },
+      { uid: "cmp_RIDGE", name: "Ridge", slug: "ridge" },
+    ];
+    mountPanel({ bot: bot({ kind: "company", companies: ["ridge"] }), bots: botsApi({ promote: vi.fn() }), companies });
+    await tick();
+    const options = Array.from(host.querySelectorAll<HTMLOptionElement>('[data-testid="local-bot-promotion"] option')).map((o) => o.value);
+    expect(options).toEqual(["", "cmp_RIDGE"]);
+  });
+
   it("a row from an older CLI without a kind shows nothing new", async () => {
     mountPanel({ bot: bot(), bots: botsApi({ promote: vi.fn() }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
     await tick();

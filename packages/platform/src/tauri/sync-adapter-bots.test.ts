@@ -65,11 +65,13 @@ describe('sync adapter local bots create', () => {
     const { adapter, calls } = adapterWithRecorder();
 
     await adapter.bots!.create({ name: 'scout', runtime: 'claude', kind: 'company', companies: ['indigo', 'ridge'] });
-    await adapter.bots!.create({ name: 'buddy', runtime: 'claude', kind: 'personal' });
+    // A personal bot is the CLI default: the form sends no kind, and the adapter
+    // sends null so an older hq without `--kind` still creates it.
+    await adapter.bots!.create({ name: 'buddy', runtime: 'claude' });
 
     expect(calls.map((c) => c.args)).toEqual([
       expect.objectContaining({ name: 'scout', kind: 'company', companies: ['indigo', 'ridge'] }),
-      expect.objectContaining({ name: 'buddy', kind: 'personal', companies: null }),
+      expect.objectContaining({ name: 'buddy', kind: null, companies: null }),
     ]);
 
     // The Tauri adapter sends exactly the same values.

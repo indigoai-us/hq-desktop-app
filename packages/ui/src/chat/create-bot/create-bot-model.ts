@@ -388,9 +388,9 @@ export function toCreateInput(draft: CreateBotDraft): LocalBotCreateInput {
     ...(worker ? { worker } : {}),
     ...(intro ? { intro } : {}),
     ...(draft.memory !== "synced" ? { memory: draft.memory } : {}),
-    // Always explicit, so the CLI never has to guess which kind was meant.
-    kind: draft.scope,
-    ...(companies.length ? { companies } : {}),
+    // Personal is the CLI's default, so it is not passed: a desktop build
+    // against an hq that predates `--kind` keeps creating personal/setup bots.
+    ...(draft.scope === "company" ? { kind: "company" as const, companies } : {}),
   };
 }
 

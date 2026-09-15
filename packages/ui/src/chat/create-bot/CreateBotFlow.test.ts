@@ -233,6 +233,31 @@ describe("CreateBotFlow", () => {
     );
   });
 
+  it("answering Personal sticks, even after going back and picking a company template", async () => {
+    const oncreate = vi.fn(async () => undefined);
+    render({ oncreate });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    // Answer the question explicitly (Personal is already selected; click it anyway).
+    click('[data-testid="chat-bot-scope-personal"]');
+    await settle();
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    click('[data-testid="create-bot-kind-template"]');
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-template-card"][data-template="iris-cx"]')!.click();
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-scope-personal"]')?.getAttribute("aria-checked")).toBe("true");
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(oncreate).toHaveBeenCalledWith({ name: "assistant", runtime: "claude", autoApprove: true, worker: "iris-cx" }, {});
+  });
+
   it("with no company to join, the company choice explains and personal still creates", async () => {
     const oncreate = vi.fn(async () => undefined);
     render({ oncreate, botCompanies: [] });
@@ -249,7 +274,7 @@ describe("CreateBotFlow", () => {
     await settle();
     click('[data-testid="chat-bot-create"]');
     await settle();
-    expect(oncreate).toHaveBeenCalledWith({ name: "assistant", runtime: "claude", autoApprove: true, kind: "personal" }, {});
+    expect(oncreate).toHaveBeenCalledWith({ name: "assistant", runtime: "claude", autoApprove: true }, {});
   });
 
   it("searching the library filters the cards", async () => {
@@ -389,8 +414,7 @@ describe("CreateBotFlow", () => {
         runtime: "claude",
         autoApprove: false,
         intro: "Hi, I'm scout. I watch the ad accounts.",
-        memory: "local",
-        kind: "personal",
+        memory: "local"
       },
       {},
     );

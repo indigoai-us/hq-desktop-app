@@ -181,7 +181,7 @@ describe("Settings → Bots (Work shell)", () => {
 
     host.querySelector<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
-    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true, kind: "personal" });
+    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true });
     await vi.waitFor(() => {
       expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).toBeNull();
     });

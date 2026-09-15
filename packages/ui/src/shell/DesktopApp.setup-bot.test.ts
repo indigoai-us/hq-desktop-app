@@ -209,8 +209,6 @@ describe("#welcome Run Setup creates the setup bot", () => {
       intro: SETUP_BOT_INTRO,
       // The bot starts step one by itself right after the intro.
       kickoff: SETUP_BOT_KICKOFF,
-      // Setup acts as the owner (bot-kinds).
-      kind: "personal",
     });
     // The scripted `/setup` session is not started any more.
     expect(scripted.start).not.toHaveBeenCalled();

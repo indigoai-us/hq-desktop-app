@@ -1123,8 +1123,7 @@
       runtime,
       intro: SETUP_BOT_INTRO,
       kickoff: SETUP_BOT_KICKOFF,
-      // Setup acts as the owner (bot-kinds): it creates companies and bots for you.
-      kind: "personal",
+      // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
     });
     if (!created.ok) return { ok: false, reason: created.reason };
     recordWelcomeSetupRun();
@@ -6344,7 +6343,7 @@
 
           {#if isAgentChannel && agentSurface === "details" && agentChannelLocalBot}
             <LocalBotDetailPanel
-              companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug }))}
+              companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug, slug: c.slug }))}
               {onopenurl}
               bot={agentChannelLocalBot}
               avatarUrl={avatarByUid[agentChannelLocalBot.agentUid] ?? null}
@@ -6636,7 +6635,7 @@
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
                   <LocalBotDetailPanel
-                    companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug }))}
+                    companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug, slug: c.slug }))}
                     {onopenurl}
                     bot={openLocalBot}
                     avatarUrl={openAgentMember.avatarUrl ??

@@ -237,7 +237,7 @@ describe("steps", () => {
 
 describe("toCreateInput", () => {
   it("maps the draft to the CLI input and omits defaults", () => {
-    expect(toCreateInput(draft({ name: " Scout " }))).toEqual({ name: "scout", runtime: "claude", autoApprove: true, kind: "personal" });
+    expect(toCreateInput(draft({ name: " Scout " }))).toEqual({ name: "scout", runtime: "claude", autoApprove: true });
     expect(
       toCreateInput(
         draft({
@@ -258,8 +258,7 @@ describe("toCreateInput", () => {
       model: "grok-4",
       worker: "iris-cx",
       intro: "Hi there.",
-      memory: "local",
-      kind: "personal",
+      memory: "local"
     });
     // A blank bot never carries a worker even if a stale templateId lingers.
     expect(toCreateInput(draft({ kind: "blank", templateId: "iris-cx" })).worker).toBeUndefined();
@@ -273,9 +272,10 @@ describe("toCreateInput", () => {
       kind: "company",
       companies: ["indigo", "acme"],
     });
-    // Slugs picked and then switched back to personal never leak through.
+    // Personal is the CLI default and is not passed (older hq compatibility);
+    // slugs picked and then switched back to personal never leak through.
     const personal = toCreateInput(draft({ scope: "personal", companySlugs: ["indigo"] }));
-    expect(personal.kind).toBe("personal");
+    expect(personal.kind).toBeUndefined();
     expect(personal.companies).toBeUndefined();
     const c = ctx();
     expect(scopeLine(draft({ scope: "personal" }), c)).toBe("acts as you");

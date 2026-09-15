@@ -35,7 +35,8 @@
     bot: LocalBotRow;
     adapter: Pick<PlatformAdapter, "bots"> | { bots?: PlatformAdapter["bots"] };
     avatarUrl?: string | null;
-    companies?: Array<{ uid: string; name: string }>;
+    /** Cloud companies the owner is in; `slug` lets a company bot's list narrow the promote targets. */
+    companies?: Array<{ uid: string; name: string; slug?: string }>;
     onopenurl?: (url: string) => void;
     onclose?: () => void;
     /** Fired after a successful Start/Stop/Remove so the host refreshes localBots. */
@@ -53,6 +54,13 @@
   let promotionPhase = $state("");
   let promotionError = $state<string | null>(null);
   let pairing = $state<{ url: string; code: string } | null>(null);
+  /** A company bot can only be promoted into a company it belongs to; older rows keep every company. */
+  const promotionCompanies = $derived.by(() => {
+    const own = new Set((bot.companies ?? []).map((c) => c.trim()).filter(Boolean));
+    if (own.size === 0) return companies;
+    const narrowed = companies.filter((c) => c.slug && own.has(c.slug));
+    return narrowed.length ? narrowed : companies;
+  });
   const transferBlocked = $derived(Boolean(promotionError?.startsWith("Bot continuity:")));
   const promotionStatus = $derived(pairing ? "Action needed: connect ChatGPT" : promotionPhase === "active" ? "Running in the cloud" : ["imported", "cloud-ready"].includes(promotionPhase) ? "Starting your cloud bot" : "Preparing your bot for the cloud");
   async function promote(): Promise<void> {
@@ -344,14 +352,14 @@
         <h3 class="ad-kicker">Cloud hosting</h3>
         <p class="ad-muted">Personal bots stay on this Mac.</p>
       </section>
-    {:else if adapter.bots?.promote && companies.length}
+    {:else if adapter.bots?.promote && promotionCompanies.length}
       <section class="ad-section" data-testid="local-bot-promotion">
         <h3 class="ad-kicker">Cloud hosting</h3>
         <p class="ad-muted">Your bot keeps its identity, conversation, skills, and memory. We prepare its cloud computer, ask you to connect ChatGPT, then move this conversation over.</p>
         <label class="ad-field"><span>Company</span>
           <select value={promotionCompany} onchange={(event) => { promotionCompany = event.currentTarget.value; }} disabled={promoting || Boolean(promotionPhase)} aria-label="Promotion company">
             <option value="">Choose company</option>
-            {#each companies as company (company.uid)}<option value={company.uid}>{company.name}</option>{/each}
+            {#each promotionCompanies as company (company.uid)}<option value={company.uid}>{company.name}</option>{/each}
           </select>
         </label>
         {#if promotionPhase || promoting}

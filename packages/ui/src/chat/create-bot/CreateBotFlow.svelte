@@ -114,6 +114,8 @@
   let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx)));
   let step = $state<CreateBotStep>("kind");
   let pickedAvatarSrc = $state<string | null>(null);
+  /** The user answered "who is it for?" themselves; templates no longer pick for them. */
+  let scopeAnswered = $state(false);
 
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
   const steps = $derived(stepsFor(draft));
@@ -155,9 +157,11 @@
   function patch(p: Partial<CreateBotDraft>): void {
     if (busy) return;
     draft = { ...draft, ...p };
+    if (p.scope !== undefined) scopeAnswered = true;
     // A company template is a company bot for that company unless the user
-    // already answered "who is it for?".
-    if (p.templateId && draft.kind === "template" && draft.companySlugs.length === 0) {
+    // already answered "who is it for?" (Personal stays personal even after
+    // going back and picking a template).
+    if (p.templateId && draft.kind === "template" && !scopeAnswered) {
       const slug = templateCard(templates.find((t) => t.id === p.templateId) ?? { id: p.templateId, path: "" }).company;
       if (slug && ownerCompanies.some((c) => c.slug === slug)) draft = { ...draft, scope: "company", companySlugs: [slug] };
     }

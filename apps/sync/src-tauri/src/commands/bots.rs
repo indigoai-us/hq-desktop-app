@@ -158,16 +158,20 @@ fn create_args(
         args.push("--memory".to_string());
         args.push(validate_memory(memory)?.to_string());
     }
-    if let Some(kind) = kind.map(str::trim).filter(|k| !k.is_empty()) {
+    // Personal is the CLI's default and is never passed, so an older hq
+    // without `--kind` keeps creating personal/setup bots. `--company` only
+    // means something for a company bot; anything else is a caller bug.
+    let kind = kind.map(str::trim).filter(|k| !k.is_empty()).map(validate_kind).transpose()?;
+    let companies: Vec<&String> = companies.unwrap_or(&[]).iter().filter(|c| !c.trim().is_empty()).collect();
+    if kind == Some("company") {
         args.push("--kind".to_string());
-        args.push(validate_kind(kind)?.to_string());
-    }
-    for company in companies.unwrap_or(&[]) {
-        if company.trim().is_empty() {
-            continue;
+        args.push("company".to_string());
+        for company in companies {
+            args.push("--company".to_string());
+            args.push(validate_company(company)?);
         }
-        args.push("--company".to_string());
-        args.push(validate_company(company)?);
+    } else if !companies.is_empty() {
+        return Err("Companies only apply to a company bot.".to_string());
     }
     Ok(args)
 }
@@ -443,10 +447,14 @@ mod tests {
             create_args("scout", "claude", None, None, None, None, None, None, Some("company"), Some(&cos)).unwrap(),
             vec!["create", "scout", "--runtime", "claude", "--kind", "company", "--company", "indigo", "--company", "ridge"]
         );
+        // Personal is the CLI default: nothing is passed, so an older hq still works.
         assert_eq!(
             create_args("scout", "claude", None, None, None, None, None, None, Some("personal"), None).unwrap(),
-            vec!["create", "scout", "--runtime", "claude", "--kind", "personal"]
+            vec!["create", "scout", "--runtime", "claude"]
         );
+        // Companies without the company kind are a caller bug, not silently dropped.
+        assert!(create_args("scout", "claude", None, None, None, None, None, None, None, Some(&cos)).is_err());
+        assert!(create_args("scout", "claude", None, None, None, None, None, None, Some("personal"), Some(&cos)).is_err());
         // Blank kind / empty companies are simply not passed.
         assert_eq!(
             create_args("scout", "claude", None, None, None, None, None, None, Some(""), Some(&[])).unwrap(),
