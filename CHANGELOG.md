@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Running an agent session inside HQ has been removed. Start your work from the Launch menu instead — it opens your HQ folder in Claude Code, Codex, or Grok, where the agents already run. Chat, projects, and the work mesh are unchanged, and the mesh still shows sessions your teammates start elsewhere.
+
 ## [0.10.267] — 2026-09-15
 
 - Core update diagnostics now identify a missing rsync installation instead of treating the rescue failure as unknown.
