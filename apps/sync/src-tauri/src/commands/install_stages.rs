@@ -38,6 +38,9 @@ pub(crate) enum OnboardingErrorCategory {
     ExitNonzero,
     UnsupportedPlatform,
     Disk,
+    AlreadyRunning,
+    Cancelled,
+    CancellationCleanupFailed,
     Unknown,
 }
 
@@ -53,6 +56,9 @@ impl OnboardingErrorCategory {
             Self::ExitNonzero => "exit-nonzero",
             Self::UnsupportedPlatform => "unsupported-platform",
             Self::Disk => "disk",
+            Self::AlreadyRunning => "already-running",
+            Self::Cancelled => "cancelled",
+            Self::CancellationCleanupFailed => "cancellation-cleanup-failed",
             Self::Unknown => "unknown",
         }
     }

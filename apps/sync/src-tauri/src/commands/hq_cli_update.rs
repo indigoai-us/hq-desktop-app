@@ -1655,20 +1655,37 @@ fn apply_post_install(
 pub(crate) fn acquire_cli_install_lock(
     app: &AppHandle,
     tool: &str,
-) -> Result<CliUpdateLockGuard, String> {
-    match acquire_cli_update_lock(tool, &app.package_info().version.to_string())? {
+) -> Result<CliUpdateLockGuard, CliInstallLockError> {
+    match acquire_cli_update_lock(tool, &app.package_info().version.to_string())
+        .map_err(|message| CliInstallLockError::Acquire { message })?
+    {
         CliUpdateLockAttempt::Acquired(guard) => Ok(guard),
         CliUpdateLockAttempt::Held { holder } => {
             let msg = format!(
                 "another hq-cli install is already running ({holder}); skipping this cycle"
             );
             log("hq-cli-update", &msg);
-            Err(msg)
+            Err(CliInstallLockError::Held { message: msg })
         }
     }
 }
 
 static HQ_CLI_INSTALL_FLIGHT: OnceLock<AsyncSingleFlight<HqCliUpdateInfo>> = OnceLock::new();
+
+#[derive(Debug)]
+pub(crate) enum CliInstallLockError {
+    Held { message: String },
+    Acquire { message: String },
+}
+
+impl std::fmt::Display for CliInstallLockError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::Held { message } | Self::Acquire { message } => message,
+        };
+        formatter.write_str(message)
+    }
+}
 
 fn hq_cli_install_flight() -> &'static AsyncSingleFlight<HqCliUpdateInfo> {
     HQ_CLI_INSTALL_FLIGHT.get_or_init(AsyncSingleFlight::new)
@@ -1685,7 +1702,8 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     // Held for the WHOLE install — every executor path below (npm, pnpm, bun,
     // and the managed-toolchain retry) mutates the same global CLI layout, so
     // the guard must outlive them all. Drop (including panic unwind) releases.
-    let _install_lock = acquire_cli_install_lock(&app, "hq-desktop-app-cli-update")?;
+    let _install_lock = acquire_cli_install_lock(&app, "hq-desktop-app-cli-update")
+        .map_err(|error| error.to_string())?;
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq_resolved = paths::resolve_bin_with_kind("hq");

@@ -77,11 +77,15 @@ struct SetupCommandDiagnostic {
 #[derive(Clone)]
 struct SetupDiagnosticCollector {
     command_failure: Arc<Mutex<Option<SetupCommandDiagnostic>>>,
+    attempt_outcome: Arc<Mutex<Option<SetupAttemptOutcome>>>,
 }
 
 impl SetupDiagnosticCollector {
     fn new() -> Self {
-        Self { command_failure: Arc::new(Mutex::new(None)) }
+        Self {
+            command_failure: Arc::new(Mutex::new(None)),
+            attempt_outcome: Arc::new(Mutex::new(None)),
+        }
     }
 
     fn record(&self, diagnostic: SetupCommandDiagnostic) {
@@ -94,10 +98,84 @@ impl SetupDiagnosticCollector {
 
     fn clear(&self) {
         let _ = self.command_failure.lock().unwrap().take();
+        let _ = self.attempt_outcome.lock().unwrap().take();
+    }
+
+    fn record_attempt_outcome(&self, outcome: SetupAttemptOutcome) {
+        *self.attempt_outcome.lock().unwrap() = Some(outcome);
+    }
+
+    fn take_attempt_outcome(&self) -> Option<SetupAttemptOutcome> {
+        self.attempt_outcome.lock().unwrap().take()
     }
 }
 
-fn record_setup_command_failure(program: &str, args: &[&str], exit_code: Option<i32>, stdout: String, stderr: String, error: String) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupAttemptOutcome {
+    Failed(OnboardingErrorCategory),
+    Skipped(OnboardingErrorCategory),
+    Cancelled(OnboardingErrorCategory),
+}
+
+impl SetupAttemptOutcome {
+    fn category(self) -> OnboardingErrorCategory {
+        match self {
+            Self::Failed(category) | Self::Skipped(category) | Self::Cancelled(category) => category,
+        }
+    }
+
+    fn reportable_category(self) -> Option<OnboardingErrorCategory> {
+        match self {
+            Self::Failed(category) => Some(category),
+            Self::Skipped(_) | Self::Cancelled(_) => None,
+        }
+    }
+
+    fn breadcrumb(self) -> Option<sentry::Breadcrumb> {
+        let message = match self {
+            Self::Skipped(OnboardingErrorCategory::AlreadyRunning) => {
+                "dependency installation skipped because another HQ CLI install is running"
+            }
+            Self::Cancelled(OnboardingErrorCategory::Cancelled) => {
+                "dependency installation cancelled by user"
+            }
+            _ => return None,
+        };
+        Some(sentry::Breadcrumb {
+            category: Some("setup.deps".into()),
+            level: sentry::Level::Info,
+            message: Some(message.into()),
+            ..Default::default()
+        })
+    }
+}
+
+fn record_setup_attempt_outcome(outcome: SetupAttemptOutcome) {
+    if let Some(breadcrumb) = outcome.breadcrumb() {
+        sentry::add_breadcrumb(breadcrumb);
+    }
+    let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR
+        .try_with(|collector| collector.record_attempt_outcome(outcome));
+}
+
+fn setup_spawn_error_category(error: &std::io::Error) -> OnboardingErrorCategory {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => OnboardingErrorCategory::Permission,
+        std::io::ErrorKind::NotFound => OnboardingErrorCategory::NotFound,
+        std::io::ErrorKind::TimedOut => OnboardingErrorCategory::Timeout,
+        _ => OnboardingErrorCategory::SpawnFailed,
+    }
+}
+
+fn record_setup_command_failure(
+    program: &str,
+    args: &[&str],
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    error: String,
+    category: OnboardingErrorCategory,
+) {
     let command = std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
     let diagnostic = SetupCommandDiagnostic {
         command,
@@ -107,6 +185,7 @@ fn record_setup_command_failure(program: &str, args: &[&str], exit_code: Option<
         error,
     };
     let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(|collector| collector.record(diagnostic));
+    record_setup_attempt_outcome(SetupAttemptOutcome::Failed(category));
 }
 
 /// The next installer path is a recovery attempt. Its terminal error, not the
@@ -2079,7 +2158,15 @@ async fn run_streaming<R: tauri::Runtime>(
         Err(e) => {
             deregister_handle(&handle_id);
             let error = format!("Failed to spawn '{}': {}", program, e);
-            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            record_setup_command_failure(
+                program,
+                args,
+                None,
+                String::new(),
+                String::new(),
+                error.clone(),
+                setup_spawn_error_category(&e),
+            );
             return Err(error);
         }
     };
@@ -2091,7 +2178,15 @@ async fn run_streaming<R: tauri::Runtime>(
         None => {
             deregister_handle(&handle_id);
             let error = "no stdout".to_string();
-            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            record_setup_command_failure(
+                program,
+                args,
+                None,
+                String::new(),
+                String::new(),
+                error.clone(),
+                OnboardingErrorCategory::Unknown,
+            );
             return Err(error);
         }
     };
@@ -2100,7 +2195,15 @@ async fn run_streaming<R: tauri::Runtime>(
         None => {
             deregister_handle(&handle_id);
             let error = "no stderr".to_string();
-            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            record_setup_command_failure(
+                program,
+                args,
+                None,
+                String::new(),
+                String::new(),
+                error.clone(),
+                OnboardingErrorCategory::Unknown,
+            );
             return Err(error);
         }
     };
@@ -2276,10 +2379,17 @@ async fn run_streaming<R: tauri::Runtime>(
     }
 
     if was_cancelled {
-        let msg = match kill_error {
-            Some(e) => format!("Cancelled by user; {e}"),
-            None => "Cancelled by user".to_string(),
+        let (msg, outcome) = match kill_error {
+            Some(error) => (
+                format!("Cancelled by user; {error}"),
+                SetupAttemptOutcome::Failed(OnboardingErrorCategory::CancellationCleanupFailed),
+            ),
+            None => (
+                "Cancelled by user".to_string(),
+                SetupAttemptOutcome::Cancelled(OnboardingErrorCategory::Cancelled),
+            ),
         };
+        record_setup_attempt_outcome(outcome);
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -2322,7 +2432,15 @@ async fn run_streaming<R: tauri::Runtime>(
         let captured = stderr_lines.lock().unwrap().clone();
         let stderr = stderr_tail.lock().unwrap().clone();
         let msg = format_install_error(code, &captured);
-        record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
+        record_setup_command_failure(
+            program,
+            args,
+            Some(code),
+            stdout,
+            stderr,
+            msg.clone(),
+            OnboardingErrorCategory::ExitNonzero,
+        );
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -3232,9 +3350,13 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
         "hq-desktop-app-install-deps",
     ) {
         Ok(guard) => guard,
-        Err(msg) => {
-            emit_preflight_line(&app, &msg);
-            return Err(msg);
+        Err(error) => {
+            record_setup_attempt_outcome(setup_attempt_outcome_from_cli_install_lock_error(
+                &error,
+            ));
+            let message = error.to_string();
+            emit_preflight_line(&app, &message);
+            return Err(message);
         }
     };
     let prefix = npm_global_prefix_arg(&app, "hq")?;
@@ -4217,7 +4339,15 @@ async fn run_streaming<R: tauri::Runtime>(
         Err(_) => {
             deregister_handle(&handle_id);
             let error = format!("'{}' not found on PATH", program);
-            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            record_setup_command_failure(
+                program,
+                args,
+                None,
+                String::new(),
+                String::new(),
+                error.clone(),
+                OnboardingErrorCategory::NotFound,
+            );
             return Err(error);
         }
     };
@@ -4226,7 +4356,15 @@ async fn run_streaming<R: tauri::Runtime>(
         Ok(job) => Arc::new(job),
         Err(e) => {
             deregister_handle(&handle_id);
-            record_setup_command_failure(program, args, None, String::new(), String::new(), e.clone());
+            record_setup_command_failure(
+                program,
+                args,
+                None,
+                String::new(),
+                String::new(),
+                e.clone(),
+                OnboardingErrorCategory::Unknown,
+            );
             return Err(e);
         }
     };
@@ -4244,13 +4382,29 @@ async fn run_streaming<R: tauri::Runtime>(
         Err(e) => {
             deregister_handle(&handle_id);
             let error = format!("Failed to spawn '{}': {}", program, e);
-            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            record_setup_command_failure(
+                program,
+                args,
+                None,
+                String::new(),
+                String::new(),
+                error.clone(),
+                setup_spawn_error_category(&e),
+            );
             return Err(error);
         }
     };
 
     if let Err(e) = assign_process_to_job(job.0, child.as_raw_handle() as HANDLE) {
-        record_setup_command_failure(program, args, None, String::new(), String::new(), e.clone());
+        record_setup_command_failure(
+            program,
+            args,
+            None,
+            String::new(),
+            String::new(),
+            e.clone(),
+            OnboardingErrorCategory::Unknown,
+        );
         let kill_result = child.kill().map_err(|kill_err| {
             format!("failed to kill untracked child after job assignment failure: {kill_err}")
         });
@@ -4279,7 +4433,15 @@ async fn run_streaming<R: tauri::Runtime>(
         None => {
             deregister_handle(&handle_id);
             let error = "no stdout".to_string();
-            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            record_setup_command_failure(
+                program,
+                args,
+                None,
+                String::new(),
+                String::new(),
+                error.clone(),
+                OnboardingErrorCategory::Unknown,
+            );
             return Err(error);
         }
     };
@@ -4288,7 +4450,15 @@ async fn run_streaming<R: tauri::Runtime>(
         None => {
             deregister_handle(&handle_id);
             let error = "no stderr".to_string();
-            record_setup_command_failure(program, args, None, String::new(), String::new(), error.clone());
+            record_setup_command_failure(
+                program,
+                args,
+                None,
+                String::new(),
+                String::new(),
+                error.clone(),
+                OnboardingErrorCategory::Unknown,
+            );
             return Err(error);
         }
     };
@@ -4451,10 +4621,17 @@ async fn run_streaming<R: tauri::Runtime>(
     }
 
     if was_cancelled {
-        let msg = match kill_error {
-            Some(e) => format!("Cancelled by user; {e}"),
-            None => "Cancelled by user".to_string(),
+        let (msg, outcome) = match kill_error {
+            Some(error) => (
+                format!("Cancelled by user; {error}"),
+                SetupAttemptOutcome::Failed(OnboardingErrorCategory::CancellationCleanupFailed),
+            ),
+            None => (
+                "Cancelled by user".to_string(),
+                SetupAttemptOutcome::Cancelled(OnboardingErrorCategory::Cancelled),
+            ),
         };
+        record_setup_attempt_outcome(outcome);
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -4497,7 +4674,15 @@ async fn run_streaming<R: tauri::Runtime>(
         let captured = stderr_lines.lock().unwrap().clone();
         let stderr = stderr_tail.lock().unwrap().clone();
         let msg = format_install_error(code, &captured);
-        record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
+        record_setup_command_failure(
+            program,
+            args,
+            Some(code),
+            stdout,
+            stderr,
+            msg.clone(),
+            OnboardingErrorCategory::ExitNonzero,
+        );
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -5433,9 +5618,13 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
         "hq-desktop-app-install-deps",
     ) {
         Ok(guard) => guard,
-        Err(msg) => {
-            emit_progress(&app, &msg);
-            return Err(msg);
+        Err(error) => {
+            record_setup_attempt_outcome(setup_attempt_outcome_from_cli_install_lock_error(
+                &error,
+            ));
+            let message = error.to_string();
+            emit_progress(&app, &message);
+            return Err(message);
         }
     };
     emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
@@ -5546,6 +5735,19 @@ struct DepInstallResult {
     optional: bool,
     status: DepInstallStatus,
     error: Option<String>,
+}
+
+fn setup_attempt_outcome_from_cli_install_lock_error(
+    error: &crate::commands::hq_cli_update::CliInstallLockError,
+) -> SetupAttemptOutcome {
+    match error {
+        crate::commands::hq_cli_update::CliInstallLockError::Held { .. } => {
+            SetupAttemptOutcome::Skipped(OnboardingErrorCategory::AlreadyRunning)
+        }
+        crate::commands::hq_cli_update::CliInstallLockError::Acquire { .. } => {
+            SetupAttemptOutcome::Failed(OnboardingErrorCategory::Unknown)
+        }
+    }
 }
 
 const DEP_DEFS: &[DepDef] = &[
@@ -5716,20 +5918,6 @@ fn is_blocked_dependency_result(result: &DepInstallResult) -> bool {
     result.error.as_deref().is_some_and(|error| error.starts_with("Prerequisite not installed:"))
 }
 
-fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupCommandDiagnostic>) -> OnboardingErrorCategory {
-    if diagnostic.and_then(|diagnostic| diagnostic.exit_code).is_some() {
-        return OnboardingErrorCategory::ExitNonzero;
-    }
-    let error = result.error.as_deref().unwrap_or_default().to_ascii_lowercase();
-    if error.contains("checksum") { OnboardingErrorCategory::Checksum }
-    else if error.contains("timed out") || error.contains("timeout") { OnboardingErrorCategory::Timeout }
-    else if error.contains("permission") || error.contains("eacces") { OnboardingErrorCategory::Permission }
-    else if error.contains("not found") || error.contains("enoent") { OnboardingErrorCategory::NotFound }
-    else if error.contains("failed to spawn") { OnboardingErrorCategory::SpawnFailed }
-    else if error.contains("network") || error.contains("connection") { OnboardingErrorCategory::Network }
-    else { OnboardingErrorCategory::Unknown }
-}
-
 fn setup_flow_token(flow: &str) -> &'static str {
     match flow {
         "first_install" => "first_install",
@@ -5760,12 +5948,24 @@ fn blocked_dependents_for(deps: &[DepDef], results: &HashMap<&'static str, DepIn
         .collect()
 }
 
-fn reportable_setup_failure_ids(deps: &[DepDef], results: &HashMap<&'static str, DepInstallResult>) -> Vec<&'static str> {
+fn reportable_setup_failure_ids(
+    deps: &[DepDef],
+    results: &HashMap<&'static str, DepInstallResult>,
+    attempt_outcomes: &HashMap<&'static str, SetupAttemptOutcome>,
+) -> Vec<&'static str> {
     deps.iter()
         .filter(|dep| !dep.optional)
-        .filter_map(|dep| results.get(dep.id)
-            .filter(|result| result.status == DepInstallStatus::Failed && !is_blocked_dependency_result(result))
-            .map(|_| dep.id))
+        .filter_map(|dep| {
+            let result = results.get(dep.id)?;
+            let outcome = attempt_outcomes
+                .get(dep.id)
+                .copied()
+                .unwrap_or(SetupAttemptOutcome::Failed(OnboardingErrorCategory::Unknown));
+            (result.status == DepInstallStatus::Failed
+                && !is_blocked_dependency_result(result)
+                && outcome.reportable_category().is_some())
+            .then_some(dep.id)
+        })
         .collect()
 }
 
@@ -5970,6 +6170,7 @@ pub async fn install_deps(
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);
     let mut diagnostic_by_id: HashMap<&'static str, SetupCommandDiagnostic> = HashMap::new();
+    let mut attempt_outcome_by_id: HashMap<&'static str, SetupAttemptOutcome> = HashMap::new();
     let mut ok_set: HashSet<&'static str> = HashSet::new();
 
     for dep in deps.iter().filter(|dep| dep.optional) {
@@ -5998,17 +6199,24 @@ pub async fn install_deps(
                     }
                     None => ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector.clone(), install_orchestrated_dep(&app, dep)).await,
                 };
-                (result_from_install(dep, install_result), collector.take())
+                (
+                    result_from_install(dep, install_result),
+                    collector.take(),
+                    collector.take_attempt_outcome(),
+                )
             }
         }))
         .await;
 
-        for (result, diagnostic) in settled {
+        for (result, diagnostic, attempt_outcome) in settled {
             if result.status == DepInstallStatus::Ok {
                 ok_set.insert(result.id);
             }
             if let Some(diagnostic) = diagnostic {
                 diagnostic_by_id.insert(result.id, diagnostic);
+            }
+            if let Some(attempt_outcome) = attempt_outcome {
+                attempt_outcome_by_id.insert(result.id, attempt_outcome);
             }
             result_by_id.insert(result.id, result);
         }
@@ -6052,11 +6260,20 @@ pub async fn install_deps(
         Ok(())
     } else {
         if let Some(scope) = failure_scope.as_ref() {
-            for dependency in reportable_setup_failure_ids(deps, &result_by_id) {
+            for dependency in reportable_setup_failure_ids(
+                deps,
+                &result_by_id,
+                &attempt_outcome_by_id,
+            ) {
                 let dep = deps.iter().find(|dep| dep.id == dependency).expect("reportable dependency is registered");
                 let result = result_by_id.get(dep.id).expect("reportable dependency has an install result");
                 let diagnostic = diagnostic_by_id.remove(dep.id).unwrap_or_else(|| fallback_setup_command_diagnostic(result));
-                let category = setup_error_category(result, Some(&diagnostic));
+                let category = attempt_outcome_by_id
+                    .get(dep.id)
+                    .copied()
+                    .expect("reportable dependency has a failure outcome")
+                    .reportable_category()
+                    .expect("reportable dependency has a reportable category");
                 let blocked_dependents = blocked_dependents_for(deps, &result_by_id, dep.id)
                     .into_iter()
                     .map(str::to_string)
@@ -6068,14 +6285,16 @@ pub async fn install_deps(
             let result = result_by_id.get(dep.id)?;
             (!dep.optional && result.status == DepInstallStatus::Failed).then_some(dep.id)
         }) {
-            // Individual installers currently return their rendered errors, so
-            // no typed source remains at this aggregation point. Preserve the
-            // exact dependency but record the category as the closed fallback.
+            let category = attempt_outcome_by_id
+                .get(failed_dependency)
+                .copied()
+                .unwrap_or(SetupAttemptOutcome::Failed(OnboardingErrorCategory::Unknown))
+                .category();
             record_onboarding_failure_detail(
                 "deps",
                 failure_scope.as_ref(),
                 Some(failed_dependency),
-                OnboardingErrorCategory::Unknown,
+                category,
             );
         }
         Err(format!(
@@ -6088,6 +6307,20 @@ pub async fn install_deps(
 #[cfg(test)]
 mod install_deps_planner_tests {
     use super::*;
+
+    #[test]
+    fn lock_contention_is_classified_as_already_running_not_unknown() {
+        let outcome = setup_attempt_outcome_from_cli_install_lock_error(
+            &crate::commands::hq_cli_update::CliInstallLockError::Held {
+                message: "lock holder".to_string(),
+            },
+        );
+
+        assert_eq!(
+            outcome,
+            SetupAttemptOutcome::Skipped(OnboardingErrorCategory::AlreadyRunning)
+        );
+    }
 
     #[test]
     fn path_persistence_failure_remains_fatal_after_the_managed_binary_is_visible() {
@@ -6448,8 +6681,55 @@ mod install_deps_planner_tests {
                 error: Some("Prerequisite not installed: node".to_string()),
             });
         }
-        assert_eq!(reportable_setup_failure_ids(deps, &results), vec!["node"]);
+        assert_eq!(
+            reportable_setup_failure_ids(deps, &results, &HashMap::new()),
+            vec!["node"]
+        );
         assert_eq!(blocked_dependents_for(deps, &results, "node"), vec!["qmd", "hq-cli"]);
+    }
+
+    #[test]
+    fn user_cancellation_does_not_emit_a_setup_failure_event_but_failed_install_does() {
+        let scope = failure_scope(
+            "11111111-1111-4111-8111-111111111111",
+            1,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        );
+        let deps = &[DEP_DEFS[0], DEP_DEFS[1], DEP_DEFS[2], DEP_DEFS[3]];
+        let mut results = HashMap::new();
+        let mut outcomes = HashMap::new();
+        for dep in deps {
+            results.insert(dep.id, failed_result(dep));
+        }
+        outcomes.insert("node", SetupAttemptOutcome::Cancelled(OnboardingErrorCategory::Cancelled));
+        outcomes.insert(
+            "yq",
+            SetupAttemptOutcome::Failed(OnboardingErrorCategory::CancellationCleanupFailed),
+        );
+        outcomes.insert("qmd", SetupAttemptOutcome::Failed(OnboardingErrorCategory::ExitNonzero));
+        outcomes.insert(
+            "hq-cli",
+            SetupAttemptOutcome::Skipped(OnboardingErrorCategory::AlreadyRunning),
+        );
+
+        let reportable = reportable_setup_failure_ids(deps, &results, &outcomes);
+        assert_eq!(reportable, vec!["yq", "qmd"]);
+        let events = sentry::test::with_captured_events(|| {
+            for dependency in reportable {
+                let category = outcomes[dependency]
+                    .reportable_category()
+                    .expect("reportable dependency must carry an error category");
+                send_setup_dependency_failure(&scope, dependency, category, setup_diagnostic(), &[]);
+            }
+        });
+
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.level == sentry::Level::Error));
+        assert_eq!(events[0].tags["setup_error_category"], "cancellation-cleanup-failed");
+        assert_eq!(
+            events[1].tags["setup_error_category"],
+            "exit-nonzero"
+        );
     }
 
     /// Retried failures stay grouped but run/session context distinguishes a
