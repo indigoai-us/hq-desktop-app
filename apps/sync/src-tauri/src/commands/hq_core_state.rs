@@ -38,7 +38,7 @@
 //! staging-drift) each had their own 6h loop — net traffic / API spend goes
 //! down.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -69,12 +69,21 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
 const CORE_STATE_REUSE_WINDOW: Duration = Duration::from_secs(15);
 
 static CORE_UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
-static AUTO_ATTEMPTED_TARGETS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+const MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES: u8 = 3;
+const CONSECUTIVE_FAILURE_CAP_SKIP_REASON: &str = "consecutive_failure_cap_reached";
+const RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON: &str = "retry_interval_not_elapsed";
+
+/// Automatic retry eligibility is intentionally separate from the update run
+/// guard. The guard prevents overlapping Core writes; this state remembers a
+/// target that completed without moving the observed version and bounds hard
+/// failures until the checker discovers a newer target.
+static AUTO_TARGET_STATES: OnceLock<Mutex<HashMap<Channel, AutomaticTargetState>>> =
+    OnceLock::new();
 
 /// Channel the user is tracking. Drives target selection + the action-pill
 /// label. Carries the resolving repo + ref so the frontend can render
 /// "Update to v14.2.0" vs "Update to Staging" without re-parsing.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum Channel {
     Release,
@@ -227,7 +236,7 @@ pub(crate) struct CoreUpdateNpxResolution {
 /// This remains a dimension rather than raw diagnostic text: hq-pro admits
 /// `errorCategory` as a short safe label, while its telemetry privacy boundary
 /// deliberately rejects free-form process output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum RescueFailureCategory {
     Auth,
     Network,
@@ -391,9 +400,7 @@ pub(crate) fn classify_core_update_error(
 /// Additional diagnostics emitted only with `core_update_failed`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CoreUpdateFailureDetails<'a> {
-    /// A redacted 16 KiB rescue-log tail retained with the Sentry diagnostic
-    /// convention. Core updates do not currently report to Sentry, so this is
-    /// never telemetry.
+    /// A redacted 16 KiB rescue-log tail retained for the Sentry diagnostic.
     pub(crate) rescue_stderr_tail: Option<&'a str>,
     pub(crate) rescue_failure_category: RescueFailureCategory,
     pub(crate) npx_resolution: Option<CoreUpdateNpxResolution>,
@@ -482,13 +489,105 @@ fn channel_label(channel: Channel) -> &'static str {
     }
 }
 
-fn mark_automatic_target_attempted(channel: Channel, target: &str) -> bool {
-    let key = format!("{}:{target}", channel_label(channel));
-    AUTO_ATTEMPTED_TARGETS
-        .get_or_init(|| Mutex::new(HashSet::new()))
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutomaticTargetState {
+    target: String,
+    consecutive_failures: u8,
+    completed_without_version_move: bool,
+    last_failure_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutomaticTargetEligibility {
+    Eligible,
+    CompletedWithoutVersionMove,
+    ConsecutiveFailureCapReached,
+    RetryIntervalNotElapsed,
+}
+
+fn automatic_target_eligibility(channel: Channel, target: &str) -> AutomaticTargetEligibility {
+    automatic_target_eligibility_at(channel, target, Instant::now())
+}
+
+fn automatic_target_eligibility_at(
+    channel: Channel,
+    target: &str,
+    attempted_at: Instant,
+) -> AutomaticTargetEligibility {
+    let states = AUTO_TARGET_STATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(state) = states.get(&channel) else {
+        return AutomaticTargetEligibility::Eligible;
+    };
+    if state.target != target {
+        // State belongs to a single target per channel, so observing a newer
+        // target starts a fresh retry budget and drops old non-convergence.
+        return AutomaticTargetEligibility::Eligible;
+    }
+    if state.completed_without_version_move {
+        AutomaticTargetEligibility::CompletedWithoutVersionMove
+    } else if state.consecutive_failures >= MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
+        AutomaticTargetEligibility::ConsecutiveFailureCapReached
+    } else if state.last_failure_at.is_some_and(|last_failure_at| {
+        attempted_at.saturating_duration_since(last_failure_at) < CHECK_INTERVAL
+    }) {
+        AutomaticTargetEligibility::RetryIntervalNotElapsed
+    } else {
+        AutomaticTargetEligibility::Eligible
+    }
+}
+
+fn record_automatic_target_failure_at(channel: Channel, target: &str, attempted_at: Instant) {
+    let mut states = AUTO_TARGET_STATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = states
+        .entry(channel)
+        .or_insert_with(|| AutomaticTargetState {
+            target: target.to_string(),
+            consecutive_failures: 0,
+            completed_without_version_move: false,
+            last_failure_at: None,
+        });
+    if state.target != target {
+        *state = AutomaticTargetState {
+            target: target.to_string(),
+            consecutive_failures: 0,
+            completed_without_version_move: false,
+            last_failure_at: None,
+        };
+    }
+    state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+    state.last_failure_at = Some(attempted_at);
+}
+
+fn record_automatic_target_completed(channel: Channel, target: &str) {
+    AUTO_TARGET_STATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(key)
+        .insert(
+            channel,
+            AutomaticTargetState {
+                target: target.to_string(),
+                consecutive_failures: 0,
+                completed_without_version_move: true,
+                last_failure_at: None,
+            },
+        );
+}
+
+#[cfg(test)]
+fn reset_automatic_target_states_for_test() {
+    if let Some(states) = AUTO_TARGET_STATES.get() {
+        states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -675,6 +774,178 @@ pub(crate) fn emit_core_update_failed_event(
             details,
         )),
     );
+    queue_core_update_failure_report(source, channel, exit_code, error_kind, details);
+}
+
+/// The Sentry grouping pair for a Core update failure. Every field is a closed
+/// vocabulary token; target version and rescue output deliberately stay out of
+/// the signature so a single underlying defect does not fragment into issues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CoreUpdateSentryFailureSignature {
+    error_kind: &'static str,
+    error_category: RescueFailureCategory,
+}
+
+static CORE_UPDATE_SENTRY_SIGNATURES: OnceLock<Mutex<HashSet<CoreUpdateSentryFailureSignature>>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct CoreUpdateSentryFailureReport {
+    source: &'static str,
+    channel: Channel,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    error_category: RescueFailureCategory,
+    rescue_stderr_tail: Option<String>,
+    npx_resolution: Option<CoreUpdateNpxResolution>,
+}
+
+fn core_update_sentry_error_kind(error_kind: &'static str) -> &'static str {
+    match error_kind {
+        "already_in_progress"
+        | "invalid_core_root"
+        | "network"
+        | "rescue_spawn"
+        | "baseline_persistence"
+        | "channel_configuration"
+        | "internal"
+        | "rescue_exit" => error_kind,
+        _ => "other",
+    }
+}
+
+fn core_update_sentry_source(source: &'static str) -> &'static str {
+    match source {
+        "automatic" | "manual" => source,
+        _ => "other",
+    }
+}
+
+fn core_update_sentry_platform() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "macos-aarch64",
+        ("macos", "x86_64") => "macos-x86_64",
+        ("windows", "x86_64") => "windows-x86_64",
+        ("windows", "aarch64") => "windows-aarch64",
+        ("linux", "x86_64") => "linux-x86_64",
+        _ => "other",
+    }
+}
+
+fn core_update_sentry_exit_code(exit_code: Option<i32>) -> &'static str {
+    match exit_code {
+        Some(1) => "1",
+        Some(2) => "2",
+        Some(3) => "3",
+        Some(4) => "4",
+        Some(5) => "5",
+        Some(-1) => "signal_or_unknown",
+        Some(_) => "other",
+        None => "not_available",
+    }
+}
+
+fn claim_core_update_sentry_signature(signature: CoreUpdateSentryFailureSignature) -> bool {
+    CORE_UPDATE_SENTRY_SIGNATURES
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(signature)
+}
+
+fn send_core_update_failure_report(report: CoreUpdateSentryFailureReport) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let fingerprint = [report.error_kind, report.error_category.label()];
+        sentry::with_scope(
+            |sentry_scope| {
+                sentry_scope.set_fingerprint(Some(&fingerprint));
+                sentry_scope.set_tag("errorKind", report.error_kind);
+                sentry_scope.set_tag("errorCategory", report.error_category.label());
+                sentry_scope.set_tag("channel", channel_label(report.channel));
+                sentry_scope.set_tag("platform", core_update_sentry_platform());
+                sentry_scope.set_tag("source", core_update_sentry_source(report.source));
+                sentry_scope.set_tag("exitCode", core_update_sentry_exit_code(report.exit_code));
+                sentry_scope.set_extra(
+                    "coreUpdateExitCode",
+                    report
+                        .exit_code
+                        .map(|code| sentry::protocol::Value::Number(code.into()))
+                        .unwrap_or(sentry::protocol::Value::Null),
+                );
+                sentry_scope.set_extra(
+                    "coreUpdateAppVersion",
+                    sentry::protocol::Value::String(env!("APP_VERSION").to_string()),
+                );
+                if let Some(rescue_stderr_tail) = report.rescue_stderr_tail {
+                    sentry_scope.set_extra(
+                        "rescueStderrTail",
+                        sentry::protocol::Value::String(rescue_stderr_tail),
+                    );
+                }
+                if let Some(npx_resolution) = report.npx_resolution {
+                    sentry_scope.set_extra(
+                        "npxResolved",
+                        sentry::protocol::Value::Bool(npx_resolution.resolved),
+                    );
+                    sentry_scope.set_extra(
+                        "npxResolution",
+                        sentry::protocol::Value::String(npx_resolution.source.to_string()),
+                    );
+                }
+            },
+            || sentry::capture_message("Desktop Core update failed", sentry::Level::Error),
+        );
+    }));
+}
+
+fn report_core_update_failure_once(report: CoreUpdateSentryFailureReport) {
+    let signature = CoreUpdateSentryFailureSignature {
+        error_kind: report.error_kind,
+        error_category: report.error_category,
+    };
+    if claim_core_update_sentry_signature(signature) {
+        send_core_update_failure_report(report);
+    }
+}
+
+fn queue_core_update_failure_report(
+    source: &'static str,
+    channel: Channel,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    details: CoreUpdateFailureDetails<'_>,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source_hub = sentry::Hub::current();
+        if source_hub.client().is_none() {
+            return;
+        }
+        let report = CoreUpdateSentryFailureReport {
+            source,
+            channel,
+            exit_code,
+            error_kind: core_update_sentry_error_kind(error_kind),
+            error_category: details.rescue_failure_category,
+            rescue_stderr_tail: details
+                .rescue_stderr_tail
+                .map(hq_telemetry::redact_core_update_diagnostic_tail),
+            npx_resolution: details.npx_resolution,
+        };
+        let hub = std::sync::Arc::new(sentry::Hub::new_from_top(source_hub));
+        hq_telemetry::dispatch_sentry_report(move || {
+            sentry::Hub::run(hub, || report_core_update_failure_once(report));
+        });
+    }));
+}
+
+#[cfg(test)]
+fn reset_core_update_sentry_signatures_for_test() {
+    if let Some(signatures) = CORE_UPDATE_SENTRY_SIGNATURES.get() {
+        signatures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
 }
 
 async fn check_once_observed(
@@ -1588,6 +1859,8 @@ enum NativeCoreAutoUpdateOutcome {
     DeferredForSync,
     SkippedAlreadyInProgress,
     SkippedAlreadyAttempted,
+    SkippedConsecutiveFailureCap,
+    SkippedRetryInterval,
     Succeeded,
     FailedExit(i32),
     Failed(CoreUpdateErrorKind),
@@ -1602,6 +1875,28 @@ async fn execute_native_core_auto_update<F, Fut>(
 where
     F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
     Fut: Future<Output = Result<i32, CoreUpdateError>>,
+{
+    execute_native_core_auto_update_with_clock(
+        candidate,
+        auto_updates,
+        sync_in_progress,
+        Instant::now,
+        install,
+    )
+    .await
+}
+
+async fn execute_native_core_auto_update_with_clock<F, Fut, Now>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    now: Now,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<i32, CoreUpdateError>>,
+    Now: Fn() -> Instant,
 {
     match core_auto_update_decision(auto_updates, candidate.version_behind, sync_in_progress) {
         CoreAutoUpdateDecision::Ignore => NativeCoreAutoUpdateOutcome::Ignored,
@@ -1678,27 +1973,78 @@ where
                     return NativeCoreAutoUpdateOutcome::SkippedAlreadyInProgress;
                 }
             };
-            if !mark_automatic_target_attempted(candidate.channel, candidate.target_version) {
-                log(
-                    "hq-core-update",
-                    "native auto-update skipped: target already attempted this session",
-                );
-                emit_core_update_event(
-                    "core_update_skipped",
-                    "automatic",
-                    "skipped",
-                    Some(candidate.channel),
-                    candidate.local_version,
-                    Some(candidate.target_version),
-                    true,
-                    Some(candidate.is_eligible),
-                    Some(candidate.version_behind),
-                    Duration::ZERO,
-                    None,
-                    None,
-                    Some("already_attempted_this_session"),
-                );
-                return NativeCoreAutoUpdateOutcome::SkippedAlreadyAttempted;
+            match automatic_target_eligibility_at(
+                candidate.channel,
+                candidate.target_version,
+                now(),
+            ) {
+                AutomaticTargetEligibility::Eligible => {}
+                AutomaticTargetEligibility::CompletedWithoutVersionMove => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: target already completed without a version move",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
+                        true,
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
+                        Duration::ZERO,
+                        None,
+                        None,
+                        Some("already_attempted_this_session"),
+                    );
+                    return NativeCoreAutoUpdateOutcome::SkippedAlreadyAttempted;
+                }
+                AutomaticTargetEligibility::ConsecutiveFailureCapReached => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: consecutive failure cap reached",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
+                        true,
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
+                        Duration::ZERO,
+                        None,
+                        None,
+                        Some(CONSECUTIVE_FAILURE_CAP_SKIP_REASON),
+                    );
+                    return NativeCoreAutoUpdateOutcome::SkippedConsecutiveFailureCap;
+                }
+                AutomaticTargetEligibility::RetryIntervalNotElapsed => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: retry interval has not elapsed",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
+                        true,
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
+                        Duration::ZERO,
+                        None,
+                        None,
+                        Some(RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON),
+                    );
+                    return NativeCoreAutoUpdateOutcome::SkippedRetryInterval;
+                }
             }
             log(
                 "hq-core-update",
@@ -1713,10 +2059,16 @@ where
             let result = install(candidate.channel, run_guard, observation).await;
             match result {
                 Ok(0) => {
+                    record_automatic_target_completed(candidate.channel, candidate.target_version);
                     log("hq-core-update", "native auto-update succeeded");
                     NativeCoreAutoUpdateOutcome::Succeeded
                 }
                 Ok(exit_code) => {
+                    record_automatic_target_failure_at(
+                        candidate.channel,
+                        candidate.target_version,
+                        now(),
+                    );
                     log(
                         "hq-core-update",
                         &format!("native auto-update failed: rescue_exit={exit_code}"),
@@ -1724,6 +2076,11 @@ where
                     NativeCoreAutoUpdateOutcome::FailedExit(exit_code)
                 }
                 Err(error) => {
+                    record_automatic_target_failure_at(
+                        candidate.channel,
+                        candidate.target_version,
+                        now(),
+                    );
                     log(
                         "hq-core-update",
                         &format!(
@@ -1736,6 +2093,28 @@ where
             }
         }
     }
+}
+
+#[cfg(test)]
+async fn execute_native_core_auto_update_at<F, Fut>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    attempted_at: Instant,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<i32, CoreUpdateError>>,
+{
+    execute_native_core_auto_update_with_clock(
+        candidate,
+        auto_updates,
+        sync_in_progress,
+        || attempted_at,
+        install,
+    )
+    .await
 }
 
 async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
@@ -1816,9 +2195,10 @@ pub fn setup_core_state_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{atomic::AtomicUsize, Arc};
 
     static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static CORE_UPDATE_SENTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // Snapshot of the hq-pro entries that can admit `core_update_failed`
     // properties. Mirrors
@@ -1856,13 +2236,248 @@ mod tests {
         drop(retry);
     }
 
-    #[test]
-    fn automatic_target_deduplication_is_scoped_to_the_channel() {
+    #[tokio::test]
+    async fn automatic_target_state_is_scoped_to_the_channel() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
         let target = "15.0.117-deduplication-contract";
 
-        assert!(mark_automatic_target_attempted(Channel::Release, target));
-        assert!(!mark_automatic_target_attempted(Channel::Release, target));
-        assert!(mark_automatic_target_attempted(Channel::Staging, target));
+        record_automatic_target_completed(Channel::Release, target);
+        assert_eq!(
+            automatic_target_eligibility(Channel::Release, target),
+            AutomaticTargetEligibility::CompletedWithoutVersionMove
+        );
+        assert_eq!(
+            automatic_target_eligibility(Channel::Staging, target),
+            AutomaticTargetEligibility::Eligible
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_automatic_target_waits_for_the_next_check_interval_before_retrying() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-retry-after-failure-contract";
+        let candidate = || CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: target,
+            is_eligible: true,
+            version_behind: true,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_attempt_at = Instant::now();
+
+        let first_calls = Arc::clone(&calls);
+        let first = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            first_attempt_at,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                first_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(5)
+            },
+        )
+        .await;
+
+        let before_interval_calls = Arc::clone(&calls);
+        let before_interval = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            first_attempt_at + CHECK_INTERVAL - Duration::from_secs(1),
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                before_interval_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(5)
+            },
+        )
+        .await;
+
+        let after_interval_calls = Arc::clone(&calls);
+        let after_interval = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            first_attempt_at + CHECK_INTERVAL,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                after_interval_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(0)
+            },
+        )
+        .await;
+
+        assert_eq!(first, NativeCoreAutoUpdateOutcome::FailedExit(5));
+        assert_eq!(
+            before_interval,
+            NativeCoreAutoUpdateOutcome::SkippedRetryInterval
+        );
+        assert_eq!(after_interval, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            2,
+            "only the first and next-cycle automatic attempts may invoke the installer"
+        );
+        assert_eq!(
+            RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON,
+            "retry_interval_not_elapsed"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_but_unchanged_target_stays_suppressed_until_a_newer_target() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let old_target = "15.0.117-success-without-version-move-contract";
+        let candidate = |target| CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            // The installer below reports zero without changing this observed
+            // local version, which is the non-convergence case we must retain.
+            local_version: Some("15.0.4"),
+            target_version: target,
+            is_eligible: true,
+            version_behind: true,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let first_calls = Arc::clone(&calls);
+        let first = execute_native_core_auto_update(
+            candidate(old_target),
+            true,
+            false,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                first_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(0)
+            },
+        )
+        .await;
+
+        let blocked = execute_native_core_auto_update(
+            candidate(old_target),
+            true,
+            false,
+            |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                panic!("a successful-but-unchanged target must remain suppressed");
+            },
+        )
+        .await;
+
+        let new_target_calls = Arc::clone(&calls);
+        let newer = execute_native_core_auto_update(
+            candidate("15.0.118-new-target-contract"),
+            true,
+            false,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                new_target_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(0)
+            },
+        )
+        .await;
+
+        assert_eq!(first, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(
+            blocked,
+            NativeCoreAutoUpdateOutcome::SkippedAlreadyAttempted
+        );
+        assert_eq!(newer, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn automatic_retry_stops_after_three_consecutive_failures() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-consecutive-failure-cap-contract";
+        let candidate = || CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("15.0.4"),
+            target_version: target,
+            is_eligible: true,
+            version_behind: true,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let first_attempt_at = Instant::now();
+        for failure_number in 0..MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
+            let failure_calls = Arc::clone(&calls);
+            let outcome = execute_native_core_auto_update_at(
+                candidate(),
+                true,
+                false,
+                first_attempt_at + CHECK_INTERVAL * u32::from(failure_number),
+                move |_, run_guard, _| async move {
+                    let _run_guard = run_guard;
+                    failure_calls.fetch_add(1, Ordering::AcqRel);
+                    Ok(5)
+                },
+            )
+            .await;
+            assert_eq!(outcome, NativeCoreAutoUpdateOutcome::FailedExit(5));
+        }
+
+        let capped = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            first_attempt_at
+                + CHECK_INTERVAL * u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES),
+            |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                panic!("the capped target must not start another automatic install");
+            },
+        )
+        .await;
+
+        assert_eq!(
+            capped,
+            NativeCoreAutoUpdateOutcome::SkippedConsecutiveFailureCap
+        );
+        assert_eq!(calls.load(Ordering::Acquire), 3);
+        assert_eq!(
+            CONSECUTIVE_FAILURE_CAP_SKIP_REASON,
+            "consecutive_failure_cap_reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_retry_is_not_gated_by_an_automatic_failure_cap() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-manual-retry-contract";
+        let first_failure_at = Instant::now();
+        record_automatic_target_failure_at(Channel::Release, target, first_failure_at);
+        assert_eq!(
+            automatic_target_eligibility_at(
+                Channel::Release,
+                target,
+                first_failure_at + Duration::from_secs(1),
+            ),
+            AutomaticTargetEligibility::RetryIntervalNotElapsed
+        );
+
+        // Manual commands acquire only the run guard; automatic retry state is
+        // deliberately not consulted, so the UI retry remains responsive even
+        // while the automatic retry interval is active.
+        let manual_run_guard = try_begin_core_update().expect("manual retry is not gated");
+        drop(manual_run_guard);
+
+        for failure_number in 1..MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
+            record_automatic_target_failure_at(
+                Channel::Release,
+                target,
+                first_failure_at + CHECK_INTERVAL * u32::from(failure_number),
+            );
+        }
+        assert_eq!(
+            automatic_target_eligibility(Channel::Release, target),
+            AutomaticTargetEligibility::ConsecutiveFailureCapReached
+        );
     }
 
     #[tokio::test]
@@ -1995,6 +2610,64 @@ mod tests {
                 "{label:?} violates hq-pro SAFE_MARKETING_LABEL_RE"
             );
         }
+    }
+
+    #[test]
+    fn sentry_reports_one_event_per_failure_signature_per_process() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let report = |error_kind, error_category, exit_code| CoreUpdateSentryFailureReport {
+            source: "automatic",
+            channel: Channel::Release,
+            exit_code,
+            error_kind,
+            error_category,
+            rescue_stderr_tail: Some(hq_telemetry::redact_core_update_diagnostic_tail(
+                "fatal: could not clone Core source",
+            )),
+            npx_resolution: Some(CoreUpdateNpxResolution {
+                resolved: true,
+                source: "managed_toolchain",
+            }),
+        };
+        let events = sentry::test::with_captured_events_options(
+            || {
+                report_core_update_failure_once(report(
+                    "rescue_exit",
+                    RescueFailureCategory::Unknown,
+                    Some(5),
+                ));
+                report_core_update_failure_once(report(
+                    "rescue_exit",
+                    RescueFailureCategory::Unknown,
+                    Some(5),
+                ));
+                report_core_update_failure_once(report(
+                    "network",
+                    RescueFailureCategory::Network,
+                    None,
+                ));
+            },
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(events.len(), 2, "identical failures must dedupe in-process");
+        assert_eq!(events[0].fingerprint, vec!["rescue_exit", "unknown"]);
+        assert_eq!(events[1].fingerprint, vec!["network", "network"]);
+        assert_eq!(events[0].tags["errorKind"], "rescue_exit");
+        assert_eq!(events[0].tags["errorCategory"], "unknown");
+        assert_eq!(events[0].tags["channel"], "release");
+        assert_eq!(events[0].tags["platform"], core_update_sentry_platform());
+        assert_eq!(events[0].tags["source"], "automatic");
+        assert_eq!(events[0].tags["exitCode"], "5");
+        assert_eq!(events[1].tags["exitCode"], "not_available");
+        assert_eq!(
+            events[0].extra["rescueStderrTail"],
+            sentry::protocol::Value::String("fatal: could not clone Core source".to_string())
+        );
     }
 
     #[test]

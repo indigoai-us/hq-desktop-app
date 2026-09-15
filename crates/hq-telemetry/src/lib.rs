@@ -36,6 +36,51 @@ pub fn redact_setup_diagnostic_tail(value: &str) -> String {
     setup_diagnostic_tail(&scrub_setup_diagnostic_text(value))
 }
 
+/// Redact a Core rescue diagnostic before it crosses the Sentry boundary.
+///
+/// Core rescue output is git output, so the setup scrubber's credential and
+/// account protections are necessary but not sufficient: a git diagnostic can
+/// also contain a remote hostname, repository, arbitrary absolute path, or an
+/// email address. None of those are needed to group or diagnose a failed
+/// update, so remove them before retaining the same bounded tail.
+pub fn redact_core_update_diagnostic_tail(value: &str) -> String {
+    let value = redact_setup_diagnostic_tail(value);
+    let value = redact_url_literals(&value);
+    let value = redact_email_addresses(&value);
+    let value = redact_unc_path_literals(&value);
+    let value = redact_absolute_path_literals(&value);
+    let value = redact_labeled_host_values(&value);
+    let value = redact_hostname_literals(&value);
+    let value = redact_repository_literals(&value);
+    bounded_redacted_core_update_diagnostic_tail(&value)
+}
+
+/// Apply the stream limit after Core-specific redactions, whose replacement
+/// marker can be longer than the diagnostic literal it replaces. Advancing to
+/// whitespace keeps the retained suffix from starting in the middle of either
+/// a `[Filtered]` marker or an unredacted token.
+fn bounded_redacted_core_update_diagnostic_tail(value: &str) -> String {
+    if value.len() <= SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES {
+        return value.to_string();
+    }
+
+    let mut start = value.len() - SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    while start < value.len() {
+        let character = value[start..]
+            .chars()
+            .next()
+            .expect("start remains within the diagnostic");
+        if character.is_whitespace() {
+            break;
+        }
+        start += character.len_utf8();
+    }
+    value[start..].to_string()
+}
+
 /// The exact Sentry issue grouping for setup dependency failures. Correlation
 /// fields deliberately stay outside this pair so retries and people do not
 /// fragment a single dependency/category root cause into separate issues.
@@ -370,6 +415,192 @@ fn redact_url_credentials(value: &str) -> String {
         offset = authority_end.max(authority_start);
         if offset == value.len() {
             break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_url_literals(value: &str) -> String {
+    let mut ranges = Vec::new();
+    let mut offset = 0;
+    while let Some(scheme_offset) = value[offset..].find("://") {
+        let scheme_end = offset + scheme_offset;
+        let mut start = scheme_end;
+        while start > 0 && value.as_bytes()[start - 1].is_ascii_alphabetic() {
+            start -= 1;
+        }
+        if start == scheme_end {
+            offset = scheme_end + 3;
+            continue;
+        }
+        let end = value[scheme_end + 3..]
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, '\'' | '"' | ')' | ']' | '}')
+            })
+            .map(|relative| scheme_end + 3 + relative)
+            .unwrap_or(value.len());
+        ranges.push((start, end));
+        offset = end.max(scheme_end + 3);
+        if offset == value.len() {
+            break;
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn is_email_local_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'%' | b'+' | b'-')
+}
+
+fn is_email_domain_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')
+}
+
+fn redact_email_addresses(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    for (at, byte) in bytes.iter().enumerate() {
+        if *byte != b'@' {
+            continue;
+        }
+        let mut start = at;
+        while start > 0 && is_email_local_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        let mut end = at + 1;
+        while end < bytes.len() && is_email_domain_byte(bytes[end]) {
+            end += 1;
+        }
+        if start < at && end > at + 1 && value[at + 1..end].contains('.') {
+            ranges.push((start, end));
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn is_path_byte(byte: u8) -> bool {
+    !byte.is_ascii_whitespace() && !matches!(byte, b'\'' | b'"' | b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';')
+}
+
+fn redact_unc_path_literals(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let unc_path = bytes[index] == b'\\' && bytes.get(index + 1) == Some(&b'\\');
+        if !unc_path {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut end = index + 2;
+        while end < bytes.len() && is_path_byte(bytes[end]) {
+            end += 1;
+        }
+        if end > start + 2 {
+            ranges.push((start, end));
+        }
+        index = end;
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_absolute_path_literals(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let unix_path = bytes[index] == b'/'
+            && (index == 0 || !bytes[index - 1].is_ascii_alphanumeric());
+        let windows_path = bytes[index].is_ascii_alphabetic()
+            && bytes.get(index + 1) == Some(&b':')
+            && matches!(bytes.get(index + 2), Some(b'/' | b'\\'));
+        if !unix_path && !windows_path {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut end = if windows_path { index + 3 } else { index + 1 };
+        while end < bytes.len() && is_path_byte(bytes[end]) {
+            end += 1;
+        }
+        ranges.push((start, end));
+        index = end;
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn redact_labeled_host_values(value: &str) -> String {
+    const LABELS: &[&str] = &["host:", "host=", "hostname:", "hostname="];
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    for index in 0..bytes.len() {
+        let Some(label) = LABELS.iter().find(|label| has_ascii_case_insensitive_prefix_at(value, index, label)) else {
+            continue;
+        };
+        let mut start = index + label.len();
+        while bytes.get(start).is_some_and(|byte| byte.is_ascii_whitespace()) {
+            start += 1;
+        }
+        let end = value[start..]
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, '\'' | '"' | ',' | ';')
+            })
+            .map(|relative| start + relative)
+            .unwrap_or(value.len());
+        if start < end {
+            ranges.push((start, end));
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn is_hostname_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')
+}
+
+fn redact_hostname_literals(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !is_hostname_byte(bytes[index]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && is_hostname_byte(bytes[index]) {
+            index += 1;
+        }
+        let candidate = &value[start..index];
+        if candidate.contains('.')
+            && candidate.bytes().any(|byte| byte.is_ascii_alphabetic())
+            && candidate.split('.').all(|part| !part.is_empty() && part.bytes().all(is_hostname_byte))
+        {
+            ranges.push((start, index));
+        }
+    }
+    replace_ranges(value, ranges, FILTERED)
+}
+
+fn is_repository_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+}
+
+fn redact_repository_literals(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    for slash in bytes.iter().enumerate().filter_map(|(index, byte)| (*byte == b'/').then_some(index)) {
+        let mut start = slash;
+        while start > 0 && is_repository_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        let mut end = slash + 1;
+        while end < bytes.len() && is_repository_byte(bytes[end]) {
+            end += 1;
+        }
+        if start < slash && end > slash + 1 {
+            ranges.push((start, end));
         }
     }
     replace_ranges(value, ranges, FILTERED)
@@ -2062,6 +2293,58 @@ mod tests {
         assert!(!diagnostic.contains("GH_TOKEN="));
         assert!(!diagnostic.contains("Ada"));
         assert!(diagnostic.contains("/Users/[user]/.npm/_logs/error.log"));
+    }
+
+    #[test]
+    fn core_update_diagnostic_tail_removes_git_machine_and_remote_identifiers() {
+        let diagnostic = redact_core_update_diagnostic_tail(
+            "GH_TOKEN=ghp_abcdefghijklmnop\nfatal: unable to access 'https://token@example.corp/private/repo?access_token=secret': Could not resolve host: example.corp\nfatal: cannot read /mnt/alice/private/repo\ncontact alice@example.com or git@internal.corp:private/repo\nC:\\Users\\Alice\\HQ\\core.yaml\n\\\\buildserver\\share\\alice\\hq\n\\\\files.example.corp\\engineering\\bob\\hq-core",
+        );
+
+        for sensitive in [
+            "GH_TOKEN=",
+            "ghp_abcdefghijklmnop",
+            "token@example.corp",
+            "example.corp",
+            "private/repo",
+            "/mnt/alice",
+            "alice@example.com",
+            "internal.corp",
+            "C:\\Users\\Alice",
+            r"\\buildserver\share\alice\hq",
+            r"\\files.example.corp\engineering\bob\hq-core",
+        ] {
+            assert!(
+                !diagnostic.contains(sensitive),
+                "Core update diagnostic leaked {sensitive:?}: {diagnostic:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn core_update_diagnostic_tail_stays_within_the_documented_limit_after_redaction() {
+        let short_redactable_token = "x/y ";
+        let input = short_redactable_token.repeat(
+            SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES / short_redactable_token.len(),
+        );
+        assert_eq!(input.len(), SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+
+        let diagnostic = redact_core_update_diagnostic_tail(&input);
+
+        assert!(
+            diagnostic.len() <= SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES,
+            "redaction must not expand a bounded diagnostic tail: {} bytes",
+            diagnostic.len()
+        );
+        assert!(
+            diagnostic.starts_with(char::is_whitespace),
+            "post-redaction truncation must begin at a token boundary: {diagnostic:?}"
+        );
+        assert!(
+            !diagnostic.starts_with("Filtered]"),
+            "post-redaction truncation must not leave a partial [Filtered] marker"
+        );
+        assert!(!diagnostic.contains("x/y"));
     }
 
     /// Correlation is event context, never part of the issue key: one failed
