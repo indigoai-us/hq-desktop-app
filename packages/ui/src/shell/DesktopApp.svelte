@@ -257,6 +257,7 @@
     type ThinkingEntry,
   } from "../chat/agent-thinking.js";
   import {
+    cloudTaskAgentUids,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
     localBotOfflineNotice,
@@ -1642,11 +1643,16 @@
     const channelId = row?.channelId?.trim() || null;
     const roster = channelId ? (channelRosterById[channelId] ?? []) : [];
     const peer = row?.personUid?.trim() || null;
-    const agentUids = channelId
-      ? roster.map((m) => m.personUid)
-      : peer && isAgentTaskUid(peer)
-        ? [peer]
-        : [];
+    // Locally hosted bots have no cloud task record, so asking for one is a
+    // permanent 404 on every tick — drop them before the controller polls.
+    const agentUids = cloudTaskAgentUids(
+      channelId
+        ? roster.map((m) => m.personUid)
+        : peer && isAgentTaskUid(peer)
+          ? [peer]
+          : [],
+      localBotRecords,
+    );
     const roomFetch = adapter.messaging.listChannelAgentTasks;
     const agentFetch = adapter.messaging.listAgentTasks;
     const ctl = new TaskFeedController({
