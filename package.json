@@ -2,7 +2,7 @@
   "name": "hq-desktop-app",
   "version": "0.13.0",
   "private": true,
-  "description": "HQ desktop apps monorepo — installer (React) and sync (Svelte), sharing Rust crates, signing, updater, and release tooling.",
+  "description": "HQ desktop apps monorepo \u2014 installer (React) and sync (Svelte), sharing Rust crates, signing, updater, and release tooling.",
   "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=20"
@@ -17,7 +17,9 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "version:app": "tsx scripts/version-app.ts",
-    "version:check": "tsx scripts/version-app.ts --check"
+    "version:check": "tsx scripts/version-app.ts --check",
+    "ci:local": "bash scripts/ci-local.sh",
+    "ci:local:fast": "bash scripts/ci-local.sh --fast"
   },
   "devDependencies": {
     "tsx": "^4.21.0",
