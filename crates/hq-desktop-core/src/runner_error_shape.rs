@@ -189,7 +189,12 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// cause. `src/bin/sync-runner-events.ts` `ERROR_TYPES` also remains (`error`,
 /// `auth-error`). No new vocabulary arm is needed, but the source-version
 /// marker moves with the verified runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.38";
+///
+/// The `~6.16.38` -> `~6.16.45` bump was also re-derived. Its rescue-preflight
+/// diagnostics, unsupported-snapshot-format message, and denied session-log
+/// delete handling add no named runner-error identity, so the vocabulary remains
+/// unchanged and only this source-version marker moves with the verified pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.45";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
