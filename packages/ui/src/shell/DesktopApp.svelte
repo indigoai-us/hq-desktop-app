@@ -4749,6 +4749,80 @@
   }
 
   /**
+   * An inbound DM wake carries ids only. When that pair's conversation is the
+   * OPEN one, fetch its new page and commit it — otherwise the reply sat
+   * unseen until some other catch-up ran (a healthy mesh only arms the
+   * timeline safety ticker when `shouldArmDirectorySafety` says it is
+   * degraded), while the wake had already torn down the agent's thinking row.
+   * The owner saw a bot's answer announced by a notification and then vanish.
+   */
+  async function applyDmWake(wake: {
+    fromPersonUid: string;
+    eventId?: string;
+    createdAt?: string;
+    direction?: "in" | "out";
+  }): Promise<void> {
+    if (wake.direction === "out") return;
+    const from = (wake.fromPersonUid ?? "").trim();
+    if (!from) return;
+    const row = selectedRow;
+    const peer = (row?.personUid ?? "").trim();
+    const isOpen =
+      !!row && row.kind === "dm" && (peer === from || row.id === `dm:${from}`);
+    // An inbound agent DM ends that agent's thinking row even when its
+    // conversation is not open (the open one clears from its page below, so
+    // its indicator never disappears before the reply is on screen).
+    if (!isOpen) {
+      if (isAgentUid(from)) {
+        clearThinkingFromIncoming(
+          [{ fromPersonUid: from, createdAt: wake.createdAt ?? null }],
+          `dm:${from}`,
+        );
+      }
+      return;
+    }
+    // In-place lifecycle-card updates reuse the same eventId, so an
+    // already-seen id re-reads without `since`; a genuinely new event that is
+    // no newer than what is already rendered is already on screen, and the
+    // wake alone may end the row.
+    const already = timelineHasEvent(liveTimeline, wake.eventId);
+    if (!already) {
+      const wakeAt = (wake.createdAt ?? "").trim();
+      if (
+        wakeAt &&
+        liveTimeline.some((message) => (message.createdAt ?? "") >= wakeAt)
+      ) {
+        if (isAgentUid(from)) {
+          clearThinkingFromIncoming(
+            [{ fromPersonUid: from, createdAt: wake.createdAt ?? null }],
+            row.id,
+          );
+        }
+        return;
+      }
+    }
+    let res: Awaited<ReturnType<typeof adapter.messaging.fetchDmThread>>;
+    try {
+      res = await adapter.messaging.fetchDmThread({
+        withPersonUid: peer || from,
+        limit: 20,
+        ...(already
+          ? {}
+          : { since: sinceForChannelWake(liveTimeline, wake.createdAt) }),
+      });
+    } catch {
+      // Never clear on a failed fetch — a later catch-up ends the row once it
+      // can actually show the reply.
+      return;
+    }
+    if (!res.ok) return;
+    if (selectedRow?.id !== row.id) return;
+    const incoming = messagesForDisplay(res.value);
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value));
+    clearThinkingFromIncoming(incoming, row.id);
+  }
+
+  /**
    * `backfill` fetches the inbox page WITHOUT the stored `since` cursor, so a
    * machine that already holds a cursor still re-reads recent DM history and
    * can stamp older-day rail rows. It deliberately does not advance the
@@ -4853,15 +4927,7 @@
         void applyChannelWake(wake);
       }),
       bus.on("dm:new-message", (wake) => {
-        // An inbound agent DM ends that agent's thinking row even when its
-        // conversation is not open (the open one clears from its page).
-        const from = (wake.fromPersonUid ?? "").trim();
-        if (wake.direction !== "out" && from && isAgentUid(from)) {
-          clearThinkingFromIncoming(
-            [{ fromPersonUid: from, createdAt: wake.createdAt ?? null }],
-            `dm:${from}`,
-          );
-        }
+        void applyDmWake(wake);
         void catchUpDmInbox();
       }),
       bus.on("mesh:catchup", () => {
