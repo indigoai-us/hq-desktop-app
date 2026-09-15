@@ -3,8 +3,8 @@ import { readRepoFile } from './harness';
 
 describe('desktop placeholder hygiene', () => {
   it('omits absent goal metadata and names missing key-result values', () => {
-    const goals = readRepoFile('src/desktop-alt/pages/CompanyGoalsPage.svelte');
-    const projectDetail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
+    const goals = readRepoFile('../../packages/ui/src/projects/CompanyGoalsPage.svelte');
+    const projectDetail = readRepoFile('../../packages/ui/src/projects/ProjectDetailView.svelte');
 
     expect(goals).not.toContain("return 'Unassigned'");
     expect(goals).not.toContain("quarterLabel(objective.timeframe) ?? '—'");
@@ -14,8 +14,8 @@ describe('desktop placeholder hygiene', () => {
   });
 
   it('does not paint dash-only meeting placeholders', () => {
-    const page = readRepoFile('src/desktop-alt/pages/MeetingsPage.svelte');
-    const agenda = readRepoFile('src/desktop-alt/components/MeetingsAgenda.svelte');
+    const page = readRepoFile('../../packages/ui/src/meetings/MeetingsPage.svelte');
+    const agenda = readRepoFile('../../packages/ui/src/meetings/MeetingsAgenda.svelte');
 
     expect(page).not.toContain("upNext ? timeLabel(upNext) : '—'");
     expect(agenda).not.toContain('>—</span>');
@@ -31,7 +31,7 @@ describe('desktop placeholder hygiene', () => {
   });
 
   it('distinguishes desktop-version loading from failure in every settings row', () => {
-    const settings = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
+    const settings = readRepoFile('../../packages/ui/src/settings/SettingsPage.svelte');
 
     expect(settings).toContain('appVersionLoadFailed');
     expect(settings).toContain("'Unavailable'");
@@ -41,9 +41,9 @@ describe('desktop placeholder hygiene', () => {
   it('keeps auxiliary CRM, deployment, meeting, and moderation states explicit', () => {
     const crm = readRepoFile('src/lib/crm/AccountView.svelte');
     const crmModel = readRepoFile('src/lib/crm/account-view-model.ts');
-    const deployments = readRepoFile('src/desktop-alt/panels/DeploymentsPanel.svelte');
+    const deployments = readRepoFile('../../packages/ui/src/company/DeploymentsPanel.svelte');
     const meetings = readRepoFile('src/components/MeetingsWindow.svelte');
-    const moderation = readRepoFile('src/desktop-alt/panels/ModerationPanel.svelte');
+    const moderation = readRepoFile('../../packages/ui/src/marketplace/ModerationPanel.svelte');
 
     expect(crm).toContain('>Not connected</');
     expect(crm).not.toContain('>—</');

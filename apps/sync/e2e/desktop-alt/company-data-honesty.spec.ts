@@ -17,12 +17,14 @@ import { readRepoFile } from './harness';
  * stories is asserted on Projects + ProjectDetailView instead.
  */
 describe('company surfaces show real data, not fabrications', () => {
-  const projects = readRepoFile('src/desktop-alt/pages/CompanyProjectsPage.svelte');
-  const projectDetail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
-  const goals = readRepoFile('src/desktop-alt/pages/CompanyGoalsPage.svelte');
+  const projects = readRepoFile('../../packages/ui/src/projects/CompanyProjectsPage.svelte');
+  const projectDetail = readRepoFile('../../packages/ui/src/projects/ProjectDetailView.svelte');
+  const goals = readRepoFile('../../packages/ui/src/projects/CompanyGoalsPage.svelte');
 
   it('Projects uses recorded responsibility without inventing an owner', () => {
-    expect(projects).toContain("responsiblePerson(project.provenance, 'project')");
+    // @hq/ui is prettier-formatted with double quotes; match either style so
+    // this guards the call, not the formatter.
+    expect(projects).toMatch(/responsiblePerson\(project\.provenance, ['"]project['"]\)/);
     expect(projects).not.toContain('ownerLabel={leadLabel(project)}');
     expect(projects).not.toContain("return 'Agent'");
     expect(projects).not.toContain('projectIndex');

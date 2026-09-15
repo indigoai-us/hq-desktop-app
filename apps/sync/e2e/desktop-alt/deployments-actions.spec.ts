@@ -27,8 +27,8 @@ import { readRepoFile } from './harness';
 
 describe('desktop-alt Deployments panel actions (US-011)', () => {
   it('aligns the Status header with the full-width status row track', () => {
-    const panel = readRepoFile('src/desktop-alt/panels/DeploymentsPanel.svelte');
-    const row = readRepoFile('src/desktop-alt/components/DeploymentRow.svelte');
+    const panel = readRepoFile('../../packages/ui/src/company/DeploymentsPanel.svelte');
+    const row = readRepoFile('../../packages/ui/src/company/DeploymentRow.svelte');
 
     expect(panel).toContain('grid-template-columns: 82px 1.4fr 1fr auto auto auto');
     expect(row).toContain('grid-template-columns: 82px 1.4fr 1fr auto auto auto');
@@ -36,7 +36,7 @@ describe('desktop-alt Deployments panel actions (US-011)', () => {
   });
 
   it('opens the live deployment URL in the browser via plugin-shell (US-001 pattern)', () => {
-    const row = readRepoFile('src/desktop-alt/components/DeploymentRow.svelte');
+    const row = readRepoFile('../../packages/ui/src/company/DeploymentRow.svelte');
 
     // Same import + call shape US-001 established in CompanyPage.svelte.
     expect(row).toContain("import { open } from '@tauri-apps/plugin-shell'");
@@ -47,7 +47,7 @@ describe('desktop-alt Deployments panel actions (US-011)', () => {
   });
 
   it('surfaces a detail drill-in over the existing deployment data shape (status + carried fields)', () => {
-    const row = readRepoFile('src/desktop-alt/components/DeploymentRow.svelte');
+    const row = readRepoFile('../../packages/ui/src/company/DeploymentRow.svelte');
 
     // Drill-in is gated behind an expand toggle (row + more button both flip it).
     expect(row).toContain("let expanded = $state(false)");
@@ -73,7 +73,7 @@ describe('desktop-alt Deployments panel actions (US-011)', () => {
   });
 
   it('takes the calm-note redeploy path — no dead redeploy button or command (no trigger surface)', () => {
-    const row = readRepoFile('src/desktop-alt/components/DeploymentRow.svelte');
+    const row = readRepoFile('../../packages/ui/src/company/DeploymentRow.svelte');
     const rust = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
     const main = readRepoFile('src-tauri/src/main.rs');
     const caps = readRepoFile('src-tauri/capabilities/desktop-alt.json');
@@ -98,7 +98,7 @@ describe('desktop-alt Deployments panel actions (US-011)', () => {
   });
 
   it('carries no dead or no-op action controls in the row detail (honesty)', () => {
-    const row = readRepoFile('src/desktop-alt/components/DeploymentRow.svelte');
+    const row = readRepoFile('../../packages/ui/src/company/DeploymentRow.svelte');
 
     // The old per-row "Rollback" presented a destructive confirm whose Confirm
     // handler was a pure no-op (it just closed the dialog) — a control that
@@ -120,7 +120,7 @@ describe('desktop-alt Deployments panel actions (US-011)', () => {
   });
 
   it('gives the drill-in proper affordances (cursor, hover, focus ring)', () => {
-    const row = readRepoFile('src/desktop-alt/components/DeploymentRow.svelte');
+    const row = readRepoFile('../../packages/ui/src/company/DeploymentRow.svelte');
     const styleBlock = row.split('<style>')[1] ?? '';
 
     expect(styleBlock).toContain('cursor: pointer');
@@ -131,7 +131,7 @@ describe('desktop-alt Deployments panel actions (US-011)', () => {
 
   it('keeps the row token-driven (no hardcoded hex)', () => {
     const styleBlock =
-      readRepoFile('src/desktop-alt/components/DeploymentRow.svelte').split('<style>')[1] ?? '';
+      readRepoFile('../../packages/ui/src/company/DeploymentRow.svelte').split('<style>')[1] ?? '';
     expect(styleBlock).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });

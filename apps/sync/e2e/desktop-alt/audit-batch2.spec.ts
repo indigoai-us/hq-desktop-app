@@ -8,7 +8,7 @@ import { readRepoFile } from './harness';
 
 describe('audit batch 2: confirmed-finding fixes', () => {
   it('treats setup-needed as a normal zero-company run and lets all-complete settle idle', () => {
-    const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+    const app = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
     // The current runner emits setup-needed only after personal provisioning,
     // when a brand-new account simply has no companies yet. Rust then emits a
     // synthetic all-complete, so this stays in progress until that event and
@@ -32,7 +32,7 @@ describe('audit batch 2: confirmed-finding fixes', () => {
   });
 
   it('command palette always closes even if a command action throws', () => {
-    const palette = readRepoFile('src/desktop-alt/components/CommandPalette.svelte');
+    const palette = readRepoFile('../../packages/ui/src/common/CommandPalette.svelte');
     // try/finally so a throwing action can't leave the modal palette stuck open.
     expect(palette).toContain('try {');
     expect(palette).toContain('await command.action();');
@@ -41,7 +41,7 @@ describe('audit batch 2: confirmed-finding fixes', () => {
   });
 
   it('deployments counts read as "unknown" (—) on a load error, not a fake empty', () => {
-    const panel = readRepoFile('src/desktop-alt/panels/DeploymentsPanel.svelte');
+    const panel = readRepoFile('../../packages/ui/src/company/DeploymentsPanel.svelte');
     expect(panel).toContain('{#if !error}');
     expect(panel).toContain('{activeCount}');
     expect(panel).toContain('error ? "Couldn\'t load"');

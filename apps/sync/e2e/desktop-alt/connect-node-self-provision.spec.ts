@@ -30,7 +30,7 @@ import { readRepoFile } from './harness';
 describe('Connect self-provisions HQ-managed Node before blaming the user (HQ-DESKTOP-49)', () => {
   const workspacesRs = readRepoFile('src-tauri/src/commands/workspaces.rs');
   const syncRs = readRepoFile('src-tauri/src/commands/sync.rs');
-  const list = readRepoFile('src/components/WorkspaceList.svelte');
+  const adapter = readRepoFile('../../packages/platform/src/tauri/sync-adapter.ts');
   const prompts = readRepoFile('src/lib/copy-prompts.ts');
   const diagnosis = readRepoFile(
     '../../crates/hq-desktop-core/src/runtime_diagnosis.rs',
@@ -66,7 +66,7 @@ describe('Connect self-provisions HQ-managed Node before blaming the user (HQ-DE
     // ever needed a JS-side change, the Connect button would silently break.
     expect(workspacesRs).toContain('pub async fn connect_workspace_to_cloud(');
     expect(workspacesRs).toContain('app: tauri::AppHandle');
-    expect(list).toContain("await invoke('connect_workspace_to_cloud', { slug });");
+    expect(adapter).toContain("call('connect_workspace_to_cloud', { slug })");
   });
 
   it('only self-repairs a PROVEN missing runtime — never someone else`s broken npx', () => {
@@ -83,24 +83,29 @@ describe('Connect self-provisions HQ-managed Node before blaming the user (HQ-DE
     expect(diagnosis).toContain('ManagedRuntime::Unknown { .. } => RuntimeDiagnosis::Unexplained');
   });
 
-  it('still renders the repair affordance when HQ cannot install Node itself', () => {
-    expect(list).toContain("case 'node-missing':");
-    expect(list).toContain("return 'Install Node.js'");
-    expect(list).toContain('click "Fix in Claude Code"');
+  it('still carries the repair copy when HQ cannot install Node itself', () => {
+    // The row markup moved off the menubar WorkspaceList (deleted with the
+    // unreachable shell); the user-facing copy and its repair prompt live in
+    // copy-prompts, which is what this ever really guarded.
+    expect(prompts).toContain("case 'node-missing':");
     expect(prompts).toContain(
       "'node-missing': 'Install Node.js and reopen HQ Sync, then retry Connect.'",
     );
   });
 
-  it('keeps Sentry suppression symmetric across the IPC boundary', () => {
-    // The Rust side declines to capture a proven user-owned gap. If the Svelte
-    // catch block still captured, the noise would simply reappear from the
-    // frontend and the fix would be cosmetic.
-    expect(list).toContain(
-      "localEnv?.kind === 'node-missing' || localEnv?.kind === 'npx-unavailable'",
-    );
-    expect(list).toMatch(
-      /if \(!expectedRuntimeGap\) \{[\s\S]{0,200}?Sentry\.captureException/,
-    );
+  /**
+   * The frontend half of the Sentry symmetry is no longer assertable: its only
+   * implementation was the `expectedRuntimeGap` catch block in the menubar
+   * WorkspaceList, which was imported solely by the unreachable desktop-alt
+   * tree and went with the Sessions removal. There is no live capture, so
+   * there is currently no frontend noise — but nothing stops a future Connect
+   * UI from adding a catch block that captures a proven user-owned gap.
+   *
+   * Asserting a suppression that no code performs would be a test that passes
+   * because the feature is absent, which is worse than not having it. The Rust
+   * half below is the part that is real today.
+   */
+  it('keeps the Rust side from capturing a proven user-owned runtime gap', () => {
+    expect(workspacesRs).toContain('is_self_repairable_node_gap');
   });
 });
