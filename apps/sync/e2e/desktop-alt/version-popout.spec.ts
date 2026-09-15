@@ -10,8 +10,8 @@ import { readRepoFile } from './harness';
 
 describe('desktop-alt version pop-out (US-017)', () => {
   it('compact titlebar hosts the version pop-out without restoring the bottom status bar', () => {
-    const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-    const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
+    const desktopApp = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
+    const titleBar = readRepoFile('../../packages/ui/src/home/V4TitleBar.svelte');
 
     expect(desktopApp).not.toContain('<DesktopStatusBar');
     expect(titleBar).toContain("import VersionPopout from '../components/VersionPopout.svelte'");
@@ -29,7 +29,7 @@ describe('desktop-alt version pop-out (US-017)', () => {
   });
 
   it('pop-out shows app + Core versions and Check all updates invokes both checks', () => {
-    const popout = readRepoFile('src/desktop-alt/components/VersionPopout.svelte');
+    const popout = readRepoFile('../../packages/ui/src/settings/VersionPopout.svelte');
 
     expect(popout).toContain('data-testid="version-popout"');
     expect(popout).toContain('data-testid="version-popout-current"');
@@ -48,7 +48,7 @@ describe('desktop-alt version pop-out (US-017)', () => {
     expect(popout).toContain('checkAllUpdates(');
     expect(popout).toContain("'check_core_state'");
     expect(popout).toContain("'get_hq_version'");
-    const updateCheck = readRepoFile('src/lib/update-check.ts');
+    const updateCheck = readRepoFile('../../packages/ui/src/settings/update-check.ts');
     expect(updateCheck).toContain("'check_for_updates'");
     expect(updateCheck).toContain("'check_core_state'");
     expect(popout).toContain('Up to date');
@@ -61,7 +61,7 @@ describe('desktop-alt version pop-out (US-017)', () => {
   });
 
   it('Restart to update invokes install_update when an update is available', () => {
-    const popout = readRepoFile('src/desktop-alt/components/VersionPopout.svelte');
+    const popout = readRepoFile('../../packages/ui/src/settings/VersionPopout.svelte');
 
     expect(popout).toContain("'install_update'");
     expect(popout).toContain('data-testid="version-popout-restart"');
@@ -75,8 +75,8 @@ describe('desktop-alt version pop-out (US-017)', () => {
   });
 
   it('Automatic updates persists via the shared serialized patch queue and opens Updates', () => {
-    const popout = readRepoFile('src/desktop-alt/components/VersionPopout.svelte');
-    const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
+    const popout = readRepoFile('../../packages/ui/src/settings/VersionPopout.svelte');
+    const desktopApp = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
 
     expect(popout).toContain('data-testid="version-popout-auto-toggle"');
     expect(popout).toContain('data-testid="version-popout-settings-link"');
@@ -92,7 +92,7 @@ describe('desktop-alt version pop-out (US-017)', () => {
   });
 
   it('Settings can install and restart when its app update check finds a newer version', () => {
-    const settings = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
+    const settings = readRepoFile('../../packages/ui/src/settings/SettingsPage.svelte');
 
     expect(settings).toContain("let appUpdate = $state<UpdateInfo | null>(null)");
     expect(settings).toContain("await invoke('install_update')");

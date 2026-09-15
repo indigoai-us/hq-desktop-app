@@ -24,8 +24,8 @@ import { readRepoFile } from './harness';
  */
 describe('Claude setup deep link carries a skill-independent prompt', () => {
   const wizard = readRepoFile('src/components/onboarding/OnboardingWizard.svelte');
-  const card = readRepoFile('src/desktop-alt/components/SetupIncompleteCard.svelte');
-  const launchLib = readRepoFile('src/desktop-alt/lib/setup-launch.ts');
+  const card = readRepoFile('../../packages/ui/src/settings/SetupIncompleteCard.svelte');
+  const launchLib = readRepoFile('../../packages/ui/src/settings/setup-launch.ts');
 
   it('never hands the /setup slash command to buildClaudeCodeUrl', () => {
     for (const [name, source] of [
@@ -51,15 +51,20 @@ describe('Claude setup deep link carries a skill-independent prompt', () => {
     // Re-exported (not redeclared) so the deep-link prompt has exactly one
     // definition across @hq/ui and this app.
     expect(launchLib).toContain("SETUP_DEEP_LINK_PROMPT");
-    expect(launchLib).toContain("from '@hq/ui'");
+    // setup-launch now lives inside @hq/ui itself, so it no longer imports
+    // from the package — it IS the package's copy.
+    expect(launchLib).toContain('export function resolveClaudeLaunchPath(');
     expect(launchLib).not.toContain('SETUP_DEEP_LINK_PROMPT =');
   });
 
   it('keeps /setup for terminal launches and the clipboard fallback', () => {
-    expect(launchLib).toContain("export const SETUP_PROMPT = '/setup';");
+    expect(launchLib).toMatch(/export const SETUP_PROMPT = ['"]\/setup['"];/);
     expect(card).toContain('navigator.clipboard.writeText(SETUP_PROMPT)');
-    // Codex opens the workspace directly (`codex app <path>`), not through an
-    // untrusted link folder, so its /setup prompt is deliberately unchanged.
-    expect(card).toContain("prompt: '/setup',");
+    // Codex no longer carries a pre-typed prompt in the @hq/ui card: it opens
+    // the CLI in a terminal and the copy tells the user to run /setup. The
+    // deep-link path keeps its own distinct prompt (asserted above) precisely
+    // because a deep-link folder is untrusted; the terminal path is not.
+    expect(card).toMatch(/launchCliInTerminal\(\{[\s\S]{0,120}?tool: ['"]codex['"]/);
+    expect(card).toContain('run /setup');
   });
 });

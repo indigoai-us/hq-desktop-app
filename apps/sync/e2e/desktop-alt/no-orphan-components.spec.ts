@@ -49,7 +49,7 @@ describe('desktop-alt component-mount gate', () => {
   });
 
   it('every DesktopRoute kind is mounted in DesktopApp', () => {
-    const app = readFileSync(join(root, 'src/desktop-alt/DesktopApp.svelte'), 'utf8');
+    const app = readFileSync(join(root, '../../packages/ui/src/shell/DesktopApp.svelte'), 'utf8');
     const route = readFileSync(join(root, 'src/desktop-alt/route.ts'), 'utf8');
     // Extract the kinds declared on the DesktopRoute union (`kind: 'home' | ...`
     // and `kind: 'library';` forms).
