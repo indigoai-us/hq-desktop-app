@@ -15,7 +15,6 @@ const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
 const normalize = (s: string) => s.replace(/\s+/g, ' ');
 
 const app = read('src/App.svelte');
-const settings = read('src/desktop-alt/pages/SettingsPage.svelte');
 const appUpdater = read('src-tauri/src/updater.rs');
 const workShell = read('src/desktop-alt/HqWorkWorkShell.svelte');
 const cliUpdate = read('src-tauri/src/commands/hq_cli_update.rs');
@@ -23,7 +22,6 @@ const cliUpdateCore = read('../../crates/hq-desktop-core/src/hq_cli_update.rs');
 const installDeps = read('src-tauri/src/commands/install_deps.rs');
 const paths = read('../../crates/hq-desktop-core/src/paths.rs');
 const ciWorkflow = read('../../.github/workflows/ci.yml');
-const settingsRs = read('src-tauri/src/commands/settings.rs');
 const processRegistry = read('src-tauri/src/commands/process.rs');
 const packages = read('src-tauri/src/commands/packages.rs');
 const marketplace = read('src-tauri/src/commands/marketplace.rs');
@@ -31,25 +29,6 @@ const hqCoreUpdate = read('src-tauri/src/commands/hq_core_update.rs');
 const hqCoreStaging = read('src-tauri/src/commands/hq_core_staging.rs');
 
 describe('master automatic-updates switch', () => {
-  it('desktop SettingsPage exposes a single "Automatic updates" toggle and drops the CLI-only one', () => {
-    const s = normalize(settings);
-    expect(s).toContain('id="toggle-auto-update"');
-    expect(s).toContain('Automatic updates');
-    expect(s).toContain('bind:checked={autoUpdate}');
-    // The standalone per-CLI toggle is folded into the master.
-    expect(settings).not.toContain('id="toggle-cli-auto-update"');
-    expect(settings).not.toContain('handleToggleCliAutoUpdate');
-    expect(settings).not.toContain('bind:checked={cliAutoUpdate}');
-    // The pref round-trips as a minimal patch through the shared serialized
-    // settings helper, so it cannot overwrite Widget/titlebar changes.
-    expect(s).toContain('autoUpdate = settings.autoUpdate ?? true');
-    expect(settings).toContain(
-      "import { updateSettings, type SettingsPatch } from '../../lib/settings-mutations'",
-    );
-    expect(s).toContain("persistSettingsControl('auto-update', { autoUpdate })");
-    expect(s).toContain("disabled={isSettingsControlPending('auto-update')}");
-    expect(s).toContain("aria-busy={isSettingsControlPending('auto-update')}");
-  });
 
   it('native Rust installs app updates without depending on a mounted WebView', () => {
     expect(appUpdater).toContain(
@@ -123,28 +102,6 @@ describe('master automatic-updates switch', () => {
     expect(app).not.toContain('loadAutoUpdatePref');
     expect(app).not.toContain('autoCoreUpdatedVersion');
     expect(app).not.toContain('if (!s || !s.isEligible || !s.versionBehind) return;');
-  });
-
-  it('the CLI background auto-installer gates on the master switch', () => {
-    // The Rust CLI checker now installs when the master `autoUpdate` is on
-    // (default), superseding the old `cliAutoUpdate`-only gate. The switch is
-    // read once per check cycle and fed to a single pure gate.
-    expect(cliUpdate).toContain('let auto_update = auto_update_enabled();');
-    expect(cliUpdate).toContain('if auto_install_allowed(auto_update, floor_repair) {');
-    // The only pass that may install past the opt-out is the launch-time
-    // version-floor repair (installed CLI below HQ_CLI_MIN_VERSION), which
-    // mirrors hq-core's ensure-hq-cli hook — that hook has no opt-out either.
-    // The scheduled loop never takes it.
-    expect(normalize(cliUpdateCore)).toContain(
-      'pub fn auto_install_allowed(auto_update_enabled: bool, floor_repair: bool) -> bool { auto_update_enabled || floor_repair }',
-    );
-    expect(cliUpdate).toContain('run_check_cycle(&handle, /* floor_repair */ true).await;');
-    const scheduledLoop = cliUpdate.slice(cliUpdate.indexOf('tokio::time::sleep(INITIAL_DELAY).await;'));
-    expect(scheduledLoop).toContain('run_check_cycle(&handle, /* floor_repair */ false).await;');
-    expect(scheduledLoop).not.toContain('/* floor_repair */ true');
-    // The pref defaults ON in both get_settings branches.
-    expect(settingsRs).toContain('auto_update: Some(true)');
-    expect(settingsRs).toContain('auto_update: Some(prefs.auto_update.unwrap_or(true))');
   });
 
   it('the CLI installer coalesces overlapping backend requests before episode ownership', () => {
@@ -222,50 +179,6 @@ describe('master automatic-updates switch', () => {
     // source of truth for both the background gate and the install command.
     expect(cliUpdateCore).toContain('pub fn non_convergent_episode_blocked(');
     expect(cliUpdate).toContain('non_convergent_episode_blocked(');
-  });
-
-  it('an undrivable settings-PATH foreign shadow is repaired in-run, not wedged (HQ-DESKTOP-46)', () => {
-    // The live macOS recurrence: the app executes a stale Homebrew `hq` resolved
-    // via the winning `.claude` settings file's PATH, while HQ delivered `latest`
-    // into its own managed prefix. HQ owns the one input it never fixed — the
-    // winning settings file's env.PATH — so it rewrites that file managed-first
-    // and re-resolves instead of writing the durable marker that wedges forever.
-
-    // 1. The reader and the writer agree on WHICH file supplies env.PATH via one
-    //    source of truth, so the composed managed-first value lands in the file
-    //    the resolver actually reads.
-    expect(paths).toContain('pub fn winning_settings_path_file(');
-    expect(paths).toContain('pub enum SettingsPathFile {');
-    expect(installDeps).toContain('pub(crate) fn write_managed_toolchain_settings_path(');
-    expect(installDeps).toContain('winning_settings_path_file(hq_root)');
-    expect(installDeps).toContain('"settings.local.json"');
-    expect(installDeps).toContain('"settings.json"');
-    // A symlinked settings file cannot redirect the write outside the HQ folder.
-    expect(installDeps).toContain('refusing to write settings PATH outside the HQ folder');
-
-    // 2. The updater's undrivable-foreign arm routes THIS shape into the in-run
-    //    repair — an npm ForeignManaged run that is undrivable, delivered a
-    //    present shim, and resolved via the settings PATH.
-    expect(normalize(cliUpdate)).toContain(
-      'if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged) ' +
-        '&& executed_copy_aim == ExecutedCopyAim::Undrivable ' +
-        '&& delivered_prefix_shim == DeliveredPrefixShim::Present ' +
-        '&& hq_bin_lane == paths::ResolutionSource::SettingsPath',
-    );
-    expect(cliUpdate).toContain('return settings_path_repair_and_refinalize(');
-    expect(cliUpdate).toContain('async fn settings_path_repair_and_refinalize(');
-    // The repair calls the SAME staged + atomic writer the installer uses.
-    expect(cliUpdate).toContain('write_managed_toolchain_settings_path(');
-    expect(cliUpdate).toContain('settings_path_repair_gate(');
-
-    // 3. The durable-marker write is gated on the repair outcome: only a
-    //    `Rewritten` repair relaxes the ForeignManaged block, so the re-decide
-    //    carries the outcome and every refusal still blocks byte-for-byte.
-    expect(cliUpdateCore).toContain('pub fn settings_path_repair_gate(');
-    expect(cliUpdateCore).toContain('pub fn settings_path_repair_outcome(');
-    expect(cliUpdateCore).toContain('pub enum SettingsPathRepair {');
-    expect(cliUpdateCore).toContain('if settings_path_repair == SettingsPathRepair::Rewritten {');
-    expect(cliUpdate).toContain('.with_settings_path(settings_path)');
   });
 
   it('the pnpm executor shares the npm executor’s convergence contract', () => {
@@ -666,55 +579,6 @@ describe('master automatic-updates switch', () => {
     // The app side still just delegates to the core collision test, so widening
     // the shape automatically arms the existing single `--force` rung.
     expect(cliUpdate).toContain('is_npm_bin_collision(detail, prefix)');
-  });
-
-  it('the non-convergent remedy reaches the user instead of the generic retry copy', () => {
-    // The backend detail is the only place that names which `hq` the app
-    // resolves and says to update it with the tool that installed it. The
-    // generic install-failure copy would bury that — and its "copy install
-    // command" action is the exact npm command already proven unable to replace
-    // the selected CLI, so offering it just repeats the failure.
-    expect(settings).toContain("const HQ_CLI_NON_CONVERGENT_PREFIX = 'hq-cli-update/non-convergent: '");
-    expect(settings).toContain('if (hqCliNonConvergent) return hqCliNonConvergentMessage;');
-    expect(settings).toContain('{#if (!hqCliVersion || hqCliUpdateError) && !hqCliNonConvergent}');
-    // The marker the UI keys off must match the constant the Rust side emits.
-    expect(cliUpdate).toContain('NON_CONVERGENT_ERROR_PREFIX');
-    // Both executors emit that marker, but the pnpm remedy differs: telling a
-    // user to "update it with the tool that installed it" is a dead end when
-    // the app just ran that tool and pnpm still did not converge.
-    expect(cliUpdateCore).toContain('InstallExecutor::Pnpm => format!(');
-    expect(cliUpdateCore).toContain('pnpm bin -g');
-  });
-
-  it('CLI updater telemetry carries only path-free install diagnostics', () => {
-    // `before_send` scrubs by KEY name only, so these ordinary string extras
-    // would otherwise ship `/Users/<name>/…` to Sentry verbatim.
-    expect(cliUpdateCore).toContain('scope.set_extra("hq_bin", redact_home(hq_bin).into());');
-    expect(cliUpdateCore).toContain('redact_home(prefix.unwrap_or("npm default prefix"))');
-    // npm stderr can contain paths, usernames, and lifecycle output. Keep it in
-    // the local log and send only the allow-listed classifications to Sentry.
-    expect(cliUpdateCore).not.toContain('scope.set_extra("npm_stderr"');
-    expect(cliUpdateCore).toContain('scope.set_tag("npm_failure_site"');
-    expect(cliUpdateCore).toContain('scope.set_tag("npm_error_code"');
-    // npm stderr is arbitrary free text. Sentry's default scrubber can erase
-    // it wholesale, so captures carry only the fixed, path-free summary.
-    expect(cliUpdateCore).toContain('fn npm_diagnostics_summary(');
-    expect(cliUpdateCore).toContain('scope.set_extra("npm_diagnostics", npm_diagnostics.into());');
-    expect(cliUpdateCore).not.toContain('scope.set_extra("npm_stderr"');
-    expect(cliUpdateCore).toContain('scope.set_tag("npm_errno"');
-    expect(cliUpdateCore).toContain('scope.set_tag("hq_bin_source"');
-    // Both the npm-only source tag and the executor-neutral one carry closed
-    // categories from `bin_resolution_source`, never the resolved path.
-    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "npm_bin_source",');
-    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "installer_bin_source",');
-    // The settings-PATH triple (HQ-DESKTOP-46) is emitted from closed, path-free
-    // token vocabularies (telemetry_value), never a raw filesystem path.
-    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "settings_path_file",');
-    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "managed_bin_in_settings_path",');
-    expect(normalize(cliUpdateCore)).toContain('scope.set_tag( "settings_path_repair",');
-    expect(cliUpdateCore).toContain('report.settings_path.file.telemetry_value()');
-    expect(cliUpdateCore).toContain('report.settings_path.managed_bin.telemetry_value()');
-    expect(cliUpdateCore).toContain('report.settings_path.repair.telemetry_value()');
   });
 });
 

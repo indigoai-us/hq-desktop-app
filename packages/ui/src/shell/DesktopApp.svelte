@@ -113,15 +113,7 @@
   import ReplyPanel, {
     type ReplyPreview,
   } from "../chat/messaging/ReplyPanel.svelte";
-  import SessionThreadPanel from "../chat/messaging/SessionThreadPanel.svelte";
-  import {
-    coalesceWorkSessionWires,
-    contextPromptForThread,
-    createSessionThread,
-    excerptFromBody,
-    isDesktopLiveSessionId,
-    type SessionThread,
-  } from "../chat/messaging/session-thread.js";
+  import { coalesceWorkSessionWires } from "../chat/messaging/work-session-wires.js";
   import type { Snippet } from "svelte";
   import ArtifactPanel from "../chat/messaging/ArtifactPanel.svelte";
   import type { ChatArtifact } from "../chat/messaging/artifact-model.js";
@@ -156,14 +148,6 @@
   import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
-  import MigrateSessionDialog from "../common/MigrateSessionDialog.svelte";
-  import { canMigrateCompanySession } from "../avatars/can-edit.js";
-  import {
-    digestMigratePayload,
-    migrateDestinationCompanies,
-    newMigrateOperationId,
-    normalizeMigrateDestination,
-  } from "../chat/session-migrate.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
@@ -625,19 +609,6 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
-    /**
-     * Desktop host starts the real agent session for an in-channel pane.
-     * Web omits this; the pane falls back to a notice.
-     */
-    onstartlivesession?: (input: {
-      thread: SessionThread;
-      companySlug: string;
-      projectId: string;
-      taskId: string;
-      contextPrompt: string;
-      channelId?: string | null;
-    }) => Promise<{ sessionId: string }>;
-    channelSessionBody?: Snippet<[SessionThread]>;
   }
 
   let {
@@ -694,8 +665,6 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
-    onstartlivesession,
-    channelSessionBody,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -832,10 +801,6 @@
   /** Company display name from the settings tab appearance, when fetched. */
   let companyAppearanceName = $state<string | null>(null);
   let openReplyRootId = $state<string | null>(null);
-  /** In-channel session pane (spike) — same column as Thread. */
-  let openSessionThread = $state<SessionThread | null>(null);
-  let sessionThreadsById = $state<Record<string, SessionThread>>({});
-  let localSessionWires = $state<ConversationMessageWire[]>([]);
   /** Right side pane in ARTIFACT mode. Supersedes thread/profile while open;
    *  closing it falls back to whatever pane was open underneath. */
   let openArtifactView = $state<ChatArtifact | null>(null);
@@ -1755,26 +1720,8 @@
     const handle = window.setInterval(() => {
       thinkingByRow = tickAll(thinkingByRow, Date.now());
     }, AGENT_THINKING_TICK_MS);
-    const onSessionStatus = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string; status?: string }>)
-        .detail;
-      const sessionId = detail?.sessionId?.trim();
-      const status = detail?.status?.trim();
-      if (!sessionId || !status) return;
-      const thread =
-        sessionThreadsById[sessionId] ??
-        Object.values(sessionThreadsById).find((row) => row.liveSessionId === sessionId);
-      upsertLocalWorkSession({
-        sessionId,
-        title: thread?.title ?? "Session",
-        status,
-        actorName: thread?.actorName ?? self?.displayName?.trim() ?? "You",
-      });
-    };
-    window.addEventListener("hq-channel-session-status", onSessionStatus);
     return () => {
       clearInterval(handle);
-      window.removeEventListener("hq-channel-session-status", onSessionStatus);
     };
   });
 
@@ -2167,8 +2114,7 @@
       rows =
         setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
     }
-    if (localSessionWires.length === 0) return coalesceWorkSessionWires(rows);
-    return coalesceWorkSessionWires([...rows, ...localSessionWires]);
+    return coalesceWorkSessionWires(rows);
   });
 
   /**
@@ -2275,12 +2221,6 @@
    * Company owner/admin "Move to another company" (US-017B). Shell owns the
    * destination picker + confirm — same outside-mousedown reason as delete.
    */
-  let migrateSessionTarget = $state<{
-    sessionId: string;
-    sourceCompanyUid: string;
-  } | null>(null);
-  let migratingSessionId = $state<string | null>(null);
-  let migrateSessionError = $state<string | null>(null);
   /** Last channel-level action failure — rendered under the header, never console-only. */
   let channelActionError = $state<string | null>(null);
 
@@ -2326,18 +2266,6 @@
       }),
   );
 
-  const canMigrateSelectedChannelSessions = $derived(
-    canMigrateCompanySession({
-      companyUid: selectedRow?.companyUid,
-      companies,
-    }),
-  );
-  const migrateDestinationsForSelected = $derived(
-    migrateDestinationCompanies(
-      companies,
-      selectedRow?.companyUid?.trim() ?? "",
-    ),
-  );
   /** personUid → live display name from the channel roster (the profile
    *  display-name override), so chat/thread show the current name instead of
    *  the full name baked into each message at send time. */
@@ -2361,7 +2289,6 @@
   function openMemberProfile(row: StatusPersonRow): void {
     // One right panel at a time — a profile/agent pane supersedes a reply.
     openReplyRootId = null;
-    openSessionThread = null;
     openArtifactView = null;
     if (isAgentUid(row.personUid)) {
       openProfileMember = null;
@@ -2530,81 +2457,6 @@
       }
     } finally {
       removingMemberUid = null;
-    }
-  }
-
-  function openMigrateSession(sessionId: string, sourceCompanyUid: string): void {
-    const sid = sessionId.trim();
-    const source = sourceCompanyUid.trim();
-    if (!sid || !source) return;
-    const destinations = migrateDestinationCompanies(companies, source);
-    if (destinations.length === 0) {
-      channelActionError =
-        "No other company is available to move this session into.";
-      return;
-    }
-    if (
-      !canMigrateCompanySession({
-        companyUid: source,
-        companies,
-      })
-    ) {
-      return;
-    }
-    membersOpen = false;
-    migrateSessionError = null;
-    migrateSessionTarget = { sessionId: sid, sourceCompanyUid: source };
-  }
-
-  async function confirmMigrateSession(
-    destinationCompanyUid: string,
-  ): Promise<void> {
-    const target = migrateSessionTarget;
-    const sessionId = target?.sessionId?.trim() ?? "";
-    const sourceCompanyUid = target?.sourceCompanyUid?.trim() ?? "";
-    const dest = destinationCompanyUid.trim();
-    if (!sessionId || !sourceCompanyUid || !dest || migratingSessionId) return;
-    if (sourceCompanyUid === dest) return;
-    if (
-      !canMigrateCompanySession({
-        companyUid: sourceCompanyUid,
-        companies,
-      })
-    ) {
-      return;
-    }
-    migratingSessionId = sessionId;
-    migrateSessionError = null;
-    channelActionError = null;
-    try {
-      const destination = normalizeMigrateDestination({});
-      const expectedVersion = 0;
-      const operationId = newMigrateOperationId();
-      const digest = await digestMigratePayload({
-        sessionId,
-        sourceCompanyUid,
-        destinationCompanyUid: dest,
-        destination,
-        expectedVersion,
-      });
-      const res = await adapter.workMesh.migrateSession(sessionId, {
-        operationId,
-        digest,
-        sourceCompanyUid,
-        destinationCompanyUid: dest,
-        destination,
-        expectedVersion,
-      });
-      if (!res.ok) {
-        migrateSessionError =
-          res.message?.trim() || "Couldn't move the session to that company.";
-        return;
-      }
-      migrateSessionTarget = null;
-    } catch (err) {
-      migrateSessionError = err instanceof Error ? err.message : String(err);
-    } finally {
-      migratingSessionId = null;
     }
   }
 
@@ -3444,216 +3296,12 @@
     }
   }
 
-  function revealSessionThread(thread: SessionThread): void {
-    openReplyRootId = null;
-    openProfileMember = null;
-    openAgentMember = null;
-    openArtifactView = null;
-    openSessionThread = thread;
-    sessionThreadsById = {
-      ...sessionThreadsById,
-      [thread.id]: thread,
-      ...(thread.liveSessionId ? { [thread.liveSessionId]: thread } : {}),
-    };
-    if (tab !== "chat") tab = "chat";
-  }
-
-  function patchSessionThread(id: string, patch: Partial<SessionThread>): void {
-    const current = sessionThreadsById[id];
-    if (!current) return;
-    const next = { ...current, ...patch };
-    const byId: Record<string, SessionThread> = { ...sessionThreadsById, [id]: next };
-    if (next.liveSessionId) byId[next.liveSessionId] = next;
-    sessionThreadsById = byId;
-    if (openSessionThread?.id === id || openSessionThread?.liveSessionId === id) {
-      openSessionThread = next;
-    }
-  }
-
-  function upsertLocalWorkSession(input: {
-    sessionId: string;
-    title: string;
-    status: string;
-    actorName: string;
-    harness?: string;
-  }): void {
-    const eventId = `local-session-${input.sessionId}`;
-    const wire: ConversationMessageWire = {
-      eventId,
-      createdAt: new Date().toISOString(),
-      messageKind: "system",
-      fromDisplayName: input.actorName,
-      fromPersonUid: self?.uid ?? null,
-      body: "",
-      systemEvent: {
-        v: 1,
-        type: "work_session",
-        title: input.title,
-        note: input.title,
-        status: input.status,
-        harness: input.harness ?? "hq-desktop",
-        actorType: "human",
-        displayName: input.actorName,
-        sessionId: input.sessionId,
-      },
-    };
-    const index = localSessionWires.findIndex((row) => row.eventId === eventId);
-    if (index < 0) {
-      localSessionWires = [...localSessionWires, wire];
-      return;
-    }
-    const prev = localSessionWires[index];
-    const prevStatus =
-      prev?.systemEvent && typeof prev.systemEvent === "object"
-        ? String((prev.systemEvent as { status?: unknown }).status ?? "")
-        : "";
-    if (prevStatus === input.status) return;
-    localSessionWires = localSessionWires.map((row, i) =>
-      i === index ? { ...wire, createdAt: row.createdAt } : row,
-    );
-  }
-
-  function liveThreadMatching(match: (thread: SessionThread) => boolean): SessionThread | null {
-    const seen = new Set<string>();
-    for (const thread of Object.values(sessionThreadsById)) {
-      if (seen.has(thread.id)) continue;
-      seen.add(thread.id);
-      if (
-        (thread.status === "starting" || thread.status === "running") &&
-        match(thread)
-      ) {
-        return thread;
-      }
-    }
-    return null;
-  }
-
-  async function bindLiveSession(thread: SessionThread): Promise<void> {
-    patchSessionThread(thread.id, { status: "starting" });
-    const row = selectedRow;
-    const companyUid = row?.companyUid?.trim();
-    const projectId = row ? projectIdForRow(row) : null;
-    const companySlug =
-      (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyUid)
-        ?.slug ?? "";
-    try {
-      if (!onstartlivesession || !projectId || !companySlug) {
-        patchSessionThread(thread.id, { status: "idle" });
-        return;
-      }
-      const started = await onstartlivesession({
-        thread,
-        companySlug,
-        projectId,
-        taskId: thread.taskId ?? "",
-        contextPrompt: contextPromptForThread(thread),
-        channelId: row?.channelId ?? null,
-      });
-      patchSessionThread(thread.id, {
-        liveSessionId: started.sessionId,
-        status: "running",
-      });
-      upsertLocalWorkSession({
-        sessionId: started.sessionId,
-        title: thread.title,
-        status: "started",
-        actorName: thread.actorName,
-      });
-    } catch (err) {
-      patchSessionThread(thread.id, {
-        status: "idle",
-        startError: err instanceof Error ? err.message : String(err),
-      });
-      console.error("[hq-desktop] channel session", err);
-    }
-  }
-
-  function startSessionFromMessage(eventId: string): void {
-    const row = selectedRow;
-    if (!row) return;
-    const existing = liveThreadMatching(
-      (thread) => thread.origin.kind === "message" && thread.origin.eventId === eventId,
-    );
-    if (existing) {
-      revealSessionThread(existing);
-      return;
-    }
-    const msg = timelineWithActivity.find((m) => m.eventId === eventId);
-    const thread = createSessionThread({
-      origin: {
-        kind: "message",
-        eventId,
-        excerpt: excerptFromBody(msg?.body ?? ""),
-        author:
-          (msg?.fromDisplayName ?? "").trim() ||
-          displayNameByUid[msg?.fromPersonUid ?? ""] ||
-          "Message",
-      },
-      actorKind: "human",
-      actorName: self?.displayName?.trim() || "You",
-    });
-    revealSessionThread(thread);
-    void bindLiveSession(thread);
-  }
-
-  function startSessionFromChannel(): void {
-    const row = selectedRow;
-    if (!row?.channelId) return;
-    const existing = liveThreadMatching(
-      (thread) => thread.origin.kind === "channel" && thread.origin.channelId === row.channelId,
-    );
-    if (existing) {
-      revealSessionThread(existing);
-      return;
-    }
-    const thread = createSessionThread({
-      origin: {
-        kind: "channel",
-        channelId: row.channelId,
-        channelTitle: row.title || "channel",
-      },
-      actorKind: "human",
-      actorName: self?.displayName?.trim() || "You",
-    });
-    revealSessionThread(thread);
-    void bindLiveSession(thread);
-  }
-
-  function openSessionFromCard(sessionId: string): void {
-    const id = sessionId.trim();
-    if (!id) return;
-    const known =
-      sessionThreadsById[id] ??
-      Object.values(sessionThreadsById).find((row) => row.liveSessionId === id);
-    if (known?.liveSessionId && isDesktopLiveSessionId(known.liveSessionId)) {
-      revealSessionThread(known);
-      return;
-    }
-    if (!isDesktopLiveSessionId(id)) return;
-    const row = selectedRow;
-    const thread = createSessionThread({
-      origin: {
-        kind: "channel",
-        channelId: row?.channelId ?? "",
-        channelTitle: row?.title || "channel",
-      },
-      actorKind: "human",
-      actorName: self?.displayName?.trim() || "You",
-    });
-    thread.id = id;
-    thread.liveSessionId = id;
-    thread.status = "running";
-    sessionThreadsById = { ...sessionThreadsById, [id]: thread };
-    revealSessionThread(thread);
-  }
-
   function openReply(rootEventId: string): void {
     const id = rootEventId.trim();
     if (!id || !selectedRow) return;
     openProfileMember = null;
     openAgentMember = null;
     openArtifactView = null;
-    openSessionThread = null;
     openReplyRootId = id;
     pushConversationSurface({
       replyRootEventId: id,
@@ -5745,28 +5393,6 @@
     onconfirm={() => void deleteSelectedChannel()}
   />
 
-  <MigrateSessionDialog
-    open={migrateSessionTarget != null}
-    sessionId={migrateSessionTarget?.sessionId ?? ""}
-    sourceLabel={companyDisplayName(
-      migrateSessionTarget?.sourceCompanyUid ?? null,
-      companyNames,
-    )}
-    destinations={migrateDestinationCompanies(
-      companies,
-      migrateSessionTarget?.sourceCompanyUid ?? "",
-    )}
-    submitting={migratingSessionId != null}
-    error={migrateSessionError}
-    oncancel={() => {
-      if (!migratingSessionId) {
-        migrateSessionTarget = null;
-        migrateSessionError = null;
-      }
-    }}
-    onconfirm={(destinationCompanyUid) =>
-      void confirmMigrateSession(destinationCompanyUid)}
-  />
 
   {#if navigationUnavailable}
     <div class="desktop-body" data-testid="navigation-unavailable-host">
@@ -6297,15 +5923,6 @@
                         deleteChannelConfirmOpen = true;
                       }}
                       deleting={deletingChannel}
-                      onmigratesession={canMigrateSelectedChannelSessions &&
-                      migrateDestinationsForSelected.length > 0
-                        ? (sessionId) =>
-                            openMigrateSession(
-                              sessionId,
-                              selectedRow?.companyUid?.trim() ?? "",
-                            )
-                        : undefined}
-                      migratingSessionId={migratingSessionId}
                     />
                   {/if}
                 </div>
@@ -6380,7 +5997,6 @@
               class:is-setup={isSetupChannel(selectedRow.channelId)}
               data-testid="chat-stage"
               data-reply-open={openReplyRootId ||
-                openSessionThread ||
                 openProfileMember ||
                 openAgentMember
                 ? "true"
@@ -6579,11 +6195,6 @@
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   onreply={openReply}
-                  onstartsession={startSessionFromMessage}
-                  onopensession={openSessionFromCard}
-                  onstartchannelsession={
-                    selectedRow.channelId ? startSessionFromChannel : undefined
-                  }
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
                   onopenartifact={openArtifact}
@@ -6692,53 +6303,6 @@
                     saveError={agentAvatarSaveError}
                     onsaveavatar={saveOpenAgentAvatar}
                     onclose={closeMemberProfile}
-                  />
-                </div>
-              {:else if openSessionThread}
-                <div
-                  class="reply-column"
-                  class:overlay={narrowViewport}
-                  class:resizable-thread={!narrowViewport}
-                  style:--thread-width={threadWidth === null ? "50%" : `${threadWidth}px`}
-                  data-testid="session-thread-column"
-                  data-reply-layout={narrowViewport ? "overlay" : "column"}
-                >
-                  {#if !narrowViewport}
-                    <div
-                      class="thread-resize-handle"
-                      role="separator"
-                      aria-label="Resize thread panel"
-                      aria-orientation="vertical"
-                      aria-valuenow={threadWidth ?? undefined}
-                      tabindex="0"
-                      onpointerdown={startThreadDrag}
-                      onpointermove={moveThreadDrag}
-                      onpointerup={stopThreadDrag}
-                      onpointercancel={stopThreadDrag}
-                      onlostpointercapture={() => {
-                        threadDrag = null;
-                      }}
-                      onkeydown={resizeThreadKey}
-                    ></div>
-                  {/if}
-                  <SessionThreadPanel
-                    thread={openSessionThread}
-                    onclose={() => (openSessionThread = null)}
-                    onexpand={
-                      extraPages?.sessions?.createAction
-                        ? (thread) => {
-                            const param =
-                              thread.liveSessionId ??
-                              extraPages!.sessions.createAction!.param();
-                            void navigate({
-                              kind: "extra",
-                              page: "sessions",
-                              param,
-                            });
-                          }
-                        : undefined
-                    }
-                    body={channelSessionBody}
                   />
                 </div>
               {:else if openReplyRootId && replyScope}

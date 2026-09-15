@@ -187,53 +187,11 @@ describe('HQ-DESKTOP-4F: dm-detail + share-detail shell:allow-open capability', 
       .map(([relative]) => relative)
       .sort();
     // ThreadPanel's pinned root now renders through the shared <Conversation/>
-    // primitive, so Conversation is the sole DM render surface. The session
-    // transcript is the SECOND markdown surface: it renders an in-app agent's
-    // prose through the same renderer, and its links emit the same
-    // target="_blank" anchors the shell listener intercepts. It is confined to
-    // the `desktop-alt` window (SessionsPage <- DesktopApp), which is in
-    // WINDOWS_GRANTED_SHELL_OPEN above — so the ACL is satisfied and its links
-    // open rather than rejecting.
-    expect(renderers).toEqual([
-      'components/messaging/Conversation.svelte',
-      'components/sessions/SessionTranscript.svelte',
-    ]);
+    // primitive, so Conversation is the SOLE markdown render surface. The
+    // session transcript was the second one; it went with the in-app Sessions
+    // feature, which is why this list is now a single entry.
+    expect(renderers).toEqual(['components/messaging/Conversation.svelte']);
 
-    // …and that confinement is itself pinned: the ONLY mount of the session
-    // transcript is the Sessions page, and every mount of that page resolves
-    // back to the desktop-alt window — the classic shell mounts it directly,
-    // and the HQ Work shell mounts it through the `extraPages` adapter. Both
-    // shells are entered only from `desktop-alt/main.ts`, so neither path can
-    // carry the transcript into a window without `shell:allow-open`.
-    const transcriptMounts = sources
-      .filter(([relative, body]) => relative.endsWith('.svelte') && /<SessionTranscript[\s/>]/.test(body))
-      .map(([relative]) => relative)
-      .sort();
-    expect(transcriptMounts).toEqual([
-      'desktop-alt/pages/SessionsPage.svelte',
-      'desktop-alt/pages/SharedSessionPage.svelte',
-    ]);
-    // Read-only shared transcripts use the same renderer and must remain in
-    // this already-granted window, never escape into another native surface.
-    const sharedPageMounts = sources
-      .filter(([relative, body]) => relative.endsWith('.svelte') && /<SharedSessionPage[\s/>]/.test(body))
-      .map(([relative]) => relative)
-      .sort();
-    expect(sharedPageMounts).toEqual(['desktop-alt/pages/SessionsExtraPage.svelte']);
-    const sessionsPageMounts = sources
-      .filter(([relative, body]) => relative.endsWith('.svelte') && /<SessionsPage[\s/>]/.test(body))
-      .map(([relative]) => relative)
-      .sort();
-    expect(sessionsPageMounts).toEqual([
-      'desktop-alt/DesktopApp.svelte',
-      'desktop-alt/components/LiveChannelSessionPane.svelte',
-      'desktop-alt/pages/SessionsExtraPage.svelte',
-    ]);
-    const extraPageMounts = sources
-      .filter(([relative, body]) => relative.endsWith('.svelte') && /SessionsExtraPage[\s/>,]/.test(body))
-      .map(([relative]) => relative)
-      .sort();
-    expect(extraPageMounts).toEqual(['desktop-alt/HqWorkWorkShell.svelte']);
     const shellEntries = sources
       .filter(
         ([relative, body]) =>

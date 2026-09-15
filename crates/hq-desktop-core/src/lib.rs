@@ -58,16 +58,14 @@ pub mod runner_error_shape;
 pub mod runner_target;
 pub mod runtime_diagnosis;
 pub mod scope_gate;
-pub mod session_links;
-pub mod session_share;
-pub mod session_continuation;
-pub mod sessions;
 pub mod settings;
 pub mod share_notify;
 pub mod skill_catalog;
 pub mod staging;
 pub mod status;
 pub mod stdio;
+pub mod agent_usage_scan;
+pub mod session_continuation;
 pub mod sync_outcome;
 pub mod sync_progress;
 pub mod toolchain;
@@ -78,4 +76,3 @@ pub mod workspaces;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-pub mod agent_session;
