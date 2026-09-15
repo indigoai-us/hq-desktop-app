@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use std::path::Path;
 
 #[cfg(any(target_os = "macos", test))]
-use crate::launchagent::{CURRENT_BUNDLE_EXECUTABLE, LAUNCH_AGENT_LABEL};
+use crate::launchagent::{
+    CURRENT_BUNDLE_EXECUTABLE, LAUNCH_AGENT_LABEL, LAUNCH_AGENT_RELAUNCH_ARG,
+};
 /// Last-resort path, used only when the running executable can't be resolved.
 /// It names the ACTUAL bundled binary (`hq-sync-menubar`) inside `HQ.app`, not
 /// the product name `HQ` — the two differ, and assuming they were the same is
@@ -78,13 +80,14 @@ fn generate_plist(app_path: &str) -> String {
     <key>ProgramArguments</key>
     <array>
         <string>{}</string>
+        <string>{}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
 </dict>
 </plist>
 "#,
-        LAUNCH_AGENT_LABEL, app_path
+        LAUNCH_AGENT_LABEL, app_path, LAUNCH_AGENT_RELAUNCH_ARG
     )
 }
 
@@ -296,6 +299,7 @@ mod tests {
         assert!(plist.contains(&format!("<string>{}</string>", LAUNCH_AGENT_LABEL)));
         assert!(plist.contains("<key>ProgramArguments</key>"));
         assert!(plist.contains("<string>/Applications/HQ Sync.app/Contents/MacOS/HQ Sync</string>"));
+        assert!(plist.contains(&format!("<string>{LAUNCH_AGENT_RELAUNCH_ARG}</string>")));
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<true/>"));
     }
@@ -386,6 +390,10 @@ mod pure_tests {
     fn extract_program_path_roundtrips_generated_plist() {
         let plist = generate_plist(REAL_EXE);
         assert_eq!(extract_program_path(&plist).as_deref(), Some(REAL_EXE));
+        assert_eq!(
+            crate::launchagent::program_argument_strings(&plist),
+            vec![REAL_EXE.to_string(), LAUNCH_AGENT_RELAUNCH_ARG.to_string()]
+        );
     }
 
     #[test]

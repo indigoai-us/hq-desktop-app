@@ -1053,7 +1053,7 @@ async fn install_verified_update(
         // server sees the post-update state (installed target version +
         // cleared updater state) without waiting for relaunch.
         crate::commands::client_health::emit_client_health_after_update(&update.version).await;
-        app.restart();
+        crate::commands::autostart::restart_preferring_launch_agent(app);
     }
 }
 
@@ -1403,7 +1403,7 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
         // server sees the post-update state (installed target version +
         // cleared updater state) without waiting for relaunch.
         crate::commands::client_health::emit_client_health_after_update(&staged.info.version).await;
-        app.restart();
+        crate::commands::autostart::restart_preferring_launch_agent(app);
     }
 }
 

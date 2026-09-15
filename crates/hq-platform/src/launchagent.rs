@@ -1,9 +1,17 @@
-//! macOS LaunchAgent path reconciliation.
+//! macOS LaunchAgent path reconciliation and post-update handoff.
 //!
 //! The shipped bundle is `HQ.app`, but existing user agents were written when
 //! the bundle was `HQ Sync.app`. A KeepAlive agent that still points at the
 //! old path keeps the previous binary running after an in-place update, so the
 //! new `HQ.app` looks installed while the user stays on the old version.
+//!
+//! After a self-update the process must not relaunch through LaunchServices.
+//! A GUI relaunch is invisible to launchd, so a KeepAlive agent starts a
+//! second copy every ThrottleInterval (~10s). The single-instance plugin then
+//! brings the primary window forward. Post-update restart waits for this
+//! process to exit, then `bootout` / `bootstrap` / `kickstart` so launchd owns
+//! the replacement. LaunchAgent argv includes `--from-launch-agent` so a
+//! KeepAlive bounce does not steal focus.
 //!
 //! Pure helpers in this module are compiled on every platform so Linux CI
 //! covers the rewrite / process-filter / leftover-bundle logic. Filesystem
@@ -26,6 +34,12 @@ pub const LEGACY_BUNDLE_NAME: &str = "HQ Sync.app";
 
 /// Canonical installed executable inside `HQ.app`.
 pub const CURRENT_BUNDLE_EXECUTABLE: &str = "/Applications/HQ.app/Contents/MacOS/hq-sync-menubar";
+
+/// Extra ProgramArguments flag so a launchd KeepAlive (or post-update
+/// kickstart) relaunch can be distinguished from a user opening HQ.app.
+/// The single-instance handler must not activate the primary window when
+/// this argument is present.
+pub const LAUNCH_AGENT_RELAUNCH_ARG: &str = "--from-launch-agent";
 
 const LOG_TAG: &str = "launchagent";
 
@@ -50,10 +64,12 @@ pub enum PlistAction {
     Absent,
     /// Present but ProgramArguments/Program could not be read. Left untouched.
     Unreadable,
-    /// Already points at the running executable.
+    /// Already points at the running executable and carries the relaunch flag.
     Current,
     /// Rewrote ProgramArguments/Program to `new_path`. Other keys preserved.
     Repointed { old_path: String, new_path: String },
+    /// Path was already current; added `--from-launch-agent` (no user notice).
+    ArgsUpdated,
 }
 
 /// How a leftover bundle was moved out of the way.
@@ -172,16 +188,41 @@ pub fn reconcile_plist_file(plist_path: &Path, current_exe: &str) -> Result<Plis
         log_la(&format!("unreadable {}", plist_path.display()));
         return Ok(PlistAction::Unreadable);
     };
-    if paths_equivalent(&old_path, current_exe) {
+    let mut body = contents;
+    let path_changed = !paths_equivalent(&old_path, current_exe);
+    if path_changed {
+        body = rewrite_plist_program_path(&body, current_exe)?;
+    }
+    let (body, args_changed) = match ensure_launch_agent_relaunch_arg(&body) {
+        Ok(result) => result,
+        Err(err) => {
+            if !path_changed {
+                log_la(&format!("relaunch-arg rewrite failed: {err}"));
+                return Ok(PlistAction::Unreadable);
+            }
+            log_la(&format!(
+                "relaunch-arg rewrite failed after path update: {err}"
+            ));
+            (body, false)
+        }
+    };
+    if !path_changed && !args_changed {
         return Ok(PlistAction::Current);
     }
-    let rewritten = rewrite_plist_program_path(&contents, current_exe)?;
-    atomic_write(plist_path, rewritten.as_bytes())?;
-    log_la(&format!("repointed {old_path} -> {current_exe}"));
-    Ok(PlistAction::Repointed {
-        old_path,
-        new_path: current_exe.to_string(),
-    })
+    atomic_write(plist_path, body.as_bytes())?;
+    if path_changed {
+        log_la(&format!("repointed {old_path} -> {current_exe}"));
+        if args_changed {
+            log_la("added --from-launch-agent to ProgramArguments");
+        }
+        Ok(PlistAction::Repointed {
+            old_path,
+            new_path: current_exe.to_string(),
+        })
+    } else {
+        log_la("added --from-launch-agent to ProgramArguments");
+        Ok(PlistAction::ArgsUpdated)
+    }
 }
 
 /// Move `path` into `trash_dir` when possible; otherwise rename with a `.old`
@@ -378,15 +419,148 @@ pub fn launchctl_reload_args(uid: u32, label: &str, plist_path: &Path) -> Vec<Ve
     ]
 }
 
+/// True when a second-process argv came from the LaunchAgent (KeepAlive or
+/// post-update kickstart) rather than a user opening the bundle.
+pub fn argv_is_launch_agent_relaunch<S: AsRef<str>>(argv: &[S]) -> bool {
+    argv.iter()
+        .any(|arg| arg.as_ref() == LAUNCH_AGENT_RELAUNCH_ARG)
+}
+
+/// Every ProgramArguments string, in order. Empty when the key is absent.
+pub fn program_argument_strings(plist: &str) -> Vec<String> {
+    let Some(after_key) = plist.split("<key>ProgramArguments</key>").nth(1) else {
+        return Vec::new();
+    };
+    let Some(array) = after_key.split("<array>").nth(1) else {
+        return Vec::new();
+    };
+    let Some(array) = array.split("</array>").next() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut rest = array;
+    while let Some((_, after_open)) = rest.split_once("<string>") {
+        let Some((value, after_close)) = after_open.split_once("</string>") else {
+            break;
+        };
+        out.push(xml_unescape(value.trim()));
+        rest = after_close;
+    }
+    out
+}
+
+/// Insert `--from-launch-agent` into ProgramArguments when missing.
+/// Returns `(plist, changed)`.
+pub fn ensure_launch_agent_relaunch_arg(plist: &str) -> Result<(String, bool), String> {
+    let args = program_argument_strings(plist);
+    if args.iter().any(|arg| arg == LAUNCH_AGENT_RELAUNCH_ARG) {
+        return Ok((plist.to_string(), false));
+    }
+    if args.is_empty() {
+        return Ok((plist.to_string(), false));
+    }
+    let needle = "<key>ProgramArguments</key>";
+    let key_at = plist
+        .find(needle)
+        .ok_or_else(|| "malformed LaunchAgent plist: ProgramArguments key missing".to_string())?;
+    let after_key = key_at + needle.len();
+    let array_end_rel = plist[after_key..].find("</array>").ok_or_else(|| {
+        "malformed LaunchAgent plist: ProgramArguments array is not closed".to_string()
+    })?;
+    let insert_at = after_key + array_end_rel;
+    let insert = format!("        <string>{LAUNCH_AGENT_RELAUNCH_ARG}</string>\n    ");
+    Ok((splice(plist, insert_at, insert_at, &insert), true))
+}
+
+/// PID from `launchctl list <label>` stdout, if the job is running.
+pub fn parse_launchctl_list_pid(stdout: &str) -> Option<u32> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("\"PID\"") else {
+            continue;
+        };
+        let value = rest
+            .trim()
+            .trim_start_matches('=')
+            .trim()
+            .trim_end_matches(';')
+            .trim();
+        return value.parse().ok();
+    }
+    None
+}
+
+/// Unload a KeepAlive job only when this process is not that job. Bootout of
+/// our own launchd job would kill the updater before it can hand off.
+pub fn should_bootout_foreign_job(self_pid: u32, agent_pid: Option<u32>) -> bool {
+    match agent_pid {
+        Some(pid) if pid == self_pid => false,
+        _ => true,
+    }
+}
+
+/// Detached waiter that reloads the LaunchAgent after `pid` exits.
+/// Env vars carry paths so the shell script never interpolates them.
+pub fn launchctl_handoff_after_exit_command(
+    pid: u32,
+    uid: u32,
+    label: &str,
+    plist_path: &Path,
+) -> (Vec<String>, Vec<(String, String)>) {
+    let domain = format!("gui/{uid}");
+    let target = format!("{domain}/{label}");
+    let script = concat!(
+        "while /bin/kill -0 \"$HQ_HANDOFF_PID\" 2>/dev/null; do /bin/sleep 0.2; done; ",
+        "/bin/launchctl bootout \"$HQ_HANDOFF_TARGET\" >/dev/null 2>&1; ",
+        "/bin/launchctl bootstrap \"$HQ_HANDOFF_DOMAIN\" \"$HQ_HANDOFF_PLIST\" && ",
+        "/bin/launchctl kickstart \"$HQ_HANDOFF_TARGET\"",
+    );
+    (
+        vec![
+            "/usr/bin/nohup".to_string(),
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            script.to_string(),
+        ],
+        vec![
+            ("HQ_HANDOFF_PID".to_string(), pid.to_string()),
+            ("HQ_HANDOFF_TARGET".to_string(), target),
+            ("HQ_HANDOFF_DOMAIN".to_string(), domain),
+            (
+                "HQ_HANDOFF_PLIST".to_string(),
+                plist_path.to_string_lossy().into_owned(),
+            ),
+        ],
+    )
+}
+
+/// After a macOS self-update: if the user LaunchAgent exists, schedule launchd
+/// to own the replacement process and return true. The caller must then exit
+/// without a LaunchServices relaunch (`app.restart()`).
+pub fn schedule_handoff_after_exit() -> bool {
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let Some(plist_path) = installed_plist_path() else {
+            log_la("no home directory; cannot hand off to launchd");
+            return false;
+        };
+        if !plist_path.exists() {
+            log_la("no LaunchAgent plist; skip launchd handoff");
+            return false;
+        }
+        let uid = current_uid();
+        let self_pid = std::process::id();
+        bootout_foreign_job_if_needed(uid, self_pid);
+        spawn_handoff_waiter(self_pid, uid, &plist_path)
+    }
+}
+
 fn extract_program_arguments(plist: &str) -> Option<String> {
-    let after_key = plist.split("<key>ProgramArguments</key>").nth(1)?;
-    let array = after_key
-        .split("<array>")
-        .nth(1)?
-        .split("</array>")
-        .next()?;
-    let value = array.split("<string>").nth(1)?.split("</string>").next()?;
-    Some(xml_unescape(value.trim()))
+    program_argument_strings(plist).into_iter().next()
 }
 
 fn extract_program_key(plist: &str) -> Option<String> {
@@ -532,6 +706,71 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 fn log_la(msg: &str) {
     hq_desktop_core::logfile::log(LOG_TAG, msg);
+}
+
+#[cfg(target_os = "macos")]
+fn bootout_foreign_job_if_needed(uid: u32, self_pid: u32) {
+    let output = std::process::Command::new("launchctl")
+        .args(["list", LAUNCH_AGENT_LABEL])
+        .output();
+    let agent_pid = match output {
+        Ok(output) => parse_launchctl_list_pid(&String::from_utf8_lossy(&output.stdout)),
+        Err(err) => {
+            log_la(&format!("launchctl list error: {err}"));
+            return;
+        }
+    };
+    if !should_bootout_foreign_job(self_pid, agent_pid) {
+        return;
+    }
+    let target = format!("gui/{uid}/{LAUNCH_AGENT_LABEL}");
+    match std::process::Command::new("launchctl")
+        .args(["bootout", &target])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            log_la("bootout of unloaded/foreign KeepAlive job before handoff");
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log_la(&format!("pre-handoff bootout failed: {}", stderr.trim()));
+        }
+        Err(err) => log_la(&format!("pre-handoff bootout error: {err}")),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_handoff_waiter(self_pid: u32, uid: u32, plist_path: &Path) -> bool {
+    use std::process::Stdio;
+    let (argv, env) =
+        launchctl_handoff_after_exit_command(self_pid, uid, LAUNCH_AGENT_LABEL, plist_path);
+    let Some((program, args)) = argv.split_first() else {
+        log_la("handoff command was empty");
+        return false;
+    };
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    match cmd.spawn() {
+        Ok(_) => {
+            log_la("scheduled launchd handoff after this process exits");
+            true
+        }
+        Err(err) => {
+            log_la(&format!("schedule launchd handoff failed: {err}"));
+            false
+        }
+    }
 }
 
 fn reload_launch_agent(uid: u32, label: &str, plist_path: &Path) {
@@ -812,12 +1051,36 @@ mod tests {
     fn reconcile_plist_current_is_noop() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("agent.plist");
-        fs::write(&path, fixture(NEW_EXE, true)).unwrap();
+        let (with_flag, changed) =
+            ensure_launch_agent_relaunch_arg(&fixture(NEW_EXE, true)).unwrap();
+        assert!(changed);
+        fs::write(&path, with_flag).unwrap();
         assert_eq!(
             reconcile_plist_file(&path, NEW_EXE).unwrap(),
             PlistAction::Current
         );
         assert!(fs::read_to_string(&path).unwrap().contains("KeepAlive"));
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains(LAUNCH_AGENT_RELAUNCH_ARG));
+    }
+
+    #[test]
+    fn reconcile_plist_adds_relaunch_arg_without_repoint_notice() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("agent.plist");
+        fs::write(&path, fixture(NEW_EXE, true)).unwrap();
+        assert_eq!(
+            reconcile_plist_file(&path, NEW_EXE).unwrap(),
+            PlistAction::ArgsUpdated
+        );
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(body.contains(LAUNCH_AGENT_RELAUNCH_ARG));
+        assert!(body.contains("KeepAlive"));
+        assert_eq!(
+            reconcile_plist_file(&path, NEW_EXE).unwrap(),
+            PlistAction::Current
+        );
     }
 
     #[test]
@@ -967,6 +1230,102 @@ mod tests {
                 "gui/501",
                 "/tmp/ai.indigo.hq-sync-menubar.test-repoint.plist"
             ]
+        );
+    }
+
+    #[test]
+    fn argv_detects_launch_agent_relaunch_and_ignores_user_open() {
+        assert!(argv_is_launch_agent_relaunch(&[
+            CURRENT_BUNDLE_EXECUTABLE,
+            LAUNCH_AGENT_RELAUNCH_ARG,
+        ]));
+        assert!(!argv_is_launch_agent_relaunch(&[CURRENT_BUNDLE_EXECUTABLE]));
+        assert!(!argv_is_launch_agent_relaunch(&[
+            CURRENT_BUNDLE_EXECUTABLE,
+            "hqwork://thread/abc",
+        ]));
+        assert!(!argv_is_launch_agent_relaunch(&Vec::<&str>::new()));
+    }
+
+    #[test]
+    fn ensure_relaunch_arg_is_idempotent_and_preserves_keepalive() {
+        let original = fixture(NEW_EXE, true);
+        let (once, changed) = ensure_launch_agent_relaunch_arg(&original).unwrap();
+        assert!(changed);
+        assert!(once.contains(LAUNCH_AGENT_RELAUNCH_ARG));
+        assert!(once.contains("<key>KeepAlive</key>"));
+        assert_eq!(
+            program_argument_strings(&once),
+            vec![NEW_EXE.to_string(), LAUNCH_AGENT_RELAUNCH_ARG.to_string()]
+        );
+        let (twice, changed_again) = ensure_launch_agent_relaunch_arg(&once).unwrap();
+        assert!(!changed_again);
+        assert_eq!(twice, once);
+    }
+
+    #[test]
+    fn parse_launchctl_list_pid_reads_running_and_absent() {
+        let running = r#"{
+	"Label" = "ai.indigo.hq-sync-menubar";
+	"LastExitStatus" = 0;
+	"PID" = 17529;
+	"Program" = "/Applications/HQ.app/Contents/MacOS/hq-sync-menubar";
+};"#;
+        assert_eq!(parse_launchctl_list_pid(running), Some(17529));
+        let idle = r#"{
+	"Label" = "ai.indigo.hq-sync-menubar";
+	"LastExitStatus" = 0;
+	"Program" = "/Applications/HQ.app/Contents/MacOS/hq-sync-menubar";
+};"#;
+        assert_eq!(parse_launchctl_list_pid(idle), None);
+        assert_eq!(parse_launchctl_list_pid(""), None);
+    }
+
+    #[test]
+    fn bootout_foreign_job_skips_self_and_unloads_missing_or_other() {
+        assert!(!should_bootout_foreign_job(17529, Some(17529)));
+        assert!(should_bootout_foreign_job(17529, None));
+        assert!(should_bootout_foreign_job(17529, Some(99)));
+    }
+
+    #[test]
+    fn handoff_after_exit_command_waits_then_reloads_via_env() {
+        let plist = Path::new("/Users/test/Library/LaunchAgents/ai.indigo.hq-sync-menubar.plist");
+        let (argv, env) =
+            launchctl_handoff_after_exit_command(4242, 501, LAUNCH_AGENT_LABEL, plist);
+        assert_eq!(argv[0], "/usr/bin/nohup");
+        assert_eq!(argv[1], "/bin/sh");
+        assert_eq!(argv[2], "-c");
+        let script = &argv[3];
+        assert!(script.contains("HQ_HANDOFF_PID"));
+        assert!(script.contains("bootout"));
+        assert!(script.contains("bootstrap"));
+        assert!(script.contains("kickstart"));
+        assert!(
+            !script.contains("-k"),
+            "post-exit kickstart must not -k a just-bootstrapped job"
+        );
+        assert!(
+            !script.contains("4242"),
+            "pid must not be interpolated into the script"
+        );
+        assert!(
+            !script.contains("/Users/test"),
+            "plist path must not be interpolated"
+        );
+        let env: std::collections::HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(env.get("HQ_HANDOFF_PID").map(String::as_str), Some("4242"));
+        assert_eq!(
+            env.get("HQ_HANDOFF_TARGET").map(String::as_str),
+            Some("gui/501/ai.indigo.hq-sync-menubar")
+        );
+        assert_eq!(
+            env.get("HQ_HANDOFF_DOMAIN").map(String::as_str),
+            Some("gui/501")
+        );
+        assert_eq!(
+            env.get("HQ_HANDOFF_PLIST").map(String::as_str),
+            Some("/Users/test/Library/LaunchAgents/ai.indigo.hq-sync-menubar.plist")
         );
     }
 

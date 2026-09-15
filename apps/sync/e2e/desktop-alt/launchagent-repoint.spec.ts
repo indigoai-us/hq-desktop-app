@@ -13,7 +13,18 @@ describe('LaunchAgent bundle-rename heal (source contracts)', () => {
       main.indexOf('commands::autostart::ensure_autostart_on_launch()'),
     );
     expect(updater).toContain('reconcile_launch_agent_after_update()');
+    expect(updater).toContain('restart_preferring_launch_agent(app)');
     expect(autostart).toContain('hq_platform::launchagent::reconcile_installed(true)');
+    expect(autostart).toContain('schedule_handoff_after_exit()');
+    expect(autostart).toContain('exiting without GUI relaunch');
+  });
+
+  it('does not steal focus when launchd KeepAlive starts a second copy', () => {
+    expect(main).toContain('argv_is_launch_agent_relaunch(&argv)');
+    expect(main).toContain('ignored launchd KeepAlive relaunch (no focus steal)');
+    expect(main.indexOf('argv_is_launch_agent_relaunch(&argv)')).toBeLessThan(
+      main.indexOf('surface_existing_instance(app);'),
+    );
   });
 
   it('surfaces a one-time non-blocking note when the agent was healed', () => {

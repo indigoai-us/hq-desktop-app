@@ -648,7 +648,7 @@ fn spawn_restart_after_flush(countdown_seconds: u64) {
         // terminal receipt was flushed before this task was spawned.
         tokio::time::sleep(Duration::from_secs(countdown_seconds)).await;
         log(LOG_TAG, "RESTART_APP: restarting now (receipt already flushed)");
-        app.restart();
+        crate::commands::autostart::restart_preferring_launch_agent(&app);
     });
 }
 
