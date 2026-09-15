@@ -19,14 +19,24 @@
 # and lines starting with # are ignored.
 
 # --- v1 desktop shell ---------------------------------------------------
-apps/sync/src/desktop-alt/v4/V4Sidebar.svelte
-apps/sync/src/desktop-alt/v4/V4SecondarySidebar.svelte
+# Repointed when the in-app Sessions subsystem was removed. The desktop window
+# mounts HqWorkWorkShell -> the @hq/ui shell; apps/sync/src/desktop-alt's own
+# DesktopApp.svelte tree had already been unreachable for some time and went
+# with the removal. These are the surfaces the live shell actually renders.
+packages/ui/src/chat/ChatSidebar.svelte
+packages/ui/src/shell/SidebarResizeHandle.svelte
 
 # --- "Finish setting up HQ" card (#432, restored in #525) ---------------
 # Backed by get_setup_status in src-tauri, which survived #454 precisely
 # because src-tauri was out of scope for that revert. The frontend did not.
-apps/sync/src/desktop-alt/components/SetupIncompleteCard.svelte
-apps/sync/src/desktop-alt/lib/setup-launch.ts
+# KNOWN GAP, pre-existing and NOT introduced by the sessions removal: the live
+# @hq/ui shell does not render this card. Verified at origin/main before the
+# removal — neither shell/DesktopApp.svelte nor home/HomePage.svelte imports
+# it, so #432/#525 has silently re-opened since the shell moved to packages/ui.
+# Pinning the @hq/ui copy keeps the surface from being deleted while that is
+# fixed; it does NOT prove the card reaches a user.
+packages/ui/src/settings/SetupIncompleteCard.svelte
+packages/ui/src/settings/setup-launch.ts
 
 # --- installer launch path (#281, #452) ---------------------------------
 # The onboarding wizard's ready screen and the deep link both the wizard and
@@ -35,5 +45,7 @@ apps/sync/src/lib/onboarding-summary.ts
 apps/sync/src/lib/claude-code-link.ts
 
 # --- title bar launch cluster -------------------------------------------
-apps/sync/src/desktop-alt/components/TitleBarLaunch.svelte
-apps/sync/src/desktop-alt/components/WorkHappensExplainer.svelte
+# The live Launch menu ("Open your HQ folder in an AI tool" -> Claude Code /
+# Codex / Grok) is V4TitleBar in @hq/ui. Smoke-verified working on a local
+# build of the sessions-removal branch.
+packages/ui/src/home/V4TitleBar.svelte
