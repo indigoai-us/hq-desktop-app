@@ -216,6 +216,8 @@ impl CoreUpdateError {
 /// Core rescue. The source is one of the resolver's stable telemetry tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CoreUpdateNpxResolution {
+    /// Whether the chosen program can be spawned. This is false for both a
+    /// missing `npx` and a Windows shim that exists but the loader rejects.
     pub(crate) resolved: bool,
     pub(crate) source: &'static str,
 }

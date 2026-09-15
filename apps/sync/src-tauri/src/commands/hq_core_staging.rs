@@ -502,19 +502,25 @@ pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
 ///
 /// Crate-public: shared by `hq_core_update::install_hq_core_update` so the
 /// prod-update and staging paths build the invocation identically.
-pub(crate) fn rescue_command() -> (
-    tokio::process::Command,
-    crate::commands::hq_core_state::CoreUpdateNpxResolution,
-) {
-    let npx = paths::resolve_bin_with_kind("npx");
-    let npx_resolution = crate::commands::hq_core_state::CoreUpdateNpxResolution {
-        resolved: npx.is_resolved(),
+fn npx_telemetry_resolution(
+    npx: &paths::ResolvedProgram,
+) -> crate::commands::hq_core_state::CoreUpdateNpxResolution {
+    crate::commands::hq_core_state::CoreUpdateNpxResolution {
+        resolved: npx.is_spawnable(),
         source: if npx.is_resolved() {
             paths::resolution_source_of(Path::new(&npx.path)).telemetry_value()
         } else {
             "not_resolved"
         },
-    };
+    }
+}
+
+pub(crate) fn rescue_command() -> (
+    tokio::process::Command,
+    crate::commands::hq_core_state::CoreUpdateNpxResolution,
+) {
+    let npx = paths::resolve_bin_with_kind("npx");
+    let npx_resolution = npx_telemetry_resolution(&npx);
     let mut cmd = paths::tokio_spawn_command(&npx.path, &[]);
     cmd.arg("-y")
         .arg(format!(
@@ -908,6 +914,21 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_spawnable_windows_npx_shim_is_not_reported_as_resolved() {
+        for kind in [
+            paths::ResolvedProgramKind::Extensionless,
+            paths::ResolvedProgramKind::OtherExtension,
+        ] {
+            let npx = paths::ResolvedProgram {
+                path: "C:\\Users\\alice\\AppData\\Roaming\\npm\\npx".to_string(),
+                kind,
+            };
+
+            assert!(!npx_telemetry_resolution(&npx).resolved, "{kind:?}");
+        }
+    }
 
     #[test]
     fn rescue_diagnostic_tail_is_capped_at_the_shared_16kib_limit() {
