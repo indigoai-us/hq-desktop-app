@@ -8,5 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Opening a chat with a bot that runs on your own Mac no longer checks the cloud for its activity every few seconds. Bots hosted in the cloud are unaffected.
+
 - In a thread, the first message now scrolls away with the replies instead of staying pinned at the top, so a long message no longer leaves only a sliver of the conversation visible.
 - After finishing setup on a new computer, clicking HQ in the menu bar or Dock opens the desktop app instead of the small status panel, without needing to restart HQ.
