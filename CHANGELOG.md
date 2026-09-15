@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core update reports now identify missing tools, access problems, and connection failures when the update cannot start or save its baseline.
+
 ## [0.10.270] — 2026-09-16
 
 - Fixed HQ quitting immediately every time the main window opened on macOS 26. The window's frosted-glass backing was being set up with a command it does not accept, which stopped the app before anything appeared.
