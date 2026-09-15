@@ -850,6 +850,7 @@ const FAILED_DEPENDENCY_VALUES: &[&str] = &[
 ];
 
 const ERROR_CATEGORY_VALUES: &[&str] = &[
+    "missing-dependency",
     "auth",
     "network",
     "dns",
@@ -2420,6 +2421,21 @@ mod codex_telemetry_tests {
         assert_eq!(event.properties["exitCode"], 5);
         assert_eq!(event.properties["errorCategory"], "dns");
         assert!(event.properties.get("rescueStderrTail").is_none());
+    }
+
+    #[test]
+    fn core_update_failure_preserves_missing_dependency_category() {
+        let event = build_desktop_telemetry_event(
+            "core_update_failed".to_string(),
+            Some(json!({
+                "errorCategory": "missing-dependency",
+            })),
+            None,
+            None,
+            "consent",
+        );
+
+        assert_eq!(event.properties["errorCategory"], "missing-dependency");
     }
 
     #[test]

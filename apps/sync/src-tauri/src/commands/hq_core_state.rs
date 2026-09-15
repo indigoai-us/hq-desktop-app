@@ -268,7 +268,7 @@ impl RescueFailureCategory {
 
     const fn label(self) -> &'static str {
         match self {
-            Self::MissingDependency => "missing_dependency",
+            Self::MissingDependency => "missing-dependency",
             Self::Auth => "auth",
             Self::Network => "network",
             Self::Dns => "dns",
@@ -2581,11 +2581,10 @@ mod tests {
         let stderr = "error: rsync preflight failed before any safety snapshot was allocated.\n\
        resolved PATH: (unset)\n\
        Install or repair rsync, then retry the HQ update.";
+        let category = classify_rescue_stderr_failure(stderr);
 
-        assert_eq!(
-            classify_rescue_stderr_failure(stderr),
-            RescueFailureCategory::MissingDependency
-        );
+        assert_eq!(category, RescueFailureCategory::MissingDependency);
+        assert_eq!(category.label(), "missing-dependency");
     }
 
     #[test]
