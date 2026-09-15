@@ -8,7 +8,9 @@ import { readRepoFile } from './harness';
 
 describe('audit batch 2: confirmed-finding fixes', () => {
   it('treats setup-needed as a normal zero-company run and lets all-complete settle idle', () => {
-    const app = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
+    // The sync event listeners live in the popover App shell, not the @hq/ui
+    // desktop shell — that is where setup-needed is handled for every window.
+    const app = readRepoFile('src/App.svelte');
     // The current runner emits setup-needed only after personal provisioning,
     // when a brand-new account simply has no companies yet. Rust then emits a
     // synthetic all-complete, so this stays in progress until that event and
@@ -44,6 +46,7 @@ describe('audit batch 2: confirmed-finding fixes', () => {
     const panel = readRepoFile('../../packages/ui/src/company/DeploymentsPanel.svelte');
     expect(panel).toContain('{#if !error}');
     expect(panel).toContain('{activeCount}');
-    expect(panel).toContain('error ? "Couldn\'t load"');
+    // @hq/ui is prettier-formatted, so the ternary wraps across lines.
+    expect(panel).toMatch(/error\s*\n?\s*\?\s*["']Couldn['\u2019]t load["']/);
   });
 });

@@ -39,9 +39,11 @@ describe('desktop-alt Deployments panel actions (US-011)', () => {
     const row = readRepoFile('../../packages/ui/src/company/DeploymentRow.svelte');
 
     // Same import + call shape US-001 established in CompanyPage.svelte.
-    expect(row).toContain("import { open } from '@tauri-apps/plugin-shell'");
-    // open() is called with the deployment's URL (https-prefixed host).
-    expect(row).toContain('await open(`https://${deployment.url}`)');
+    // The direct plugin-shell import moved to an injected `openExternal`
+    // seam when the panel became a @hq/ui component — the same call, but the
+    // host supplies the opener so the panel also renders on web.
+    expect(row).toContain('openExternal?: (url: string) => Promise<void> | void');
+    expect(row).toContain('await openExternal(`https://${deployment.url}`)');
     // The open button is wired to the open handler.
     expect(row).toContain('onclick={openDeployment}');
   });
@@ -67,7 +69,7 @@ describe('desktop-alt Deployments panel actions (US-011)', () => {
     expect(row).toContain('>Version<');
     expect(row).toContain('{deployment.ver}');
     expect(row).toContain('>Access<');
-    expect(row).toContain("deployment.pwd ? 'Password protected' : 'Public'");
+    expect(row).toMatch(/deployment\.pwd \? ['"]Password protected['"] : ['"]Public['"]/);
     // No fabricated backend fields leaked into the UI shape.
     expect(row).not.toMatch(/deployment\.(logs|logsUrl|commit|sha|branch|repo)\b/);
   });
