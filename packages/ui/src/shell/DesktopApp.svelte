@@ -167,6 +167,7 @@
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
+  import BotSignInBanner from "../chat/BotSignInBanner.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
   import { canEditAgentProfile } from "../avatars/can-edit.js";
   import { loadAvatarGallery } from "../avatars/gallery.js";
@@ -283,6 +284,11 @@
     locallyHostedBots,
     promotedBotCompany,
   } from "../chat/local-bots.js";
+  import {
+    botNeedsSignIn,
+    restartBotsNeedingSignIn,
+    runtimesNeedingSignIn,
+  } from "../chat/runtime-sign-in-again.js";
   import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption, SessionProviderId } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
@@ -1228,6 +1234,37 @@
   const selectedLocalBotOffline = $derived(
     Boolean(selectedLocalBot && selectedLocalBot.online !== true),
   );
+  /**
+   * The open bot's coding tool needs a new sign-in (`hq bot list` reports it):
+   * the bot has paused, so the conversation says so above the composer and
+   * offers the sign-in instead of looking silently stuck.
+   */
+  const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
+  /** Coding tools some local bot is paused on — evidence a "Connected" tool is dead. */
+  const staleRuntimes = $derived(runtimesNeedingSignIn(localBots));
+  /**
+   * Which coding tools the Connect step must treat as signed out despite the
+   * CLI saying otherwise: a run that stopped with "Failed to authenticate",
+   * and any tool a local bot is paused on.
+   */
+  function setupStaleTools(failure: { kind: string } | null): ("claude" | "codex")[] {
+    const out = new Set<"claude" | "codex">();
+    for (const runtime of staleRuntimes) if (runtime === "claude" || runtime === "codex") out.add(runtime);
+    if (failure?.kind === "auth") {
+      const ran = setupAgent.lastRunTool;
+      if (ran) out.add(ran);
+      else if (setupAgent.providers) {
+        if (setupAgent.providers.claudeLoggedIn) out.add("claude");
+        if (setupAgent.providers.codexLoggedIn) out.add("codex");
+      }
+    }
+    return [...out];
+  }
+  /** Restart the bots paused on a tool after it was signed in again elsewhere. */
+  async function afterRuntimeSignedIn(runtime: string): Promise<void> {
+    await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], adapter.bots ?? null);
+    await refreshLocalBots();
+  }
   async function startSelectedLocalBot(): Promise<void> {
     const bot = selectedLocalBot;
     const api = adapter.bots;
@@ -6388,6 +6425,8 @@
                           onrefresh={() => setupAgent.refreshProviders(true)}
                           onrun={(tool) => void setupAgent.runAgain(tool)}
                           runBusy={setupAgent.busy}
+                          staleTools={setupStaleTools(stopFailure)}
+                          onsignedin={(tool) => afterRuntimeSignedIn(tool)}
                         />
                       {:else}
                       <SetupRunCard
@@ -6435,6 +6474,14 @@
                         </div>
                       {/if}
                     </div>
+                  {/if}
+                  {#if selectedLocalBot && selectedLocalBotNeedsSignIn && adapter.sessions?.loginStart}
+                    <BotSignInBanner
+                      bot={selectedLocalBot}
+                      sessions={adapter.sessions}
+                      bots={adapter.bots ?? null}
+                      ondone={refreshLocalBots}
+                    />
                   {/if}
                   <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
                   <AgentTaskStrip tasks={mainPaneTasks} />

@@ -19,6 +19,7 @@
     localBotPresence,
     localBotRuntimeLabel,
   } from "./local-bots.js";
+  import { botNeedsSignIn, expiredRuntimeOf } from "./runtime-sign-in-again.js";
   import {
     DEFAULT_LOCAL_BOT_EFFORT,
     LOCAL_BOT_SETTINGS,
@@ -141,6 +142,7 @@
   );
   const heartbeat = $derived(lastHeartbeatLabel(bot.lastHeartbeatAt, Date.now()));
   const presenceLine = $derived.by(() => {
+    if (botNeedsSignIn(bot)) return `Needs sign-in · ${localBotRuntimeLabel(expiredRuntimeOf(bot))}`;
     if (presence === "online") return heartbeat ? `Online · ${heartbeat}` : "Online";
     if (bot.processAlive && bot.state !== "failed") {
       return heartbeat ? `Starting up · ${heartbeat}` : "Starting up";
@@ -225,7 +227,12 @@
       </div>
     </div>
 
-    {#if presence !== "online"}
+    {#if botNeedsSignIn(bot)}
+      <p class="ad-desc" data-testid="local-bot-detail-notice">
+        {localBotRuntimeLabel(expiredRuntimeOf(bot))} needs you to sign in again before {bot.name} can keep
+        working. Open its conversation to sign in.
+      </p>
+    {:else if presence !== "online"}
       <p class="ad-desc" data-testid="local-bot-detail-notice">
         {localBotOfflineNotice(bot)}
       </p>
