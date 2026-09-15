@@ -10,8 +10,6 @@
   import CompanyLibraryPanel from "./CompanyLibraryPanel.svelte";
   import CompanyKnowledgePanel from "./CompanyKnowledgePanel.svelte";
   import TeamPanel from "./TeamPanel.svelte";
-  import OfficePanel from "../meet/OfficePanel.svelte";
-  import type { OfficeCallsHost } from "../meet/office-host.js";
   import {
     configureCompanyApi,
     startCompanyStore,
@@ -32,12 +30,6 @@
     openExternal?: (url: string) => Promise<void> | void;
     /** Optional focus/sync refresh host for the company library (desktop). */
     libraryRefreshHost?: LibraryRefreshHost | null;
-    /**
-     * US-018 native calling seams for the Office section. A desktop host
-     * supplies them; without them (or without `adapter.capabilities
-     * .nativeCalls`) the section says so instead of rendering blank.
-     */
-    callsHost?: OfficeCallsHost | null;
     company: Workspace;
     /**
      * Which company section to show — driven by the primary sidebar children
@@ -68,7 +60,6 @@
       window.open(url, "_blank", "noopener,noreferrer");
     },
     libraryRefreshHost = null,
-    callsHost = null,
     company,
     tab = DEFAULT_COMPANY_TAB,
     onopenprojects,
@@ -401,14 +392,6 @@
             company={adapter.company}
             messaging={adapter.messaging}
             {openExternal}
-          />
-        {:else if tab === "office"}
-          <!-- US-018: the one shared Office implementation. -->
-          <OfficePanel
-            {adapter}
-            {callsHost}
-            companyUid={company.cloudUid}
-            companyLabel={company.displayName}
           />
         {:else if isCompanyOperationsTab(tab)}
           <!-- DESKTOP-010: Deployments / Secrets / Settings under More (US-020 removed Activity). -->

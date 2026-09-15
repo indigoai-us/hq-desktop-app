@@ -24,7 +24,6 @@ import {
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
-import { createCallsApi } from "../calls/api.js";
 import {
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -192,17 +191,6 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     }
     return ok(raw.value as T);
   }
-
-  /**
-   * Native calling (US-014). This adapter already proxies hq-pro through the
-   * Rust `hq_pro_fetch` command exactly like the Sync adapter does, so it gets
-   * the real implementation rather than a refusal — the evidence preflight,
-   * not the host, is what gates it.
-   */
-  readonly calls: PlatformAdapter["calls"] = createCallsApi(
-    <T,>(method: "GET" | "POST", path: string, body?: unknown) =>
-      this.hqProJson<T>(method, path, body),
-  );
 
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),

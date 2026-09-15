@@ -40,7 +40,6 @@
     type ChannelFilePreview,
     type ChannelStatusModel,
     type ChatSidebarApi,
-    type OfficeCallsHost,
     type PackagesEvents,
     type ReplyThreadScope,
     type RosterStatus,
@@ -144,12 +143,6 @@
     /** Native external-browser seam for Settings and rendered links. */
     onOpenConsole?: (url: string) => Promise<void> | void;
     onopenurl?: (url: string) => void;
-    /**
-     * US-018 native calling seams (bundled service evidence, call-window open,
-     * device id). A desktop host supplies these; the web build has none, and
-     * the Office tab stays unadvertised there.
-     */
-    callsHost?: OfficeCallsHost | null;
     /** Native route bridge, attached after DesktopApp listeners are ready. */
     onembeddednavigationready?: () => void | (() => void);
     /** Native active-thread bridge for reply realtime optimization. */
@@ -224,7 +217,6 @@
     onShellReady,
     onOpenConsole: hostOnOpenConsole,
     onopenurl: hostOpenUrl,
-    callsHost = null,
     onembeddednavigationready,
     onactivethreadchange,
     extraPages,
@@ -813,7 +805,6 @@
   {#key shellEpoch}
     <DesktopApp
       {adapter}
-      {callsHost}
       version={hostVersion ?? displayVersion(`v${workPackage.version}`)}
       sidebarApi={liveSidebarApi}
       {notificationsApi}

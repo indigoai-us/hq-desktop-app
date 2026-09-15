@@ -130,13 +130,10 @@
   import CompanyTabs from "../chat/CompanyTabs.svelte";
   import CompanyHero from "../chat/CompanyHero.svelte";
   import {
-    companyChannelTabsFor,
     parseCompanyTab,
     type CompanyChannelTabId,
     type CompanyTabModel,
   } from "../chat/tabs/tab-model.js";
-  import OfficePanel from "../meet/OfficePanel.svelte";
-  import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import CommandPalette, {
@@ -575,12 +572,6 @@
     bootTimeoutMs?: number;
     /** First successful conversation/empty paint — host reports `shell_ready`. */
     onShellReady?: () => void;
-    /**
-     * US-018 native calling seams. Supplied by a desktop host; absent on the
-     * web. The Office tab is gated on `adapter.capabilities.nativeCalls`, and
-     * the panel refuses in its own voice when this is missing.
-     */
-    callsHost?: OfficeCallsHost | null;
     /** Host-registered full-column destinations keyed by page id. */
     extraPages?: Record<
       string,
@@ -636,7 +627,6 @@
 
   let {
     adapter,
-    callsHost = null,
     version = "0.0.0",
     sidebarApi,
     notificationsApi,
@@ -810,16 +800,6 @@
   let tab = $state<ChannelTab>("chat");
   let channelFileKey = $state<string | null>(null);
   let companyTab = $state<CompanyChannelTabId>("chat");
-  /**
-   * US-018: the company tabs this host may actually offer. Office appears only
-   * when the platform adapter reports native calling, so the web build never
-   * advertises a destination it cannot open.
-   */
-  const companyTabsForHost = $derived(
-    companyChannelTabsFor({
-      nativeCalls: adapter?.capabilities?.nativeCalls === true,
-    }),
-  );
   let companyTabData = $state<CompanyTabModel | null>(null);
   let companyTabLoading = $state(false);
   let companyWallpaper = $state("aurora");
@@ -3285,12 +3265,6 @@
       companyTabData = null;
       return;
     }
-    // US-018: Office is a live native surface, not server-returned rows. It
-    // has no company-tab endpoint, so never ask for one.
-    if (tabId === "office") {
-      companyTabData = null;
-      return;
-    }
     const getTab = conversationApi.getCompanyTab;
     const fetchId = tabId === "chat" ? "settings" : tabId;
     if (!getTab) {
@@ -4273,7 +4247,7 @@
         }
         if (next.kind === "channel") {
           tab = next.tab ?? "chat";
-          companyTab = next.companyTab === "office" ? "office" : "chat";
+          companyTab = "chat";
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
         } else {
@@ -6081,7 +6055,6 @@
                   slug={selectedCompanySlug}
                   {onopenurl}
                   active={companyTab}
-                  tabs={companyTabsForHost}
                   onselect={(id) => pushConversationSurface({ companyTab: id })}
                 />
               {:else if isProjectChannel}
@@ -6291,17 +6264,6 @@
             />
           {/if}
 
-          <!-- One selected-company listener survives view/tab changes. Office UI is only visible on its tab. -->
-          {#if selectedRow.companyUid}
-            <div class="company-office-stage" class:office-background={!(isCompanyChannel && companyTab === "office")} data-testid="company-tab-panel-office">
-              <OfficePanel {adapter} {callsHost}
-                companyUid={selectedRow.companyUid}
-                companyLabel={selectedRow.title ?? "This company"}
-                displayName={(uid) => displayNameByUid[uid] || identities?.[uid] || uid}
-                visible={isCompanyChannel && companyTab === "office"}
-              />
-            </div>
-          {/if}
 
           {#if isAgentChannel && agentSurface === "details" && agentChannelLocalBot}
             <LocalBotDetailPanel
@@ -6330,12 +6292,6 @@
               onsaveavatar={saveOpenAgentAvatar}
               onclose={() => void leaveCurrentDestination()}
             />
-          {:else if isCompanyChannel && companyTab === "office"}
-            {#if companyTab === "office"}
-              <!--
-                US-018: OfficePanel is mounted above and shown via visible=.
-              -->
-            {/if}
           {:else if activeTab === "chat"}
             <div
               class="chat-stage"
@@ -7280,12 +7236,6 @@
     outline-offset: 2px;
   }
 
-  .company-office-stage.office-background { flex: none; height: 0; min-height: 0; overflow: visible; }
-  .company-office-stage {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-  }
 
   .project-tabs {
     display: flex;

@@ -1,6 +1,5 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { createSyncPlatformAdapter } from '@hq/platform';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onDestroy, onMount, tick } from 'svelte';
@@ -300,15 +299,6 @@
         : getDesktopCompanies(workspaces),
   );
   const orderedCompanies = $derived(sortV4CompaniesConnectedFirst(shellCompanies));
-
-  /**
-   * Native calling capability (US-018). Read from the platform adapter rather
-   * than assumed from the build: it gates whether the company Office
-   * destination is advertised at all.
-   */
-  const nativeCalls = createSyncPlatformAdapter({
-    invoke: (command, args) => invoke(command, args as never),
-  }).capabilities.nativeCalls === true;
   const watchedCompanies = $derived(
     shellCompanies.filter((workspace) => isWorkspaceSyncEnabled(workspace)),
   );
@@ -1729,7 +1719,6 @@
       {:else}
         <V4Sidebar
           {route}
-          {nativeCalls}
           companies={renderCompanies}
           accountLabel={accountIdentity.label}
           {brand}

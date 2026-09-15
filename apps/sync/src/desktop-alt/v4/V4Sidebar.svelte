@@ -51,11 +51,6 @@
     onworkspaceenabledchange?: (slug: string, enabled: boolean) => void;
     /** Active white-label brand (US-005); null → HQ defaults. */
     brand?: CachedBrand | null;
-    /**
-     * Host capability gate for company children (US-018). Office only appears
-     * when the platform adapter reports native calling.
-     */
-    nativeCalls?: boolean;
     onnavigate?: (route: V4Route) => void;
   }
 
@@ -66,7 +61,6 @@
     cloudReachable = null,
     onworkspaceenabledchange,
     brand = null,
-    nativeCalls = false,
     onnavigate,
   }: Props = $props();
 
@@ -77,7 +71,7 @@
   // An explicitly supplied empty list is authoritative: it represents the
   // parent's hydrated empty/error state. Only an omitted value may self-load.
   const model = $derived(
-    getV4SidebarModel(route, companies ?? fetched, { nativeCalls }),
+    getV4SidebarModel(route, companies ?? fetched),
   );
   const personalRows = $derived(model.companies.filter((row) => row.isPersonal));
   const companyRows = $derived(model.companies.filter((row) => !row.isPersonal));
