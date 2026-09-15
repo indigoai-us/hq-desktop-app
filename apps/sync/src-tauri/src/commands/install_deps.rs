@@ -286,6 +286,71 @@ fn deregister_handle(handle: &str) {
     cancel_registry().lock().unwrap().remove(handle);
 }
 
+/// A non-process phase (such as waiting for the CLI update lock) still needs a
+/// frontend-visible installer handle. Keeping this registration alive through
+/// the following streamed install closes the hand-off gap between the wait and
+/// npm: cancellation can reach either phase through the one existing registry.
+struct InstallCancellationRegistration {
+    handle: String,
+}
+
+impl InstallCancellationRegistration {
+    fn new(app: &AppHandle) -> Self {
+        let handle = Uuid::new_v4().to_string();
+        register_cancel_handle(handle.clone());
+        emit_install_handle_started(app, &handle);
+        Self { handle }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        is_cancelled(&self.handle)
+    }
+
+    fn finish(&self, app: &AppHandle, error: Option<&str>) {
+        deregister_handle(&self.handle);
+        let _ = app.emit(
+            "install:progress",
+            InstallProgress {
+                handle: self.handle.clone(),
+                line: String::new(),
+                finished: true,
+                error: error.map(str::to_string),
+            },
+        );
+    }
+}
+
+impl Drop for InstallCancellationRegistration {
+    fn drop(&mut self) {
+        deregister_handle(&self.handle);
+    }
+}
+
+async fn acquire_cli_install_lock_for_setup(
+    app: &AppHandle,
+    cancellation: &InstallCancellationRegistration,
+    on_wait: impl Fn(&AppHandle, &str) + Send + 'static,
+) -> Result<hq_desktop_core::cli_update_lock::CliUpdateLockGuard, String> {
+    let lock_app = app.clone();
+    let cancel_handle = cancellation.handle.clone();
+    let install_lock = tokio::task::spawn_blocking(move || {
+        crate::commands::hq_cli_update::acquire_cli_install_lock_waiting(
+            &lock_app,
+            "hq-desktop-app-install-deps",
+            hq_desktop_core::cli_update_lock::CLI_INSTALL_LOCK_WAIT_BUDGET,
+            || is_cancelled(&cancel_handle),
+            |line| on_wait(&lock_app, line),
+        )
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("cli-install lock wait task join failed: {e}")));
+
+    if cancellation.is_cancelled() {
+        return Err(crate::commands::hq_cli_update::CLI_INSTALL_CANCELLED_MESSAGE.to_string());
+    }
+    install_lock
+}
+
 #[cfg(unix)]
 fn register_process_group(handle: &str, pgid: i32) {
     if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
@@ -3222,50 +3287,67 @@ fn bundled_cli_version_matches(expected: Option<&str>, actual: Option<&str>) -> 
 /// Errors if npm is not available.
 #[cfg(not(windows))]
 async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
-    // Cross-process cli-update lock (contract with hq-cli's version gate —
-    // see hq_desktop_core::cli_update_lock). A concurrent updater or `hq`
-    // self-update writing the same global package can collide with npm's
-    // mid-rename staging and gut the install; a held lock means skip and let
-    // the user retry. Guard held through the streamed install below.
-    let _install_lock = match crate::commands::hq_cli_update::acquire_cli_install_lock(
-        &app,
-        "hq-desktop-app-install-deps",
-    ) {
-        Ok(guard) => guard,
-        Err(msg) => {
-            emit_preflight_line(&app, &msg);
-            return Err(msg);
-        }
-    };
-    let prefix = npm_global_prefix_arg(&app, "hq")?;
-    if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
-        emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
+    // Cross-process cli-update lock (contract with hq-cli's version gate — see
+    // hq_desktop_core::cli_update_lock). A concurrent updater or `hq` self-update
+    // writing the same global package can collide with npm's mid-rename staging
+    // and gut the install, so overlapping writers must not run.
+    //
+    // On the SETUP deps path a held lock is almost always a benign collision with
+    // the app's OWN background CLI updater, so instead of failing the deps stage
+    // (and paging Sentry — HQ-DESKTOP-6J) we WAIT the holder out for a bounded
+    // budget and converge. The blocking wait runs off the async worker via
+    // spawn_blocking so the rest of the dependency wave keeps installing
+    // concurrently; the guard is held through the streamed install below.
+    let cancellation = InstallCancellationRegistration::new(&app);
+    let result = async {
+        let _install_lock = acquire_cli_install_lock_for_setup(
+            &app,
+            &cancellation,
+            |app, line| emit_preflight_line(app, line),
+        )
+        .await?;
+        install_hq_cli_after_lock(
+            || hq_cli_dependency_is_satisfied(&app),
+            || async {
+                if cancellation.is_cancelled() {
+                    return Err(crate::commands::hq_cli_update::CLI_INSTALL_CANCELLED_MESSAGE.to_string());
+                }
+                let prefix = npm_global_prefix_arg(&app, "hq")?;
+                if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
+                    emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
+                }
+                let npm = match which::which_in(
+                    "npm",
+                    Some(extended_search_path()),
+                    std::env::current_dir().unwrap_or_default(),
+                ) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        let msg = "npm is not installed. Install Node.js first.";
+                        emit_preflight_line(&app, msg);
+                        return Err(msg.to_string());
+                    }
+                };
+                let resource_dir = app.path().resource_dir().ok();
+                let install_spec = hq_cli_install_spec(resource_dir.as_deref());
+                if install_spec != HQ_CLI_REGISTRY_SPEC {
+                    emit_preflight_line(&app, "[hq] installing the CLI bundled with this HQ app");
+                }
+                npm_install_global_managed(
+                    &app,
+                    npm.to_str().unwrap_or("npm"),
+                    &prefix,
+                    &install_spec,
+                    "hq",
+                )
+                .await
+            },
+        )
+        .await
     }
-    let npm = match which::which_in(
-        "npm",
-        Some(extended_search_path()),
-        std::env::current_dir().unwrap_or_default(),
-    ) {
-        Ok(p) => p,
-        Err(_) => {
-            let msg = "npm is not installed. Install Node.js first.";
-            emit_preflight_line(&app, msg);
-            return Err(msg.to_string());
-        }
-    };
-    let resource_dir = app.path().resource_dir().ok();
-    let install_spec = hq_cli_install_spec(resource_dir.as_deref());
-    if install_spec != HQ_CLI_REGISTRY_SPEC {
-        emit_preflight_line(&app, "[hq] installing the CLI bundled with this HQ app");
-    }
-    npm_install_global_managed(
-        &app,
-        npm.to_str().unwrap_or("npm"),
-        &prefix,
-        &install_spec,
-        "hq",
-    )
-    .await
+    .await;
+    cancellation.finish(&app, result.as_ref().err().map(String::as_str));
+    result
 }
 
 // NOTE (2026-04-21): `install_hq_cloud` was removed along with the
@@ -5426,38 +5508,49 @@ pub fn ensure_shims() -> Result<String, String> {
 
 #[cfg(windows)]
 async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
-    // Cross-process cli-update lock — same rationale and contract as the
-    // macOS leg above; held through the streamed install.
-    let _install_lock = match crate::commands::hq_cli_update::acquire_cli_install_lock(
-        &app,
-        "hq-desktop-app-install-deps",
-    ) {
-        Ok(guard) => guard,
-        Err(msg) => {
-            emit_progress(&app, &msg);
-            return Err(msg);
-        }
-    };
-    emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
-    let result_inner = run_streaming(
-        &app,
-        "npm",
-        &[
-            "install",
-            "-g",
-            "--prefix",
-            &managed_npm_prefix().to_string_lossy(),
-            "--@indigoai-us:registry=https://registry.npmjs.org/",
-            "--registry=https://registry.npmjs.org/",
-            "@indigoai-us/hq-cli",
-        ],
-    )
-    .await?;
-    append_user_path(&managed_npm_bin())?;
-
-    patch_hq_cli_pack_install_rsync()?;
-
-    Ok(result_inner)
+    // Cross-process cli-update lock — same rationale and contract as the macOS
+    // leg above. On the SETUP deps path we WAIT the holder out for a bounded
+    // budget (HQ-DESKTOP-6J) instead of failing the deps stage, off the async
+    // worker via spawn_blocking; the guard is held through the streamed install.
+    let cancellation = InstallCancellationRegistration::new(&app);
+    let result = async {
+        let _install_lock = acquire_cli_install_lock_for_setup(
+            &app,
+            &cancellation,
+            |app, line| emit_progress(app, line),
+        )
+        .await?;
+        install_hq_cli_after_lock(
+            || hq_cli_dependency_is_satisfied(&app),
+            || async {
+                if cancellation.is_cancelled() {
+                    return Err(crate::commands::hq_cli_update::CLI_INSTALL_CANCELLED_MESSAGE.to_string());
+                }
+                emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
+                let result_inner = run_streaming(
+                    &app,
+                    "npm",
+                    &[
+                        "install",
+                        "-g",
+                        "--prefix",
+                        &managed_npm_prefix().to_string_lossy(),
+                        "--@indigoai-us:registry=https://registry.npmjs.org/",
+                        "--registry=https://registry.npmjs.org/",
+                        "@indigoai-us/hq-cli",
+                    ],
+                )
+                .await?;
+                append_user_path(&managed_npm_bin())?;
+                patch_hq_cli_pack_install_rsync()?;
+                Ok(result_inner)
+            },
+        )
+        .await
+    }
+    .await;
+    cancellation.finish(&app, result.as_ref().err().map(String::as_str));
+    result
 }
 
 #[cfg(windows)]
@@ -5716,7 +5809,27 @@ fn is_blocked_dependency_result(result: &DepInstallResult) -> bool {
     result.error.as_deref().is_some_and(|error| error.starts_with("Prerequisite not installed:"))
 }
 
+/// True when a dependency "failed" only because the cross-process cli-update lock
+/// was held by a concurrent installer — in practice the app's own background CLI
+/// auto-updater — and this cycle was skipped BY DESIGN, not because the install
+/// failed (HQ-DESKTOP-6J). Matched off the single `CLI_INSTALL_LOCK_SKIP_PREFIX`
+/// that the lock's `Held` branch builds every skip message from, so producer and
+/// consumer share one committed literal and cannot silently drift — pinned by
+/// `cli_install_lock_skip_tests`. Only hq-cli contends on this lock, so this can
+/// never mask another dependency's genuine failure.
+fn is_concurrent_install_skip_result(result: &DepInstallResult) -> bool {
+    result.error.as_deref().is_some_and(|error| {
+        error.starts_with(crate::commands::hq_cli_update::CLI_INSTALL_LOCK_SKIP_PREFIX)
+    })
+}
+
 fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupCommandDiagnostic>) -> OnboardingErrorCategory {
+    // A cli-update lock skip is a deliberate concurrent-install skip, never an
+    // install failure. It carries no exit code, so classify it BEFORE the
+    // exit_code branch; this is what keeps it off the error-level Sentry path.
+    if is_concurrent_install_skip_result(result) {
+        return OnboardingErrorCategory::ConcurrentInstall;
+    }
     if diagnostic.and_then(|diagnostic| diagnostic.exit_code).is_some() {
         return OnboardingErrorCategory::ExitNonzero;
     }
@@ -5764,7 +5877,9 @@ fn reportable_setup_failure_ids(deps: &[DepDef], results: &HashMap<&'static str,
     deps.iter()
         .filter(|dep| !dep.optional)
         .filter_map(|dep| results.get(dep.id)
-            .filter(|result| result.status == DepInstallStatus::Failed && !is_blocked_dependency_result(result))
+            .filter(|result| result.status == DepInstallStatus::Failed
+                && !is_blocked_dependency_result(result)
+                && !is_concurrent_install_skip_result(result))
             .map(|_| dep.id))
         .collect()
 }
@@ -5922,6 +6037,34 @@ fn dep_is_satisfied(app: &AppHandle, dep: &DepDef) -> bool {
     #[cfg(not(windows))]
     if dep.id == "hq-cli" && !bundled_hq_cli_ready(app) { return false; }
     dep_status_satisfies(dep, &check_dep_impl(dep.binary, None))
+}
+
+const HQ_CLI_ALREADY_INSTALLED_BY_CONCURRENT_UPDATER: &str =
+    "HQ CLI already installed by concurrent updater";
+
+/// Reuse the orchestrator's single satisfaction probe after the shared lock is
+/// acquired. A successful competing updater must suppress the redundant npm
+/// install, but an absent or unusable managed CLI must still fall through to it.
+fn hq_cli_dependency_is_satisfied(app: &AppHandle) -> bool {
+    let hq_cli = dependency_defs()
+        .iter()
+        .find(|dep| dep.id == "hq-cli")
+        .expect("hq-cli is a registered dependency");
+    dep_is_satisfied(app, hq_cli)
+}
+
+async fn install_hq_cli_after_lock<F, Fut>(
+    is_satisfied: impl FnOnce() -> bool,
+    install: F,
+) -> Result<String, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    if is_satisfied() {
+        return Ok(HQ_CLI_ALREADY_INSTALLED_BY_CONCURRENT_UPDATER.to_string());
+    }
+    install().await
 }
 
 fn finish_orchestrated_dep_install(
@@ -6098,6 +6241,47 @@ mod install_deps_planner_tests {
         );
 
         assert_eq!(result, Err("PATH persistence failed".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_cli_satisfied_by_the_lock_holder_skips_the_second_npm_install() {
+        let install_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let calls_for_install = std::rc::Rc::clone(&install_calls);
+
+        let result = install_hq_cli_after_lock(
+            || true,
+            move || {
+                calls_for_install.set(calls_for_install.get() + 1);
+                async { Err("a second npm install must not run".to_string()) }
+            },
+        )
+        .await;
+
+        assert_eq!(result, Ok("HQ CLI already installed by concurrent updater".to_string()));
+        assert_eq!(install_calls.get(), 0, "the satisfied CLI must skip npm");
+    }
+
+    #[tokio::test]
+    async fn a_missing_cli_after_the_lock_wait_still_runs_and_reports_a_failed_install() {
+        let install_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let calls_for_install = std::rc::Rc::clone(&install_calls);
+
+        let install_result = install_hq_cli_after_lock(
+            || false,
+            move || {
+                calls_for_install.set(calls_for_install.get() + 1);
+                async { Err("npm ERR! EACCES: permission denied".to_string()) }
+            },
+        )
+        .await;
+        let result = finish_orchestrated_dep_install("HQ CLI", install_result, false);
+
+        assert_eq!(install_calls.get(), 1, "a missing CLI must still invoke npm");
+        assert_eq!(
+            result,
+            Err("npm ERR! EACCES: permission denied".to_string()),
+            "a real npm failure after the wait must remain fatal"
+        );
     }
 
     #[test]
@@ -8585,5 +8769,306 @@ mod registry_failure_classifier_tests {
         assert!(looks_like_registry_failure("npm error network In most cases you are behind a proxy"));
         assert!(!looks_like_registry_failure("npm error code EACCES permission denied, mkdir '/usr/local/lib/node_modules'"));
         assert!(!looks_like_registry_failure("npm error code ENOSPC no space left on device"));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HQ-DESKTOP-6J: a cli-update lock skip must not be reported as a setup failure
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod cli_install_lock_skip_tests {
+    use super::*;
+    use crate::commands::hq_cli_update::{
+        cli_install_lock_skip_message, CLI_INSTALL_LOCK_SKIP_PREFIX,
+    };
+    use hq_desktop_core::cli_update_lock::CliUpdateLockInfo;
+
+    fn scope() -> OnboardingFailureScope {
+        OnboardingFailureScope {
+            setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            attempt_count: 1,
+            flow: "resume".to_string(),
+            frontend_session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+        }
+    }
+
+    fn hq_cli_result(error: &str) -> DepInstallResult {
+        let dep = dependency_defs().iter().find(|d| d.id == "hq-cli").unwrap();
+        DepInstallResult {
+            id: dep.id,
+            label: dep.label,
+            optional: dep.optional,
+            status: DepInstallStatus::Failed,
+            error: Some(error.to_string()),
+        }
+    }
+
+    /// The exact production skip message, reconstructed byte-for-byte from the
+    /// real holder-line formatter and the real message builder — this is the
+    /// `setup_error` extra that production event 2e10b3a7… carried.
+    fn production_skip_message() -> String {
+        let holder = CliUpdateLockInfo {
+            pid: 39446,
+            started_at: "2026-09-13T00:43:32.742Z".to_string(),
+            tool: "hq-desktop-app-cli-update".to_string(),
+            version: "0.10.251".to_string(),
+        }
+        .holder_line();
+        cli_install_lock_skip_message(&holder)
+    }
+
+    /// Drive `install_deps`'s exact reporting loop against a results map and
+    /// return the captured Sentry events.
+    fn capture_reporting_loop(
+        results: &HashMap<&'static str, DepInstallResult>,
+        diagnostics: &HashMap<&'static str, SetupCommandDiagnostic>,
+    ) -> Vec<sentry::protocol::Event<'static>> {
+        let deps = dependency_defs();
+        let scope = scope();
+        sentry::test::with_captured_events(|| {
+            for dependency in reportable_setup_failure_ids(deps, results) {
+                let result = results.get(dependency).unwrap();
+                let diagnostic = diagnostics
+                    .get(dependency)
+                    .cloned()
+                    .unwrap_or_else(|| fallback_setup_command_diagnostic(result));
+                let category = setup_error_category(result, Some(&diagnostic));
+                let blocked = blocked_dependents_for(deps, results, dependency)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                send_setup_dependency_failure(&scope, dependency, category, diagnostic, &blocked);
+            }
+        })
+    }
+
+    #[test]
+    fn a_concurrent_cli_install_skip_is_not_a_reportable_setup_failure() {
+        // Reproduces HQ-DESKTOP-6J: on the base, hq-cli is a reportable root and
+        // the reporting loop fires one Level::Error event; with the fix it is
+        // neither a root nor an event.
+        let deps = dependency_defs();
+        let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+        results.insert("hq-cli", hq_cli_result(&production_skip_message()));
+
+        assert!(
+            reportable_setup_failure_ids(deps, &results).is_empty(),
+            "a lock-skip must not be a reportable setup-failure root"
+        );
+        assert_eq!(
+            capture_reporting_loop(&results, &HashMap::new()).len(),
+            0,
+            "a lock-skip must capture zero Sentry events"
+        );
+    }
+
+    #[test]
+    fn a_genuine_hq_cli_install_failure_is_still_reported() {
+        // Negative control (filter-gates-need-a-negative-control): an ordinary
+        // non-zero-exit npm failure for hq-cli stays a reportable root and still
+        // fires exactly one error event with its existing fingerprint.
+        let deps = dependency_defs();
+        let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+        results.insert(
+            "hq-cli",
+            hq_cli_result("Process exited with code 243: npm ERR! EACCES: permission denied"),
+        );
+        let mut diagnostics: HashMap<&'static str, SetupCommandDiagnostic> = HashMap::new();
+        diagnostics.insert(
+            "hq-cli",
+            SetupCommandDiagnostic {
+                command: "npm install -g @indigoai-us/hq-cli".to_string(),
+                exit_code: Some(243),
+                stdout: String::new(),
+                stderr: "npm ERR! EACCES: permission denied".to_string(),
+                error: "Process exited with code 243".to_string(),
+            },
+        );
+
+        assert_eq!(reportable_setup_failure_ids(deps, &results), vec!["hq-cli"]);
+        let events = capture_reporting_loop(&results, &diagnostics);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].fingerprint, vec!["hq-cli", "exit-nonzero"]);
+        assert_eq!(events[0].tags["setup_error_category"], "exit-nonzero");
+    }
+
+    #[test]
+    fn the_skip_message_the_lock_path_produces_satisfies_the_suppression_predicate() {
+        // Initializer-vs-consumer parity: the exact message the lock path emits is
+        // accepted by the predicate, so producer and consumer cannot drift.
+        let message = production_skip_message();
+        assert!(message.starts_with(CLI_INSTALL_LOCK_SKIP_PREFIX));
+        assert!(
+            is_concurrent_install_skip_result(&hq_cli_result(&message)),
+            "producer message must satisfy the consumer predicate: {message}"
+        );
+    }
+
+    #[test]
+    fn a_lock_skip_is_categorised_concurrent_install() {
+        // No exit code, yet it must classify as concurrent-install (ahead of the
+        // exit_code branch), never Unknown.
+        let result = hq_cli_result(&production_skip_message());
+        assert_eq!(
+            setup_error_category(&result, None),
+            OnboardingErrorCategory::ConcurrentInstall
+        );
+        assert_eq!(
+            OnboardingErrorCategory::ConcurrentInstall.as_str(),
+            "concurrent-install"
+        );
+    }
+}
+
+// Real-process artifact E2E for the bounded cli-install lock wait. `#[ignore]`d
+// out of the parallel `cargo test` pool and run in a dedicated, timeout-bounded
+// rust-macos step with `--include-ignored --test-threads=1`. A genuine second OS
+// process holds the real cli-update lock under a temp `HQ_LOCK_DIR`; each case
+// loops >= 20 sequential iterations so one green run is repeated-run evidence.
+#[cfg(all(test, unix))]
+mod cli_install_lock_e2e_tests {
+    use super::*;
+    use crate::commands::hq_cli_update::cli_install_lock_skip_message;
+    use hq_desktop_core::cli_update_lock::{
+        acquire_cli_update_lock_waiting_in, CliUpdateLockAttempt, CliUpdateLockInfo,
+        CLI_UPDATE_LOCK_FILE,
+    };
+    use std::process::Command;
+
+    // Opt-in real backoff window (mirrors HQ_SWAP_TEST_BACKOFF_MS). The rust-macos
+    // step sets HQ_CLI_LOCK_TEST_BACKOFF_MS=200; the default keeps a local run brisk.
+    fn wait_backoff() -> Duration {
+        Duration::from_millis(
+            std::env::var("HQ_CLI_LOCK_TEST_BACKOFF_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(200),
+        )
+    }
+
+    fn seed_fresh_lock(dir: &Path, pid: u32) {
+        let info = CliUpdateLockInfo {
+            pid,
+            started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            tool: "hq-desktop-app-cli-update".to_string(),
+            version: "0.10.251".to_string(),
+        };
+        std::fs::write(
+            dir.join(CLI_UPDATE_LOCK_FILE),
+            serde_json::to_string(&info).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn scope() -> OnboardingFailureScope {
+        OnboardingFailureScope {
+            setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            attempt_count: 1,
+            flow: "resume".to_string(),
+            frontend_session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+        }
+    }
+
+    #[test]
+    #[ignore = "real-process artifact E2E; run in the rust-macos cli-install-lock step"]
+    fn a_holder_that_exits_mid_budget_lets_the_cli_install_proceed() {
+        let backoff = wait_backoff();
+        for iteration in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            // A REAL second OS process is the lock holder.
+            let mut holder = Command::new("sleep").arg("30").spawn().expect("spawn holder");
+            seed_fresh_lock(dir.path(), holder.id());
+
+            // The holder exits mid-budget; reaping it makes its pid genuinely dead,
+            // so the lock is reclaimable exactly as production's dead-holder takeover
+            // is — nothing waits forever on a crashed holder.
+            let releaser = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                let _ = holder.kill();
+                let _ = holder.wait();
+            });
+
+            let attempt = acquire_cli_update_lock_waiting_in(
+                dir.path(),
+                "hq-desktop-app-install-deps",
+                "0.10.255",
+                Duration::from_secs(20),
+                backoff,
+                |_| {},
+            )
+            .expect("acquire");
+            releaser.join().unwrap();
+
+            assert!(
+                matches!(attempt, CliUpdateLockAttempt::Acquired(_)),
+                "iteration {iteration}: a holder that exits mid-budget must let the install proceed"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "real-process artifact E2E; run in the rust-macos cli-install-lock step"]
+    fn a_holder_that_never_exits_skips_within_budget_with_zero_error_events() {
+        let backoff = wait_backoff();
+        let scope = scope();
+        for iteration in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let mut holder = Command::new("sleep").arg("30").spawn().expect("spawn holder");
+            seed_fresh_lock(dir.path(), holder.id());
+
+            // A real, live, foreign holder for the whole (short) budget => a bounded
+            // skip, never an unbounded wait.
+            let attempt = acquire_cli_update_lock_waiting_in(
+                dir.path(),
+                "hq-desktop-app-install-deps",
+                "0.10.255",
+                backoff * 3,
+                backoff,
+                |_| {},
+            )
+            .expect("acquire");
+            let holder_line = match attempt {
+                CliUpdateLockAttempt::Held { holder } => holder,
+                other => {
+                    let _ = holder.kill();
+                    let _ = holder.wait();
+                    panic!("iteration {iteration}: expected a bounded skip, got {other:?}");
+                }
+            };
+
+            // The bounded skip must produce ZERO error-level Sentry events through
+            // the real reporting path.
+            let deps = dependency_defs();
+            let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+            let hq_cli = deps.iter().find(|d| d.id == "hq-cli").unwrap();
+            results.insert(
+                "hq-cli",
+                DepInstallResult {
+                    id: hq_cli.id,
+                    label: hq_cli.label,
+                    optional: hq_cli.optional,
+                    status: DepInstallStatus::Failed,
+                    error: Some(cli_install_lock_skip_message(&holder_line)),
+                },
+            );
+            assert!(reportable_setup_failure_ids(deps, &results).is_empty());
+            let events = sentry::test::with_captured_events(|| {
+                for dependency in reportable_setup_failure_ids(deps, &results) {
+                    let result = results.get(dependency).unwrap();
+                    let diagnostic = fallback_setup_command_diagnostic(result);
+                    let category = setup_error_category(result, Some(&diagnostic));
+                    send_setup_dependency_failure(&scope, dependency, category, diagnostic, &[]);
+                }
+            });
+            assert_eq!(
+                events.len(),
+                0,
+                "iteration {iteration}: a lock skip must page nothing"
+            );
+
+            let _ = holder.kill();
+            let _ = holder.wait();
+        }
     }
 }

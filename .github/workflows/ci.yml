@@ -229,6 +229,15 @@ jobs:
         timeout-minutes: 10
         working-directory: apps/sync/src-tauri
         run: cargo test --locked commands::process::cross_generation_escalation_tests -- --nocapture
+      # Real-process artifact E2E for the bounded cli-install lock wait
+      # (HQ-DESKTOP-6J): a genuine second OS process holds the real cli-update
+      # lock under a temp HQ_LOCK_DIR; each case loops >= 20 sequential iterations
+      # so one green run is repeated-run evidence. Timeout-bounded, mirroring the
+      # escalation step above; the env opt-in gives a real (bounded) backoff window.
+      - name: cli-install lock wait regressions (real children)
+        timeout-minutes: 10
+        working-directory: apps/sync/src-tauri
+        run: HQ_CLI_LOCK_TEST_BACKOFF_MS=200 cargo test --locked commands::install_deps::cli_install_lock_e2e_tests -- --nocapture --include-ignored --test-threads=1
       # hq-platform's tests and the full-workspace lockfile check live here
       # rather than on rust-linux: both need window-vibrancy, whose Linux
       # backend links GTK3. See the rust-linux job comment.

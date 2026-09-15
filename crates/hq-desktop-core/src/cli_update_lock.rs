@@ -45,7 +45,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -61,6 +61,20 @@ pub const LOCK_DIR_ENV: &str = "HQ_LOCK_DIR";
 /// holder pid: no healthy `npm install -g` of this package runs 10 minutes.
 /// Contract — matches hq-cli.
 pub const CLI_UPDATE_LOCK_STALE_AFTER: Duration = Duration::from_secs(600);
+
+/// Fixed inter-attempt backoff for the setup-deps WAITING acquire
+/// ([`acquire_cli_update_lock_waiting`]). Fixed, not exponential: the goal is to
+/// ride out a brief concurrent install cycle, not to be polite. The crate seam
+/// takes the step explicitly (so its own tests stay hermetic and race-free); the
+/// app-crate caller supplies this value in production and zeroes it under
+/// cfg(test) with an env opt-in, mirroring `install_deps::swap_backoff`.
+pub const CLI_INSTALL_LOCK_WAIT_BACKOFF: Duration = Duration::from_secs(3);
+
+/// Total wall-clock budget the setup-deps path waits for a concurrent hq-cli
+/// install to finish before giving up and reporting the skip. STRICTLY less than
+/// [`CLI_UPDATE_LOCK_STALE_AFTER`] so a waiter can never outlive the window in
+/// which a dead holder's lock is reclaimed (asserted in tests).
+pub const CLI_INSTALL_LOCK_WAIT_BUDGET: Duration = Duration::from_secs(90);
 
 /// The lock file's JSON body. Field names are the cross-repo contract —
 /// hq-cli parses these exact keys.
@@ -107,6 +121,14 @@ pub enum CliUpdateLockAttempt {
     /// Another live process holds a fresh lock. Do not install; log the
     /// holder and skip this cycle.
     Held { holder: String },
+}
+
+/// Outcome of a bounded acquire that may be cancelled by the caller.
+#[derive(Debug)]
+pub enum CliUpdateLockWaitAttempt {
+    Acquired(CliUpdateLockGuard),
+    Held { holder: String },
+    Cancelled,
 }
 
 /// Resolve the lock directory: `HQ_LOCK_DIR` when set, else `~/.hq/locks`.
@@ -194,6 +216,139 @@ pub fn acquire_cli_update_lock_in(
         }
     }
     unreachable!("the second create attempt always returns");
+}
+
+/// Bounded, caller-side WAITING acquire for the setup deps path.
+///
+/// Repeatedly calls the unchanged atomic [`acquire_cli_update_lock_in`] behind a
+/// fixed `backoff` until it acquires or the `budget` elapses, then returns the
+/// same [`CliUpdateLockAttempt`]. This is PURE caller-side retry: the lock file
+/// path, JSON body, staleness rules, and the `O_CREAT | O_EXCL` acquire are all
+/// untouched, so the cross-repo contract with hq-cli's TypeScript version gate is
+/// unchanged and needs no companion change there.
+///
+/// `on_wait(holder)` fires once before each backoff sleep (never after the final
+/// attempt), so a caller can surface progress. A zero `backoff` performs exactly
+/// one attempt and never sleeps, which keeps hermetic tests bounded.
+pub fn acquire_cli_update_lock_waiting(
+    tool: &str,
+    version: &str,
+    budget: Duration,
+    backoff: Duration,
+    on_wait: impl FnMut(&str),
+) -> Result<CliUpdateLockAttempt, String> {
+    match acquire_cli_update_lock_waiting_cancellable(
+        tool,
+        version,
+        budget,
+        backoff,
+        || false,
+        on_wait,
+    )? {
+        CliUpdateLockWaitAttempt::Acquired(guard) => Ok(CliUpdateLockAttempt::Acquired(guard)),
+        CliUpdateLockWaitAttempt::Held { holder } => Ok(CliUpdateLockAttempt::Held { holder }),
+        CliUpdateLockWaitAttempt::Cancelled => unreachable!("the non-cancellable wait never cancels"),
+    }
+}
+
+/// Cancellable variant of [`acquire_cli_update_lock_waiting`]. The predicate is
+/// checked before each acquire, immediately after acquisition, and during the
+/// retry backoff, so a cancelled setup cannot begin an install after its
+/// competing holder releases the lock.
+pub fn acquire_cli_update_lock_waiting_cancellable(
+    tool: &str,
+    version: &str,
+    budget: Duration,
+    backoff: Duration,
+    is_cancelled: impl FnMut() -> bool,
+    on_wait: impl FnMut(&str),
+) -> Result<CliUpdateLockWaitAttempt, String> {
+    acquire_cli_update_lock_waiting_cancellable_in(
+        &lock_dir()?,
+        tool,
+        version,
+        budget,
+        backoff,
+        is_cancelled,
+        on_wait,
+    )
+}
+
+/// Directory-explicit seam for [`acquire_cli_update_lock_waiting`] so tests drive
+/// the full wait against a temp dir with an explicit budget/backoff — no process
+/// env and no wall-clock races. The loop makes at most `budget / backoff`
+/// attempts, so it always terminates well inside [`CLI_UPDATE_LOCK_STALE_AFTER`]
+/// when `budget` is (see [`CLI_INSTALL_LOCK_WAIT_BUDGET`]).
+pub fn acquire_cli_update_lock_waiting_in(
+    dir: &Path,
+    tool: &str,
+    version: &str,
+    budget: Duration,
+    backoff: Duration,
+    on_wait: impl FnMut(&str),
+) -> Result<CliUpdateLockAttempt, String> {
+    match acquire_cli_update_lock_waiting_cancellable_in(
+        dir,
+        tool,
+        version,
+        budget,
+        backoff,
+        || false,
+        on_wait,
+    )? {
+        CliUpdateLockWaitAttempt::Acquired(guard) => Ok(CliUpdateLockAttempt::Acquired(guard)),
+        CliUpdateLockWaitAttempt::Held { holder } => Ok(CliUpdateLockAttempt::Held { holder }),
+        CliUpdateLockWaitAttempt::Cancelled => unreachable!("the non-cancellable wait never cancels"),
+    }
+}
+
+/// Directory-explicit cancellable waiting seam. The retry sleep is split into
+/// short slices so a registered frontend cancellation does not wait for an
+/// entire production backoff interval before being observed.
+pub fn acquire_cli_update_lock_waiting_cancellable_in(
+    dir: &Path,
+    tool: &str,
+    version: &str,
+    budget: Duration,
+    backoff: Duration,
+    mut is_cancelled: impl FnMut() -> bool,
+    mut on_wait: impl FnMut(&str),
+) -> Result<CliUpdateLockWaitAttempt, String> {
+    let started = Instant::now();
+    loop {
+        if is_cancelled() {
+            return Ok(CliUpdateLockWaitAttempt::Cancelled);
+        }
+        match acquire_cli_update_lock_in(dir, tool, version)? {
+            CliUpdateLockAttempt::Acquired(guard) => {
+                if is_cancelled() {
+                    drop(guard);
+                    return Ok(CliUpdateLockWaitAttempt::Cancelled);
+                }
+                return Ok(CliUpdateLockWaitAttempt::Acquired(guard));
+            }
+            CliUpdateLockAttempt::Held { holder } => {
+                // Wait only while another (backoff + attempt) still fits inside
+                // the budget. A zero backoff means one attempt, no sleep — which
+                // keeps hermetic unit tests bounded and free of wall-clock races.
+                if backoff.is_zero() || started.elapsed() + backoff >= budget {
+                    return Ok(CliUpdateLockWaitAttempt::Held { holder });
+                }
+                on_wait(&holder);
+                if is_cancelled() {
+                    return Ok(CliUpdateLockWaitAttempt::Cancelled);
+                }
+                let sleep_started = Instant::now();
+                while sleep_started.elapsed() < backoff {
+                    let remaining = backoff.saturating_sub(sleep_started.elapsed());
+                    std::thread::sleep(remaining.min(Duration::from_millis(50)));
+                    if is_cancelled() {
+                        return Ok(CliUpdateLockWaitAttempt::Cancelled);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn read_lock_info(path: &Path) -> Option<CliUpdateLockInfo> {
@@ -428,6 +583,160 @@ mod tests {
             Some(v) => std::env::set_var(LOCK_DIR_ENV, v),
             None => std::env::remove_var(LOCK_DIR_ENV),
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn fresh_live_holder() -> CliUpdateLockInfo {
+        CliUpdateLockInfo {
+            pid: std::process::id(), // this process: definitely alive
+            started_at: rfc3339_secs_ago(5),
+            tool: "hq-cli-version-gate".into(),
+            version: "5.99.0".into(),
+        }
+    }
+
+    #[test]
+    fn a_lock_released_mid_budget_is_acquired_rather_than_skipped() {
+        let dir = temp_lock_dir("wait-release");
+        // Pre-seed a FRESH, live holder so the FIRST attempt deterministically
+        // observes Held — real critical-section overlap, asserted by the callback
+        // firing, not by wall-clock timing.
+        write_lock(&dir, &fresh_live_holder());
+
+        let mut observed_held = 0u32;
+        let dir_for_cb = dir.clone();
+        let attempt = acquire_cli_update_lock_waiting_in(
+            &dir,
+            "hq-desktop-app-install-deps",
+            "1.2.3",
+            Duration::from_secs(10),
+            Duration::from_millis(1),
+            |holder| {
+                observed_held += 1;
+                assert!(holder.contains("hq-cli-version-gate"), "holder: {holder}");
+                // Simulate the holder's guard drop deterministically AFTER the
+                // first observed Held — the next attempt then acquires. No race.
+                if observed_held == 1 {
+                    fs::remove_file(lock_path(&dir_for_cb)).unwrap();
+                }
+            },
+        )
+        .expect("acquire");
+        assert!(
+            matches!(attempt, CliUpdateLockAttempt::Acquired(_)),
+            "a lock released mid-budget must be acquired, not skipped"
+        );
+        assert_eq!(
+            observed_held, 1,
+            "first attempt observes Held, then acquires"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cancelled_waiter_does_not_acquire_a_lock_released_after_cancellation() {
+        let dir = temp_lock_dir("wait-cancelled");
+        write_lock(&dir, &fresh_live_holder());
+
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled_for_wait = std::sync::Arc::clone(&cancelled);
+        let dir_for_wait = dir.clone();
+        let attempt = acquire_cli_update_lock_waiting_cancellable_in(
+            &dir,
+            "hq-desktop-app-install-deps",
+            "1.2.3",
+            Duration::from_secs(10),
+            Duration::from_millis(1),
+            || cancelled.load(std::sync::atomic::Ordering::SeqCst),
+            |_| {
+                cancelled_for_wait.store(true, std::sync::atomic::Ordering::SeqCst);
+                fs::remove_file(lock_path(&dir_for_wait)).unwrap();
+            },
+        )
+        .expect("acquire");
+
+        assert!(
+            matches!(attempt, CliUpdateLockWaitAttempt::Cancelled),
+            "a cancelled waiter must not acquire a lock released after cancellation"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_lock_held_for_the_whole_budget_still_skips_within_the_bound() {
+        let dir = temp_lock_dir("wait-held");
+        write_lock(&dir, &fresh_live_holder());
+
+        let budget = Duration::from_millis(60);
+        let started = Instant::now();
+        let mut retries = 0u32;
+        let attempt = acquire_cli_update_lock_waiting_in(
+            &dir,
+            "hq-desktop-app-install-deps",
+            "1.2.3",
+            budget,
+            Duration::from_millis(10),
+            |_| retries += 1,
+        )
+        .expect("acquire");
+        let elapsed = started.elapsed();
+        match attempt {
+            CliUpdateLockAttempt::Held { holder } => {
+                assert!(holder.contains("hq-cli-version-gate"), "holder: {holder}");
+            }
+            other => panic!("expected Held after the whole budget, got {other:?}"),
+        }
+        assert!(retries >= 1, "the waiter must have retried at least once");
+        assert!(elapsed < CLI_UPDATE_LOCK_STALE_AFTER, "elapsed {elapsed:?}");
+        // The fresh holder's lock must survive the losing waiter untouched.
+        let raw = fs::read_to_string(lock_path(&dir)).unwrap();
+        let survived: CliUpdateLockInfo = serde_json::from_str(&raw).unwrap();
+        assert_eq!(survived.tool, "hq-cli-version-gate");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_cli_install_wait_budget_stays_inside_the_stale_ceiling() {
+        // A waiter must never outlive the window in which a dead holder's lock is
+        // reclaimed, or a crashed holder could hang the wait until the ceiling.
+        assert!(
+            CLI_INSTALL_LOCK_WAIT_BUDGET < CLI_UPDATE_LOCK_STALE_AFTER,
+            "wait budget {CLI_INSTALL_LOCK_WAIT_BUDGET:?} must stay under the {CLI_UPDATE_LOCK_STALE_AFTER:?} stale ceiling"
+        );
+        assert!(
+            !CLI_INSTALL_LOCK_WAIT_BACKOFF.is_zero(),
+            "the production backoff must be non-zero or the wait busy-loops"
+        );
+    }
+
+    #[test]
+    fn the_waiting_acquire_writes_the_same_contract_body_as_the_plain_acquire() {
+        // On a free dir the waiting acquire takes the lock on the first attempt
+        // and must write the byte-identical contract body the plain acquire does,
+        // so the cross-repo contract with hq-cli is provably unchanged.
+        let dir = temp_lock_dir("wait-contract");
+        let attempt = acquire_cli_update_lock_waiting_in(
+            &dir,
+            "hq-desktop-app-cli-update",
+            "1.2.3",
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+            |_| panic!("must not wait on a free lock"),
+        )
+        .expect("acquire");
+        assert!(matches!(attempt, CliUpdateLockAttempt::Acquired(_)));
+        let raw = fs::read_to_string(lock_path(&dir)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let obj = json.as_object().unwrap();
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["pid", "startedAt", "tool", "version"]);
+        assert_eq!(json["pid"].as_u64().unwrap(), u64::from(std::process::id()));
+        assert_eq!(json["tool"], "hq-desktop-app-cli-update");
+        assert_eq!(json["version"], "1.2.3");
+        DateTime::parse_from_rfc3339(json["startedAt"].as_str().unwrap())
+            .expect("startedAt must be RFC3339");
+        drop(attempt);
         let _ = fs::remove_dir_all(&dir);
     }
 }
