@@ -875,7 +875,7 @@ async fn run_replace_from_staging_inner(
 }
 
 /// Read only the terminal 16 KiB of the combined rescue log before applying
-/// the shared setup-diagnostic redaction. The file itself is never attached to
+/// the Core-update diagnostic redaction. The file itself is never attached to
 /// telemetry, and this bounded read avoids making a maliciously large log part
 /// of the update reporting path.
 pub(crate) fn read_rescue_diagnostic_tail(path: &Path) -> Result<String, String> {
@@ -892,7 +892,7 @@ pub(crate) fn read_rescue_diagnostic_tail(path: &Path) -> Result<String, String>
     file.take(limit)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("read {}: {error}", path.display()))?;
-    Ok(hq_telemetry::redact_setup_diagnostic_tail(
+    Ok(hq_telemetry::redact_core_update_diagnostic_tail(
         &String::from_utf8_lossy(&bytes),
     ))
 }
@@ -951,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn rescue_diagnostic_tail_redacts_home_paths_before_telemetry() {
+    fn rescue_diagnostic_tail_redacts_home_paths_before_sentry() {
         let temp = tempfile::tempdir().unwrap();
         let log_path = temp.path().join("rescue.log");
         std::fs::write(
@@ -964,7 +964,8 @@ mod tests {
 
         assert!(!tail.contains("alice"));
         assert!(!tail.contains("HOME="));
-        assert!(tail.contains("/Users/[user]/.npm/_logs/rescue.log"));
+        assert!(!tail.contains("/Users/[user]/.npm/_logs/rescue.log"));
+        assert!(tail.contains("[Filtered]"));
     }
 
     #[test]

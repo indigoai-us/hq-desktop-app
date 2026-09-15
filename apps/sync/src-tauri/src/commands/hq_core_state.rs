@@ -38,7 +38,7 @@
 //! staging-drift) each had their own 6h loop — net traffic / API spend goes
 //! down.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -235,7 +235,7 @@ pub(crate) struct CoreUpdateNpxResolution {
 /// This remains a dimension rather than raw diagnostic text: hq-pro admits
 /// `errorCategory` as a short safe label, while its telemetry privacy boundary
 /// deliberately rejects free-form process output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum RescueFailureCategory {
     Auth,
     Network,
@@ -399,9 +399,7 @@ pub(crate) fn classify_core_update_error(
 /// Additional diagnostics emitted only with `core_update_failed`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CoreUpdateFailureDetails<'a> {
-    /// A redacted 16 KiB rescue-log tail retained with the Sentry diagnostic
-    /// convention. Core updates do not currently report to Sentry, so this is
-    /// never telemetry.
+    /// A redacted 16 KiB rescue-log tail retained for the Sentry diagnostic.
     pub(crate) rescue_stderr_tail: Option<&'a str>,
     pub(crate) rescue_failure_category: RescueFailureCategory,
     pub(crate) npx_resolution: Option<CoreUpdateNpxResolution>,
@@ -757,6 +755,178 @@ pub(crate) fn emit_core_update_failed_event(
             details,
         )),
     );
+    queue_core_update_failure_report(source, channel, exit_code, error_kind, details);
+}
+
+/// The Sentry grouping pair for a Core update failure. Every field is a closed
+/// vocabulary token; target version and rescue output deliberately stay out of
+/// the signature so a single underlying defect does not fragment into issues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CoreUpdateSentryFailureSignature {
+    error_kind: &'static str,
+    error_category: RescueFailureCategory,
+}
+
+static CORE_UPDATE_SENTRY_SIGNATURES: OnceLock<Mutex<HashSet<CoreUpdateSentryFailureSignature>>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct CoreUpdateSentryFailureReport {
+    source: &'static str,
+    channel: Channel,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    error_category: RescueFailureCategory,
+    rescue_stderr_tail: Option<String>,
+    npx_resolution: Option<CoreUpdateNpxResolution>,
+}
+
+fn core_update_sentry_error_kind(error_kind: &'static str) -> &'static str {
+    match error_kind {
+        "already_in_progress"
+        | "invalid_core_root"
+        | "network"
+        | "rescue_spawn"
+        | "baseline_persistence"
+        | "channel_configuration"
+        | "internal"
+        | "rescue_exit" => error_kind,
+        _ => "other",
+    }
+}
+
+fn core_update_sentry_source(source: &'static str) -> &'static str {
+    match source {
+        "automatic" | "manual" => source,
+        _ => "other",
+    }
+}
+
+fn core_update_sentry_platform() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "macos-aarch64",
+        ("macos", "x86_64") => "macos-x86_64",
+        ("windows", "x86_64") => "windows-x86_64",
+        ("windows", "aarch64") => "windows-aarch64",
+        ("linux", "x86_64") => "linux-x86_64",
+        _ => "other",
+    }
+}
+
+fn core_update_sentry_exit_code(exit_code: Option<i32>) -> &'static str {
+    match exit_code {
+        Some(1) => "1",
+        Some(2) => "2",
+        Some(3) => "3",
+        Some(4) => "4",
+        Some(5) => "5",
+        Some(-1) => "signal_or_unknown",
+        Some(_) => "other",
+        None => "not_available",
+    }
+}
+
+fn claim_core_update_sentry_signature(signature: CoreUpdateSentryFailureSignature) -> bool {
+    CORE_UPDATE_SENTRY_SIGNATURES
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(signature)
+}
+
+fn send_core_update_failure_report(report: CoreUpdateSentryFailureReport) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let fingerprint = [report.error_kind, report.error_category.label()];
+        sentry::with_scope(
+            |sentry_scope| {
+                sentry_scope.set_fingerprint(Some(&fingerprint));
+                sentry_scope.set_tag("errorKind", report.error_kind);
+                sentry_scope.set_tag("errorCategory", report.error_category.label());
+                sentry_scope.set_tag("channel", channel_label(report.channel));
+                sentry_scope.set_tag("platform", core_update_sentry_platform());
+                sentry_scope.set_tag("source", core_update_sentry_source(report.source));
+                sentry_scope.set_tag("exitCode", core_update_sentry_exit_code(report.exit_code));
+                sentry_scope.set_extra(
+                    "coreUpdateExitCode",
+                    report
+                        .exit_code
+                        .map(|code| sentry::protocol::Value::Number(code.into()))
+                        .unwrap_or(sentry::protocol::Value::Null),
+                );
+                sentry_scope.set_extra(
+                    "coreUpdateAppVersion",
+                    sentry::protocol::Value::String(env!("APP_VERSION").to_string()),
+                );
+                if let Some(rescue_stderr_tail) = report.rescue_stderr_tail {
+                    sentry_scope.set_extra(
+                        "rescueStderrTail",
+                        sentry::protocol::Value::String(rescue_stderr_tail),
+                    );
+                }
+                if let Some(npx_resolution) = report.npx_resolution {
+                    sentry_scope.set_extra(
+                        "npxResolved",
+                        sentry::protocol::Value::Bool(npx_resolution.resolved),
+                    );
+                    sentry_scope.set_extra(
+                        "npxResolution",
+                        sentry::protocol::Value::String(npx_resolution.source.to_string()),
+                    );
+                }
+            },
+            || sentry::capture_message("Desktop Core update failed", sentry::Level::Error),
+        );
+    }));
+}
+
+fn report_core_update_failure_once(report: CoreUpdateSentryFailureReport) {
+    let signature = CoreUpdateSentryFailureSignature {
+        error_kind: report.error_kind,
+        error_category: report.error_category,
+    };
+    if claim_core_update_sentry_signature(signature) {
+        send_core_update_failure_report(report);
+    }
+}
+
+fn queue_core_update_failure_report(
+    source: &'static str,
+    channel: Channel,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    details: CoreUpdateFailureDetails<'_>,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source_hub = sentry::Hub::current();
+        if source_hub.client().is_none() {
+            return;
+        }
+        let report = CoreUpdateSentryFailureReport {
+            source,
+            channel,
+            exit_code,
+            error_kind: core_update_sentry_error_kind(error_kind),
+            error_category: details.rescue_failure_category,
+            rescue_stderr_tail: details
+                .rescue_stderr_tail
+                .map(hq_telemetry::redact_core_update_diagnostic_tail),
+            npx_resolution: details.npx_resolution,
+        };
+        let hub = std::sync::Arc::new(sentry::Hub::new_from_top(source_hub));
+        hq_telemetry::dispatch_sentry_report(move || {
+            sentry::Hub::run(hub, || report_core_update_failure_once(report));
+        });
+    }));
+}
+
+#[cfg(test)]
+fn reset_core_update_sentry_signatures_for_test() {
+    if let Some(signatures) = CORE_UPDATE_SENTRY_SIGNATURES.get() {
+        signatures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
 }
 
 async fn check_once_observed(
@@ -1930,6 +2100,7 @@ mod tests {
     use std::sync::{atomic::AtomicUsize, Arc};
 
     static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static CORE_UPDATE_SENTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // Snapshot of the hq-pro entries that can admit `core_update_failed`
     // properties. Mirrors
@@ -2296,6 +2467,64 @@ mod tests {
                 "{label:?} violates hq-pro SAFE_MARKETING_LABEL_RE"
             );
         }
+    }
+
+    #[test]
+    fn sentry_reports_one_event_per_failure_signature_per_process() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let report = |error_kind, error_category, exit_code| CoreUpdateSentryFailureReport {
+            source: "automatic",
+            channel: Channel::Release,
+            exit_code,
+            error_kind,
+            error_category,
+            rescue_stderr_tail: Some(hq_telemetry::redact_core_update_diagnostic_tail(
+                "fatal: could not clone Core source",
+            )),
+            npx_resolution: Some(CoreUpdateNpxResolution {
+                resolved: true,
+                source: "managed_toolchain",
+            }),
+        };
+        let events = sentry::test::with_captured_events_options(
+            || {
+                report_core_update_failure_once(report(
+                    "rescue_exit",
+                    RescueFailureCategory::Unknown,
+                    Some(5),
+                ));
+                report_core_update_failure_once(report(
+                    "rescue_exit",
+                    RescueFailureCategory::Unknown,
+                    Some(5),
+                ));
+                report_core_update_failure_once(report(
+                    "network",
+                    RescueFailureCategory::Network,
+                    None,
+                ));
+            },
+            sentry::ClientOptions {
+                before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(events.len(), 2, "identical failures must dedupe in-process");
+        assert_eq!(events[0].fingerprint, vec!["rescue_exit", "unknown"]);
+        assert_eq!(events[1].fingerprint, vec!["network", "network"]);
+        assert_eq!(events[0].tags["errorKind"], "rescue_exit");
+        assert_eq!(events[0].tags["errorCategory"], "unknown");
+        assert_eq!(events[0].tags["channel"], "release");
+        assert_eq!(events[0].tags["platform"], core_update_sentry_platform());
+        assert_eq!(events[0].tags["source"], "automatic");
+        assert_eq!(events[0].tags["exitCode"], "5");
+        assert_eq!(events[1].tags["exitCode"], "not_available");
+        assert_eq!(
+            events[0].extra["rescueStderrTail"],
+            sentry::protocol::Value::String("fatal: could not clone Core source".to_string())
+        );
     }
 
     #[test]
