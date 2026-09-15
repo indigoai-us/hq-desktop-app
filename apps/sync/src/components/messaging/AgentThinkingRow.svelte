@@ -2,7 +2,12 @@
   // Dense status row for the client-side agent "thinking" indicator. Rendered
   // under the last message (via Conversation's `belowMessages` snippet) — status,
   // not an alert, not a message bubble. Tokens only so dark + light stay correct.
-  import { labelFor, type ThinkingEntry } from '../../lib/agentThinking';
+  //
+  // Mirrors @hq/ui's AgentThinkingRow: the row keeps its own clock so the line
+  // visibly moves while the agent works. The clock is presentation only — it
+  // never removes a row (teardown is still a strictly newer message from that
+  // agent).
+  import { thinkingLine, type ThinkingEntry } from '../../lib/agentThinking';
 
   interface Props {
     entries: ThinkingEntry[];
@@ -10,14 +15,22 @@
 
   let { entries }: Props = $props();
 
+  /** One second is the coarsest tick the elapsed counter can read smoothly. */
+  const TICK_MS = 1_000;
+
+  let now = $state(Date.now());
+
+  $effect(() => {
+    if (entries.length === 0) return;
+    const handle = setInterval(() => {
+      now = Date.now();
+    }, TICK_MS);
+    return () => clearInterval(handle);
+  });
+
   function initial(name: string): string {
     const trimmed = name.trim();
     return trimmed ? trimmed[0].toUpperCase() : '?';
-  }
-
-  function thinkingLabel(entry: ThinkingEntry): string {
-    const label = labelFor(entry);
-    return label.endsWith('…') ? label.slice(0, -1) : label;
   }
 </script>
 
@@ -29,17 +42,21 @@
     data-testid="agent-thinking-row"
   >
     {#each entries as entry (entry.agentUid)}
+      {@const line = thinkingLine(entry, now)}
       <div class="thinking-row">
         <span class="avatar" aria-hidden="true">{initial(entry.agentName)}</span>
-        {#if entry.phase === 'thinking'}
-          <span class="label">
-            {thinkingLabel(entry)}<span class="ellipsis-anim" aria-hidden="true"
-              ><span>.</span><span>.</span><span>.</span></span
-            ><span class="ellipsis-static">…</span>
-          </span>
-        {:else}
-          <span class="label">{labelFor(entry)}</span>
-        {/if}
+        <span class="label">
+          {#key line.label}<span class="label-text">{line.label}</span>{/key}<span
+            class="ellipsis-anim"
+            aria-hidden="true"
+          ><span>.</span><span>.</span><span>.</span></span><span
+            class="ellipsis-static">…</span
+          >{#if line.elapsed}<span
+              class="elapsed"
+              aria-hidden="true"
+              data-testid="agent-thinking-elapsed">{line.elapsed}</span
+            >{/if}
+        </span>
       </div>
     {/each}
   </div>
@@ -83,6 +100,16 @@
     line-height: 1.3;
   }
 
+  .label-text {
+    animation: thinking-phrase 0.32s ease-out;
+  }
+
+  .elapsed {
+    margin-left: 0.375rem;
+    opacity: 0.7;
+    font-variant-numeric: tabular-nums;
+  }
+
   .ellipsis-anim {
     display: inline-flex;
     letter-spacing: 0.02em;
@@ -115,6 +142,15 @@
     }
   }
 
+  @keyframes thinking-phrase {
+    from {
+      opacity: 0.35;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .ellipsis-anim {
       display: none;
@@ -122,6 +158,10 @@
 
     .ellipsis-static {
       display: inline;
+    }
+
+    .label-text {
+      animation: none;
     }
   }
 </style>
