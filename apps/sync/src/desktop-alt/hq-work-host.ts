@@ -13,6 +13,7 @@ import {
 } from '@tauri-apps/plugin-notification';
 import {
   normalizeDirectoryFeed,
+  parseAgentStatusWake,
   dispatchEmbeddedNavigation,
   destinationFromEmbeddedTarget,
   isEmbeddedSettingsSection,
@@ -337,6 +338,11 @@ export async function subscribeHqWorkNativeWakes(
         ...(typeof row?.unread === 'number' ? { absoluteUnread: true } : {}),
       });
       config.onNotificationWake();
+    }),
+    // An agent's live "still working" status (native agent:status event).
+    register('agent:status', (payload) => {
+      const wake = parseAgentStatusWake(nativeRecords(payload)[0] ?? payload);
+      if (wake) config.wakes.emit?.('agent:status', wake);
     }),
     register('thread:new-reply', (payload) => {
       const row = nativeRecords(payload)[0];

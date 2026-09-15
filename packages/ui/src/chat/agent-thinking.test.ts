@@ -17,6 +17,10 @@ import {
   dropRow,
   kickoffThinkingState,
   agentDisplayName,
+  applyAgentStatus,
+  parseAgentStatusWake,
+  clearFromMessages as clearRows,
+  labelFor as label,
 } from './agent-thinking.js';
 
 function member(personUid: string, displayName: string): MentionCandidate {
@@ -372,5 +376,46 @@ describe("agentDisplayName", () => {
   it("prefers the live roster name, then the agent's own messages, then the fallback", () => {
     expect(agentDisplayName("agt_mkt", [agentReply], { liveNames: { agt_mkt: "Maya" } })).toBe("Maya");
     expect(agentDisplayName("agt_mkt", [root])).toBe("Bot");
+  });
+});
+
+describe("agent status keeps the row up while the agent works", () => {
+  const t = (s: number) => new Date(Date.UTC(2026, 8, 15, 10, 0, s)).toISOString();
+  const wake = (s: number, status = "is thinking\u2026") =>
+    parseAgentStatusWake({ type: "agent_status", channelId: "chn_1", agentUid: "agt_connor", status, ts: t(s) })!;
+  const msg = (s: number) => ({ fromPersonUid: "agt_connor", createdAt: t(s) });
+
+  it("survives a progress post in the middle of a turn and ends on the final answer", () => {
+    let rows = applyAgentStatus([], wake(0), "connor", [], 1);
+    expect(rows).toHaveLength(1);
+    // "I'll check the Vercel team…" lands, then the bot reports it is still working.
+    rows = clearRows(rows, [msg(5)]);
+    expect(rows).toHaveLength(0);
+    rows = applyAgentStatus(rows, wake(6), "connor", [msg(5)], 2);
+    expect(rows).toHaveLength(1);
+    // A re-fetch that still carries the progress post does not clear it again.
+    expect(clearRows(rows, [msg(5)])).toHaveLength(1);
+    // The final answer, after the last status, ends it.
+    expect(clearRows(rows, [msg(5), msg(40)])).toHaveLength(0);
+  });
+
+  it("ignores a status older than a message already shown from that agent", () => {
+    expect(applyAgentStatus([], wake(10), "connor", [msg(12)], 1)).toHaveLength(0);
+  });
+
+  it("shows the agent's own status text, and the usual copy for a plain thinking status", () => {
+    expect(label(applyAgentStatus([], wake(0), "connor", [], 1)[0]!)).toBe("connor is thinking\u2026");
+    expect(label(applyAgentStatus([], wake(0, "still working (1m20s)"), "connor", [], 1)[0]!)).toBe(
+      "connor: still working (1m20s)",
+    );
+  });
+
+  it("parses only well-formed agent_status payloads", () => {
+    expect(parseAgentStatusWake('{"type":"channel","channelId":"chn_1"}')).toBeNull();
+    expect(parseAgentStatusWake({ type: "agent_status", agentUid: "agt_c", ts: t(0) })).toBeNull();
+    expect(parseAgentStatusWake({ type: "agent_status", channelId: "chn_1", agentUid: "agt_c", ts: "nope" })).toBeNull();
+    expect(
+      parseAgentStatusWake(JSON.stringify({ type: "agent_status", channelId: "chn_1", agentUid: "agt_c", status: "x", threadRoot: "evt_r", ts: t(0) })),
+    ).toMatchObject({ threadRoot: "evt_r" });
   });
 });

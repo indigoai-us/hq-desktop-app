@@ -28,6 +28,8 @@
     newestMessageAtFrom,
     startThinking,
     agentDisplayName,
+    applyAgentStatus,
+    type AgentStatusWake,
     tick,
     type ThinkingEntry,
   } from "../agent-thinking.js";
@@ -82,7 +84,7 @@
     ConversationMessageWire,
     ReplyThreadScope,
   } from "../chat-api";
-  import { subscribeReplyNew } from "../chat-api";
+  import { subscribeAgentStatus, subscribeReplyNew } from "../chat-api";
 
   export interface ReplyPreviewAuthor {
     personUid: string;
@@ -795,6 +797,25 @@
     if (id && seenIds.has(id)) return;
     void load();
   }
+
+  /** The agent says it is still working in THIS thread: keep its row up. */
+  function onAgentStatus(wake: AgentStatusWake): void {
+    if (scope !== "channel" || !channelId || wake.channelId !== channelId) return;
+    if (wake.threadRoot !== rootEventId) return;
+    const thread = [...(root ? [root] : []), ...replies];
+    agentThinking = applyAgentStatus(
+      agentThinking,
+      wake,
+      agentDisplayName(wake.agentUid, thread, { liveNames: displayNameByUid }),
+      thread,
+      Date.now(),
+    );
+  }
+
+  $effect(() => {
+    if (wakes) return wakes.on("agent:status", onAgentStatus);
+    return subscribeAgentStatus(onAgentStatus);
+  });
 
   $effect(() => {
     if (wakes) {

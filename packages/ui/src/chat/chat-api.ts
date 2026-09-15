@@ -16,6 +16,7 @@ import type { DmRequest, RequestAction } from "./dm-requests";
 import type { ChannelDirectoryFeed } from "./channel-directory-reconciler";
 import type { InboxDmActivity } from "./live-catchup";
 import type { DmContactInput, MessageSearchResult } from "./sidebar-model";
+import type { AgentStatusWake } from "./agent-thinking";
 
 export interface ContactsResponse {
   contacts: DmContactInput[];
@@ -498,6 +499,8 @@ export interface ChatWakeEvents {
    * Not named `thread:` (that collides with work-mesh).
    */
   "reply:new": ReplyNewWake;
+  /** An agent reported it is still working in a channel (ephemeral status). */
+  "agent:status": AgentStatusWake;
 }
 
 /** Ids-only reply doorbell. Hosts re-fetch; they must not payload-apply. */
@@ -568,6 +571,17 @@ export interface ChatWakeBus {
 }
 
 const replyNewListeners = new Set<(payload: ReplyNewWake) => void>();
+const agentStatusListeners = new Set<(payload: AgentStatusWake) => void>();
+
+/** Subscribe to every bus's `agent:status` emit (ReplyPanel has no parent wire). */
+export function subscribeAgentStatus(
+  handler: (payload: AgentStatusWake) => void,
+): () => void {
+  agentStatusListeners.add(handler);
+  return () => {
+    agentStatusListeners.delete(handler);
+  };
+}
 
 /** Subscribe to every bus's `reply:new` emit (ReplyPanel lives without a parent wire). */
 export function subscribeReplyNew(
@@ -598,6 +612,11 @@ export function createChatWakeBus(): ChatWakeBus & {
       if (event === "reply:new") {
         for (const listener of replyNewListeners) {
           listener(payload as ReplyNewWake);
+        }
+      }
+      if (event === "agent:status") {
+        for (const listener of agentStatusListeners) {
+          listener(payload as AgentStatusWake);
         }
       }
       for (const h of handlers.get(event) ?? []) {
