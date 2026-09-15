@@ -123,6 +123,14 @@ pub enum CliUpdateLockAttempt {
     Held { holder: String },
 }
 
+/// Outcome of a bounded acquire that may be cancelled by the caller.
+#[derive(Debug)]
+pub enum CliUpdateLockWaitAttempt {
+    Acquired(CliUpdateLockGuard),
+    Held { holder: String },
+    Cancelled,
+}
+
 /// Resolve the lock directory: `HQ_LOCK_DIR` when set, else `~/.hq/locks`.
 fn lock_dir() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os(LOCK_DIR_ENV) {
@@ -229,7 +237,41 @@ pub fn acquire_cli_update_lock_waiting(
     backoff: Duration,
     on_wait: impl FnMut(&str),
 ) -> Result<CliUpdateLockAttempt, String> {
-    acquire_cli_update_lock_waiting_in(&lock_dir()?, tool, version, budget, backoff, on_wait)
+    match acquire_cli_update_lock_waiting_cancellable(
+        tool,
+        version,
+        budget,
+        backoff,
+        || false,
+        on_wait,
+    )? {
+        CliUpdateLockWaitAttempt::Acquired(guard) => Ok(CliUpdateLockAttempt::Acquired(guard)),
+        CliUpdateLockWaitAttempt::Held { holder } => Ok(CliUpdateLockAttempt::Held { holder }),
+        CliUpdateLockWaitAttempt::Cancelled => unreachable!("the non-cancellable wait never cancels"),
+    }
+}
+
+/// Cancellable variant of [`acquire_cli_update_lock_waiting`]. The predicate is
+/// checked before each acquire, immediately after acquisition, and during the
+/// retry backoff, so a cancelled setup cannot begin an install after its
+/// competing holder releases the lock.
+pub fn acquire_cli_update_lock_waiting_cancellable(
+    tool: &str,
+    version: &str,
+    budget: Duration,
+    backoff: Duration,
+    is_cancelled: impl FnMut() -> bool,
+    on_wait: impl FnMut(&str),
+) -> Result<CliUpdateLockWaitAttempt, String> {
+    acquire_cli_update_lock_waiting_cancellable_in(
+        &lock_dir()?,
+        tool,
+        version,
+        budget,
+        backoff,
+        is_cancelled,
+        on_wait,
+    )
 }
 
 /// Directory-explicit seam for [`acquire_cli_update_lock_waiting`] so tests drive
@@ -243,23 +285,67 @@ pub fn acquire_cli_update_lock_waiting_in(
     version: &str,
     budget: Duration,
     backoff: Duration,
-    mut on_wait: impl FnMut(&str),
+    on_wait: impl FnMut(&str),
 ) -> Result<CliUpdateLockAttempt, String> {
+    match acquire_cli_update_lock_waiting_cancellable_in(
+        dir,
+        tool,
+        version,
+        budget,
+        backoff,
+        || false,
+        on_wait,
+    )? {
+        CliUpdateLockWaitAttempt::Acquired(guard) => Ok(CliUpdateLockAttempt::Acquired(guard)),
+        CliUpdateLockWaitAttempt::Held { holder } => Ok(CliUpdateLockAttempt::Held { holder }),
+        CliUpdateLockWaitAttempt::Cancelled => unreachable!("the non-cancellable wait never cancels"),
+    }
+}
+
+/// Directory-explicit cancellable waiting seam. The retry sleep is split into
+/// short slices so a registered frontend cancellation does not wait for an
+/// entire production backoff interval before being observed.
+pub fn acquire_cli_update_lock_waiting_cancellable_in(
+    dir: &Path,
+    tool: &str,
+    version: &str,
+    budget: Duration,
+    backoff: Duration,
+    mut is_cancelled: impl FnMut() -> bool,
+    mut on_wait: impl FnMut(&str),
+) -> Result<CliUpdateLockWaitAttempt, String> {
     let started = Instant::now();
     loop {
+        if is_cancelled() {
+            return Ok(CliUpdateLockWaitAttempt::Cancelled);
+        }
         match acquire_cli_update_lock_in(dir, tool, version)? {
             CliUpdateLockAttempt::Acquired(guard) => {
-                return Ok(CliUpdateLockAttempt::Acquired(guard))
+                if is_cancelled() {
+                    drop(guard);
+                    return Ok(CliUpdateLockWaitAttempt::Cancelled);
+                }
+                return Ok(CliUpdateLockWaitAttempt::Acquired(guard));
             }
             CliUpdateLockAttempt::Held { holder } => {
                 // Wait only while another (backoff + attempt) still fits inside
                 // the budget. A zero backoff means one attempt, no sleep — which
                 // keeps hermetic unit tests bounded and free of wall-clock races.
                 if backoff.is_zero() || started.elapsed() + backoff >= budget {
-                    return Ok(CliUpdateLockAttempt::Held { holder });
+                    return Ok(CliUpdateLockWaitAttempt::Held { holder });
                 }
                 on_wait(&holder);
-                std::thread::sleep(backoff);
+                if is_cancelled() {
+                    return Ok(CliUpdateLockWaitAttempt::Cancelled);
+                }
+                let sleep_started = Instant::now();
+                while sleep_started.elapsed() < backoff {
+                    let remaining = backoff.saturating_sub(sleep_started.elapsed());
+                    std::thread::sleep(remaining.min(Duration::from_millis(50)));
+                    if is_cancelled() {
+                        return Ok(CliUpdateLockWaitAttempt::Cancelled);
+                    }
+                }
             }
         }
     }
@@ -543,6 +629,35 @@ mod tests {
         assert_eq!(
             observed_held, 1,
             "first attempt observes Held, then acquires"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cancelled_waiter_does_not_acquire_a_lock_released_after_cancellation() {
+        let dir = temp_lock_dir("wait-cancelled");
+        write_lock(&dir, &fresh_live_holder());
+
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled_for_wait = std::sync::Arc::clone(&cancelled);
+        let dir_for_wait = dir.clone();
+        let attempt = acquire_cli_update_lock_waiting_cancellable_in(
+            &dir,
+            "hq-desktop-app-install-deps",
+            "1.2.3",
+            Duration::from_secs(10),
+            Duration::from_millis(1),
+            || cancelled.load(std::sync::atomic::Ordering::SeqCst),
+            |_| {
+                cancelled_for_wait.store(true, std::sync::atomic::Ordering::SeqCst);
+                fs::remove_file(lock_path(&dir_for_wait)).unwrap();
+            },
+        )
+        .expect("acquire");
+
+        assert!(
+            matches!(attempt, CliUpdateLockWaitAttempt::Cancelled),
+            "a cancelled waiter must not acquire a lock released after cancellation"
         );
         let _ = fs::remove_dir_all(&dir);
     }

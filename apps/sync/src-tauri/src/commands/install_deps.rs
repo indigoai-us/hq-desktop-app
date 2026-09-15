@@ -286,6 +286,71 @@ fn deregister_handle(handle: &str) {
     cancel_registry().lock().unwrap().remove(handle);
 }
 
+/// A non-process phase (such as waiting for the CLI update lock) still needs a
+/// frontend-visible installer handle. Keeping this registration alive through
+/// the following streamed install closes the hand-off gap between the wait and
+/// npm: cancellation can reach either phase through the one existing registry.
+struct InstallCancellationRegistration {
+    handle: String,
+}
+
+impl InstallCancellationRegistration {
+    fn new(app: &AppHandle) -> Self {
+        let handle = Uuid::new_v4().to_string();
+        register_cancel_handle(handle.clone());
+        emit_install_handle_started(app, &handle);
+        Self { handle }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        is_cancelled(&self.handle)
+    }
+
+    fn finish(&self, app: &AppHandle, error: Option<&str>) {
+        deregister_handle(&self.handle);
+        let _ = app.emit(
+            "install:progress",
+            InstallProgress {
+                handle: self.handle.clone(),
+                line: String::new(),
+                finished: true,
+                error: error.map(str::to_string),
+            },
+        );
+    }
+}
+
+impl Drop for InstallCancellationRegistration {
+    fn drop(&mut self) {
+        deregister_handle(&self.handle);
+    }
+}
+
+async fn acquire_cli_install_lock_for_setup(
+    app: &AppHandle,
+    cancellation: &InstallCancellationRegistration,
+    on_wait: impl Fn(&AppHandle, &str) + Send + 'static,
+) -> Result<hq_desktop_core::cli_update_lock::CliUpdateLockGuard, String> {
+    let lock_app = app.clone();
+    let cancel_handle = cancellation.handle.clone();
+    let install_lock = tokio::task::spawn_blocking(move || {
+        crate::commands::hq_cli_update::acquire_cli_install_lock_waiting(
+            &lock_app,
+            "hq-desktop-app-install-deps",
+            hq_desktop_core::cli_update_lock::CLI_INSTALL_LOCK_WAIT_BUDGET,
+            || is_cancelled(&cancel_handle),
+            |line| on_wait(&lock_app, line),
+        )
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("cli-install lock wait task join failed: {e}")));
+
+    if cancellation.is_cancelled() {
+        return Err(crate::commands::hq_cli_update::CLI_INSTALL_CANCELLED_MESSAGE.to_string());
+    }
+    install_lock
+}
+
 #[cfg(unix)]
 fn register_process_group(handle: &str, pgid: i32) {
     if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
@@ -3233,53 +3298,56 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
     // budget and converge. The blocking wait runs off the async worker via
     // spawn_blocking so the rest of the dependency wave keeps installing
     // concurrently; the guard is held through the streamed install below.
-    let lock_app = app.clone();
-    let install_lock = tokio::task::spawn_blocking(move || {
-        crate::commands::hq_cli_update::acquire_cli_install_lock_waiting(
-            &lock_app,
-            "hq-desktop-app-install-deps",
-            hq_desktop_core::cli_update_lock::CLI_INSTALL_LOCK_WAIT_BUDGET,
-            |line| emit_preflight_line(&lock_app, line),
+    let cancellation = InstallCancellationRegistration::new(&app);
+    let result = async {
+        let _install_lock = acquire_cli_install_lock_for_setup(
+            &app,
+            &cancellation,
+            |app, line| emit_preflight_line(app, line),
         )
-    })
-    .await
-    .unwrap_or_else(|e| Err(format!("cli-install lock wait task join failed: {e}")));
-    let _install_lock = match install_lock {
-        Ok(guard) => guard,
-        Err(msg) => {
-            emit_preflight_line(&app, &msg);
-            return Err(msg);
-        }
-    };
-    let prefix = npm_global_prefix_arg(&app, "hq")?;
-    if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
-        emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
+        .await?;
+        install_hq_cli_after_lock(
+            || hq_cli_dependency_is_satisfied(&app),
+            || async {
+                if cancellation.is_cancelled() {
+                    return Err(crate::commands::hq_cli_update::CLI_INSTALL_CANCELLED_MESSAGE.to_string());
+                }
+                let prefix = npm_global_prefix_arg(&app, "hq")?;
+                if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
+                    emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
+                }
+                let npm = match which::which_in(
+                    "npm",
+                    Some(extended_search_path()),
+                    std::env::current_dir().unwrap_or_default(),
+                ) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        let msg = "npm is not installed. Install Node.js first.";
+                        emit_preflight_line(&app, msg);
+                        return Err(msg.to_string());
+                    }
+                };
+                let resource_dir = app.path().resource_dir().ok();
+                let install_spec = hq_cli_install_spec(resource_dir.as_deref());
+                if install_spec != HQ_CLI_REGISTRY_SPEC {
+                    emit_preflight_line(&app, "[hq] installing the CLI bundled with this HQ app");
+                }
+                npm_install_global_managed(
+                    &app,
+                    npm.to_str().unwrap_or("npm"),
+                    &prefix,
+                    &install_spec,
+                    "hq",
+                )
+                .await
+            },
+        )
+        .await
     }
-    let npm = match which::which_in(
-        "npm",
-        Some(extended_search_path()),
-        std::env::current_dir().unwrap_or_default(),
-    ) {
-        Ok(p) => p,
-        Err(_) => {
-            let msg = "npm is not installed. Install Node.js first.";
-            emit_preflight_line(&app, msg);
-            return Err(msg.to_string());
-        }
-    };
-    let resource_dir = app.path().resource_dir().ok();
-    let install_spec = hq_cli_install_spec(resource_dir.as_deref());
-    if install_spec != HQ_CLI_REGISTRY_SPEC {
-        emit_preflight_line(&app, "[hq] installing the CLI bundled with this HQ app");
-    }
-    npm_install_global_managed(
-        &app,
-        npm.to_str().unwrap_or("npm"),
-        &prefix,
-        &install_spec,
-        "hq",
-    )
-    .await
+    .await;
+    cancellation.finish(&app, result.as_ref().err().map(String::as_str));
+    result
 }
 
 // NOTE (2026-04-21): `install_hq_cloud` was removed along with the
@@ -5444,44 +5512,45 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
     // leg above. On the SETUP deps path we WAIT the holder out for a bounded
     // budget (HQ-DESKTOP-6J) instead of failing the deps stage, off the async
     // worker via spawn_blocking; the guard is held through the streamed install.
-    let lock_app = app.clone();
-    let install_lock = tokio::task::spawn_blocking(move || {
-        crate::commands::hq_cli_update::acquire_cli_install_lock_waiting(
-            &lock_app,
-            "hq-desktop-app-install-deps",
-            hq_desktop_core::cli_update_lock::CLI_INSTALL_LOCK_WAIT_BUDGET,
-            |line| emit_progress(&lock_app, line),
+    let cancellation = InstallCancellationRegistration::new(&app);
+    let result = async {
+        let _install_lock = acquire_cli_install_lock_for_setup(
+            &app,
+            &cancellation,
+            |app, line| emit_progress(app, line),
         )
-    })
-    .await
-    .unwrap_or_else(|e| Err(format!("cli-install lock wait task join failed: {e}")));
-    let _install_lock = match install_lock {
-        Ok(guard) => guard,
-        Err(msg) => {
-            emit_progress(&app, &msg);
-            return Err(msg);
-        }
-    };
-    emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
-    let result_inner = run_streaming(
-        &app,
-        "npm",
-        &[
-            "install",
-            "-g",
-            "--prefix",
-            &managed_npm_prefix().to_string_lossy(),
-            "--@indigoai-us:registry=https://registry.npmjs.org/",
-            "--registry=https://registry.npmjs.org/",
-            "@indigoai-us/hq-cli",
-        ],
-    )
-    .await?;
-    append_user_path(&managed_npm_bin())?;
-
-    patch_hq_cli_pack_install_rsync()?;
-
-    Ok(result_inner)
+        .await?;
+        install_hq_cli_after_lock(
+            || hq_cli_dependency_is_satisfied(&app),
+            || async {
+                if cancellation.is_cancelled() {
+                    return Err(crate::commands::hq_cli_update::CLI_INSTALL_CANCELLED_MESSAGE.to_string());
+                }
+                emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
+                let result_inner = run_streaming(
+                    &app,
+                    "npm",
+                    &[
+                        "install",
+                        "-g",
+                        "--prefix",
+                        &managed_npm_prefix().to_string_lossy(),
+                        "--@indigoai-us:registry=https://registry.npmjs.org/",
+                        "--registry=https://registry.npmjs.org/",
+                        "@indigoai-us/hq-cli",
+                    ],
+                )
+                .await?;
+                append_user_path(&managed_npm_bin())?;
+                patch_hq_cli_pack_install_rsync()?;
+                Ok(result_inner)
+            },
+        )
+        .await
+    }
+    .await;
+    cancellation.finish(&app, result.as_ref().err().map(String::as_str));
+    result
 }
 
 #[cfg(windows)]
@@ -5970,6 +6039,34 @@ fn dep_is_satisfied(app: &AppHandle, dep: &DepDef) -> bool {
     dep_status_satisfies(dep, &check_dep_impl(dep.binary, None))
 }
 
+const HQ_CLI_ALREADY_INSTALLED_BY_CONCURRENT_UPDATER: &str =
+    "HQ CLI already installed by concurrent updater";
+
+/// Reuse the orchestrator's single satisfaction probe after the shared lock is
+/// acquired. A successful competing updater must suppress the redundant npm
+/// install, but an absent or unusable managed CLI must still fall through to it.
+fn hq_cli_dependency_is_satisfied(app: &AppHandle) -> bool {
+    let hq_cli = dependency_defs()
+        .iter()
+        .find(|dep| dep.id == "hq-cli")
+        .expect("hq-cli is a registered dependency");
+    dep_is_satisfied(app, hq_cli)
+}
+
+async fn install_hq_cli_after_lock<F, Fut>(
+    is_satisfied: impl FnOnce() -> bool,
+    install: F,
+) -> Result<String, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    if is_satisfied() {
+        return Ok(HQ_CLI_ALREADY_INSTALLED_BY_CONCURRENT_UPDATER.to_string());
+    }
+    install().await
+}
+
 fn finish_orchestrated_dep_install(
     label: &str,
     install_result: Result<String, String>,
@@ -6144,6 +6241,47 @@ mod install_deps_planner_tests {
         );
 
         assert_eq!(result, Err("PATH persistence failed".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_cli_satisfied_by_the_lock_holder_skips_the_second_npm_install() {
+        let install_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let calls_for_install = std::rc::Rc::clone(&install_calls);
+
+        let result = install_hq_cli_after_lock(
+            || true,
+            move || {
+                calls_for_install.set(calls_for_install.get() + 1);
+                async { Err("a second npm install must not run".to_string()) }
+            },
+        )
+        .await;
+
+        assert_eq!(result, Ok("HQ CLI already installed by concurrent updater".to_string()));
+        assert_eq!(install_calls.get(), 0, "the satisfied CLI must skip npm");
+    }
+
+    #[tokio::test]
+    async fn a_missing_cli_after_the_lock_wait_still_runs_and_reports_a_failed_install() {
+        let install_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let calls_for_install = std::rc::Rc::clone(&install_calls);
+
+        let install_result = install_hq_cli_after_lock(
+            || false,
+            move || {
+                calls_for_install.set(calls_for_install.get() + 1);
+                async { Err("npm ERR! EACCES: permission denied".to_string()) }
+            },
+        )
+        .await;
+        let result = finish_orchestrated_dep_install("HQ CLI", install_result, false);
+
+        assert_eq!(install_calls.get(), 1, "a missing CLI must still invoke npm");
+        assert_eq!(
+            result,
+            Err("npm ERR! EACCES: permission denied".to_string()),
+            "a real npm failure after the wait must remain fatal"
+        );
     }
 
     #[test]

@@ -76,8 +76,8 @@ use crate::util::logfile::log;
 use crate::util::paths;
 
 use hq_desktop_core::cli_update_lock::{
-    acquire_cli_update_lock, acquire_cli_update_lock_waiting, CliUpdateLockAttempt,
-    CliUpdateLockGuard, CLI_INSTALL_LOCK_WAIT_BACKOFF,
+    acquire_cli_update_lock, acquire_cli_update_lock_waiting_cancellable, CliUpdateLockAttempt,
+    CliUpdateLockGuard, CliUpdateLockWaitAttempt, CLI_INSTALL_LOCK_WAIT_BACKOFF,
 };
 use hq_desktop_core::toolchain::{classify_runtime, ManagedRuntime};
 
@@ -1673,6 +1673,10 @@ pub(crate) fn acquire_cli_install_lock(
 /// `install_deps::cli_install_lock_skip_tests`.
 pub(crate) const CLI_INSTALL_LOCK_SKIP_PREFIX: &str = "another hq-cli install is already running";
 
+/// Returned by both the lock-wait phase and a streamed install when setup is
+/// cancelled through the shared installer-handle registry.
+pub(crate) const CLI_INSTALL_CANCELLED_MESSAGE: &str = "Cancelled by user";
+
 /// Render the cross-process lock-skip message from the shared prefix. Exposed to
 /// `install_deps`'s tests so producer/consumer parity is pinned against the exact
 /// message this builder emits.
@@ -1715,20 +1719,29 @@ pub(crate) fn acquire_cli_install_lock_waiting(
     app: &AppHandle,
     tool: &str,
     budget: Duration,
+    is_cancelled: impl FnMut() -> bool,
     mut on_wait: impl FnMut(&str),
 ) -> Result<CliUpdateLockGuard, String> {
     let version = app.package_info().version.to_string();
     let backoff = cli_install_lock_wait_backoff();
-    let attempt = acquire_cli_update_lock_waiting(tool, &version, budget, backoff, |holder| {
-        let line = format!(
-            "{CLI_INSTALL_LOCK_SKIP_PREFIX} ({holder}); waiting for it to finish before installing the HQ CLI…"
-        );
-        log("hq-cli-update", &line);
-        on_wait(&line);
-    })?;
+    let attempt = acquire_cli_update_lock_waiting_cancellable(
+        tool,
+        &version,
+        budget,
+        backoff,
+        is_cancelled,
+        |holder| {
+            let line = format!(
+                "{CLI_INSTALL_LOCK_SKIP_PREFIX} ({holder}); waiting for it to finish before installing the HQ CLI…"
+            );
+            log("hq-cli-update", &line);
+            on_wait(&line);
+        },
+    )?;
     match attempt {
-        CliUpdateLockAttempt::Acquired(guard) => Ok(guard),
-        CliUpdateLockAttempt::Held { holder } => {
+        CliUpdateLockWaitAttempt::Acquired(guard) => Ok(guard),
+        CliUpdateLockWaitAttempt::Cancelled => Err(CLI_INSTALL_CANCELLED_MESSAGE.to_string()),
+        CliUpdateLockWaitAttempt::Held { holder } => {
             // Budget expired. Still an Err — setup honestly reports the HQ CLI as
             // not installed — but reworded for the user: a concurrent install is
             // in progress and re-running setup will finish it. Starts with
