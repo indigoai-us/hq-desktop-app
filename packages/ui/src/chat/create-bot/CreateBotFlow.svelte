@@ -29,6 +29,7 @@
     initialDraft,
     nextStep,
     prevStep,
+    scopeLine,
     stepIssue,
     stepsFor,
     templateCard,
@@ -50,6 +51,8 @@
     existingNames?: readonly string[] | null;
     /** Companies a Cloud bot can be added to; empty hides Cloud. */
     agentTargets?: ReadonlyArray<{ companyUid: string; label: string; iconUrl?: string | null }> | null;
+    /** The owner's companies (slugs) a Local company bot can belong to. */
+    botCompanies?: ReadonlyArray<{ slug: string; label: string }> | null;
     /** Cloud: the host runs the company team action and navigates. */
     onCloudCreate?: ((companyUid: string) => void | Promise<void>) | null;
     /** Local: the host creates through the CLI and opens the DM. */
@@ -74,6 +77,7 @@
     botWorkers = null,
     existingNames = null,
     agentTargets = null,
+    botCompanies = null,
     onCloudCreate = null,
     oncreate = null,
     onback = null,
@@ -91,6 +95,7 @@
   const templates = $derived<readonly LocalBotWorkerOption[]>(companyTemplates(botWorkers ?? []));
   const names = $derived<readonly string[]>(existingNames ?? []);
   const companies = $derived(agentTargets ?? []);
+  const ownerCompanies = $derived(botCompanies ?? []);
   const canLocal = $derived(!!oncreate);
   const canCloud = $derived(!!onCloudCreate && companies.length > 0);
 
@@ -100,6 +105,7 @@
     runtimeReady: botRuntimeReady,
     existingNames: names,
     companies,
+    ownerCompanies,
     templates,
   });
 
@@ -108,6 +114,8 @@
   let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx)));
   let step = $state<CreateBotStep>("kind");
   let pickedAvatarSrc = $state<string | null>(null);
+  /** The user answered "who is it for?" themselves; templates no longer pick for them. */
+  let scopeAnswered = $state(false);
 
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
   const steps = $derived(stepsFor(draft));
@@ -129,6 +137,8 @@
         : "From a template"
       : "Blank bot",
   );
+  const scopeText = $derived(scopeLine(draft, ctx));
+  const previewKindLine = $derived(scopeText ? `${kindLine} · ${scopeText}` : kindLine);
   const previewAvatar = $derived(pickedAvatarSrc);
   const cloudCompany = $derived(companies.find((c) => c.companyUid === draft.companyUid) ?? null);
 
@@ -147,6 +157,14 @@
   function patch(p: Partial<CreateBotDraft>): void {
     if (busy) return;
     draft = { ...draft, ...p };
+    if (p.scope !== undefined) scopeAnswered = true;
+    // A company template is a company bot for that company unless the user
+    // already answered "who is it for?" (Personal stays personal even after
+    // going back and picking a template).
+    if (p.templateId && draft.kind === "template" && !scopeAnswered) {
+      const slug = templateCard(templates.find((t) => t.id === p.templateId) ?? { id: p.templateId, path: "" }).company;
+      if (slug && ownerCompanies.some((c) => c.slug === slug)) draft = { ...draft, scope: "company", companySlugs: [slug] };
+    }
     // A Cloud draft has no details step: never strand the user there.
     if (draft.home === "cloud" && step === "details") step = "home";
   }
@@ -252,7 +270,7 @@
         thinksWith={thinksWithLine(draft, ctx)}
         intro={draft.intro}
         avatarUrl={previewAvatar}
-        {kindLine}
+        kindLine={previewKindLine}
       />
     {/if}
 
@@ -266,6 +284,7 @@
           {canCloud}
           runtimeReady={botRuntimeReady}
           {companies}
+          {ownerCompanies}
           disabled={busy}
           onpatch={patch}
           {signInApi}
@@ -320,7 +339,7 @@
         thinksWith={thinksWithLine(draft, ctx)}
         intro={draft.intro}
         avatarUrl={previewAvatar}
-        {kindLine}
+        kindLine={previewKindLine}
       />
     </div>
   {/if}

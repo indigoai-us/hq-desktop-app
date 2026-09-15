@@ -274,6 +274,43 @@ describe("LocalBotDetailPanel — model and thinking", () => {
 });
 
 
+describe("bot kinds (personal vs company)", () => {
+  it("shows Personal · acts as you and no promote control for a personal bot", async () => {
+    mountPanel({ bot: bot({ kind: "personal" }), bots: botsApi({ promote: vi.fn() }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
+    await tick();
+    expect(q('[data-testid="local-bot-detail-kind"]')?.textContent).toBe("Personal · acts as you");
+    expect(q('[data-testid="local-bot-promotion"]')).toBeNull();
+    expect(q('[data-testid="local-bot-promotion-personal"]')?.textContent).toContain("Personal bots stay on this Mac");
+  });
+
+  it("shows Company · slugs and offers promotion for a company bot", async () => {
+    mountPanel({ bot: bot({ kind: "company", companies: ["indigo", "ridge"] }), bots: botsApi({ promote: vi.fn() }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
+    await tick();
+    expect(q('[data-testid="local-bot-detail-kind"]')?.textContent).toBe("Company · indigo, ridge");
+    expect(q('[data-testid="local-bot-promotion"]')).not.toBeNull();
+    expect(q('[data-testid="local-bot-promotion-personal"]')).toBeNull();
+  });
+
+  it("a company bot can only be promoted into a company it belongs to", async () => {
+    const companies = [
+      { uid: "cmp_INDIGO", name: "Indigo", slug: "indigo" },
+      { uid: "cmp_RIDGE", name: "Ridge", slug: "ridge" },
+    ];
+    mountPanel({ bot: bot({ kind: "company", companies: ["ridge"] }), bots: botsApi({ promote: vi.fn() }), companies });
+    await tick();
+    const options = Array.from(host.querySelectorAll<HTMLOptionElement>('[data-testid="local-bot-promotion"] option')).map((o) => o.value);
+    expect(options).toEqual(["", "cmp_RIDGE"]);
+  });
+
+  it("a row from an older CLI without a kind shows nothing new", async () => {
+    mountPanel({ bot: bot(), bots: botsApi({ promote: vi.fn() }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
+    await tick();
+    expect(q('[data-testid="local-bot-detail-kind"]')).toBeNull();
+    expect(q('[data-testid="local-bot-promotion-personal"]')).toBeNull();
+    expect(q('[data-testid="local-bot-promotion"]')).not.toBeNull();
+  });
+});
+
 describe("local bot cloud promotion", () => {
   it("requires a destination and presents the returned subscription pairing", async () => {
     const current = bot();

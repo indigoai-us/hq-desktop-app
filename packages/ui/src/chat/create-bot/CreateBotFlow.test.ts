@@ -42,6 +42,11 @@ const COMPANIES = [
   { companyUid: "cmp_acme", label: "Acme" },
 ];
 
+const OWNER_COMPANIES = [
+  { slug: "indigo", label: "Indigo" },
+  { slug: "acme", label: "Acme" },
+];
+
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -84,6 +89,7 @@ function render(props: Record<string, unknown> = {}): void {
       botRuntimeReady: { claude: true, codex: false, grok: false },
       botWorkers: WORKERS,
       existingNames: [],
+      botCompanies: OWNER_COMPANIES,
       // A rail preview needs matchMedia; pin the placement so the test is stable.
       previewPlacement: "top",
       ...props,
@@ -180,10 +186,95 @@ describe("CreateBotFlow", () => {
     expect(q('[data-testid="chat-bot-template-brings"]')?.textContent).toContain("3 skills");
     click('[data-testid="chat-bot-create"]');
     await settle();
+    // A company template defaults to a company bot for that company.
     expect(oncreate).toHaveBeenCalledWith(
-      { name: "assistant", runtime: "claude", autoApprove: true, worker: "iris-cx" },
+      { name: "assistant", runtime: "claude", autoApprove: true, worker: "iris-cx", kind: "company", companies: ["indigo"] },
       {},
     );
+  });
+
+  it("asks who the bot is for: personal by default, company needs at least one company (bot-kinds)", async () => {
+    const oncreate = vi.fn(async () => undefined);
+    render({ oncreate });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-scope-personal"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(q('[data-testid="chat-bot-scope-personal"]')?.textContent).toContain("acts as you");
+    expect(q('[data-testid="chat-bot-scope-companies"]')).toBeNull();
+
+    click('[data-testid="chat-bot-scope-company"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-scope-company"]')?.getAttribute("aria-checked")).toBe("true");
+    // Company kind without a company cannot advance nor create.
+    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')?.disabled).toBe(true);
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Pick at least one company.");
+    cmdEnter();
+    await settle();
+    expect(oncreate).not.toHaveBeenCalled();
+
+    click('[data-testid="chat-bot-scope-company-indigo"]');
+    click('[data-testid="chat-bot-scope-company-acme"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-scope-company-acme"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')?.disabled).toBe(false);
+    // Unpicking one keeps the other.
+    click('[data-testid="chat-bot-scope-company-indigo"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-scope-company-indigo"]')?.getAttribute("aria-checked")).toBe("false");
+
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(oncreate).toHaveBeenCalledWith(
+      { name: "assistant", runtime: "claude", autoApprove: true, kind: "company", companies: ["acme"] },
+      {},
+    );
+  });
+
+  it("answering Personal sticks, even after going back and picking a company template", async () => {
+    const oncreate = vi.fn(async () => undefined);
+    render({ oncreate });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    // Answer the question explicitly (Personal is already selected; click it anyway).
+    click('[data-testid="chat-bot-scope-personal"]');
+    await settle();
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    click('[data-testid="create-bot-kind-template"]');
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-template-card"][data-template="iris-cx"]')!.click();
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-scope-personal"]')?.getAttribute("aria-checked")).toBe("true");
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(oncreate).toHaveBeenCalledWith({ name: "assistant", runtime: "claude", autoApprove: true, worker: "iris-cx" }, {});
+  });
+
+  it("with no company to join, the company choice explains and personal still creates", async () => {
+    const oncreate = vi.fn(async () => undefined);
+    render({ oncreate, botCompanies: [] });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-scope-company"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-scope-help"]')?.textContent).toContain("not in a company yet");
+    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')?.disabled).toBe(true);
+    click('[data-testid="chat-bot-scope-personal"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(oncreate).toHaveBeenCalledWith({ name: "assistant", runtime: "claude", autoApprove: true }, {});
   });
 
   it("searching the library filters the cards", async () => {
@@ -223,8 +314,9 @@ describe("CreateBotFlow", () => {
     await settle();
     cmdEnter();
     await settle();
+    // A company template (Acme's note-taker) defaults to a company bot for Acme.
     expect(oncreate).toHaveBeenCalledWith(
-      { name: "assistant", runtime: "claude", autoApprove: true, worker: "note-taker" },
+      { name: "assistant", runtime: "claude", autoApprove: true, worker: "note-taker", kind: "company", companies: ["acme"] },
       {},
     );
   });
@@ -322,7 +414,7 @@ describe("CreateBotFlow", () => {
         runtime: "claude",
         autoApprove: false,
         intro: "Hi, I'm scout. I watch the ad accounts.",
-        memory: "local",
+        memory: "local"
       },
       {},
     );

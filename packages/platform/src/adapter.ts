@@ -1088,9 +1088,20 @@ export interface LocalBotRow {
   /** Set when the bot was created from a company/core worker (`--worker`). */
   workerId?: string;
   companySlug?: string;
+  /**
+   * Bot kind (bot-kinds): `personal` acts as its owner and stays on this Mac;
+   * `company` acts as itself inside its companies and can be promoted.
+   * Absent on older CLI versions.
+   */
+  kind?: LocalBotKind;
+  /** Company slugs a company bot belongs to (absent for personal bots / older CLI). */
+  companies?: string[];
   /** Present while the runtime CLI needs the person to sign in again. */
   runtimeSignIn?: LocalBotRuntimeSignIn | null;
 }
+
+/** `hq bot create --kind`: personal bots act as the owner; company bots act as themselves. */
+export type LocalBotKind = "personal" | "company";
 
 /** A worker a bot can be created from (`hq bot workers --json`). */
 export interface LocalBotWorkerOption {
@@ -1130,6 +1141,10 @@ export interface LocalBotCreateInput {
   kickoff?: string;
   /** Where the bot's memory lives: HQ-synced (default) or this Mac only. */
   memory?: "synced" | "local";
+  /** Personal (acts as the owner) or company (acts as itself); `hq bot create --kind`. */
+  kind?: LocalBotKind;
+  /** Company slugs for a company bot — one `--company <slug>` each; required when kind is company. */
+  companies?: string[];
 }
 
 /**

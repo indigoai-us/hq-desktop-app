@@ -129,6 +129,8 @@ fn create_args(
     intro: Option<&str>,
     kickoff: Option<&str>,
     memory: Option<&str>,
+    kind: Option<&str>,
+    companies: Option<&[String]>,
 ) -> Result<Vec<String>, String> {
     let name = validate_name(name)?;
     let runtime = validate_runtime(runtime)?;
@@ -156,7 +158,36 @@ fn create_args(
         args.push("--memory".to_string());
         args.push(validate_memory(memory)?.to_string());
     }
+    // Personal is the CLI's default and is never passed, so an older hq
+    // without `--kind` keeps creating personal/setup bots. `--company` only
+    // means something for a company bot; anything else is a caller bug.
+    let kind = kind.map(str::trim).filter(|k| !k.is_empty()).map(validate_kind).transpose()?;
+    let companies: Vec<&String> = companies.unwrap_or(&[]).iter().filter(|c| !c.trim().is_empty()).collect();
+    if kind == Some("company") {
+        args.push("--kind".to_string());
+        args.push("company".to_string());
+        for company in companies {
+            args.push("--company".to_string());
+            args.push(validate_company(company)?);
+        }
+    } else if !companies.is_empty() {
+        return Err("Companies only apply to a company bot.".to_string());
+    }
     Ok(args)
+}
+
+/// Bot kind (bot-kinds): personal bots act as the owner, company bots as themselves.
+fn validate_kind(kind: &str) -> Result<&'static str, String> {
+    match kind.trim() {
+        "personal" => Ok("personal"),
+        "company" => Ok("company"),
+        other => Err(format!("Unknown bot kind \"{other}\"; expected personal or company.")),
+    }
+}
+
+/// Company slugs share the worker-id shape (lowercase slug, no leading dash).
+fn validate_company(company: &str) -> Result<String, String> {
+    validate_worker(company).map_err(|_| "Company slugs use lowercase letters, digits, underscores, and hyphens.".to_string())
 }
 
 fn validate_runtime(runtime: &str) -> Result<&'static str, String> {
@@ -239,7 +270,8 @@ pub async fn local_bots_list() -> Result<Value, String> {
 }
 
 /// `hq bot create <name> --runtime <runtime> [--model m] [--no-auto-approve]
-/// [--worker id] [--intro text] [--kickoff prompt] [--memory synced|local] --json`: provisions
+/// [--worker id] [--intro text] [--kickoff prompt] [--memory synced|local]
+/// [--kind personal|company] [--company slug]... --json`: provisions
 /// the identity, scaffolds (or binds) the worker folder, installs the launchd
 /// agent, and starts the bot.
 #[tauri::command]
@@ -252,6 +284,8 @@ pub async fn local_bots_create(
     intro: Option<String>,
     kickoff: Option<String>,
     memory: Option<String>,
+    kind: Option<String>,
+    companies: Option<Vec<String>>,
 ) -> Result<Value, String> {
     let args = create_args(
         &name,
@@ -262,6 +296,8 @@ pub async fn local_bots_create(
         intro.as_deref(),
         kickoff.as_deref(),
         memory.as_deref(),
+        kind.as_deref(),
+        companies.as_deref(),
     )?;
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     run_hq_bot(&argv, Duration::from_secs(150)).await
@@ -366,42 +402,70 @@ mod tests {
     #[test]
     fn create_args_map_every_setting_to_a_cli_flag() {
         assert_eq!(
-            create_args("scout", "claude", None, None, None, None, None, None).unwrap(),
+            create_args("scout", "claude", None, None, None, None, None, None, None, None).unwrap(),
             vec!["create", "scout", "--runtime", "claude"]
         );
         assert_eq!(
-            create_args("scout", "grok", Some("grok-4.5"), Some(true), Some(""), Some(""), None, Some("")).unwrap(),
+            create_args("scout", "grok", Some("grok-4.5"), Some(true), Some(""), Some(""), None, Some(""), None, None).unwrap(),
             vec!["create", "scout", "--runtime", "grok", "--model", "grok-4.5"]
         );
         assert_eq!(
-            create_args("iris", "claude", None, Some(false), Some("iris-cx"), None, None, None).unwrap(),
+            create_args("iris", "claude", None, Some(false), Some("iris-cx"), None, None, None, None, None).unwrap(),
             vec!["create", "iris", "--runtime", "claude", "--no-auto-approve", "--worker", "iris-cx"]
         );
-        assert!(create_args("scout", "claude", Some("--dangerously"), None, None, None, None, None).is_err());
-        assert!(create_args("scout", "claude", None, None, Some("../x"), None, None, None).is_err());
-        assert!(create_args("scout", "claude", None, None, Some("Iris"), None, None, None).is_err());
-        assert!(create_args("Scout", "claude", None, None, None, None, None, None).is_err());
+        assert!(create_args("scout", "claude", Some("--dangerously"), None, None, None, None, None, None, None).is_err());
+        assert!(create_args("scout", "claude", None, None, Some("../x"), None, None, None, None, None).is_err());
+        assert!(create_args("scout", "claude", None, None, Some("Iris"), None, None, None, None, None).is_err());
+        assert!(create_args("Scout", "claude", None, None, None, None, None, None, None, None).is_err());
     }
 
     #[test]
     fn create_args_pass_intro_and_memory() {
         assert_eq!(
-            create_args("scout", "claude", None, None, None, Some(" Hi, I'm Scout. "), None, Some("local")).unwrap(),
+            create_args("scout", "claude", None, None, None, Some(" Hi, I'm Scout. "), None, Some("local"), None, None).unwrap(),
             vec!["create", "scout", "--runtime", "claude", "--intro", "Hi, I'm Scout.", "--memory", "local"]
         );
         assert_eq!(
-            create_args("scout", "claude", None, None, None, None, None, Some("synced")).unwrap(),
+            create_args("scout", "claude", None, None, None, None, None, Some("synced"), None, None).unwrap(),
             vec!["create", "scout", "--runtime", "claude", "--memory", "synced"]
         );
         // Intro: bounded, no control characters (newlines included).
         let long = "x".repeat(INTRO_MAX_CHARS + 1);
-        assert!(create_args("scout", "claude", None, None, None, Some(&long), None, None).is_err());
-        assert!(create_args("scout", "claude", None, None, None, Some("hi\nthere"), None, None).is_err());
-        assert!(create_args("scout", "claude", None, None, None, Some("hi\u{1b}[31m"), None, None).is_err());
+        assert!(create_args("scout", "claude", None, None, None, Some(&long), None, None, None, None).is_err());
+        assert!(create_args("scout", "claude", None, None, None, Some("hi\nthere"), None, None, None, None).is_err());
+        assert!(create_args("scout", "claude", None, None, None, Some("hi\u{1b}[31m"), None, None, None, None).is_err());
         assert_eq!(validate_intro(&"y".repeat(INTRO_MAX_CHARS)).unwrap().len(), INTRO_MAX_CHARS);
         // Memory is a closed enum.
-        assert!(create_args("scout", "claude", None, None, None, None, None, Some("cloud")).is_err());
+        assert!(create_args("scout", "claude", None, None, None, None, None, Some("cloud"), None, None).is_err());
         assert!(validate_memory("LOCAL").is_err());
+    }
+
+    #[test]
+    fn create_args_pass_kind_and_companies() {
+        let cos = vec!["indigo".to_string(), "ridge".to_string()];
+        assert_eq!(
+            create_args("scout", "claude", None, None, None, None, None, None, Some("company"), Some(&cos)).unwrap(),
+            vec!["create", "scout", "--runtime", "claude", "--kind", "company", "--company", "indigo", "--company", "ridge"]
+        );
+        // Personal is the CLI default: nothing is passed, so an older hq still works.
+        assert_eq!(
+            create_args("scout", "claude", None, None, None, None, None, None, Some("personal"), None).unwrap(),
+            vec!["create", "scout", "--runtime", "claude"]
+        );
+        // Companies without the company kind are a caller bug, not silently dropped.
+        assert!(create_args("scout", "claude", None, None, None, None, None, None, None, Some(&cos)).is_err());
+        assert!(create_args("scout", "claude", None, None, None, None, None, None, Some("personal"), Some(&cos)).is_err());
+        // Blank kind / empty companies are simply not passed.
+        assert_eq!(
+            create_args("scout", "claude", None, None, None, None, None, None, Some(""), Some(&[])).unwrap(),
+            vec!["create", "scout", "--runtime", "claude"]
+        );
+        // Kind is a closed enum; company slugs cannot smuggle flags or paths.
+        assert!(create_args("scout", "claude", None, None, None, None, None, None, Some("cloud"), None).is_err());
+        let bad = vec!["--dangerously".to_string()];
+        assert!(create_args("scout", "claude", None, None, None, None, None, None, Some("company"), Some(&bad)).is_err());
+        let bad = vec!["../x".to_string()];
+        assert!(create_args("scout", "claude", None, None, None, None, None, None, Some("company"), Some(&bad)).is_err());
     }
 
     #[test]
@@ -415,6 +479,8 @@ mod tests {
                 Some("setup"),
                 Some("Hi, I'm your setup bot."),
                 Some(" Kickoff: check where this HQ stands, then start step one. "),
+                None,
+                None,
                 None,
             )
             .unwrap(),
@@ -433,16 +499,16 @@ mod tests {
         );
         // A blank kickoff is simply not passed.
         assert_eq!(
-            create_args("scout", "claude", None, None, None, None, Some("   "), None).unwrap(),
+            create_args("scout", "claude", None, None, None, None, Some("   "), None, None, None).unwrap(),
             vec!["create", "scout", "--runtime", "claude"]
         );
         // Bounded at 2000 chars, and no control characters (newlines included).
         let at_limit = "k".repeat(KICKOFF_MAX_CHARS);
         assert_eq!(validate_kickoff(&at_limit).unwrap().len(), KICKOFF_MAX_CHARS);
         let long = "k".repeat(KICKOFF_MAX_CHARS + 1);
-        assert!(create_args("scout", "claude", None, None, None, None, Some(&long), None).is_err());
-        assert!(create_args("scout", "claude", None, None, None, None, Some("start\n--yes"), None).is_err());
-        assert!(create_args("scout", "claude", None, None, None, None, Some("go\u{1b}[31m"), None).is_err());
+        assert!(create_args("scout", "claude", None, None, None, None, Some(&long), None, None, None).is_err());
+        assert!(create_args("scout", "claude", None, None, None, None, Some("start\n--yes"), None, None, None).is_err());
+        assert!(create_args("scout", "claude", None, None, None, None, Some("go\u{1b}[31m"), None, None, None).is_err());
         // A kickoff may be longer than an intro.
         assert!(validate_kickoff(&"k".repeat(INTRO_MAX_CHARS + 1)).is_ok());
     }
