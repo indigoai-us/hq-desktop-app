@@ -71,6 +71,7 @@ const CORE_STATE_REUSE_WINDOW: Duration = Duration::from_secs(15);
 static CORE_UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 const MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES: u8 = 3;
 const CONSECUTIVE_FAILURE_CAP_SKIP_REASON: &str = "consecutive_failure_cap_reached";
+const RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON: &str = "retry_interval_not_elapsed";
 
 /// Automatic retry eligibility is intentionally separate from the update run
 /// guard. The guard prevents overlapping Core writes; this state remembers a
@@ -493,6 +494,7 @@ struct AutomaticTargetState {
     target: String,
     consecutive_failures: u8,
     completed_without_version_move: bool,
+    last_failure_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -500,9 +502,18 @@ enum AutomaticTargetEligibility {
     Eligible,
     CompletedWithoutVersionMove,
     ConsecutiveFailureCapReached,
+    RetryIntervalNotElapsed,
 }
 
 fn automatic_target_eligibility(channel: Channel, target: &str) -> AutomaticTargetEligibility {
+    automatic_target_eligibility_at(channel, target, Instant::now())
+}
+
+fn automatic_target_eligibility_at(
+    channel: Channel,
+    target: &str,
+    attempted_at: Instant,
+) -> AutomaticTargetEligibility {
     let states = AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -519,12 +530,16 @@ fn automatic_target_eligibility(channel: Channel, target: &str) -> AutomaticTarg
         AutomaticTargetEligibility::CompletedWithoutVersionMove
     } else if state.consecutive_failures >= MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
         AutomaticTargetEligibility::ConsecutiveFailureCapReached
+    } else if state.last_failure_at.is_some_and(|last_failure_at| {
+        attempted_at.saturating_duration_since(last_failure_at) < CHECK_INTERVAL
+    }) {
+        AutomaticTargetEligibility::RetryIntervalNotElapsed
     } else {
         AutomaticTargetEligibility::Eligible
     }
 }
 
-fn record_automatic_target_failure(channel: Channel, target: &str) {
+fn record_automatic_target_failure_at(channel: Channel, target: &str, attempted_at: Instant) {
     let mut states = AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -535,15 +550,18 @@ fn record_automatic_target_failure(channel: Channel, target: &str) {
             target: target.to_string(),
             consecutive_failures: 0,
             completed_without_version_move: false,
+            last_failure_at: None,
         });
     if state.target != target {
         *state = AutomaticTargetState {
             target: target.to_string(),
             consecutive_failures: 0,
             completed_without_version_move: false,
+            last_failure_at: None,
         };
     }
     state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+    state.last_failure_at = Some(attempted_at);
 }
 
 fn record_automatic_target_completed(channel: Channel, target: &str) {
@@ -557,6 +575,7 @@ fn record_automatic_target_completed(channel: Channel, target: &str) {
                 target: target.to_string(),
                 consecutive_failures: 0,
                 completed_without_version_move: true,
+                last_failure_at: None,
             },
         );
 }
@@ -1841,6 +1860,7 @@ enum NativeCoreAutoUpdateOutcome {
     SkippedAlreadyInProgress,
     SkippedAlreadyAttempted,
     SkippedConsecutiveFailureCap,
+    SkippedRetryInterval,
     Succeeded,
     FailedExit(i32),
     Failed(CoreUpdateErrorKind),
@@ -1855,6 +1875,28 @@ async fn execute_native_core_auto_update<F, Fut>(
 where
     F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
     Fut: Future<Output = Result<i32, CoreUpdateError>>,
+{
+    execute_native_core_auto_update_with_clock(
+        candidate,
+        auto_updates,
+        sync_in_progress,
+        Instant::now,
+        install,
+    )
+    .await
+}
+
+async fn execute_native_core_auto_update_with_clock<F, Fut, Now>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    now: Now,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<i32, CoreUpdateError>>,
+    Now: Fn() -> Instant,
 {
     match core_auto_update_decision(auto_updates, candidate.version_behind, sync_in_progress) {
         CoreAutoUpdateDecision::Ignore => NativeCoreAutoUpdateOutcome::Ignored,
@@ -1931,7 +1973,11 @@ where
                     return NativeCoreAutoUpdateOutcome::SkippedAlreadyInProgress;
                 }
             };
-            match automatic_target_eligibility(candidate.channel, candidate.target_version) {
+            match automatic_target_eligibility_at(
+                candidate.channel,
+                candidate.target_version,
+                now(),
+            ) {
                 AutomaticTargetEligibility::Eligible => {}
                 AutomaticTargetEligibility::CompletedWithoutVersionMove => {
                     log(
@@ -1977,6 +2023,28 @@ where
                     );
                     return NativeCoreAutoUpdateOutcome::SkippedConsecutiveFailureCap;
                 }
+                AutomaticTargetEligibility::RetryIntervalNotElapsed => {
+                    log(
+                        "hq-core-update",
+                        "native auto-update skipped: retry interval has not elapsed",
+                    );
+                    emit_core_update_event(
+                        "core_update_skipped",
+                        "automatic",
+                        "skipped",
+                        Some(candidate.channel),
+                        candidate.local_version,
+                        Some(candidate.target_version),
+                        true,
+                        Some(candidate.is_eligible),
+                        Some(candidate.version_behind),
+                        Duration::ZERO,
+                        None,
+                        None,
+                        Some(RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON),
+                    );
+                    return NativeCoreAutoUpdateOutcome::SkippedRetryInterval;
+                }
             }
             log(
                 "hq-core-update",
@@ -1996,7 +2064,11 @@ where
                     NativeCoreAutoUpdateOutcome::Succeeded
                 }
                 Ok(exit_code) => {
-                    record_automatic_target_failure(candidate.channel, candidate.target_version);
+                    record_automatic_target_failure_at(
+                        candidate.channel,
+                        candidate.target_version,
+                        now(),
+                    );
                     log(
                         "hq-core-update",
                         &format!("native auto-update failed: rescue_exit={exit_code}"),
@@ -2004,7 +2076,11 @@ where
                     NativeCoreAutoUpdateOutcome::FailedExit(exit_code)
                 }
                 Err(error) => {
-                    record_automatic_target_failure(candidate.channel, candidate.target_version);
+                    record_automatic_target_failure_at(
+                        candidate.channel,
+                        candidate.target_version,
+                        now(),
+                    );
                     log(
                         "hq-core-update",
                         &format!(
@@ -2017,6 +2093,28 @@ where
             }
         }
     }
+}
+
+#[cfg(test)]
+async fn execute_native_core_auto_update_at<F, Fut>(
+    candidate: CoreAutoUpdateCandidate<'_>,
+    auto_updates: bool,
+    sync_in_progress: bool,
+    attempted_at: Instant,
+    install: F,
+) -> NativeCoreAutoUpdateOutcome
+where
+    F: FnOnce(Channel, CoreUpdateRunGuard, CoreUpdateTelemetryContext) -> Fut,
+    Fut: Future<Output = Result<i32, CoreUpdateError>>,
+{
+    execute_native_core_auto_update_with_clock(
+        candidate,
+        auto_updates,
+        sync_in_progress,
+        || attempted_at,
+        install,
+    )
+    .await
 }
 
 async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
@@ -2156,7 +2254,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_automatic_target_is_eligible_on_the_next_cycle_without_restart() {
+    async fn failed_automatic_target_waits_for_the_next_check_interval_before_retrying() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         reset_automatic_target_states_for_test();
         let target = "15.0.117-retry-after-failure-contract";
@@ -2168,12 +2266,14 @@ mod tests {
             version_behind: true,
         };
         let calls = Arc::new(AtomicUsize::new(0));
+        let first_attempt_at = Instant::now();
 
         let first_calls = Arc::clone(&calls);
-        let first = execute_native_core_auto_update(
+        let first = execute_native_core_auto_update_at(
             candidate(),
             true,
             false,
+            first_attempt_at,
             move |_, run_guard, _| async move {
                 let _run_guard = run_guard;
                 first_calls.fetch_add(1, Ordering::AcqRel);
@@ -2182,25 +2282,48 @@ mod tests {
         )
         .await;
 
-        let second_calls = Arc::clone(&calls);
-        let second = execute_native_core_auto_update(
+        let before_interval_calls = Arc::clone(&calls);
+        let before_interval = execute_native_core_auto_update_at(
             candidate(),
             true,
             false,
+            first_attempt_at + CHECK_INTERVAL - Duration::from_secs(1),
             move |_, run_guard, _| async move {
                 let _run_guard = run_guard;
-                second_calls.fetch_add(1, Ordering::AcqRel);
+                before_interval_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(5)
+            },
+        )
+        .await;
+
+        let after_interval_calls = Arc::clone(&calls);
+        let after_interval = execute_native_core_auto_update_at(
+            candidate(),
+            true,
+            false,
+            first_attempt_at + CHECK_INTERVAL,
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                after_interval_calls.fetch_add(1, Ordering::AcqRel);
                 Ok(0)
             },
         )
         .await;
 
         assert_eq!(first, NativeCoreAutoUpdateOutcome::FailedExit(5));
-        assert_eq!(second, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(
+            before_interval,
+            NativeCoreAutoUpdateOutcome::SkippedRetryInterval
+        );
+        assert_eq!(after_interval, NativeCoreAutoUpdateOutcome::Succeeded);
         assert_eq!(
             calls.load(Ordering::Acquire),
             2,
-            "a failed target must be retried on the next automatic cycle"
+            "only the first and next-cycle automatic attempts may invoke the installer"
+        );
+        assert_eq!(
+            RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON,
+            "retry_interval_not_elapsed"
         );
     }
 
@@ -2280,12 +2403,14 @@ mod tests {
         };
         let calls = Arc::new(AtomicUsize::new(0));
 
-        for _ in 0..MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
+        let first_attempt_at = Instant::now();
+        for failure_number in 0..MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
             let failure_calls = Arc::clone(&calls);
-            let outcome = execute_native_core_auto_update(
+            let outcome = execute_native_core_auto_update_at(
                 candidate(),
                 true,
                 false,
+                first_attempt_at + CHECK_INTERVAL * u32::from(failure_number),
                 move |_, run_guard, _| async move {
                     let _run_guard = run_guard;
                     failure_calls.fetch_add(1, Ordering::AcqRel);
@@ -2296,10 +2421,12 @@ mod tests {
             assert_eq!(outcome, NativeCoreAutoUpdateOutcome::FailedExit(5));
         }
 
-        let capped = execute_native_core_auto_update(
+        let capped = execute_native_core_auto_update_at(
             candidate(),
             true,
             false,
+            first_attempt_at
+                + CHECK_INTERVAL * u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES),
             |_, run_guard, _| async move {
                 let _run_guard = run_guard;
                 panic!("the capped target must not start another automatic install");
@@ -2323,18 +2450,34 @@ mod tests {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         reset_automatic_target_states_for_test();
         let target = "15.0.117-manual-retry-contract";
-        for _ in 0..MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
-            record_automatic_target_failure(Channel::Release, target);
+        let first_failure_at = Instant::now();
+        record_automatic_target_failure_at(Channel::Release, target, first_failure_at);
+        assert_eq!(
+            automatic_target_eligibility_at(
+                Channel::Release,
+                target,
+                first_failure_at + Duration::from_secs(1),
+            ),
+            AutomaticTargetEligibility::RetryIntervalNotElapsed
+        );
+
+        // Manual commands acquire only the run guard; automatic retry state is
+        // deliberately not consulted, so the UI retry remains responsive even
+        // while the automatic retry interval is active.
+        let manual_run_guard = try_begin_core_update().expect("manual retry is not gated");
+        drop(manual_run_guard);
+
+        for failure_number in 1..MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
+            record_automatic_target_failure_at(
+                Channel::Release,
+                target,
+                first_failure_at + CHECK_INTERVAL * u32::from(failure_number),
+            );
         }
         assert_eq!(
             automatic_target_eligibility(Channel::Release, target),
             AutomaticTargetEligibility::ConsecutiveFailureCapReached
         );
-
-        // Manual commands acquire only the run guard; automatic retry state is
-        // deliberately not consulted, so the UI retry remains responsive.
-        let manual_run_guard = try_begin_core_update().expect("manual retry is not gated");
-        drop(manual_run_guard);
     }
 
     #[tokio::test]

@@ -47,10 +47,38 @@ pub fn redact_core_update_diagnostic_tail(value: &str) -> String {
     let value = redact_setup_diagnostic_tail(value);
     let value = redact_url_literals(&value);
     let value = redact_email_addresses(&value);
+    let value = redact_unc_path_literals(&value);
     let value = redact_absolute_path_literals(&value);
     let value = redact_labeled_host_values(&value);
     let value = redact_hostname_literals(&value);
-    redact_repository_literals(&value)
+    let value = redact_repository_literals(&value);
+    bounded_redacted_core_update_diagnostic_tail(&value)
+}
+
+/// Apply the stream limit after Core-specific redactions, whose replacement
+/// marker can be longer than the diagnostic literal it replaces. Advancing to
+/// whitespace keeps the retained suffix from starting in the middle of either
+/// a `[Filtered]` marker or an unredacted token.
+fn bounded_redacted_core_update_diagnostic_tail(value: &str) -> String {
+    if value.len() <= SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES {
+        return value.to_string();
+    }
+
+    let mut start = value.len() - SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    while start < value.len() {
+        let character = value[start..]
+            .chars()
+            .next()
+            .expect("start remains within the diagnostic");
+        if character.is_whitespace() {
+            break;
+        }
+        start += character.len_utf8();
+    }
+    value[start..].to_string()
 }
 
 /// The exact Sentry issue grouping for setup dependency failures. Correlation
@@ -452,6 +480,29 @@ fn redact_email_addresses(value: &str) -> String {
 
 fn is_path_byte(byte: u8) -> bool {
     !byte.is_ascii_whitespace() && !matches!(byte, b'\'' | b'"' | b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';')
+}
+
+fn redact_unc_path_literals(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let unc_path = bytes[index] == b'\\' && bytes.get(index + 1) == Some(&b'\\');
+        if !unc_path {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut end = index + 2;
+        while end < bytes.len() && is_path_byte(bytes[end]) {
+            end += 1;
+        }
+        if end > start + 2 {
+            ranges.push((start, end));
+        }
+        index = end;
+    }
+    replace_ranges(value, ranges, FILTERED)
 }
 
 fn redact_absolute_path_literals(value: &str) -> String {
@@ -2247,7 +2298,7 @@ mod tests {
     #[test]
     fn core_update_diagnostic_tail_removes_git_machine_and_remote_identifiers() {
         let diagnostic = redact_core_update_diagnostic_tail(
-            "GH_TOKEN=ghp_abcdefghijklmnop\nfatal: unable to access 'https://token@example.corp/private/repo?access_token=secret': Could not resolve host: example.corp\nfatal: cannot read /mnt/alice/private/repo\ncontact alice@example.com or git@internal.corp:private/repo\nC:\\Users\\Alice\\HQ\\core.yaml",
+            "GH_TOKEN=ghp_abcdefghijklmnop\nfatal: unable to access 'https://token@example.corp/private/repo?access_token=secret': Could not resolve host: example.corp\nfatal: cannot read /mnt/alice/private/repo\ncontact alice@example.com or git@internal.corp:private/repo\nC:\\Users\\Alice\\HQ\\core.yaml\n\\\\buildserver\\share\\alice\\hq\n\\\\files.example.corp\\engineering\\bob\\hq-core",
         );
 
         for sensitive in [
@@ -2260,12 +2311,40 @@ mod tests {
             "alice@example.com",
             "internal.corp",
             "C:\\Users\\Alice",
+            r"\\buildserver\share\alice\hq",
+            r"\\files.example.corp\engineering\bob\hq-core",
         ] {
             assert!(
                 !diagnostic.contains(sensitive),
                 "Core update diagnostic leaked {sensitive:?}: {diagnostic:?}"
             );
         }
+    }
+
+    #[test]
+    fn core_update_diagnostic_tail_stays_within_the_documented_limit_after_redaction() {
+        let short_redactable_token = "x/y ";
+        let input = short_redactable_token.repeat(
+            SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES / short_redactable_token.len(),
+        );
+        assert_eq!(input.len(), SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+
+        let diagnostic = redact_core_update_diagnostic_tail(&input);
+
+        assert!(
+            diagnostic.len() <= SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES,
+            "redaction must not expand a bounded diagnostic tail: {} bytes",
+            diagnostic.len()
+        );
+        assert!(
+            diagnostic.starts_with(char::is_whitespace),
+            "post-redaction truncation must begin at a token boundary: {diagnostic:?}"
+        );
+        assert!(
+            !diagnostic.starts_with("Filtered]"),
+            "post-redaction truncation must not leave a partial [Filtered] marker"
+        );
+        assert!(!diagnostic.contains("x/y"));
     }
 
     /// Correlation is event context, never part of the issue key: one failed
