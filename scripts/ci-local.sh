@@ -29,6 +29,19 @@
 # same job CI runs. And a green run here is evidence, not proof — CI remains
 # the authority. It is the difference between "I ran the tests" and "I ran what
 # CI runs", which is the gap this script closes.
+#
+# Known local-only reds, as of 2026-09-15. Each of these was reproduced on an
+# untouched base commit, so seeing one does NOT mean your change broke it.
+# Confirm it the same way before you spend time on it: check out the merge-base
+# and run the same check there.
+#   - work app build (desktop|web): fails resolving a transitive Node builtin
+#     out of mqtt. CI installs on Node 22 with --no-frozen-lockfile and passes.
+#   - cargo fmt: a local rustfmt newer than CI's reformats files CI accepts.
+#     A base commit showed ~280 such diffs.
+#   - release contract tests: the installer-E2E version test demands a stable
+#     X.Y.Z, so it fails by design on a release branch stamped with a
+#     prerelease version.
+# If a check here goes red for a reason NOT in this list, treat it as yours.
 
 set -uo pipefail
 
@@ -41,7 +54,7 @@ for arg in "$@"; do
   case "$arg" in
     --fast) FAST=1 ;;
     --list) LIST=1 ;;
-    -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown flag: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -84,11 +97,27 @@ run "@hq/ui typecheck"            fast .         pnpm --filter @hq/ui typecheck
 run "@hq/ui tests"                fast .         pnpm --filter @hq/ui test
 run "hq-sync typecheck"           fast apps/sync pnpm typecheck
 run "hq-sync lint"                fast apps/sync pnpm lint
-run "hq-sync tests"               fast apps/sync pnpm test
-run "hq-sync build"               slow apps/sync pnpm build
+# CI runs `pnpm coverage`, not `pnpm test` -- same suite, but it also enforces
+# the coverage reporters, so mirror the command CI actually runs.
+run "hq-sync tests + coverage"    fast apps/sync pnpm coverage
+run "hq-sync build"               slow apps/sync env SENTRY_AUTH_TOKEN= VITE_SENTRY_DSN= pnpm build
+
+# The Playwright layout-regression suite is its own CI step and is easy to miss
+# locally: it needs a build to serve and browsers installed. Skipping it is how
+# a whole suite of specs pointed at deleted UI reached CI green-looking. The
+# install is idempotent and quiet once the browsers are present.
+run "browser install (chromium+webkit)" slow apps/sync \
+  pnpm exec playwright install chromium webkit
+run "browser E2E (chromium+webkit)"     slow apps/sync pnpm test:e2e:browser
+
 run "work app typecheck"          fast apps/work pnpm typecheck
 run "work app lint"               fast apps/work pnpm lint
 run "work app tests"              fast apps/work pnpm test
+# Two builds off one tree: the desktop target and the web target share
+# SvelteKit output directories, so CI wipes them in between. Same order here.
+run "work app build (desktop)"    slow apps/work env TAURI=1 pnpm build
+run "work app build (web)"        slow .         bash -c \
+  'rm -rf apps/work/.svelte-kit/output apps/work/build && cd apps/work && pnpm build'
 
 # ── workspace-packages ──────────────────────────────────────────────────────
 run "workspace package tests"     fast .         pnpm turbo run test --force \
