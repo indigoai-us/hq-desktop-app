@@ -669,7 +669,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     slashCommands: (tool) => this.call("agent_session_slash_commands", { tool }),
     installProvider: (tool) =>
       this.call<string>("install_session_provider", { tool }),
-    loginStart: (tool) => this.call("agent_provider_login_start", { tool }),
+    loginStart: (tool, opts) =>
+      this.call("agent_provider_login_start", { tool, ...(opts?.force ? { force: true } : {}) }),
     loginStatus: (tool) => this.call("agent_provider_login_status", { tool }),
     loginCancel: (tool) => this.call("agent_provider_login_cancel", { tool }),
   };

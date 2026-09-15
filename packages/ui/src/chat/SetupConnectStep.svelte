@@ -23,9 +23,28 @@
     /** Offered on signed-in rows: run setup with that agent. */
     onrun?: (tool: SetupProviderTool) => void;
     runBusy?: boolean;
+    /**
+     * Tools the CLI calls signed in but whose sign-in is known dead (a setup
+     * run failed to authenticate with it, or a local bot is paused on it).
+     * Their row offers "Sign in again" instead of treating them as ready.
+     */
+    staleTools?: readonly SetupProviderTool[];
+    /** After a forced sign-in connects (e.g. restart the bots paused on it). */
+    onsignedin?: (tool: SetupProviderTool) => void | Promise<void>;
   }
 
-  let { api, providers, onrefresh, variant = "hero", lead, detail, onrun, runBusy = false }: Props = $props();
+  let {
+    api,
+    providers,
+    onrefresh,
+    variant = "hero",
+    lead,
+    detail,
+    onrun,
+    runBusy = false,
+    staleTools = [],
+    onsignedin,
+  }: Props = $props();
 
   const TOOLS: readonly { id: SetupProviderTool; name: string; app: string }[] = [
     { id: "claude", name: "Claude Code", app: "Claude" },
@@ -35,11 +54,18 @@
   const available = (tool: SetupProviderTool) => (tool === "claude" ? providers.claudeAvailable : providers.codexAvailable);
   const connected = (tool: SetupProviderTool) =>
     available(tool) && (tool === "claude" ? providers.claudeLoggedIn : providers.codexLoggedIn);
+  /** Signed in as far as the CLI knows, but that sign-in no longer works. */
+  const stale = (tool: SetupProviderTool) =>
+    connected(tool) && staleTools.includes(tool) && !signedInAgain.includes(tool);
 
   let active = $state<SetupProviderTool | null>(null);
   let loginState = $state<SetupProviderLoginState["state"]>("disconnected");
   let message = $state("");
   let busy = $state(false);
+  /** The current attempt signs out and in again (see `staleTools`). */
+  let forcing = $state(false);
+  /** Signed in again here; the host's evidence can lag a poll behind. */
+  let signedInAgain = $state<SetupProviderTool[]>([]);
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -55,6 +81,11 @@
     if (result.state === "connected") {
       stopPolling();
       await onrefresh();
+      if (forcing) {
+        forcing = false;
+        if (!signedInAgain.includes(tool)) signedInAgain = [...signedInAgain, tool];
+        await onsignedin?.(tool);
+      }
     } else if (result.state === "waiting") {
       timer = setTimeout(() => void poll(tool, token), 1500);
     }
@@ -71,10 +102,11 @@
     }
   }
 
-  async function connect(tool: SetupProviderTool): Promise<void> {
+  async function connect(tool: SetupProviderTool, force = false): Promise<void> {
     if (busy || loginState === "waiting" || !api.providerLoginStart) return;
     stopPolling();
     active = tool;
+    forcing = force;
     busy = true;
     message = "";
     const token = ++generation;
@@ -84,7 +116,7 @@
         await api.providerInstall(tool);
         await onrefresh();
       }
-      await apply(await api.providerLoginStart(tool), tool, token);
+      await apply(await (force ? api.providerLoginStart(tool, { force: true }) : api.providerLoginStart(tool)), tool, token);
     } catch {
       if (token === generation) {
         loginState = "error";
@@ -156,10 +188,36 @@
         <span class="provider-text">
           <span class="provider-name">{tool.name}</span>
           <span class="provider-state">
-            {connected(tool.id) ? "Connected" : available(tool.id) ? "Installed, not signed in" : "Coding tool not installed"}
+            {stale(tool.id)
+              ? "Sign-in expired"
+              : connected(tool.id)
+                ? "Connected"
+                : available(tool.id)
+                  ? "Installed, not signed in"
+                  : "Coding tool not installed"}
           </span>
+          {#if connected(tool.id) && !stale(tool.id) && api.providerLoginStart}
+            <SetupButton
+              variant="quiet"
+              class="reauth-quiet"
+              data-testid={`setup-connect-${tool.id}-reauth-quiet`}
+              disabled={busy || loginState === "waiting"}
+              onclick={() => void connect(tool.id, true)}
+            >
+              Signed in but it isn't working? Sign in again
+            </SetupButton>
+          {/if}
         </span>
-        {#if connected(tool.id) && onrun}
+        {#if stale(tool.id) && api.providerLoginStart}
+          <SetupButton
+            variant="primary"
+            data-testid={`setup-connect-${tool.id}-reauth`}
+            disabled={busy || loginState === "waiting"}
+            onclick={() => void connect(tool.id, true)}
+          >
+            {busy && active === tool.id ? "Opening sign-in…" : "Sign in again"}
+          </SetupButton>
+        {:else if connected(tool.id) && onrun}
           <SetupButton
             variant="primary"
             data-testid={`setup-connect-${tool.id}-run`}
@@ -194,7 +252,7 @@
         <SetupButton variant="quiet" disabled={busy} onclick={() => void cancel()}>Cancel</SetupButton>
       {:else}
         <span class:error={loginState === "error"}>{message || "Sign-in did not complete."}</span>
-        <SetupButton variant="quiet" disabled={busy} onclick={() => void connect(active!)}>Try again</SetupButton>
+        <SetupButton variant="quiet" disabled={busy} onclick={() => void connect(active!, forcing)}>Try again</SetupButton>
       {/if}
     </div>
   {:else if message}
@@ -294,6 +352,13 @@
   .provider-state {
     font-size: 12px;
     color: rgba(255, 255, 255, 0.66);
+  }
+  /* A small text-weight button under the row's state, flush with it. */
+  .provider-text > :global(.reauth-quiet) {
+    align-self: flex-start;
+    min-height: 0;
+    padding: 0;
+    font-size: 12px;
   }
   .provider-check {
     font-weight: 600;

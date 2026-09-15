@@ -1031,9 +1031,30 @@ export interface SessionsApi {
   preflight?(): AdapterPromise<Json>;
   slashCommands?(tool: SessionProviderId): AdapterPromise<Json>;
   installProvider?(tool: SessionProviderId): AdapterPromise<string>;
-  loginStart?(tool: SessionProviderId): AdapterPromise<Json>;
+  /**
+   * Open the vendor CLI's browser sign-in. `force` signs out first and signs
+   * in again even when the CLI still reports a saved login (a dead login
+   * `auth status` cannot see).
+   */
+  loginStart?(tool: SessionProviderId, opts?: SessionLoginStartOptions): AdapterPromise<Json>;
   loginStatus?(tool: SessionProviderId): AdapterPromise<Json>;
   loginCancel?(tool: SessionProviderId): AdapterPromise<Json>;
+}
+
+export interface SessionLoginStartOptions {
+  force?: boolean;
+}
+
+/**
+ * Set by `hq bot list` when the bot's last model turn failed because its
+ * runtime CLI's sign-in is missing or expired. The bot pauses and retries on
+ * its own; a restart makes it retry at once. Absent or null once a turn works.
+ */
+export interface LocalBotRuntimeSignIn {
+  state: "expired";
+  runtime: "claude" | "codex" | "grok";
+  /** ISO time the sign-in was first seen expired. */
+  since: string;
 }
 
 /** A personal local bot (local-bots US-009) as reported by `hq bot list --json`. */
@@ -1067,6 +1088,8 @@ export interface LocalBotRow {
   /** Set when the bot was created from a company/core worker (`--worker`). */
   workerId?: string;
   companySlug?: string;
+  /** Present while the runtime CLI needs the person to sign in again. */
+  runtimeSignIn?: LocalBotRuntimeSignIn | null;
 }
 
 /** A worker a bot can be created from (`hq bot workers --json`). */

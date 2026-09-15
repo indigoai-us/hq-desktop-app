@@ -20,6 +20,7 @@
   import type { Workspace } from "../chat/workspaces.js";
   import BotKindChip from "../chat/BotKindChip.svelte";
   import { LOCAL_BOT_RUNTIMES } from "../chat/local-bots.js";
+  import { botNeedsSignIn } from "../chat/runtime-sign-in-again.js";
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import "../chat/tokens.css";
@@ -80,6 +81,8 @@
     return Boolean(flags[`${id}Available`]) && Boolean(flags[`${id}LoggedIn`]);
   }
   function presenceLabel(bot: LocalBotRow): string {
+    // A bot whose coding tool needs a new sign-in is up but not working.
+    if (botNeedsSignIn(bot)) return "Needs sign-in";
     if (bot.online === true) return "Online";
     if (bot.state === "failed") return "Stopped after errors";
     if (bot.processAlive) return "Starting…";
