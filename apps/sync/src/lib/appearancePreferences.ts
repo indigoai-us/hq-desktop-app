@@ -26,12 +26,9 @@ interface AppearanceRoot {
 /** What backs the window natively — see `window_material_capability` (Rust). */
 export type WindowMaterial = 'glass' | 'vibrancy' | 'none';
 
-/**
- * Without real Liquid Glass (macOS 26+), the translucent surfaces tuned for
- * it sit on a far more see-through vibrancy material and read as washed-out
- * grey (reported on Sequoia Macs and in VMs). Cap how much of the desktop
- * can show through in that case; the person's own preference is kept and
- * comes back untouched on a glass-capable machine.
+/** The PR772 surfaces are designed over either native material. Only an
+ * absent material needs the opaque fallback; vibrancy must not change the
+ * requested alpha and turn the reference's white 2% dark ground grey.
  */
 export const MAX_WINDOW_TRANSPARENCY_WITHOUT_GLASS = 15;
 
@@ -39,7 +36,7 @@ export function effectiveWindowTransparency(
   requested: number,
   material: WindowMaterial | null | undefined,
 ): number {
-  if (material === 'glass' || material == null) return requested;
+  if (material !== 'none') return requested;
   return Math.min(requested, MAX_WINDOW_TRANSPARENCY_WITHOUT_GLASS);
 }
 

@@ -83,9 +83,9 @@ export function composerPlaceholderFor(
       title === DIRECT_MESSAGE_PLACEHOLDER ||
       title === GROUP_MESSAGE_PLACEHOLDER
     ) {
-      return "Send a message — or type @ to mention an agent…";
+      return "Send a message — or type @ to mention a bot…";
     }
-    return `Message ${title} — or type @ to mention an agent…`;
+    return `Message ${title} — or type @ to mention a bot…`;
   }
-  return `Message # ${title} — or type @ to mention an agent…`;
+  return `Message # ${title} — or type @ to mention a bot…`;
 }

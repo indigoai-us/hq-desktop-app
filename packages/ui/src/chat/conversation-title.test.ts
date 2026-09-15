@@ -134,21 +134,21 @@ describe("composerPlaceholderFor", () => {
   it("hides the uid behind a generic send prompt for placeholder titles", () => {
     expect(
       composerPlaceholderFor(dm(), DIRECT_MESSAGE_PLACEHOLDER),
-    ).toBe("Send a message — or type @ to mention an agent…");
+    ).toBe("Send a message — or type @ to mention a bot…");
     expect(
       composerPlaceholderFor(
         { ...dm(), kind: "group", id: "grp:1" },
         GROUP_MESSAGE_PLACEHOLDER,
       ),
-    ).toBe("Send a message — or type @ to mention an agent…");
+    ).toBe("Send a message — or type @ to mention a bot…");
   });
 
   it("keeps the existing Message formats once a real title is known", () => {
     expect(composerPlaceholderFor(dm({ title: "Polar Data Agent" }), "Polar Data Agent")).toBe(
-      "Message Polar Data Agent — or type @ to mention an agent…",
+      "Message Polar Data Agent — or type @ to mention a bot…",
     );
     expect(composerPlaceholderFor(channel(), "launch")).toBe(
-      "Message # launch — or type @ to mention an agent…",
+      "Message # launch — or type @ to mention a bot…",
     );
   });
 });

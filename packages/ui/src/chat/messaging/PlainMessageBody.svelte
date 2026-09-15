@@ -82,7 +82,10 @@
     background: none;
     padding: 2px 0;
     color: var(--vio-ink, var(--accent, #7c8cff));
-    font: 600 12px/1.2 inherit;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
     cursor: pointer;
   }
 

@@ -48,10 +48,9 @@ describe('desktop-alt command palette coverage', () => {
     expect(desktopApp).not.toContain("id: 'command-go-companies'");
   });
 
-  it('keeps Atlas reachable from the palette with g a (US-016)', () => {
-    expect(desktopApp).toContain("id: 'command-go-atlas'");
-    expect(desktopApp).toContain("navigate({ kind: 'atlas' })");
-    expect(desktopApp).toContain("shortcut: 'g a'");
+  it('does not expose Atlas in the palette', () => {
+    expect(desktopApp).not.toContain("id: 'command-go-atlas'");
+    expect(desktopApp).not.toContain("shortcut: 'g a'");
   });
 
   it('fills the ACTIONS section with the hq-* verbs (deploy / share / run worker)', () => {

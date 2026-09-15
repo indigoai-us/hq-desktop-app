@@ -225,7 +225,7 @@ describe("destination equality and labels", () => {
       "Settings · Appearance",
     );
     expect(destinationLabel({ kind: "settings", section: "agents" })).toBe(
-      "Settings · Agents",
+      "Settings · AI tools",
     );
     expect(
       destinationLabel({ kind: "extra", page: "sessions", param: "new?draft=1" }),

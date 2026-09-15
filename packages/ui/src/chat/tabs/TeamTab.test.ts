@@ -5,7 +5,6 @@ import { flushSync, mount, unmount } from "svelte";
 import TeamTab from "./TeamTab.svelte";
 import CompanyTabs from "../CompanyTabs.svelte";
 import { parseCompanyTab, type CompanyTabModel } from "./tab-model.js";
-import type { CompanyChannelTabId } from "./tab-model.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -215,32 +214,24 @@ function memberTab(): CompanyTabModel {
 }
 
 describe("CompanyTabs", () => {
-  it("switches Chat · Atlas · Team · Settings", () => {
+  it("opens the company console URL via onopenurl", () => {
     host = document.createElement("div");
     document.body.appendChild(host);
-    let active: CompanyChannelTabId = "chat";
+    const opened: string[] = [];
     component = mount(CompanyTabs, {
       target: host,
       props: {
-        active,
-        onselect: (id: CompanyChannelTabId) => {
-          active = id;
-        },
+        slug: "indigo",
+        onopenurl: (url: string) => opened.push(url),
       },
     });
-    const labels = [...host.querySelectorAll(".company-tab")].map(
-      (el) => el.textContent?.trim(),
+    expect(host.querySelector('[data-testid="company-channel-tabs"]')).toBeNull();
+    const gear = host.querySelector<HTMLButtonElement>(
+      '[data-testid="company-console-gear"]',
     );
-    expect(labels).toEqual([
-      "Chat",
-      "Atlas",
-      "Team",
-      "Settings",
-    ]);
-    flushSync(() =>
-      host.querySelector<HTMLButtonElement>('[data-testid="company-tab-team"]')?.click(),
-    );
-    expect(active).toBe("team");
+    expect(gear).not.toBeNull();
+    flushSync(() => gear?.click());
+    expect(opened).toEqual(["https://hq.computer/companies/indigo"]);
   });
 });
 

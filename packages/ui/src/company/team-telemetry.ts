@@ -54,7 +54,7 @@ export function memberKindFromUid(uid: string): TeamMemberKind {
 
 /** Honest type label for list/detail chips — not a live status indicator. */
 export function memberKindLabel(kind: TeamMemberKind): string {
-  return kind === "agent" ? "Agent" : "Human";
+  return kind === "agent" ? "Bot" : "Human";
 }
 
 /**

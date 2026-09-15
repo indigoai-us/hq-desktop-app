@@ -16,6 +16,7 @@
   import CompaniesSettingsPane from "./CompaniesSettingsPane.svelte";
   import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
   import AgentsSettingsPane from "./AgentsSettingsPane.svelte";
+  import BotsSettingsPane from "./BotsSettingsPane.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
   import { avatarBase64FromFile } from "./avatar-image.js";
   import {
@@ -43,6 +44,7 @@
     | "companies"
     | "general"
     | "agents"
+    | "bots"
     | "appearance"
     | "notifications"
     | "sync"
@@ -55,7 +57,8 @@
       { id: "companies", label: "Companies" },
       { id: "sep", label: "" },
       { id: "general", label: "General" },
-      { id: "agents", label: "Agents" },
+      { id: "agents", label: "AI tools" },
+      { id: "bots", label: "Bots" },
       { id: "appearance", label: "Appearance" },
       { id: "notifications", label: "Notifications" },
       { id: "sync", label: "Sync" },
@@ -411,6 +414,9 @@
       }
       if (section.id === "agents")
         return Boolean(adapter?.sessions?.preflight);
+      // Bots: the Cloud group reads adapter.agents (every host); the Local
+      // group needs the desktop-only `bots` group and hides itself otherwise.
+      if (section.id === "bots") return Boolean(adapter?.bots || adapter?.agents);
       return true;
     }),
   );
@@ -669,6 +675,8 @@
         />
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
+      {:else if active === "bots"}
+        <BotsSettingsPane {adapter} {companies} />
       {:else}
         <PrototypeSettingsPanes
           section={active as
@@ -807,9 +815,10 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    background: var(--raised);
-    border: 1px solid var(--line);
-    border-radius: 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-top-color: var(--line);
+    border-radius: 0;
     padding: 14px 16px;
   }
 
@@ -821,8 +830,9 @@
 
   .sd {
     margin-top: 2px;
-    color: var(--t3);
-    font-size: 11px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.45;
   }
 
   .mono {

@@ -280,7 +280,7 @@
               <span class="ops-settings-row-copy title-stack">
                 <span class="ops-settings-row-title">Members and roles</span>
                 <span class="ops-settings-row-meta"
-                  >Humans, agents, and access in console</span
+                  >Humans, bots, and access in console</span
                 >
               </span>
               <button

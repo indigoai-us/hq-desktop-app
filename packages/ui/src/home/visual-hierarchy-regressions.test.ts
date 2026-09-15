@@ -55,15 +55,33 @@ describe("desktop visual hierarchy regressions", () => {
     );
   });
 
-  it("uses a stronger neutral glass material", () => {
+  it("paints a dark ground in dark mode instead of a white film (#807 regression)", () => {
+    // The PR772 refresh set the dark ground to `rgb(255 255 255 / 0.02)`, which
+    // paints nothing: the glass window then showed only blurred wallpaper and
+    // white text became unreadable. Dark mode must tint its own ground.
+    const chatTokens = normalize(
+      readFileSync(new URL("../chat/tokens.css", import.meta.url), "utf8"),
+    );
+    const darkGround =
+      "--v4-ground: rgb(17 17 17 / clamp(0.35, calc(0.86 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));";
+    for (const source of [tokens, chatTokens]) {
+      // Both the system-dark and forced-dark blocks.
+      expect(source.split(darkGround).length - 1).toBe(2);
+      expect(source).not.toContain(
+        "--v4-ground: rgb(255 255 255 / clamp(0.02,",
+      );
+    }
+  });
+
+  it("keeps detached menus legible with the PR772 reference material", () => {
     expect(tokens).toContain(
       "--v4-glass-filter-popover: blur(40px) saturate(124%) contrast(104%);",
     );
     expect(tokens).toContain(
-      "--v4-popover-strong: rgb(250 250 250 / clamp(0.7, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.308), 1));",
+      "--v4-popover-strong: rgb(252 252 253 / clamp(0.90, calc(0.96 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));",
     );
     expect(tokens).toContain(
-      "--v4-popover-strong: rgb(36 36 36 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.277), 1));",
+      "--v4-popover-strong: rgb(44 44 54 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));",
     );
   });
 });

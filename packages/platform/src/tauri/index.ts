@@ -23,6 +23,7 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
+import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { createCallsApi } from "../calls/api.js";
 import {
   createFeatureFlagGate,
@@ -671,6 +672,27 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     loginStart: (tool) => this.call("agent_provider_login_start", { tool }),
     loginStatus: (tool) => this.call("agent_provider_login_status", { tool }),
     loginCancel: (tool) => this.call("agent_provider_login_cancel", { tool }),
+  };
+
+  readonly bots: NonNullable<PlatformAdapter["bots"]> = {
+    list: () => this.call("local_bots_list"),
+    create: (input) =>
+      this.call("local_bots_create", {
+        name: input.name,
+        runtime: input.runtime,
+        model: input.model ?? null,
+        autoApprove: input.autoApprove ?? null,
+        worker: input.worker ?? null,
+        intro: input.intro ?? null,
+        kickoff: input.kickoff ?? null,
+        memory: input.memory ?? null,
+      }),
+    workers: () => this.call("local_bots_workers"),
+    start: (name) => this.call("local_bots_start", { name }),
+    stop: (name) => this.call("local_bots_stop", { name }),
+    remove: (name) => this.call("local_bots_remove", { name }),
+    configure: (name, settings) => this.call("local_bots_configure", localBotSettingsArgs(name, settings)),
+    promote: (name, companyUid) => this.call("local_bots_promote", { name, companyUid }),
   };
 
   readonly settings: PlatformAdapter["settings"] = {

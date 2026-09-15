@@ -81,7 +81,7 @@ describe('honest onboarding stage reporting', () => {
     expect(wizard).not.toContain('if (!result.needsAttention)');
     expect(wizard).toContain('if (finishing) return false;');
     expect(wizard).toContain('disabled={finishing ||');
-    expect(wizard).toContain('data-testid="onboarding-install-{slot.kind}"\n                    disabled={finishing}');
+    expect(wizard).toMatch(/data-testid="onboarding-install-\{slot\.kind\}"\n\s+disabled=\{finishing\}/);
   });
 
   it('awaits a bounded initial cloud sync rather than completing a detached task', () => {

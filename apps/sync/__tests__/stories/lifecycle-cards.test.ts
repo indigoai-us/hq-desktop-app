@@ -14,24 +14,20 @@ function readUi(rel: string): string {
 }
 
 describe("lifecycle cards desktop harness", () => {
-  it("keeps Chat · Atlas · Team · Integrations · Settings in CompanyTabs", () => {
+  it("company header gear opens the HQ console (no desktop Team/Settings/Atlas tabs)", () => {
     const src = readUi("chat/CompanyTabs.svelte");
-    expect(src).toContain("Chat");
-    expect(src).toContain("Atlas");
-    expect(src).toContain("Team");
-    expect(src).toContain("Integrations");
-    expect(src).toContain("Settings");
-    expect(src).toContain('data-testid="company-channel-tabs"');
+    expect(src).toContain("companyConsoleUrl");
+    expect(src).toContain('data-testid="company-console-gear"');
+    expect(src).not.toContain("Atlas");
   });
 
-  it("DesktopApp mounts company tabs, Team, Integrations, Settings, Atlas, and the hero", () => {
+  it("DesktopApp mounts the console gear and the hero (no Team/Settings/Atlas tabs)", () => {
     const src = readUi("shell/DesktopApp.svelte");
     expect(src).toContain("CompanyTabs");
-    expect(src).toContain("TeamTab");
-    // The Integrations tab was removed — apps connect in the HQ console only.
+    expect(src).not.toContain("TeamTab");
     expect(src).not.toContain("IntegrationsTab");
-    expect(src).toContain("SettingsTab");
-    expect(src).toContain("AtlasTab");
+    expect(src).not.toContain("SettingsTab");
+    expect(src).not.toContain("AtlasTab");
     expect(src).toContain("CompanyHero");
     expect(src).toContain("runCardAction");
   });

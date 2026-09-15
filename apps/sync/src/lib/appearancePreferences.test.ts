@@ -296,10 +296,10 @@ describe('appearance preferences', () => {
 });
 
 describe('window material without real glass', () => {
-  it('caps transparency on the vibrancy fallback and leaves glass alone', () => {
+  it('preserves the reference alpha over glass and vibrancy, with an absent-material fallback', () => {
     expect(effectiveWindowTransparency(65, 'glass')).toBe(65);
     expect(effectiveWindowTransparency(65, null)).toBe(65);
-    expect(effectiveWindowTransparency(65, 'vibrancy')).toBe(15);
+    expect(effectiveWindowTransparency(65, 'vibrancy')).toBe(65);
     expect(effectiveWindowTransparency(65, 'none')).toBe(15);
     expect(effectiveWindowTransparency(5, 'vibrancy')).toBe(5);
   });
@@ -320,7 +320,7 @@ describe('window material without real glass', () => {
       .filter(([name]) => name === '--hq-window-transparency-factor')
       .map(([, v]) => v);
     expect(factor[0]).toBe('0.65');
-    expect(factor.at(-1)).toBe('0.15');
+    expect(factor.at(-1)).toBe('0.65');
     expect(root.dataset.material).toBe('vibrancy');
     expect(root.dataset.windowTransparency).toBe('65');
     dispose();

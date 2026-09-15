@@ -13049,7 +13049,7 @@ mod tests {
             interpreter_dir.to_str().unwrap(),
         );
 
-        assert_eq!(result.local.as_deref(), Some("5.88.1"));
+        assert_eq!(result.local.as_deref(), Some("5.88.1"), "{:?}", result.probes);
         assert_eq!(result.probes.hq_version, VersionProbeOutcome::Succeeded);
         assert!(!should_report_unreadable_version(&result));
     }

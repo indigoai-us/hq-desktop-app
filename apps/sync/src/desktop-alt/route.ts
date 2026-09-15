@@ -157,6 +157,7 @@ export type SettingsTab =
   | 'updates'
   | 'general'
   | 'agents'
+  | 'bots'
   | 'appearance'
   | 'meetings';
 
@@ -285,6 +286,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{
   { id: 'updates', label: 'Updates' },
   { id: 'general', label: 'General' },
   { id: 'agents', label: 'Agents' },
+  { id: 'bots', label: 'Bots' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'meetings', label: 'Meetings' },
 ];
@@ -439,7 +441,7 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
     case 'mission-control':
       return { kind: 'mission-control' };
     case 'atlas':
-      return { kind: 'atlas' };
+      return { kind: 'home' };
     case 'inbox':
       return { kind: 'inbox' };
     case 'messages':

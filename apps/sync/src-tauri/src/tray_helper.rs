@@ -134,10 +134,9 @@ pub fn spawn_and_poll(app: &AppHandle) {
             };
             let _ = std::fs::remove_file(&cf);
             let cmd = cmd.trim();
-            // Menu-bar click opens the desktop workspace (first-run onboarding
-            // still keeps the installer card on `main`). Parse the icon's
-            // on-screen centre ("show <x>", Cocoa points) so a leftover
-            // popover still anchors under the icon if onboarding is showing.
+            // Menu-bar click opens the desktop workspace (setup still keeps the
+            // installer card on `main`). Parse the icon's on-screen centre
+            // ("show <x>", Cocoa points) so that card anchors under the icon.
             if let Some(rest) = cmd.strip_prefix("show") {
                 if let Ok(points) = rest.trim().parse::<f64>() {
                     crate::tray::set_tray_anchor_x(points);

@@ -85,7 +85,7 @@ const DEFAULT_LIFECYCLE_TITLES: Record<LifecycleCardKind, string> = {
   create_company: "Name your company",
   activate_cloud: "Turning on cloud sync",
   upgrade_plan: "Choose a plan",
-  create_agent: "Create an agent",
+  create_agent: "Create a bot",
   status: "Status",
   companies_summary: "Your companies",
   tab_row: "Row",

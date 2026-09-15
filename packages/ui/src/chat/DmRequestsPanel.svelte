@@ -379,7 +379,10 @@
     border-radius: var(--v4-radius-button, 6px);
     background: transparent;
     color: var(--t1);
-    font: 500 12px/1 inherit;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
     cursor: pointer;
   }
   .action:disabled {

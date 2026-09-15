@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * SetupChannelIntro — the welcome experience at the top of the synthetic
-   * #setup support channel in the live desktop shell: a wallpaper hero with
+   * #setup support channel in the live desktop shell: a window-ground introduction with
    * the three launch actions (Claude Code / Codex / Grok Build), then ghost
    * rows for the getting-started guide, the free book, the weekly onboarding
    * training, and the docs, closed by the support note.
@@ -11,8 +11,7 @@
    * the title-bar Launch menu uses, with `/setup` prefilled from
    * `SETUP_LAUNCH_COMMANDS`. The HQ folder path comes from
    * `settings.getSetupStatus`. Copy + links come from `setup-channel.ts`
-   * (shared with the classic messaging surface); art from
-   * `setup-welcome-art.ts`. The live message thread + composer below this
+   * (shared with the classic messaging surface). The live message thread + composer below this
    * header are the shell's standard ChannelConversation pipeline with
    * channelId "setup" — this component owns only the intro. Lifecycle cards
    * (`create_company`, `companies_summary`) render in that conversation.
@@ -29,6 +28,7 @@
    * localStorage so a relaunch offers "Continue setup (N of 4)".
    */
   import { onMount } from "svelte";
+  import SetupWelcomeMark from "./SetupWelcomeMark.svelte";
   import type { SettingsApi, ShellApi } from "@hq/platform";
   import {
     createLaunchActions,
@@ -50,13 +50,13 @@
     setupRosterLoading,
     type SetupRosterStatus,
   } from "./setup-channel";
-  import { SETUP_HERO_ART } from "./setup-welcome-art";
   import { SETUP_RESOURCE_GLYPHS } from "./setup-resource-glyphs";
   import SetupRunCard from "./SetupRunCard.svelte";
   import SetupConnectStep from "./SetupConnectStep.svelte";
   import SetupButton from "./SetupButton.svelte";
   import { SETUP_RUN_STEPS } from "./setup-run";
   import type { SetupAgent } from "./setup-agent.svelte";
+  import { SETUP_BOT_COPY, setupBotActionLabel, type SetupBotLauncher } from "./setup-bot";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
 
@@ -117,6 +117,14 @@
      * stepper. Without it, Run Setup opens the host's Sessions draft.
      */
     agent?: SetupAgent | null;
+    /**
+     * SETUP AS A BOT (bots v2, step 3). With a launcher, Run Setup creates a
+     * Local bot named `setup` from the core template and opens its DM instead
+     * of starting the scripted run; the bot's own welcome message is its first
+     * turn. The scripted run stays as the fallback when creating the bot
+     * fails, so nobody is ever stuck on this screen.
+     */
+    setupBot?: SetupBotLauncher | null;
     /** "Show details": open the underlying session on the Sessions page. */
     onopensessiondetails?: (sessionId: string) => void;
     /**
@@ -138,6 +146,7 @@
     onsetupstarted,
     agent = null,
     onopensessiondetails,
+    setupBot = null,
   }: Props = $props();
 
   const rosterCompanies = $derived(setupCompanies(companies));
@@ -204,6 +213,56 @@
    * prefilled; hosts without in-app Sessions fall back to Claude Code.
    */
   function runSetup(): void {
+    if (setupBot && !scriptedFallback) {
+      void runSetupBot();
+      return;
+    }
+    if (agent?.api) {
+      void startAgent();
+      return;
+    }
+    openSessionsForSetup();
+  }
+
+  /** Creating the setup bot, or opening the one that is already here. */
+  let botBusy = $state(false);
+  let botError = $state<string | null>(null);
+  const visibleBotError = $derived(botError ?? setupBot?.error);
+  /** The bot could not be made: the scripted run takes over from the next click. */
+  let scriptedFallback = $state(false);
+
+  const runLabel = $derived(
+    setupBot && !scriptedFallback ? setupBotActionLabel(setupBot) : SETUP_RUN_LABEL,
+  );
+  /** Hero body in bot mode — setup is a conversation now, not a wizard. */
+  const heroBody = $derived(
+    setupBot && !scriptedFallback && !rosterLoading
+      ? setupBot.starting && !setupBot.existing
+        ? SETUP_BOT_COPY.bodyStarting
+        : setupBot.existing
+        ? SETUP_BOT_COPY.bodyExisting
+        : SETUP_BOT_COPY.body
+      : hero.body,
+  );
+
+  async function runSetupBot(): Promise<void> {
+    if (!setupBot || botBusy) return;
+    botBusy = true;
+    botError = null;
+    try {
+      const result = await setupBot.start();
+      if (!result.ok) botError = result.reason;
+    } catch (err) {
+      botError = err instanceof Error ? err.message : String(err);
+    } finally {
+      botBusy = false;
+    }
+  }
+
+  /** "Use the step-by-step setup instead": the old scripted run, right now. */
+  function useScriptedSetup(): void {
+    scriptedFallback = true;
+    botError = null;
     if (agent?.api) {
       void startAgent();
       return;
@@ -280,23 +339,9 @@
   data-setup-roster-status={rosterStatus ?? "ready"}
 >
   <div class="hero" data-testid="setup-hero">
-    <img
-      class="hero-art hero-art--light"
-      src={SETUP_HERO_ART.light}
-      alt=""
-      aria-hidden="true"
-      decoding="async"
-      draggable="false"
-    />
-    <img
-      class="hero-art hero-art--dark"
-      src={SETUP_HERO_ART.dark}
-      alt=""
-      aria-hidden="true"
-      decoding="async"
-      draggable="false"
-    />
-    <div class="hero-scrim" aria-hidden="true"></div>
+    {#if !runActive}
+      <div class="hero-mark"><SetupWelcomeMark /></div>
+    {/if}
     {#if runActive && agent}
       <div class="hero-copy hero-copy--run">
         <SetupRunCard
@@ -321,13 +366,13 @@
           aria-live="polite"
           data-testid="setup-roster-loading"
         >
-          {hero.body}
+          {heroBody}
         </p>
       {:else}
-        <p class="hero-body">{hero.body}</p>
+        <p class="hero-body">{heroBody}</p>
       {/if}
-      {#if agent?.api}
-        <!-- What Run Setup will do, visible before the first click. -->
+      {#if agent?.api && !setupBot}
+        <!-- What the scripted Run Setup will do. The setup bot says this itself. -->
         <ol class="steps-preview" aria-label="Setup steps" data-testid="setup-steps-preview">
           {#each SETUP_RUN_STEPS as step, index (step.id)}
             <li class="steps-preview-step">
@@ -360,13 +405,40 @@
         <SetupButton
           variant="primary"
           data-testid="setup-run"
-          disabled={Boolean(agent?.busy) || (!agent?.api && !onopensessions && (!canLaunch || launching !== null))}
-          aria-busy={Boolean(agent?.busy) || (!onopensessions && launching === "claude")}
+          disabled={botBusy ||
+            Boolean(setupBot?.starting && !scriptedFallback) ||
+            Boolean(agent?.busy) ||
+            (!setupBot && !agent?.api && !onopensessions && (!canLaunch || launching !== null))}
+          aria-busy={botBusy || Boolean(agent?.busy) || (!onopensessions && launching === "claude")}
           onclick={runSetup}
         >
-          {agent?.busy ? "Starting…" : SETUP_RUN_LABEL}
+          {setupBot?.starting && !scriptedFallback && !botBusy
+            ? SETUP_BOT_COPY.autoStarting
+            : botBusy || agent?.busy
+              ? SETUP_BOT_COPY.starting
+              : runLabel}
         </SetupButton>
       </div>
+      {#if visibleBotError}
+        <!-- The bot could not be created: say why, offer another go, and
+             keep the old scripted run one click away. -->
+        <div class="bot-failure" data-testid="setup-bot-failure">
+          <p class="launch-error" role="alert" data-testid="setup-bot-error">{visibleBotError}</p>
+          <div class="hero-actions" role="group" aria-label="Setup bot recovery">
+            <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
+              {SETUP_BOT_COPY.retry}
+            </SetupButton>
+            <SetupButton
+              variant="quiet"
+              data-testid="setup-bot-fallback"
+              disabled={Boolean(agent?.busy)}
+              onclick={useScriptedSetup}
+            >
+              {SETUP_BOT_COPY.fallback}
+            </SetupButton>
+          </div>
+        </div>
+      {/if}
       {/if}
       {#if !onopensessions && launchErrors.claude}
         <p class="launch-error" role="alert">{launchErrors.claude}</p>
@@ -375,6 +447,7 @@
         <p class="launch-error" role="alert" data-testid="setup-run-start-error">{agent?.error}</p>
       {/if}
 
+      {#if !setupBot}
       <details class="advanced" data-testid="setup-advanced">
         <summary>{SETUP_ADVANCED_LABEL}</summary>
         <div class="advanced-body">
@@ -442,49 +515,62 @@
 
           <p data-testid="setup-hosted-agent-guidance">{SETUP_HOSTED_AGENT_NOTE}</p>
 
-          <ul class="resources" aria-label="Learn HQ">
-            {#each SETUP_RESOURCES as resource (resource.id)}
-              <li class="resource">
-                <a
-                  class="resource-link"
-                  href={resource.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  data-testid={`setup-resource-${resource.id}`}
-                  onclick={(event) => openResourceLink(event, resource.href)}
-                >
-                  <svg
-                    class="resource-glyph"
-                    viewBox="0 0 16 16"
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.25"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
-                  </svg>
-                  <span class="resource-text">
-                    <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
-                    <span class="resource-title">{resource.title}</span>
-                    <span class="resource-desc">{resource.description}</span>
-                  </span>
-                </a>
-              </li>
-            {/each}
-          </ul>
+          {@render resourceList()}
           <p class="support-note" data-testid="setup-support-note">{SETUP_SUPPORT_NOTE}</p>
         </div>
       </details>
+      {/if}
     </div>
     {/if}
   </div>
+  {#if setupBot && !(runActive && agent)}
+    <div class="bot-resources" data-testid="setup-resources">
+      {@render resourceList()}
+    </div>
+  {/if}
 </section>
 
+{#snippet resourceList()}
+  <ul class="resources" aria-label="Learn HQ">
+    {#each SETUP_RESOURCES as resource (resource.id)}
+      <li class="resource">
+        <a
+          class="resource-link"
+          href={resource.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid={`setup-resource-${resource.id}`}
+          onclick={(event) => openResourceLink(event, resource.href)}
+        >
+          <svg
+            class="resource-glyph"
+            viewBox="0 0 16 16"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.25"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
+          </svg>
+          <span class="resource-text">
+            <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
+            <span class="resource-title">{resource.title}</span>
+            <span class="resource-desc">{resource.description}</span>
+          </span>
+        </a>
+      </li>
+    {/each}
+  </ul>
+{/snippet}
+
 <style>
+  .bot-resources {
+    margin-top: 0;
+  }
   .advanced {
     margin-top: 14px;
     font-size: 13px;
@@ -492,12 +578,12 @@
   .advanced summary {
     cursor: pointer;
     width: fit-content;
-    color: rgba(255, 255, 255, 0.72);
+    color: var(--t2);
     font-size: 12px;
     letter-spacing: 0.02em;
   }
   .advanced summary:hover {
-    color: #ffffff;
+    color: var(--t1);
   }
   .advanced-body {
     display: flex;
@@ -508,122 +594,99 @@
   .advanced-body p {
     margin: 0;
     line-height: 1.5;
-    color: rgba(255, 255, 255, 0.72);
+    color: var(--t2);
   }
-  /* Learn-HQ rows live inside the dark hero now: keep them legible on it. */
+  /* Resources and setup details share the reference canvas ink. */
   .advanced-body .resources {
     margin-top: 4px;
-    border-top: 1px solid rgba(255, 255, 255, 0.14);
+    border-top: 1px solid var(--line);
   }
   .advanced-body .resource-link,
   .advanced-body .resource-title {
-    color: #ffffff;
+    color: var(--t1);
   }
   .advanced-body .resource-desc,
   .advanced-body .eyebrow--muted,
   .advanced-body .support-note {
-    color: rgba(255, 255, 255, 0.66);
+    color: var(--t3);
   }
   .advanced-body .support-note {
     font-size: 12px;
   }
   .setup-intro {
+    container-type: inline-size;
     flex: 0 0 auto;
     overflow: visible;
     width: 100%;
-    max-width: 760px;
-    padding: var(--space-2, 8px) 0 var(--space-3, 12px);
+    max-width: none;
+    padding: 4px 0 12px;
     margin-bottom: var(--space-3, 12px);
     display: flex;
     flex-direction: column;
     gap: var(--space-4, 16px);
-    border-bottom: 1px solid var(--border);
+    border-bottom: 0;
+  }
+
+  .advanced-body .resource-link {
+    background: var(--raised);
+    border: 1px solid var(--line);
+  }
+  .resource-link:hover {
+    background: var(--btn-bg);
+  }
+  .advanced-body .resource-link:hover {
+    background: var(--hover);
   }
 
   /* ---- Hero ------------------------------------------------------------ */
 
+  /* The supplied #772 reference places the welcome copy directly on the
+     window ground; the current setup actions and state machine stay intact. */
   .hero {
     position: relative;
-    isolation: isolate;
-    overflow: hidden;
-    min-height: 248px;
-    /* Wallpaper panels are always dark; the eyebrow/title sit on white. The
-       fallback color covers the frame before the art decodes. */
-    background: #0a0b0d;
-    color: #ffffff;
-    /* Buttons live on the wallpaper, so they are image-relative (white on
-       dark), not theme-relative — the same in light and dark shells. */
-    --setup-btn-fg: #fff;
-    --setup-btn-line: rgba(255, 255, 255, 0.6);
-    --setup-btn-primary-bg: #fff;
-    --setup-btn-primary-fg: #111;
-    --setup-btn-muted: rgba(255, 255, 255, 0.8);
-    --setup-btn-hover: rgba(255, 255, 255, 0.14);
+    color: var(--t1);
+    background: transparent;
+    --setup-btn-fg: var(--t1);
+    --setup-btn-line: var(--line2);
+    --setup-btn-primary-bg: var(--btn-bg);
+    --setup-btn-primary-fg: var(--t1);
+    --setup-btn-muted: var(--t2);
+    --setup-btn-hover: var(--hover);
   }
 
-  .hero-art {
+  .hero-mark {
     position: absolute;
-    inset: 0;
-    z-index: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    /* Aim the crop at the clean sky band, keeping the moon in frame. */
-    object-position: center 28%;
-    user-select: none;
-    pointer-events: none;
+    top: 20px;
+    left: 0;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: var(--ice-tile);
+    color: var(--ice-ink);
   }
 
-  /* Light shell shows the brighter monoliths piece; dark shows the aurora.
-     Mirrors the chat-tokens.css theme cascade (force-theme wins over OS). */
-  .hero-art--dark {
-    display: none;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :global(:root:not([data-force-theme="light"])) .hero-art--dark {
-      display: block;
-    }
-
-    :global(:root:not([data-force-theme="light"])) .hero-art--light {
-      display: none;
-    }
-  }
-
-  :global(:root[data-force-theme="dark"]) .hero-art--dark {
-    display: block;
-  }
-
-  :global(:root[data-force-theme="dark"]) .hero-art--light {
-    display: none;
-  }
-
-  .hero-scrim {
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    background:
-      linear-gradient(
-        180deg,
-        rgba(6, 6, 6, 0.08) 0%,
-        rgba(6, 6, 6, 0.42) 48%,
-        rgba(6, 6, 6, 0.86) 100%
-      ),
-      linear-gradient(90deg, rgba(6, 6, 6, 0.55) 0%, rgba(6, 6, 6, 0) 70%);
+  .hero-actions :global(.setup-btn) {
+    border-radius: 8px;
+    min-height: 32px;
+    padding-inline: 14px;
   }
 
   .hero-copy {
+    box-sizing: border-box;
     position: relative;
     z-index: 2;
     display: flex;
     flex-direction: column;
     gap: var(--space-2, 8px);
-    padding: var(--space-6, 24px) var(--space-5, 20px) var(--space-5, 20px);
-    min-height: 248px;
-    justify-content: flex-end;
+    padding: 20px 0 24px 56px;
+    border-bottom: 1px solid var(--line);
+    justify-content: flex-start;
   }
 
   .hero-copy--run {
+    padding-left: 0;
     justify-content: flex-end;
     min-height: 168px;
     padding-top: var(--space-4, 16px);
@@ -640,29 +703,29 @@
     font-weight: 500;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.62);
+    color: var(--t3);
   }
 
   .hero-title {
     margin: 0;
-    max-width: 22ch;
-    font-size: var(--type-detail, 24px);
-    font-weight: 500;
-    line-height: 1.15;
+    max-width: none;
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.25;
     letter-spacing: -0.012em;
-    color: #ffffff;
+    color: var(--t1);
   }
 
   .hero-body {
     margin: 0;
-    max-width: 52ch;
+    max-width: 64ch;
     font-size: var(--text-base, 13px);
-    line-height: 1.55;
-    color: rgba(255, 255, 255, 0.74);
+    line-height: 1.5;
+    color: var(--t2);
   }
 
   .roster-loading {
-    color: rgba(255, 255, 255, 0.62);
+    color: var(--t3);
   }
 
   .roster-failed {
@@ -673,7 +736,7 @@
     margin: 0;
     font-size: var(--text-base, 13px);
     line-height: 1.4;
-    color: rgba(255, 255, 255, 0.85);
+    color: var(--t2);
   }
 
   .steps-preview {
@@ -684,7 +747,7 @@
     padding: 0;
     list-style: none;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.78);
+    color: var(--t2);
   }
   .steps-preview-step {
     display: inline-flex;
@@ -698,7 +761,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.45);
+    border: 1px solid var(--line2);
     font-size: 10px;
     font-variant-numeric: tabular-nums;
   }
@@ -730,41 +793,69 @@
     margin-top: var(--space-3, 12px);
   }
 
+  .bot-failure {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
   .launch-error {
     margin: 0;
     max-width: 22rem;
     font-size: var(--text-base, 13px);
     line-height: 1.4;
-    color: rgba(255, 255, 255, 0.85);
+    color: var(--t2);
   }
 
-  /* ---- Resources (ghost rows, no card chrome) ------------------------- */
+  /* ---- Resource cards ------------------------------------------------ */
 
   .resources {
     margin: 0;
     padding: 0;
     list-style: none;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     column-gap: var(--space-6, 24px);
+
+    gap: 10px;
+  }
+
+  @container (max-width: 420px) {
+    .resources {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   .resource {
-    border-top: 1px solid var(--border);
+    border-top: 0;
+
+    min-width: 0;
   }
 
   .resource-link {
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) 14px;
-    align-items: start;
-    gap: var(--space-3, 12px);
-    padding: var(--space-3, 12px) 0 var(--space-4, 16px);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 16px;
     color: var(--fg);
     text-decoration: none;
+
+    height: 100%;
+
+    box-sizing: border-box;
+
+    border-radius: 10px;
+
+    background: var(--raised);
   }
 
   .resource-glyph {
-    margin-top: 2px;
+    padding: 8px;
+    box-sizing: content-box;
+    border-radius: 8px;
+    background: var(--btn-bg);
+    margin-top: 0;
     color: var(--muted);
     transition: color 140ms ease;
   }
@@ -781,8 +872,8 @@
   }
 
   .resource-title {
-    font-size: var(--text-base, 13px);
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 600;
     line-height: 1.35;
     color: var(--fg);
     text-decoration: underline;
@@ -792,7 +883,7 @@
   }
 
   .resource-desc {
-    font-size: var(--text-base, 13px);
+    font-size: 12px;
     line-height: 1.5;
     color: var(--muted);
   }
@@ -829,9 +920,9 @@
 
   .support-note {
     margin: 0;
-    padding-top: var(--space-3, 12px);
+    padding-top: 16px;
     border-top: 1px solid var(--border);
-    font-size: var(--text-base, 13px);
+    font-size: 12px;
     line-height: 1.5;
     color: var(--muted-2);
   }

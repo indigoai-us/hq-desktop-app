@@ -32,6 +32,7 @@ import {
   createHqProFlagFetch,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
+import { localBotSettingsArgs } from './local-bot-settings.js';
 import { createCallsApi } from '../calls/api.js';
 
 export type SyncInvokeFn = (
@@ -1085,6 +1086,32 @@ export function createSyncPlatformAdapter(
       loginStart: (tool) => call('agent_provider_login_start', { tool }),
       loginStatus: (tool) => call('agent_provider_login_status', { tool }),
       loginCancel: (tool) => call('agent_provider_login_cancel', { tool }),
+    },
+
+    // local-bots US-009: desktop-only — every call shells to `hq bot … --json`
+    // behind the host's launch boundary (src-tauri/src/commands/bots.rs).
+    bots: {
+      list: () => call('local_bots_list'),
+      // Every field of LocalBotCreateInput has to reach the Rust command:
+      // dropping one here silently loses it (live 2026-09-12, `intro` never
+      // arrived, so the new bot greeted the owner with the generic hello).
+      create: (input) =>
+        call('local_bots_create', {
+          name: input.name,
+          runtime: input.runtime,
+          model: input.model ?? null,
+          autoApprove: input.autoApprove ?? null,
+          worker: input.worker ?? null,
+          intro: input.intro ?? null,
+          kickoff: input.kickoff ?? null,
+          memory: input.memory ?? null,
+        }),
+      workers: () => call('local_bots_workers'),
+      start: (name) => call('local_bots_start', { name }),
+      stop: (name) => call('local_bots_stop', { name }),
+      remove: (name) => call('local_bots_remove', { name }),
+      configure: (name, settings) => call('local_bots_configure', localBotSettingsArgs(name, settings)),
+    promote: (name, companyUid) => call("local_bots_promote", { name, companyUid }),
     },
 
     settings: {

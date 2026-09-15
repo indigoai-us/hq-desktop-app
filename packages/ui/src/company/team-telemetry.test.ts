@@ -20,13 +20,13 @@ describe("memberKindFromUid", () => {
 
 describe("memberKindLabel / memberTypeRoleLabel", () => {
   it("labels kinds honestly without inventing presence", () => {
-    expect(memberKindLabel("agent")).toBe("Agent");
+    expect(memberKindLabel("agent")).toBe("Bot");
     expect(memberKindLabel("human")).toBe("Human");
   });
 
   it("prefers payload role when present, else kind label", () => {
     expect(memberTypeRoleLabel({ kind: "human", role: "owner" })).toBe("owner");
-    expect(memberTypeRoleLabel({ kind: "agent" })).toBe("Agent");
+    expect(memberTypeRoleLabel({ kind: "agent" })).toBe("Bot");
     expect(memberTypeRoleLabel({ kind: "human", role: "  " })).toBe("Human");
   });
 });

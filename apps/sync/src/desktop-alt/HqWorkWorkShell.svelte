@@ -411,13 +411,25 @@
    * Resolves `true` when the roster applied (or the session moved on — nothing
    * left to retry) and `false` when the fetch failed for the session that asked.
    */
+  let workspaceRequest = 0;
   async function refreshWorkspaces(request: number, generation = authGeneration): Promise<boolean> {
+    const sequence = ++workspaceRequest;
+    const isCurrent = () => sequence === workspaceRequest && request === hydration && generation === authGeneration && lifecycle === 'ready';
     try {
+      // The native request keeps running after the UI deadline. Accept a late
+      // success while it still belongs to this account and newest request.
+      const pending = adapter.identity.listWorkspaces().then((result) => {
+        if (isCurrent() && result.ok) {
+          companies = workspacesFromMembershipRows(result.value);
+          workspaceError = null;
+        }
+        return result;
+      });
       const result = await bounded(
-        adapter.identity.listWorkspaces(),
+        pending,
         'Workspace lookup',
       );
-      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return true;
+      if (!isCurrent()) return true;
       if (!result.ok) {
         // Keep a previously good roster on screen; the refresher retries.
         workspaceError = result.message ?? 'Couldn’t load company workspaces.';
@@ -427,7 +439,7 @@
       workspaceError = null;
       return true;
     } catch (error) {
-      if (request !== hydration || generation !== authGeneration || lifecycle !== 'ready') return true;
+      if (!isCurrent()) return true;
       workspaceError = readableError(error, 'Couldn’t load company workspaces.');
       return false;
     }
@@ -922,9 +934,9 @@
     </section>
   {:else if capabilities}
     {#if workspaceError}
-      <div class="workspace-warning" data-testid="hq-work-workspace-error" role="alert">
-        <span>{workspaceError}</span>
-        <button type="button" onclick={() => void retryWorkspaces()}>Retry workspaces</button>
+      <div class="workspace-warning" data-testid="hq-work-workspace-error" role="status">
+        <span>Workspaces couldn’t refresh.</span>
+        <button type="button" onclick={() => void retryWorkspaces()}>Retry</button>
       </div>
     {/if}
     {#if signOutError}
@@ -939,6 +951,7 @@
         startError={thread.startError ?? null}
       />
     {/snippet}
+    <div class="work-shell-frame">
     {#key authGeneration}
       <WorkShell
         {channelSessionBody}
@@ -1018,6 +1031,7 @@
         }}
       />
     {/key}
+    </div>
   {/if}
 </div>
 
@@ -1035,11 +1049,36 @@
   }
 
   .hq-work-embedded {
+    display: flex;
+    flex-direction: column;
     width: 100%;
     height: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  /* PR #772's staged window backing, below the shared surface tokens.
+     AppKit supplies the blur; repeating backdrop-filter inside WebKit washes
+     the native window out. Preserve the existing opacity control, with the
+     reference's .82/.86 alphas at its default transparency of 65.
+     The dark backing follows the supplied rendered PR reference: unobstructed
+     canvas samples (600,200) = #171435 and (540,940) = #12182e on its
+     1920x1305 preview. This retains that reference appearance across desktops. */
+  .hq-work-embedded {
+    background: rgb(250 250 252 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.276923), 1));
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-force-theme="light"])) .hq-work-embedded {
+      --reference-window-alpha: clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.215385), 1);
+      background: linear-gradient(180deg, rgb(23 20 53 / var(--reference-window-alpha)), rgb(18 24 46 / var(--reference-window-alpha)));
+    }
+  }
+
+  :global(:root[data-force-theme="dark"]) .hq-work-embedded {
+    --reference-window-alpha: clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.215385), 1);
+    background: linear-gradient(180deg, rgb(23 20 53 / var(--reference-window-alpha)), rgb(18 24 46 / var(--reference-window-alpha)));
   }
 
   .lifecycle-state {
@@ -1060,8 +1099,7 @@
     margin: 0;
   }
 
-  .lifecycle-state > button,
-  .workspace-warning button {
+  .lifecycle-state > button {
     width: fit-content;
     padding: 7px 10px;
     border: 1px solid #4b5563;
@@ -1084,19 +1122,46 @@
   }
 
   .workspace-warning {
-    position: absolute;
-    z-index: 100;
-    right: 16px;
-    bottom: 16px;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 10px;
-    max-width: min(560px, calc(100% - 32px));
-    padding: 10px 12px;
-    border: 1px solid #854d0e;
-    border-radius: 8px;
-    color: #fef3c7;
-    background: #3b2f10;
+    justify-content: center;
+    gap: 12px;
+    box-sizing: border-box;
+    padding: 3px 10px;
+    border-bottom: 1px solid var(--v4-hairline, #414141);
+    font-family: var(--font-sans, system-ui, sans-serif);
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--v4-text-2, #b0b0b0);
+    background: var(--v4-surface-solid, #282828);
+  }
+
+  .work-shell-frame {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .workspace-warning button {
+    flex-shrink: 0;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: 4px;
+    font: inherit;
+    color: var(--v4-text-1, #ededed);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .workspace-warning button:hover {
+    background: var(--c-hover, rgb(128 128 128 / 15%));
+  }
+
+  .workspace-warning button:focus-visible {
+    outline: 2px solid var(--v4-text-1, #ededed);
+    outline-offset: 2px;
   }
 
   .hq-work-boot {

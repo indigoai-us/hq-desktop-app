@@ -1036,6 +1036,107 @@ export interface SessionsApi {
   loginCancel?(tool: SessionProviderId): AdapterPromise<Json>;
 }
 
+/** A personal local bot (local-bots US-009) as reported by `hq bot list --json`. */
+export interface LocalBotRow {
+  /** Absent on older CLI versions; cloud only after verified activation. */
+  hosting?: "local" | "cloud";
+  name: string;
+  agentUid: string;
+  ownerUid: string;
+  runtime: "claude" | "codex" | "grok";
+  /** Model override; absent = the runtime CLI's own default for the owner's account. */
+  model?: string;
+  /** Thinking level the bot runs with (`hq bot list` reports the effective value). */
+  effort?: string;
+  /** True when no thinking level was picked, so `effort` is the default. */
+  effortIsDefault?: boolean;
+  /** Local process state: running | stopped | failed. */
+  state: string;
+  pid: number | null;
+  processAlive: boolean;
+  /** Durable local handoff hold; null destination means it could not be verified. */
+  promotionHold?: { companyUid: string | null } | null;
+  /** Server-side liveness (heartbeat < 90 s); null when hq-pro was unreachable. */
+  online: boolean | null;
+  lastHeartbeatAt: string | null;
+  daemonInstalled: boolean;
+  daemonLoaded: boolean;
+  dir: string;
+  /** Configured memory folder, reported by the supervisor; may be absolute for Mac-only memory. */
+  memoryDir?: string;
+  /** Set when the bot was created from a company/core worker (`--worker`). */
+  workerId?: string;
+  companySlug?: string;
+}
+
+/** A worker a bot can be created from (`hq bot workers --json`). */
+export interface LocalBotWorkerOption {
+  id: string;
+  /** hqRoot-relative worker folder. */
+  path: string;
+  company?: string;
+  description?: string;
+  type?: string;
+  /** Human name from worker.yaml; falls back to a title-cased id. */
+  name?: string;
+  /** Curated one-liner from worker.yaml `summary:`; else the first sentence of `description`. */
+  summary?: string;
+  /** Number of skills the worker ships. */
+  skillCount?: number;
+  /** Whether the worker is an HQ core template or a company one. */
+  source?: "core" | "company";
+}
+
+/** Input to `LocalBotsApi.create` — mirrors `hq bot create` flags. */
+export interface LocalBotCreateInput {
+  name: string;
+  runtime: "claude" | "codex" | "grok";
+  /** Optional model override passed to the runtime CLI. */
+  model?: string;
+  /** Pre-approve every tool/command (default true; headless bots cannot prompt). */
+  autoApprove?: boolean;
+  /** Create the bot from this worker id instead of a fresh persona. */
+  worker?: string;
+  /** Optional first message the bot sends when it comes online (≤ 500 chars). */
+  intro?: string;
+  /**
+   * Optional first task (≤ 2000 chars): right after the intro, on first start
+   * only, the bot runs one model turn on this prompt as if the owner sent it
+   * and DMs the answer (`hq bot create --kickoff`).
+   */
+  kickoff?: string;
+  /** Where the bot's memory lives: HQ-synced (default) or this Mac only. */
+  memory?: "synced" | "local";
+}
+
+/**
+ * Desktop-only group (local-bots US-009): personal bots that run on THIS
+ * computer under the user's own model login. Every call shells to the hq CLI
+ * through the host's launch boundary; nothing here talks to hq-pro directly.
+ */
+export interface LocalBotsApi {
+  list(): AdapterPromise<{ bots: LocalBotRow[] }>;
+  create(input: LocalBotCreateInput): AdapterPromise<Json>;
+  /** Workers a bot can be created from; optional for older hosts. */
+  workers?(): AdapterPromise<{ workers: LocalBotWorkerOption[] }>;
+  start(name: string): AdapterPromise<Json>;
+  stop(name: string): AdapterPromise<Json>;
+  remove(name: string): AdapterPromise<Json>;
+  /**
+   * Change what a bot thinks with (`hq bot set`), from its next message.
+   * A field left out is unchanged; `null` resets it to the default.
+   * Optional for older hosts.
+   */
+  configure?(name: string, settings: LocalBotSettingsInput): AdapterPromise<Json>;
+  promote?(name: string, companyUid: string): AdapterPromise<Json>;
+}
+
+/** Input to `LocalBotsApi.configure`. */
+export interface LocalBotSettingsInput {
+  model?: string | null;
+  effort?: string | null;
+}
+
 /** Local per-platform settings. */
 export interface SettingsApi {
   getConfig(): AdapterPromise<Json>;
@@ -1292,6 +1393,8 @@ export interface PlatformAdapter {
   readonly updates: UpdatesApi;
   readonly packages: PackagesApi;
   readonly sessions: SessionsApi;
+  /** Optional: only the desktop host can run bots on this machine. */
+  readonly bots?: LocalBotsApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
   /** Native calling (US-014). Unsupported hosts implement it as refusals. */

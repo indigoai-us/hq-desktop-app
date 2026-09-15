@@ -102,7 +102,6 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyCardFocus: "none",
   navigateToEntryTarget: "push",
   applyCardActionFailure: "none",
-  handleTeamAction: "push",
   handleCardAction: "push",
   openReply: "push",
   openSessionFromCard: "none",
@@ -116,6 +115,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyPendingConversation: "push",
   changeTenantCompany: "push",
   openCompanyFromSetup: "push",
+  // #welcome / Home setup card → the setup bot's DM (handleSelect).
+  openSetupBotDm: "push",
   applyChannelWake: "none",
   openAttachmentTray: "none",
   openChannelFile: "none",
@@ -151,15 +152,6 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     file: SHARED_SHELL_FILE,
     needle: 'id: "command-go-meetings"',
     destinationKind: "meetings",
-    history: "push",
-    host: "shared-shell",
-    inScope: true,
-  },
-  {
-    id: "palette-go-atlas",
-    file: SHARED_SHELL_FILE,
-    needle: 'id: "command-go-atlas"',
-    destinationKind: "atlas",
     history: "push",
     host: "shared-shell",
     inScope: true,
@@ -218,15 +210,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     host: "shared-shell",
     inScope: true,
   },
-  {
-    id: "team-action-navigate-chat",
-    file: SHARED_SHELL_FILE,
-    needle: 'if (result?.navigateTo === "chat")',
-    destinationKind: "channel",
-    history: "push",
-    host: "shared-shell",
-    inScope: true,
-  },
+
   {
     id: "card-action-open-agent-channel",
     file: SHARED_SHELL_FILE,
@@ -475,15 +459,6 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
   },
   {
-    id: "go-chord-atlas",
-    file: SHARED_SHELL_FILE,
-    needle: 'if (letter !== "a") return false;',
-    destinationKind: "atlas",
-    history: "push",
-    host: "shared-shell",
-    inScope: true,
-  },
-  {
     id: "titlebar-create-extra-page",
     file: SHARED_SHELL_FILE,
     needle: "openExtraPage(id, action.param())",
@@ -687,15 +662,6 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
   },
   {
-    id: "atlas-page",
-    file: SHARED_SHELL_FILE,
-    needle: 'headerVariant="embedded"',
-    destinationKind: "atlas",
-    history: "push",
-    host: "shared-shell",
-    inScope: true,
-  },
-  {
     id: "agent-surface-tab",
     file: SHARED_SHELL_FILE,
     needle: "onclick={() => pushConversationSurface({ agentSurface: t.id })}",
@@ -713,15 +679,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     host: "shared-shell",
     inScope: true,
   },
-  {
-    id: "company-tab-select",
-    file: SHARED_SHELL_FILE,
-    needle: "onselect={(id) => pushConversationSurface({ companyTab: id })}",
-    destinationKind: "channel",
-    history: "push",
-    host: "shared-shell",
-    inScope: true,
-  },
+
   {
     id: "channel-tab-select",
     file: SHARED_SHELL_FILE,

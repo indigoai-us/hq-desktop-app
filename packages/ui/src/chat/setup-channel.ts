@@ -172,7 +172,7 @@ export const SETUP_RUN_LABEL = "Run Setup";
 export const SETUP_ADVANCED_LABEL = "Advanced";
 export const SETUP_ADVANCED_TOOLS_NOTE = "Open setup in a separate coding tool instead of HQ Sessions:";
 export const SETUP_HOSTED_AGENT_NOTE =
-  "Hosted agents: open your company channel and choose Add agent, then send it a direct message. Hosted agents require a paid plan; local setup does not.";
+  "Cloud bots: open your company channel and choose Add bot, then send it a direct message. Cloud bots require a paid plan; local setup does not.";
 
 /**
  * Boot lands on #welcome until Run Setup (or one of its advanced launches)
@@ -414,7 +414,7 @@ export const SETUP_WELCOME_MESSAGES: readonly SetupWelcomeMessage[] = [
   {
     id: "get-started",
     title: "How to get started",
-    body: "Create or choose a company below, follow the setup steps, and open its team channel. Starter is free; paid agents are optional.",
+    body: "Create or choose a company below, follow the setup steps, and open its team channel. Starter is free; paid Cloud bots are optional.",
     links: [
       {
         label: SETUP_RESOURCES[0].title,

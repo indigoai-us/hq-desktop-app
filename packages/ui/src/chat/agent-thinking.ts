@@ -96,6 +96,13 @@ export interface ThinkingEntry {
   agentName: string;
   startedAt: number;
   phase: ThinkingPhase;
+  /** Server timestamp (ms) of the newest message from this agent that was
+   * already in the timeline when the row started. When set, only a message
+   * NEWER than this clears the row — the clock-skew fallback in
+   * `clearFromMessages` is not used. Needed for fast responders (local bots
+   * answer in ~15–30 s): their previous reply falls inside the skew window
+   * and would otherwise clear a fresh row on the very next catch-up. */
+  afterMs?: number;
 }
 
 const DEFAULT_SLOW_AFTER_MS = 150_000;
@@ -110,12 +117,16 @@ export function startThinking(
   entries: ThinkingEntry[],
   agent: { agentUid: string; agentName: string },
   now: number,
+  opts?: { afterMs?: number },
 ): ThinkingEntry[] {
   const next: ThinkingEntry = {
     agentUid: agent.agentUid,
     agentName: agent.agentName,
     startedAt: now,
     phase: 'thinking',
+    ...(opts?.afterMs !== undefined && Number.isFinite(opts.afterMs)
+      ? { afterMs: opts.afterMs }
+      : {}),
   };
   const idx = entries.findIndex((e) => e.agentUid === agent.agentUid);
   if (idx < 0) return [...entries, next];
@@ -206,8 +217,55 @@ export function clearFromMessages(
     const newest = newestByUid.get(entry.agentUid);
     if (newest === undefined) return true;
     if (Number.isNaN(newest)) return false;
+    if (entry.afterMs !== undefined) return newest <= entry.afterMs;
     return newest < entry.startedAt - CLEAR_SKEW_MS;
   });
+}
+
+/** Newest parseable `createdAt` (ms) among `messages` sent by `agentUid`, for
+ * `startThinking`'s `afterMs`. Undefined when the agent has no timestamped
+ * message yet (callers then fall back to the skew rule). */
+export function newestMessageAtFrom(
+  messages: ReadonlyArray<{
+    fromPersonUid?: string | null;
+    createdAt?: string | null;
+  }>,
+  agentUid: string,
+): number | undefined {
+  const uid = agentUid.trim();
+  let newest: number | undefined;
+  for (const msg of messages) {
+    if ((msg.fromPersonUid ?? '').trim() !== uid) continue;
+    const ts = msg.createdAt ? Date.parse(msg.createdAt) : Number.NaN;
+    if (Number.isNaN(ts)) continue;
+    if (newest === undefined || ts > newest) newest = ts;
+  }
+  return newest;
+}
+
+/**
+ * A bot created with a kickoff (`hq bot create --kickoff`) sends its intro and
+ * then works on a first turn nobody asked for, so no send ever starts its
+ * thinking row. Decide from that bot's messages in its DM:
+ * - `waiting`: the intro has not landed yet;
+ * - `start`: only the intro is there — show the row, pinned to the intro so
+ *   the intro itself never clears it and the kickoff answer does;
+ * - `done`: the answer already landed (or the DM already has more than the
+ *   intro), so there is nothing left to wait for.
+ */
+export function kickoffThinkingState(
+  messages: ReadonlyArray<{
+    fromPersonUid?: string | null;
+    createdAt?: string | null;
+  }>,
+  agentUid: string,
+): { state: 'waiting' } | { state: 'start'; afterMs: number } | { state: 'done' } {
+  const uid = agentUid.trim();
+  const fromBot = messages.filter((m) => (m.fromPersonUid ?? '').trim() === uid);
+  if (fromBot.length === 0) return { state: 'waiting' };
+  if (fromBot.length > 1) return { state: 'done' };
+  const afterMs = newestMessageAtFrom(fromBot, uid);
+  return afterMs === undefined ? { state: 'done' } : { state: 'start', afterMs };
 }
 
 /** Status copy for a row. Unicode ellipsis (U+2026) matches the rest of
@@ -217,4 +275,77 @@ export function labelFor(entry: ThinkingEntry): string {
     return `${entry.agentName} is taking longer than usual…`;
   }
   return `${entry.agentName} is thinking…`;
+}
+
+// ---------------------------------------------------------------------------
+// Per-conversation map. The desktop shell keeps one flat list per OPEN row
+// for a long time and wiped it on every row switch, so "Izzy is thinking…"
+// vanished when the user peeked at another conversation and came back. The
+// helpers below layer a `rowId → entries` map over the flat primitives so a
+// row's optimistic status survives navigation and clears only on the signal
+// that actually ends it: a NEWER message from that agent in THAT row (or a
+// failed send in that row, or the hard expiry). Each helper returns a NEW
+// object and never mutates its input; empty rows are dropped so the map does
+// not accumulate keys for every conversation ever visited.
+
+/** Thinking rows keyed by conversation row id (`dm:<uid>` / `ch:<channelId>`). */
+export type ThinkingByRow = Record<string, ThinkingEntry[]>;
+
+/** `startThinking` scoped to `rowId`. Returns a NEW map. */
+export function startThinkingIn(
+  map: ThinkingByRow,
+  rowId: string,
+  agent: { agentUid: string; agentName: string },
+  now: number,
+  opts?: { afterMs?: number },
+): ThinkingByRow {
+  return { ...map, [rowId]: startThinking(map[rowId] ?? [], agent, now, opts) };
+}
+
+/** `tick` applied to every row; rows left empty by the expiry are removed.
+ * Returns a NEW map. */
+export function tickAll(
+  map: ThinkingByRow,
+  now: number,
+  opts?: TickOpts,
+): ThinkingByRow {
+  const out: ThinkingByRow = {};
+  for (const [rowId, entries] of Object.entries(map)) {
+    const next = tick(entries, now, opts);
+    if (next.length > 0) out[rowId] = next;
+  }
+  return out;
+}
+
+/** `clearFromMessages` scoped to `rowId` (messages from another conversation
+ * must never clear this row's status). A row left empty is removed. Returns
+ * a NEW map. */
+export function clearRowFromMessages(
+  map: ThinkingByRow,
+  rowId: string,
+  messages: ReadonlyArray<{
+    fromPersonUid?: string | null;
+    createdAt?: string | null;
+  }>,
+): ThinkingByRow {
+  const entries = map[rowId];
+  if (!entries || entries.length === 0) return { ...map };
+  const next = clearFromMessages(entries, messages);
+  if (next.length === entries.length) return { ...map };
+  return dropOrSet(map, rowId, next);
+}
+
+/** Remove every row for `rowId` (failed send in that conversation). Returns
+ * a NEW map. */
+export function dropRow(map: ThinkingByRow, rowId: string): ThinkingByRow {
+  return dropOrSet(map, rowId, []);
+}
+
+function dropOrSet(
+  map: ThinkingByRow,
+  rowId: string,
+  entries: ThinkingEntry[],
+): ThinkingByRow {
+  const { [rowId]: _dropped, ...rest } = map;
+  return entries.length > 0 ? { ...rest, [rowId]: entries } : rest;
 }

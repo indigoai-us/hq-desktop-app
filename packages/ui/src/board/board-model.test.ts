@@ -124,7 +124,7 @@ describe("board-model (US-006 Board tab)", () => {
         "US-006",
         "US-005",
       ]);
-      expect(inProgress?.cards[0]?.statusLine).toBe("AGENT RUNNING · 42%");
+      expect(inProgress?.cards[0]?.statusLine).toBe("BOT RUNNING · 42%");
       expect(inProgress?.cards[0]?.hasLiveAgent).toBe(true);
       expect(inProgress?.cards[1]?.statusLine).toBe("QUEUED");
       expect(inProgress?.cards[1]?.hasLiveAgent).toBe(false);
@@ -153,17 +153,17 @@ describe("board-model (US-006 Board tab)", () => {
   });
 
   describe("buildStatusLine vocabulary", () => {
-    it("emits AGENT RUNNING with and without progress", () => {
+    it("emits BOT RUNNING with and without progress", () => {
       expect(
         buildStatusLine({
           liveSession: liveSession({ progressPercent: 42 }),
         }),
-      ).toBe("AGENT RUNNING · 42%");
+      ).toBe("BOT RUNNING · 42%");
       expect(
         buildStatusLine({
           liveSession: liveSession({ progressPercent: null }),
         }),
-      ).toBe("AGENT RUNNING");
+      ).toBe("BOT RUNNING");
     });
 
     it("emits reviewer, PR/CI, SHIPPED, and QUEUED forms", () => {
@@ -247,7 +247,7 @@ describe("board-model (US-006 Board tab)", () => {
       expect(panel.acCountLabel).toBe("2/4");
       expect(panel.acceptanceCriteria.filter((c) => c.done)).toHaveLength(2);
       expect(panel.description).toContain("mixed criteria");
-      expect(panel.statusBadge).toBe("AGENT RUNNING · 42%");
+      expect(panel.statusBadge).toBe("BOT RUNNING · 42%");
       expect(panel.fields.branch).toBe("feat/v2-chat-shell");
 
       expect(buildStatusLine({ signal: { reviewer: "Marcus" } })).toBe(
@@ -269,7 +269,7 @@ describe("board-model (US-006 Board tab)", () => {
         [liveSession({ storyId: "US-007", tool: "codex", model: "gpt" })],
       );
       expect(panel.fields.assignee).toBe("codex · gpt");
-      expect(panel.statusBadge).toBe("AGENT RUNNING");
+      expect(panel.statusBadge).toBe("BOT RUNNING");
     });
   });
 

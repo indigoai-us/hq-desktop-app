@@ -39,6 +39,8 @@
   import { parseMessageAttachments } from "../chat/messaging/channelMessageModels";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
+  import BotKindChip from "../chat/BotKindChip.svelte";
+  import { botKindFor } from "../chat/bot-kind.js";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
@@ -67,6 +69,20 @@
     withoutCompaniesSummaryCards,
     withoutSeededCreateCompanyCards,
   } from "../chat/setup-channel.js";
+  import {
+    findSetupBot,
+    firstSignedInRuntime,
+    SETUP_BOT_INTRO,
+    SETUP_BOT_KICKOFF,
+    SETUP_BOT_MODE,
+    SETUP_BOT_NAME,
+    SETUP_BOT_NO_RUNTIME,
+    SETUP_BOT_UNAVAILABLE,
+    SETUP_BOT_WORKER,
+    type SetupBotLauncher,
+    type SetupBotRef,
+    type SetupBotStart,
+  } from "../chat/setup-bot.js";
   import {
     findLifecycleCardElement,
     runAddAgentEntry,
@@ -112,15 +128,11 @@
   import BoardTab from "../chat/messaging/BoardTab.svelte";
   import ChannelFilesTab from "../chat/messaging/ChannelFilesTab.svelte";
   import CompanyTabs from "../chat/CompanyTabs.svelte";
-  import TeamTab from "../chat/tabs/TeamTab.svelte";
-  import SettingsTab from "../chat/tabs/SettingsTab.svelte";
-  import AtlasTab from "../chat/tabs/AtlasTab.svelte";
   import CompanyHero from "../chat/CompanyHero.svelte";
   import {
     companyChannelTabsFor,
     parseCompanyTab,
     type CompanyChannelTabId,
-    type CompanyTabActionEvent,
     type CompanyTabModel,
   } from "../chat/tabs/tab-model.js";
   import OfficePanel from "../meet/OfficePanel.svelte";
@@ -154,6 +166,7 @@
   } from "../chat/session-migrate.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
+  import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
   import { canEditAgentProfile } from "../avatars/can-edit.js";
   import { loadAvatarGallery } from "../avatars/gallery.js";
@@ -172,7 +185,7 @@
     setMeetingsViewActive,
     startMeetingsStore,
   } from "../meetings/meetings-store.svelte";
-  import { AtlasPage, createGoChord } from "../atlas/index.js";
+
   import LibraryOverlay from "../library/LibraryOverlay.svelte";
   import type { PackagesEvents } from "../library/packages-events.js";
   import type { LibraryTab } from "../library/library-overlay-model.js";
@@ -249,12 +262,29 @@
     type MentionTarget,
   } from "../chat/mentions.js";
   import {
-    clearFromMessages,
+    clearRowFromMessages,
+    dropRow,
     isAgentUid,
-    startThinking,
-    tick,
+    newestMessageAtFrom,
+    startThinkingIn,
+    kickoffThinkingState,
+    tickAll,
+    type ThinkingByRow,
     type ThinkingEntry,
   } from "../chat/agent-thinking.js";
+  import {
+    LOCAL_BOTS_POLL_MS,
+    localBotForRow,
+    localBotOfflineNotice,
+    localBotPresence,
+    type LocalBotEntryResult,
+    locallyHostedBots,
+    promotedBotCompany,
+  } from "../chat/local-bots.js";
+  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption, SessionProviderId } from "@hq/platform";
+  import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
+  import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
     ChatSidebarApi,
     ChatWakeBus,
@@ -745,7 +775,6 @@
     | "notifications"
     | "settings"
     | "meetings"
-    | "atlas"
     | "library"
     | "shared-files"
     | "extra"
@@ -875,6 +904,339 @@
   })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+
+  // ── Personal local bots (local-bots US-009) ────────────────────────────────
+  // The host's bots API shells to `hq bot list --json`; rows carry the server's
+  // online verdict. Polled while the shell is mounted so the DM rail dot and the
+  // thread notice track the bot without any CLI on the user's side.
+  let localBotRecords = $state<LocalBotRow[]>([]);
+  const localBots = $derived(locallyHostedBots(localBotRecords));
+  let localBotBusy = $state<string | null>(null);
+  let localBotActionError = $state<string | null>(null);
+  async function refreshLocalBots(): Promise<void> {
+    const api = adapter.bots;
+    if (!api) return;
+    const result = await api.list();
+    if (result.ok) localBotRecords = result.value.bots ?? [];
+  }
+  onMount(() => {
+    if (!adapter.bots) return;
+    void refreshLocalBots();
+    const handle = window.setInterval(() => void refreshLocalBots(), LOCAL_BOTS_POLL_MS);
+    return () => clearInterval(handle);
+  });
+  /** Which runtimes are signed in here (`{ claude: true, … }`); null until known. */
+  let localBotRuntimeReady = $state<Record<string, boolean> | null>(null);
+  /** Company/core workers a bot can be created from; loaded once on demand. */
+  let localBotWorkers = $state<LocalBotWorkerOption[] | null>(null);
+  async function loadLocalBotRuntimeReady(): Promise<void> {
+    const preflight = adapter.sessions?.preflight;
+    if (!preflight || localBotRuntimeReady) return;
+    const result = await preflight();
+    if (!result.ok) return;
+    const rec = result.value as Record<string, unknown>;
+    const next: Record<string, boolean> = {};
+    for (const id of ["claude", "codex", "grok"]) {
+      next[id] = rec[`${id}Available`] === true && rec[`${id}LoggedIn`] === true;
+    }
+    localBotRuntimeReady = next;
+  }
+  async function loadLocalBotWorkers(): Promise<void> {
+    const workers = adapter.bots?.workers;
+    if (!workers || localBotWorkers) return;
+    const result = await workers();
+    if (result.ok) localBotWorkers = result.value.workers ?? [];
+  }
+  onMount(() => {
+    if (!adapter.bots) return;
+    void loadLocalBotRuntimeReady();
+    void loadLocalBotWorkers();
+  });
+  /**
+   * Sidebar "+" → New bot. The CLI provisions the identity, scaffolds the
+   * worker (or binds a company worker), installs the launch agent and starts
+   * the bot; we then open its DM. The intro DM may not have landed yet, so a
+   * synthetic row makes the thread openable immediately and a progress card
+   * (Creating → Installing → Online) covers "starting up" until presence
+   * reports online or the bot's first message lands.
+   */
+  interface BotProgressEntry {
+    name: string;
+    state: BotProgressState;
+    reason: string | null;
+    /** The draft that made it, so Retry can re-run the same create. */
+    input: LocalBotCreateInput;
+    extras: CreateBotExtras;
+    startedAt: number;
+    retrying: boolean;
+  }
+  /** Seconds a fresh bot may take to come online before the card calls it failed. */
+  const BOT_PROGRESS_TIMEOUT_MS = 180_000;
+  let botProgressByUid = $state<Record<string, BotProgressEntry>>({});
+  function setBotProgress(uid: string, patch: Partial<BotProgressEntry>): void {
+    const current = botProgressByUid[uid];
+    if (!current) return;
+    botProgressByUid = { ...botProgressByUid, [uid]: { ...current, ...patch } };
+  }
+  function clearBotProgress(uid: string): void {
+    if (!botProgressByUid[uid]) return;
+    const next = { ...botProgressByUid };
+    delete next[uid];
+    botProgressByUid = next;
+  }
+  async function createBotEntry(input: LocalBotCreateInput, extras: CreateBotExtras = {}): Promise<LocalBotEntryResult> {
+    const api = adapter.bots;
+    if (!api) return { ok: false, reason: "Bots are only available in the HQ desktop app." };
+    const result = await api.create(input);
+    if (!result.ok) return { ok: false, reason: result.message || `Could not create ${input.name}.` };
+    const value = (result.value ?? {}) as Record<string, unknown>;
+    const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
+    await refreshLocalBots();
+    if (!agentUid) return { ok: true, agentUid: "", name: input.name };
+    // A kickoff turn starts with no message from the person, so nothing else
+    // would show "is thinking…" while the bot works on it.
+    if (input.kickoff?.trim()) kickoffPendingByUid = { ...kickoffPendingByUid, [agentUid]: input.name };
+    // Identity exists (the CLI returned a uid); the launch agent is installing.
+    botProgressByUid = {
+      ...botProgressByUid,
+      [agentUid]: { name: input.name, state: "installing", reason: null, input, extras, startedAt: Date.now(), retrying: false },
+    };
+    const existing = railRows.find((r) => r.kind === "dm" && r.personUid === agentUid);
+    const row: ConversationRow = existing ?? {
+      id: `dm:${agentUid}`,
+      kind: "dm",
+      title: input.name,
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: Date.now(),
+      pinned: false,
+      personUid: agentUid,
+    };
+    handleSelect(row);
+    if (extras.avatar) void saveNewBotAvatar(agentUid, extras.avatar);
+    return { ok: true, agentUid, name: input.name };
+  }
+  /** Best effort: the avatar picked in the flow, saved once the bot has a uid. */
+  async function saveNewBotAvatar(agentUid: string, selection: AvatarSelection): Promise<void> {
+    try {
+      const packs = loadedAvatarPacks ?? (await loadAvatarGallery(adapter.identity)).packs;
+      loadedAvatarPacks = packs;
+      const saved = await saveAgentAvatar(agentUid, selection, {
+        packs,
+        fetchBytes: (url) => fetchBytesWith(fetch, url),
+        prepareAvatar: async (bytes) => avatarBase64FromFile(new Blob([bytes as BlobPart])),
+        updateAgentProfile: (uid, input) => adapter.identity.updateAgentProfile(uid, input),
+        selectAgentAvatar: (uid, input) => adapter.identity.selectAgentAvatar(uid, input),
+      });
+      avatarOverridesByUid = { ...avatarOverridesByUid, [agentUid]: saved.previewDataUrl };
+    } catch {
+      /* the bot exists; the avatar can be set from its profile later */
+    }
+  }
+  /**
+   * SETUP AS A LOCAL BOT (bots v2, step 3). Run Setup no longer starts a
+   * scripted `/setup` session: it creates a Local bot named `setup` from the
+   * core template and opens its DM, so onboarding is a normal conversation
+   * with a bot that stays afterwards. Copy, names and the launcher contract
+   * live in `chat/setup-bot.ts`; everything here reuses `createBotEntry` (and
+   * therefore the progress card, the synthetic DM row and presence polling).
+   */
+  /** Set once the setup bot was started this session, automatically or by Run Setup. */
+  let setupBotAutoStarted = false;
+  /** True while startSetupBot is creating the bot, so #welcome can say so. */
+  let setupBotStarting = $state(false);
+  let setupBotStartError = $state<string | null>(null);
+  const existingSetupBot = $derived(findSetupBot(localBots));
+  const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
+  const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
+    adapter.bots && SETUP_BOT_MODE
+      ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, starting: setupBotStarting, error: setupBotStartError, start: startSetupBot }
+      : null,
+  );
+  /** Open a setup bot's DM; setup counts as run from that moment. */
+  function openSetupBotDm(bot: SetupBotRef): void {
+    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${bot.agentUid}`,
+        kind: "dm",
+        title: bot.name,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: bot.agentUid,
+      },
+    );
+    recordWelcomeSetupRun();
+  }
+  /**
+   * Create the setup bot (or open the one that already exists). Never creates
+   * a second one: the list is re-read first, because another window — or an
+   * earlier run on this Mac — may already have made it.
+   */
+  async function startSetupBot(): Promise<SetupBotStart> {
+    setupBotStarting = true;
+    setupBotStartError = null;
+    try {
+      const result = await startSetupBotNow();
+      if (!result.ok) setupBotStartError = result.reason;
+      return result;
+    } catch {
+      setupBotStartError = "Could not start your setup bot. Please try again.";
+      return { ok: false, reason: setupBotStartError };
+    } finally {
+      setupBotStarting = false;
+    }
+  }
+  async function startSetupBotNow(): Promise<SetupBotStart> {
+    // Any start (the automatic one or a click) settles the automatic start.
+    setupBotAutoStarted = true;
+    if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
+    await refreshLocalBots();
+    const existing = findSetupBot(localBots);
+    if (existing) {
+      openSetupBotDm(existing);
+      return { ok: true, existing: true };
+    }
+    // Re-read sign-in state: the Connect step signs in through the setup run's
+    // own API, so a readiness answer cached at boot can be a click out of date.
+    localBotRuntimeReady = null;
+    await loadLocalBotRuntimeReady();
+    const runtime = firstSignedInRuntime(localBotRuntimeReady);
+    if (!runtime) return { ok: false, reason: SETUP_BOT_NO_RUNTIME };
+    // `intro` is sent by the runtime on start, so the first message is
+    // instant instead of a ~30 s wait for a model turn; `kickoff` then runs
+    // one turn by itself so the bot starts step one without waiting for the
+    // person to type.
+    const created = await createBotEntry({
+      name: SETUP_BOT_NAME,
+      worker: SETUP_BOT_WORKER,
+      runtime,
+      intro: SETUP_BOT_INTRO,
+      kickoff: SETUP_BOT_KICKOFF,
+    });
+    if (!created.ok) return { ok: false, reason: created.reason };
+    recordWelcomeSetupRun();
+    return { ok: true, existing: false };
+  }
+  /**
+   * First open on this Mac: the setup bot starts by itself, so the person is
+   * greeted and walked through setup without pressing anything. Only when
+   * setup has never been run here, a coding tool is signed in (otherwise Run
+   * Setup shows the Connect step first), and once per app session. Run Setup
+   * then opens the bot's conversation. A failure leaves Run Setup to retry
+   * and explain.
+   */
+  $effect(() => {
+    if (setupBotAutoStarted || !adapter.bots || !SETUP_BOT_MODE || welcomeSetupRun) return;
+    // Wait for the shell's first conversation to be chosen, so opening the
+    // bot's DM is not undone by the boot selection landing afterwards.
+    if (!selectedRow) return;
+    if (!firstSignedInRuntime(localBotRuntimeReady)) return;
+    setupBotAutoStarted = true;
+    void startSetupBot()
+      .then((result) => {
+        if (!result.ok) console.warn("[hq-desktop] setup bot did not start by itself:", result.reason);
+      })
+      .catch((err) => console.warn("[hq-desktop] setup bot did not start by itself:", err));
+  });
+  /** Retry from the progress card: start the bot if it exists, else re-run the same create. */
+  async function retryBotProgress(uid: string): Promise<void> {
+    const entry = botProgressByUid[uid];
+    const api = adapter.bots;
+    if (!entry || !api || entry.retrying) return;
+    setBotProgress(uid, { retrying: true, reason: null });
+    const bot = localBots.find((b) => b.agentUid === uid);
+    if (bot) {
+      const result = await api.start(bot.name);
+      if (!result.ok) {
+        setBotProgress(uid, { retrying: false, state: "failed", reason: result.message || `Could not start ${bot.name}.` });
+        return;
+      }
+      // Re-read presence FIRST: flipping to "installing" while the list still
+      // says "failed" lets the presence effect below stamp it failed again.
+      await refreshLocalBots();
+      setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
+      return;
+    }
+    clearBotProgress(uid);
+    const created = await createBotEntry(entry.input, entry.extras);
+    if (!created.ok) {
+      botProgressByUid = { ...botProgressByUid, [uid]: { ...entry, retrying: false, state: "failed", reason: created.reason } };
+    }
+  }
+  // Presence drives the card: online → tick then remove; a failed process →
+  // reason + Retry; too long without a heartbeat → failed as well.
+  $effect(() => {
+    const entries = Object.entries(botProgressByUid);
+    if (entries.length === 0) return;
+    const now = Date.now();
+    for (const [uid, entry] of entries) {
+      if (entry.state === "online") continue;
+      const bot = localBots.find((b) => b.agentUid === uid);
+      // A heartbeat is the last word: a bot that checked in is online even if
+      // the card had already given up on it.
+      if (bot?.online === true) {
+        setBotProgress(uid, { state: "online" });
+        window.setTimeout(() => clearBotProgress(uid), 1500);
+        continue;
+      }
+      if (entry.state === "failed") continue;
+      if (bot?.state === "failed") {
+        setBotProgress(uid, { state: "failed", reason: localBotOfflineNotice(bot) });
+      } else if (now - entry.startedAt > BOT_PROGRESS_TIMEOUT_MS) {
+        setBotProgress(uid, { state: "failed", reason: `${entry.name} did not come online. Check that its tool is signed in, then retry.` });
+      }
+    }
+  });
+  // The bot's first message replaces the card.
+  $effect(() => {
+    const uid = selectedRow?.kind === "dm" ? (selectedRow.personUid ?? "").trim() : "";
+    if (!uid || !botProgressByUid[uid]) return;
+    if (timeline.some((m) => m.fromPersonUid === uid)) clearBotProgress(uid);
+  });
+  const selectedBotProgress = $derived(
+    selectedRow?.kind === "dm" && selectedRow.personUid ? (botProgressByUid[selectedRow.personUid] ?? null) : null,
+  );
+  const existingBotNames = $derived(localBots.map((b) => b.name));
+  /** Inline runtime sign-in for the flow's Home step (browser login + status poll). */
+  const botSignIn = $derived.by<RuntimeSignInApi | null>(() => {
+    const sessions = adapter.sessions;
+    if (!sessions?.loginStart || !sessions.loginStatus) return null;
+    const toState = (result: { ok: true; value: unknown } | { ok: false; message?: string }): RuntimeSignInState => {
+      if (!result.ok) return { state: "error", message: result.message || "Could not reach the sign-in." };
+      const rec = (result.value ?? {}) as { state?: string; message?: string };
+      const state = rec.state === "waiting" || rec.state === "connected" || rec.state === "error" ? rec.state : "disconnected";
+      return { state, message: rec.message };
+    };
+    return {
+      loginStart: async (runtime) => toState(await sessions.loginStart!(runtime as SessionProviderId)),
+      loginStatus: async (runtime) => toState(await sessions.loginStatus!(runtime as SessionProviderId)),
+      loginCancel: sessions.loginCancel
+        ? async (runtime) => toState(await sessions.loginCancel!(runtime as SessionProviderId))
+        : undefined,
+    };
+  });
+  async function onBotRuntimeSignedIn(): Promise<void> {
+    localBotRuntimeReady = null;
+    await loadLocalBotRuntimeReady();
+  }
+  const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
+  const selectedLocalBotOffline = $derived(
+    Boolean(selectedLocalBot && selectedLocalBot.online !== true),
+  );
+  async function startSelectedLocalBot(): Promise<void> {
+    const bot = selectedLocalBot;
+    const api = adapter.bots;
+    if (!bot || !api || localBotBusy) return;
+    localBotBusy = bot.name;
+    localBotActionError = null;
+    const result = await api.start(bot.name);
+    if (!result.ok) localBotActionError = result.message || `Could not start ${bot.name}.`;
+    await refreshLocalBots();
+    localBotBusy = null;
+  }
   let directorySettled = $state(false);
   let conversationBootTimedOut = $state(false);
   $effect(() => {
@@ -992,15 +1354,6 @@
           void navigate({ kind: "meetings" });
         },
       },
-      {
-        id: "command-go-atlas",
-        label: "Atlas",
-        detail: "People and agents on projects, live",
-        shortcut: "g a",
-        action: () => {
-          void navigate({ kind: "atlas" });
-        },
-      },
     ];
     nav.push({
       id: "command-go-library",
@@ -1074,22 +1427,14 @@
     selectedRow?.kind === "channel" &&
       (selectedRow.channelScope ?? "").trim() === "company",
   );
-
-  /** Company for Atlas — selected conversation company, else first cloud workspace. */
-  const atlasCompanyUid = $derived.by(() => {
-    const fromRow = (selectedRow?.companyUid ?? "").trim();
-    if (fromRow) return fromRow;
-    for (const company of companies ?? []) {
-      const uid = (company.cloudUid ?? "").trim();
-      if (uid) return uid;
-    }
-    return "";
+  const selectedCompanySlug = $derived.by(() => {
+    const uid = (selectedRow?.companyUid ?? "").trim();
+    if (!uid) return "";
+    return (
+      (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid)?.slug ??
+      ""
+    );
   });
-  const atlasCompanyLabel = $derived(
-    companyDisplayName(atlasCompanyUid, companyNames) ||
-      companies?.find((c) => c.cloudUid === atlasCompanyUid)?.displayName ||
-      null,
-  );
 
   /** "Indigo · project channel" style subtitle under the channel name. */
   const channelSubtitle = $derived.by(() => {
@@ -1168,6 +1513,11 @@
     },
   });
   $effect(() => () => setupAgent.dispose());
+  /** In setup-bot mode #welcome is just its banner (resources + the setup
+   *  button); the scripted fallback run still needs its transcript. */
+  const welcomeIsBannerOnly = $derived(
+    Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupBotLauncher && !setupAgent.active),
+  );
   const inSetupChannelWithAgent = $derived(
     Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupAgent.active),
   );
@@ -1249,7 +1599,7 @@
       : inSetupChannelWithAgent && setupAgent.listening
       ? setupAgent.state?.question?.kind === "choice"
         ? "Type your answer…"
-        : "Reply to Setup Agent…"
+        : "Reply to Setup bot…"
       : isAgentChannel && provisioning.state === "pending"
         ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
         : composerPlaceholderFor(selectedRow, headerTitle),
@@ -1286,11 +1636,35 @@
    */
   let dmThreadsUnsupported = false;
 
-  // Client-side "agent is thinking" rows for the open channel. Local only —
-  // the backend has no typing/ack events. Per-conversation: a row switch
-  // must not keep another channel's optimistic status on screen.
+  // Client-side "agent is thinking" rows, keyed by conversation row id.
+  // Local only — the backend has no typing/ack events. Per-conversation so
+  // a row switch neither shows another conversation's status nor forgets
+  // this one's: the indicator survives navigating away and back and clears
+  // on the signal that ends it (a NEWER message from that agent in that
+  // row, a failed send there, or the hard expiry) — never a row switch.
   const AGENT_THINKING_TICK_MS = 5_000;
-  let agentThinking = $state<ThinkingEntry[]>([]);
+  let thinkingByRow = $state<ThinkingByRow>({});
+  /** Bots created with a kickoff whose first turn has not been shown yet
+   *  (uid → name). Once the intro is in the open DM, the row starts there. */
+  let kickoffPendingByUid = $state<Record<string, string>>({});
+  $effect(() => {
+    const row = selectedRow;
+    const uid = row?.kind === "dm" ? (row.personUid?.trim() ?? "") : "";
+    if (!row || !uid || !kickoffPendingByUid[uid] || liveTimelineId !== row.id) return;
+    const decision = kickoffThinkingState(liveTimeline, uid);
+    if (decision.state === "waiting") return;
+    const name = kickoffPendingByUid[uid]!;
+    const { [uid]: _started, ...rest } = kickoffPendingByUid;
+    kickoffPendingByUid = rest;
+    if (decision.state === "start") {
+      thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: row.title?.trim() || name }, Date.now(), {
+        afterMs: decision.afterMs,
+      });
+    }
+  });
+  const agentThinking = $derived<ThinkingEntry[]>(
+    selectedRow ? (thinkingByRow[selectedRow.id] ?? []) : [],
+  );
 
   // Background-task chips for the agents in the selected conversation — the
   // room-scoped route for a channel (every agent on its roster), the
@@ -1337,14 +1711,9 @@
       : [],
   );
 
-  $effect(() => {
-    void selectedRow?.id;
-    agentThinking = [];
-  });
-
   onMount(() => {
     const handle = window.setInterval(() => {
-      agentThinking = tick(agentThinking, Date.now());
+      thinkingByRow = tickAll(thinkingByRow, Date.now());
     }, AGENT_THINKING_TICK_MS);
     const onSessionStatus = (event: Event) => {
       const detail = (event as CustomEvent<{ sessionId?: string; status?: string }>)
@@ -1369,16 +1738,22 @@
     };
   });
 
-  /** Clear thinking rows when those agents appear in a freshly fetched page
-   *  (recent messages only — not the full merged timeline, or historical
-   *  agent posts would immediately kill a new mention's indicator). */
+  /** Clear a conversation's thinking rows when those agents appear in a
+   *  freshly fetched page for THAT conversation (recent messages only — not
+   *  the full merged timeline, or historical agent posts would immediately
+   *  kill a new mention's indicator). Background wakes for a conversation
+   *  that is not open pass a one-message page built from the wake. */
   function clearThinkingFromIncoming(
-    messages: ConversationMessageWire[],
+    messages: ReadonlyArray<{
+      fromPersonUid?: string | null;
+      createdAt?: string | null;
+    }>,
+    rowId: string,
   ): void {
-    if (agentThinking.length === 0) return;
+    if (!thinkingByRow[rowId]?.length) return;
     // Timestamp-aware so a full-history hydrate or overlapping catch-up page
     // containing an OLD agent message cannot clear a newer row.
-    agentThinking = clearFromMessages(agentThinking, messages);
+    thinkingByRow = clearRowFromMessages(thinkingByRow, rowId, messages);
   }
 
   function commitTimeline(
@@ -1513,7 +1888,7 @@
       incoming = patchLifecycleCardState(incoming, pendingCardId, { state: "pending", reason: null });
     }
     commitTimeline(row, incoming);
-    clearThinkingFromIncoming(incoming);
+    clearThinkingFromIncoming(incoming, row.id);
   }
 
   async function catchUpTimeline(row: ConversationRow): Promise<void> {
@@ -1532,7 +1907,7 @@
       ? liveTimeline
       : (timelineCache.get(row.id) ?? []);
     commitTimeline(row, mergeFetchedTimeline(current, raw));
-    clearThinkingFromIncoming(incoming);
+    clearThinkingFromIncoming(incoming, row.id);
   }
 
   $effect(() => {
@@ -1838,6 +2213,16 @@
   // ── Member profile / agent detail (Slack-style right panel) ───────────────
   let openProfileMember = $state<StatusPersonRow | null>(null);
   let openAgentMember = $state<StatusPersonRow | null>(null);
+  /** Local bot behind an open profile / Details surface; routes to LocalBotDetailPanel. */
+  const openLocalBot = $derived.by(() => {
+    const uid = openAgentMember?.personUid;
+    return uid ? (localBots.find((b) => b.agentUid === uid) ?? null) : null;
+  });
+  const agentChannelLocalBot = $derived(
+    agentChannelUid
+      ? (localBots.find((b) => b.agentUid === agentChannelUid) ?? null)
+      : null,
+  );
   let removingMemberUid = $state<string | null>(null);
   /**
    * Owner-only "Delete channel" (members popover → trash). The shell owns the
@@ -1913,16 +2298,6 @@
       selectedRow?.companyUid?.trim() ?? "",
     ),
   );
-  const canMigrateAtlasSessions = $derived(
-    canMigrateCompanySession({
-      companyUid: atlasCompanyUid,
-      companies,
-    }),
-  );
-  const migrateDestinationsForAtlas = $derived(
-    migrateDestinationCompanies(companies, atlasCompanyUid),
-  );
-
   /** personUid → live display name from the channel roster (the profile
    *  display-name override), so chat/thread show the current name instead of
    *  the full name baked into each message at send time. */
@@ -2834,7 +3209,7 @@
     if (uid) changeTenantCompany(uid);
   }
 
-  /** Sidebar / header "New agent": Team tab action, then the company channel. */
+  /** Sidebar / header "New bot" (Cloud): Team tab action, then the company channel. */
   async function addAgentEntry(companyUid: string): Promise<EntryPointResult> {
     const result = await runAddAgentEntry(conversationApi, companyUid);
     if (result.ok) navigateToEntryTarget(result.target, companyUid);
@@ -2971,30 +3346,6 @@
     const uid = selectedRow?.companyUid?.trim() ?? "";
     if (uid) void loadCompanyTeamCanAct(uid);
   });
-
-  async function handleTeamAction(event: CompanyTabActionEvent): Promise<void> {
-    const run = conversationApi.runCompanyTabAction;
-    if (!run) return;
-    const result = await submitLifecycleCardAction({
-      event,
-      store: cardActionKeys,
-      run: (args) =>
-        run({
-          companyUid: event.companyUid,
-          tab: event.tab,
-          cardId: args.cardId,
-          actionId: args.actionId,
-          values: args.values,
-          idempotencyKey: args.idempotencyKey,
-        }),
-      onFailure: () => {},
-    });
-    if (result?.navigateTo === "chat") {
-      pushConversationSurface({ companyTab: "chat" });
-      return;
-    }
-    await loadCompanyTabSurface(companyTab);
-  }
 
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
     const actionRow = selectedRow;
@@ -3552,8 +3903,6 @@
           kind: "meetings",
           meetingId: meetingFocusRequest?.meetingId ?? null,
         };
-      case "atlas":
-        return { kind: "atlas" };
       case "library":
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
@@ -3834,7 +4183,7 @@
         }
         break;
       case "atlas":
-        view = "atlas";
+        view = "conversation";
         settingsSection = null;
         extraPageId = null;
         extraPageParam = null;
@@ -3902,7 +4251,7 @@
         }
         if (next.kind === "channel") {
           tab = next.tab ?? "chat";
-          companyTab = next.companyTab ?? "chat";
+          companyTab = next.companyTab === "office" ? "office" : "chat";
           agentSurface = next.agentSurface ?? "chat";
           channelFileKey = next.tab === "files" ? next.fileKey ?? null : null;
         } else {
@@ -4232,6 +4581,7 @@
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
+    thinkingByRow = {};
     openReplyRootId = null;
     openProfileMember = null;
     openAgentMember = null;
@@ -4320,6 +4670,24 @@
             displayName,
           })),
         ),
+        // Everyone already IN the open channel. A teammate's personal bot is
+        // not on the company contacts roster (it has no membership), so
+        // without this a channel member could never @mention it — the picker
+        // said "No one matches" while the bot sat on the roster.
+        mentionTargetsFromContacts(
+          (selectedRow?.channelId
+            ? (channelRosterById[selectedRow.channelId.trim()] ?? [])
+            : []
+          ).map((member) => ({
+            personUid: member.personUid,
+            displayName: member.displayName,
+          })),
+        ),
+        // The user's own local bots: never on the contacts roster, but
+        // @mentionable anywhere the user can add them.
+        mentionTargetsFromContacts(
+          localBots.map((bot) => ({ personUid: bot.agentUid, displayName: bot.name })),
+        ),
       ).map((target) => {
         if (!target.companyUid || target.companyName) return target;
         const name = companyDisplayName(target.companyUid, companyNames);
@@ -4332,7 +4700,18 @@
     channelId: string;
     eventId?: string;
     createdAt?: string;
+    fromPersonUid?: string;
   }): Promise<void> {
+    // An agent's reply in a channel that is NOT open ends its thinking row
+    // there too — otherwise the stale status greets the user on return. The
+    // open channel clears from the fetched page below (same timestamp rule).
+    const wakeFrom = (wake.fromPersonUid ?? "").trim();
+    if (wakeFrom && isAgentUid(wakeFrom)) {
+      clearThinkingFromIncoming(
+        [{ fromPersonUid: wakeFrom, createdAt: wake.createdAt ?? null }],
+        `ch:${wake.channelId}`,
+      );
+    }
     const row = selectedRow;
     if (!row?.channelId) return;
     if (row.channelId !== wake.channelId && row.id !== `ch:${wake.channelId}`) {
@@ -4362,7 +4741,7 @@
     if (selectedRow?.id !== row.id) return;
     const incoming = messagesForDisplay(res.value);
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value));
-    clearThinkingFromIncoming(incoming);
+    clearThinkingFromIncoming(incoming, row.id);
   }
 
   /**
@@ -4469,7 +4848,16 @@
       bus.on("channel:new-message", (wake) => {
         void applyChannelWake(wake);
       }),
-      bus.on("dm:new-message", () => {
+      bus.on("dm:new-message", (wake) => {
+        // An inbound agent DM ends that agent's thinking row even when its
+        // conversation is not open (the open one clears from its page).
+        const from = (wake.fromPersonUid ?? "").trim();
+        if (wake.direction !== "out" && from && isAgentUid(from)) {
+          clearThinkingFromIncoming(
+            [{ fromPersonUid: from, createdAt: wake.createdAt ?? null }],
+            `dm:${from}`,
+          );
+        }
         void catchUpDmInbox();
       }),
       bus.on("mesh:catchup", () => {
@@ -4626,13 +5014,18 @@
         // before the catch-up below so a page that already carries the reply
         // clears it immediately.
         if (isAgentUid(row.personUid)) {
-          agentThinking = startThinking(
-            agentThinking,
+          // Pin the row to "newer than the agent's last message" — a local
+          // bot's previous reply is usually < 2 min old and would otherwise
+          // clear the fresh row on the next catch-up (skew fallback).
+          thinkingByRow = startThinkingIn(
+            thinkingByRow,
+            row.id,
             {
               agentUid: row.personUid,
-              agentName: row.title?.trim() || "Agent",
+              agentName: row.title?.trim() || "Bot",
             },
             Date.now(),
+            { afterMs: newestMessageAtFrom(liveTimeline, row.personUid) },
           );
         }
         if (!wire) {
@@ -4664,13 +5057,17 @@
       // row in the DM branch above).
       for (const mention of mentions) {
         if (mention.participantType !== "agent") continue;
-        agentThinking = startThinking(
-          agentThinking,
+        thinkingByRow = startThinkingIn(
+          thinkingByRow,
+          row.id,
           {
             agentUid: mention.participantUid,
             agentName: mention.displayName,
           },
           Date.now(),
+          // Pin to "newer than the agent's last post here" — same fast-
+          // responder guard as the DM branch.
+          { afterMs: newestMessageAtFrom(liveTimeline, mention.participantUid) },
         );
       }
       // Mention sends write a same-timestamp member_added sibling the POST
@@ -4684,9 +5081,10 @@
         console.warn("[hq-desktop] post-send catch-up failed", err);
       }
     } catch (err) {
-      // Send never left — drop every optimistic thinking row so the status
-      // cannot outlive a failed mention.
-      agentThinking = [];
+      // Send never left — drop this conversation's optimistic thinking rows
+      // so the status cannot outlive a failed mention. Other conversations'
+      // rows are unrelated to this failure and stay.
+      thinkingByRow = dropRow(thinkingByRow, row.id);
       throw err;
     }
   }
@@ -5073,13 +5471,6 @@
     startMeetingsStore();
     void prefetchMeetings();
 
-    // US-016: `g a` opens Atlas (Slack-style go chord).
-    const goChord = createGoChord((letter) => {
-      if (letter !== "a") return false;
-      void navigate({ kind: "atlas" });
-      return true;
-    });
-
     function onKey(event: KeyboardEvent) {
       if (
         consumeNavigationShortcut(event, {
@@ -5091,7 +5482,6 @@
           },
         })
       ) {
-        goChord.reset();
         return;
       }
       const meta = event.metaKey || event.ctrlKey;
@@ -5100,7 +5490,6 @@
         if (key === "k") {
           event.preventDefault();
           paletteOpen = !paletteOpen;
-          goChord.reset();
         } else if (key === ",") {
           // macOS-standard ⌘, opens Settings.
           event.preventDefault();
@@ -5121,9 +5510,6 @@
         return;
       }
       if (paletteOpen) return;
-      if (goChord.handleKeydown(event)) {
-        event.preventDefault();
-      }
     }
     window.addEventListener("keydown", onKey);
 
@@ -5403,6 +5789,14 @@
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           oncreateagent={canRunEntryPoints ? addAgentEntry : null}
+          oncreatebot={adapter.bots ? createBotEntry : null}
+          botRuntimeReady={localBotRuntimeReady}
+          botWorkers={localBotWorkers}
+          {existingBotNames}
+          {botSignIn}
+          onbotsignedin={onBotRuntimeSignedIn}
+          loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
+          {localBots}
           onrows={(rows) => {
             railRows = rows;
             directorySettled = true;
@@ -5411,6 +5805,7 @@
           welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
           {onShellReady}
           projectHasPresence={rowHasProjectPresence}
+          dmPresence={(row) => localBotPresence(localBots, row)}
           {rowExtrasLoading}
           {rowExtrasError}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
@@ -5484,22 +5879,6 @@
             openExternal={onopenurl}
             focusRequest={meetingFocusRequest}
           />
-        {:else if view === "atlas"}
-          <AtlasPage
-            companyUid={atlasCompanyUid}
-            companyLabel={atlasCompanyLabel}
-            featureEnabled={true}
-            headerVariant="embedded"
-            canMigrate={canMigrateAtlasSessions &&
-              migrateDestinationsForAtlas.length > 0}
-            migrateDestinations={migrateDestinationsForAtlas}
-            onmigratesession={(sessionId) =>
-              openMigrateSession(sessionId, atlasCompanyUid)}
-            migratingSessionId={migratingSessionId}
-            onback={() => {
-              void leaveCurrentDestination();
-            }}
-          />
         {:else if view === "conversation" && selectedRow}
           <header
             class="channel-header chat-shell"
@@ -5519,7 +5898,7 @@
                       type="button"
                       class="channel-header-agent"
                       data-testid="channel-header-agent"
-                      aria-label={`View agent ${headerTitle}`}
+                      aria-label={`View bot ${headerTitle}`}
                       onclick={openAgentFromHeader}
                     >
                       <span
@@ -5542,6 +5921,11 @@
                         />
                       </span>
                       <h2 data-testid="channel-name">{headerTitle}</h2>
+                      <BotKindChip
+                        kind={botKindFor(selectedRow.personUid, localBots) ?? "cloud"}
+                        runtime={selectedLocalBot?.runtime ?? null}
+                        size="md"
+                      />
                     </button>
                   {:else}
                     <span
@@ -5632,7 +6016,7 @@
               {#if isAgentChannel}
                 <nav
                   class="project-tabs"
-                  aria-label="Agent channel views"
+                  aria-label="Bot channel views"
                   data-testid="agent-channel-tabs"
                 >
                   {#each AGENT_CHANNEL_TABS as t (t.id)}
@@ -5663,15 +6047,17 @@
                     type="button"
                     class="header-ghost-btn"
                     data-testid="company-add-agent"
-                    aria-label={`Add an agent to ${companyHeroTitle}`}
+                    aria-label={`Add a bot to ${companyHeroTitle}`}
                     aria-busy={headerAddAgentBusy ? "true" : undefined}
                     disabled={headerAddAgentBusy}
                     onclick={() => void addAgentFromHeader()}
                   >
-                    Add agent
+                    Add bot
                   </button>
                 {/if}
                 <CompanyTabs
+                  slug={selectedCompanySlug}
+                  {onopenurl}
                   active={companyTab}
                   tabs={companyTabsForHost}
                   onselect={(id) => pushConversationSurface({ companyTab: id })}
@@ -5837,6 +6223,7 @@
                             : null,
                         )}
                       {self}
+                      {localBots}
                       onclose={() => (membersOpen = false)}
                       {onopenurl}
                       onopenprofile={(row) => {
@@ -5894,12 +6281,23 @@
             </div>
           {/if}
 
-          {#if isAgentChannel && agentSurface === "details" && agentChannelUid}
+          {#if isAgentChannel && agentSurface === "details" && agentChannelLocalBot}
+            <LocalBotDetailPanel
+              companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug }))}
+              {onopenurl}
+              bot={agentChannelLocalBot}
+              avatarUrl={avatarByUid[agentChannelLocalBot.agentUid] ?? null}
+              {adapter}
+              onchanged={refreshLocalBots}
+              onclose={() => void leaveCurrentDestination()}
+            />
+          {:else if isAgentChannel && agentSurface === "details" && agentChannelUid}
             <AgentDetailPanel
               agentUid={agentChannelUid}
+              {localBots}
               displayName={headerTitle}
               avatarUrl={avatarByUid[agentChannelUid] ?? null}
-              companyUid={selectedRow?.companyUid}
+              companyUid={promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid}
               {companyNames}
               {self}
               {isAdmin}
@@ -5910,50 +6308,11 @@
               onsaveavatar={saveOpenAgentAvatar}
               onclose={() => void leaveCurrentDestination()}
             />
-          {:else if isCompanyChannel && companyTab !== "chat"}
+          {:else if isCompanyChannel && companyTab === "office"}
             {#if companyTab === "office"}
               <!--
-                US-018: the shipping Office surface. One implementation, shared
-                with every other host — see packages/ui/src/meet/OfficePanel.
+                US-018: OfficePanel is mounted above and shown via visible=.
               -->
-
-            {:else if companyTab === "team"}
-              <TeamTab
-                data={companyTabData ?? {
-                  tab: "team",
-                  companyUid: selectedRow.companyUid ?? "",
-                  viewer: { canAct: false },
-                  sections: [],
-                }}
-                onaction={handleTeamAction}
-              />
-            {:else if companyTab === "atlas"}
-              <AtlasTab
-                graph={companyTabData?.graph ?? { nodes: [], edges: [] }}
-              />
-            {:else if companyTab === "settings"}
-              <SettingsTab
-                data={companyTabData ?? {
-                  tab: "settings",
-                  companyUid: selectedRow.companyUid ?? "",
-                  viewer: { canAct: false },
-                  sections: [],
-                }}
-                onaction={handleTeamAction}
-              />
-            {:else}
-              <div
-                class="company-tab-placeholder"
-                data-testid={`company-tab-panel-${companyTab}`}
-              >
-                {#if companyTabLoading}
-                  Loading…
-                {:else if (companyTabData?.sections[0]?.rows.length ?? 0) > 0}
-                  <TeamTab data={companyTabData!} onaction={handleTeamAction} />
-                {:else}
-                  {String(companyTab).charAt(0).toUpperCase() + String(companyTab).slice(1)}
-                {/if}
-              </div>
             {/if}
           {:else if activeTab === "chat"}
             <div
@@ -6077,6 +6436,7 @@
                     {onretryroster}
                     onsetupstarted={recordWelcomeSetupRun}
                     agent={setupAgent}
+                    setupBot={setupBotLauncher}
                     onopensessiondetails={extraPages?.sessions
                       ? (sessionId) => openExtraPage("sessions", sessionId)
                       : undefined}
@@ -6085,8 +6445,42 @@
                 {#snippet companyHeader()}
                   <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
                 {/snippet}
+                {#snippet botProgressHeader()}
+                  {#if selectedBotProgress && selectedRow?.personUid}
+                    {@const uid = selectedRow.personUid}
+                    <BotProgressCard
+                      name={selectedBotProgress.name}
+                      phase={selectedBotProgress.state}
+                      reason={selectedBotProgress.reason}
+                      retrying={selectedBotProgress.retrying}
+                      onretry={() => void retryBotProgress(uid)}
+                    />
+                  {/if}
+                {/snippet}
+                {#snippet localBotHeader()}
+                  {#if selectedLocalBot && selectedLocalBotOffline}
+                    <div class="local-bot-notice" data-testid="local-bot-offline-notice" role="status">
+                      <span class="local-bot-notice-text">{localBotOfflineNotice(selectedLocalBot)}</span>
+                      {#if !selectedLocalBot.processAlive && !selectedLocalBot.promotionHold}
+                        <button
+                          type="button"
+                          class="local-bot-notice-start"
+                          data-testid="local-bot-start"
+                          disabled={localBotBusy === selectedLocalBot.name}
+                          onclick={() => void startSelectedLocalBot()}
+                        >
+                          {localBotBusy === selectedLocalBot.name ? "Starting…" : "Start"}
+                        </button>
+                      {/if}
+                      {#if localBotActionError}
+                        <span class="local-bot-notice-error" role="alert">{localBotActionError}</span>
+                      {/if}
+                    </div>
+                  {/if}
+                {/snippet}
                 <ChannelConversation
                   restoreScroll={pendingRestoreScroll}
+                  {localBots}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;
@@ -6134,11 +6528,16 @@
                   loading={(timelineHydrating || projectActivityLoading) &&
                     timelineWithActivity.length === 0}
                   landAt={isSetupChannel(selectedRow.channelId) ? "top" : "bottom"}
+                  headerOnly={welcomeIsBannerOnly}
                   header={isSetupChannel(selectedRow.channelId)
                     ? setupHeader
                     : isCompanyChannel
                       ? companyHeader
-                      : undefined}
+                      : selectedBotProgress
+                        ? botProgressHeader
+                        : selectedLocalBot && selectedLocalBotOffline
+                          ? localBotHeader
+                          : undefined}
                   belowMessages={agentThinkingBelow}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
@@ -6158,6 +6557,25 @@
                     {onopenurl}
                   />
                 </div>
+              {:else if openAgentMember && openLocalBot}
+                <div
+                  class="reply-column profile-column"
+                  class:overlay={narrowViewport}
+                  data-testid="local-bot-detail-column"
+                  data-reply-layout={narrowViewport ? "overlay" : "column"}
+                >
+                  <LocalBotDetailPanel
+                    companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug }))}
+                    {onopenurl}
+                    bot={openLocalBot}
+                    avatarUrl={openAgentMember.avatarUrl ??
+                      avatarByUid[openLocalBot.agentUid] ??
+                      null}
+                    {adapter}
+                    onchanged={refreshLocalBots}
+                    onclose={closeAgentDetail}
+                  />
+                </div>
               {:else if openAgentMember}
                 <div
                   class="reply-column profile-column"
@@ -6167,12 +6585,13 @@
                 >
                   <AgentDetailPanel
                     agentUid={openAgentMember.personUid}
+                    {localBots}
                     displayName={openAgentMember.displayName}
                     avatarUrl={openAgentMember.avatarUrl ??
                       avatarByUid[openAgentMember.personUid] ??
                       null}
                     description={openAgentMember.description}
-                    companyUid={selectedRow.companyUid}
+                    companyUid={promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid}
                     {companyNames}
                     {self}
                     {isAdmin}
@@ -6281,6 +6700,7 @@
                   {/if}
                   <ReplyPanel
                     api={conversationApi}
+                    {localBots}
                     rootEventId={openReplyRootId}
                     tasks={threadTasks}
                     scope={replyScope}
@@ -6529,7 +6949,7 @@
   }
 
   .chat-stage:has(.reply-column:not(.overlay)) :global(.conversation) {
-    min-width: 320px;
+    min-width: min(320px, 50%);
   }
 
   /* Open thread pane takes half the conversation area — a 50/50 split
@@ -6538,7 +6958,7 @@
   .chat-stage:has(.reply-column:not(.profile-column):not(.overlay))
     :global(.conversation) {
     flex: 1 1 0;
-    min-width: 360px;
+    min-width: min(360px, 50%);
   }
 
   .reply-column {
@@ -6549,13 +6969,12 @@
        hover chrome and message text. .overlay still overrides to
        position:absolute; z-index:5. */
     isolation: isolate;
-    width: clamp(340px, 34%, 420px);
+    width: clamp(min(340px, 50%), 34%, 420px);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
     border-left: 1px solid var(--line);
-    background: var(--v4-reading-surface, var(--v4-ground, #161618));
     transition: width 150ms ease;
   }
 
@@ -6566,7 +6985,7 @@
   .reply-column:not(.profile-column):not(.overlay) {
     width: auto;
     flex: 1 1 0;
-    min-width: 360px;
+    min-width: min(360px, 50%);
   }
 
   .reply-column.resizable-thread {
@@ -6767,20 +7186,31 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 5px;
     height: 28px;
     min-height: 28px;
     padding: 0 10px;
-    border: 1px solid var(--line2, var(--panel-border));
-    border-radius: 0;
-    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--btn-bg);
     color: var(--t1);
-    font: 500 12px/1 inherit;
+    /* Longhands, not the `font:` shorthand: `inherit` is not a valid
+       font-family inside it, so the whole declaration was dropped and this
+       button rendered in the UA default (Arial 13.3px/400) beside 12px/500
+       Geist tabs. */
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
     cursor: pointer;
     white-space: nowrap;
+    transition:
+      border-color 0.12s ease,
+      background-color 0.12s ease;
   }
 
   .header-ghost-btn:hover {
-    background: var(--hover);
+    border-color: var(--line2);
   }
 
   .header-ghost-btn:disabled {
@@ -6809,7 +7239,10 @@
     border: none;
     background: transparent;
     color: var(--t2);
-    font: 500 12px/1.45 inherit;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
     cursor: pointer;
     text-decoration: underline;
     text-underline-offset: 3px;
@@ -6829,15 +7262,6 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-  }
-
-  .company-tab-placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 120px;
-    color: var(--t3);
-    font-size: 13px;
   }
 
   .project-tabs {
@@ -6942,5 +7366,41 @@
   }
   .setup-agent-prompt:empty {
     display: none;
+  }
+  .local-bot-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 16px 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line2);
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .local-bot-notice-text {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .local-bot-notice-start {
+    font: inherit;
+    font-weight: 600;
+    padding: 4px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-bg, transparent);
+    color: var(--t1);
+    cursor: pointer;
+  }
+  .local-bot-notice-start:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .local-bot-notice-error {
+    flex-basis: 100%;
+    color: var(--danger, #d05f5f);
   }
 </style>
