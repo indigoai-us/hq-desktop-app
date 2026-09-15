@@ -186,6 +186,7 @@ impl CoreUpdateErrorKind {
 pub(crate) struct CoreUpdateError {
     kind: CoreUpdateErrorKind,
     message: String,
+    npx_resolution: Option<CoreUpdateNpxResolution>,
 }
 
 impl CoreUpdateError {
@@ -193,12 +194,37 @@ impl CoreUpdateError {
         Self {
             kind,
             message: message.into(),
+            npx_resolution: None,
         }
+    }
+
+    pub(crate) fn with_npx_resolution(mut self, npx_resolution: CoreUpdateNpxResolution) -> Self {
+        self.npx_resolution = Some(npx_resolution);
+        self
     }
 
     pub(crate) const fn kind(&self) -> CoreUpdateErrorKind {
         self.kind
     }
+
+    pub(crate) const fn npx_resolution(&self) -> Option<CoreUpdateNpxResolution> {
+        self.npx_resolution
+    }
+}
+
+/// Path-free, closed diagnostic for the `npx` executable used to launch the
+/// Core rescue. The source is one of the resolver's stable telemetry tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CoreUpdateNpxResolution {
+    pub(crate) resolved: bool,
+    pub(crate) source: &'static str,
+}
+
+/// Additional diagnostics emitted only with `core_update_failed`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CoreUpdateFailureDetails<'a> {
+    pub(crate) rescue_stderr_tail: Option<&'a str>,
+    pub(crate) npx_resolution: Option<CoreUpdateNpxResolution>,
 }
 
 impl std::fmt::Display for CoreUpdateError {
@@ -294,8 +320,7 @@ fn mark_automatic_target_attempted(channel: Channel, target: &str) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_core_update_event(
-    event_name: &'static str,
+fn core_update_event_properties(
     source: &'static str,
     result: &'static str,
     channel: Option<Channel>,
@@ -308,7 +333,7 @@ pub(crate) fn emit_core_update_event(
     exit_code: Option<i32>,
     error_kind: Option<&'static str>,
     skip_reason: Option<&'static str>,
-) {
+) -> Map<String, Value> {
     let mut properties = Map::new();
     properties.insert("source".to_string(), Value::String(source.to_string()));
     properties.insert("result".to_string(), Value::String(result.to_string()));
@@ -363,9 +388,122 @@ pub(crate) fn emit_core_update_event(
             Value::String(skip_reason.to_string()),
         );
     }
+    properties
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_core_update_event(
+    event_name: &'static str,
+    source: &'static str,
+    result: &'static str,
+    channel: Option<Channel>,
+    local_version: Option<&str>,
+    target_version: Option<&str>,
+    auto_update_enabled: bool,
+    eligible: Option<bool>,
+    version_behind: Option<bool>,
+    duration: Duration,
+    exit_code: Option<i32>,
+    error_kind: Option<&'static str>,
+    skip_reason: Option<&'static str>,
+) {
+    let properties = core_update_event_properties(
+        source,
+        result,
+        channel,
+        local_version,
+        target_version,
+        auto_update_enabled,
+        eligible,
+        version_behind,
+        duration,
+        exit_code,
+        error_kind,
+        skip_reason,
+    );
     crate::commands::telemetry::emit_desktop_telemetry_best_effort(
         event_name,
         Value::Object(properties),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn core_update_failed_properties(
+    source: &'static str,
+    channel: Channel,
+    local_version: Option<&str>,
+    auto_update_enabled: bool,
+    eligible: Option<bool>,
+    version_behind: Option<bool>,
+    duration: Duration,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    details: CoreUpdateFailureDetails<'_>,
+) -> Map<String, Value> {
+    let mut properties = core_update_event_properties(
+        source,
+        "failed",
+        Some(channel),
+        local_version,
+        None,
+        auto_update_enabled,
+        eligible,
+        version_behind,
+        duration,
+        exit_code,
+        Some(error_kind),
+        None,
+    );
+    properties.insert(
+        "platform".to_string(),
+        Value::String(crate::commands::version_gate::platform_tag()),
+    );
+    if let Some(rescue_stderr_tail) = details.rescue_stderr_tail {
+        properties.insert(
+            "rescueStderrTail".to_string(),
+            Value::String(rescue_stderr_tail.to_string()),
+        );
+    }
+    if let Some(npx_resolution) = details.npx_resolution {
+        properties.insert(
+            "npxResolved".to_string(),
+            Value::Bool(npx_resolution.resolved),
+        );
+        properties.insert(
+            "npxResolution".to_string(),
+            Value::String(npx_resolution.source.to_string()),
+        );
+    }
+    properties
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_core_update_failed_event(
+    source: &'static str,
+    channel: Channel,
+    local_version: Option<&str>,
+    auto_update_enabled: bool,
+    eligible: Option<bool>,
+    version_behind: Option<bool>,
+    duration: Duration,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    details: CoreUpdateFailureDetails<'_>,
+) {
+    crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+        "core_update_failed",
+        Value::Object(core_update_failed_properties(
+            source,
+            channel,
+            local_version,
+            auto_update_enabled,
+            eligible,
+            version_behind,
+            duration,
+            exit_code,
+            error_kind,
+            details,
+        )),
     );
 }
 
@@ -1578,6 +1716,41 @@ mod tests {
             "completely revised network wording",
         );
         assert_eq!(error.kind().label(), "network");
+    }
+
+    #[test]
+    fn rescue_exit_failure_has_a_diagnostic_tail_and_closed_platform_dimension() {
+        let properties = core_update_failed_properties(
+            "automatic",
+            Channel::Release,
+            Some("15.0.4"),
+            true,
+            None,
+            Some(true),
+            Duration::from_millis(42),
+            Some(5),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some("fatal: could not clone hq-core"),
+                npx_resolution: Some(CoreUpdateNpxResolution {
+                    resolved: false,
+                    source: "not_resolved",
+                }),
+            },
+        );
+
+        assert_eq!(properties["exitCode"], 5);
+        assert_eq!(
+            properties["rescueStderrTail"],
+            "fatal: could not clone hq-core"
+        );
+        assert_eq!(properties["npxResolved"], false);
+        assert_eq!(properties["npxResolution"], "not_resolved");
+        let platform = properties["platform"].as_str().unwrap();
+        assert!(
+            crate::commands::version_gate::DESKTOP_PLATFORM_VALUES.contains(&platform),
+            "platform must remain in the closed desktop vocabulary"
+        );
     }
 
     #[test]

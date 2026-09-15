@@ -270,35 +270,35 @@ async fn install_hq_core_update_observed(
                 None,
             );
         }
-        Ok(run) => crate::commands::hq_core_state::emit_core_update_event(
-            "core_update_failed",
+        Ok(run) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
-            "failed",
-            Some(crate::commands::hq_core_state::Channel::Release),
+            crate::commands::hq_core_state::Channel::Release,
             local_before.as_deref(),
-            None,
             auto_updates,
             None,
             observation.version_behind(),
             started.elapsed(),
             Some(run.exit_code),
-            Some("rescue_exit"),
-            None,
+            "rescue_exit",
+            crate::commands::hq_core_state::CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(&run.rescue_stderr_tail),
+                npx_resolution: Some(run.npx_resolution),
+            },
         ),
-        Err(error) => crate::commands::hq_core_state::emit_core_update_event(
-            "core_update_failed",
+        Err(error) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
-            "failed",
-            Some(crate::commands::hq_core_state::Channel::Release),
+            crate::commands::hq_core_state::Channel::Release,
             local_before.as_deref(),
-            None,
             auto_updates,
             None,
             observation.version_behind(),
             started.elapsed(),
             None,
-            Some(error.kind().label()),
-            None,
+            error.kind().label(),
+            crate::commands::hq_core_state::CoreUpdateFailureDetails {
+                rescue_stderr_tail: None,
+                npx_resolution: error.npx_resolution(),
+            },
         ),
     }
     outcome
@@ -420,6 +420,7 @@ async fn install_hq_core_update_inner() -> Result<
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so this prod Update can't race prewarm/sync into a corrupt
     // `_npx` tree (especially likely right after an HQ_CLOUD_VERSION bump).
+    let (mut cmd, npx_resolution) = crate::commands::hq_core_staging::rescue_command();
     crate::commands::hq_core_staging::materialize_rescue_cache()
         .await
         .map_err(|error| {
@@ -427,6 +428,7 @@ async fn install_hq_core_update_inner() -> Result<
                 crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
                 error,
             )
+            .with_npx_resolution(npx_resolution)
         })?;
 
     let _update_guard =
@@ -435,9 +437,9 @@ async fn install_hq_core_update_inner() -> Result<
                 crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
                 error,
             )
+            .with_npx_resolution(npx_resolution)
         })?;
 
-    let mut cmd = crate::commands::hq_core_staging::rescue_command();
     cmd.args(crate::commands::hq_core_staging::build_rescue_args(
         &hq_folder,
         PROD_HQ_CORE_REPO,
@@ -458,6 +460,7 @@ async fn install_hq_core_update_inner() -> Result<
             crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
             format!("spawn rescue script: {error}"),
         )
+        .with_npx_resolution(npx_resolution)
     })?;
 
     let exit_code = status.code().unwrap_or(-1);
@@ -492,6 +495,9 @@ async fn install_hq_core_update_inner() -> Result<
     }
     let log_tail = crate::commands::hq_core_staging::tail_log(&log_path, 40)
         .unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+    let rescue_stderr_tail =
+        crate::commands::hq_core_staging::read_rescue_diagnostic_tail(&log_path)
+            .unwrap_or_default();
 
     log(
         "hq-core-update",
@@ -507,6 +513,8 @@ async fn install_hq_core_update_inner() -> Result<
         exit_code,
         log_tail,
         log_path: log_path.display().to_string(),
+        rescue_stderr_tail,
+        npx_resolution,
     })
 }
 
@@ -521,7 +529,8 @@ mod tests {
                 Some("15.0.0".into())
             },
             std::time::Duration::from_millis(20),
-        ).await;
+        )
+        .await;
         // Release the real worker before asserting, including on a regression.
         let _ = release.send(());
         assert_eq!(result, None);
@@ -531,13 +540,16 @@ mod tests {
     async fn local_version_read_does_not_run_on_the_ui_executor() {
         let caller = std::thread::current().id();
         let result = super::read_local_version_for_ui(
-            move || Some(if std::thread::current().id() == caller {
-                "blocked caller".into()
-            } else {
-                "worker".into()
-            }),
+            move || {
+                Some(if std::thread::current().id() == caller {
+                    "blocked caller".into()
+                } else {
+                    "worker".into()
+                })
+            },
             std::time::Duration::from_secs(1),
-        ).await;
+        )
+        .await;
         assert_eq!(result.as_deref(), Some("worker"));
     }
 

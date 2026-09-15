@@ -28,6 +28,8 @@
 //!     report always renders even when staging is unreachable.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -463,6 +465,12 @@ pub struct RescueRunResult {
     pub log_tail: String,
     /// Full log file path on disk for `Open in Finder` / debug.
     pub log_path: String,
+    /// Sanitized bounded diagnostic retained only for consent-gated telemetry.
+    #[serde(skip_serializing)]
+    pub(crate) rescue_stderr_tail: String,
+    /// Path-free provenance of the `npx` executable used for this rescue.
+    #[serde(skip_serializing)]
+    pub(crate) npx_resolution: crate::commands::hq_core_state::CoreUpdateNpxResolution,
 }
 
 /// Resolve the user's HQ folder using the same 4-tier resolver the rest of
@@ -494,9 +502,20 @@ pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
 ///
 /// Crate-public: shared by `hq_core_update::install_hq_core_update` so the
 /// prod-update and staging paths build the invocation identically.
-pub(crate) fn rescue_command() -> tokio::process::Command {
-    let npx = paths::resolve_bin("npx");
-    let mut cmd = paths::tokio_spawn_command(&npx, &[]);
+pub(crate) fn rescue_command() -> (
+    tokio::process::Command,
+    crate::commands::hq_core_state::CoreUpdateNpxResolution,
+) {
+    let npx = paths::resolve_bin_with_kind("npx");
+    let npx_resolution = crate::commands::hq_core_state::CoreUpdateNpxResolution {
+        resolved: npx.is_resolved(),
+        source: if npx.is_resolved() {
+            paths::resolution_source_of(Path::new(&npx.path)).telemetry_value()
+        } else {
+            "not_resolved"
+        },
+    };
+    let mut cmd = paths::tokio_spawn_command(&npx.path, &[]);
     cmd.arg("-y")
         .arg(format!(
             "--package={}@{}",
@@ -508,7 +527,7 @@ pub(crate) fn rescue_command() -> tokio::process::Command {
         // node/npx install dirs so npx can resolve `node`. Mirrors the
         // runner spawn in `commands::sync`.
         .env("PATH", paths::child_path());
-    cmd
+    (cmd, npx_resolution)
 }
 
 /// Canonical rescue argument vector — the SHARED invocation contract.
@@ -654,35 +673,35 @@ async fn run_replace_from_staging_observed(
                 None,
             );
         }
-        Ok(run) => crate::commands::hq_core_state::emit_core_update_event(
-            "core_update_failed",
+        Ok(run) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
-            "failed",
-            Some(crate::commands::hq_core_state::Channel::Staging),
+            crate::commands::hq_core_state::Channel::Staging,
             local_before.as_deref(),
-            None,
             auto_updates,
             Some(eligible),
             observation.version_behind(),
             started.elapsed(),
             Some(run.exit_code),
-            Some("rescue_exit"),
-            None,
+            "rescue_exit",
+            crate::commands::hq_core_state::CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(&run.rescue_stderr_tail),
+                npx_resolution: Some(run.npx_resolution),
+            },
         ),
-        Err(error) => crate::commands::hq_core_state::emit_core_update_event(
-            "core_update_failed",
+        Err(error) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
-            "failed",
-            Some(crate::commands::hq_core_state::Channel::Staging),
+            crate::commands::hq_core_state::Channel::Staging,
             local_before.as_deref(),
-            None,
             auto_updates,
             Some(eligible),
             observation.version_behind(),
             started.elapsed(),
             None,
-            Some(error.kind().label()),
-            None,
+            error.kind().label(),
+            crate::commands::hq_core_state::CoreUpdateFailureDetails {
+                rescue_stderr_tail: None,
+                npx_resolution: error.npx_resolution(),
+            },
         ),
     }
     outcome
@@ -764,11 +783,13 @@ async fn run_replace_from_staging_inner(
 
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so a rescue can't race prewarm/sync into a corrupt `_npx` tree.
+    let (mut cmd, npx_resolution) = rescue_command();
     materialize_rescue_cache().await.map_err(|error| {
         crate::commands::hq_core_state::CoreUpdateError::new(
             crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
             error,
         )
+        .with_npx_resolution(npx_resolution)
     })?;
 
     let _update_guard =
@@ -777,13 +798,13 @@ async fn run_replace_from_staging_inner(
                 crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
                 error,
             )
+            .with_npx_resolution(npx_resolution)
         })?;
 
     // npx -y --package=@indigoai-us/hq-cloud@<pin> hq-rescue
     //     --hq-root <folder> --source <repo> --yes
     // Staging leaves --ref to the engine default (main) and has no floor SHA.
     // Token is passed via env (never in argv — argv shows up in `ps`).
-    let mut cmd = rescue_command();
     cmd.args(build_rescue_args(&hq_folder, &repo, None, None))
         .env("GH_TOKEN", &token)
         .stdout(std::process::Stdio::from(log_file_for_stdout))
@@ -794,6 +815,7 @@ async fn run_replace_from_staging_inner(
             crate::commands::hq_core_state::CoreUpdateErrorKind::RescueSpawn,
             format!("spawn rescue script: {error}"),
         )
+        .with_npx_resolution(npx_resolution)
     })?;
 
     let exit_code = status.code().unwrap_or(-1);
@@ -821,6 +843,7 @@ async fn run_replace_from_staging_inner(
     }
     let log_tail =
         tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+    let rescue_stderr_tail = read_rescue_diagnostic_tail(&log_path).unwrap_or_default();
 
     log(
         "hq-core-staging",
@@ -831,7 +854,32 @@ async fn run_replace_from_staging_inner(
         exit_code,
         log_tail,
         log_path: log_path.display().to_string(),
+        rescue_stderr_tail,
+        npx_resolution,
     })
+}
+
+/// Read only the terminal 16 KiB of the combined rescue log before applying
+/// the shared setup-diagnostic redaction. The file itself is never attached to
+/// telemetry, and this bounded read avoids making a maliciously large log part
+/// of the update reporting path.
+pub(crate) fn read_rescue_diagnostic_tail(path: &Path) -> Result<String, String> {
+    let mut file =
+        std::fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let length = file
+        .metadata()
+        .map_err(|error| format!("stat {}: {error}", path.display()))?
+        .len();
+    let limit = hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES as u64;
+    file.seek(SeekFrom::Start(length.saturating_sub(limit)))
+        .map_err(|error| format!("seek {}: {error}", path.display()))?;
+    let mut bytes = Vec::with_capacity(length.min(limit) as usize);
+    file.take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    Ok(hq_telemetry::redact_setup_diagnostic_tail(
+        &String::from_utf8_lossy(&bytes),
+    ))
 }
 
 /// Read the last N lines of a log file. Pure stdlib so we don't pull in
@@ -851,6 +899,43 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rescue_diagnostic_tail_is_capped_at_the_shared_16kib_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("rescue.log");
+        let input = format!(
+            "discard-me-{}diagnostic-tail",
+            "x".repeat(hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES)
+        );
+        std::fs::write(&log_path, input).unwrap();
+
+        let tail = read_rescue_diagnostic_tail(&log_path).unwrap();
+
+        assert_eq!(
+            tail.len(),
+            hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES
+        );
+        assert!(tail.ends_with("diagnostic-tail"));
+        assert!(!tail.contains("discard-me-"));
+    }
+
+    #[test]
+    fn rescue_diagnostic_tail_redacts_home_paths_before_telemetry() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("rescue.log");
+        std::fs::write(
+            &log_path,
+            "HOME=/Users/alice\nfatal: cannot read /Users/alice/.npm/_logs/rescue.log",
+        )
+        .unwrap();
+
+        let tail = read_rescue_diagnostic_tail(&log_path).unwrap();
+
+        assert!(!tail.contains("alice"));
+        assert!(!tail.contains("HOME="));
+        assert!(tail.contains("/Users/[user]/.npm/_logs/rescue.log"));
+    }
 
     #[test]
     fn staging_index_cache_is_fresh_inside_ttl() {

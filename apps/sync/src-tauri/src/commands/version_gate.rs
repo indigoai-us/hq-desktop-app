@@ -95,7 +95,17 @@ fn vault_api_url() -> Result<String, String> {
 /// Platform tag passed to hq-pro. Format mirrors what hq-cli sends so the
 /// server can route a single `platform`-aware `downloadUrl` resolver across
 /// both clients.
-fn platform_tag() -> String {
+/// Desktop platform vocabulary shared by update and operational telemetry.
+/// These are the shipping desktop targets; keeping the list closed prevents a
+/// platform dimension from becoming a free-form client value.
+pub(crate) const DESKTOP_PLATFORM_VALUES: &[&str] = &[
+    "macos-aarch64",
+    "macos-x86_64",
+    "windows-x86_64",
+    "linux-x86_64",
+];
+
+pub(crate) fn platform_tag() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
@@ -253,6 +263,11 @@ mod tests {
     #[test]
     fn background_version_gate_is_disabled_in_dev_builds() {
         assert!(background_version_gate_disabled());
+    }
+
+    #[test]
+    fn current_platform_tag_is_in_the_closed_desktop_vocabulary() {
+        assert!(DESKTOP_PLATFORM_VALUES.contains(&platform_tag().as_str()));
     }
 
     #[tokio::test]
