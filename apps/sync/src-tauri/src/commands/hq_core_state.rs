@@ -220,10 +220,180 @@ pub(crate) struct CoreUpdateNpxResolution {
     pub(crate) source: &'static str,
 }
 
+/// Closed telemetry dimension for why a Core rescue failed.
+///
+/// This remains a dimension rather than raw diagnostic text: hq-pro admits
+/// `errorCategory` as a short safe label, while its telemetry privacy boundary
+/// deliberately rejects free-form process output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RescueFailureCategory {
+    Auth,
+    Network,
+    Dns,
+    Tls,
+    DiskFull,
+    Permission,
+    NotFound,
+    NpxResolveFailed,
+    Timeout,
+    Unknown,
+}
+
+impl RescueFailureCategory {
+    const ALL: &[Self] = &[
+        Self::Auth,
+        Self::Network,
+        Self::Dns,
+        Self::Tls,
+        Self::DiskFull,
+        Self::Permission,
+        Self::NotFound,
+        Self::NpxResolveFailed,
+        Self::Timeout,
+        Self::Unknown,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Auth => "auth",
+            Self::Network => "network",
+            Self::Dns => "dns",
+            Self::Tls => "tls",
+            Self::DiskFull => "disk-full",
+            Self::Permission => "permission",
+            Self::NotFound => "not-found",
+            Self::NpxResolveFailed => "npx-resolve-failed",
+            Self::Timeout => "timeout",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+struct RescueStderrPattern {
+    category: RescueFailureCategory,
+    needle: &'static str,
+}
+
+// Git supplies the only signal for a rescue process that started and then
+// exited unsuccessfully. Keep every recognized stderr phrase in this one
+// ordered table: specific causes must precede their broader counterparts.
+const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
+    RescueStderrPattern {
+        category: RescueFailureCategory::Auth,
+        needle: "authentication failed",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Auth,
+        needle: "could not read username",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Auth,
+        needle: "permission denied (publickey)",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Dns,
+        needle: "could not resolve host",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Dns,
+        needle: "name or service not known",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Tls,
+        needle: "ssl certificate problem",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Tls,
+        needle: "certificate verify failed",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::DiskFull,
+        needle: "no space left on device",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "operation not permitted",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "permission denied",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::NotFound,
+        needle: "repository not found",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::NotFound,
+        needle: "remote: not found",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Timeout,
+        needle: "operation timed out",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Timeout,
+        needle: "connection timed out",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "failed to connect",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "connection refused",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "connection reset",
+    },
+];
+
+fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
+    let stderr = stderr.to_ascii_lowercase();
+    RESCUE_STDERR_PATTERNS
+        .iter()
+        .find(|pattern| stderr.contains(pattern.needle))
+        .map(|pattern| pattern.category)
+        .unwrap_or(RescueFailureCategory::Unknown)
+}
+
+pub(crate) fn classify_rescue_exit_failure(
+    stderr: &str,
+    npx_resolution: CoreUpdateNpxResolution,
+) -> RescueFailureCategory {
+    if !npx_resolution.resolved {
+        return RescueFailureCategory::NpxResolveFailed;
+    }
+    classify_rescue_stderr_failure(stderr)
+}
+
+pub(crate) fn classify_core_update_error(
+    error_kind: CoreUpdateErrorKind,
+    npx_resolution: Option<CoreUpdateNpxResolution>,
+) -> RescueFailureCategory {
+    if npx_resolution.is_some_and(|resolution| !resolution.resolved) {
+        return RescueFailureCategory::NpxResolveFailed;
+    }
+
+    match error_kind {
+        CoreUpdateErrorKind::Network => RescueFailureCategory::Network,
+        CoreUpdateErrorKind::AlreadyInProgress
+        | CoreUpdateErrorKind::InvalidCoreRoot
+        | CoreUpdateErrorKind::RescueSpawn
+        | CoreUpdateErrorKind::BaselinePersistence
+        | CoreUpdateErrorKind::ChannelConfiguration
+        | CoreUpdateErrorKind::Internal => RescueFailureCategory::Unknown,
+    }
+}
+
 /// Additional diagnostics emitted only with `core_update_failed`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CoreUpdateFailureDetails<'a> {
+    /// A redacted 16 KiB rescue-log tail retained with the Sentry diagnostic
+    /// convention. Core updates do not currently report to Sentry, so this is
+    /// never telemetry.
     pub(crate) rescue_stderr_tail: Option<&'a str>,
+    pub(crate) rescue_failure_category: RescueFailureCategory,
     pub(crate) npx_resolution: Option<CoreUpdateNpxResolution>,
 }
 
@@ -458,12 +628,10 @@ fn core_update_failed_properties(
         "platform".to_string(),
         Value::String(crate::commands::version_gate::platform_tag()),
     );
-    if let Some(rescue_stderr_tail) = details.rescue_stderr_tail {
-        properties.insert(
-            "rescueStderrTail".to_string(),
-            Value::String(rescue_stderr_tail.to_string()),
-        );
-    }
+    properties.insert(
+        "errorCategory".to_string(),
+        Value::String(details.rescue_failure_category.label().to_string()),
+    );
     if let Some(npx_resolution) = details.npx_resolution {
         properties.insert(
             "npxResolved".to_string(),
@@ -1650,6 +1818,31 @@ mod tests {
 
     static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    // Snapshot of the hq-pro entries that can admit `core_update_failed`
+    // properties. Mirrors
+    // src/vault-service/handlers/raw-telemetry-envelope.ts. CI for this repo
+    // cannot import hq-pro, so the test below makes server-list drift explicit.
+    const HQ_PRO_LABEL_PROPERTY_KEYS: &[&str] = &[
+        "channel",
+        "desktopVersion",
+        "errorCategory",
+        "errorKind",
+        "localCoreVersion",
+        "platform",
+        "result",
+        "source",
+    ];
+    const HQ_PRO_BOOLEAN_PROPERTY_KEYS: &[&str] =
+        &["autoUpdateEnabled", "eligible", "versionBehind"];
+    const HQ_PRO_NUMBER_PROPERTY_KEYS: &[&str] = &["durationMs", "exitCode"];
+    const EXPECTED_HQ_PRO_CORE_UPDATE_PROPERTY_GAPS: &[&str] = &["npxResolution", "npxResolved"];
+
+    fn hq_pro_admits_core_update_property(key: &str) -> bool {
+        HQ_PRO_LABEL_PROPERTY_KEYS.contains(&key)
+            || HQ_PRO_BOOLEAN_PROPERTY_KEYS.contains(&key)
+            || HQ_PRO_NUMBER_PROPERTY_KEYS.contains(&key)
+    }
+
     #[tokio::test]
     async fn core_update_run_guard_serializes_and_releases_the_update_slot() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
@@ -1719,7 +1912,13 @@ mod tests {
     }
 
     #[test]
-    fn rescue_exit_failure_has_a_diagnostic_tail_and_closed_platform_dimension() {
+    fn rescue_exit_failure_classifies_dns_without_sending_the_raw_diagnostic() {
+        let npx_resolution = CoreUpdateNpxResolution {
+            resolved: true,
+            source: "managed_toolchain",
+        };
+        let stderr =
+            "fatal: unable to access 'https://github.com/indigoai-us/hq-core/': Could not resolve host: github.com";
         let properties = core_update_failed_properties(
             "automatic",
             Channel::Release,
@@ -1731,25 +1930,112 @@ mod tests {
             Some(5),
             "rescue_exit",
             CoreUpdateFailureDetails {
-                rescue_stderr_tail: Some("fatal: could not clone hq-core"),
-                npx_resolution: Some(CoreUpdateNpxResolution {
-                    resolved: false,
-                    source: "not_resolved",
-                }),
+                rescue_stderr_tail: Some(stderr),
+                rescue_failure_category: classify_rescue_exit_failure(stderr, npx_resolution),
+                npx_resolution: Some(npx_resolution),
             },
         );
 
         assert_eq!(properties["exitCode"], 5);
         assert_eq!(
-            properties["rescueStderrTail"],
-            "fatal: could not clone hq-core"
+            properties["errorCategory"], "dns",
+            "a git DNS failure must become a bounded telemetry dimension"
         );
-        assert_eq!(properties["npxResolved"], false);
-        assert_eq!(properties["npxResolution"], "not_resolved");
+        assert!(properties.get("rescueStderrTail").is_none());
+        assert_eq!(properties["npxResolved"], true);
+        assert_eq!(properties["npxResolution"], "managed_toolchain");
         let platform = properties["platform"].as_str().unwrap();
         assert!(
             crate::commands::version_gate::DESKTOP_PLATFORM_VALUES.contains(&platform),
             "platform must remain in the closed desktop vocabulary"
+        );
+    }
+
+    #[test]
+    fn every_rescue_stderr_pattern_classifies_to_its_table_category() {
+        for pattern in RESCUE_STDERR_PATTERNS {
+            assert_eq!(
+                classify_rescue_stderr_failure(pattern.needle),
+                pattern.category,
+                "pattern {:?} must classify as {:?}",
+                pattern.needle,
+                pattern.category
+            );
+        }
+    }
+
+    #[test]
+    fn typed_core_update_conditions_take_precedence_over_stderr_matching() {
+        assert_eq!(
+            classify_core_update_error(CoreUpdateErrorKind::Network, None),
+            RescueFailureCategory::Network
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                Some(CoreUpdateNpxResolution {
+                    resolved: false,
+                    source: "not_resolved",
+                })
+            ),
+            RescueFailureCategory::NpxResolveFailed
+        );
+    }
+
+    #[test]
+    fn rescue_failure_category_values_are_hq_pro_safe_labels() {
+        for category in RescueFailureCategory::ALL {
+            let label = category.label();
+            assert!(label.len() <= 64, "{label:?} exceeds hq-pro's label cap");
+            assert!(
+                label.bytes().all(|byte| byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'_' | b'.' | b':' | b'-')),
+                "{label:?} violates hq-pro SAFE_MARKETING_LABEL_RE"
+            );
+        }
+    }
+
+    #[test]
+    fn hq_pro_core_update_allowlist_snapshot_is_not_empty() {
+        assert!(!HQ_PRO_LABEL_PROPERTY_KEYS.is_empty());
+        assert!(!HQ_PRO_BOOLEAN_PROPERTY_KEYS.is_empty());
+        assert!(!HQ_PRO_NUMBER_PROPERTY_KEYS.is_empty());
+    }
+
+    #[test]
+    fn core_update_failed_properties_have_no_untracked_hq_pro_allowlist_gaps() {
+        let npx_resolution = CoreUpdateNpxResolution {
+            resolved: true,
+            source: "managed_toolchain",
+        };
+        let properties = core_update_failed_properties(
+            "automatic",
+            Channel::Release,
+            Some("15.0.4"),
+            true,
+            Some(true),
+            Some(true),
+            Duration::from_millis(42),
+            Some(5),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some("fatal: could not clone hq-core"),
+                rescue_failure_category: RescueFailureCategory::Unknown,
+                npx_resolution: Some(npx_resolution),
+            },
+        );
+        let mut missing: Vec<&str> = properties
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !hq_pro_admits_core_update_property(key))
+            .collect();
+        missing.sort_unstable();
+
+        let mut expected = EXPECTED_HQ_PRO_CORE_UPDATE_PROPERTY_GAPS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            missing, expected,
+            "every core_update_failed property must be admitted by hq-pro or appear in the explicit companion-PR gap list"
         );
     }
 

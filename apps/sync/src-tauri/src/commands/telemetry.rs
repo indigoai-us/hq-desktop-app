@@ -834,7 +834,6 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "failedDependency",
     "errorCategory",
     "setupRunId",
-    "rescueStderrTail",
     "npxResolved",
     "npxResolution",
 ];
@@ -851,10 +850,15 @@ const FAILED_DEPENDENCY_VALUES: &[&str] = &[
 ];
 
 const ERROR_CATEGORY_VALUES: &[&str] = &[
+    "auth",
     "network",
+    "dns",
+    "tls",
     "checksum",
+    "disk-full",
     "permission",
     "not-found",
+    "npx-resolve-failed",
     "timeout",
     "spawn-failed",
     "exit-nonzero",
@@ -950,41 +954,37 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
             continue;
         }
 
-        let sanitized_value = match (key.as_str(), &value) {
-            ("rescueStderrTail", Value::String(value)) => {
-                let diagnostic = hq_telemetry::redact_setup_diagnostic_tail(&value);
-                (!diagnostic.is_empty()).then_some(Value::String(diagnostic))
-            }
-            ("failedDependency", Value::String(value)) => Some(Value::String(
-                normalize_closed_label(&value, FAILED_DEPENDENCY_VALUES),
-            )),
-            ("errorCategory", Value::String(value)) => Some(Value::String(normalize_closed_label(
-                &value,
-                ERROR_CATEGORY_VALUES,
-            ))),
-            ("npxResolution", Value::String(value)) => Some(Value::String(
-                normalize_closed_label(&value, NPX_RESOLUTION_VALUES),
-            )),
-            ("detectedSourceSet", Value::String(value)) => Some(Value::String(
-                normalize_closed_label(&value, CONNECTOR_IMPORT_SOURCE_SET_VALUES),
-            )),
-            ("outcome", Value::String(value)) if connector_import => Some(Value::String(
-                normalize_closed_label(&value, CONNECTOR_IMPORT_OUTCOME_VALUES),
-            )),
-            ("failedStages", Value::Array(values)) => {
-                Some(Value::Array(normalize_failed_stages(&values)))
-            }
-            (_, Value::Bool(_)) => matches!(
-                key.as_str(),
-                "enabled" | "autoUpdateEnabled" | "eligible" | "versionBehind" | "npxResolved"
-            )
-            .then_some(value),
-            (_, Value::Number(n)) => {
-                (n.as_i64().is_some() || n.as_u64().is_some()).then_some(value)
-            }
-            (_, Value::String(s)) => is_safe_label_value(s).then_some(value),
-            _ => None,
-        };
+        let sanitized_value =
+            match (key.as_str(), &value) {
+                ("failedDependency", Value::String(value)) => Some(Value::String(
+                    normalize_closed_label(&value, FAILED_DEPENDENCY_VALUES),
+                )),
+                ("errorCategory", Value::String(value)) => Some(Value::String(
+                    normalize_closed_label(&value, ERROR_CATEGORY_VALUES),
+                )),
+                ("npxResolution", Value::String(value)) => Some(Value::String(
+                    normalize_closed_label(&value, NPX_RESOLUTION_VALUES),
+                )),
+                ("detectedSourceSet", Value::String(value)) => Some(Value::String(
+                    normalize_closed_label(&value, CONNECTOR_IMPORT_SOURCE_SET_VALUES),
+                )),
+                ("outcome", Value::String(value)) if connector_import => Some(Value::String(
+                    normalize_closed_label(&value, CONNECTOR_IMPORT_OUTCOME_VALUES),
+                )),
+                ("failedStages", Value::Array(values)) => {
+                    Some(Value::Array(normalize_failed_stages(&values)))
+                }
+                (_, Value::Bool(_)) => matches!(
+                    key.as_str(),
+                    "enabled" | "autoUpdateEnabled" | "eligible" | "versionBehind" | "npxResolved"
+                )
+                .then_some(value),
+                (_, Value::Number(n)) => {
+                    (n.as_i64().is_some() || n.as_u64().is_some()).then_some(value)
+                }
+                (_, Value::String(s)) => is_safe_label_value(s).then_some(value),
+                _ => None,
+            };
         if let Some(value) = sanitized_value {
             out.insert(key, value);
         }
@@ -2374,9 +2374,9 @@ mod codex_telemetry_tests {
             "exitCode": 1,
             "skipReason": "automatic_updates_disabled",
             "platform": "macos-aarch64",
+            "errorCategory": "dns",
             "npxResolved": false,
             "npxResolution": "not_resolved",
-            "rescueStderrTail": "fatal: could not clone hq-core",
             "logPath": "/Users/alice/private/core-update.log",
             "error": "raw subprocess output must not leave the client"
         })));
@@ -2395,20 +2395,21 @@ mod codex_telemetry_tests {
         assert_eq!(sanitized["exitCode"], 1);
         assert_eq!(sanitized["skipReason"], "automatic_updates_disabled");
         assert_eq!(sanitized["platform"], "macos-aarch64");
+        assert_eq!(sanitized["errorCategory"], "dns");
         assert_eq!(sanitized["npxResolved"], false);
         assert_eq!(sanitized["npxResolution"], "not_resolved");
-        assert_eq!(sanitized["rescueStderrTail"], "fatal: could not clone hq-core");
         assert!(sanitized.get("logPath").is_none());
         assert!(sanitized.get("error").is_none());
     }
 
     #[test]
-    fn rescue_exit_failure_keeps_a_diagnostic_tail() {
+    fn core_update_failure_drops_raw_rescue_diagnostics_from_telemetry() {
         let event = build_desktop_telemetry_event(
             "core_update_failed".to_string(),
             Some(json!({
                 "errorKind": "rescue_exit",
                 "exitCode": 5,
+                "errorCategory": "dns",
                 "rescueStderrTail": "fatal: could not clone hq-core"
             })),
             None,
@@ -2417,10 +2418,8 @@ mod codex_telemetry_tests {
         );
 
         assert_eq!(event.properties["exitCode"], 5);
-        assert_eq!(
-            event.properties["rescueStderrTail"],
-            "fatal: could not clone hq-core"
-        );
+        assert_eq!(event.properties["errorCategory"], "dns");
+        assert!(event.properties.get("rescueStderrTail").is_none());
     }
 
     #[test]
@@ -2480,7 +2479,6 @@ mod codex_telemetry_tests {
                 "failedDependency",
                 "errorCategory",
                 "setupRunId",
-                "rescueStderrTail",
                 "npxResolved",
                 "npxResolution",
             ]

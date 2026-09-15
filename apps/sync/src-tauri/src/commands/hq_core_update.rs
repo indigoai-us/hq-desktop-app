@@ -282,6 +282,11 @@ async fn install_hq_core_update_observed(
             "rescue_exit",
             crate::commands::hq_core_state::CoreUpdateFailureDetails {
                 rescue_stderr_tail: Some(&run.rescue_stderr_tail),
+                rescue_failure_category:
+                    crate::commands::hq_core_state::classify_rescue_exit_failure(
+                        &run.rescue_stderr_tail,
+                        run.npx_resolution,
+                    ),
                 npx_resolution: Some(run.npx_resolution),
             },
         ),
@@ -297,6 +302,10 @@ async fn install_hq_core_update_observed(
             error.kind().label(),
             crate::commands::hq_core_state::CoreUpdateFailureDetails {
                 rescue_stderr_tail: None,
+                rescue_failure_category: crate::commands::hq_core_state::classify_core_update_error(
+                    error.kind(),
+                    error.npx_resolution(),
+                ),
                 npx_resolution: error.npx_resolution(),
             },
         ),
