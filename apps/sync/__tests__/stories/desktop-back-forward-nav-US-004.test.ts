@@ -183,7 +183,6 @@ describe("US-004: Cover nested destinations in the same stack", () => {
 
     const shell = readRepo("packages/ui/src/shell/DesktopApp.svelte");
     expect(shell).toContain("<ConfirmDialog");
-    expect(shell).toContain("<MigrateSessionDialog");
     expect(shell).toContain("if (/^https?:\\/\\//i.test(url)) onopenurl?.(url);");
     const confirm = functionSource(shell, "deleteSelectedChannel");
     expect(confirm).not.toContain("void navigate(");

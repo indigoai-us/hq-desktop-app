@@ -56,9 +56,11 @@ afterEach(async () => {
 
 describe("LibraryOverlay host capabilities", () => {
   it("hides Workers for web and any desktop host without the worker-detail capability", async () => {
+    // Worker detail now gates on canInstallLocally: reading the local worker
+    // tree needs a local install, not the (removed) in-app session runtime.
     for (const [kind, capabilities] of [
       ["web", WEB_CAPABILITIES],
-      ["desktop", { ...TAURI_CAPABILITIES, canSpawnSessions: false }],
+      ["desktop", { ...TAURI_CAPABILITIES, canInstallLocally: false }],
     ] as const) {
       host = document.createElement("div");
       document.body.appendChild(host);

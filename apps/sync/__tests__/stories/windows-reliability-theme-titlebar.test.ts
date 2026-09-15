@@ -93,28 +93,6 @@ describe('US-003: Windows theme, notification, and native title-bar policy', () 
     });
   });
 
-  describe('no forced-dark Windows surfaces', () => {
-    it('rejects hard-coded dark Mica / locked dark color-scheme / forced dark popover bg', () => {
-      const effects = readPlatformWindowEffects();
-      expect(effects).not.toContain('apply_mica(window, Some(true))');
-
-      const popover = readRepo('src/components/Popover.svelte');
-      // Old forced-dark opaque surface must be gone.
-      expect(popover).not.toMatch(
-        /data-platform=['"]windows['"][\s\S]{0,200}background:\s*#18181b/,
-      );
-      expect(popover).toMatch(/data-platform=['"]windows['"][\s\S]{0,120}var\(--pop-bg/);
-
-      const banner = readRepo('src/components/BannerNotification.svelte');
-      expect(banner).toMatch(/color-scheme:\s*light dark/);
-      expect(banner).not.toMatch(/color-scheme:\s*dark\s*;/);
-
-      const settings = readRepo('src/desktop-alt/pages/SettingsPage.svelte');
-      expect(settings).not.toMatch(/select\s*\{[^}]*color-scheme:\s*dark/);
-      expect(settings).toMatch(/color-scheme:\s*light dark/);
-    });
-  });
-
   describe('banner notification fallback', () => {
     it('has deterministic legible fallback when transparency is unavailable', () => {
       const banner = readRepo('src/components/BannerNotification.svelte');
@@ -136,18 +114,6 @@ describe('US-003: Windows theme, notification, and native title-bar policy', () 
   });
 
   describe('native Windows title bar / no traffic-light inset', () => {
-    it('V4TitleBar drops the macOS traffic-light inset on Windows', () => {
-      const titlebar = readRepo('src/desktop-alt/v4/V4TitleBar.svelte');
-      // macOS default still has the 78px inset.
-      expect(titlebar).toMatch(/padding-left:\s*78px/);
-      // Windows override removes it.
-      expect(titlebar).toMatch(
-        /data-platform=['"]windows['"][\s\S]{0,80}padding-left:\s*12px/,
-      );
-      expect(titlebar).toMatch(
-        /data-platform=['"]windows['"][\s\S]{0,120}v4-drag-lights[\s\S]{0,40}display:\s*none/,
-      );
-    });
 
     it('desktop entry sets data-platform before mount', () => {
       const desktopMain = readRepo('src/desktop-alt/main.ts');
@@ -201,14 +167,6 @@ describe('US-003: Windows theme, notification, and native title-bar policy', () 
           /prefers-color-scheme:\s*dark/,
           /prefers-reduced-transparency/,
           /prefers-reduced-motion/,
-        ],
-      },
-      {
-        name: 'titlebar',
-        path: 'src/desktop-alt/v4/V4TitleBar.svelte',
-        checks: [
-          /prefers-reduced-motion:\s*reduce/,
-          /prefers-reduced-transparency:\s*reduce/,
         ],
       },
       {

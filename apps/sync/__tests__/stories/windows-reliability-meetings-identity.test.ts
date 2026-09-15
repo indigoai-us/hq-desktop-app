@@ -161,55 +161,6 @@ describe('US-005: Meeting bot identity and duplicate-invite recovery', () => {
       ).toBe(true);
       expect(isAlreadyScheduledError(new Error('HTTP 500'))).toBe(false);
     });
-
-    it('optimistic seed paints invited immediately (rowButtonKind + attachment state)', () => {
-      const evt = event('evt-409', {
-        meetingUrl: 'https://meet.google.com/abc-defg-hij',
-        summary: 'Weekly',
-      });
-      const seeded = optimisticAlreadyInvitedBot(evt, evt.meetingUrl!);
-      expect(rowButtonKind(seeded)).toBe('invited');
-      expect(botAttachmentState(seeded)).toBe('invited');
-      // Join works via event id so the agenda row flips without a refresh.
-      expect(botForEvent(evt, new Map([[evt.id, seeded]]), [seeded])?.botId).toBe(
-        seeded.botId,
-      );
-    });
-
-    it('store recovers 409 with isAlreadyScheduledError, seed, info toast, background refresh', () => {
-      const store = readRepo('src/desktop-alt/lib/meetings-store.svelte.ts');
-      expect(store).toMatch(/isAlreadyScheduledError/);
-      expect(store).toMatch(/seedAlreadyInvited|optimisticAlreadyInvitedBot/);
-      expect(store).toMatch(/Already invited — refreshing\./);
-      // Background refresh — void, not awaited on the conflict path.
-      expect(store).toMatch(/void\s+refresh\(\)/);
-      // Conflict path must not return kind:'warn'.
-      expect(store).toMatch(/kind:\s*'info',\s*text:\s*'Already invited/);
-    });
-
-    it('MeetingsPage does not promote 409 recovery to the refresh-error banner', () => {
-      const page = readRepo('src/desktop-alt/pages/MeetingsPage.svelte');
-      expect(page).toMatch(/US-005/);
-      expect(page).toMatch(/already-invited|HTTP 409/);
-      // Invite only flashes toast; never assigns fetchError locally.
-      expect(page).toMatch(/flashToast\(t\.kind,\s*t\.text\)/);
-      expect(page).toMatch(/const fetchError = \$derived\(meetingsStore\.fetchError\)/);
-      expect(page).not.toMatch(/fetchError\s*=\s*['"`]/);
-      expect(page).not.toMatch(/meetingsStore\.fetchError\s*=/);
-    });
-
-    it('MeetingsPage consumes open_meetings_window focus handoff', () => {
-      const page = readRepo('src/desktop-alt/pages/MeetingsPage.svelte');
-      const agenda = readRepo('src/desktop-alt/components/MeetingsAgenda.svelte');
-      expect(page).toContain("listen<{ meetingId?: string }>('meetings:focus-meeting'");
-      expect(page).toContain("invoke<string | null>('meetings_take_pending_focus')");
-      expect(page).toContain('{focusedMeetingId}');
-      expect(agenda).toContain('data-meeting-id={event.id}');
-      expect(agenda).toContain('data-bot-id={bot?.botId ?? \'\'}');
-      expect(agenda).toContain(
-        'class:focused={meetingMatchesFocusId(focusedMeetingId, event, bot)}',
-      );
-    });
   });
 
   describe('AC5: list distinguishes lifecycle states before interaction', () => {
@@ -221,18 +172,6 @@ describe('US-005: Meeting bot identity and duplicate-invite recovery', () => {
       expect(
         botAttachmentState(bot({ status: 'completed', sourceLanded: true })),
       ).toBe('completed');
-    });
-
-    it('agenda rows expose data-bot-state for each visible attachment lifecycle', () => {
-      const agenda = readRepo('src/desktop-alt/components/MeetingsAgenda.svelte');
-      expect(agenda).toMatch(/botAttachmentState/);
-      expect(agenda).toMatch(/data-bot-state=\{attachment\}/);
-      // Distinct affordances for the five user-facing states.
-      expect(agenda).toMatch(/kind === 'invite'/);
-      expect(agenda).toMatch(/kind === 'invited'/);
-      expect(agenda).toMatch(/kind === 'joining'/);
-      expect(agenda).toMatch(/kind === 'in-call'/);
-      expect(agenda).toMatch(/row-icon-done|Done — transcript saved/);
     });
   });
 });

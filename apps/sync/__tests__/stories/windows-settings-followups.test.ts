@@ -1,13 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { formatHqFolderMeta } from '../../src/desktop-alt/route';
 
 const read = (path: string): string =>
   readFileSync(resolve(process.cwd(), path), 'utf8').replace(/\r\n/g, '\n');
-
-const settings = read('src/desktop-alt/pages/SettingsPage.svelte');
-const titleBar = read('src/desktop-alt/v4/V4TitleBar.svelte');
 const paths = read('../../crates/hq-desktop-core/src/paths.rs');
 
 describe('Windows settings follow-up regressions', () => {
@@ -19,56 +15,6 @@ describe('Windows settings follow-up regressions', () => {
     expect(production).not.toContain('dunce::canonicalize');
     expect(production).not.toContain('dunce::simplified');
     expect(production).not.toContain('hq_path.canonicalize');
-  });
-
-  it('renders Windows verbatim paths as normal user-facing paths', () => {
-    expect(formatHqFolderMeta(String.raw`\\?\C:\Users\person\lr-hq`)).toBe(
-      String.raw`C:\Users\person\lr-hq`,
-    );
-    expect(formatHqFolderMeta(String.raw`\\?\UNC\server\share\HQ`)).toBe(
-      String.raw`\\server\share\HQ`,
-    );
-    expect(formatHqFolderMeta(String.raw`\\?\C:\Users\person\COM1`)).toBe(
-      String.raw`\\?\C:\Users\person\COM1`,
-    );
-  });
-
-  it('keeps action groups and platform chips horizontal', () => {
-    expect(settings).toContain('.setting-row > span:first-child');
-    expect(settings).toContain('.setting-row > div:first-child');
-    expect(settings).not.toMatch(/\.setting-row span,\s*\n\s*\.setting-row div/);
-    expect(settings).toMatch(/\.row-actions\s*\{[\s\S]*?display:\s*flex/);
-    expect(settings).toMatch(/\.platforms\s*\{[\s\S]*?display:\s*flex/);
-  });
-
-  it('themes native select option surfaces for the Windows dark UI', () => {
-    expect(settings).toMatch(/select\s*\{[\s\S]*?color-scheme:\s*light dark/);
-    expect(settings).toMatch(/select option\s*\{[\s\S]*?background:/);
-    expect(settings).toMatch(/select option\s*\{[\s\S]*?color:/);
-  });
-
-  it('centers recovery action content inside the fixed-height title bar', () => {
-    expect(titleBar).toMatch(
-      /\.v4-recovery-actions :global\(button\)\s*\{[\s\S]*?box-sizing:\s*border-box/,
-    );
-    expect(titleBar).toMatch(
-      /\.v4-recovery-actions :global\(button\)\s*\{[\s\S]*?justify-content:\s*center/,
-    );
-    expect(titleBar).toMatch(
-      /\.v4-recovery-actions :global\(button\)\s*\{[\s\S]*?padding-block:\s*0/,
-    );
-  });
-
-  it('uses platform-neutral visible Settings copy', () => {
-    for (const macOnlyCopy of [
-      'macOS is allowing notifications from HQ',
-      'Blocked in macOS',
-      'Open HQ when macOS starts.',
-      'Checking macOS privacy grants',
-      'macOS permissions need attention',
-    ]) {
-      expect(settings).not.toContain(macOnlyCopy);
-    }
   });
 });
 

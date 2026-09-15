@@ -716,6 +716,10 @@ fn main() {
             commands::install_deps::install_claude_code,
             commands::install_deps::install_codex,
             commands::install_deps::install_grok,
+            commands::agent_providers::preflight::agent_session_preflight,
+            commands::agent_providers::agent_provider_login_start,
+            commands::agent_providers::agent_provider_login_status,
+            commands::agent_providers::agent_provider_login_cancel,
             commands::install_deps::install_session_provider,
             commands::install_deps::install_qmd,
             commands::install_deps::install_hq_cli,
@@ -792,29 +796,8 @@ fn main() {
             // reader and the polling loop emits `sessions:updated`).
             // In-app agent sessions (feature-flagged dark by
             // `agent_session_flags`): the live registry + Claude driver.
-            commands::agent_session::agent_session_preflight,
-            commands::agent_session::agent_session_repair_hq_setup,
-            commands::agent_session::provider_auth::agent_provider_login_start,
-            commands::agent_session::provider_auth::agent_provider_login_status,
-            commands::agent_session::provider_auth::agent_provider_login_cancel,
-            commands::agent_session::agent_session_start,
-            commands::agent_session::agent_session_send,
-            commands::agent_session::agent_session_respond_permission,
-            commands::agent_session::agent_session_answer_question,
-            commands::agent_session::agent_session_interrupt,
-            commands::agent_session::agent_session_set_permission_mode,
-            commands::agent_session::agent_session_end,
-            commands::agent_session::agent_session_list,
-            commands::agent_session::agent_session_replay,
-            commands::agent_session::agent_session_history_page,
-            commands::agent_session::agent_session_context,
-            commands::agent_session::agent_session_slash_commands,
             // Sessions composer `@`-mentions: the company directory + the DM
             // fan-out that runs after a mentioned message is sent.
-            commands::session_mentions::session_mention_candidates,
-            commands::session_mentions::session_mention_notify,
-            commands::agent_session::agent_session_cli_session_id,
-            commands::agent_session_launch::agent_session_open_in_app,
             // HQ-native context for the Sessions composer (read-only).
             commands::hq_context::hq_skill_catalog,
             commands::hq_context::hq_company_projects,
@@ -823,19 +806,9 @@ fn main() {
             commands::hq_context::hq_vault_files,
             commands::hq_context::hq_reference_text,
             commands::hq_context::hq_share_to_channel_preflight,
-            commands::session_share_channel::session_share_to_channel,
             // Project channels ↔ sessions: the join behind the sidebar's
             // session badges / hover cards and the strip's project pill.
-            commands::session_project_links::session_project_links,
-            commands::project_session_sharing::project_sessions_read,
             // Open / Share / Deploy on files a session produced.
-            commands::session_artifacts::session_artifact_stat,
-            commands::session_artifacts::session_artifact_open,
-            commands::session_artifacts::session_artifact_share,
-            commands::sessions::list_agent_sessions,
-            commands::sessions::claude::list_local_claude_sessions,
-            commands::sessions::codex::list_local_codex_sessions,
-            commands::sessions::history::list_session_history,
             // Mission Control — agency teams + answerable questions (read + answer).
             commands::agency::list_agency_teams,
             commands::agency::list_agency_questions,
@@ -1041,7 +1014,6 @@ fn main() {
                 return Ok(());
             }
             app.manage(commands::desktop_alt::DesktopSessionScope::new());
-            commands::project_session_sharing::start_recovery(app.handle());
             // macOS app menu with "Check for Updates…" under About; replaces
             // the implicit default menu. See updater::setup_app_menu.
             #[cfg(target_os = "macos")]
@@ -1324,12 +1296,10 @@ fn main() {
             // default 5s) and emits the typed `sessions:updated` event so the UI
             // stays fresh without a manual refresh — same independent-timer
             // pattern as the share/dm poller above.
-            commands::sessions::setup_sessions_poller(app.handle().clone());
 
             // Project watch: notices a `prd.json` HQ writes while a session is
             // live, binds the session to it and emits
             // `agent-session:project-created` so the chat can offer a channel.
-            commands::session_project_links::setup_project_watch(app.handle().clone());
 
             // Agent CLI children spawned by `hq_desktop_core::stdio` join the
             // same process registry `terminate_all_for_exit` drains on quit.
@@ -1346,8 +1316,6 @@ fn main() {
             // the rest of the realtime surface; every path is best-effort.
             #[cfg(target_os = "macos")]
             {
-                commands::sessions::outpost::setup_outpost_mqtt_receiver(app.handle().clone());
-                commands::sessions::outpost::setup_outpost_pollers(app.handle().clone());
             }
 
             // SPIKE: env-var trigger to preview the custom notification banner

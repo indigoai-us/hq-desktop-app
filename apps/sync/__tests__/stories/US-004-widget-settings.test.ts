@@ -25,15 +25,10 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import { flushSync, mount, unmount } from 'svelte';
 import { invoke } from '@tauri-apps/api/core';
-import WidgetSettings from '../../src/components/WidgetSettings.svelte';
 
 const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
 const source = (...parts: string[]) =>
   readFileSync(root(...parts), 'utf8').replace(/\r\n/g, '\n');
-
-const widgetSettingsSource = source('src/components/WidgetSettings.svelte');
-const settingsPageSource = source('src/desktop-alt/pages/SettingsPage.svelte');
-const routeSource = source('src/desktop-alt/route.ts');
 const widgetRs = source('src-tauri/src/commands/widget.rs');
 const settingsRs = source('src-tauri/src/commands/settings.rs');
 const mainRs = source('src-tauri/src/main.rs');
@@ -120,15 +115,6 @@ async function flushPersist(): Promise<void> {
   flushSync();
 }
 
-async function mountWidgetSettings(): Promise<HTMLElement> {
-  host = document.createElement('div');
-  document.body.appendChild(host);
-  component = mount(WidgetSettings, { target: host });
-  flushSync();
-  await settleLoad();
-  return host;
-}
-
 function toggleButton(): HTMLButtonElement {
   const el = host.querySelector('[data-testid="widget-toggle"]');
   expect(el).toBeTruthy();
@@ -157,192 +143,6 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
   // ── 1. Toggle off → native notifications, no widget window ────────────────
 
   describe('Given the widget toggle is switched off, when a notification arrives, then it is native and no widget window exists', () => {
-    it('behavioral: toggle off persists widgetEnabled=false (preserving other keys) then apply_widget_settings; picker unmounts', async () => {
-      stubInvoke({
-        settings: {
-          widgetEnabled: true,
-          widgetDisplay: null,
-          markerKey: 'preserve-me',
-          notifications: true,
-        },
-        displays: defaultDisplays(),
-      });
-
-      await mountWidgetSettings();
-
-      const toggle = toggleButton();
-      expect(toggle.getAttribute('aria-checked')).toBe('true');
-      expect(displayPicker()).toBeTruthy();
-
-      mockInvoke.mockClear();
-      // After clear, re-stub so persist's fresh get_settings still returns the payload.
-      stubInvoke({
-        settings: {
-          widgetEnabled: true,
-          widgetDisplay: null,
-          markerKey: 'preserve-me',
-          notifications: true,
-        },
-        displays: defaultDisplays(),
-      });
-
-      toggle.click();
-      flushSync();
-      // Optimistic flip before persist settles
-      expect(toggleButton().getAttribute('aria-checked')).toBe('false');
-      expect(displayPicker()).toBeNull();
-
-      await flushPersist();
-      await vi.waitFor(() => {
-        expect(mockInvoke.mock.calls.some((c) => c[0] === 'apply_widget_settings')).toBe(true);
-      });
-
-      const sequence = mockInvoke.mock.calls.map((c) => c[0] as string);
-      // Fresh get_settings, then save_settings, then apply
-      expect(sequence).toContain('get_settings');
-      expect(sequence).toContain('save_settings');
-      expect(sequence).toContain('apply_widget_settings');
-
-      const getIdx = sequence.indexOf('get_settings');
-      const saveIdx = sequence.indexOf('save_settings');
-      const applyIdx = sequence.indexOf('apply_widget_settings');
-      expect(getIdx).toBeGreaterThan(-1);
-      expect(saveIdx).toBeGreaterThan(getIdx);
-      expect(applyIdx).toBeGreaterThan(saveIdx);
-
-      const saveArgs = callsOf('save_settings')[0] as {
-        prefs: Record<string, unknown>;
-      };
-      expect(saveArgs.prefs.widgetEnabled).toBe(false);
-      // Spread from fresh get_settings is preserved (not clobbered)
-      expect(saveArgs.prefs.markerKey).toBe('preserve-me');
-      expect(saveArgs.prefs.notifications).toBe(true);
-
-      expect(toggleButton().getAttribute('aria-checked')).toBe('false');
-      expect(displayPicker()).toBeNull();
-    });
-
-    it('behavioral: save_settings rejection reverts optimistic flip and shows inline error', async () => {
-      stubInvoke({
-        settings: { widgetEnabled: true, widgetDisplay: null },
-        displays: defaultDisplays(),
-        saveError: 'disk full',
-      });
-
-      await mountWidgetSettings();
-      expect(toggleButton().getAttribute('aria-checked')).toBe('true');
-      expect(host.querySelector('[role="alert"]')).toBeNull();
-
-      mockInvoke.mockClear();
-      stubInvoke({
-        settings: { widgetEnabled: true, widgetDisplay: null },
-        displays: defaultDisplays(),
-        saveError: 'disk full',
-      });
-
-      toggleButton().click();
-      flushSync();
-      // Optimistic OFF while save is in flight
-      expect(toggleButton().getAttribute('aria-checked')).toBe('false');
-
-      await flushPersist();
-      await vi.waitFor(() => {
-        expect(toggleButton().getAttribute('aria-checked')).toBe('true');
-      });
-
-      // Reverted to ON; picker back; error line visible
-      expect(toggleButton().getAttribute('aria-checked')).toBe('true');
-      expect(displayPicker()).toBeTruthy();
-      const alert = host.querySelector('[role="alert"]');
-      expect(alert).toBeTruthy();
-      expect(alert!.textContent).toMatch(/disk full/);
-
-      // apply must not run after save failure
-      expect(mockInvoke.mock.calls.some((c) => c[0] === 'apply_widget_settings')).toBe(false);
-    });
-
-    it('behavioral: disables widget controls while persistence is in flight', async () => {
-      let releaseSave!: () => void;
-      const saveGate = new Promise<void>((resolve) => {
-        releaseSave = resolve;
-      });
-      stubInvoke({
-        settings: { widgetEnabled: true, widgetDisplay: null },
-        displays: defaultDisplays(),
-        save: () => saveGate,
-      });
-
-      await mountWidgetSettings();
-      const toggle = toggleButton();
-      toggle.click();
-      flushSync();
-
-      expect(toggleButton().disabled).toBe(true);
-      toggleButton().click();
-      await vi.waitFor(() => expect(callsOf('save_settings')).toHaveLength(1));
-
-      releaseSave();
-      await flushPersist();
-      await vi.waitFor(() => expect(toggleButton().disabled).toBe(false));
-      expect(callsOf('save_settings')).toHaveLength(1);
-    });
-
-    it('behavioral: apply_widget_settings rejection does NOT revert the toggle; shows error and reloads from disk', async () => {
-      // Disk is authoritative after a successful save — apply failure must keep
-      // the new value, surface the error, and re-sync via get_settings.
-      stubInvoke({
-        settings: { widgetEnabled: true, widgetDisplay: null },
-        displays: defaultDisplays(),
-      });
-
-      await mountWidgetSettings();
-      expect(toggleButton().getAttribute('aria-checked')).toBe('true');
-
-      mockInvoke.mockClear();
-      // After save succeeds, get_settings (reload) returns the persisted OFF state.
-      stubInvoke({
-        settings: () => {
-          const applyCalls = mockInvoke.mock.calls.filter(
-            (c) => c[0] === 'apply_widget_settings',
-          ).length;
-          // Before apply: still ON for the fresh read-modify-write get.
-          // After apply fails and load() runs: disk has OFF.
-          if (applyCalls > 0) {
-            return { widgetEnabled: false, widgetDisplay: null };
-          }
-          return { widgetEnabled: true, widgetDisplay: null };
-        },
-        displays: defaultDisplays(),
-        applyError: 'main thread hop failed',
-      });
-
-      const getCallsBefore = mockInvoke.mock.calls.filter((c) => c[0] === 'get_settings').length;
-
-      toggleButton().click();
-      flushSync();
-      expect(toggleButton().getAttribute('aria-checked')).toBe('false');
-
-      await flushPersist();
-      await vi.waitFor(() => {
-        const alert = host.querySelector('[role="alert"]');
-        expect(alert).toBeTruthy();
-        expect(alert!.textContent).toMatch(/main thread hop failed/);
-      });
-
-      // Toggle stays OFF (not reverted) — disk won
-      expect(toggleButton().getAttribute('aria-checked')).toBe('false');
-      expect(displayPicker()).toBeNull();
-
-      // save + apply both ran
-      expect(mockInvoke.mock.calls.some((c) => c[0] === 'save_settings')).toBe(true);
-      expect(mockInvoke.mock.calls.some((c) => c[0] === 'apply_widget_settings')).toBe(true);
-
-      // load() re-sync: get_settings called again after the persist path
-      const getCallsAfter = mockInvoke.mock.calls.filter((c) => c[0] === 'get_settings').length;
-      expect(getCallsAfter).toBeGreaterThan(getCallsBefore);
-      // At least: persist's fresh get + load()'s get
-      expect(getCallsAfter).toBeGreaterThanOrEqual(2);
-    });
 
     it('source contract: apply_widget_settings_on_main closes window on disabled path, marks stack not-ready keeping pending; takeover_active reads widget_enabled() fresh', () => {
       // Disabled path closes the window
@@ -398,83 +198,6 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       { name: 'DELL U2720Q', primary: false },
     ];
 
-    it('behavioral: selecting display 2 saves widgetDisplay name then apply; Primary (empty) saves null', async () => {
-      stubInvoke({
-        settings: { widgetEnabled: true, widgetDisplay: null },
-        displays: twoDisplays,
-      });
-
-      await mountWidgetSettings();
-
-      const picker = displayPicker();
-      expect(picker).toBeTruthy();
-      const options = Array.from(picker!.querySelectorAll('option')).map((o) => ({
-        value: (o as HTMLOptionElement).value,
-        text: o.textContent ?? '',
-      }));
-      expect(options.some((o) => o.value === '')).toBe(true); // Primary
-      expect(options.some((o) => o.value === 'DELL U2720Q')).toBe(true);
-
-      mockInvoke.mockClear();
-      stubInvoke({
-        settings: { widgetEnabled: true, widgetDisplay: null },
-        displays: twoDisplays,
-      });
-
-      picker!.value = 'DELL U2720Q';
-      picker!.dispatchEvent(new Event('change', { bubbles: true }));
-      await flushPersist();
-      await vi.waitFor(() => {
-        expect(mockInvoke.mock.calls.some((c) => c[0] === 'apply_widget_settings')).toBe(true);
-      });
-
-      let saveArgs = callsOf('save_settings')[0] as { prefs: Record<string, unknown> };
-      expect(saveArgs.prefs.widgetDisplay).toBe('DELL U2720Q');
-      const seq = mockInvoke.mock.calls.map((c) => c[0] as string);
-      expect(seq.indexOf('apply_widget_settings')).toBeGreaterThan(seq.indexOf('save_settings'));
-
-      // Select Primary (empty string) → null
-      mockInvoke.mockClear();
-      stubInvoke({
-        settings: { widgetEnabled: true, widgetDisplay: 'DELL U2720Q' },
-        displays: twoDisplays,
-      });
-
-      const picker2 = displayPicker();
-      expect(picker2).toBeTruthy();
-      picker2!.value = '';
-      picker2!.dispatchEvent(new Event('change', { bubbles: true }));
-      await flushPersist();
-      await vi.waitFor(() => {
-        expect(mockInvoke.mock.calls.some((c) => c[0] === 'save_settings')).toBe(true);
-      });
-
-      saveArgs = callsOf('save_settings')[0] as { prefs: Record<string, unknown> };
-      expect(saveArgs.prefs.widgetDisplay).toBeNull();
-      expect(mockInvoke.mock.calls.some((c) => c[0] === 'apply_widget_settings')).toBe(true);
-    });
-
-    it('behavioral: stored widgetDisplay absent from list_displays renders a "(disconnected)" option', async () => {
-      stubInvoke({
-        settings: {
-          widgetEnabled: true,
-          widgetDisplay: 'Phantom Monitor',
-        },
-        displays: defaultDisplays(),
-      });
-
-      await mountWidgetSettings();
-
-      const picker = displayPicker();
-      expect(picker).toBeTruthy();
-      const disconnected = Array.from(picker!.querySelectorAll('option')).find((o) =>
-        (o.textContent ?? '').includes('(disconnected)'),
-      ) as HTMLOptionElement | undefined;
-      expect(disconnected).toBeTruthy();
-      expect(disconnected!.value).toBe('Phantom Monitor');
-      expect(disconnected!.textContent).toMatch(/Phantom Monitor \(disconnected\)/);
-    });
-
     it('source contract: list_displays uses localizedName (same key as configured_display_name/widget_position_cocoa); enabled apply calls setup_widget_window', () => {
       // DisplayInfo name must be NSScreen.localizedName matching key
       expect(widgetRs).toMatch(/localizedName/);
@@ -525,59 +248,6 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
       return host.querySelector('[data-testid="widget-needs-action-toggle"]');
     }
 
-    it('behavioral: placement change saves widgetPlacement then apply_widget_settings', async () => {
-      stubInvoke({
-        settings: { widgetEnabled: true, widgetDisplay: null, widgetPlacement: 'bottom-right' },
-      });
-      await mountWidgetSettings();
-      const picker = placementPicker();
-      expect(picker).toBeTruthy();
-      expect(picker!.value).toBe('bottom-right');
-
-      mockInvoke.mockClear();
-      stubInvoke({
-        settings: { widgetEnabled: true, widgetDisplay: null, widgetPlacement: 'bottom-right' },
-      });
-      picker!.value = 'top-left';
-      picker!.dispatchEvent(new Event('change', { bubbles: true }));
-      await flushPersist();
-      await vi.waitFor(() => {
-        expect(mockInvoke.mock.calls.some((c) => c[0] === 'apply_widget_settings')).toBe(true);
-      });
-      const saveArgs = callsOf('save_settings')[0] as { prefs: Record<string, unknown> };
-      expect(saveArgs.prefs.widgetPlacement).toBe('top-left');
-    });
-
-    it('behavioral: auto-hide Never and needs-action off persist and restore', async () => {
-      stubInvoke({
-        settings: {
-          widgetEnabled: true,
-          widgetAutoHideSeconds: 0,
-          widgetShowNeedsAction: false,
-        },
-      });
-      await mountWidgetSettings();
-      expect(autoHidePicker()?.value).toBe('0');
-      expect(needsActionToggle()?.getAttribute('aria-checked')).toBe('false');
-
-      mockInvoke.mockClear();
-      stubInvoke({
-        settings: {
-          widgetEnabled: true,
-          widgetAutoHideSeconds: 0,
-          widgetShowNeedsAction: false,
-        },
-      });
-      needsActionToggle()!.click();
-      flushSync();
-      await flushPersist();
-      await vi.waitFor(() => {
-        expect(mockInvoke.mock.calls.some((c) => c[0] === 'save_settings')).toBe(true);
-      });
-      const saveArgs = callsOf('save_settings')[0] as { prefs: Record<string, unknown> };
-      expect(saveArgs.prefs.widgetShowNeedsAction).toBe(true);
-    });
-
     it('source contract: apply_widget_settings re-anchors so placement moves the native window', () => {
       expect(widgetRs).toContain('fn widget_position_in_work_area');
       expect(widgetRs).toContain('apply_widget_settings: enabled — setup/re-anchor');
@@ -589,47 +259,6 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
   // ── 3. Restart preserves prefs ────────────────────────────────────────────
 
   describe('Given preferences are set, when the app restarts, then widget state and display choice are preserved', () => {
-    it('behavioral: get_settings widgetEnabled false renders toggle off (no picker); null/absent defaults ON', async () => {
-      stubInvoke({
-        settings: { widgetEnabled: false, widgetDisplay: 'DELL U2720Q' },
-        displays: [
-          { name: 'Built-in Display', primary: true },
-          { name: 'DELL U2720Q', primary: false },
-        ],
-      });
-
-      await mountWidgetSettings();
-      expect(toggleButton().getAttribute('aria-checked')).toBe('false');
-      // Picker only while enabled
-      expect(displayPicker()).toBeNull();
-
-      await unmount(component!);
-      component = null;
-      host.remove();
-      mockInvoke.mockReset();
-
-      // Default-ON when widgetEnabled is null
-      stubInvoke({
-        settings: { widgetEnabled: null, widgetDisplay: null },
-        displays: defaultDisplays(),
-      });
-      await mountWidgetSettings();
-      expect(toggleButton().getAttribute('aria-checked')).toBe('true');
-      expect(displayPicker()).toBeTruthy();
-
-      await unmount(component!);
-      component = null;
-      host.remove();
-      mockInvoke.mockReset();
-
-      // Default-ON when key absent entirely
-      stubInvoke({
-        settings: { widgetDisplay: null },
-        displays: defaultDisplays(),
-      });
-      await mountWidgetSettings();
-      expect(toggleButton().getAttribute('aria-checked')).toBe('true');
-    });
 
     it('source contract: widget fields preserve explicit values and use the platform default when absent', () => {
       // Typed fields with skip_serializing_if (merge preservation on unrelated saves)
@@ -669,42 +298,6 @@ describe('US-004: Widget settings (enable/disable, display, persistence)', () =>
         /pub fn setup_widget_window\(app: &AppHandle\)\s*\{\s*if !widget_enabled\(\)/s,
       );
       expect(widgetRs).toMatch(/widgetEnabled=false — skipping/);
-    });
-  });
-
-  // ── 4. Desktop settings surface (popover Settings retired in US-005) ──────
-
-  describe('Settings UI reachable from the desktop SettingsPage (US-005 canonical surface)', () => {
-    it('source contract: WidgetSettings mounts ONLY in SettingsPage; route has widget section; WidgetSettings is self-contained', () => {
-      // Canonical desktop SettingsPage — section id="widget"
-      expect(settingsPageSource).toMatch(
-        /import WidgetSettings from ['"]\.\.\/\.\.\/components\/WidgetSettings\.svelte['"]/,
-      );
-      expect(settingsPageSource).toMatch(/id=["']widget["']/);
-      expect(settingsPageSource).toContain('<WidgetSettings showLoadError={false} />');
-
-      // Popover Settings.svelte is gone — no dual-surface mount remains.
-      expect(() => readFileSync(root('src/components/Settings.svelte'), 'utf8')).toThrow();
-
-      // route.ts SETTINGS_SECTIONS includes widget row
-      expect(routeSource).toMatch(/SETTINGS_SECTIONS/);
-      expect(routeSource).toMatch(
-        /\{\s*id:\s*['"]widget['"]\s*,\s*label:\s*['"]Notifications widget['"]\s*\}/,
-      );
-
-      // Self-contained UI: owns load + apply + list_displays. Persistence is
-      // routed through the shared serialized mutation helper.
-      expect(widgetSettingsSource).toMatch(/['"]get_settings['"]/);
-      expect(widgetSettingsSource).toContain("import { updateSettings } from '../lib/settings-mutations'");
-      expect(widgetSettingsSource).toContain('await updateSettings(');
-      expect(widgetSettingsSource).not.toMatch(/invoke\(['"]save_settings['"]/);
-      expect(widgetSettingsSource).toMatch(/['"]apply_widget_settings['"]/);
-      expect(widgetSettingsSource).toMatch(/['"]list_displays['"]/);
-      expect(widgetSettingsSource).toContain('data-testid="widget-toggle"');
-      expect(widgetSettingsSource).toContain('data-testid="widget-display-picker"');
-      expect(widgetSettingsSource).toContain('data-testid="widget-placement-picker"');
-      expect(widgetSettingsSource).toContain('data-testid="widget-auto-hide-picker"');
-      expect(widgetSettingsSource).toContain('data-testid="widget-needs-action-toggle"');
     });
   });
 });

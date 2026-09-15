@@ -30,11 +30,6 @@ function readRepo(...parts: string[]): string {
   return readFileSync(resolve(repoRoot, ...parts), 'utf8');
 }
 
-function styleRule(source: string, selector: string): string {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return source.match(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\}`))?.[1] ?? '';
-}
-
 function mockInvoker(
   impl?: (command: string, args?: Record<string, unknown>) => unknown,
 ): HqWorkInvoker & { calls: Array<{ command: string; args?: Record<string, unknown> }> } {
@@ -128,29 +123,6 @@ describe('US-003 desktop-view-moved handoff card', () => {
   });
 
   describe.skip('Frontend card', () => {
-    it('renders plain-language copy, Install/Open testids, and ghost wrapper', () => {
-      const invokeFn = mockInvoker();
-      mountCard({ invokeFn, firstShow: true });
-      const card = host.querySelector('[data-testid="hq-work-handoff-card"]');
-      expect(card).toBeTruthy();
-      expect(card?.textContent).toContain('The HQ desktop view moved');
-      expect(card?.textContent).toMatch(/HQ Work is the desktop app now/i);
-      expect(host.querySelector('[data-testid="hq-work-handoff-install"]')?.textContent).toMatch(
-        /Install/,
-      );
-      expect(host.querySelector('[data-testid="hq-work-handoff-open"]')).toBeNull();
-
-      const source = readRepo('src/components/HqWorkHandoffCard.svelte');
-      const wrapper = styleRule(source, '.handoff');
-      expect(wrapper).toBeTruthy();
-      const hasRadius = /border-radius/.test(wrapper);
-      const hasBorder = /(?:^|[^-])border(?:-width|-style|-color)?:/.test(wrapper);
-      const hasFill = /background(?:-color)?:/.test(wrapper);
-      expect(hasRadius && hasBorder && hasFill).toBe(false);
-      expect(source).toContain('data-testid="hq-work-handoff-card"');
-      expect(source).toContain('data-testid="hq-work-handoff-install"');
-      expect(source).toContain('data-testid="hq-work-handoff-open"');
-    });
 
     it('Install invokes install_hq_work then swaps the CTA to Open / launch_hq_work', async () => {
       const invokeFn = mockInvoker();
@@ -185,18 +157,6 @@ describe('US-003 desktop-view-moved handoff card', () => {
       expect(host.querySelector('[data-testid="hq-work-handoff-install"]')).toBeTruthy();
       expect(host.querySelector('[data-testid="hq-work-handoff-open"]')).toBeNull();
       expect(host.textContent).toMatch(/signature verification failed/);
-    });
-
-    it('App.svelte shows the card from handoff:show-card, not inside desktop-alt', () => {
-      const app = readRepo('src/App.svelte');
-      expect(app).toContain("listen<{ firstShow?: boolean }>('handoff:show-card'");
-      expect(app).toContain('showHqWorkHandoff={showHandoffCard}');
-      const desktopApp = readRepo('src/desktop-alt/DesktopApp.svelte');
-      expect(desktopApp).not.toContain('hq-work-handoff-card');
-      const popover = readRepo('src/components/Popover.svelte');
-      expect(popover).toContain('HqWorkHandoffCard');
-      expect(popover).toContain('showHqWorkHandoff');
-      expect(app).toMatch(/else \{\s*\/\/ Handoff overlay[\s\S]*showHandoffCard = false;/);
     });
   });
 
