@@ -238,6 +238,7 @@ pub(crate) struct CoreUpdateNpxResolution {
 /// deliberately rejects free-form process output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum RescueFailureCategory {
+    MissingDependency,
     Auth,
     Network,
     Dns,
@@ -252,6 +253,7 @@ pub(crate) enum RescueFailureCategory {
 
 impl RescueFailureCategory {
     const ALL: &[Self] = &[
+        Self::MissingDependency,
         Self::Auth,
         Self::Network,
         Self::Dns,
@@ -266,6 +268,7 @@ impl RescueFailureCategory {
 
     const fn label(self) -> &'static str {
         match self {
+            Self::MissingDependency => "missing-dependency",
             Self::Auth => "auth",
             Self::Network => "network",
             Self::Dns => "dns",
@@ -285,10 +288,15 @@ struct RescueStderrPattern {
     needle: &'static str,
 }
 
-// Git supplies the only signal for a rescue process that started and then
-// exited unsuccessfully. Keep every recognized stderr phrase in this one
-// ordered table: specific causes must precede their broader counterparts.
+// Rescue emits local preflight diagnostics before allocating a safety snapshot;
+// Git supplies the transport signals for a rescue process that then exits
+// unsuccessfully. Keep every recognized stderr phrase in this one ordered
+// table: specific causes must precede their broader counterparts.
 const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "rsync preflight failed",
+    },
     RescueStderrPattern {
         category: RescueFailureCategory::Auth,
         needle: "authentication failed",
@@ -2565,6 +2573,29 @@ mod tests {
         assert!(
             crate::commands::version_gate::DESKTOP_PLATFORM_VALUES.contains(&platform),
             "platform must remain in the closed desktop vocabulary"
+        );
+    }
+
+    #[test]
+    fn rescue_rsync_preflight_failure_is_a_missing_dependency() {
+        let stderr = "error: rsync preflight failed before any safety snapshot was allocated.\n\
+       resolved PATH: (unset)\n\
+       Install or repair rsync, then retry the HQ update.";
+        let category = classify_rescue_stderr_failure(stderr);
+
+        assert_eq!(category, RescueFailureCategory::MissingDependency);
+        assert_eq!(category.label(), "missing-dependency");
+    }
+
+    #[test]
+    fn rescue_rsync_preflight_failure_precedes_broader_transport_needles() {
+        let stderr = "error: rsync preflight failed before any safety snapshot was allocated.\n\
+       version output: permission denied";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::MissingDependency,
+            "the rsync preflight diagnostic must not be shadowed by a transport needle"
         );
     }
 

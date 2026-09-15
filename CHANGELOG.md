@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core update diagnostics now identify a missing rsync installation instead of treating the rescue failure as unknown.
+
 ## [0.10.266] — 2026-09-15
 
 - After HQ updates itself on a Mac, it starts again through the login agent instead of as a separate app, so the window no longer jumps to the front every few seconds.
