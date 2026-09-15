@@ -8,7 +8,7 @@
   import { initialsFor } from "../sidebar-model.js";
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
   import RuntimeSignIn, { type RuntimeSignInApi } from "./RuntimeSignIn.svelte";
-  import { runtimeIsReady, type BotHome, type BotRuntime, type CreateBotDraft } from "./create-bot-model.js";
+  import { BOT_SCOPE_COPY, runtimeIsReady, type BotHome, type BotRuntime, type BotScope, type CreateBotDraft } from "./create-bot-model.js";
   import "./create-bot.css";
 
   interface Props {
@@ -17,6 +17,8 @@
     canCloud: boolean;
     runtimeReady: Record<string, boolean> | null;
     companies: ReadonlyArray<{ companyUid: string; label: string; iconUrl?: string | null }>;
+    /** The owner's companies a Local company bot can belong to. */
+    ownerCompanies?: ReadonlyArray<{ slug: string; label: string }>;
     disabled?: boolean;
     onpatch: (patch: Partial<CreateBotDraft>) => void;
     /** Inline browser sign-in; when absent the host handles `onsignin`. */
@@ -34,6 +36,7 @@
     canCloud,
     runtimeReady,
     companies,
+    ownerCompanies = [],
     disabled = false,
     onpatch,
     signInApi = null,
@@ -41,6 +44,8 @@
     onsignedin,
     pollMs = 1500,
   }: Props = $props();
+
+  const SCOPES: readonly BotScope[] = ["personal", "company"];
 
   /** Runtime whose inline sign-in is open. */
   let signingIn = $state<BotRuntime | null>(null);
@@ -50,6 +55,29 @@
     if (home === "local" && !canLocal) return;
     if (home === "cloud" && !canCloud) return;
     onpatch({ home });
+  }
+
+  function pickScope(scope: BotScope): void {
+    if (disabled) return;
+    onpatch({ home: "local", scope });
+  }
+
+  function toggleCompany(slug: string): void {
+    if (disabled) return;
+    const has = draft.companySlugs.includes(slug);
+    onpatch({
+      home: "local",
+      scope: "company",
+      companySlugs: has ? draft.companySlugs.filter((s) => s !== slug) : [...draft.companySlugs, slug],
+    });
+  }
+
+  function onScopeKey(event: KeyboardEvent): void {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const next: BotScope = draft.scope === "personal" ? "company" : "personal";
+    pickScope(next);
+    (event.currentTarget as HTMLElement).querySelector<HTMLButtonElement>(`[data-scope="${next}"]`)?.focus();
   }
 
   function pickRuntime(runtime: BotRuntime): void {
@@ -175,6 +203,52 @@
         </p>
       {:else}
         <p class="cb-help ok" data-testid="chat-bot-runtime-help">Signed in on this Mac — the bot uses your own {LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label} plan.</p>
+      {/if}
+    </div>
+
+    <div class="cb-field">
+      <span class="cb-label" id="create-bot-scope-label">Who is it for?</span>
+      <div class="cb-cards scope-cards" role="radiogroup" aria-labelledby="create-bot-scope-label" data-testid="chat-bot-scope" tabindex="-1" onkeydown={onScopeKey}>
+        {#each SCOPES as scope (scope)}
+          <button
+            type="button"
+            class="cb-card scope-card"
+            role="radio"
+            aria-checked={draft.scope === scope}
+            data-testid={`chat-bot-scope-${scope}`}
+            data-scope={scope}
+            disabled={disabled}
+            tabindex={draft.scope === scope ? 0 : -1}
+            onclick={() => pickScope(scope)}
+          >
+            <span class="cb-card-row"><span class="cb-card-title">{BOT_SCOPE_COPY[scope].title}</span></span>
+            <span class="cb-card-sub">{BOT_SCOPE_COPY[scope].sub}</span>
+          </button>
+        {/each}
+      </div>
+      {#if draft.scope === "company"}
+        {#if ownerCompanies.length === 0}
+          <p class="cb-help" data-testid="chat-bot-scope-help">You are not in a company yet. Make it personal for now; a personal bot can create a company for you.</p>
+        {:else}
+          <div class="cb-pills" role="group" aria-label="Companies" data-testid="chat-bot-scope-companies">
+            {#each ownerCompanies as company (company.slug)}
+              {@const on = draft.companySlugs.includes(company.slug)}
+              <button
+                type="button"
+                class="cb-pill"
+                role="checkbox"
+                aria-checked={on}
+                data-testid={`chat-bot-scope-company-${company.slug}`}
+                disabled={disabled}
+                onclick={() => toggleCompany(company.slug)}
+              >
+                <span class="cb-pill-dot" class:ready={on} aria-hidden="true"></span>
+                {company.label}
+              </button>
+            {/each}
+          </div>
+          <p class="cb-help" data-testid="chat-bot-scope-help">Pick one or more. Others can @mention it in those companies' rooms.</p>
+        {/if}
       {/if}
     </div>
   {:else if draft.home === "cloud" && canCloud}

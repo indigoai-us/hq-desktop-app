@@ -10,7 +10,7 @@
  * step; a Local draft continues to details (name, avatar, intro, advanced).
  */
 
-import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
+import type { LocalBotCreateInput, LocalBotKind, LocalBotWorkerOption } from "@hq/platform";
 import type { AvatarSelection } from "../../avatars/types.js";
 import { LOCAL_BOT_RUNTIMES, isValidLocalBotName } from "../local-bots.js";
 
@@ -19,6 +19,8 @@ export type BotKindChoice = "blank" | "template";
 export type BotHome = "local" | "cloud";
 export type BotRuntime = LocalBotCreateInput["runtime"];
 export type BotMemory = "synced" | "local";
+/** Who a Local bot acts as (bot-kinds): the owner, or itself inside its companies. */
+export type BotScope = LocalBotKind;
 
 export interface CreateBotDraft {
   kind: BotKindChoice;
@@ -26,6 +28,10 @@ export interface CreateBotDraft {
   home: BotHome;
   runtime: BotRuntime;
   companyUid?: string;
+  /** Local only: personal (acts as you) or company (acts as itself). */
+  scope: BotScope;
+  /** Local company bots: the company slugs it belongs to (at least one). */
+  companySlugs: string[];
   name: string;
   intro: string;
   avatar?: AvatarSelection;
@@ -45,8 +51,22 @@ export interface CreateBotContext {
   /** Names already taken by the user's local bots. */
   existingNames: readonly string[];
   companies: ReadonlyArray<{ companyUid: string; label: string }>;
+  /** The owner's companies a Local company bot can belong to (slugs). */
+  ownerCompanies: ReadonlyArray<{ slug: string; label: string }>;
   templates: readonly LocalBotWorkerOption[];
 }
+
+/** One-line copy for each bot scope, shown beside the choice. */
+export const BOT_SCOPE_COPY: Record<BotScope, { title: string; sub: string }> = {
+  personal: {
+    title: "Personal — acts as you",
+    sub: "Works under your account, with everything you can reach. Stays on this Mac.",
+  },
+  company: {
+    title: "For a company",
+    sub: "Has its own identity and only reaches its companies' files. Can move to the cloud later.",
+  },
+};
 
 export const INTRO_MAX = 500;
 
@@ -71,6 +91,8 @@ export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud"
     home: ctx.canLocal ? "local" : "cloud",
     runtime: firstReadyRuntime(ctx.runtimeReady),
     companyUid: ctx.companies[0]?.companyUid,
+    scope: "personal",
+    companySlugs: [],
     name: suggestBotName(ctx.existingNames),
     intro: "",
     autoApprove: true,
@@ -313,7 +335,7 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
           const label = LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime;
           return `${label} is not signed in on this Mac.`;
         }
-        return null;
+        return scopeIssue(draft, ctx);
       }
       if (!ctx.canCloud) return "No company can host a bot right now.";
       if (!draft.companyUid || !ctx.companies.some((c) => c.companyUid === draft.companyUid)) {
@@ -323,6 +345,18 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
     case "details":
       return nameIssue(draft.name, ctx.existingNames) ?? introIssue(draft.intro);
   }
+}
+
+/** A company bot needs at least one of the owner's companies; personal needs nothing. */
+export function scopeIssue(
+  draft: Pick<CreateBotDraft, "scope" | "companySlugs">,
+  ctx: Pick<CreateBotContext, "ownerCompanies">,
+): string | null {
+  if (draft.scope !== "company") return null;
+  if (ctx.ownerCompanies.length === 0) return "You are not in a company yet — make it personal for now.";
+  const known = new Set(ctx.ownerCompanies.map((c) => c.slug));
+  if (!draft.companySlugs.some((slug) => known.has(slug))) return "Pick at least one company.";
+  return null;
 }
 
 export function canAdvance(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext): boolean {
@@ -345,6 +379,7 @@ export function toCreateInput(draft: CreateBotDraft): LocalBotCreateInput {
   const model = draft.model.trim();
   const intro = draft.intro.trim();
   const worker = draft.kind === "template" ? (draft.templateId ?? "").trim() : "";
+  const companies = draft.scope === "company" ? [...new Set(draft.companySlugs.map((c) => c.trim()).filter(Boolean))] : [];
   return {
     name: normalizeBotName(draft.name),
     runtime: draft.runtime,
@@ -353,7 +388,20 @@ export function toCreateInput(draft: CreateBotDraft): LocalBotCreateInput {
     ...(worker ? { worker } : {}),
     ...(intro ? { intro } : {}),
     ...(draft.memory !== "synced" ? { memory: draft.memory } : {}),
+    // Always explicit, so the CLI never has to guess which kind was meant.
+    kind: draft.scope,
+    ...(companies.length ? { companies } : {}),
   };
+}
+
+/** "acts as you" / "for Indigo and Ridge" for the preview card. */
+export function scopeLine(draft: Pick<CreateBotDraft, "home" | "scope" | "companySlugs">, ctx: Pick<CreateBotContext, "ownerCompanies">): string {
+  if (draft.home !== "local") return "";
+  if (draft.scope !== "company") return "acts as you";
+  const labels = draft.companySlugs.map((slug) => ctx.ownerCompanies.find((c) => c.slug === slug)?.label ?? slug);
+  if (labels.length === 0) return "for a company";
+  if (labels.length === 1) return `for ${labels[0]}`;
+  return `for ${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
 }
 
 /** "thinks with Claude Code" / "hosted by Indigo" for the preview card. */

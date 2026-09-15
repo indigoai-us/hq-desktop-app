@@ -15,6 +15,7 @@
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import {
     lastHeartbeatLabel,
+    localBotKindLabel,
     localBotOfflineNotice,
     localBotPresence,
     localBotRuntimeLabel,
@@ -263,6 +264,12 @@
         <dt>Runs on</dt>
         <dd>This Mac{bot.daemonInstalled ? " · starts at login" : ""}</dd>
       </div>
+      {#if localBotKindLabel(bot)}
+        <div>
+          <dt>Kind</dt>
+          <dd data-testid="local-bot-detail-kind">{localBotKindLabel(bot)}</dd>
+        </div>
+      {/if}
       <div>
         <dt>UID</dt>
         <dd>
@@ -332,7 +339,12 @@
       </section>
     {/if}
 
-    {#if adapter.bots?.promote && companies.length}
+    {#if bot.kind === "personal"}
+      <section class="ad-section" data-testid="local-bot-promotion-personal">
+        <h3 class="ad-kicker">Cloud hosting</h3>
+        <p class="ad-muted">Personal bots stay on this Mac.</p>
+      </section>
+    {:else if adapter.bots?.promote && companies.length}
       <section class="ad-section" data-testid="local-bot-promotion">
         <h3 class="ad-kicker">Cloud hosting</h3>
         <p class="ad-muted">Your bot keeps its identity, conversation, skills, and memory. We prepare its cloud computer, ask you to connect ChatGPT, then move this conversation over.</p>

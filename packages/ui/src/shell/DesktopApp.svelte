@@ -1123,6 +1123,8 @@
       runtime,
       intro: SETUP_BOT_INTRO,
       kickoff: SETUP_BOT_KICKOFF,
+      // Setup acts as the owner (bot-kinds): it creates companies and bots for you.
+      kind: "personal",
     });
     if (!created.ok) return { ok: false, reason: created.reason };
     recordWelcomeSetupRun();

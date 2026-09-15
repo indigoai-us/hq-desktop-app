@@ -19,7 +19,7 @@
   import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption, PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import BotKindChip from "../chat/BotKindChip.svelte";
-  import { LOCAL_BOT_RUNTIMES } from "../chat/local-bots.js";
+  import { LOCAL_BOT_RUNTIMES, localBotCompanies, localBotKindLabel } from "../chat/local-bots.js";
   import { botNeedsSignIn } from "../chat/runtime-sign-in-again.js";
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
@@ -326,6 +326,9 @@
               <small>
                 {runtimeLabel(bot.runtime)}{bot.model ? ` · ${bot.model}` : ""} · {presenceLabel(bot)} · {heartbeatLabel(bot)}
               </small>
+              {#if localBotKindLabel(bot)}
+                <small class="muted" data-testid={`settings-bot-${bot.name}-kind`}>{localBotKindLabel(bot)}</small>
+              {/if}
               {#if bot.state === "failed"}
                 <small class="muted">
                   The bot stopped after repeated errors. Check that {runtimeLabel(bot.runtime)} is signed in, then start it again.
@@ -492,6 +495,7 @@
         botRuntimeReady={runtimeReadyById}
         botWorkers={workers}
         existingNames={bots.map((b) => b.name)}
+        botCompanies={localBotCompanies(companies)}
         agentTargets={[]}
         oncreate={create}
         onback={closeCreate}

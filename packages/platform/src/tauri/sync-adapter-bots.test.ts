@@ -54,9 +54,34 @@ describe('sync adapter local bots create', () => {
           intro: "Hi, I'm setup. I'll walk you through getting HQ ready.",
           kickoff: 'Kickoff: check where this HQ stands, then start the first unfinished step.',
           memory: 'local',
+          kind: null,
+          companies: null,
         },
       },
     ]);
+  });
+
+  it('passes the bot kind and each company slug through to local_bots_create (bot-kinds)', async () => {
+    const { adapter, calls } = adapterWithRecorder();
+
+    await adapter.bots!.create({ name: 'scout', runtime: 'claude', kind: 'company', companies: ['indigo', 'ridge'] });
+    await adapter.bots!.create({ name: 'buddy', runtime: 'claude', kind: 'personal' });
+
+    expect(calls.map((c) => c.args)).toEqual([
+      expect.objectContaining({ name: 'scout', kind: 'company', companies: ['indigo', 'ridge'] }),
+      expect.objectContaining({ name: 'buddy', kind: 'personal', companies: null }),
+    ]);
+
+    // The Tauri adapter sends exactly the same values.
+    const tauriCalls: { cmd: string; args?: Record<string, unknown> }[] = [];
+    const tauri = new TauriPlatformAdapter({
+      invoke: async (cmd, args) => {
+        tauriCalls.push({ cmd, args });
+        return { ok: true };
+      },
+    });
+    await tauri.bots.create({ name: 'scout', runtime: 'claude', kind: 'company', companies: ['indigo', 'ridge'] });
+    expect(tauriCalls[0]?.args).toEqual(calls[0]?.args);
   });
 
   it('sends null, not undefined, for the settings the form left blank', async () => {
@@ -73,6 +98,8 @@ describe('sync adapter local bots create', () => {
       intro: null,
       kickoff: null,
       memory: null,
+      kind: null,
+      companies: null,
     });
   });
 
@@ -133,6 +160,8 @@ describe('tauri adapter local bots create', () => {
           intro: 'Hi.',
           kickoff: 'Kickoff: start step one.',
           memory: 'synced',
+          kind: null,
+          companies: null,
         },
       },
     ]);

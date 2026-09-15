@@ -1106,6 +1106,8 @@ export function createSyncPlatformAdapter(
           intro: input.intro ?? null,
           kickoff: input.kickoff ?? null,
           memory: input.memory ?? null,
+          kind: input.kind ?? null,
+          companies: input.companies ?? null,
         }),
       workers: () => call('local_bots_workers'),
       start: (name) => call('local_bots_start', { name }),

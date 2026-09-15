@@ -147,7 +147,7 @@ describe("DesktopApp sidebar '+' → New bot", () => {
 
     click('[data-testid="chat-bot-create"]');
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
-    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true });
+    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true, kind: "personal" });
     await vi.waitFor(() => expect(q('[data-testid="chat-create-modal"]')).toBeNull());
     // The new bot's DM is the selected conversation.
     await vi.waitFor(() =>

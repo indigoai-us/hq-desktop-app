@@ -123,3 +123,28 @@ export function promotedBotCompany(bots: readonly LocalBotRow[], agentUid: strin
   const row = bots.find(bot => bot.agentUid === agentUid && bot.hosting === "cloud");
   return row?.promotionHold?.companyUid ?? null;
 }
+
+/**
+ * "Personal · acts as you" or "Company · indigo, ridge" (bot-kinds). Null when
+ * the CLI predates bot kinds, so older rows show nothing new.
+ */
+export function localBotKindLabel(bot: Pick<LocalBotRow, "kind" | "companies">): string | null {
+  if (bot.kind === "personal") return "Personal · acts as you";
+  if (bot.kind === "company") {
+    const slugs = (bot.companies ?? []).map((s) => s.trim()).filter(Boolean);
+    return slugs.length ? `Company · ${slugs.join(", ")}` : "Company";
+  }
+  return null;
+}
+
+/**
+ * The owner's companies a Local company bot can belong to: cloud-backed company
+ * workspaces, keyed by slug (what `hq bot create --company` takes).
+ */
+export function localBotCompanies(
+  workspaces: ReadonlyArray<{ slug: string; displayName?: string | null; kind: string; cloudUid: string | null }> | null | undefined,
+): Array<{ slug: string; label: string }> {
+  return (workspaces ?? [])
+    .filter((w) => w.kind !== "personal" && Boolean(w.cloudUid) && w.slug.trim())
+    .map((w) => ({ slug: w.slug.trim(), label: w.displayName?.trim() || w.slug.trim() }));
+}

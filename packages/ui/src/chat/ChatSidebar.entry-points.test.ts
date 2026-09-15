@@ -360,7 +360,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="bot-preview-thinks"]')?.textContent).toBe("thinks with Grok");
     click('[data-testid="chat-bot-create"]');
     await settle(10);
-    expect(oncreatebot).toHaveBeenCalledWith({ name: "assistant", runtime: "grok", autoApprove: true }, {});
+    expect(oncreatebot).toHaveBeenCalledWith({ name: "assistant", runtime: "grok", autoApprove: true, kind: "personal" }, {});
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
 

@@ -181,7 +181,7 @@ describe("Settings → Bots (Work shell)", () => {
 
     host.querySelector<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
-    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true });
+    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true, kind: "personal" });
     await vi.waitFor(() => {
       expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).toBeNull();
     });
@@ -219,6 +219,29 @@ describe("Settings → Bots (Work shell)", () => {
     expect(rex.textContent).toContain("Other Co");
     expect(rex.textContent).toContain("Setting up");
     expect(rex.querySelector("button")).toBeNull();
+  });
+
+  it("labels each local bot's kind in the list, and nothing for rows without one (bot-kinds)", async () => {
+    const adapter = fakeAdapter({
+      bots: {
+        list: vi.fn(async () =>
+          ok({
+            bots: [
+              { ...LOCAL_BOT, name: "buddy", agentUid: "agt_LOCAL000000000000000000002", kind: "personal" as const },
+              { ...LOCAL_BOT, name: "scout", agentUid: "agt_LOCAL000000000000000000003", kind: "company" as const, companies: ["indigo", "ridge"] },
+              LOCAL_BOT,
+            ],
+          }),
+        ),
+      },
+    });
+    await mountPane(adapter);
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="settings-bot-scout-kind"]')).not.toBeNull();
+    });
+    expect(host.querySelector('[data-testid="settings-bot-buddy-kind"]')?.textContent).toBe("Personal · acts as you");
+    expect(host.querySelector('[data-testid="settings-bot-scout-kind"]')?.textContent).toBe("Company · indigo, ridge");
+    expect(host.querySelector('[data-testid="settings-bot-assistant-kind"]')).toBeNull();
   });
 
   it("pauses, resumes, and removes a managed cloud bot through adapter.agents", async () => {
