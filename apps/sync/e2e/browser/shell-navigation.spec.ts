@@ -33,8 +33,18 @@ test('title-bar Back/Forward sit next to the date on the real shell', async ({ p
   expect(await history.getAttribute('data-tauri-drag-region')).toBe('false');
 });
 
-// Four session-navigation tests went with the in-app Sessions subsystem: the
+// Three session-navigation tests went with the in-app Sessions subsystem: the
 // drawer slide, back/forward across sessions, the unsent-draft survival, and
 // the keyboard channel -> session -> source retrace. The two tests kept here
 // never touched a session -- they cover the sidebar resize and the title-bar
 // history controls, which both still ship.
+
+
+// The keyboard retrace test is not ported. Its subject -- the back/forward
+// chord, and an editor keeping it -- is live, but it needs two destinations to
+// retrace between, and the persona harness paints exactly one conversation
+// (ch:setup) now that sessions are gone. Rewriting it against a single row
+// would assert nothing. The chord itself, on both platforms, and the rule that
+// a textarea or embedded editor keeps it, are covered by
+// packages/ui/src/shell/navigation-shortcuts.test.ts; what is no longer
+// covered end-to-end is that the shell wires that module to real navigation.

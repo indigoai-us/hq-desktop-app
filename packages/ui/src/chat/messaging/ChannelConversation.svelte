@@ -142,7 +142,6 @@
     /** Open an existing in-channel session from a work-session card. */
     onopensession?: (sessionId: string) => void;
     /** Start a channel-level session (posts a card). */
-    onstartchannelsession?: () => void;
     /** Host-owned attachment modal (must render outside this column). */
     onopenattachment?: (
       item: FileAttachmentModel,
@@ -263,7 +262,6 @@
     onreply,
     onstartsession,
     onopensession,
-    onstartchannelsession,
     onopenattachment,
     onopenartifact,
     onreleaseurl,
@@ -1574,18 +1572,6 @@
     </div>
     <div class="dm-reply-footer">
       <div class="dm-reply-tools">
-        {#if onstartchannelsession}
-          <button
-            type="button"
-            class="dm-tool-btn"
-            data-testid="composer-start-session"
-            aria-label="Start a session in this channel"
-            title="Start session"
-            onclick={() => onstartchannelsession()}
-          >
-            Session
-          </button>
-        {/if}
         <label
           class="dm-tool-btn composer-attach"
           title="Attach a file"
