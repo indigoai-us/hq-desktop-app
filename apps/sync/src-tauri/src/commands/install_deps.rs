@@ -97,6 +97,189 @@ impl SetupDiagnosticCollector {
     }
 }
 
+/// The two typed outcomes a user-initiated cancellation can have. Rendering the
+/// user-facing error stays separate from this type so Sentry classification
+/// cannot accidentally depend on an error-message substring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InstallCancellation {
+    UserCancelled,
+    CleanupFailed(CancellationCleanupFailure),
+}
+
+impl InstallCancellation {
+    fn user_message(&self) -> String {
+        match self {
+            Self::UserCancelled => "Cancelled by user".to_string(),
+            Self::CleanupFailed(cleanup) => {
+                format!("Cancelled by user; {}", cleanup.description())
+            }
+        }
+    }
+}
+
+/// The cleanup operation that could not stop an installer. On Unix, the
+/// process group gets a signal; Windows uses the Job Object termination API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancellationCleanupSignal {
+    #[cfg(unix)]
+    Sigterm,
+    #[cfg(unix)]
+    Sigkill,
+    #[cfg(windows)]
+    TerminateJobObject,
+}
+
+impl CancellationCleanupSignal {
+    fn as_str(self) -> &'static str {
+        match self {
+            #[cfg(unix)]
+            Self::Sigterm => "SIGTERM",
+            #[cfg(unix)]
+            Self::Sigkill => "SIGKILL",
+            #[cfg(windows)]
+            Self::TerminateJobObject => "TerminateJobObject",
+        }
+    }
+}
+
+/// OS-level failure that prevented cancellation cleanup. This retains the
+/// structured error class separately from its UI rendering and never stores a
+/// machine-specific process ID in a Sentry fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancellationCleanupErrorKind {
+    #[cfg(unix)]
+    Unix(nix::errno::Errno),
+    #[cfg(windows)]
+    Windows {
+        kind: std::io::ErrorKind,
+        raw_os_error: Option<i32>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CancellationCleanupFailure {
+    signal: CancellationCleanupSignal,
+    os_error_kind: CancellationCleanupErrorKind,
+    description: String,
+}
+
+impl CancellationCleanupFailure {
+    #[cfg(unix)]
+    fn from_unix_signal(signal: Signal, error: nix::errno::Errno) -> Self {
+        let signal = match signal {
+            Signal::SIGTERM => CancellationCleanupSignal::Sigterm,
+            Signal::SIGKILL => CancellationCleanupSignal::Sigkill,
+            _ => unreachable!("install cancellation only sends SIGTERM or SIGKILL"),
+        };
+        Self {
+            signal,
+            os_error_kind: CancellationCleanupErrorKind::Unix(error),
+            description: error.to_string(),
+        }
+    }
+
+    #[cfg(windows)]
+    fn from_windows_error(error: std::io::Error) -> Self {
+        Self {
+            signal: CancellationCleanupSignal::TerminateJobObject,
+            os_error_kind: CancellationCleanupErrorKind::Windows {
+                kind: error.kind(),
+                raw_os_error: error.raw_os_error(),
+            },
+            description: error.to_string(),
+        }
+    }
+
+    fn os_error_kind_token(&self) -> String {
+        match self.os_error_kind {
+            #[cfg(unix)]
+            CancellationCleanupErrorKind::Unix(error) => format!("{error:?}"),
+            #[cfg(windows)]
+            CancellationCleanupErrorKind::Windows {
+                kind: _,
+                raw_os_error: Some(raw_os_error),
+            } => format!("os-error-{raw_os_error}"),
+            #[cfg(windows)]
+            CancellationCleanupErrorKind::Windows {
+                kind,
+                raw_os_error: None,
+            } => format!("{kind:?}"),
+        }
+    }
+
+    fn description(&self) -> String {
+        match self.signal {
+            #[cfg(unix)]
+            CancellationCleanupSignal::Sigterm | CancellationCleanupSignal::Sigkill => {
+                format!(
+                    "failed to send {} to install process group: {}",
+                    self.signal.as_str(),
+                    self.description
+                )
+            }
+            #[cfg(windows)]
+            CancellationCleanupSignal::TerminateJobObject => {
+                format!("TerminateJobObject failed: {}", self.description)
+            }
+        }
+    }
+}
+
+/// Carries a typed cancellation from a streamed command to its dependency's
+/// aggregation task without changing the public Tauri command's String error.
+#[derive(Clone)]
+struct InstallCancellationCollector {
+    cancellation: Arc<Mutex<Option<InstallCancellation>>>,
+}
+
+impl InstallCancellationCollector {
+    fn new() -> Self {
+        Self {
+            cancellation: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn record(&self, cancellation: InstallCancellation) {
+        let mut slot = self.cancellation.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(cancellation);
+        }
+    }
+
+    fn take(&self) -> Option<InstallCancellation> {
+        self.cancellation.lock().unwrap().take()
+    }
+}
+
+tokio::task_local! {
+    static ACTIVE_INSTALL_CANCELLATION_COLLECTOR: InstallCancellationCollector;
+}
+
+fn record_install_cancellation(cancellation: InstallCancellation) {
+    let (level, message) = match &cancellation {
+        InstallCancellation::UserCancelled => (
+            sentry::Level::Info,
+            "setup dependency installation cancelled by user".to_string(),
+        ),
+        InstallCancellation::CleanupFailed(cleanup) => (
+            sentry::Level::Warning,
+            format!(
+                "setup dependency installation cancelled by user; cleanup failed to send {} ({})",
+                cleanup.signal.as_str(),
+                cleanup.os_error_kind_token()
+            ),
+        ),
+    };
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("setup.install-cancel".into()),
+        level,
+        message: Some(message),
+        ..Default::default()
+    });
+    let _ = ACTIVE_INSTALL_CANCELLATION_COLLECTOR
+        .try_with(|collector| collector.record(cancellation));
+}
+
 fn record_setup_command_failure(program: &str, args: &[&str], exit_code: Option<i32>, stdout: String, stderr: String, error: String) {
     let command = std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
     let diagnostic = SetupCommandDiagnostic {
@@ -252,7 +435,7 @@ static CANCEL_REGISTRY: std::sync::OnceLock<Arc<Mutex<HashMap<String, CancelStat
 #[derive(Default)]
 struct CancelState {
     cancelled: bool,
-    kill_error: Option<String>,
+    cleanup_failure: Option<CancellationCleanupFailure>,
     #[cfg(unix)]
     pgid: Option<i32>,
     #[cfg(windows)]
@@ -365,22 +548,30 @@ fn register_job_handle(handle: &str, job: Arc<JobHandle>) {
     }
 }
 
-fn record_kill_error(handle: &str, err: String) {
+fn record_cleanup_failure(handle: &str, failure: CancellationCleanupFailure) {
     if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
-        state.kill_error = Some(err);
+        // Preserve the first failed cleanup attempt. It is normally SIGTERM;
+        // retaining it prevents a later SIGKILL attempt from hiding the
+        // original failure that could leave the process tree running.
+        if state.cleanup_failure.is_none() {
+            state.cleanup_failure = Some(failure);
+        }
     }
 }
 
-fn take_kill_error(handle: &str) -> Option<String> {
+fn take_cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
     cancel_registry()
         .lock()
         .unwrap()
         .get_mut(handle)
-        .and_then(|state| state.kill_error.take())
+        .and_then(|state| state.cleanup_failure.take())
 }
 
 #[cfg(unix)]
-fn terminate_process_tree(handle: &str, signal_kind: Signal) -> Result<(), String> {
+fn terminate_process_tree(
+    handle: &str,
+    signal_kind: Signal,
+) -> Result<(), CancellationCleanupFailure> {
     let pgid = cancel_registry()
         .lock()
         .unwrap()
@@ -392,14 +583,12 @@ fn terminate_process_tree(handle: &str, signal_kind: Signal) -> Result<(), Strin
 
     match signal::kill(Pid::from_raw(-pgid), signal_kind) {
         Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
-        Err(e) => Err(format!(
-            "failed to send {signal_kind:?} to install process group {pgid}: {e}"
-        )),
+        Err(error) => Err(CancellationCleanupFailure::from_unix_signal(signal_kind, error)),
     }
 }
 
 #[cfg(windows)]
-fn terminate_process_tree(handle: &str) -> Result<(), String> {
+fn terminate_process_tree(handle: &str) -> Result<(), CancellationCleanupFailure> {
     let job = cancel_registry()
         .lock()
         .unwrap()
@@ -411,9 +600,8 @@ fn terminate_process_tree(handle: &str) -> Result<(), String> {
 
     let result = unsafe { TerminateJobObject(job.0, 1) };
     if result == 0 {
-        return Err(format!(
-            "TerminateJobObject failed: {}",
-            std::io::Error::last_os_error()
+        return Err(CancellationCleanupFailure::from_windows_error(
+            std::io::Error::last_os_error(),
         ));
     }
     Ok(())
@@ -2089,11 +2277,11 @@ pub fn cancel_install(handle: String) -> bool {
 
     #[cfg(unix)]
     if let Err(e) = terminate_process_tree(&handle, Signal::SIGTERM) {
-        record_kill_error(&handle, e);
+        record_cleanup_failure(&handle, e);
     }
     #[cfg(windows)]
     if let Err(e) = terminate_process_tree(&handle) {
-        record_kill_error(&handle, e);
+        record_cleanup_failure(&handle, e);
     }
 
     true
@@ -2284,7 +2472,7 @@ async fn run_streaming<R: tauri::Runtime>(
         if is_cancelled(&handle_id) {
             if cancel_started.is_none() {
                 if let Err(e) = terminate_process_tree(&handle_id, Signal::SIGTERM) {
-                    record_kill_error(&handle_id, e);
+                    record_cleanup_failure(&handle_id, e);
                 }
                 cancel_started = Some(Instant::now());
             } else if !sigkill_sent
@@ -2293,7 +2481,7 @@ async fn run_streaming<R: tauri::Runtime>(
                     .unwrap_or(false)
             {
                 if let Err(e) = terminate_process_tree(&handle_id, Signal::SIGKILL) {
-                    record_kill_error(&handle_id, e);
+                    record_cleanup_failure(&handle_id, e);
                 }
                 sigkill_sent = true;
             }
@@ -2324,7 +2512,7 @@ async fn run_streaming<R: tauri::Runtime>(
         .map_err(|_| "stderr reader thread panicked".to_string());
 
     let was_cancelled = is_cancelled(&handle_id);
-    let kill_error = take_kill_error(&handle_id);
+    let cleanup_failure = take_cleanup_failure(&handle_id);
     deregister_handle(&handle_id);
 
     if let Err(e) = stdout_join.and(stderr_join) {
@@ -2341,10 +2529,11 @@ async fn run_streaming<R: tauri::Runtime>(
     }
 
     if was_cancelled {
-        let msg = match kill_error {
-            Some(e) => format!("Cancelled by user; {e}"),
-            None => "Cancelled by user".to_string(),
-        };
+        let cancellation = cleanup_failure
+            .map(InstallCancellation::CleanupFailed)
+            .unwrap_or(InstallCancellation::UserCancelled);
+        record_install_cancellation(cancellation.clone());
+        let msg = cancellation.user_message();
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -4352,7 +4541,7 @@ async fn run_streaming<R: tauri::Runtime>(
     emit_install_handle_started(app, &handle_id);
     if is_cancelled(&handle_id) {
         if let Err(e) = terminate_process_tree(&handle_id) {
-            record_kill_error(&handle_id, e);
+            record_cleanup_failure(&handle_id, e);
         }
     }
 
@@ -4486,7 +4675,7 @@ async fn run_streaming<R: tauri::Runtime>(
 
         if is_cancelled(&handle_id) && !cancel_signal_sent {
             if let Err(e) = terminate_process_tree(&handle_id) {
-                record_kill_error(&handle_id, e);
+                record_cleanup_failure(&handle_id, e);
             }
             cancel_signal_sent = true;
         }
@@ -4516,7 +4705,7 @@ async fn run_streaming<R: tauri::Runtime>(
         .map_err(|_| "stderr reader thread panicked".to_string());
 
     let was_cancelled = is_cancelled(&handle_id);
-    let kill_error = take_kill_error(&handle_id);
+    let cleanup_failure = take_cleanup_failure(&handle_id);
     deregister_handle(&handle_id);
 
     if let Err(e) = stdout_join.and(stderr_join) {
@@ -4533,10 +4722,11 @@ async fn run_streaming<R: tauri::Runtime>(
     }
 
     if was_cancelled {
-        let msg = match kill_error {
-            Some(e) => format!("Cancelled by user; {e}"),
-            None => "Cancelled by user".to_string(),
-        };
+        let cancellation = cleanup_failure
+            .map(InstallCancellation::CleanupFailed)
+            .unwrap_or(InstallCancellation::UserCancelled);
+        record_install_cancellation(cancellation.clone());
+        let msg = cancellation.user_message();
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -5629,6 +5819,10 @@ struct DepDef {
 enum DepInstallStatus {
     Ok,
     Skipped,
+    /// A user stopped this dependency. It remains a terminal setup outcome for
+    /// UI/recovery purposes, but telemetry treats it as control flow rather
+    /// than a dependency-install error.
+    Cancelled,
     Failed,
 }
 
@@ -5786,7 +5980,11 @@ fn blocked_required_results(
         .collect()
 }
 
-fn result_from_install(dep: &DepDef, install_result: Result<(), String>) -> DepInstallResult {
+fn result_from_install(
+    dep: &DepDef,
+    install_result: Result<(), String>,
+    cancellation: Option<&InstallCancellation>,
+) -> DepInstallResult {
     match install_result {
         Ok(()) => DepInstallResult {
             id: dep.id,
@@ -5799,10 +5997,22 @@ fn result_from_install(dep: &DepDef, install_result: Result<(), String>) -> DepI
             id: dep.id,
             label: dep.label,
             optional: dep.optional,
-            status: DepInstallStatus::Failed,
+            status: if cancellation.is_some() {
+                DepInstallStatus::Cancelled
+            } else {
+                DepInstallStatus::Failed
+            },
             error: Some(err),
         },
     }
+}
+
+fn is_cancelled_dependency_result(result: &DepInstallResult) -> bool {
+    result.status == DepInstallStatus::Cancelled
+}
+
+fn is_terminal_dependency_failure(result: &DepInstallResult) -> bool {
+    result.status == DepInstallStatus::Failed || is_cancelled_dependency_result(result)
 }
 
 fn is_blocked_dependency_result(result: &DepInstallResult) -> bool {
@@ -5824,6 +6034,12 @@ fn is_concurrent_install_skip_result(result: &DepInstallResult) -> bool {
 }
 
 fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupCommandDiagnostic>) -> OnboardingErrorCategory {
+    // The status is set only from InstallCancellation, which is captured at the
+    // streaming cancellation source. Never infer this category from the
+    // rendered error string.
+    if is_cancelled_dependency_result(result) {
+        return OnboardingErrorCategory::Cancelled;
+    }
     // A cli-update lock skip is a deliberate concurrent-install skip, never an
     // install failure. It carries no exit code, so classify it BEFORE the
     // exit_code branch; this is what keeps it off the error-level Sentry path.
@@ -5879,6 +6095,7 @@ fn reportable_setup_failure_ids(deps: &[DepDef], results: &HashMap<&'static str,
         .filter_map(|dep| results.get(dep.id)
             .filter(|result| result.status == DepInstallStatus::Failed
                 && !is_blocked_dependency_result(result)
+                && !is_cancelled_dependency_result(result)
                 && !is_concurrent_install_skip_result(result))
             .map(|_| dep.id))
         .collect()
@@ -5937,6 +6154,142 @@ fn queue_setup_dependency_failure(scope: OnboardingFailureScope, dependency: &'s
     hq_telemetry::dispatch_sentry_report(move || {
         sentry::Hub::run(hub, || {
             send_setup_dependency_failure(&scope, dependency, category, diagnostic, &blocked_dependents);
+        });
+    });
+}
+
+/// Capture a cancellation cleanup failure independently from the user's
+/// deliberate cancellation. The fingerprint deliberately carries only stable
+/// facts (dependency, cleanup category, signal, OS error kind): a process-group
+/// id is machine-specific and would fragment one defect into many issues.
+fn send_setup_cancellation_cleanup_failure(
+    scope: &OnboardingFailureScope,
+    dependency: &'static str,
+    cleanup: CancellationCleanupFailure,
+    diagnostic: SetupCommandDiagnostic,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let os = os_info::get();
+        let category = OnboardingErrorCategory::CancelCleanupFailed;
+        let os_error_kind = cleanup.os_error_kind_token();
+        let fingerprint = [
+            dependency,
+            category.as_str(),
+            cleanup.signal.as_str(),
+            os_error_kind.as_str(),
+        ];
+        let search_path = {
+            #[cfg(windows)]
+            {
+                Some(extended_search_path())
+            }
+            #[cfg(not(windows))]
+            {
+                None::<String>
+            }
+        };
+        sentry::with_scope(
+            |sentry_scope| {
+                sentry_scope.set_fingerprint(Some(&fingerprint));
+                sentry_scope.set_tag("setup_stage", "deps");
+                sentry_scope.set_tag("setup_dependency", dependency);
+                sentry_scope.set_tag("setup_error_category", category.as_str());
+                sentry_scope.set_tag("setup_execution", "cancel-cleanup");
+                sentry_scope.set_tag("setup_flow", setup_flow_token(&scope.flow));
+                sentry_scope.set_tag("setup_attempt", scope.attempt_count.to_string());
+                sentry_scope.set_tag("setup_os", os.os_type().to_string());
+                sentry_scope.set_tag("setup_architecture", std::env::consts::ARCH);
+                sentry_scope.set_extra(
+                    "setup_run_id",
+                    sentry::protocol::Value::String(setup_correlation_id(&scope.setup_run_id)),
+                );
+                sentry_scope.set_extra(
+                    "setup_frontend_session_id",
+                    sentry::protocol::Value::String(setup_correlation_id(
+                        &scope.frontend_session_id,
+                    )),
+                );
+                sentry_scope.set_extra(
+                    "setup_app_version",
+                    sentry::protocol::Value::String(env!("APP_VERSION").to_string()),
+                );
+                sentry_scope.set_extra(
+                    "setup_os_version",
+                    sentry::protocol::Value::String(os.version().to_string()),
+                );
+                sentry_scope.set_extra(
+                    "setup_command",
+                    sentry::protocol::Value::String(diagnostic.command),
+                );
+                sentry_scope.set_extra(
+                    "setup_exit_code",
+                    diagnostic
+                        .exit_code
+                        .map(|code| sentry::protocol::Value::Number(code.into()))
+                        .unwrap_or(sentry::protocol::Value::Null),
+                );
+                sentry_scope.set_extra(
+                    "setup_stdout_tail",
+                    sentry::protocol::Value::String(diagnostic.stdout),
+                );
+                sentry_scope.set_extra(
+                    "setup_stderr_tail",
+                    sentry::protocol::Value::String(diagnostic.stderr),
+                );
+                sentry_scope.set_extra(
+                    "setup_error",
+                    sentry::protocol::Value::String(diagnostic.error),
+                );
+                sentry_scope.set_extra(
+                    "setup_blocked_dependents",
+                    sentry::protocol::Value::Array(Vec::new()),
+                );
+                sentry_scope.set_extra(
+                    "setup_blocked_dependents_status",
+                    sentry::protocol::Value::String("none".to_string()),
+                );
+                sentry_scope.set_extra(
+                    "setup_cancel_signal",
+                    sentry::protocol::Value::String(cleanup.signal.as_str().to_string()),
+                );
+                sentry_scope.set_extra(
+                    "setup_cancel_os_error_kind",
+                    sentry::protocol::Value::String(os_error_kind),
+                );
+                if let Some(search_path) = search_path {
+                    sentry_scope.set_extra(
+                        "setup_resolved_search_path",
+                        sentry::protocol::Value::String(search_path),
+                    );
+                }
+            },
+            || {
+                sentry::capture_message(
+                    "Desktop setup cancellation cleanup could leave an install process running",
+                    sentry::Level::Error,
+                )
+            },
+        );
+    }));
+}
+
+/// Queue cancellation cleanup telemetry without delaying setup completion.
+/// The user's cancellation remains terminal control flow regardless of whether
+/// reporting can allocate a thread or reach Sentry.
+fn queue_setup_cancellation_cleanup_failure(
+    scope: OnboardingFailureScope,
+    dependency: &'static str,
+    cleanup: CancellationCleanupFailure,
+    diagnostic: SetupCommandDiagnostic,
+) {
+    let source_hub = sentry::Hub::current();
+    if source_hub.client().is_none() {
+        return;
+    }
+    let hub = Arc::new(sentry::Hub::new_from_top(source_hub));
+    hq_telemetry::dispatch_sentry_report(move || {
+        sentry::Hub::run(hub, || {
+            send_setup_cancellation_cleanup_failure(&scope, dependency, cleanup, diagnostic);
         });
     });
 }
@@ -6113,6 +6466,7 @@ pub async fn install_deps(
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);
     let mut diagnostic_by_id: HashMap<&'static str, SetupCommandDiagnostic> = HashMap::new();
+    let mut cancellation_by_id: HashMap<&'static str, InstallCancellation> = HashMap::new();
     let mut ok_set: HashSet<&'static str> = HashSet::new();
 
     for dep in deps.iter().filter(|dep| dep.optional) {
@@ -6133,25 +6487,53 @@ pub async fn install_deps(
             let failure_scope = failure_scope.clone();
             async move {
                 let collector = SetupDiagnosticCollector::new();
+                let cancellation_collector = InstallCancellationCollector::new();
                 let install_result = match failure_scope {
                     Some(scope) => {
                         ACTIVE_ONBOARDING_FAILURE_SCOPE
-                            .scope(scope, ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector.clone(), install_orchestrated_dep(&app, dep)))
+                            .scope(
+                                scope,
+                                ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(
+                                    collector.clone(),
+                                    ACTIVE_INSTALL_CANCELLATION_COLLECTOR.scope(
+                                        cancellation_collector.clone(),
+                                        install_orchestrated_dep(&app, dep),
+                                    ),
+                                ),
+                            )
                             .await
                     }
-                    None => ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(collector.clone(), install_orchestrated_dep(&app, dep)).await,
+                    None => {
+                        ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR
+                            .scope(
+                                collector.clone(),
+                                ACTIVE_INSTALL_CANCELLATION_COLLECTOR.scope(
+                                    cancellation_collector.clone(),
+                                    install_orchestrated_dep(&app, dep),
+                                ),
+                            )
+                            .await
+                    }
                 };
-                (result_from_install(dep, install_result), collector.take())
+                let cancellation = cancellation_collector.take();
+                (
+                    result_from_install(dep, install_result, cancellation.as_ref()),
+                    collector.take(),
+                    cancellation,
+                )
             }
         }))
         .await;
 
-        for (result, diagnostic) in settled {
+        for (result, diagnostic, cancellation) in settled {
             if result.status == DepInstallStatus::Ok {
                 ok_set.insert(result.id);
             }
             if let Some(diagnostic) = diagnostic {
                 diagnostic_by_id.insert(result.id, diagnostic);
+            }
+            if let Some(cancellation) = cancellation {
+                cancellation_by_id.insert(result.id, cancellation);
             }
             result_by_id.insert(result.id, result);
         }
@@ -6176,7 +6558,7 @@ pub async fn install_deps(
         .iter()
         .filter_map(|dep| {
             let result = result_by_id.get(dep.id)?;
-            if result.optional || result.status != DepInstallStatus::Failed {
+            if result.optional || !is_terminal_dependency_failure(result) {
                 return None;
             }
             let summary = result
@@ -6195,6 +6577,24 @@ pub async fn install_deps(
         Ok(())
     } else {
         if let Some(scope) = failure_scope.as_ref() {
+            for (&dependency, cancellation) in &cancellation_by_id {
+                let InstallCancellation::CleanupFailed(cleanup) = cancellation else {
+                    continue;
+                };
+                let result = result_by_id
+                    .get(dependency)
+                    .expect("cancelled dependency has an install result");
+                let diagnostic = diagnostic_by_id
+                    .get(dependency)
+                    .cloned()
+                    .unwrap_or_else(|| fallback_setup_command_diagnostic(result));
+                queue_setup_cancellation_cleanup_failure(
+                    scope.clone(),
+                    dependency,
+                    cleanup.clone(),
+                    diagnostic,
+                );
+            }
             for dependency in reportable_setup_failure_ids(deps, &result_by_id) {
                 let dep = deps.iter().find(|dep| dep.id == dependency).expect("reportable dependency is registered");
                 let result = result_by_id.get(dep.id).expect("reportable dependency has an install result");
@@ -6209,16 +6609,19 @@ pub async fn install_deps(
         }
         if let Some(failed_dependency) = deps.iter().find_map(|dep| {
             let result = result_by_id.get(dep.id)?;
-            (!dep.optional && result.status == DepInstallStatus::Failed).then_some(dep.id)
+            (!dep.optional && is_terminal_dependency_failure(result)).then_some(dep.id)
         }) {
-            // Individual installers currently return their rendered errors, so
-            // no typed source remains at this aggregation point. Preserve the
-            // exact dependency but record the category as the closed fallback.
+            let result = result_by_id
+                .get(failed_dependency)
+                .expect("failed dependency has an install result");
             record_onboarding_failure_detail(
                 "deps",
                 failure_scope.as_ref(),
                 Some(failed_dependency),
-                OnboardingErrorCategory::Unknown,
+                setup_error_category(
+                    result,
+                    diagnostic_by_id.get(failed_dependency),
+                ),
             );
         }
         Err(format!(
@@ -9070,5 +9473,147 @@ mod cli_install_lock_e2e_tests {
             let _ = holder.kill();
             let _ = holder.wait();
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HQ-DESKTOP-6H: user cancellation and failed cancellation cleanup are distinct
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod cancellation_reporting_tests {
+    use super::*;
+
+    fn scope() -> OnboardingFailureScope {
+        OnboardingFailureScope {
+            setup_run_id: "11111111-1111-4111-8111-111111111111".to_string(),
+            attempt_count: 1,
+            flow: "first_install".to_string(),
+            frontend_session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+        }
+    }
+
+    fn failed_result(dependency: &'static str, error: &str) -> DepInstallResult {
+        let dep = dependency_defs()
+            .iter()
+            .find(|dep| dep.id == dependency)
+            .expect("fixture dependency is registered");
+        DepInstallResult {
+            id: dep.id,
+            label: dep.label,
+            optional: dep.optional,
+            status: DepInstallStatus::Failed,
+            error: Some(error.to_string()),
+        }
+    }
+
+    fn cancelled_result(dependency: &'static str, cancellation: &InstallCancellation) -> DepInstallResult {
+        let dep = dependency_defs()
+            .iter()
+            .find(|dep| dep.id == dependency)
+            .expect("fixture dependency is registered");
+        result_from_install(dep, Err(cancellation.user_message()), Some(cancellation))
+    }
+
+    #[cfg(unix)]
+    fn sigterm_eperm_cleanup_failure() -> CancellationCleanupFailure {
+        CancellationCleanupFailure::from_unix_signal(Signal::SIGTERM, nix::errno::Errno::EPERM)
+    }
+
+    fn diagnostic(error: &str) -> SetupCommandDiagnostic {
+        SetupCommandDiagnostic {
+            command: "npm install -g @indigoai-us/hq-cli".to_string(),
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: error.to_string(),
+            error: error.to_string(),
+        }
+    }
+
+    fn capture_reporting_loop(result: &DepInstallResult) -> Vec<sentry::protocol::Event<'static>> {
+        let deps = dependency_defs();
+        let mut results = premark_optional_results(deps);
+        results.insert(result.id, result.clone());
+        sentry::test::with_captured_events(|| {
+            for dependency in reportable_setup_failure_ids(deps, &results) {
+                let result = results.get(dependency).expect("reportable result is present");
+                let diagnostic = diagnostic(result.error.as_deref().unwrap_or_default());
+                let category = setup_error_category(result, Some(&diagnostic));
+                send_setup_dependency_failure(&scope(), dependency, category, diagnostic, &[]);
+            }
+        })
+    }
+
+    #[test]
+    fn a_clean_user_cancellation_is_cancelled_and_not_reportable() {
+        let cancellation = InstallCancellation::UserCancelled;
+        let result = cancelled_result("hq-cli", &cancellation);
+
+        assert_eq!(
+            setup_error_category(&result, None),
+            OnboardingErrorCategory::Cancelled
+        );
+        assert!(
+            reportable_setup_failure_ids(
+                dependency_defs(),
+                &HashMap::from([("hq-cli", result.clone())]),
+            )
+            .is_empty(),
+            "a user cancellation must not be an error-level setup failure"
+        );
+        assert!(
+            capture_reporting_loop(&result).is_empty(),
+            "a user cancellation must capture no error-level Sentry event"
+        );
+    }
+
+    #[test]
+    fn a_failed_sigterm_cleanup_is_reported_separately_from_a_user_cancellation() {
+        let cleanup = sigterm_eperm_cleanup_failure();
+        let cancellation = InstallCancellation::CleanupFailed(cleanup.clone());
+        let result = cancelled_result("hq-cli", &cancellation);
+
+        assert!(
+            capture_reporting_loop(&result).is_empty(),
+            "the cancellation must not also create the generic setup-failure event"
+        );
+        let events = sentry::test::with_captured_events(|| {
+            send_setup_cancellation_cleanup_failure(
+                &scope(),
+                "hq-cli",
+                cleanup,
+                diagnostic(result.error.as_deref().unwrap_or_default()),
+            );
+        });
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(
+            event.fingerprint,
+            vec!["hq-cli", "cancel-cleanup-failed", "SIGTERM", "EPERM"],
+            "cleanup grouping must exclude the machine-specific process-group id"
+        );
+        assert_eq!(event.level, sentry::Level::Error);
+        assert_eq!(
+            event.message.as_deref(),
+            Some("Desktop setup cancellation cleanup could leave an install process running")
+        );
+        assert_eq!(event.tags["setup_error_category"], "cancel-cleanup-failed");
+        assert_eq!(event.tags["setup_cancel_signal"], "SIGTERM");
+        assert_eq!(event.tags["setup_cancel_os_error_kind"], "EPERM");
+    }
+
+    #[test]
+    fn a_genuine_dependency_install_failure_still_reports_at_error_level() {
+        let result = failed_result("hq-cli", "Process exited with code 1: npm ERR! EACCES");
+
+        let events = capture_reporting_loop(&result);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.level, sentry::Level::Error);
+        assert_eq!(event.fingerprint, vec!["hq-cli", "exit-nonzero"]);
+        assert_eq!(
+            event.message.as_deref(),
+            Some("Desktop setup dependency installation failed")
+        );
     }
 }
