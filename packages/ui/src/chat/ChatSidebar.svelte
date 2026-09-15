@@ -1,3 +1,9 @@
+<script module lang="ts">
+  /** See the note on its use below — deliberately outside the instance so a
+   *  remount does not re-ask the server for peers it already 404'd on. */
+  const dmNameLookupsTried = new Set<string>();
+</script>
+
 <script lang="ts">
   /**
    * Chat-first unified conversation sidebar (US-003).
@@ -1416,8 +1422,7 @@
     });
   });
 
-  /** Peers already asked about — one thread read per bare uid, ever. */
-  const dmNameLookupsTried = new Set<string>();
+  // `dmNameLookupsTried` lives in the module script above.
 
   /**
    * The DM peer index (dm-threads) carries bare uids. When such a peer is not
