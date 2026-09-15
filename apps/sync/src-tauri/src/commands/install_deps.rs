@@ -9572,6 +9572,7 @@ mod cancellation_reporting_tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failed_sigterm_cleanup_is_reported_separately_from_a_user_cancellation() {
         let cleanup = sigterm_eperm_cleanup_failure();
