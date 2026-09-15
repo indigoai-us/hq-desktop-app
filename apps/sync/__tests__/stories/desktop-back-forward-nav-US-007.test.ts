@@ -35,20 +35,28 @@ describe("US-007: Accept the full matrix in browser, native preview, and Windows
     expect(shortcuts).toContain("An explicit non-Windows");
     expect(shortcuts).toContain('if (event.key === "ArrowLeft") return "back";');
 
-    const browserSpec = readRepo("apps/sync/e2e/browser/session-navigation.spec.ts");
+    // session-navigation.spec.ts became shell-navigation.spec.ts when the
+    // Sessions removal took the thing it navigated between. The matrix rows
+    // that survive are the ones about navigation itself: the title-bar
+    // controls, both platforms' chords, and the editor keeping the chord.
+    const browserSpec = readRepo("apps/sync/e2e/browser/shell-navigation.spec.ts");
     expect(browserSpec).toContain("titlebar-back");
     expect(browserSpec).toContain("titlebar-forward");
     expect(browserSpec).toContain("titlebar-day-date");
     expect(browserSpec).toContain("titlebar-history");
-    expect(browserSpec).toContain("session-source");
-    expect(browserSpec).toContain("code: 'BracketLeft'");
-    expect(browserSpec).toContain("key: 'ArrowLeft'");
-    expect(browserSpec).toContain("agent_session_start");
-    expect(browserSpec).toContain("NAV_LATENCY_BACK_MS");
+    // The browser-level chord retrace needed two destinations to move between,
+    // and the persona harness paints one conversation now that sessions are
+    // gone. Both platforms' chords and the rule that an editor keeps them are
+    // asserted at unit level instead; what no longer has end-to-end proof is
+    // the shell wiring that module to real navigation.
+    const shortcutSpec = readRepo(
+      "packages/ui/src/shell/navigation-shortcuts.test.ts",
+    );
+    expect(shortcutSpec).toContain('key: "ArrowLeft", altKey: true');
+    expect(shortcutSpec).toContain("does not steal from text editing");
 
     const loading = readRepo("apps/sync/e2e/browser/loading-readiness.spec.ts");
     expect(loading).toContain("sidebar-loading");
-    expect(loading).toContain("session-starter");
 
     const sources = new Map<string, string>();
     const read = (file: string) => {
