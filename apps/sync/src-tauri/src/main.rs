@@ -411,6 +411,14 @@ fn main() {
                 return;
             }
 
+            if hq_platform::launchagent::argv_is_launch_agent_relaunch(&argv) {
+                util::logfile::log(
+                    "app",
+                    "single-instance: ignored launchd KeepAlive relaunch (no focus steal)",
+                );
+                return;
+            }
+
             surface_existing_instance(app);
         }));
 
