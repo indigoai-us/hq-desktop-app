@@ -664,7 +664,6 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly sessions: PlatformAdapter["sessions"] = {
-    listAgentSessions: () => this.call("list_agent_sessions"),
     preflight: () => this.call("agent_session_preflight"),
     slashCommands: (tool) => this.call("agent_session_slash_commands", { tool }),
     installProvider: (tool) =>

@@ -1079,7 +1079,6 @@ export function createSyncPlatformAdapter(
     },
 
     sessions: {
-      listAgentSessions: () => call('list_agent_sessions'),
       preflight: () => call('agent_session_preflight'),
       slashCommands: (tool) => call('agent_session_slash_commands', { tool }),
       installProvider: (tool) => call<string>('install_session_provider', { tool }),
