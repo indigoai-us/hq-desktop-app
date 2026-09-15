@@ -14,6 +14,8 @@ import {
   nameIssue,
   nextStep,
   prevStep,
+  scopeIssue,
+  scopeLine,
   stepIssue,
   stepsFor,
   suggestBotName,
@@ -66,6 +68,10 @@ function ctx(over: Partial<CreateBotContext> = {}): CreateBotContext {
     companies: [
       { companyUid: "cmp_indigo", label: "Indigo" },
       { companyUid: "cmp_acme", label: "Acme" },
+    ],
+    ownerCompanies: [
+      { slug: "indigo", label: "Indigo" },
+      { slug: "acme", label: "Acme" },
     ],
     templates: WORKERS,
     ...over,
@@ -192,6 +198,21 @@ describe("steps", () => {
     expect(canAdvance("home", draft({ home: "local" }), c)).toBe(true);
   });
 
+  it("home needs at least one of the owner's companies for a company bot (bot-kinds)", () => {
+    const c = ctx();
+    expect(stepIssue("home", draft({ scope: "personal" }), c)).toBeNull();
+    expect(stepIssue("home", draft({ scope: "company" }), c)).toBe("Pick at least one company.");
+    expect(stepIssue("home", draft({ scope: "company", companySlugs: ["nope"] }), c)).toBe("Pick at least one company.");
+    expect(stepIssue("home", draft({ scope: "company", companySlugs: ["indigo"] }), c)).toBeNull();
+    expect(stepIssue("home", draft({ scope: "company", companySlugs: ["indigo", "acme"] }), c)).toBeNull();
+    // Not in any company yet: the answer is personal, not a dead end.
+    expect(scopeIssue({ scope: "company", companySlugs: [] }, { ownerCompanies: [] })).toContain("personal");
+    expect(canCreate(draft({ scope: "company" }), c)).toBe(false);
+    expect(firstBlockingStep(draft({ scope: "company" }), c)).toBe("home");
+    // Cloud drafts never ask.
+    expect(stepIssue("home", draft({ home: "cloud", companyUid: "cmp_acme", scope: "company" }), c)).toBeNull();
+  });
+
   it("details validates name then intro", () => {
     const c = ctx({ existingNames: ["scout"] });
     expect(stepIssue("details", draft({ name: "scout" }), c)).toBe("You already have a bot named scout.");
@@ -237,10 +258,29 @@ describe("toCreateInput", () => {
       model: "grok-4",
       worker: "iris-cx",
       intro: "Hi there.",
-      memory: "local",
+      memory: "local"
     });
     // A blank bot never carries a worker even if a stale templateId lingers.
     expect(toCreateInput(draft({ kind: "blank", templateId: "iris-cx" })).worker).toBeUndefined();
+  });
+
+  it("passes the kind and, for company bots, each company slug once (bot-kinds)", () => {
+    expect(toCreateInput(draft({ scope: "company", companySlugs: ["indigo", " acme ", "indigo", ""] }))).toEqual({
+      name: "assistant",
+      runtime: "claude",
+      autoApprove: true,
+      kind: "company",
+      companies: ["indigo", "acme"],
+    });
+    // Personal is the CLI default and is not passed (older hq compatibility);
+    // slugs picked and then switched back to personal never leak through.
+    const personal = toCreateInput(draft({ scope: "personal", companySlugs: ["indigo"] }));
+    expect(personal.kind).toBeUndefined();
+    expect(personal.companies).toBeUndefined();
+    const c = ctx();
+    expect(scopeLine(draft({ scope: "personal" }), c)).toBe("acts as you");
+    expect(scopeLine(draft({ scope: "company", companySlugs: ["indigo", "acme"] }), c)).toBe("for Indigo and Acme");
+    expect(scopeLine(draft({ home: "cloud" }), c)).toBe("");
   });
 
   it("describes what the bot thinks with", () => {

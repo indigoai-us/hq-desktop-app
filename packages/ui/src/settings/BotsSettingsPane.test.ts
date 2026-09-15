@@ -221,6 +221,29 @@ describe("Settings → Bots (Work shell)", () => {
     expect(rex.querySelector("button")).toBeNull();
   });
 
+  it("labels each local bot's kind in the list, and nothing for rows without one (bot-kinds)", async () => {
+    const adapter = fakeAdapter({
+      bots: {
+        list: vi.fn(async () =>
+          ok({
+            bots: [
+              { ...LOCAL_BOT, name: "buddy", agentUid: "agt_LOCAL000000000000000000002", kind: "personal" as const },
+              { ...LOCAL_BOT, name: "scout", agentUid: "agt_LOCAL000000000000000000003", kind: "company" as const, companies: ["indigo", "ridge"] },
+              LOCAL_BOT,
+            ],
+          }),
+        ),
+      },
+    });
+    await mountPane(adapter);
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="settings-bot-scout-kind"]')).not.toBeNull();
+    });
+    expect(host.querySelector('[data-testid="settings-bot-buddy-kind"]')?.textContent).toBe("Personal · acts as you");
+    expect(host.querySelector('[data-testid="settings-bot-scout-kind"]')?.textContent).toBe("Company · indigo, ridge");
+    expect(host.querySelector('[data-testid="settings-bot-assistant-kind"]')).toBeNull();
+  });
+
   it("pauses, resumes, and removes a managed cloud bot through adapter.agents", async () => {
     const adapter = fakeAdapter({});
     await mountPane(adapter);

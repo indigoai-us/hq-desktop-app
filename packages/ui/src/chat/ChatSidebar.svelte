@@ -34,6 +34,7 @@
   } from "./setup-channel";
   import { requestConversation } from "./pending-conversation";
   import { companiesForChannelCreate } from "./channel-create-scope.js";
+  import { localBotCompanies } from "./local-bots.js";
   import type { Workspace } from "./workspaces";
   import { type DmRequest, addRequest, removeRequest } from "./dm-requests";
   import { requestChannelOpen, requestDmRequestsOpen } from "./open-target";
@@ -561,6 +562,9 @@
         iconUrl: w.iconUrl ?? null,
       })),
   );
+
+  /** The owner's cloud companies by slug — a Local company bot joins these (bot-kinds). */
+  const botCompanies = $derived(localBotCompanies(companies));
 
   /** companyUid → presigned icon, for rows that only carry a uid. */
   const companyIcons = $derived(
@@ -2750,6 +2754,7 @@
       {botRuntimeReady}
       {botWorkers}
       {existingBotNames}
+      {botCompanies}
       {botSignIn}
       {onbotsignedin}
       {avatarPacks}

@@ -122,6 +122,8 @@
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** Names the user's local bots already use (availability check). */
     existingBotNames?: readonly string[] | null;
+    /** The owner's companies (slugs) a Local company bot can belong to. */
+    botCompanies?: ReadonlyArray<{ slug: string; label: string }> | null;
     /** Inline runtime sign-in (browser login + status poll) for the Home step. */
     botSignIn?: RuntimeSignInApi | null;
     /** A runtime just signed in — the host refreshes `botRuntimeReady`. */
@@ -156,6 +158,7 @@
     botRuntimeReady = null,
     botWorkers = null,
     existingBotNames = null,
+    botCompanies = null,
     botSignIn = null,
     onbotsignedin = null,
     avatarPacks = null,
@@ -1886,6 +1889,7 @@
         {botRuntimeReady}
         {botWorkers}
         existingNames={existingBotNames}
+        {botCompanies}
         agentTargets={canCreateCloudBot ? agentTargets : []}
         onCloudCreate={canCreateCloudBot ? newAgentFor : null}
         oncreate={canCreateLocalBot ? submitLocalBot : null}
