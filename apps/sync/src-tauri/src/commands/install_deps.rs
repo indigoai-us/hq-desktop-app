@@ -6115,7 +6115,7 @@ fn send_setup_cancellation_cleanup_failure(
                 );
                 sentry_scope.set_extra(
                     "setup_cancel_os_error_kind",
-                    sentry::protocol::Value::String(os_error_kind),
+                    sentry::protocol::Value::String(os_error_kind.clone()),
                 );
                 if let Some(search_path) = search_path {
                     sentry_scope.set_extra(
