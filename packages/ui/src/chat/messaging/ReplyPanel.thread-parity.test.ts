@@ -115,6 +115,21 @@ describe("ReplyPanel thread parity", () => {
     expect(rootBody?.classList.contains("msg-body")).toBe(true);
   });
 
+  it("scrolls the thread's first message away with the replies instead of pinning it", async () => {
+    const h = mountPanel();
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    const list = h.querySelector('[data-testid="reply-panel-list"]') as HTMLElement | null;
+    const rootEl = h.querySelector('[data-testid="reply-panel-root"]') as HTMLElement | null;
+    const replyRow = h.querySelector('[data-testid="reply-panel-message"]') as HTMLElement | null;
+    expect(list).not.toBeNull();
+    expect(rootEl?.parentElement).toBe(list);
+    expect(list!.firstElementChild).toBe(rootEl);
+    expect(replyRow?.parentElement).toBe(list);
+  });
+
   it("does not render a reaction bar for a message with no reactions", async () => {
     const h = mountPanel();
     await tick();

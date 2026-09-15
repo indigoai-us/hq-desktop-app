@@ -830,157 +830,158 @@
     </button>
   </header>
 
-  <div class="reply-root" data-testid="reply-panel-root">
-    {#if root}
-      {@const rootId = root.eventId}
-      {@const rootRich = richContentForMessage(root)}
-      <span class="reply-avatar" aria-hidden="true">
-        <IdentityMark
-          kind={isAgent(root) ? "agent" : "person"}
-          label={messageAuthor(root)}
-          avatarUrl={authorAvatarUrl(root.fromPersonUid, avatarByUid)}
-          agentUid={root.fromPersonUid}
-          size="regular"
-        />
-      </span>
-      <div class="reply-col">
-        <div class="reply-meta">
-          {#if onopenprofile && (root.fromPersonUid ?? "").trim()}
-            <button
-              type="button"
-              class="reply-root-author reply-author-btn"
-              data-testid="reply-root-author-open"
-              onclick={() => openAuthorProfile(root)}
-              >{messageAuthor(root)}</button
-            >
-          {:else}
-            <span class="reply-root-author">{messageAuthor(root)}</span>
-          {/if}
-          <span class="reply-time">{formatTime(root.createdAt)}</span>
-        </div>
-        <div class="reply-root-body">
-          {#if rootRich.text.trim()}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="reply-md msg-body"
-              class:msg-body-jumbo={isJumboEmojiBody(rootRich.text)}
-              onclick={(e) => {
-                if (onBodyLinkActivate(e)) return;
-                onMentionActivate(e, e.target);
-              }}
-              onkeydown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  if (onBodyLinkActivate(e)) return;
-                  onMentionActivate(e, e.target);
-                }
-              }}
-            >
-              {#if isHeavyMessageBody(rootRich.text)}
-                <PlainMessageBody body={rootRich.text} />
-              {:else}
-                {@html applyMentionMarkup(
-                  renderMessageBodyMarkdown(rootRich.text),
-                  storedMentions(root),
-                )}
-              {/if}
-            </div>
-          {/if}
-          {#if rootRich.rich}
-            <RichMessageContent
-              content={rootRich.rich}
-              ondecision={handleDecision}
-              {answeredQuestionIds}
-              {answeredChoices}
-            />
-          {/if}
-          {#if root.details?.trim()}
-            <ArtifactCard
-              kind="details"
-              text={root.details}
-              eventId={root.eventId}
-              onopen={onopenartifact}
-            />
-          {/if}
-          {#if root.prompt?.trim()}
-            <ArtifactCard
-              kind="prompt"
-              text={root.prompt}
-              eventId={root.eventId}
-              onopen={onopenartifact}
-            />
-          {/if}
-          <MessageAttachments
-                    {previewCache}
-                    {vaultCompanyUid}
-            attachments={parseMessageAttachments(root)}
-            onopen={onopenattachment}
-            resolveUrl={resolveAttachmentUrl}
-            {onreleaseurl}
-          />
-        </div>
-        {#if reactionsFor(rootId).length > 0}
-          <ReactionBar
-                    {selfPersonUid}
-                    {displayNameByUid}
-            messageId={rootId}
-            reactions={reactionsFor(rootId)}
-            ontoggle={toggle}
-            compact
-          />
-        {/if}
-        <div
-          class="reply-quick-react reply-quick-react-root"
-          role="group"
-          aria-label="Message actions"
-        >
-          {#each QUICK_REACT_EMOJI as emoji (emoji)}
-            <button
-              type="button"
-              class="reply-quick-react-btn"
-              onclick={() => toggle(rootId, emoji)}
-              aria-label={`React with ${emoji}`}
-            >
-              {emoji}
-            </button>
-          {/each}
-          <span class="reply-quick-react-picker-wrap">
-            <button
-              type="button"
-              class="reply-quick-react-btn reply-quick-react-more"
-              aria-label="Add a reaction"
-              title="Add a reaction"
-              aria-haspopup="menu"
-              aria-expanded={reactPickerFor === rootId}
-              onclick={() =>
-                (reactPickerFor = reactPickerFor === rootId ? null : rootId)}
-            >
-              +
-            </button>
-            {#if reactPickerFor === rootId}
-              <EmojiPicker
-                onpick={(emoji) => {
-                  reactPickerFor = null;
-                  toggle(rootId, emoji);
-                }}
-                onclose={() => (reactPickerFor = null)}
-              />
-            {/if}
-          </span>
-        </div>
-        <span class="reply-root-label">
-          {replyCount}
-          {replyCount === 1 ? "reply" : "replies"}
-        </span>
-      </div>
-    {:else if loading}
-      <p class="reply-status" role="status">Loading replies…</p>
-    {:else if loadError}
-      <p class="reply-status reply-error" role="alert">{loadError}</p>
-    {/if}
-  </div>
-
   <div class="reply-body">
     <div class="reply-list" data-testid="reply-panel-list">
+      <!-- The thread's first message scrolls with its replies, so a long one
+           never squeezes the conversation into a sliver under it. -->
+      <div class="reply-root" data-testid="reply-panel-root">
+        {#if root}
+          {@const rootId = root.eventId}
+          {@const rootRich = richContentForMessage(root)}
+          <span class="reply-avatar" aria-hidden="true">
+            <IdentityMark
+              kind={isAgent(root) ? "agent" : "person"}
+              label={messageAuthor(root)}
+              avatarUrl={authorAvatarUrl(root.fromPersonUid, avatarByUid)}
+              agentUid={root.fromPersonUid}
+              size="regular"
+            />
+          </span>
+          <div class="reply-col">
+            <div class="reply-meta">
+              {#if onopenprofile && (root.fromPersonUid ?? "").trim()}
+                <button
+                  type="button"
+                  class="reply-root-author reply-author-btn"
+                  data-testid="reply-root-author-open"
+                  onclick={() => openAuthorProfile(root)}
+                  >{messageAuthor(root)}</button
+                >
+              {:else}
+                <span class="reply-root-author">{messageAuthor(root)}</span>
+              {/if}
+              <span class="reply-time">{formatTime(root.createdAt)}</span>
+            </div>
+            <div class="reply-root-body">
+              {#if rootRich.text.trim()}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="reply-md msg-body"
+                  class:msg-body-jumbo={isJumboEmojiBody(rootRich.text)}
+                  onclick={(e) => {
+                    if (onBodyLinkActivate(e)) return;
+                    onMentionActivate(e, e.target);
+                  }}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      if (onBodyLinkActivate(e)) return;
+                      onMentionActivate(e, e.target);
+                    }
+                  }}
+                >
+                  {#if isHeavyMessageBody(rootRich.text)}
+                    <PlainMessageBody body={rootRich.text} />
+                  {:else}
+                    {@html applyMentionMarkup(
+                      renderMessageBodyMarkdown(rootRich.text),
+                      storedMentions(root),
+                    )}
+                  {/if}
+                </div>
+              {/if}
+              {#if rootRich.rich}
+                <RichMessageContent
+                  content={rootRich.rich}
+                  ondecision={handleDecision}
+                  {answeredQuestionIds}
+                  {answeredChoices}
+                />
+              {/if}
+              {#if root.details?.trim()}
+                <ArtifactCard
+                  kind="details"
+                  text={root.details}
+                  eventId={root.eventId}
+                  onopen={onopenartifact}
+                />
+              {/if}
+              {#if root.prompt?.trim()}
+                <ArtifactCard
+                  kind="prompt"
+                  text={root.prompt}
+                  eventId={root.eventId}
+                  onopen={onopenartifact}
+                />
+              {/if}
+              <MessageAttachments
+                        {previewCache}
+                        {vaultCompanyUid}
+                attachments={parseMessageAttachments(root)}
+                onopen={onopenattachment}
+                resolveUrl={resolveAttachmentUrl}
+                {onreleaseurl}
+              />
+            </div>
+            {#if reactionsFor(rootId).length > 0}
+              <ReactionBar
+                        {selfPersonUid}
+                        {displayNameByUid}
+                messageId={rootId}
+                reactions={reactionsFor(rootId)}
+                ontoggle={toggle}
+                compact
+              />
+            {/if}
+            <div
+              class="reply-quick-react reply-quick-react-root"
+              role="group"
+              aria-label="Message actions"
+            >
+              {#each QUICK_REACT_EMOJI as emoji (emoji)}
+                <button
+                  type="button"
+                  class="reply-quick-react-btn"
+                  onclick={() => toggle(rootId, emoji)}
+                  aria-label={`React with ${emoji}`}
+                >
+                  {emoji}
+                </button>
+              {/each}
+              <span class="reply-quick-react-picker-wrap">
+                <button
+                  type="button"
+                  class="reply-quick-react-btn reply-quick-react-more"
+                  aria-label="Add a reaction"
+                  title="Add a reaction"
+                  aria-haspopup="menu"
+                  aria-expanded={reactPickerFor === rootId}
+                  onclick={() =>
+                    (reactPickerFor = reactPickerFor === rootId ? null : rootId)}
+                >
+                  +
+                </button>
+                {#if reactPickerFor === rootId}
+                  <EmojiPicker
+                    onpick={(emoji) => {
+                      reactPickerFor = null;
+                      toggle(rootId, emoji);
+                    }}
+                    onclose={() => (reactPickerFor = null)}
+                  />
+                {/if}
+              </span>
+            </div>
+            <span class="reply-root-label">
+              {replyCount}
+              {replyCount === 1 ? "reply" : "replies"}
+            </span>
+          </div>
+        {:else if loading}
+          <p class="reply-status" role="status">Loading replies…</p>
+        {:else if loadError}
+          <p class="reply-status reply-error" role="alert">{loadError}</p>
+        {/if}
+      </div>
       {#if loading && replies.length === 0 && root}
         <p class="reply-status" role="status">Loading replies…</p>
       {:else if loadError && replies.length === 0 && root}
@@ -1299,6 +1300,9 @@
     grid-template-columns: 36px minmax(0, 1fr);
     gap: 8px;
     align-items: start;
+    /* First item of the scrolling list: bleed past the list padding so its
+       divider still spans the panel. */
+    margin: -8px -12px 8px;
     padding: 12px 16px 16px;
     border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
   }
