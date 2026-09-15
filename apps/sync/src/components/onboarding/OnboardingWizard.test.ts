@@ -1343,3 +1343,116 @@ describe('setup failure correlation', () => {
     );
   });
 });
+
+describe('setup progress direction', () => {
+  interface ProgressSample {
+    percent: number;
+    bands: string[];
+    subStatus: string;
+    elapsedSeconds: number | null;
+  }
+
+  const BAND_RANK: Record<string, number> = { pending: 0, active: 1, done: 2 };
+
+  function sampleProgress(): ProgressSample {
+    const panel = host.querySelector('[data-testid="onboarding-setup"]');
+    const elapsed = host.querySelector(
+      '[data-testid="onboarding-setup-elapsed"]',
+    )?.textContent;
+    const seconds = elapsed?.match(/(\d+)s/)?.[1];
+    return {
+      percent: Number.parseInt(host.querySelector('.ppct')?.textContent ?? '', 10),
+      bands: [...(panel?.querySelectorAll('[data-band-status]') ?? [])].map(
+        (band) => band.getAttribute('data-band-status') ?? '',
+      ),
+      subStatus:
+        host.querySelector('[data-testid="onboarding-setup-substatus"]')
+          ?.textContent ?? '',
+      elapsedSeconds: seconds ? Number.parseInt(seconds, 10) : null,
+    };
+  }
+
+  it('never walks the ring or the bands backward while a stage auto-retries', async () => {
+    let depsAttempts = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          depsAttempts += 1;
+          // The first attempt runs long enough to earn an elapsed clock, then
+          // fails transiently so the wizard auto-retries it.
+          if (depsAttempts === 1) {
+            return new Promise<never>((_resolve, reject) => {
+              setTimeout(
+                () =>
+                  reject(new Error('network timeout while installing dependencies')),
+                25_000,
+              );
+            });
+          }
+          // The second attempt also takes a while, so the clock it inherited
+          // is observable rather than gone in one tick.
+          return new Promise<void>((resolve) => {
+            setTimeout(resolve, 10_000);
+          });
+        case 'record_install_complete':
+          // Holds the wizard on the setup step so the whole run stays visible.
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 2 },
+    });
+
+    const samples: ProgressSample[] = [];
+    await flush();
+    for (let step = 0; step < 200; step += 1) {
+      await vi.advanceTimersByTimeAsync(300);
+      await flush();
+      const sample = sampleProgress();
+      if (Number.isFinite(sample.percent)) samples.push(sample);
+    }
+
+    expect(depsAttempts).toBe(2);
+    expect(samples.length).toBeGreaterThan(100);
+    expect(samples.at(-1)?.percent).toBe(100);
+
+    for (let i = 1; i < samples.length; i += 1) {
+      const previous = samples[i - 1]!;
+      const current = samples[i]!;
+      expect(current.percent).toBeGreaterThanOrEqual(previous.percent);
+      for (const [band, status] of current.bands.entries()) {
+        expect(BAND_RANK[status]).toBeGreaterThanOrEqual(
+          BAND_RANK[previous.bands[band]!]!,
+        );
+      }
+    }
+
+    // The retried stage says so, keeps an active band, and keeps the clock it
+    // had already earned instead of restarting from zero.
+    const retryIndexes = samples
+      .map((sample, index) => (sample.subStatus.includes('Retrying') ? index : -1))
+      .filter((index) => index >= 0);
+    expect(retryIndexes.length).toBeGreaterThan(0);
+    for (const index of retryIndexes) {
+      const sample = samples[index]!;
+      expect(sample.subStatus).toContain('Retrying — attempt 2 of 2…');
+      expect(sample.bands).toContain('active');
+      expect(sample.bands).not.toContain('');
+      expect(sample.elapsedSeconds ?? 0).toBeGreaterThanOrEqual(25);
+    }
+
+    // The attempt that follows inherits that clock: it does not start over.
+    const afterRetry = samples[retryIndexes.at(-1)! + 1];
+    expect(afterRetry?.subStatus).not.toContain('Retrying');
+    expect(afterRetry?.subStatus).not.toBe('');
+    expect(afterRetry?.elapsedSeconds ?? 0).toBeGreaterThanOrEqual(25);
+  });
+});

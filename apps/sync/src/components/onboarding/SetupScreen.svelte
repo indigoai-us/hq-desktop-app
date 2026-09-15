@@ -4,15 +4,19 @@
   import { safeUnlisten } from '../../lib/listener-registry';
   import { onDestroy, onMount } from 'svelte';
   import {
+    activeStageId,
     allSettled,
     buildInitialStages,
     buildStagesFromManifest,
+    countSettledStages,
+    createSetupProgressTracker,
     isContentRetryEligible,
     isStageSkipEligible,
     resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
     setupProgressPercent,
+    trackSetupProgress,
     stageCommandInvocations,
     stageCreepAt,
     stageSkipThresholdMs,
@@ -51,13 +55,12 @@
   const activeInstallHandles = new Set<string>();
   const activeContentHandles = new Set<string>();
 
-  const settledCount = $derived(
-    stages.filter((stage) => stage.status === 'ok' || stage.status === 'failed')
-      .length,
-  );
-  const currentStageId = $derived(
-    stages.find((stage) => stage.status === 'running')?.id ?? null,
-  );
+  // Same high-water mark as the wizard: a stage waiting on a retry must not
+  // drag the bar backward.
+  const setupProgressTracker = createSetupProgressTracker();
+
+  const settledCount = $derived(countSettledStages(stages));
+  const currentStageId = $derived(activeStageId(stages));
   const contentStage = $derived(
     stages.find((stage) => stage.id === 'content') ?? null,
   );
@@ -73,7 +76,7 @@
     stagingSourceSaving || contentStage?.status === 'ok',
   );
   const setupDone = $derived(allSettled(stages));
-  const overallPercent = $derived(
+  const rawOverallPercent = $derived(
     setupProgressPercent({
       settledCount,
       totalStages: STAGE_ORDER.length,
@@ -81,6 +84,9 @@
       stageCreep,
       allDone: setupDone,
     }),
+  );
+  const overallPercent = $derived(
+    trackSetupProgress(setupProgressTracker, rawOverallPercent),
   );
   const progressFillPercent = $derived(
     setupDone ? overallPercent : Math.max(2, overallPercent),
@@ -387,7 +393,9 @@
     if (!isCurrentRun(runId)) return 'cancelled';
 
     if (result.kind === 'retry') {
-      stages = setStageStatus(stages, id, 'pending');
+      // 'retrying', not 'pending': the stage keeps its place in the progress
+      // bar and the list while the next attempt spins up.
+      stages = setStageStatus(stages, id, 'retrying');
       if (id === 'content') contentProgress = null;
       return 'retry';
     }
@@ -639,11 +647,11 @@
       <li
         class:current={stage.id === currentStageId}
         class:pending={stage.status === 'pending'}
-        class:running={stage.status === 'running'}
+        class:running={stage.status === 'running' || stage.status === 'retrying'}
         class:ok={stage.status === 'ok'}
         class:failed={stage.status === 'failed'}
       >
-        {#if stage.status === 'running'}
+        {#if stage.status === 'running' || stage.status === 'retrying'}
           <span class="stage-spinner" aria-hidden="true"></span>
         {:else}
           <span class="status-dot" aria-hidden="true"></span>
