@@ -658,6 +658,58 @@ describe("release workflow channel contract", () => {
     expect(sync).not.toContain("git add -A");
   });
 
+  // Release notes are the only record users get of a release and are permanent
+  // once published. They come from CHANGELOG.md, written in each change's own
+  // PR (changelog.yml), and every step that touches them is pinned here: an
+  // unwired guard never runs, and every check still looks green.
+  it("refuses a stable tag with empty release notes before anything is built", () => {
+    const validate = jobBody("validate");
+    const guard = stepBody(validate, "Refuse to release empty release notes");
+
+    // Manual retries are checked too; only a tag older than CHANGELOG.md is exempt.
+    expect(guard).not.toMatch(/^\s*if:/m);
+    expect(guard).toContain('if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ ! -f CHANGELOG.md ]; then');
+    expect(validate).toContain(".github/scripts/check-changelog.mjs");
+    // The final, unconditional line is the hard gate for stable tags; the
+    // earlier call only reports on beta/alpha. It is given the previous stable
+    // tag's CHANGELOG.md, so notes a failed sync left under Unreleased are not
+    // published a second time.
+    expect(guard.trim().split("\n").at(-1)?.trim()).toBe(
+      'node .release-control/.github/scripts/check-changelog.mjs release --file CHANGELOG.md --version "$TAG" "${previous[@]}"',
+    );
+    expect(guard).toContain('previous=(--previous "$RUNNER_TEMP/previous-CHANGELOG.md" --previous-version "$PREVIOUS_TAG")');
+    expect(guard).not.toContain("continue-on-error");
+    expect(jobBody("macos")).toContain("needs: validate");
+    expect(jobBody("windows")).toContain("needs: validate");
+  });
+
+  it("leads the GitHub release body with the tag's CHANGELOG notes", () => {
+    const publish = jobBody("publish");
+    const draft = stepBody(publish, "Create or reset hidden draft GitHub release");
+
+    expect(publish).toContain(".github/scripts/check-changelog.mjs");
+    expect(draft).toContain(
+      'node .release-control/.github/scripts/check-changelog.mjs notes --file CHANGELOG.md --version "$TAG"',
+    );
+    expect(draft).toContain('--arg body "$notes"');
+    expect(draft).toContain("body: $body");
+    // GitHub's generated PR list stays, beneath the written notes.
+    expect(draft).toContain("generate_release_notes: true");
+  });
+
+  it("moves the shipped notes into the version's section when syncing main", () => {
+    const sync = stepBody(jobBody("sync-version"), "Stamp the released version onto main");
+
+    expect(sync).toContain("node .github/scripts/check-changelog.mjs promote");
+    expect(sync).toContain('git show "${RELEASE_TAG}:CHANGELOG.md"');
+    expect(sync).toMatch(/git add -- \\[\s\S]*CHANGELOG\.md/);
+    // Promotion happens inside the retry loop, after main is re-derived, so a
+    // merge that landed mid-release keeps its Unreleased entry.
+    expect(sync.indexOf("check-changelog.mjs promote")).toBeGreaterThan(
+      sync.indexOf("git checkout -B main refs/remotes/origin/main"),
+    );
+  });
+
   it("publishes prereleases without advancing the stable latest alias", () => {
     const publish = jobBody("publish");
 
