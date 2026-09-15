@@ -1280,6 +1280,8 @@ pub fn build_sync_spawn_args(
     // Dock-launched apps and either process exits with code 127. See
     // `paths::child_path`.
     env.insert("PATH".to_string(), paths::child_path());
+    #[cfg(not(windows))]
+    env.extend(crate::commands::install_deps::managed_git_env());
     // Per-company Off toggles persist in menubar.json; honor them on All-scope
     // fanout so Sync Now does not upload/download paused companies.
     apply_skip_companies_env(&mut env, scope);
@@ -3507,6 +3509,63 @@ mod tests {
         assert!(
             env.get("PATH").is_some_and(|path| !path.is_empty()),
             "PATH must be present so npx and its node shebang resolve"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_sync_spawn_args_sets_managed_git_environment_when_installed() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let git = home
+            .path()
+            .join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
+        std::fs::create_dir_all(git.parent().unwrap()).unwrap();
+        std::fs::write(&git, "").unwrap();
+        let _home = scoped_home(home.path());
+
+        let env = build_sync_spawn_args("/tmp", true, &SyncRunScope::All, None)
+            .env
+            .unwrap();
+
+        assert_eq!(
+            env.get("GIT_EXEC_PATH").map(String::as_str),
+            Some(
+                home.path()
+                    .join("Library/Application Support/Indigo HQ/toolchain/git/libexec/git-core")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            env.get("GIT_TEMPLATE_DIR").map(String::as_str),
+            Some(
+                home.path()
+                    .join("Library/Application Support/Indigo HQ/toolchain/git/share/git-core/templates")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_sync_spawn_args_leaves_git_environment_unset_without_managed_git() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let _home = scoped_home(home.path());
+
+        let env = build_sync_spawn_args("/tmp", true, &SyncRunScope::All, None)
+            .env
+            .unwrap();
+
+        assert!(
+            !env.contains_key("GIT_EXEC_PATH"),
+            "a system git must keep its own exec-path configuration: {env:?}"
+        );
+        assert!(
+            !env.contains_key("GIT_TEMPLATE_DIR"),
+            "a system git must keep its own template configuration: {env:?}"
         );
     }
 
