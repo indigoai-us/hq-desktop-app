@@ -164,13 +164,28 @@ fn onboarding_window_requires_blur_suppression(app: &AppHandle) -> bool {
         .try_state::<crate::commands::first_run::LaunchKindState>()
         .map(|state| crate::commands::first_run::should_autoshow_on_launch(state.0))
         .unwrap_or(false);
-    let setup_lifecycle = crate::commands::lifecycle::current_lifecycle_state(app)
-        .map(crate::commands::lifecycle::lifecycle_keeps_main_window_visible)
-        .unwrap_or(false);
-    // Browser OAuth steals key focus; do not dismiss the sign-in surface under it.
-    let oauth_in_flight = crate::commands::oauth::oauth_flow_keeps_window_visible();
+    setup_owns_main_window(
+        first_run_launch,
+        crate::commands::lifecycle::current_lifecycle_state(app),
+        // Browser OAuth steals key focus; do not dismiss the sign-in surface under it.
+        crate::commands::oauth::oauth_flow_keeps_window_visible(),
+    )
+}
 
-    first_run_launch || setup_lifecycle || oauth_in_flight
+/// Whether setup still owns `main`. The first-run launch verdict is frozen for
+/// the whole process, so on its own it would keep routing Dock / tray clicks
+/// to `main` long after onboarding finished. `mark_first_run_complete`
+/// advances the in-process lifecycle out of the setup states, and that is what
+/// releases the first-run pin: after it, clicks open the desktop workspace.
+pub(crate) fn setup_owns_main_window(
+    first_run_launch: bool,
+    lifecycle: Option<hq_desktop_core::lifecycle::LifecycleState>,
+    oauth_in_flight: bool,
+) -> bool {
+    let setup_lifecycle = lifecycle
+        .map(crate::commands::lifecycle::lifecycle_keeps_main_window_visible);
+    let first_run_pending = first_run_launch && setup_lifecycle.unwrap_or(true);
+    first_run_pending || setup_lifecycle.unwrap_or(false) || oauth_in_flight
 }
 
 /// Last-known horizontal centre of the native "HQ" menu-bar icon, in Cocoa
@@ -1583,5 +1598,31 @@ mod tests {
             start,
             "dropping outer guard should decrement back to start"
         );
+    }
+
+    mod setup_owns_main_window_tests {
+        use super::super::setup_owns_main_window;
+        use hq_desktop_core::lifecycle::LifecycleState;
+
+        #[test]
+        fn first_run_launch_during_setup_keeps_main() {
+            assert!(setup_owns_main_window(true, Some(LifecycleState::NeedsInstall), false));
+            assert!(setup_owns_main_window(true, None, false));
+        }
+
+        /// Regression: a fresh install's first launch finished onboarding
+        /// (lifecycle advanced to SteadyState) but tray clicks kept showing
+        /// the popover instead of the desktop until HQ was relaunched.
+        #[test]
+        fn first_run_launch_releases_main_once_setup_finishes() {
+            assert!(!setup_owns_main_window(true, Some(LifecycleState::SteadyState), false));
+        }
+
+        #[test]
+        fn setup_lifecycle_or_oauth_keeps_main_on_normal_launch() {
+            assert!(setup_owns_main_window(false, Some(LifecycleState::InstalledFirstRun), false));
+            assert!(setup_owns_main_window(false, Some(LifecycleState::SteadyState), true));
+            assert!(!setup_owns_main_window(false, Some(LifecycleState::SteadyState), false));
+        }
     }
 }
