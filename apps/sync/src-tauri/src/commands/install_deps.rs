@@ -9773,7 +9773,7 @@ mod cancellation_reporting_tests {
                     .parse()
                     .expect("test DSN parses"),
             ),
-            transport: Some(transport.clone()),
+            transport: Some(Arc::new(transport.clone())),
             ..Default::default()
         };
         let hub = Arc::new(sentry::Hub::new(
