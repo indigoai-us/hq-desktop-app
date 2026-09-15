@@ -17,6 +17,7 @@
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
+  import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
@@ -241,6 +242,11 @@
   // `?step=4` upward — including this harness's own default entry point, and
   // the Ready screen at 5 — silently fell back to Welcome.
   const LAST_ONBOARDING_STEP = WIZARD_STEPS[WIZARD_STEPS.length - 1].index;
+  // ?beat=0..N opens the intro directly on one scene for design work.
+  const introBeatParam = params.get('beat');
+  const introBeat =
+    introBeatParam === null ? null : Number.parseInt(introBeatParam, 10);
+
   const onboardingStep =
     Number.isInteger(requestedOnboardingStep) &&
     requestedOnboardingStep >= 0 &&
@@ -372,6 +378,15 @@
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />
+{:else if view === 'intro'}
+  <!-- The cinematic first-run intro. Resize the preview viewport to ~1100x740.
+       In the real app the window is transparent with native frosted material,
+       so what sits behind the intro is the person's blurred desktop. A browser
+       cannot reproduce NSVisualEffectView, so the harness paints a stand-in
+       "desktop" here purely so the iris takeover is visible during design
+       work. This backdrop does NOT exist in the shipped app. -->
+  <div class="fake-desktop" aria-hidden="true"></div>
+  <CinematicIntro onfinish={() => {}} startAtBeat={introBeat} />
 {:else if view === 'onboarding'}
   <!-- First-run onboarding at its real 780x620 transparent-window size.
        Pass ?step=0..3 to inspect every reachable lifecycle screen directly. -->
@@ -459,6 +474,18 @@
 {/if}
 
 <style>
+  .fake-desktop {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(40% 50% at 18% 22%, #3b4a63, transparent 70%),
+      radial-gradient(45% 45% at 82% 30%, #5a4360, transparent 70%),
+      radial-gradient(60% 55% at 50% 95%, #24303f, transparent 75%),
+      linear-gradient(160deg, #2b3446, #171d28);
+    filter: blur(26px) saturate(115%);
+  }
+
   :global(html[data-window='desktop-alt']),
   :global(html[data-window='desktop-alt'] body) {
     width: 100%;
