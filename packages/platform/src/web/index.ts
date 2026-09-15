@@ -1098,7 +1098,6 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly sessions: PlatformAdapter["sessions"] = {
-    listAgentSessions: async () => DESKTOP_ONLY,
   };
 
   readonly settings: PlatformAdapter["settings"] = {

@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-use hq_desktop_core::sessions::claude::resolve_claude_projects_dirs;
-use hq_desktop_core::sessions::codex::{enumerate_rollout_files, RolloutFile};
+use hq_desktop_core::agent_usage_scan::{
+    enumerate_rollout_files, resolve_claude_projects_dirs, RolloutFile,
+};
 
 use crate::commands::sync::resolve_vault_api_url;
 use crate::commands::vault_client::{

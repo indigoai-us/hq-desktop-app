@@ -23,7 +23,6 @@ export type NavigationHostId =
   | "shared-shell"
   | "work-host"
   | "hq-work-host"
-  | "sessions-extra"
   | "legacy-desktop-alt";
 
 export type HistoryEffect = "push" | "replace" | "none";
@@ -52,10 +51,6 @@ export const WORK_HOST_FILE = "apps/work/src/lib/WorkShell.svelte";
 export const HQ_WORK_SHELL_FILE =
   "apps/sync/src/desktop-alt/HqWorkWorkShell.svelte";
 export const HQ_WORK_HOST_FILE = "apps/sync/src/desktop-alt/hq-work-host.ts";
-export const SESSIONS_EXTRA_FILE =
-  "apps/sync/src/desktop-alt/pages/SessionsExtraPage.svelte";
-export const LEGACY_DESKTOP_APP_FILE =
-  "apps/sync/src/desktop-alt/DesktopApp.svelte";
 export const DESKTOP_ALT_MAIN_FILE = "apps/sync/src/desktop-alt/main.ts";
 
 export const NAVIGATION_INVENTORY_FILES = [
@@ -63,7 +58,6 @@ export const NAVIGATION_INVENTORY_FILES = [
   WORK_HOST_FILE,
   HQ_WORK_SHELL_FILE,
   HQ_WORK_HOST_FILE,
-  SESSIONS_EXTRA_FILE,
 ] as const;
 
 /** Assignments of `view` in DesktopApp.svelte. Comparisons (`view ===`) are excluded. */
@@ -72,7 +66,9 @@ export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 12;
 
 /** Direct `navigation.navigate(` calls in HqWorkWorkShell (native/host seams). */
 export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
-export const HQ_WORK_SHELL_NAVIGATE_COUNT = 7;
+// Was 7 before the Sessions removal: the Sessions row-extras "New session"
+// and history-session navigations went with the feature.
+export const HQ_WORK_SHELL_NAVIGATE_COUNT = 5;
 
 export const DESKTOP_APP_FUNCTION_RE =
   /(?:async )?function (open[A-Z]\w*|close[A-Z]\w*|apply[A-Z]\w*|toggle[A-Z]\w*|navigate[A-Z]\w*|handle[A-Z]\w*|leave[A-Z]\w*|changeTenantCompany|onOpenChannel|onMessagePerson|onOpenSettingsEvent|onEmbeddedNavigation|onKey|navigate|resolveDestination|commitDestination|goBack|goForward)\b/g;
@@ -98,13 +94,11 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   closeAgentDetail: "none",
   openAgentFromHeader: "none",
   openProfileForAuthor: "none",
-  openMigrateSession: "none",
   applyCardFocus: "none",
   navigateToEntryTarget: "push",
   applyCardActionFailure: "none",
   handleCardAction: "push",
   openReply: "push",
-  openSessionFromCard: "none",
   openArtifact: "none",
   closeArtifact: "none",
   closeReply: "replace",
@@ -764,16 +758,6 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     notes: "Native confirm dialogs stay outside history.",
   },
   {
-    id: "native-dialog-migrate",
-    file: SHARED_SHELL_FILE,
-    needle: "<MigrateSessionDialog",
-    destinationKind: "none",
-    history: "none",
-    host: "shared-shell",
-    inScope: true,
-    notes: "Native dialogs stay outside history.",
-  },
-  {
     id: "external-url-open",
     file: SHARED_SHELL_FILE,
     needle: "if (/^https?:\\/\\//i.test(url)) onopenurl?.(url);",
@@ -1066,42 +1050,6 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
 
   // --- HqWorkWorkShell ---
   {
-    id: "hq-work-extra-sessions",
-    file: HQ_WORK_SHELL_FILE,
-    needle: "component: SessionsExtraPage",
-    destinationKind: "extra",
-    history: "push",
-    host: "hq-work-host",
-    inScope: true,
-  },
-  {
-    id: "hq-work-new-session-action",
-    file: HQ_WORK_SHELL_FILE,
-    needle: "createAction: { label: 'New session'",
-    destinationKind: "extra",
-    history: "push",
-    host: "hq-work-host",
-    inScope: true,
-  },
-  {
-    id: "hq-work-row-extras-new-session",
-    file: HQ_WORK_SHELL_FILE,
-    needle: "param: newSessionParam(company, link.project, link.channelId)",
-    destinationKind: "extra",
-    history: "push",
-    host: "hq-work-host",
-    inScope: true,
-  },
-  {
-    id: "hq-work-row-extras-history-session",
-    file: HQ_WORK_SHELL_FILE,
-    needle: "param: historySessionParam(company, _link.project, session)",
-    destinationKind: "extra",
-    history: "push",
-    host: "hq-work-host",
-    inScope: true,
-  },
-  {
     id: "hq-work-restore-pending-route",
     file: HQ_WORK_SHELL_FILE,
     needle: "desktop_alt_consume_pending_route",
@@ -1196,16 +1144,6 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     notes:
       "Sign-out and account change clear the pending-route bridge. WorkShell remounts on authGeneration so the in-memory stack is dropped.",
   },
-  {
-    id: "hq-work-project-channel-linked",
-    file: HQ_WORK_SHELL_FILE,
-    needle: "PROJECT_CHANNEL_LINKED_EVENT",
-    destinationKind: "none",
-    history: "none",
-    host: "hq-work-host",
-    inScope: true,
-    nonNavigationReason: "background-roster",
-  },
 
   // --- hq-work-host.ts pending-route bridge ---
   {
@@ -1291,15 +1229,6 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
   },
   {
-    id: "host-route-sessions",
-    file: HQ_WORK_HOST_FILE,
-    needle: "case 'sessions':",
-    destinationKind: "extra",
-    history: "push",
-    host: "hq-work-host",
-    inScope: true,
-  },
-  {
     id: "host-route-settings",
     file: HQ_WORK_HOST_FILE,
     needle: "case 'settings':",
@@ -1355,50 +1284,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
   },
 
-  // --- Sessions extra page ---
-  {
-    id: "sessions-open-session",
-    file: SESSIONS_EXTRA_FILE,
-    needle: "onnavigate?.(next, { mode: sessionNavigateMode(options) });",
-    destinationKind: "extra",
-    history: "push",
-    host: "sessions-extra",
-    inScope: true,
-    notes: "First send on a new draft passes replace so Back cannot recreate it.",
-  },
-  {
-    id: "sessions-open-channel",
-    file: SESSIONS_EXTRA_FILE,
-    needle:
-      "onopenchannel={(channelId) => dispatchEmbeddedNavigation({ kind: 'channel', channelId })}",
-    destinationKind: "channel",
-    history: "push",
-    host: "sessions-extra",
-    inScope: true,
-  },
-  {
-    id: "sessions-parse-param",
-    file: SESSIONS_EXTRA_FILE,
-    needle: "const route = $derived(parseSessionsParam(param));",
-    destinationKind: "none",
-    history: "none",
-    host: "sessions-extra",
-    inScope: true,
-    nonNavigationReason: "hydration",
-  },
-
   // --- out of scope ---
-  {
-    id: "legacy-desktop-route-navigate",
-    file: LEGACY_DESKTOP_APP_FILE,
-    needle: "function navigate(nextRoute: DesktopRoute)",
-    destinationKind: "legacy",
-    history: "none",
-    host: "legacy-desktop-alt",
-    inScope: false,
-    notes:
-      "OUT OF SCOPE. Retired classic shell. Active desktop-alt mounts HqWorkWorkShell (see desktop-alt/main.ts), which hosts WorkShell → shared DesktopApp.",
-  },
   {
     id: "active-host-desktop-alt-main",
     file: DESKTOP_ALT_MAIN_FILE,
@@ -1443,8 +1329,6 @@ export function inScopeUserHandler(row: NavigationHandlerRow): boolean {
     n.includes("<DesktopApp") ||
     n.includes("<WorkShell") ||
     n.includes("<ConfirmDialog") ||
-    n.includes("<MigrateSessionDialog") ||
-    n.includes("component: SessionsExtraPage") ||
     n.includes("let selectedRow") ||
     n.includes("isStrictlyRicher") ||
     n.includes("Never touches") ||

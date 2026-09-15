@@ -49,12 +49,7 @@
     type Story,
     type TaskColumn,
   } from "./projects-model.js";
-  import { relativeActivity } from "../sessions/sessions.js";
-  import {
-    configureSessionsApi,
-    sessionsStore,
-    startSessionsStore,
-  } from "../sessions/sessions-store.svelte.js";
+  import { relativeActivity } from "../common/relative-activity.js";
   import type { DirEntry } from "../files/file-tree.js";
   import StoryKanban from "./StoryKanban.svelte";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
@@ -194,14 +189,12 @@
   let now = $state(Date.now());
   onMount(() => {
     configureProjectsApiIfNeeded();
-    configureSessionsApi(adapter.sessions);
-    startSessionsStore();
     const tick = setInterval(() => {
       now = Date.now();
     }, 15_000);
     return () => clearInterval(tick);
   });
-  const sessions = $derived(sessionsStore.sessions as PortfolioSessionRef[]);
+  const sessions: PortfolioSessionRef[] = [];
 
   // Task roll-up uses the four operational columns.
   const classifiedTasks = $derived(classifyTasks(stories, sessions));

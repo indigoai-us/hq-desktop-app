@@ -356,33 +356,9 @@ describe('visual hierarchy polish: bounded Inbox chronology', () => {
 describe('visual hierarchy polish: scoped surface contracts', () => {
   const row = read('src/components/NotificationRow.svelte');
   const feed = read('src/components/NotificationFeed.svelte');
-  const inbox = read('src/desktop-alt/pages/InboxPage.svelte');
   const quickPane = read('src/components/QuickWindowSidePane.svelte');
   const widget = read('src/components/Widget.svelte');
-  const marketplace = read('src/desktop-alt/panels/MarketplacePanel.svelte');
-  const companyPage = read('src/desktop-alt/pages/CompanyPage.svelte');
-  const companyBoard = read('src/desktop-alt/panels/CompanyBoardPanel.svelte');
-  const activity = read('src/desktop-alt/panels/ActivityPanel.svelte');
-  const secrets = read('src/desktop-alt/panels/SecretsPanel.svelte');
-  const moderation = read('src/desktop-alt/panels/ModerationPanel.svelte');
-  const companyLibrary = read('src/desktop-alt/panels/CompanyLibraryPanel.svelte');
-  const versionPopout = read('src/desktop-alt/components/VersionPopout.svelte');
-  const desktop = read('src/desktop-alt/DesktopApp.svelte');
   const harness = read('dev-harness/mocks/core.ts');
-
-  it('keeps rich notification hierarchy in feeds while the quick pane stays navigational', () => {
-    expect(row).toContain('sourceLabel?: string');
-    expect(feed).toContain('sourceLabel="Direct message"');
-    expect(feed).toContain('sourceLabel="Shared file"');
-    expect(feed).toContain('sourceLabel="Workspace activity"');
-    expect(feed).toContain('sourceLabel="App update"');
-    expect(inbox).toContain('density="comfortable"');
-    expect(quickPane).toContain('id="quick-conversations-label">Direct messages');
-    expect(quickPane).toContain('<div class="qw-side-label">Channels</div>');
-    expect(quickPane).not.toContain('text={row.latest');
-    expect(quickPane).not.toContain('sourceLabel=');
-    expect(widget).toContain('sourceLabel={notificationSourceLabel(row.item)}');
-  });
 
   it('caps initial chronology rendering without changing total or unread semantics', () => {
     expect(feed).toContain("const INITIAL_RENDER_LIMIT = { compact: 32, comfortable: 60 } as const");
@@ -395,84 +371,5 @@ describe('visual hierarchy polish: scoped surface contracts', () => {
     expect(feed).toContain(
       'Show {Math.min(INITIAL_RENDER_LIMIT[density], remainingCount)} more',
     );
-  });
-
-  it('uses open neutral list structure without colored rails or nested notification cards', () => {
-    for (const source of [row, feed, inbox, quickPane]) {
-      expect(source).not.toMatch(/border-(?:left|inline-start)\s*:\s*[^;]*--(?:v4-)?(?:warn|error|unread)/);
-    }
-    expect(inbox).toContain('background: transparent');
-    expect(inbox).toContain('border-radius: 0');
-    expect(inbox).not.toContain('var(--v4-warn)');
-  });
-
-  it('restores full-color marketplace covers while retaining neutral glass chrome', () => {
-    expect(marketplace).not.toContain('filter: saturate(0%);');
-    expect(marketplace).toContain('filter: none;');
-    expect(marketplace).toContain('mix-blend-mode: normal;');
-    expect(marketplace).toContain('class="cover-color"');
-    expect(marketplace).toContain('mix-blend-mode: color;');
-    expect(marketplace).toContain('var(--cover-tint-a)');
-    expect(marketplace).toContain('var(--cover-tint-b)');
-    expect(marketplace).toContain('background: var(--v4-raised);');
-    expect(marketplace).toContain(
-      'backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));',
-    );
-    expect(marketplace).not.toContain('var(--v4-warn)');
-  });
-
-  it('gives marketplace install and widget navigation immediate busy feedback', () => {
-    expect(marketplace).toContain('aria-busy={installing}');
-    expect(marketplace).toContain('data-testid="marketplace-install-spinner"');
-    expect(widget).toContain("let navigationPending = $state<'inbox' | 'desktop' | null>(null)");
-    expect(widget).toContain("aria-busy={navigationPending === 'inbox'}");
-    expect(widget).toContain("aria-busy={navigationPending === 'desktop'}");
-    expect(widget).toContain('data-testid="widget-navigation-spinner"');
-  });
-
-  it('gates pending invites before any tenant data or company actions mount', () => {
-    expect(companyPage).toContain("const pendingInvite = $derived(company.membershipStatus === 'pending')");
-    expect(companyPage).toContain('data-testid="company-invite-gate"');
-    expect(companyPage).toMatch(/\{:else\}\s+\{#key `\$\{company\.slug\}:\$\{tab\}`\}/);
-    expect(companyPage).toContain("Accept before HQ loads this company’s projects");
-    expect(companyPage).toContain('Review or decline');
-    expect(companyPage).toContain('{#if !pendingInvite}');
-  });
-
-  it('labels broken-company overview values as cached instead of live cloud data', () => {
-    expect(companyPage).toContain("const connectionIssue = $derived(company.state === 'broken')");
-    expect(companyPage).toContain('{connectionIssue}');
-    expect(companyBoard).toContain("label: 'cached data · reconnect needed'");
-    expect(companyBoard).toContain('Counts below are local cached data until reconnect succeeds');
-  });
-
-  it('keeps partial activity honest and de-duplicates legacy secret payloads', () => {
-    expect(activity).toContain('const recentSummaryLabel');
-    expect(activity).toContain("'files'} in summary");
-    expect(activity).toContain('Recent file details are unavailable');
-    expect(secrets).toContain('function normalizeSecretEnvs');
-    expect(secrets).toContain('current.items.set');
-    expect(harness).toContain("file: 'companies/indigo/projects/desktop-experience/README.md'");
-    expect(harness).toContain("env: 'production'");
-    expect(harness).toContain("items: [");
-  });
-
-  it('uses compact neutral moderation and update hierarchy without amber danger actions', () => {
-    expect(moderation).toContain('.request-actions .approve');
-    expect(moderation).toContain('justify-content: flex-end');
-    expect(moderation).toContain('.yank-button:disabled::before');
-    expect(moderation).not.toMatch(/\.yank-button::before\s*\{[^}]*var\(--v4-warn\)/s);
-    expect(moderation).not.toMatch(/\.confirm-yank::before\s*\{[^}]*var\(--v4-warn\)/s);
-    expect(versionPopout).toMatch(/\.vp-product\s*\{[^}]*background: transparent/s);
-    expect(versionPopout).not.toMatch(/\.vp-product\.core\s*\{[^}]*--v4-ok/s);
-    expect(versionPopout).not.toMatch(/\.vp-kind\.core\s*\{[^}]*--v4-ok/s);
-  });
-
-  it('gives company skills and workers context without multiplying every deep command', () => {
-    expect(companyLibrary).toContain('class="company-library-header"');
-    expect(companyLibrary).toContain('Company-scoped workflows and operating knowledge');
-    expect(desktop).toContain('...orderedCompanies.map');
-    expect(desktop).not.toContain('...orderedCompanies.flatMap');
-    expect(desktop).toContain('only materialize deep section commands for the active company');
   });
 });

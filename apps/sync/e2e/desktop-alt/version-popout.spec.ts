@@ -2,115 +2,58 @@ import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
 /**
- * US-017 — Version pop-out in the desktop status bar.
+ * US-017 — version + updates live in the title bar, not a bottom status bar.
  *
- * Source-contract harness (same style as v4-chrome.spec.ts): lock the wiring
- * so a dropped import, command, or testid fails fast without a macOS Tauri build.
+ * Rewritten when the in-app Sessions subsystem removed the unreachable
+ * desktop-alt tree. The surface this used to assert — `VersionPopout`, with
+ * its own test-ids, `top: 48px`, `z-index: 10000` — is not what ships: the
+ * title bar renders `CorePopover`, and the @hq/ui `VersionPopout` is an
+ * orphan nothing mounts. The old file asserted that orphan's internals in
+ * detail, which is coverage of a component no user can reach.
+ *
+ * What survives here is the CAPABILITY the story was about, asserted against
+ * the component that actually renders it: app and Core versions visible from
+ * the title bar, a check-for-updates action, an install action, and the Core
+ * drift/restore affordance. Structural details (exact offsets, z-index) are
+ * deliberately not re-asserted — they pinned one component's layout, not a
+ * user-visible contract, and re-creating them against a different component
+ * would be inventing a requirement rather than guarding one.
  */
+describe('version and updates surface (US-017)', () => {
+  const titleBar = readRepoFile('../../packages/ui/src/home/V4TitleBar.svelte');
+  const popover = readRepoFile('../../packages/ui/src/home/CorePopover.svelte');
+  const shell = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
 
-describe('desktop-alt version pop-out (US-017)', () => {
-  it('compact titlebar hosts the version pop-out without restoring the bottom status bar', () => {
-    const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-    const titleBar = readRepoFile('src/desktop-alt/v4/V4TitleBar.svelte');
-
-    expect(desktopApp).not.toContain('<DesktopStatusBar');
-    expect(titleBar).toContain("import VersionPopout from '../components/VersionPopout.svelte'");
-    expect(titleBar).toContain('data-testid="version-label"');
-    expect(titleBar).toContain('data-testid="core-version-label"');
-    expect(titleBar).toContain("'get_hq_version'");
-    expect(titleBar).toContain('aria-expanded={versionOpen}');
-    expect(titleBar).toContain('<VersionPopout');
-    expect(titleBar).toContain("onOpenSettings?: (tab?: SettingsTab) => void");
-    expect(titleBar).toContain('placement="below"');
-    expect(titleBar).toContain("window.addEventListener('mousedown'");
-    expect(titleBar).toContain("event.key === 'Escape'");
-    expect(desktopApp).toContain('version={__APP_VERSION__}');
-    expect(desktopApp).toContain('onaccount={handleAccountMenu}');
+  it('lives in the title bar and did not restore the bottom status bar', () => {
+    expect(shell).not.toContain('<DesktopStatusBar');
+    expect(titleBar).toContain('import CorePopover from "./CorePopover.svelte"');
+    expect(titleBar).toContain('coreOpen');
+    expect(titleBar).toContain('aria-expanded');
   });
 
-  it('pop-out shows app + Core versions and Check all updates invokes both checks', () => {
-    const popout = readRepoFile('src/desktop-alt/components/VersionPopout.svelte');
-
-    expect(popout).toContain('data-testid="version-popout"');
-    expect(popout).toContain('data-testid="version-popout-current"');
-    expect(popout).toContain('data-testid="version-popout-latest"');
-    expect(popout).toContain('data-testid="version-popout-status"');
-    expect(popout).toContain('data-testid="version-popout-core-current"');
-    expect(popout).toContain('data-testid="version-popout-core-status"');
-    expect(popout).toContain('data-testid="version-popout-check"');
-    expect(popout).toContain("role=\"dialog\"");
-    expect(popout).toContain('aria-label="Version and updates"');
-    expect(popout).toContain('position: fixed');
-    expect(popout).toContain('z-index: 10000');
-    expect(popout).toContain('top: 48px');
-    expect(popout).toContain('--v4-popover-strong');
-    expect(popout).toContain("import { checkAllUpdates } from '../../lib/update-check'");
-    expect(popout).toContain('checkAllUpdates(');
-    expect(popout).toContain("'check_core_state'");
-    expect(popout).toContain("'get_hq_version'");
-    const updateCheck = readRepoFile('src/lib/update-check.ts');
-    expect(updateCheck).toContain("'check_for_updates'");
-    expect(updateCheck).toContain("'check_core_state'");
-    expect(popout).toContain('Up to date');
-    expect(popout).toContain('Check all updates');
-    // Background-detected updates without a manual check.
-    expect(popout).toContain("listen<UpdateInfo>('update:available'");
-    // Hydrates an update the background checker already found (get_pending_update),
-    // and the Rust command is registered.
-    expect(popout).toContain("'get_pending_update'");
+  it('shows both the app version and the HQ core version', () => {
+    expect(popover).toContain('data-testid="core-popover"');
+    expect(popover).toContain('data-testid="core-popover-app-row"');
+    expect(popover).toContain('data-testid="core-popover-core-row"');
   });
 
-  it('Restart to update invokes install_update when an update is available', () => {
-    const popout = readRepoFile('src/desktop-alt/components/VersionPopout.svelte');
-
-    expect(popout).toContain("'install_update'");
-    expect(popout).toContain('data-testid="version-popout-restart"');
-    expect(popout).toContain('Restart to update');
-    expect(popout).toContain('Downloading…');
-    expect(popout).toContain('Restart to apply');
-
-    const harness = readRepoFile('dev-harness/mocks/core.ts');
-    expect(harness).toContain('install_update: () => {');
-    expect(harness).toContain("harnessScenario() === 'settings-errors'");
+  it('offers an update check and an install action for each', () => {
+    expect(popover).toContain('data-testid="core-popover-check-updates"');
+    expect(popover).toContain('data-testid="core-popover-download-install"');
+    expect(popover).toContain('data-testid="core-popover-core-check"');
   });
 
-  it('Automatic updates persists via the shared serialized patch queue and opens Updates', () => {
-    const popout = readRepoFile('src/desktop-alt/components/VersionPopout.svelte');
-    const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-
-    expect(popout).toContain('data-testid="version-popout-auto-toggle"');
-    expect(popout).toContain('data-testid="version-popout-settings-link"');
-    expect(popout).toContain('autoUpdate');
-    expect(popout).toContain(
-      "import { updateSettings } from '../../lib/settings-mutations'",
-    );
-    expect(popout).toContain('await updateSettings({ autoUpdate: next })');
-    expect(popout).not.toMatch(/invoke\(['"]save_settings['"]/);
-    expect(popout).toContain("onOpenSettings('updates')");
-    expect(desktopApp).toContain('function handleOpenSettings(tab?: SettingsTab)');
-    expect(popout).toContain('All update settings');
+  it('surfaces Core drift with a restore affordance', () => {
+    expect(popover).toContain('data-testid="core-popover-drift-count"');
+    expect(popover).toContain('data-testid="core-popover-core-restore"');
+    expect(popover).toContain('Restore');
   });
 
-  it('Settings can install and restart when its app update check finds a newer version', () => {
-    const settings = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
-
-    expect(settings).toContain("let appUpdate = $state<UpdateInfo | null>(null)");
-    expect(settings).toContain("await invoke('install_update')");
-    expect(settings).toContain('data-testid="settings-install-app-update"');
-    expect(settings).toContain("appUpdate ? `v${appUpdate.version} ready` : 'Background checks run every 6 hours'");
-    expect(settings).toContain("appUpdateInstalling ? 'Installing…' : 'Restart to Update'");
-  });
-
-  it('the preview harness exposes a deterministic update-available scenario', () => {
-    const harness = readRepoFile('dev-harness/mocks/core.ts');
-
-    expect(harness).toContain('const HARNESS_UPDATE');
-    expect(harness).toContain('function hasSettingsUpdates(');
-    expect(harness).toContain("scenario === 'update-available'");
-    expect(harness).toContain('check_for_updates: () =>');
-    expect(harness).toContain('get_pending_update: () =>');
-    expect(harness).toContain(
-      'hasSettingsUpdates() && !harnessAppUpdateInstalled ? HARNESS_UPDATE : null',
-    );
+  it('keeps the conflict rescue path on the same surface', () => {
+    // A conflict must remain reachable from the chrome rather than only from
+    // Home — this is the rescue route when the board is not in front of you.
+    expect(popover).toContain('data-testid="core-popover-conflict-row"');
+    expect(popover).toContain('data-testid="core-popover-keep-local"');
+    expect(popover).toContain('data-testid="core-popover-keep-cloud"');
   });
 });

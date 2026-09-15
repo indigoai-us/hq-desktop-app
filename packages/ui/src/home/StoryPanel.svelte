@@ -22,7 +22,7 @@
     type Project,
     type Story,
   } from "../projects/projects-model.js";
-  import { relativeActivity } from "../sessions/sessions.js";
+  import { relativeActivity } from "../common/relative-activity.js";
   import { createStoryMutationGuard } from "./story-mutation-guard.js";
   import LabelChip from "../common/LabelChip.svelte";
   import OpenFileInClaudeCode from "../files/OpenFileInClaudeCode.svelte";

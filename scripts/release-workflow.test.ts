@@ -458,12 +458,22 @@ describe("release workflow channel contract", () => {
   });
 
   it("keeps the working tree on the v1 desktop shell", async () => {
-    const shellDir = resolve(rootDir, "apps/sync/src/desktop-alt");
+    // The V2 chat shell must stay absent from the desktop-alt tree.
+    await expect(
+      stat(resolve(rootDir, "apps/sync/src/desktop-alt/chat")),
+    ).rejects.toThrow();
 
-    await expect(stat(resolve(shellDir, "chat"))).rejects.toThrow();
-
-    for (const marker of ["v4/V4Sidebar.svelte", "v4/V4SecondarySidebar.svelte"]) {
-      await expect(stat(resolve(shellDir, marker))).resolves.toBeDefined();
+    // Positive markers moved with the shell. The desktop window mounts
+    // HqWorkWorkShell, which renders the @hq/ui shell; desktop-alt's own
+    // DesktopApp.svelte tree became unreachable and was removed with the
+    // in-app Sessions subsystem. Pointing at the surfaces a user actually
+    // sees is what makes this assertion mean anything.
+    for (const marker of [
+      "apps/sync/src/desktop-alt/HqWorkWorkShell.svelte",
+      "packages/ui/src/shell/DesktopApp.svelte",
+      "packages/ui/src/chat/ChatSidebar.svelte",
+    ]) {
+      await expect(stat(resolve(rootDir, marker))).resolves.toBeDefined();
     }
   });
 
@@ -488,16 +498,19 @@ describe("release workflow channel contract", () => {
     // "Finish setting up HQ" card with it; the guard's two sidebar markers
     // waved 36 releases through without it. Pinning these entries stops the
     // manifest being quietly emptied back to a shell-only check.
+    //
+    // Repointed to the @hq/ui shell: the desktop-alt copies these used to
+    // name were part of the unreachable DesktopApp.svelte tree removed with
+    // the in-app Sessions subsystem. Pinning a path that no longer reaches a
+    // user is worse than not pinning it — it reads as coverage and is not.
     const surfaces = parseRequiredSurfaces(requiredSurfaces);
 
     expect(surfaces).toContain(
-      "apps/sync/src/desktop-alt/components/SetupIncompleteCard.svelte",
+      "packages/ui/src/settings/SetupIncompleteCard.svelte",
     );
-    expect(surfaces).toContain("apps/sync/src/desktop-alt/lib/setup-launch.ts");
-    expect(surfaces).toContain("apps/sync/src/desktop-alt/v4/V4Sidebar.svelte");
-    expect(surfaces).toContain(
-      "apps/sync/src/desktop-alt/v4/V4SecondarySidebar.svelte",
-    );
+    expect(surfaces).toContain("packages/ui/src/settings/setup-launch.ts");
+    expect(surfaces).toContain("packages/ui/src/chat/ChatSidebar.svelte");
+    expect(surfaces).toContain("packages/ui/src/home/V4TitleBar.svelte");
   });
 
   it("allows an equal stable rerun but rejects a rollback below public latest", () => {

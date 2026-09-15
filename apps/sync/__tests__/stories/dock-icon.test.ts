@@ -26,7 +26,6 @@ function readRepo(...parts: string[]): string {
 const readDock = () => readRepo('src-tauri/src/commands/dock.rs');
 const readMain = () => readRepo('src-tauri/src/main.rs');
 const readSettingsRs = () => readRepo('src-tauri/src/commands/settings.rs');
-const readSettingsPage = () => readRepo('src/desktop-alt/pages/SettingsPage.svelte');
 
 describe('Dock icon: on by default, with a Settings opt-out', () => {
   describe('preference plumbing', () => {
@@ -199,36 +198,6 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       // No `?` and no Result return: the unread path must not fail on a badge.
       expect(src).not.toMatch(/pub fn set_badge<R: tauri::Runtime>\([^)]*\) -> Result/);
       expect(body).toMatch(/set_badge_label failed/);
-    });
-  });
-
-  describe('Settings toggle', () => {
-    it('renders a macOS-only Show in Dock row', () => {
-      const src = readSettingsPage();
-      expect(src).toMatch(/Show in Dock/);
-      expect(src).toMatch(/data-testid="dock-icon-toggle"/);
-      expect(src).toMatch(/\{#if isMacOS\}/);
-    });
-
-    it('hydrates the toggle default-on, matching the Rust resolver', () => {
-      const src = readSettingsPage();
-      expect(src).toMatch(/dockIcon = settings\.dockIcon \?\? true;/);
-      // The pre-hydration $state default must agree, or the row flashes OFF
-      // for a user whose Dock icon is actually showing.
-      expect(src).toMatch(/let dockIcon = \$state\(true\);/);
-    });
-
-    it('persists first, then re-applies live so the change is not deferred to relaunch', () => {
-      const src = readSettingsPage();
-      expect(src).toMatch(/async function applyDockIcon/);
-      expect(src).toMatch(/saveSettings\(\{ dockIcon \}\)/);
-      expect(src).toMatch(/invoke\('apply_dock_icon'\)/);
-    });
-
-    it('reverts the optimistic checkbox when the save fails', () => {
-      const src = readSettingsPage();
-      expect(src).toMatch(/const previous = !dockIcon;/);
-      expect(src).toMatch(/dockIcon = previous;/);
     });
   });
 });

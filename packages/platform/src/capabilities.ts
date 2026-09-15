@@ -91,7 +91,10 @@ export const TAURI_CAPABILITIES: Readonly<Capabilities> = Object.freeze({
   canLaunchApps: true,
   canSelfUpdate: true,
   canManagePackages: true,
-  canSpawnSessions: true,
+  // The in-app Sessions runtime was removed; the desktop no longer spawns
+  // agent sessions. Installing and signing in to the agent CLIs (Settings →
+  // AI tools, Bots) is unaffected — that is `canLaunchApps` / SessionsApi.
+  canSpawnSessions: false,
   canInstallLocally: true,
   osNotifications: true,
   trayAndWindow: true,

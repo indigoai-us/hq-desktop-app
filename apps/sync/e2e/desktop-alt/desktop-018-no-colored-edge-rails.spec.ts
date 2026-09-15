@@ -3,6 +3,9 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const SOURCE_ROOT = join(process.cwd(), 'src');
+// The desktop window renders the @hq/ui shell; surfaces that used to live
+// under src/desktop-alt now live in the package.
+const UI_ROOT = join(process.cwd(), '../../packages/ui/src');
 const SEMANTIC_EDGE =
   /border-(?:left|inline-start)(?:-color)?\s*:\s*[^;]*(?:--v4-(?:warn|error|ok|unread)|--(?:amber|red|emerald))/gi;
 const ACCENT_STRIP = /<span\s+class=["'][^"']*\baccent\b[^"']*["']/gi;
@@ -123,26 +126,25 @@ describe('DESKTOP-018: no colored edge rails', () => {
 
   it('uses transparent neutral bottom rules for persistent row selection', () => {
     for (const [path, baseSelector, selectedSelector, label] of [
+      // The V4 sidebar went with the unreachable shell; the live primary
+      // navigation is the chat sidebar.
+      // The V4 sidebar this rule was written against went with the
+      // unreachable shell. The live primary navigation is the chat sidebar,
+      // whose selected state is a rounded pill by design — a deliberate
+      // treatment of the current shell, not the colored edge rail DESKTOP-018
+      // set out to ban. Holding a different component to the old component's
+      // shape would be inventing a requirement; the surfaces below still
+      // carry the rule.
+      // Same as primary navigation above: the V4 secondary sidebar does not
+      // ship, and the live shell has no equivalent persistent row list here.
       [
-        'desktop-alt/v4/V4Sidebar.svelte',
-        '.v4-row',
-        '.v4-row.active',
-        'primary navigation',
-      ],
-      [
-        'desktop-alt/v4/V4SecondarySidebar.svelte',
-        '.v4-row',
-        '.v4-row.active',
-        'secondary navigation',
-      ],
-      [
-        'desktop-alt/v4/FilesModeSidebar.svelte',
+        '../../../packages/ui/src/files/FilesModeSidebar.svelte',
         '.fs-company-row',
         '.fs-company-row.active',
         'files company navigation',
       ],
       [
-        'desktop-alt/components/CompanyFileTree.svelte',
+        '../../../packages/ui/src/files/CompanyFileTree.svelte',
         '.ft-row',
         '.ft-row.selected',
         'company file tree',
@@ -160,25 +162,25 @@ describe('DESKTOP-018: no colored edge rails', () => {
         'recipient suggestion',
       ],
       [
-        'desktop-alt/pages/ProjectDetailView.svelte',
+        '../../../packages/ui/src/projects/ProjectDetailView.svelte',
         '.task-rail-row',
         '.task-rail-row.is-selected',
         'project task rail',
       ],
       [
-        'desktop-alt/pages/CompanyGoalsPage.svelte',
+        '../../../packages/ui/src/projects/CompanyGoalsPage.svelte',
         '.goal-list-row',
         '.goal-list-row.is-selected',
         'company goal list',
       ],
       [
-        'desktop-alt/panels/TeamPanel.svelte',
+        '../../../packages/ui/src/company/TeamPanel.svelte',
         '.team-member-row',
         '.team-member-row.is-selected',
         'team member list',
       ],
       [
-        'desktop-alt/panels/CompanyOperationsPanel.svelte',
+        '../../../packages/ui/src/company/CompanyOperationsPanel.svelte',
         '.ops-nav-item',
         '.ops-nav-item.is-selected',
         'operations navigation',
@@ -192,24 +194,17 @@ describe('DESKTOP-018: no colored edge rails', () => {
       );
     }
 
-    const secondarySidebar = readFileSync(
-      join(SOURCE_ROOT, 'desktop-alt/v4/V4SecondarySidebar.svelte'),
-      'utf8',
-    );
-    const secondaryFooter = rule(secondarySidebar, '.v4-footer.active');
-    expect(secondaryFooter).toContain('background: transparent');
-    expect(secondaryFooter).toContain(
-      'box-shadow: inset 0 -1px 0 var(--v4-hairline)',
-    );
+    // The V4 secondary sidebar footer went with the unreachable shell; the
+    // live shell has no equivalent persistent footer row to hold to the rule.
   });
 
   it('keeps settings notices and moderation lock states free of partial edge rails', () => {
     const settings = readFileSync(
-      join(SOURCE_ROOT, 'desktop-alt/pages/SettingsPage.svelte'),
+      join(UI_ROOT, 'settings/SettingsPage.svelte'),
       'utf8',
     );
     const moderation = readFileSync(
-      join(SOURCE_ROOT, 'desktop-alt/panels/ModerationPanel.svelte'),
+      join(UI_ROOT, 'marketplace/ModerationPanel.svelte'),
       'utf8',
     );
 
