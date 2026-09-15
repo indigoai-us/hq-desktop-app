@@ -5,6 +5,7 @@
   import { initialStepForLifecycle, CONSENT_STEP_INDEX, type WizardMode } from '../lib/onboarding-wizard';
   import type { OnboardingFlow } from '../lib/onboarding-step-telemetry';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
+  import CinematicIntro from './onboarding/CinematicIntro.svelte';
 
   interface Props {
     state: string;
@@ -37,21 +38,56 @@
   // shadow — no hard rectangular outline.
   const ONBOARDING_SIZE = new LogicalSize(780, 620);
   const POPOVER_SIZE = new LogicalSize(288, 360);
+  // The intro takes the whole screen. `responsiveOnboardingSize` clamps to the
+  // monitor's work area, so an absurd request resolves to "as big as this
+  // display allows" without this file having to know the display size.
+  const INTRO_SIZE = new LogicalSize(100_000, 100_000);
 
-  async function responsiveOnboardingSize(): Promise<LogicalSize> {
+  /**
+   * The film plays once per install. A person who quits partway through setup
+   * and reopens HQ is resuming a task, not arriving for the first time —
+   * replaying four beats of brand copy at them would be a tax, not a welcome.
+   */
+  const INTRO_SEEN_KEY = 'hq.onboarding.introSeen';
+
+  function introAlreadySeen(): boolean {
     try {
-      const monitor = await currentMonitor();
-      if (!monitor) return ONBOARDING_SIZE;
-      const workArea = monitor.workArea.size.toLogical(monitor.scaleFactor);
-      return new LogicalSize(
-        Math.max(360, Math.min(ONBOARDING_SIZE.width, workArea.width - 32)),
-        Math.max(420, Math.min(ONBOARDING_SIZE.height, workArea.height - 32)),
-      );
-    } catch {
-      return ONBOARDING_SIZE;
+      return window.localStorage.getItem(INTRO_SEEN_KEY) === '1';
+    } catch (err) {
+      // Private mode / disabled storage: treat as seen so nobody can be trapped
+      // re-watching the intro on every launch.
+      console.warn('onboarding: intro-seen flag unreadable', err);
+      return true;
     }
   }
 
+  function markIntroSeen(): void {
+    try {
+      window.localStorage.setItem(INTRO_SEEN_KEY, '1');
+    } catch (err) {
+      console.warn('onboarding: intro-seen flag not persisted', err);
+    }
+  }
+
+  async function responsiveOnboardingSize(
+    target: LogicalSize = ONBOARDING_SIZE,
+  ): Promise<LogicalSize> {
+    try {
+      const monitor = await currentMonitor();
+      if (!monitor) return target;
+      const workArea = monitor.workArea.size.toLogical(monitor.scaleFactor);
+      return new LogicalSize(
+        Math.max(360, Math.min(target.width, workArea.width - 32)),
+        Math.max(420, Math.min(target.height, workArea.height - 32)),
+      );
+    } catch {
+      return target;
+    }
+  }
+
+  // Whether the cinematic intro is currently on screen. Only a genuine first
+  // install opens on it; `reprompt` and resumed installs go straight to the form.
+  let showIntro = $state(false);
   let initialStep = $state(0);
   let onboardingFlow = $state<OnboardingFlow>('first_install');
   let activeLifecycleState = $state<string | null>(null);
@@ -65,14 +101,26 @@
     await invoke('set_main_window_vibrancy', { enabled }).catch(() => {});
   }
 
-  async function sizeForOnboarding() {
-    await setWindowVibrancy(false);
+  /**
+   * @param frosted - whether the native window material stays ON. The wizard
+   *   card wants it off (the frosted popover panel would show through the
+   *   transparent webview as a rectangle around the card). The intro wants it
+   *   ON: it is a full-screen sheet, and the material is what actually blurs
+   *   the person's real desktop behind it. CSS `backdrop-filter` cannot do
+   *   this — a transparent webview never receives the desktop behind it, so
+   *   the native `NSVisualEffectView` is the only thing that reads the desktop.
+   */
+  async function sizeForOnboarding(
+    target: LogicalSize = ONBOARDING_SIZE,
+    frosted = false,
+  ) {
+    await setWindowVibrancy(frosted);
     try {
       const win = getCurrentWindow();
       // Drop the native window shadow so only the card's own CSS shadow shows —
       // otherwise the transparent window's shadow traces a rectangle on the desktop.
       await win.setShadow(false).catch(() => {});
-      await win.setSize(await responsiveOnboardingSize());
+      await win.setSize(await responsiveOnboardingSize(target));
       await win.center();
     } catch {
       // Non-Tauri / test environment.
@@ -91,8 +139,19 @@
   }
 
   onMount(() => {
-    void sizeForOnboarding();
+    showIntro =
+      mode === 'onboarding' &&
+      lifecycleStateProp === 'NeedsInstall' &&
+      !introAlreadySeen();
+    void sizeForOnboarding(showIntro ? INTRO_SIZE : ONBOARDING_SIZE, showIntro);
   });
+
+  async function handleIntroFinish() {
+    markIntroSeen();
+    showIntro = false;
+    // Shrink back to the wizard card the film was covering.
+    await sizeForOnboarding(ONBOARDING_SIZE);
+  }
 
   onDestroy(() => {
     void restorePopoverSize();
@@ -132,10 +191,14 @@
   }
 </script>
 
-<OnboardingWizard
-  {initialStep}
-  {onboardingFlow}
-  {mode}
-  {repromptPersonUid}
-  onfinish={handleFinish}
-/>
+{#if showIntro}
+  <CinematicIntro onfinish={handleIntroFinish} />
+{:else}
+  <OnboardingWizard
+    {initialStep}
+    {onboardingFlow}
+    {mode}
+    {repromptPersonUid}
+    onfinish={handleFinish}
+  />
+{/if}
