@@ -1232,7 +1232,7 @@ fn authorized_claude_file_url(target: &ResolvedFileTarget) -> Result<String, Str
     ))
 }
 
-pub(crate) fn reveal_file_in_manager(path: &Path) -> Result<(), String> {
+fn reveal_file_in_manager(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let status = Command::new("open")
         .arg("-R")

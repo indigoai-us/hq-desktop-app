@@ -992,7 +992,6 @@
         fetch={capabilities.fetch}
         onUnauthorized={capabilities.onUnauthorized}
         loadFilePreview={capabilities.loadFilePreview}
-        callsHost={capabilities.calls}
         hostIdentity={capabilities.hostIdentity}
         hostTenantAccountId={authAccountId}
         hostTenantGeneration={authGeneration}

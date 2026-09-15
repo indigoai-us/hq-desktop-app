@@ -5,7 +5,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_IGNORES: &[&str] = &[
-    // Solo native transcript notes are local-only.
+    // Keep legacy native transcript notes local-only after Meet removal.
     "/personal/sources/meetings/native-*.md",
     "/personal/sources/meetings/native-*.raw.json",
     // Participant-authorized native meeting projections are server-owned.
@@ -244,6 +244,9 @@ mod tests {
         let tmp=TempDir::new().unwrap();let root=tmp.path();let filter=IgnoreFilter::for_hq_root(root).unwrap();
         assert!(!filter.should_sync(&root.join("companies/indigo/sources/meetings/native-abc.md")));
         assert!(!filter.should_sync(&root.join("companies/indigo/sources/meetings/native-abc.raw.json")));
+        assert!(!filter.should_sync(&root.join("personal/sources/meetings/native-abc.md")));
+        assert!(!filter.should_sync(&root.join("personal/sources/meetings/native-abc.raw.json")));
+        assert!(filter.should_sync(&root.join("personal/sources/meetings/manual-notes.md")));
         assert!(filter.should_sync(&root.join("companies/indigo/sources/meetings/manual-notes.md")));
     }
     #[test]

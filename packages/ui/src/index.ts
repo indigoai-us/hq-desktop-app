@@ -203,42 +203,6 @@ export * from "./inbox/live-notifications.js";
 export * as common from "./common/index.js";
 export * as settingsArea from "./settings/index.js";
 export * as meetings from "./meetings/index.js";
-
-// Native calling — shared office-hours surface (US-018).
-export * as meet from "./meet/index.js";
-// US-018: the capability-gated company tab list a host renders.
-export {
-  COMPANY_CHANNEL_TABS,
-  COMPANY_OFFICE_TAB,
-  companyChannelTabsFor,
-  isCompanyChannelTabId,
-  isCompanyTabSurfaceId,
-  type CompanyChannelTabId,
-  type CompanyTabCapabilities,
-} from "./chat/tabs/tab-model.js";
-// US-018: the native seams a host must supply for the Office surface. Exported
-// flat so hosts can type their capability object without a deep import.
-export type { OfficeCallsHost, OfficeCallTarget } from "./meet/office-host.js";
-// The in-call surface (US-020). Re-exported at the root because the call
-// window mounts it directly and consumes its model types.
-export { default as CallView } from "./meet/CallView.svelte";
-export { default as MediaControls } from "./meet/MediaControls.svelte";
-export { default as MediaPermissionCard } from "./meet/MediaPermissionCard.svelte";
-export {
-  CALL_TILE_LIMIT,
-  canModerate,
-  deriveCallView,
-  tileColumns,
-  type CallPeerView,
-  type CallRole,
-  type CallSnapshotView,
-  type CallTile,
-  type CallViewLayout,
-  type MediaDeviceOption,
-  type MediaDevicesPort,
-  type SelfMediaView,
-  type TileConnection,
-} from "./meet/call-view-model.js";
 export * as company from "./company/index.js";
 
 // Atlas v0 (work-mesh-live US-016) — company roster × live projects.

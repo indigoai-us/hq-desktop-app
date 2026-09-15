@@ -9,10 +9,6 @@ pub mod auth;
 pub mod autostart;
 pub mod banner;
 pub mod bots;
-pub mod calls;
-/// US-016 story acceptance tests (test builds only).
-#[cfg(test)]
-mod calls_story_tests;
 pub mod checksums;
 pub mod client_diagnostics;
 pub mod client_health;
@@ -96,9 +92,3 @@ pub mod widget;
 pub mod windows_teardown_probe;
 pub mod window_material;
 pub mod workspaces;
-
-pub mod meet_transcription;
-
-pub mod meet_transcript_outbox;
-
-pub mod meet_transcript_projection;

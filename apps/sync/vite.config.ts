@@ -33,7 +33,7 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ['@hq/ui', '@hq/platform', '@hq/core', '@hq/work', '@hq/meet-core'],
+    exclude: ['@hq/ui', '@hq/platform', '@hq/core', '@hq/work'],
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
@@ -44,7 +44,6 @@ export default defineConfig({
       input: {
         main: resolve(rootDir, "index.html"),
         desktopAlt: resolve(rootDir, "desktop-alt.html"),
-        call: resolve(rootDir, "call.html"),
       },
     },
   },

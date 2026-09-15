@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Company channel header: optional in-app tabs (Office) plus a gear that
+   * Company channel header: in-app tabs plus a gear that
    * opens the company in the HQ console. Team and Settings are not desktop
    * tabs.
    */

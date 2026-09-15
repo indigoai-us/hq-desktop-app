@@ -9,8 +9,14 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PROBE = "    // BASE PROBE\n";
 
 describe("sync cancel base probe injection", () => {
-  it("lands in the menubar app's main when the webdriver main comes first", async () => {
+  it("injects the current app entrypoint", async () => {
     const main = await readFile(resolve(rootDir, "apps/sync/src-tauri/src/main.rs"), "utf8");
+    const out = injectBaseProbeMain(main, PROBE);
+    expect(out).toBe(main.replace("fn main() {", `fn main() {\n${PROBE}`));
+  });
+
+  it("supports historical bases with a webdriver main first", () => {
+    const main = '#[cfg(feature = "meet-native-webdriver")]\nfn main() { driver(); }\n#[cfg(not(feature = "meet-native-webdriver"))]\nfn main() { app(); }';
     const out = injectBaseProbeMain(main, PROBE);
     const probeAt = out.indexOf(PROBE);
     const appMainAt = out.indexOf('#[cfg(not(feature = "meet-native-webdriver"))]\nfn main() {');
