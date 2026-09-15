@@ -53,7 +53,7 @@ describe('settings write boundary', () => {
         'utf8',
       ),
     ).toContain("'save_settings'");
-    expect(readRepoFile('src/lib/settings-mutations.ts')).toContain(
+    expect(readRepoFile('../../packages/ui/src/settings/settings-mutations.ts')).toContain(
       'updateInjectedSettings',
     );
   });

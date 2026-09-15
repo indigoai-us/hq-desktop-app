@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest';
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 const updaterRs = read('../../src-tauri/src/updater.rs');
 const releaseChannelRs = read('../../../../crates/hq-desktop-core/src/release_channel.rs');
-const settingsPage = read('../../src/desktop-alt/pages/SettingsPage.svelte');
 const uiSettingsPage = read('../../../../packages/ui/src/settings/SettingsPage.svelte');
 
 describe('release channel opt-in for every signed-in user', () => {
@@ -31,9 +30,10 @@ describe('release channel opt-in for every signed-in user', () => {
   });
 
   it('Settings copy no longer tells non-Indigo users Stable is enforced', () => {
-    expect(settingsPage).not.toContain('Stable is enforced for everyone else');
+    // The desktop-alt copy of this page went with the unreachable
+    // DesktopApp.svelte tree (Sessions removal); its two assertions were
+    // duplicates of the @hq/ui ones below, so nothing is lost here.
     expect(uiSettingsPage).not.toContain('Stable is enforced for everyone else');
-    expect(settingsPage).toContain('Opt into Beta for pre-release builds');
     expect(uiSettingsPage).toContain('Opt into Beta for pre-release builds');
   });
 });
