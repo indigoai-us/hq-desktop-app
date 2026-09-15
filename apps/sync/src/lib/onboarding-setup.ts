@@ -29,6 +29,9 @@ export const ERROR_CATEGORIES = [
   'exit-nonzero',
   'unsupported-platform',
   'disk',
+  'already-running',
+  'cancelled',
+  'cancellation-cleanup-failed',
   'unknown',
 ] as const;
 

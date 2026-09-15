@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createSetupRunId,
@@ -12,6 +13,19 @@ import {
 } from './onboarding-setup';
 
 describe('setup failure telemetry details', () => {
+  it('keeps the Rust and TypeScript setup error category lists in lockstep', () => {
+    const rustSource = readFileSync(
+      new URL('../../src-tauri/src/commands/install_stages.rs', import.meta.url),
+      'utf8',
+    );
+    const rustCategories = Array.from(
+      rustSource.matchAll(/Self::[A-Za-z]+ => "([a-z-]+)"/g),
+      ([, category]) => category,
+    );
+
+    expect(rustCategories).toEqual(ERROR_CATEGORIES);
+  });
+
   it('keeps both closed vocabularies and normalizes unknown values', () => {
     for (const dependency of FAILED_DEPENDENCIES) {
       expect(normalizeFailedDependency(dependency)).toBe(dependency);
