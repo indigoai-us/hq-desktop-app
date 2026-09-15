@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   createSetupRunId,
   ERROR_CATEGORIES,
@@ -12,6 +13,17 @@ import {
 } from './onboarding-setup';
 
 describe('setup failure telemetry details', () => {
+  it('keeps the frontend error-category vocabulary aligned with Rust', () => {
+    const rustCategories = Array.from(
+      readFileSync(new URL('../../src-tauri/src/commands/install_stages.rs', import.meta.url), 'utf8').matchAll(
+        /Self::[A-Za-z]+ => "([^"]+)",/g,
+      ),
+      ([, category]) => category,
+    );
+
+    expect(ERROR_CATEGORIES).toEqual(rustCategories);
+  });
+
   it('keeps both closed vocabularies and normalizes unknown values', () => {
     for (const dependency of FAILED_DEPENDENCIES) {
       expect(normalizeFailedDependency(dependency)).toBe(dependency);

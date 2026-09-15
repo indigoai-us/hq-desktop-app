@@ -41,6 +41,14 @@ pub(crate) enum OnboardingErrorCategory {
     /// cycle was skipped by design rather than failing. It is deliberately kept
     /// out of the error-level Sentry paging path — see `install_deps`.
     ConcurrentInstall,
+    /// The user deliberately cancelled dependency installation. This is an
+    /// expected control-flow outcome, so it is breadcrumb-only rather than an
+    /// error-level setup failure — see `install_deps`.
+    Cancelled,
+    /// Cancellation's process-tree cleanup could not stop the install process.
+    /// This has its own Sentry event because it can leave a process running
+    /// after the user believes setup has stopped — see `install_deps`.
+    CancelCleanupFailed,
     UnsupportedPlatform,
     Disk,
     Unknown,
@@ -57,6 +65,8 @@ impl OnboardingErrorCategory {
             Self::SpawnFailed => "spawn-failed",
             Self::ExitNonzero => "exit-nonzero",
             Self::ConcurrentInstall => "concurrent-install",
+            Self::Cancelled => "cancelled",
+            Self::CancelCleanupFailed => "cancel-cleanup-failed",
             Self::UnsupportedPlatform => "unsupported-platform",
             Self::Disk => "disk",
             Self::Unknown => "unknown",
