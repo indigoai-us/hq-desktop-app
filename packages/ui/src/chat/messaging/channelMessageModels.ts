@@ -81,6 +81,19 @@ const KINDS_ALLOWING_NULL_COMPANY = new Set<string>([
   "companies_summary",
 ]);
 
+/**
+ * Lifecycle card kinds the channel timeline no longer renders.
+ *
+ * `create_agent` is the server's "Create a bot" name/handle form. Bots are made
+ * through the local bot flow now (bot kinds), so the card in a company channel
+ * is a second, contradictory way in. It still PARSES — an old card sitting in
+ * history must not break the timeline, and the server surfaces that reuse the
+ * lifecycle model keep working — it is simply not shown.
+ */
+export const HIDDEN_TIMELINE_CARD_KINDS = new Set<LifecycleCardKind>([
+  "create_agent",
+]);
+
 const DEFAULT_LIFECYCLE_TITLES: Record<LifecycleCardKind, string> = {
   create_company: "Name your company",
   activate_cloud: "Turning on cloud sync",
@@ -649,7 +662,15 @@ export function systemModelForMessage(message: {
   fromDisplayName?: string | null;
 }): SystemEventModel | null {
   const fromEnvelope = parseSystemEvent(message.systemEvent ?? null);
-  if (fromEnvelope) return fromEnvelope;
+  if (fromEnvelope) {
+    if (
+      fromEnvelope.kind === "lifecycle_card" &&
+      HIDDEN_TIMELINE_CARD_KINDS.has(fromEnvelope.cardKind)
+    ) {
+      return null;
+    }
+    return fromEnvelope;
+  }
   const kind = message.messageKind?.trim().toLowerCase();
   if (kind !== "member_added") return null;
   const title =
@@ -674,6 +695,21 @@ export function shouldHideSystemMessage(message: {
   const kind = message.messageKind?.trim().toLowerCase();
   if (kind !== "system") return false;
   return parseSystemEvent(message.systemEvent) == null;
+}
+
+/**
+ * Whether the timeline should drop this row outright rather than render it.
+ * A retired lifecycle card would otherwise fall through to the ordinary
+ * message branch and paint an empty bubble with an avatar and a timestamp.
+ */
+export function isHiddenTimelineMessage(message: {
+  systemEvent?: unknown;
+}): boolean {
+  const parsed = parseSystemEvent(message.systemEvent ?? null);
+  return (
+    parsed?.kind === "lifecycle_card" &&
+    HIDDEN_TIMELINE_CARD_KINDS.has(parsed.cardKind)
+  );
 }
 
 const ISO_TIMESTAMP_RE =

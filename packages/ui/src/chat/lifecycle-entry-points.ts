@@ -1,10 +1,15 @@
 /**
- * "New company" / "New bot" entry points.
+ * The "New company" entry point.
  *
- * Both reuse the server-stamped lifecycle cards instead of a form of their
- * own: the host runs one card action, the server posts (or resurfaces) the
- * right card, and the shell selects that channel and scrolls to the card.
+ * It reuses the server-stamped lifecycle cards instead of a form of its own:
+ * the host runs one card action, the server posts (or resurfaces) the right
+ * card, and the shell selects that channel and scrolls to the card.
  * Zero-network: callers hand in the `ConversationApi` seam.
+ *
+ * There is no "New bot" entry point here. It ran the Team tab's `add_agent`
+ * action to post the server's "Create a bot" card into a company channel; bots
+ * are made through the local bot flow (bot kinds) now, and that card is no
+ * longer rendered, so posting it would have produced nothing a person sees.
  */
 
 import type { CardActionResult, ConversationApi } from "./chat-api.js";
@@ -14,9 +19,6 @@ import { SETUP_CHANNEL_ID } from "./setup-channel.js";
 /** #setup summary card + its action that posts a fresh create_company card. */
 export const COMPANIES_SUMMARY_CARD_ID = "companies_summary";
 export const CREATE_COMPANY_ACTION_ID = "create_company";
-/** Team tab spend row + its action that posts (or resurfaces) create_agent. */
-export const TEAM_SPEND_CARD_ID = "team:spend";
-export const ADD_AGENT_ACTION_ID = "add_agent";
 
 /** Where the shell should land after an entry-point action. */
 export interface EntryPointTarget {
@@ -37,10 +39,7 @@ export type EntryPointResult =
       blocked: boolean;
     };
 
-export type EntryPointApi = Pick<
-  ConversationApi,
-  "runCardAction" | "runCompanyTabAction"
->;
+export type EntryPointApi = Pick<ConversationApi, "runCardAction">;
 
 function isNotFound(err: unknown): boolean {
   const raw = err instanceof Error ? err.message : String(err ?? "");
@@ -122,73 +121,6 @@ export async function runCreateCompanyEntry(
       channelId: trimmed(result.channelId) || SETUP_CHANNEL_ID,
       cardId: cardId && cardId !== COMPANIES_SUMMARY_CARD_ID ? cardId : null,
       cardKind: CREATE_COMPANY_ACTION_ID,
-    },
-  };
-}
-
-/**
- * New agent: run the Team tab's `team:spend` / `add_agent` action for one
- * company. The server answers `{ channelId, cardId }` — the create_agent card
- * on Workforce, or the upgrade card on a free plan. A `blocked` result (or a
- * permission error) becomes an inline reason for the caller to render.
- */
-export async function runAddAgentEntry(
-  api: EntryPointApi,
-  companyUid: string,
-  options: { idempotencyKey?: string } = {},
-): Promise<EntryPointResult> {
-  const uid = companyUid.trim();
-  if (!uid) {
-    return { ok: false, reason: "Pick a company first", blocked: false };
-  }
-  const run = api.runCompanyTabAction;
-  if (typeof run !== "function") {
-    return {
-      ok: false,
-      reason: "Adding bots isn't available in this build",
-      blocked: false,
-    };
-  }
-  let result: CardActionResult;
-  try {
-    result = await run({
-      companyUid: uid,
-      tab: "team",
-      cardId: TEAM_SPEND_CARD_ID,
-      actionId: ADD_AGENT_ACTION_ID,
-      values: {},
-      idempotencyKey: options.idempotencyKey,
-    });
-  } catch (err) {
-    return {
-      ok: false,
-      reason: cardActionFailureMessage(err),
-      blocked: isPermission(err),
-    };
-  }
-  if (result.state === "blocked") {
-    return {
-      ok: false,
-      reason:
-        trimmed(result.reason) || "You don't have permission to add bots here",
-      blocked: true,
-    };
-  }
-  const channelId = trimmed(result.channelId);
-  if (!channelId) {
-    return {
-      ok: false,
-      reason: "The server didn't say where the bot step was posted",
-      blocked: false,
-    };
-  }
-  const cardId = trimmed(result.cardId);
-  return {
-    ok: true,
-    target: {
-      channelId,
-      cardId: cardId && cardId !== TEAM_SPEND_CARD_ID ? cardId : null,
-      cardKind: null,
     },
   };
 }

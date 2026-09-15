@@ -1,10 +1,9 @@
 // @vitest-environment happy-dom
 
 /**
- * Lifecycle entry points in the shell: the company header "Add bot" ghost
- * button (present only when the Team tab viewer can act), the navigation after
- * `team:spend/add_agent`, and the #setup summary card's primary action landing
- * on the create_company card the server posts.
+ * Lifecycle entry points in the shell: the #setup summary card's primary action
+ * landing on the create_company card the server posts, and the absence of the
+ * retired company-header "Add bot" button and its create_agent card.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -171,123 +170,35 @@ function mountApp(adapterValue: PlatformAdapter, initialRow: ConversationRow): v
   });
 }
 
-describe("DesktopApp company header: Add bot", () => {
-  it("shows the 28px ghost button when the Team tab viewer can act and lands on the posted card", async () => {
+describe("DesktopApp company header: no server bot form", () => {
+  it("has no Add bot button and never renders a create_agent card in the company channel", async () => {
+    // Bots come from the local bot flow (bot kinds). The Team tab action that
+    // posted the server's "Create a bot" card is gone, and a card already
+    // sitting in the channel's history is not shown.
     const getCompanyTab = vi.fn(async (_uid: string, tab: string) =>
       ok(tab === "team" ? teamTab(true) : { tab, companyUid: "cmp_acme", viewer: viewerOwner, sections: [] }),
     );
-    const runCompanyTabAction = vi.fn(async () =>
-      ok({
-        cardId: "card_create_agent_1",
-        actionId: "add_agent",
-        state: "open",
-        replayed: false,
-        channelId: "chn_acme",
-      }),
-    );
+    const runCompanyTabAction = vi.fn();
     const fetchChannel = vi.fn(async () =>
       ok({ messages: [systemMessage("evt_agent", CREATE_AGENT_CARD)], nextCursor: null }),
     );
-    const opened: string[] = [];
-    const onOpen = (event: Event) =>
-      opened.push(String((event as CustomEvent).detail?.channelId ?? ""));
-    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
 
-    mountApp(adapter({ getCompanyTab, runCompanyTabAction, fetchChannel }), COMPANY_ROW);
+    mountApp(
+      adapter({ getCompanyTab, runCompanyTabAction, fetchChannel }),
+      COMPANY_ROW,
+    );
     await vi.waitFor(
-      () => {
-        expect(host.querySelector('[data-testid="company-add-agent"]')).toBeTruthy();
-      },
-      { timeout: 10_000, interval: 50 },
-    );
-    const button = host.querySelector<HTMLButtonElement>('[data-testid="company-add-agent"]')!;
-    expect(button.textContent?.trim()).toBe("Add bot");
-    expect(button.getAttribute("aria-label")).toMatch(/^Add a bot to /);
-    expect(button.classList.contains("header-ghost-btn")).toBe(true);
-    expect(
-      button.parentElement?.querySelector('[data-testid="company-console-gear"]'),
-    ).toBeTruthy();
-
-    button.click();
-    await settle(12);
-    expect(runCompanyTabAction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        companyUid: "cmp_acme",
-        tab: "team",
-        cardId: "team:spend",
-        actionId: "add_agent",
-      }),
-    );
-    // Already on the company channel: no re-open, just scroll + focus the card.
-    expect(opened).toEqual([]);
-    await vi.waitFor(
-      () => {
-        expect(document.activeElement?.getAttribute("data-card-id")).toBe(
-          "card_create_agent_1",
-        );
-      },
-      { timeout: 10_000, interval: 50 },
-    );
-    window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
-  }, 30_000);
-
-  it("re-opens the channel the server names when it differs from the current one", async () => {
-    const getCompanyTab = vi.fn(async (_uid: string, tab: string) =>
-      ok(tab === "team" ? teamTab(true) : { tab, companyUid: "cmp_acme", viewer: viewerOwner, sections: [] }),
-    );
-    const runCompanyTabAction = vi.fn(async () =>
-      ok({ cardId: "card_upgrade_plan_2", actionId: "add_agent", state: "open", channelId: "chn_acme_general" }),
-    );
-    const opened: Array<Record<string, unknown>> = [];
-    const onOpen = (event: Event) => opened.push((event as CustomEvent).detail ?? {});
-    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
-    mountApp(adapter({ getCompanyTab, runCompanyTabAction }), COMPANY_ROW);
-    await vi.waitFor(
-      () => expect(host.querySelector('[data-testid="company-add-agent"]')).toBeTruthy(),
-      { timeout: 10_000, interval: 50 },
-    );
-    host.querySelector<HTMLButtonElement>('[data-testid="company-add-agent"]')!.click();
-    await settle(12);
-    window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
-    expect(opened).toHaveLength(1);
-    expect(opened[0]).toMatchObject({
-      channelId: "chn_acme_general",
-      companyUid: "cmp_acme",
-      focusCardId: "card_upgrade_plan_2",
-    });
-  }, 30_000);
-
-  it("hides the button when the Team tab viewer cannot act", async () => {
-    const getCompanyTab = vi.fn(async (_uid: string, tab: string) =>
-      ok(tab === "team" ? teamTab(false) : { tab, companyUid: "cmp_acme", viewer: { canAct: false }, sections: [] }),
-    );
-    mountApp(adapter({ getCompanyTab, runCompanyTabAction: vi.fn() }), COMPANY_ROW);
-    await vi.waitFor(
-      () => expect(getCompanyTab).toHaveBeenCalledWith("cmp_acme", "team"),
+      () => expect(host.querySelector('[data-testid="company-console-gear"]')).toBeTruthy(),
       { timeout: 10_000, interval: 50 },
     );
     await settle(12);
-    expect(host.querySelector('[data-testid="company-console-gear"]')).toBeTruthy();
+
     expect(host.querySelector('[data-testid="company-add-agent"]')).toBeNull();
-  }, 30_000);
-
-  it("shows a blocked permission reason inline next to the button", async () => {
-    const getCompanyTab = vi.fn(async (_uid: string, tab: string) =>
-      ok(tab === "team" ? teamTab(true) : { tab, companyUid: "cmp_acme", viewer: viewerOwner, sections: [] }),
-    );
-    const runCompanyTabAction = vi.fn(async () =>
-      ok({ cardId: "team:spend", actionId: "add_agent", state: "blocked", reason: "Only owners can add agents." }),
-    );
-    mountApp(adapter({ getCompanyTab, runCompanyTabAction }), COMPANY_ROW);
-    await vi.waitFor(
-      () => expect(host.querySelector('[data-testid="company-add-agent"]')).toBeTruthy(),
-      { timeout: 10_000, interval: 50 },
-    );
-    host.querySelector<HTMLButtonElement>('[data-testid="company-add-agent"]')!.click();
-    await settle(12);
-    const error = host.querySelector('[data-testid="company-add-agent-error"]');
-    expect(error?.getAttribute("role")).toBe("alert");
-    expect(error?.textContent).toContain("Only owners can add agents.");
+    expect(
+      host.querySelector('[data-card-id="card_create_agent_1"]'),
+    ).toBeNull();
+    expect(host.textContent).not.toContain("Create an agent");
+    expect(runCompanyTabAction).not.toHaveBeenCalled();
   }, 30_000);
 });
 

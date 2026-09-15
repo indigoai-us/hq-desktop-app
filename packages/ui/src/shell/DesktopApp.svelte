@@ -85,7 +85,6 @@
   } from "../chat/setup-bot.js";
   import {
     findLifecycleCardElement,
-    runAddAgentEntry,
     runCreateCompanyEntry,
     type EntryPointResult,
     type EntryPointTarget,
@@ -3249,52 +3248,11 @@
     if (uid) changeTenantCompany(uid);
   }
 
-  /** Sidebar / header "New bot" (Cloud): Team tab action, then the company channel. */
-  async function addAgentEntry(companyUid: string): Promise<EntryPointResult> {
-    const result = await runAddAgentEntry(conversationApi, companyUid);
-    if (result.ok) navigateToEntryTarget(result.target, companyUid);
-    return result;
-  }
-
-  /**
-   * Whether the viewer may act on the current company's Team tab. Read from
-   * the tab surface the server sends (its `viewer` is per company), fetched
-   * once per company so the header button is right on the Chat tab too.
-   */
-  let companyTeamCanAct = $state(false);
-  let companyTeamCanActUid: string | null = null;
-  let headerAddAgentBusy = $state(false);
-  let headerAddAgentError = $state<string | null>(null);
-
-  async function loadCompanyTeamCanAct(uid: string): Promise<void> {
-    if (companyTeamCanActUid === uid) return;
-    companyTeamCanActUid = uid;
-    companyTeamCanAct = false;
-    headerAddAgentError = null;
-    const getTab = conversationApi.getCompanyTab;
-    if (!getTab || !conversationApi.runCompanyTabAction) return;
-    try {
-      const parsed = parseCompanyTab(await getTab(uid, "team"));
-      if (companyTeamCanActUid === uid) {
-        companyTeamCanAct = parsed?.viewer.canAct === true;
-      }
-    } catch {
-      if (companyTeamCanActUid === uid) companyTeamCanAct = false;
-    }
-  }
-
-  async function addAgentFromHeader(): Promise<void> {
-    const uid = selectedRow?.companyUid?.trim() ?? "";
-    if (!uid || headerAddAgentBusy) return;
-    headerAddAgentBusy = true;
-    headerAddAgentError = null;
-    try {
-      const result = await addAgentEntry(uid);
-      if (!result.ok) headerAddAgentError = result.reason;
-    } finally {
-      headerAddAgentBusy = false;
-    }
-  }
+  // There is no "add a bot to this company" entry point here any more. It ran
+  // the Team tab's `add_agent` action, whose only effect was to post the
+  // server's "Create a bot" card into the company channel — a second, rival way
+  // to make a bot that the local bot flow (bot kinds) replaced. Both the card
+  // and the buttons that posted it are gone; new bots come from "New bot".
 
   const cardActionKeys: CardActionIdempotencyStore = new Map();
 
@@ -3353,9 +3311,6 @@
         companyAppearanceName = parsed.appearance.name.trim();
       }
       companyTabData = tabId === "chat" ? companyTabData : parsed;
-      if (tabId === "team" && parsed && companyTeamCanActUid === uid) {
-        companyTeamCanAct = parsed.viewer.canAct === true;
-      }
     } catch {
       if (tabId !== "chat") {
         companyTabData = {
@@ -3374,17 +3329,6 @@
     if (!isCompanyChannel) return;
     const tabId = companyTab;
     void loadCompanyTabSurface(tabId);
-  });
-
-  $effect(() => {
-    if (!isCompanyChannel) {
-      companyTeamCanActUid = null;
-      companyTeamCanAct = false;
-      headerAddAgentError = null;
-      return;
-    }
-    const uid = selectedRow?.companyUid?.trim() ?? "";
-    if (uid) void loadCompanyTeamCanAct(uid);
   });
 
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
@@ -5848,7 +5792,6 @@
           onopenSettings={() => openSettings()}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
-          oncreateagent={canRunEntryPoints ? addAgentEntry : null}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
           botWorkers={localBotWorkers}
@@ -6093,28 +6036,6 @@
                   {/each}
                 </nav>
               {:else if isCompanyChannel}
-                {#if companyTeamCanAct}
-                  {#if headerAddAgentError}
-                    <span
-                      class="header-inline-error"
-                      role="alert"
-                      data-testid="company-add-agent-error"
-                    >
-                      {headerAddAgentError}
-                    </span>
-                  {/if}
-                  <button
-                    type="button"
-                    class="header-ghost-btn"
-                    data-testid="company-add-agent"
-                    aria-label={`Add a bot to ${companyHeroTitle}`}
-                    aria-busy={headerAddAgentBusy ? "true" : undefined}
-                    disabled={headerAddAgentBusy}
-                    onclick={() => void addAgentFromHeader()}
-                  >
-                    Add bot
-                  </button>
-                {/if}
                 <CompanyTabs
                   slug={selectedCompanySlug}
                   {onopenurl}
@@ -7248,59 +7169,6 @@
     gap: 0.5rem;
     flex: 0 0 auto;
     margin-left: auto;
-  }
-
-  /* 28px ghost button: same control scale as the tab-row actions. */
-  .header-ghost-btn {
-    appearance: none;
-    -webkit-appearance: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    height: 28px;
-    min-height: 28px;
-    padding: 0 10px;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    background: var(--btn-bg);
-    color: var(--t1);
-    /* Longhands, not the `font:` shorthand: `inherit` is not a valid
-       font-family inside it, so the whole declaration was dropped and this
-       button rendered in the UA default (Arial 13.3px/400) beside 12px/500
-       Geist tabs. */
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    line-height: 1;
-    cursor: pointer;
-    white-space: nowrap;
-    transition:
-      border-color 0.12s ease,
-      background-color 0.12s ease;
-  }
-
-  .header-ghost-btn:hover {
-    border-color: var(--line2);
-  }
-
-  .header-ghost-btn:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-
-  .header-ghost-btn:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--t1));
-    outline-offset: 2px;
-  }
-
-  .header-inline-error {
-    color: var(--danger, #e5484d);
-    font-size: 12px;
-    max-width: 260px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .edit-profile-btn {
