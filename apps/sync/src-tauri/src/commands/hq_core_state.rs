@@ -369,6 +369,14 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
         category: RescueFailureCategory::Network,
         needle: "connection reset",
     },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "is not a git command",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "remote helper 'https' aborted session",
+    },
 ];
 
 // These are OS-error renderings emitted before the rescue process can start or
@@ -2642,6 +2650,35 @@ mod tests {
             classify_rescue_stderr_failure(stderr),
             RescueFailureCategory::MissingDependency,
             "the rsync preflight diagnostic must not be shadowed by a transport needle"
+        );
+    }
+
+    #[test]
+    fn rescue_broken_git_https_transport_is_a_missing_dependency() {
+        let stderr = "warning: templates not found in ...\n\
+git: 'remote-https' is not a git command. See 'git --help'.\n\
+fatal: remote helper 'https' aborted session\n\
+error: clone failed";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::MissingDependency
+        );
+    }
+
+    #[test]
+    fn rescue_broken_git_https_transport_keeps_auth_precedence() {
+        assert_eq!(
+            classify_rescue_stderr_failure("is not a git command; authentication failed"),
+            RescueFailureCategory::Auth
+        );
+    }
+
+    #[test]
+    fn rescue_generic_clone_failure_remains_unknown() {
+        assert_eq!(
+            classify_rescue_stderr_failure("error: clone failed"),
+            RescueFailureCategory::Unknown
         );
     }
 

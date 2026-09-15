@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Core update reports now identify missing tools, access problems, and connection failures when the update cannot start or save its baseline.
+- Core update now explains when a broken Git HTTPS setup prevents it from updating, instead of showing an unknown failure.
 
 ## [0.10.270] — 2026-09-16
 
