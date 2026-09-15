@@ -53,8 +53,14 @@ describe('settings write boundary', () => {
         'utf8',
       ),
     ).toContain("'save_settings'");
-    expect(readRepoFile('../../packages/ui/src/settings/settings-mutations.ts')).toContain(
-      'updateInjectedSettings',
+    // The app-local wrapper (updateInjectedSettings) went with the
+    // unreachable shell; the shared owner in @hq/platform exports the
+    // serialized writer directly.
+    expect(readRepoFile('../../packages/platform/src/tauri/settings-mutations.ts')).toContain(
+      'export function updateSettings(',
+    );
+    expect(readRepoFile('../../packages/platform/src/tauri/settings-mutations.ts')).toContain(
+      'export class SettingsMutationQueue',
     );
   });
 });
