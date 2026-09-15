@@ -92,7 +92,8 @@ pub fn reconcile_launch_agent_after_update() {
 /// A LaunchServices relaunch is invisible to the KeepAlive agent, which then
 /// starts a second copy every ~10s and the single-instance handler steals
 /// focus. Falls back to `app.restart()` when no LaunchAgent is installed.
-pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) {
+/// Never returns: same contract as `AppHandle::restart`.
+pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) -> ! {
     #[cfg(target_os = "macos")]
     {
         if hq_platform::launchagent::schedule_handoff_after_exit() {
@@ -108,7 +109,7 @@ pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) {
             "launchd handoff unavailable; falling back to GUI relaunch",
         );
     }
-    app.restart();
+    app.restart()
 }
 
 /// Return the one-time LaunchAgent heal note and clear the pending flag.

@@ -1746,9 +1746,13 @@ export const liveSessionStore = {
   preflight,
   repairHqSetup,
   providerLoginStart: async (tool: SessionTool, opts?: { force?: boolean }) => {
+    // A session already failed to authenticate with this tool: its CLI still
+    // reports a saved login, so a plain start would answer "connected" at once
+    // and never reach a sign-in page. Sign in again for real.
+    const force = opts?.force === true || staleLogin.has(tool);
     const result = await invoke<ProviderLoginState>('agent_provider_login_start', {
       tool,
-      ...(opts?.force ? { force: true } : {}),
+      ...(force ? { force: true } : {}),
     });
     if (result.state === 'connected') {
       staleLogin.delete(tool);

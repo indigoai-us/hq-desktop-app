@@ -786,8 +786,12 @@ export interface SetupRunApi {
    * without it skip the Connect step and rely on `preflight` alone.
    */
   providers?(refresh?: boolean): Promise<SetupProviderStatus>;
-  /** Open the provider's browser sign-in; poll `providerLoginStatus` until connected. */
-  providerLoginStart?(tool: SetupProviderTool): Promise<SetupProviderLoginState>;
+  /**
+   * Open the provider's browser sign-in; poll `providerLoginStatus` until
+   * connected. `force` signs out and in again even when the CLI still reports
+   * a saved login — the way out of a dead login `auth status` cannot see.
+   */
+  providerLoginStart?(tool: SetupProviderTool, opts?: { force?: boolean }): Promise<SetupProviderLoginState>;
   providerLoginStatus?(tool: SetupProviderTool): Promise<SetupProviderLoginState>;
   providerLoginCancel?(tool: SetupProviderTool): Promise<SetupProviderLoginState>;
   /** Where to get the provider's app; opened in the system browser by the host. */

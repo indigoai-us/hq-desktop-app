@@ -193,7 +193,7 @@ export function createSetupRunApi(options: SetupRunHostOptions = {}): SetupRunAp
     storeSecret,
     providers,
     providerInstall: (tool) => store.installProvider(tool),
-    providerLoginStart: (tool) => store.providerLoginStart(tool),
+    providerLoginStart: (tool, opts) => store.providerLoginStart(tool, opts),
     providerLoginStatus: (tool) => store.providerLoginStatus(tool),
     providerLoginCancel: (tool) => store.providerLoginCancel(tool),
     providerInstallUrl: (tool) => (tool === 'claude' ? CLAUDE_INSTALL_URL : CODEX_INSTALL_URL),

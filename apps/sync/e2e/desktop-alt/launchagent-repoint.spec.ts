@@ -17,6 +17,9 @@ describe('LaunchAgent bundle-rename heal (source contracts)', () => {
     expect(autostart).toContain('hq_platform::launchagent::reconcile_installed(true)');
     expect(autostart).toContain('schedule_handoff_after_exit()');
     expect(autostart).toContain('exiting without GUI relaunch');
+    expect(autostart).toContain(
+      'pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) -> !',
+    );
   });
 
   it('does not steal focus when launchd KeepAlive starts a second copy', () => {

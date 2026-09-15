@@ -592,6 +592,11 @@ export class SetupAgent {
     await this.api.storeSecret(card, value);
   }
 
+  /** The agent the last run was started with; undefined when the host picked. */
+  get lastRunTool(): SetupProviderTool | undefined {
+    return this.lastTool;
+  }
+
   get canStoreSecrets(): boolean {
     return typeof this.api?.storeSecret === "function";
   }
