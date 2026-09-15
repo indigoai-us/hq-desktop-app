@@ -168,6 +168,12 @@ pub fn spawn_and_poll(app: &AppHandle) {
                     "signout" => {
                         let _ = app.emit("tray:sign-out", ());
                     }
+                    // Re-run the first-run welcome film on demand. The
+                    // frontend owns the sizing dance (full-screen frosted
+                    // sheet, then back to whatever was showing).
+                    "replay-intro" => {
+                        let _ = app.emit("tray:replay-intro", ());
+                    }
                     "quit" => app.exit(0),
                     other => log("tray", &format!("native helper: unknown cmd '{other}'")),
                 }
