@@ -103,6 +103,8 @@ export interface ThinkingEntry {
    * answer in ~15–30 s): their previous reply falls inside the skew window
    * and would otherwise clear a fresh row on the very next catch-up. */
   afterMs?: number;
+  /** Live status text the agent itself reported (`agent_status` wake). */
+  detail?: string;
 }
 
 const DEFAULT_SLOW_AFTER_MS = 150_000;
@@ -117,8 +119,9 @@ export function startThinking(
   entries: ThinkingEntry[],
   agent: { agentUid: string; agentName: string },
   now: number,
-  opts?: { afterMs?: number },
+  opts?: { afterMs?: number; detail?: string },
 ): ThinkingEntry[] {
+  const detail = opts?.detail?.trim();
   const next: ThinkingEntry = {
     agentUid: agent.agentUid,
     agentName: agent.agentName,
@@ -127,6 +130,7 @@ export function startThinking(
     ...(opts?.afterMs !== undefined && Number.isFinite(opts.afterMs)
       ? { afterMs: opts.afterMs }
       : {}),
+    ...(detail ? { detail } : {}),
   };
   const idx = entries.findIndex((e) => e.agentUid === agent.agentUid);
   if (idx < 0) return [...entries, next];
@@ -268,9 +272,106 @@ export function kickoffThinkingState(
   return afterMs === undefined ? { state: 'done' } : { state: 'start', afterMs };
 }
 
+/**
+ * The name to show for an agent's thinking row. Never the name on a message
+ * someone else wrote: a thread's root is often the person's own message, and
+ * labelling the row with its author read "Jacob is thinking…" while the agent
+ * worked. Order: the live roster name, the agent's own most recent message,
+ * the caller's fallback (e.g. the DM title), then "Bot".
+ */
+export function agentDisplayName(
+  agentUid: string,
+  messages: ReadonlyArray<{
+    fromPersonUid?: string | null;
+    fromDisplayName?: string | null;
+  }>,
+  opts?: { liveNames?: Record<string, string>; fallback?: string | null },
+): string {
+  const uid = agentUid.trim();
+  const live = opts?.liveNames?.[uid]?.trim();
+  if (live) return live;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i]!;
+    if ((msg.fromPersonUid ?? '').trim() !== uid) continue;
+    const name = msg.fromDisplayName?.trim();
+    if (name) return name;
+  }
+  return opts?.fallback?.trim() || 'Bot';
+}
+
+/** An agent's own live status in a channel (hq-pro `agent_status` wake). */
+export interface AgentStatusWake {
+  channelId: string;
+  agentUid: string;
+  status: string;
+  threadRoot?: string;
+  /** Server publish time (ISO-8601). */
+  ts: string;
+}
+
+/** Parse an `agent_status` payload (native event or raw MQTT JSON). */
+export function parseAgentStatusWake(raw: unknown): AgentStatusWake | null {
+  let value: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const rec = value as Record<string, unknown>;
+  if (rec.type !== undefined && rec.type !== 'agent_status') return null;
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  const channelId = str(rec.channelId);
+  const agentUid = str(rec.agentUid);
+  const ts = str(rec.ts);
+  if (!channelId || !agentUid || !ts || Number.isNaN(Date.parse(ts))) return null;
+  const threadRoot = str(rec.threadRoot);
+  return {
+    channelId,
+    agentUid,
+    status: str(rec.status).slice(0, 140),
+    ts,
+    ...(threadRoot ? { threadRoot } : {}),
+  };
+}
+
+/**
+ * Keep an agent's row up while the agent says it is working. Each status
+ * restarts the row pinned to the status time, so only a message the agent
+ * posts AFTER it clears the row: a progress post in the middle of a turn is
+ * followed by a fresh status and the row comes straight back, and the final
+ * answer (with no status after it) ends it. A status older than a message
+ * the conversation already shows from that agent is stale and ignored.
+ */
+export function applyAgentStatus(
+  entries: ThinkingEntry[],
+  wake: AgentStatusWake,
+  agentName: string,
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; createdAt?: string | null }>,
+  now: number,
+): ThinkingEntry[] {
+  const at = Date.parse(wake.ts);
+  if (Number.isNaN(at)) return entries.slice();
+  const newest = newestMessageAtFrom(messages, wake.agentUid);
+  if (newest !== undefined && newest >= at) return entries.slice();
+  return startThinking(
+    entries,
+    { agentUid: wake.agentUid, agentName },
+    now,
+    { afterMs: at, detail: wake.status },
+  );
+}
+
 /** Status copy for a row. Unicode ellipsis (U+2026) matches the rest of
  * the messaging UI (`Sending…`, `Joining…`). */
 export function labelFor(entry: ThinkingEntry): string {
+  const detail = entry.detail?.trim() ?? '';
+  // "is thinking…" is the generic status local bots send; say it the usual way.
+  if (detail && !/^is thinking/i.test(detail)) {
+    return /^is\s/i.test(detail) ? `${entry.agentName} ${detail}` : `${entry.agentName}: ${detail}`;
+  }
   if (entry.phase === 'slow') {
     return `${entry.agentName} is taking longer than usual…`;
   }

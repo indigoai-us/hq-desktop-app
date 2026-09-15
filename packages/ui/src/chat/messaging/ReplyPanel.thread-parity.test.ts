@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import ReplyPanel from "./ReplyPanel.svelte";
-import type { ConversationApi, SendReplyArgs } from "../chat-api";
+import { createChatWakeBus, type ConversationApi, type SendReplyArgs } from "../chat-api";
 import type { MentionTarget } from "../mentions.js";
 
 let host: HTMLDivElement;
@@ -128,6 +128,29 @@ describe("ReplyPanel thread parity", () => {
     expect(rootEl?.parentElement).toBe(list);
     expect(list!.firstElementChild).toBe(rootEl);
     expect(replyRow?.parentElement).toBe(list);
+  });
+
+  it("shows the agent working in this thread while it reports status, and only for this thread", async () => {
+    const wakes = createChatWakeBus();
+    const h = mountPanel({ wakes, displayNameByUid: { agt_connor: "connor" } });
+    await tick();
+    await Promise.resolve();
+    await tick();
+    const status = (threadRoot: string) => ({
+      channelId: "chn_1",
+      agentUid: "agt_connor",
+      status: "is thinking\u2026",
+      threadRoot,
+      ts: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    wakes.emit("agent:status", status("evt_other_root"));
+    await tick();
+    expect(h.querySelector('[data-testid="agent-thinking-row"]')).toBeNull();
+
+    wakes.emit("agent:status", status("evt_root"));
+    await tick();
+    expect(h.querySelector('[data-testid="agent-thinking-row"]')?.textContent).toContain("connor is thinking");
   });
 
   it("does not render a reaction bar for a message with no reactions", async () => {

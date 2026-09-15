@@ -263,6 +263,8 @@
   } from "../chat/mentions.js";
   import {
     clearRowFromMessages,
+    agentDisplayName,
+    applyAgentStatus,
     dropRow,
     isAgentUid,
     newestMessageAtFrom,
@@ -3696,6 +3698,26 @@
     }
   }
 
+  // An agent's own "still working" status in a channel keeps its row up in the
+  // main pane until it posts after the status. Thread-scoped statuses belong
+  // to that thread's panel (ReplyPanel), whose replies are what end them.
+  $effect(() => {
+    if (!wakes) return;
+    return wakes.on("agent:status", (wake) => {
+      if (wake.threadRoot) return;
+      const rowId = `ch:${wake.channelId}`;
+      const open = liveTimelineId === rowId ? liveTimeline : [];
+      const roster = channelRosterById[wake.channelId] ?? [];
+      const rosterName = roster.find((m) => m.personUid === wake.agentUid)?.displayName;
+      const name = agentDisplayName(wake.agentUid, open, {
+        liveNames: displayNameByUid,
+        fallback: rosterName,
+      });
+      const next = applyAgentStatus(thinkingByRow[rowId] ?? [], wake, name, open, Date.now());
+      if (next.length > 0) thinkingByRow = { ...thinkingByRow, [rowId]: next };
+    });
+  });
+
   // Closed-panel `reply:new`: bump visible “N replies”. Open panel on this
   // root re-fetches via ReplyPanel. Other roots do not rewrite the panel.
   $effect(() => {
@@ -6706,6 +6728,7 @@
                     scope={replyScope}
                     channelId={selectedRow.channelId}
                     withPersonUid={selectedRow.personUid}
+                    withPersonName={selectedRow.title}
                     {seedRoot}
                     {wakes}
                     reactions={rowReactions}

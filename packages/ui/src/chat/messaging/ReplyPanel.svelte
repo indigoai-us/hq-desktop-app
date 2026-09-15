@@ -27,6 +27,9 @@
     isAgentUid,
     newestMessageAtFrom,
     startThinking,
+    agentDisplayName,
+    applyAgentStatus,
+    type AgentStatusWake,
     tick,
     type ThinkingEntry,
   } from "../agent-thinking.js";
@@ -81,7 +84,7 @@
     ConversationMessageWire,
     ReplyThreadScope,
   } from "../chat-api";
-  import { subscribeReplyNew } from "../chat-api";
+  import { subscribeAgentStatus, subscribeReplyNew } from "../chat-api";
 
   export interface ReplyPreviewAuthor {
     personUid: string;
@@ -109,6 +112,8 @@
     tasks?: AgentTask[];
     channelId?: string | null;
     withPersonUid?: string | null;
+    /** Display name of the DM counterpart (the agent in an agent DM). */
+    withPersonName?: string | null;
     /** Timeline root for instant pin while GET /threads is in flight. */
     seedRoot?: ConversationMessageWire | null;
     /** Host wake bus. Matching `reply:new` re-fetches; other roots are ignored. */
@@ -181,6 +186,7 @@
     scope,
     channelId = null,
     withPersonUid = null,
+    withPersonName = null,
     seedRoot = null,
     wakes = null,
     reactions = {},
@@ -316,7 +322,10 @@
         agentThinking,
         {
           agentUid: uid,
-          agentName: root ? messageAuthor(root) : "Bot",
+          agentName: agentDisplayName(uid, [...(root ? [root] : []), ...replies], {
+            liveNames: displayNameByUid,
+            fallback: withPersonName,
+          }),
         },
         Date.now(),
         // Fast responders (local bots): only a reply newer than their last
@@ -788,6 +797,25 @@
     if (id && seenIds.has(id)) return;
     void load();
   }
+
+  /** The agent says it is still working in THIS thread: keep its row up. */
+  function onAgentStatus(wake: AgentStatusWake): void {
+    if (scope !== "channel" || !channelId || wake.channelId !== channelId) return;
+    if (wake.threadRoot !== rootEventId) return;
+    const thread = [...(root ? [root] : []), ...replies];
+    agentThinking = applyAgentStatus(
+      agentThinking,
+      wake,
+      agentDisplayName(wake.agentUid, thread, { liveNames: displayNameByUid }),
+      thread,
+      Date.now(),
+    );
+  }
+
+  $effect(() => {
+    if (wakes) return wakes.on("agent:status", onAgentStatus);
+    return subscribeAgentStatus(onAgentStatus);
+  });
 
   $effect(() => {
     if (wakes) {

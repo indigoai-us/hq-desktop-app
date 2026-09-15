@@ -56,7 +56,7 @@
 use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
 use crate::commands::dm_notify::poll_dm_once;
@@ -267,6 +267,42 @@ fn client_id() -> String {
     )
 }
 
+/// Tauri event carrying an agent's live status in a channel.
+pub const EVENT_AGENT_STATUS: &str = "agent:status";
+
+/// Parse hq-pro's `{type:"agent_status", channelId, agentUid, status, threadRoot?, ts}`
+/// wake (published on the person DM topic while an agent works in a channel).
+/// Returns the camelCase event payload, or `None` for any other wake so it
+/// keeps its wake-and-poll behavior. The status text is server-capped at 140
+/// chars; it is capped again here because it is rendered as-is.
+pub(crate) fn agent_status_event(payload: &[u8]) -> Option<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    if value.get("type")?.as_str()? != "agent_status" {
+        return None;
+    }
+    let field = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let channel_id = field("channelId")?;
+    let agent_uid = field("agentUid")?;
+    let ts = field("ts")?;
+    let status: String = field("status").unwrap_or("").chars().take(140).collect();
+    let mut event = serde_json::json!({
+        "channelId": channel_id,
+        "agentUid": agent_uid,
+        "status": status,
+        "ts": ts,
+    });
+    if let Some(root) = field("threadRoot") {
+        event["threadRoot"] = serde_json::Value::String(root.to_string());
+    }
+    Some(event)
+}
+
 /// What an inbound wake (ConnAck offline catch-up, or any Publish) should do.
 /// The MQTT payload is NEVER inspected either way — only its arrival matters
 /// ("the MQTT message is ONLY a wake signal", per the module docs). Shared by
@@ -403,7 +439,16 @@ async fn drive_eventloop(
                 // disconnected, before the first push arrives.
                 wake.fire(&app).await;
             }
-            Ok(Event::Incoming(Packet::Publish(_))) => {
+            Ok(Event::Incoming(Packet::Publish(publish))) => {
+                // The one payload we read: an agent's live "working" status.
+                // It is ephemeral text with nothing to poll for, so it goes to
+                // the UI as an event instead of waking the DM poll.
+                if matches!(wake, MqttWakeAction::Dm) {
+                    if let Some(status) = agent_status_event(&publish.payload) {
+                        let _ = app.emit(EVENT_AGENT_STATUS, &status);
+                        continue;
+                    }
+                }
                 // Wake signal. We do not inspect the payload — just wake.
                 log(LOG_TAG, "DM_MQTT_WAKE");
                 wake.fire(&app).await;
@@ -640,6 +685,24 @@ mod tests {
     // the WSS transport's send-after-close `unreachable!()` is caught as a
     // JoinError and converted to a recoverable reconnect, not a process-killing
     // unwind. These pin the two halves of that guard. ──────────────────────────
+
+    #[test]
+    fn agent_status_event_reads_only_agent_status_wakes() {
+        let wake = br#"{"type":"agent_status","channelId":"chn_1","agentUid":"agt_c","status":" is thinking\u2026 ","threadRoot":"evt_root","ts":"2026-09-15T10:00:00.000Z"}"#;
+        let event = agent_status_event(wake).expect("agent status");
+        assert_eq!(event["channelId"], "chn_1");
+        assert_eq!(event["agentUid"], "agt_c");
+        assert_eq!(event["status"], "is thinking\u{2026}");
+        assert_eq!(event["threadRoot"], "evt_root");
+        assert_eq!(event["ts"], "2026-09-15T10:00:00.000Z");
+
+        let no_root = br#"{"type":"agent_status","channelId":"chn_1","agentUid":"agt_c","status":"","ts":"t"}"#;
+        assert!(agent_status_event(no_root).unwrap().get("threadRoot").is_none());
+
+        assert!(agent_status_event(br#"{"type":"channel","channelId":"chn_1"}"#).is_none());
+        assert!(agent_status_event(br#"{"type":"agent_status","agentUid":"agt_c","ts":"t"}"#).is_none());
+        assert!(agent_status_event(b"not json").is_none());
+    }
 
     #[test]
     fn panic_payload_message_extracts_str_and_string() {
