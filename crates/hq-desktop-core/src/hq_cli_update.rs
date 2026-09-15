@@ -1348,7 +1348,11 @@ pub fn cli_install_needed(local: Option<&str>, latest: &str, hq_installed: bool)
 /// CLI below this version as missing and reinstalls it on the next prompt. Keep
 /// the two in sync: a CLI hq-core refuses to run with is one the desktop app
 /// should not sit on for the updater's launch stagger or its 6h interval either.
-pub const HQ_CLI_MIN_VERSION: &str = "5.103.26";
+///
+/// 5.115.4: the create-bot flow passes `--kind`/`--company` for company bots
+/// and relies on the bot-kinds contract (hq-cli #596/#598/#599/#605); an
+/// older CLI answers `unknown option '--kind'`.
+pub const HQ_CLI_MIN_VERSION: &str = "5.115.4";
 
 /// Is a *readable* installed version below [`HQ_CLI_MIN_VERSION`]?
 ///
