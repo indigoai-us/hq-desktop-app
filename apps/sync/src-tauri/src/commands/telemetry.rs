@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use hq_desktop_core::sessions::claude::resolve_claude_projects_dirs;
@@ -834,6 +834,8 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "failedDependency",
     "errorCategory",
     "setupRunId",
+    "npxResolved",
+    "npxResolution",
 ];
 
 const FAILED_DEPENDENCY_VALUES: &[&str] = &[
@@ -848,15 +850,30 @@ const FAILED_DEPENDENCY_VALUES: &[&str] = &[
 ];
 
 const ERROR_CATEGORY_VALUES: &[&str] = &[
+    "auth",
     "network",
+    "dns",
+    "tls",
     "checksum",
+    "disk-full",
     "permission",
     "not-found",
+    "npx-resolve-failed",
     "timeout",
     "spawn-failed",
     "exit-nonzero",
     "unsupported-platform",
     "disk",
+    "unknown",
+];
+
+const NPX_RESOLUTION_VALUES: &[&str] = &[
+    "managed_toolchain",
+    "settings_path",
+    "user_prefix",
+    "system_prefix",
+    "login_shell",
+    "not_resolved",
     "unknown",
 ];
 
@@ -937,34 +954,37 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
             continue;
         }
 
-        let sanitized_value = match (key.as_str(), &value) {
-            ("failedDependency", Value::String(value)) => Some(Value::String(
-                normalize_closed_label(&value, FAILED_DEPENDENCY_VALUES),
-            )),
-            ("errorCategory", Value::String(value)) => Some(Value::String(normalize_closed_label(
-                &value,
-                ERROR_CATEGORY_VALUES,
-            ))),
-            ("detectedSourceSet", Value::String(value)) => Some(Value::String(
-                normalize_closed_label(&value, CONNECTOR_IMPORT_SOURCE_SET_VALUES),
-            )),
-            ("outcome", Value::String(value)) if connector_import => Some(Value::String(
-                normalize_closed_label(&value, CONNECTOR_IMPORT_OUTCOME_VALUES),
-            )),
-            ("failedStages", Value::Array(values)) => {
-                Some(Value::Array(normalize_failed_stages(&values)))
-            }
-            (_, Value::Bool(_)) => matches!(
-                key.as_str(),
-                "enabled" | "autoUpdateEnabled" | "eligible" | "versionBehind"
-            )
-            .then_some(value),
-            (_, Value::Number(n)) => {
-                (n.as_i64().is_some() || n.as_u64().is_some()).then_some(value)
-            }
-            (_, Value::String(s)) => is_safe_label_value(s).then_some(value),
-            _ => None,
-        };
+        let sanitized_value =
+            match (key.as_str(), &value) {
+                ("failedDependency", Value::String(value)) => Some(Value::String(
+                    normalize_closed_label(&value, FAILED_DEPENDENCY_VALUES),
+                )),
+                ("errorCategory", Value::String(value)) => Some(Value::String(
+                    normalize_closed_label(&value, ERROR_CATEGORY_VALUES),
+                )),
+                ("npxResolution", Value::String(value)) => Some(Value::String(
+                    normalize_closed_label(&value, NPX_RESOLUTION_VALUES),
+                )),
+                ("detectedSourceSet", Value::String(value)) => Some(Value::String(
+                    normalize_closed_label(&value, CONNECTOR_IMPORT_SOURCE_SET_VALUES),
+                )),
+                ("outcome", Value::String(value)) if connector_import => Some(Value::String(
+                    normalize_closed_label(&value, CONNECTOR_IMPORT_OUTCOME_VALUES),
+                )),
+                ("failedStages", Value::Array(values)) => {
+                    Some(Value::Array(normalize_failed_stages(&values)))
+                }
+                (_, Value::Bool(_)) => matches!(
+                    key.as_str(),
+                    "enabled" | "autoUpdateEnabled" | "eligible" | "versionBehind" | "npxResolved"
+                )
+                .then_some(value),
+                (_, Value::Number(n)) => {
+                    (n.as_i64().is_some() || n.as_u64().is_some()).then_some(value)
+                }
+                (_, Value::String(s)) => is_safe_label_value(s).then_some(value),
+                _ => None,
+            };
         if let Some(value) = sanitized_value {
             out.insert(key, value);
         }
@@ -1163,7 +1183,10 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         schema_version: 1,
         idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
         session_id: None,
-        properties: Value::Object(Map::new()),
+        properties: json!({
+            "platform": crate::commands::version_gate::platform_tag(),
+            "appVersion": env!("APP_VERSION"),
+        }),
     }
 }
 
@@ -2350,6 +2373,10 @@ mod codex_telemetry_tests {
             "durationMs": 4200,
             "exitCode": 1,
             "skipReason": "automatic_updates_disabled",
+            "platform": "macos-aarch64",
+            "errorCategory": "dns",
+            "npxResolved": false,
+            "npxResolution": "not_resolved",
             "logPath": "/Users/alice/private/core-update.log",
             "error": "raw subprocess output must not leave the client"
         })));
@@ -2367,12 +2394,51 @@ mod codex_telemetry_tests {
         assert_eq!(sanitized["durationMs"], 4200);
         assert_eq!(sanitized["exitCode"], 1);
         assert_eq!(sanitized["skipReason"], "automatic_updates_disabled");
+        assert_eq!(sanitized["platform"], "macos-aarch64");
+        assert_eq!(sanitized["errorCategory"], "dns");
+        assert_eq!(sanitized["npxResolved"], false);
+        assert_eq!(sanitized["npxResolution"], "not_resolved");
         assert!(sanitized.get("logPath").is_none());
         assert!(sanitized.get("error").is_none());
     }
 
     #[test]
-    fn desktop_property_allowlist_keeps_all_existing_and_setup_failure_keys() {
+    fn core_update_failure_drops_raw_rescue_diagnostics_from_telemetry() {
+        let event = build_desktop_telemetry_event(
+            "core_update_failed".to_string(),
+            Some(json!({
+                "errorKind": "rescue_exit",
+                "exitCode": 5,
+                "errorCategory": "dns",
+                "rescueStderrTail": "fatal: could not clone hq-core"
+            })),
+            None,
+            None,
+            "consent",
+        );
+
+        assert_eq!(event.properties["exitCode"], 5);
+        assert_eq!(event.properties["errorCategory"], "dns");
+        assert!(event.properties.get("rescueStderrTail").is_none());
+    }
+
+    #[test]
+    fn npx_resolution_is_limited_to_its_closed_vocabulary() {
+        for value in NPX_RESOLUTION_VALUES {
+            let sanitized = sanitize_desktop_properties(Some(json!({
+                "npxResolution": value,
+            })));
+            assert_eq!(sanitized["npxResolution"], *value);
+        }
+
+        let sanitized = sanitize_desktop_properties(Some(json!({
+            "npxResolution": "/Users/alice/.npm/bin/npx",
+        })));
+        assert_eq!(sanitized["npxResolution"], "unknown");
+    }
+
+    #[test]
+    fn desktop_property_allowlist_keeps_existing_setup_and_core_update_keys() {
         assert_eq!(
             ALLOWED_DESKTOP_PROPERTY_KEYS,
             &[
@@ -2413,6 +2479,8 @@ mod codex_telemetry_tests {
                 "failedDependency",
                 "errorCategory",
                 "setupRunId",
+                "npxResolved",
+                "npxResolution",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
@@ -3044,7 +3112,12 @@ mod codex_telemetry_tests {
         );
         assert_eq!(first.occurred_at, retry.occurred_at);
         assert_eq!(first.idempotency_key, retry.idempotency_key);
-        assert_eq!(first.properties, json!({}));
+        assert_eq!(first.properties["appVersion"], env!("APP_VERSION"));
+        let platform = first.properties["platform"].as_str().unwrap();
+        assert!(
+            crate::commands::version_gate::DESKTOP_PLATFORM_VALUES.contains(&platform),
+            "daily-active platform must remain in the closed desktop vocabulary"
+        );
 
         let serialized = serde_json::to_value(&first).unwrap();
         assert_eq!(serialized["eventName"], "desktop_app_daily_active");
@@ -3055,7 +3128,8 @@ mod codex_telemetry_tests {
             serialized["idempotencyKey"],
             "hq-desktop-app:daily-active:2026-07-15"
         );
-        assert_eq!(serialized["properties"], json!({}));
+        assert_eq!(serialized["properties"]["appVersion"], env!("APP_VERSION"));
+        assert_eq!(serialized["properties"]["platform"], platform);
         for unexpected_key in ["machineId", "appVersion", "companyUid", "personUid"] {
             assert!(serialized.get(unexpected_key).is_none());
         }

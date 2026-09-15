@@ -29,6 +29,13 @@ pub fn setup_diagnostic_tail(value: &str) -> String {
     value[start..].to_string()
 }
 
+/// Redact raw process output before retaining the bounded tail for a telemetry
+/// payload. This reuses the setup-failure diagnostic convention so rescue
+/// diagnostics cannot carry an account name, credential, or environment dump.
+pub fn redact_setup_diagnostic_tail(value: &str) -> String {
+    setup_diagnostic_tail(&scrub_setup_diagnostic_text(value))
+}
+
 /// The exact Sentry issue grouping for setup dependency failures. Correlation
 /// fields deliberately stay outside this pair so retries and people do not
 /// fragment a single dependency/category root cause into separate issues.
@@ -534,6 +541,31 @@ fn redact_npm_prefixed_tokens(value: &str) -> String {
     replace_ranges(value, ranges, FILTERED)
 }
 
+/// An environment dump is never useful telemetry. Drop conventional
+/// `NAME=value` lines before the other redactors inspect process output.
+fn redact_environment_assignment_lines(value: &str) -> String {
+    value
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            let Some((name, _)) = trimmed.split_once('=') else {
+                return line;
+            };
+            let mut bytes = name.bytes();
+            let is_name = bytes
+                .next()
+                .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+                && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric());
+            if !name.is_empty() && is_name {
+                "[environment assignment redacted]"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Remove credentials and account names from raw setup diagnostics at the
 /// shared Sentry egress boundary, rather than relying on callers to sanitize.
 fn scrub_sensitive_text(value: &str) -> String {
@@ -548,7 +580,8 @@ fn scrub_sensitive_text(value: &str) -> String {
 /// setup-only npm-token shape here so closed legacy `npm_*` telemetry labels
 /// remain stable while a bare npm access token cannot leave this channel.
 fn scrub_setup_diagnostic_text(value: &str) -> String {
-    redact_npm_prefixed_tokens(&scrub_sensitive_text(value))
+    let value = redact_environment_assignment_lines(value);
+    redact_npm_prefixed_tokens(&scrub_sensitive_text(&value))
 }
 
 fn valid_runner_stack_shape(value: &str) -> bool {
@@ -2017,6 +2050,18 @@ mod tests {
         assert_eq!(tail.len(), SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
         assert!(tail.ends_with("diagnostic-tail"));
         assert!(!tail.contains("discard-me-"), "the leading output is discarded");
+    }
+
+    #[test]
+    fn redacted_setup_diagnostic_tail_removes_environment_assignments() {
+        let diagnostic = redact_setup_diagnostic_tail(
+            "HOME=/Users/Ada\nGH_TOKEN=ghp_abcdefghijklmnop\nfatal: cannot write /Users/Ada/.npm/_logs/error.log",
+        );
+
+        assert!(!diagnostic.contains("HOME="));
+        assert!(!diagnostic.contains("GH_TOKEN="));
+        assert!(!diagnostic.contains("Ada"));
+        assert!(diagnostic.contains("/Users/[user]/.npm/_logs/error.log"));
     }
 
     /// Correlation is event context, never part of the issue key: one failed
