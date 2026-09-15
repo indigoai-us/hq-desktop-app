@@ -666,13 +666,18 @@ describe("release workflow channel contract", () => {
     const validate = jobBody("validate");
     const guard = stepBody(validate, "Refuse to release empty release notes");
 
-    expect(guard).toContain("if: ${{ github.event_name == 'push' }}");
+    // Manual retries are checked too; only a tag older than CHANGELOG.md is exempt.
+    expect(guard).not.toMatch(/^\s*if:/m);
+    expect(guard).toContain('if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ ! -f CHANGELOG.md ]; then');
     expect(validate).toContain(".github/scripts/check-changelog.mjs");
     // The final, unconditional line is the hard gate for stable tags; the
-    // earlier call only reports on beta/alpha.
+    // earlier call only reports on beta/alpha. It is given the previous stable
+    // tag's CHANGELOG.md, so notes a failed sync left under Unreleased are not
+    // published a second time.
     expect(guard.trim().split("\n").at(-1)?.trim()).toBe(
-      'node .release-control/.github/scripts/check-changelog.mjs release --file CHANGELOG.md --version "$TAG"',
+      'node .release-control/.github/scripts/check-changelog.mjs release --file CHANGELOG.md --version "$TAG" "${previous[@]}"',
     );
+    expect(guard).toContain('previous=(--previous "$RUNNER_TEMP/previous-CHANGELOG.md" --previous-version "$PREVIOUS_TAG")');
     expect(guard).not.toContain("continue-on-error");
     expect(jobBody("macos")).toContain("needs: validate");
     expect(jobBody("windows")).toContain("needs: validate");

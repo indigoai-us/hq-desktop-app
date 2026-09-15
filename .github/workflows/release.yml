@@ -393,23 +393,35 @@ jobs:
       # CHANGELOG.md notes (see the publish job), so refuse a stable tag whose
       # notes are empty before anything is built. PRs are asked for notes up
       # front by changelog.yml; this is the backstop. beta/alpha testing builds
-      # are reported, not blocked. Like the branch policy, this applies when a
-      # tag is first pushed: a workflow_dispatch retry re-releases a tag that was
-      # already vetted and may predate CHANGELOG.md.
+      # are reported, not blocked. A workflow_dispatch retry is checked too; only
+      # a retry of a tag cut before CHANGELOG.md existed is exempt, because it
+      # has no written notes and publishes GitHub's generated list as before.
+      # A stable tag is also refused when the previous stable release's notes
+      # are still under ## [Unreleased] (its sync to main failed), because they
+      # would be published again under this version.
       - name: Refuse to release empty release notes
-        if: ${{ github.event_name == 'push' }}
         env:
+          EVENT_NAME: ${{ github.event_name }}
           TAG: ${{ steps.classify.outputs.tag }}
           CHANNEL: ${{ steps.classify.outputs.channel }}
         shell: bash
         run: |
           set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ ! -f CHANGELOG.md ]; then
+            echo "::warning::$TAG predates CHANGELOG.md, so its release body is GitHub's generated notes alone."
+            exit 0
+          fi
           if [ "$CHANNEL" != "stable" ]; then
             node .release-control/.github/scripts/check-changelog.mjs release --file CHANGELOG.md --version "$TAG" ||
               echo "::warning::Prerelease $TAG has empty release notes; allowed for beta/alpha only."
             exit 0
           fi
-          node .release-control/.github/scripts/check-changelog.mjs release --file CHANGELOG.md --version "$TAG"
+          previous=()
+          if PREVIOUS_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' "${TAG}^" 2>/dev/null) &&
+            git show "${PREVIOUS_TAG}:CHANGELOG.md" > "$RUNNER_TEMP/previous-CHANGELOG.md" 2>/dev/null; then
+            previous=(--previous "$RUNNER_TEMP/previous-CHANGELOG.md" --previous-version "$PREVIOUS_TAG")
+          fi
+          node .release-control/.github/scripts/check-changelog.mjs release --file CHANGELOG.md --version "$TAG" "${previous[@]}"
 
   macos:
     name: Build macOS universal
