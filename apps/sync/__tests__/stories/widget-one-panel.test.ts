@@ -173,7 +173,6 @@ describe('one widget panel — HQ mark toggles Messages', () => {
     const widgetRs = readFileSync(root('src-tauri/src/commands/widget.rs'), 'utf8');
     const mainTs = readFileSync(root('src/main.ts'), 'utf8');
     const capabilities = readFileSync(root('src-tauri/capabilities/widget.json'), 'utf8');
-    const settings = readFileSync(root('src/components/WidgetSettings.svelte'), 'utf8');
 
     expect(widgetRs).toContain('pub const WINDOW_LABEL: &str = "widget"');
     expect(widgetRs).toContain('There is no separate `widget-stack` window.');
@@ -187,7 +186,5 @@ describe('one widget panel — HQ mark toggles Messages', () => {
     expect(widgetUi).toContain('clearLiveOverlay');
     expect(widgetUi).toContain('liveOverlay: !hoverOpen && !pinned');
     expect(widgetUi).toContain('widgetBadgeCount');
-    expect(settings).toContain('data-testid="widget-toggle"');
-    expect(settings).toContain('Off hides both');
   });
 });

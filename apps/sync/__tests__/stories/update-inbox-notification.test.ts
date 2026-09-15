@@ -17,7 +17,6 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import NotificationFeed from '../../src/components/NotificationFeed.svelte';
-import InboxPage from '../../src/desktop-alt/pages/InboxPage.svelte';
 
 type UpdateInfo = {
   version: string;
@@ -240,51 +239,6 @@ describe('Inbox app-update notification', () => {
       'cloud notifications could not be loaded',
     );
     expect(onloadstatechange).toHaveBeenLastCalledWith(false);
-  });
-
-  it('does not mark omitted notifications read when a partial load is left before recovery', async () => {
-    historyShouldFail = true;
-    component = mount(InboxPage, { target: host });
-    flushSync();
-    await waitForUpdateRow();
-    expect(host.querySelector('[role="alert"]')).toBeTruthy();
-
-    await unmount(component);
-    component = null;
-    expect(localStorage.getItem('hq-sync:notifications-last-read')).toBeNull();
-
-    historyShouldFail = false;
-    component = mount(InboxPage, { target: host });
-    flushSync();
-    await waitForUpdateRow();
-    await vi.waitFor(() => {
-      flushSync();
-      expect(host.querySelector('[role="alert"]')).toBeNull();
-    });
-
-    await unmount(component);
-    component = null;
-    expect(Number(localStorage.getItem('hq-sync:notifications-last-read'))).toBeGreaterThan(0);
-  });
-
-  it('does not mark a post-hydration update read when leaving before its debounce refresh', async () => {
-    component = mount(InboxPage, { target: host });
-    flushSync();
-    await waitForUpdateRow();
-    await vi.waitFor(() => {
-      expect(listeners.get('update:available')).toBeTypeOf('function');
-    });
-
-    vi.useFakeTimers();
-    pendingUpdate = {
-      version: '0.10.37-beta.2',
-      date: '2026-07-27T17:00:00Z',
-    };
-    listeners.get('update:available')!({ payload: pendingUpdate });
-
-    await unmount(component);
-    component = null;
-    expect(localStorage.getItem('hq-sync:notifications-last-read')).toBeNull();
   });
 
   it('unregisters the update listener with the rest of the feed listeners', async () => {

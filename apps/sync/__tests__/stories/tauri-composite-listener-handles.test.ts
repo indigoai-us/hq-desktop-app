@@ -120,17 +120,13 @@ describe('HQ-DESKTOP-39: framework composite listener handles', () => {
     // Every production surface that used to call `onFocusChanged`. Named
     // explicitly so dropping one back to the composite — or deleting its
     // subscription outright — fails here rather than silently reopening the
-    // Sentry lane. `DesktopApp.svelte` is covered by source contract because no
-    // spec in this repo mounts it; the runtime proof for the shared mechanism
-    // is `e2e/desktop-alt/popover-listener-teardown.spec.ts` (real Popover) and
-    // `src/desktop-alt/lib/library-refresh.test.ts` (real desktop-alt Library
-    // consumer), both against faithful @tauri-apps/api doubles.
+    // Sentry lane. The runtime proof for the shared mechanism is
+    // `e2e/desktop-alt/popover-listener-teardown.spec.ts` (real Popover) and
+    // against a faithful @tauri-apps/api double.
     const migrated = [
       'App.svelte',
       'components/Popover.svelte',
       'components/MeetingsWindow.svelte',
-      'desktop-alt/DesktopApp.svelte',
-      'desktop-alt/lib/library-refresh.ts',
     ];
 
     for (const rel of migrated) {

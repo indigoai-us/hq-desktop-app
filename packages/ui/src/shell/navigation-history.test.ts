@@ -30,7 +30,6 @@ import {
   DESKTOP_ALT_MAIN_FILE,
   HQ_WORK_SHELL_NAVIGATE_COUNT,
   HQ_WORK_SHELL_NAVIGATE_RE,
-  LEGACY_DESKTOP_APP_FILE,
   NAVIGATION_HANDLER_MATRIX,
   NAVIGATION_INVENTORY_FILES,
   SHARED_SHELL_FILE,
@@ -163,10 +162,8 @@ describe("navigation handler coverage matrix", () => {
     expect(work).toContain("<DesktopApp");
     const hqWork = readRepo(HQ_WORK_SHELL_FILE);
     expect(hqWork).toContain("<WorkShell");
-    const legacy = matrixRowsForFile(LEGACY_DESKTOP_APP_FILE);
-    expect(legacy).toHaveLength(1);
-    expect(legacy[0]?.inScope).toBe(false);
-    expect(legacy[0]?.id).toBe("legacy-desktop-route-navigate");
+    // The legacy desktop-alt shell was deleted with the Sessions removal;
+    // main.ts must still never import it.
   });
 });
 
