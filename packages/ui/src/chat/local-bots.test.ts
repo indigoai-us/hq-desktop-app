@@ -3,6 +3,7 @@ import type { LocalBotRow } from "@hq/platform";
 import {
   isValidLocalBotName,
   locallyHostedBots,
+  cloudTaskAgentUids,
   promotedBotCompany,
   lastHeartbeatLabel,
   localBotsAsContacts,
@@ -95,4 +96,31 @@ it("uses the promoted destination for the original personal DM profile", () => {
   expect(promotedBotCompany([promoted], promoted.agentUid)).toBe("cmp_TARGET");
   expect(promotedBotCompany([promoted], "agt_OTHER")).toBeNull();
   expect(promotedBotCompany([bot({ promotionHold: { companyUid: "cmp_TARGET" } })], promoted.agentUid)).toBeNull();
+});
+
+describe("cloudTaskAgentUids — local bots are never polled for cloud tasks", () => {
+  const local = bot({ name: "george", agentUid: "agt_LOCAL", hosting: "local" });
+  const promoted = bot({ name: "atlas", agentUid: "agt_CLOUD", hosting: "cloud" });
+
+  it("drops a locally hosted bot, which the cloud task route 404s forever", () => {
+    expect(cloudTaskAgentUids(["agt_LOCAL"], [local])).toEqual([]);
+  });
+
+  it("keeps a promoted bot, which does have a cloud task record", () => {
+    expect(cloudTaskAgentUids(["agt_CLOUD"], [local, promoted])).toEqual(["agt_CLOUD"]);
+  });
+
+  it("keeps an agent that is not a local bot at all", () => {
+    expect(cloudTaskAgentUids(["agt_FLEET"], [local])).toEqual(["agt_FLEET"]);
+  });
+
+  it("filters a channel roster without disturbing the rest of its order", () => {
+    expect(
+      cloudTaskAgentUids(["agt_FLEET", "agt_LOCAL", "agt_CLOUD"], [local, promoted]),
+    ).toEqual(["agt_FLEET", "agt_CLOUD"]);
+  });
+
+  it("is a no-op when no local bots are registered", () => {
+    expect(cloudTaskAgentUids(["agt_LOCAL"], [])).toEqual(["agt_LOCAL"]);
+  });
 });

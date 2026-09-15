@@ -29,6 +29,16 @@ export interface TaskFeedControllerOptions {
 }
 
 export const AGENT_TASK_POLL_MS = 15_000;
+
+/** Consecutive agent-wide failures after which an agent stops being polled.
+ *
+ * The agent-wide view is the last resort — when it fails there is nothing left
+ * to fall back to. A 404 there is permanent by construction (unknown agent,
+ * cross-tenant probe, or no read access; upstream keeps them
+ * indistinguishable), so retrying it forever spends an authenticated
+ * round-trip every tick and buries genuine failures in the log. A few retries
+ * still absorb a transient network blip before the agent is dropped. */
+export const AGENT_TASK_MAX_CONSECUTIVE_FAILURES = 3;
 export type TaskFeedSource = "room" | "agent";
 
 /** Agent uid shapes across the fleet (`agt_…` today, `agent_…` legacy). */
@@ -46,6 +56,8 @@ export class TaskFeedController {
   private readonly channelId: string | null;
   private readonly fetchTasks: TaskFetcher | null;
   private readonly fetchRoomTasks: RoomTaskFetcher | null;
+  /** Consecutive agent-wide failures per uid; an entry at the cap is retired. */
+  private readonly failures = new Map<string, number>();
 
   constructor(options: TaskFeedControllerOptions) {
     this.agents = [...new Set(options.agentUids.filter(isAgentUid))];
@@ -109,8 +121,11 @@ export class TaskFeedController {
       return { source: "agent", feed: agentTaskFeed(null, "agent task view unavailable") };
     }
     try {
-      return { source: "agent", feed: agentTaskFeed(await this.fetchTasks(uid)) };
+      const feed = { source: "agent" as const, feed: agentTaskFeed(await this.fetchTasks(uid)) };
+      this.failures.delete(uid);
+      return feed;
     } catch (err) {
+      this.failures.set(uid, (this.failures.get(uid) ?? 0) + 1);
       return {
         source: "agent",
         feed: agentTaskFeed(null, err instanceof Error ? err.message : String(err)),
@@ -118,21 +133,36 @@ export class TaskFeedController {
     }
   }
 
-  /** One poll. Never throws. */
+  /** True once an agent has failed the agent-wide view too many times running. */
+  private retired(uid: string): boolean {
+    return (this.failures.get(uid) ?? 0) >= AGENT_TASK_MAX_CONSECUTIVE_FAILURES;
+  }
+
+  /** One poll. Never throws.
+   *
+   * A retired agent keeps whatever feed it last had — the strip already shows
+   * nothing for an errored feed, so dropping it would change nothing visible
+   * while losing the error the next reader wants. */
   async tick(): Promise<void> {
     if (this.disposed) return;
-    const nextFeeds = new Map<string, AgentTaskFeed>();
-    const nextSources = new Map<string, TaskFeedSource>();
+    const nextFeeds = new Map<string, AgentTaskFeed>(this.feeds);
+    const nextSources = new Map<string, TaskFeedSource>(this.sources);
     await Promise.all(
-      this.agents.map(async (uid) => {
-        const { feed, source } = await this.load(uid);
-        nextFeeds.set(uid, feed);
-        nextSources.set(uid, source);
-      }),
+      this.agents
+        .filter((uid) => !this.retired(uid))
+        .map(async (uid) => {
+          const { feed, source } = await this.load(uid);
+          nextFeeds.set(uid, feed);
+          nextSources.set(uid, source);
+        }),
     );
-    if (!this.disposed) {
-      this.feeds = nextFeeds;
-      this.sources = nextSources;
+    if (this.disposed) return;
+    this.feeds = nextFeeds;
+    this.sources = nextSources;
+    // Nothing left to ask for — stop the timer rather than wake up to no-op.
+    if (this.timer && this.agents.every((uid) => this.retired(uid))) {
+      clearInterval(this.timer);
+      this.timer = null;
     }
   }
 

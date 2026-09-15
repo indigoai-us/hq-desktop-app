@@ -286,6 +286,7 @@ export * from "./chat/tasks/room-task-feed";
 export {
   TaskFeedController,
   AGENT_TASK_POLL_MS,
+  AGENT_TASK_MAX_CONSECUTIVE_FAILURES,
   type TaskFeedControllerOptions,
   type TaskFeedSource,
   type TaskFetcher,

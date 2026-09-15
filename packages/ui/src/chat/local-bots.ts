@@ -123,3 +123,19 @@ export function promotedBotCompany(bots: readonly LocalBotRow[], agentUid: strin
   const row = bots.find(bot => bot.agentUid === agentUid && bot.hosting === "cloud");
   return row?.promotionHold?.companyUid ?? null;
 }
+
+
+/** Agent uids worth asking the cloud task route about.
+ *
+ * A locally hosted bot runs only on this machine, so `agent-telescope` has no
+ * record of it and answers a permanent 404 — which the task-feed poller would
+ * otherwise re-request every tick for as long as its DM stays open, burning an
+ * authenticated round-trip each time and burying real 404s in the log. A
+ * promoted bot (`hosting === "cloud"`) does have a record and stays included. */
+export function cloudTaskAgentUids(
+  uids: readonly string[],
+  bots: readonly LocalBotRow[],
+): string[] {
+  const localOnly = new Set(locallyHostedBots(bots).map(bot => bot.agentUid));
+  return uids.filter(uid => !localOnly.has(uid));
+}
