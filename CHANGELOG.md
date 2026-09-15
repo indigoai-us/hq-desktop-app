@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.267] — 2026-09-15
+
 - Core update diagnostics now identify a missing rsync installation instead of treating the rescue failure as unknown.
 
 ## [0.10.266] — 2026-09-15
