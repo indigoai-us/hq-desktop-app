@@ -27,6 +27,7 @@
     isAgentUid,
     newestMessageAtFrom,
     startThinking,
+    agentDisplayName,
     tick,
     type ThinkingEntry,
   } from "../agent-thinking.js";
@@ -109,6 +110,8 @@
     tasks?: AgentTask[];
     channelId?: string | null;
     withPersonUid?: string | null;
+    /** Display name of the DM counterpart (the agent in an agent DM). */
+    withPersonName?: string | null;
     /** Timeline root for instant pin while GET /threads is in flight. */
     seedRoot?: ConversationMessageWire | null;
     /** Host wake bus. Matching `reply:new` re-fetches; other roots are ignored. */
@@ -181,6 +184,7 @@
     scope,
     channelId = null,
     withPersonUid = null,
+    withPersonName = null,
     seedRoot = null,
     wakes = null,
     reactions = {},
@@ -316,7 +320,10 @@
         agentThinking,
         {
           agentUid: uid,
-          agentName: root ? messageAuthor(root) : "Bot",
+          agentName: agentDisplayName(uid, [...(root ? [root] : []), ...replies], {
+            liveNames: displayNameByUid,
+            fallback: withPersonName,
+          }),
         },
         Date.now(),
         // Fast responders (local bots): only a reply newer than their last

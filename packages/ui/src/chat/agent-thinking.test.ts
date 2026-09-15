@@ -16,6 +16,7 @@ import {
   clearRowFromMessages,
   dropRow,
   kickoffThinkingState,
+  agentDisplayName,
 } from './agent-thinking.js';
 
 function member(personUid: string, displayName: string): MentionCandidate {
@@ -356,5 +357,20 @@ describe('kickoffThinkingState', () => {
   });
   it('is done when the answer already landed', () => {
     expect(kickoffThinkingState([intro, reply], bot)).toEqual({ state: 'done' });
+  });
+});
+
+describe("agentDisplayName", () => {
+  const root = { fromPersonUid: "prs_jacob", fromDisplayName: "Jacob Posel" };
+  const agentReply = { fromPersonUid: "agt_mkt", fromDisplayName: "Marketing Agent" };
+
+  it("never names the row after the person who started the thread", () => {
+    expect(agentDisplayName("agt_mkt", [root], { fallback: "Marketing Agent" })).toBe("Marketing Agent");
+    expect(agentDisplayName("agt_mkt", [root, agentReply])).toBe("Marketing Agent");
+  });
+
+  it("prefers the live roster name, then the agent's own messages, then the fallback", () => {
+    expect(agentDisplayName("agt_mkt", [agentReply], { liveNames: { agt_mkt: "Maya" } })).toBe("Maya");
+    expect(agentDisplayName("agt_mkt", [root])).toBe("Bot");
   });
 });

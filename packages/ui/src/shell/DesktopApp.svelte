@@ -6706,6 +6706,7 @@
                     scope={replyScope}
                     channelId={selectedRow.channelId}
                     withPersonUid={selectedRow.personUid}
+                    withPersonName={selectedRow.title}
                     {seedRoot}
                     {wakes}
                     reactions={rowReactions}

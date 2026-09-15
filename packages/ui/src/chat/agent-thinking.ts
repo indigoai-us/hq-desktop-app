@@ -268,6 +268,33 @@ export function kickoffThinkingState(
   return afterMs === undefined ? { state: 'done' } : { state: 'start', afterMs };
 }
 
+/**
+ * The name to show for an agent's thinking row. Never the name on a message
+ * someone else wrote: a thread's root is often the person's own message, and
+ * labelling the row with its author read "Jacob is thinking…" while the agent
+ * worked. Order: the live roster name, the agent's own most recent message,
+ * the caller's fallback (e.g. the DM title), then "Bot".
+ */
+export function agentDisplayName(
+  agentUid: string,
+  messages: ReadonlyArray<{
+    fromPersonUid?: string | null;
+    fromDisplayName?: string | null;
+  }>,
+  opts?: { liveNames?: Record<string, string>; fallback?: string | null },
+): string {
+  const uid = agentUid.trim();
+  const live = opts?.liveNames?.[uid]?.trim();
+  if (live) return live;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i]!;
+    if ((msg.fromPersonUid ?? '').trim() !== uid) continue;
+    const name = msg.fromDisplayName?.trim();
+    if (name) return name;
+  }
+  return opts?.fallback?.trim() || 'Bot';
+}
+
 /** Status copy for a row. Unicode ellipsis (U+2026) matches the rest of
  * the messaging UI (`Sending…`, `Joining…`). */
 export function labelFor(entry: ThinkingEntry): string {
