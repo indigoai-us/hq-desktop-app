@@ -169,7 +169,7 @@ final class TrayController: NSObject {
         // Right-click context menu (NOT set as item.menu — that would make a
         // plain left-click open the menu instead of the popover). Items:
         // Sync Now / Open desktop view / Hide notifications / Check for
-        // updates / Recovery / Sign Out / Quit HQ ⌘Q.
+        // updates / Recovery / Replay welcome intro / Sign Out / Quit HQ ⌘Q.
         let sync = NSMenuItem(title: "Sync Now", action: #selector(syncNow), keyEquivalent: "")
         sync.target = self
         menu.addItem(sync)
@@ -190,6 +190,10 @@ final class TrayController: NSObject {
             title: "Recovery…", action: #selector(openRecovery), keyEquivalent: "")
         recovery.target = self
         menu.addItem(recovery)
+        let replayIntro = NSMenuItem(
+            title: "Replay welcome intro", action: #selector(replayWelcomeIntro), keyEquivalent: "")
+        replayIntro.target = self
+        menu.addItem(replayIntro)
         menu.addItem(.separator())
         let signOut = NSMenuItem(title: "Sign Out", action: #selector(signOutHQ), keyEquivalent: "")
         signOut.target = self
@@ -275,6 +279,7 @@ final class TrayController: NSObject {
         writeCommand("recovery")
         activateHQ()
     }
+    @objc func replayWelcomeIntro() { writeCommand("replay-intro") }
     @objc func signOutHQ() { writeCommand("signout") }
     @objc func quitHQ() {
         writeCommand("quit")

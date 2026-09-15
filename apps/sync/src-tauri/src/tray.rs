@@ -307,6 +307,7 @@ const MENU_OPEN_DESKTOP: &str = "open-desktop";
 const MENU_HIDE_NOTIFICATIONS: &str = "hide-notifications";
 const MENU_CHECK_UPDATES: &str = "check-for-updates";
 const MENU_RECOVERY: &str = "recovery";
+const MENU_REPLAY_INTRO: &str = "replay-intro";
 const MENU_SIGN_OUT: &str = "sign-out";
 const MENU_SETTINGS: &str = "settings";
 const MENU_QUIT: &str = "quit";
@@ -350,6 +351,8 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     let check_updates =
         MenuItemBuilder::with_id(MENU_CHECK_UPDATES, "Check for updates…").build(app)?;
     let recovery = MenuItemBuilder::with_id(MENU_RECOVERY, "Recovery…").build(app)?;
+    let replay_intro =
+        MenuItemBuilder::with_id(MENU_REPLAY_INTRO, "Replay welcome intro").build(app)?;
     let settings = MenuItemBuilder::with_id(MENU_SETTINGS, "Settings").build(app)?;
     let sign_out = MenuItemBuilder::with_id(MENU_SIGN_OUT, "Sign Out").build(app)?;
     let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit HQ").build(app)?;
@@ -363,6 +366,7 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .separator()
         .item(&check_updates)
         .item(&recovery)
+        .item(&replay_intro)
         .separator()
         .item(&settings)
         .item(&sign_out)
@@ -411,6 +415,9 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     }
                     id if id == MENU_SIGN_OUT => {
                         let _ = app_handle.emit("tray:sign-out", ());
+                    }
+                    id if id == MENU_REPLAY_INTRO => {
+                        let _ = app_handle.emit("tray:replay-intro", ());
                     }
                     id if id == MENU_SETTINGS => {
                         let _ = app_handle.emit("tray:open-settings", ());
@@ -1245,6 +1252,7 @@ mod tests {
         assert_eq!(MENU_HIDE_NOTIFICATIONS, "hide-notifications");
         assert_eq!(MENU_CHECK_UPDATES, "check-for-updates");
         assert_eq!(MENU_RECOVERY, "recovery");
+        assert_eq!(MENU_REPLAY_INTRO, "replay-intro");
         assert_eq!(MENU_SIGN_OUT, "sign-out");
         assert_eq!(MENU_SETTINGS, "settings");
         assert_eq!(MENU_QUIT, "quit");

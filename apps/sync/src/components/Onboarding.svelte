@@ -14,9 +14,11 @@
      * `'onboarding'` (default) runs the full first-run wizard. `'reprompt'`
      * (US-005) shows ONLY the consent step to re-ask a person whose recorded
      * answer is stale — same floating-card chrome, but it must NOT mark first
-     * run complete on finish (that already happened long ago).
+     * run complete on finish (that already happened long ago). `'replay'`
+     * plays ONLY the cinematic intro (menu-bar "Replay welcome intro") and
+     * calls `onfinish` when it ends — no wizard, no flag writes.
      */
-    mode?: 'onboarding' | 'reprompt';
+    mode?: 'onboarding' | 'reprompt' | 'replay';
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
   }
@@ -138,13 +140,20 @@
 
   onMount(() => {
     showIntro =
-      mode === 'onboarding' &&
-      lifecycleStateProp === 'NeedsInstall' &&
-      !introAlreadySeen();
+      mode === 'replay' ||
+      (mode === 'onboarding' &&
+        lifecycleStateProp === 'NeedsInstall' &&
+        !introAlreadySeen());
     void sizeForOnboarding(showIntro ? INTRO_SIZE : ONBOARDING_SIZE, showIntro);
   });
 
   async function handleIntroFinish() {
+    if (mode === 'replay') {
+      // Nothing follows a replay. Unmounting restores the popover material
+      // and size (onDestroy), then the parent hides the sheet.
+      await onfinish?.();
+      return;
+    }
     markIntroSeen();
     showIntro = false;
     // Shrink back to the wizard card the film was covering.
@@ -196,7 +205,7 @@
   <OnboardingWizard
     {initialStep}
     {onboardingFlow}
-    {mode}
+    mode={mode === 'replay' ? 'onboarding' : mode}
     {repromptPersonUid}
     onfinish={handleFinish}
   />
