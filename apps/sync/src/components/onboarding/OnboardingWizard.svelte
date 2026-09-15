@@ -49,6 +49,9 @@
     buildInitialStages,
     buildStagesFromManifest,
     friendlySetupBands,
+    contentProgressSubStatus,
+    setupSubStatus,
+    stageCreepAt,
     createSetupRunId,
     normalizeFailedStageIds,
     reuseInFlightOperation,
@@ -241,6 +244,12 @@
   let setupCompleted = $state(false);
   let setupStarted = $state(false);
   let stageCreep = $state(0);
+  // How long the stage that is running right now has been running. Drives both
+  // the ring's creep and the sub-status line under the active band, so a long
+  // stage never reads as frozen.
+  let stageElapsedMs = $state(0);
+  /** Real backend progress text for the running stage, when one was reported. */
+  let stageDetail = $state<string | null>(null);
   let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
   let currentSetupRunId = '';
@@ -354,6 +363,13 @@
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
+  const setupSubStatusModel = $derived(
+    setupSubStatus({
+      stageId: currentStageId,
+      elapsedMs: stageElapsedMs,
+      detail: stageDetail,
+    }),
+  );
   const userFacingInstallPath = $derived(
     installPath ? toUserFacingPath(installPath) : null,
   );
@@ -412,18 +428,24 @@
     return () => window.clearInterval(intervalId);
   });
 
+  // One ticker per running stage. It advances the ring's creep AND the elapsed
+  // clock the sub-status line reads, so the percent keeps moving and the copy
+  // under the active band keeps changing for as long as the stage runs.
   $effect(() => {
     const activeId = currentStageId;
     const done = setupDone;
-    let creep = 0;
-    stageCreep = creep;
+    stageCreep = 0;
+    stageElapsedMs = 0;
+    stageDetail = null;
 
     if (done || activeId === null) return;
 
+    const startedAt = Date.now();
     const interval = window.setInterval(() => {
-      creep += (0.92 - creep) * 0.14;
-      stageCreep = creep;
-    }, 1200);
+      const elapsed = Date.now() - startedAt;
+      stageElapsedMs = elapsed;
+      stageCreep = stageCreepAt(elapsed);
+    }, 1000);
 
     return () => {
       window.clearInterval(interval);
@@ -886,6 +908,12 @@
 
     if (handle && payload.phase === 'complete') {
       activeContentHandles.delete(handle);
+    }
+
+    // The template download is the one stage that reports genuine progress;
+    // show it verbatim instead of the written sub-steps while it runs.
+    if (currentStageId === 'content') {
+      stageDetail = contentProgressSubStatus(payload);
     }
   }
 
@@ -2162,6 +2190,26 @@
                 {/if}
                 <span class="lt">{band.label}</span>
               </div>
+              {#if band.status === 'active' && setupSubStatusModel.text}
+                <div
+                  class="li-sub"
+                  role="status"
+                  aria-live="polite"
+                  data-testid="onboarding-setup-substatus"
+                >
+                  <!-- Keyed so each new sub-step replays the fade-in and the
+                       line visibly changes rather than swapping in place. -->
+                  {#key setupSubStatusModel.text}
+                    <span class="sub-text">{setupSubStatusModel.text}</span>
+                  {/key}
+                  {#if setupSubStatusModel.elapsedLabel}
+                    <span
+                      class="sub-elapsed"
+                      data-testid="onboarding-setup-elapsed"
+                    >{setupSubStatusModel.elapsedLabel}</span>
+                  {/if}
+                </div>
+              {/if}
             {/each}
           </div>
           <!-- The setup screen intentionally shows ONLY the friendly checklist (matching
@@ -2875,6 +2923,14 @@
   .dotpend { width:14px; height:14px; border-radius:50%; border:1.4px solid var(--check-border); flex-shrink:0; }
   .spin { width:13px; height:13px; border:1.6px solid var(--check-border); border-top-color:var(--c-text); border-radius:50%; animation:sp .8s linear infinite; flex-shrink:0; }
   @keyframes sp { to{transform:rotate(360deg)} }
+  /* Live sub-status under the active band — indented to sit under its label. */
+  .li-sub { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin:-1px 0 2px 24px; color:var(--c-muted); font-size:12px; line-height:16px; }
+  .li-sub .sub-text { animation:subin .28s ease-out; }
+  .li-sub .sub-elapsed { font-variant-numeric:tabular-nums; opacity:.75; }
+  @keyframes subin { from{opacity:0; transform:translateY(2px)} to{opacity:1; transform:none} }
+  @media (prefers-reduced-motion: reduce) {
+    .li-sub .sub-text { animation:none; }
+  }
 
   .logo svg { width:120px; height:auto; display:block; color:#fff; }
   .finder-item { display:flex; flex-direction:column; align-items:center; gap:2px; }

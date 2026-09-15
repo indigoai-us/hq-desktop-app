@@ -84,6 +84,25 @@ describe('honest onboarding stage reporting', () => {
     expect(wizard).toMatch(/data-testid="onboarding-install-\{slot\.kind\}"\n\s+disabled=\{finishing\}/);
   });
 
+  it('shows a live sub-status and an elapsed cue under the active band', () => {
+    const wizard = readFileSync(
+      fileURLToPath(
+        new URL('../components/onboarding/OnboardingWizard.svelte', import.meta.url),
+      ),
+      'utf8',
+    );
+
+    // The band alone cannot show movement on a stage that runs for minutes:
+    // the sub-status line and the "still working" cue are what the user reads.
+    expect(wizard).toContain("{#if band.status === 'active' && setupSubStatusModel.text}");
+    expect(wizard).toContain('data-testid="onboarding-setup-substatus"');
+    expect(wizard).toContain('data-testid="onboarding-setup-elapsed"');
+    expect(wizard).toContain('aria-live="polite"');
+    // The ring's creep is the shared curve, not a saturating per-tick constant.
+    expect(wizard).toContain('stageCreep = stageCreepAt(elapsed);');
+    expect(wizard).not.toContain('creep += (0.92 - creep) * 0.14;');
+  });
+
   it('awaits a bounded initial cloud sync rather than completing a detached task', () => {
     const stages = readFileSync(
       fileURLToPath(

@@ -14,6 +14,7 @@
     setupCompletionResult,
     setupProgressPercent,
     stageCommandInvocations,
+    stageCreepAt,
     stageSkipThresholdMs,
     stageTimeoutMs,
     StageTimeoutError,
@@ -536,18 +537,19 @@
     void startSetupRun();
   });
 
+  // Shares the wizard's creep curve so both surfaces keep the percent moving
+  // for the whole of a long stage instead of saturating after ~25s.
   $effect(() => {
     const activeId = currentStageId;
     const done = setupDone;
-    let creep = 0;
-    stageCreep = creep;
+    stageCreep = 0;
 
     if (done || activeId === null) return;
 
+    const startedAt = Date.now();
     const interval = window.setInterval(() => {
-      creep += (0.92 - creep) * 0.14;
-      stageCreep = creep;
-    }, 1200);
+      stageCreep = stageCreepAt(Date.now() - startedAt);
+    }, 1000);
 
     return () => {
       window.clearInterval(interval);

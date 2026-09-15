@@ -5,9 +5,11 @@ import { mount, unmount } from 'svelte';
 import {
   allSettled,
   buildInitialStages,
+  contentProgressSubStatus,
   buildStagesFromManifest,
   failedRequiredStages,
   friendlySetupBands,
+  humanizeStageId,
   isContentRetryEligible,
   isHardStageTimeoutMessage,
   isStageSkipEligible,
@@ -18,7 +20,10 @@ import {
   setupCompletionResult,
   setupProgressPercent,
   setupStageRecoveryAction,
+  setupSubStatus,
   stageAutoRetryLimit,
+  stageCreepAt,
+  stageSubSteps,
   stageCommandInvocations,
   stageSkipThresholdMs,
   stageTimeoutMs,
@@ -28,6 +33,7 @@ import {
   DEFAULT_STAGE_SKIP_THRESHOLD_MS,
   DEFAULT_STAGE_TIMEOUT_MS,
   withTimeout,
+  type StageId,
   type StageState,
 } from './onboarding-setup';
 import SetupScreen from '../components/onboarding/SetupScreen.svelte';
@@ -753,5 +759,153 @@ describe('SetupScreen install cancellation', () => {
       hqPath: '/tmp/hq',
     });
     await unmount(component);
+  });
+});
+
+describe('live sub-status under the active band', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Drive the wizard's 1s ticker and read the sub-status at each tick. */
+  function runStage(
+    stageId: StageId,
+    seconds: number,
+    detail: string | null = null,
+  ): ReturnType<typeof setupSubStatus>[] {
+    const startedAt = Date.now();
+    const seen: ReturnType<typeof setupSubStatus>[] = [];
+    const timer = setInterval(() => {
+      seen.push(
+        setupSubStatus({ stageId, elapsedMs: Date.now() - startedAt, detail }),
+      );
+    }, 1_000);
+    vi.advanceTimersByTime(seconds * 1_000);
+    clearInterval(timer);
+    return seen;
+  }
+
+  it('has honest sub-steps for every backend stage', () => {
+    for (const id of STAGE_ORDER) {
+      expect(stageSubSteps(id).length).toBeGreaterThan(0);
+      for (const step of stageSubSteps(id)) expect(step.trim()).not.toBe('');
+    }
+  });
+
+  it('humanizes a stage id it has no sub-steps for instead of rendering blank', () => {
+    expect(stageSubSteps('menubar-install' as StageId)).toEqual([
+      'Menubar install…',
+    ]);
+    expect(humanizeStageId('')).toBe('Working');
+  });
+
+  it('rotates through a stage’s sub-steps as it keeps running', () => {
+    const lines = runStage('initial-sync', 30).map((status) => status.text);
+    const distinct = [...new Set(lines)];
+
+    expect(distinct.length).toBeGreaterThan(1);
+    expect(distinct[0]).toBe('Downloading worker definitions…');
+    expect(lines.at(-1)).toBe('Almost there…');
+  });
+
+  it('holds on the last sub-step rather than looping back to the first', () => {
+    const lines = runStage('initial-sync', 240).map((status) => status.text);
+
+    expect(lines.at(-1)).toBe('Almost there…');
+    expect(lines.slice(60)).not.toContain('Downloading worker definitions…');
+  });
+
+  it('adds a still-working cue only after the threshold, counting up', () => {
+    const statuses = runStage('deps', 130);
+
+    expect(statuses[18]?.elapsedLabel).toBeNull();
+    expect(statuses[19]?.elapsedLabel).toBe('Still working — 20s');
+    expect(statuses[44]?.elapsedLabel).toBe('Still working — 45s');
+    expect(statuses.at(-1)?.elapsedLabel).toBe('Still working — 2m 10s');
+  });
+
+  it('prefers a real backend detail over the written sub-steps', () => {
+    const statuses = runStage(
+      'content',
+      12,
+      'Downloading the HQ template — 42%',
+    );
+
+    expect(new Set(statuses.map((s) => s.text))).toEqual(
+      new Set(['Downloading the HQ template — 42%']),
+    );
+  });
+
+  it('says nothing when no stage is running', () => {
+    expect(setupSubStatus({ stageId: null, elapsedMs: 600_000 })).toEqual({
+      text: null,
+      elapsedLabel: null,
+    });
+  });
+
+  it('turns content download progress into one honest line', () => {
+    expect(
+      contentProgressSubStatus({ phase: 'download', percent: 41.6 }),
+    ).toBe('Downloading the HQ template — 42%');
+    expect(contentProgressSubStatus({ phase: 'download', percent: null })).toBe(
+      'Downloading the HQ template…',
+    );
+    expect(contentProgressSubStatus({ phase: 'extract' })).toBe(
+      'Unpacking files…',
+    );
+    expect(
+      contentProgressSubStatus({ phase: 'download', percent: 12, stalled: true }),
+    ).toBe('The download stalled — retrying…');
+    expect(contentProgressSubStatus({ phase: 'complete' })).toBeNull();
+  });
+});
+
+describe('percent creep inside a band', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The percent the ring shows for a stage that has been running `seconds`. */
+  function percentAfter(seconds: number): number {
+    return setupProgressPercent({
+      settledCount: 2,
+      totalStages: STAGE_ORDER.length,
+      hasRunningStage: true,
+      stageCreep: stageCreepAt(seconds * 1_000),
+    });
+  }
+
+  it('keeps the number moving for minutes, not only for the first half-minute', () => {
+    const startedAt = Date.now();
+    const samples: number[] = [];
+    const timer = setInterval(() => {
+      samples.push(stageCreepAt(Date.now() - startedAt));
+    }, 1_000);
+    vi.advanceTimersByTime(180_000);
+    clearInterval(timer);
+
+    // Monotonic, and still climbing long after the old 14%-per-tick curve
+    // had saturated (~25s).
+    for (let i = 1; i < samples.length; i += 1) {
+      expect(samples[i]).toBeGreaterThanOrEqual(samples[i - 1]!);
+    }
+    expect(samples.at(-1)!).toBeGreaterThan(samples[29]!);
+    expect(percentAfter(180)).toBeGreaterThan(percentAfter(30));
+    expect(percentAfter(30)).toBeGreaterThan(percentAfter(5));
+  });
+
+  it('never claims more than the band it is inside', () => {
+    expect(stageCreepAt(0)).toBe(0);
+    expect(stageCreepAt(10_000_000)).toBeLessThanOrEqual(0.92);
+    expect(stageCreepAt(-5_000)).toBe(0);
+    expect(percentAfter(10_000)).toBeLessThan(50);
   });
 });
