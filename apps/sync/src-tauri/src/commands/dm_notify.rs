@@ -1211,9 +1211,12 @@ pub async fn fetch_dm_thread(
             .await
             .ok()
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        // Name the peer. Without it a recurring 404 tells you a thread read
+        // failed but not which one, so you cannot tell one unreachable
+        // account from a broken route without adding the field first.
         log(
             LOG_TAG,
-            &format!("DM_NOTIFY_THREAD_FAIL status={status} msg={server_msg:?}"),
+            &format!("DM_NOTIFY_THREAD_FAIL with={target} status={status} msg={server_msg:?}"),
         );
         return Err(server_msg
             .unwrap_or_else(|| format!("Failed to load thread (status {})", status.as_u16())));
