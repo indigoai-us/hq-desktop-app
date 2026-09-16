@@ -298,6 +298,44 @@ fn rebound_claude_folder(original: Option<&Path>, hq_root: &Path) -> Result<Path
     Ok(canonical_root)
 }
 
+/// A short natural-language request cannot carry missing-install recovery.
+/// Supply a fallback skill only when the real wizard is absent. Never replace
+/// an installed skill or write through a dangling symlink.
+fn ensure_setup_skill(root: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let skill = root.join(".claude/skills/setup/SKILL.md");
+    if skill.is_file() {
+        return Ok(());
+    }
+    if std::fs::symlink_metadata(&skill).is_ok() {
+        return Err(
+            "The setup skill path is damaged. Repair HQ from the installer and try again.".into(),
+        );
+    }
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let mut parent = root.clone();
+    for part in [".claude", "skills", "setup"] {
+        parent.push(part);
+        match std::fs::symlink_metadata(&parent) {
+            Ok(meta) if meta.is_symlink() || !meta.is_dir() => {
+                return Err("Cannot prepare setup through a redirected or damaged skill directory. Repair HQ and try again.".into());
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&parent)
+                    .map_err(|e| format!("Could not prepare the setup skill: {e}"))?;
+            }
+            Err(e) => return Err(format!("Could not inspect the setup skill: {e}")),
+        }
+    }
+    let mut file = tempfile::NamedTempFile::new_in(&parent).map_err(|e| e.to_string())?;
+    file.write_all(include_bytes!("setup-recovery.md"))
+        .map_err(|e| e.to_string())?;
+    file.persist_noclobber(parent.join("SKILL.md"))
+        .map_err(|e| format!("Could not prepare the setup skill. Please retry: {e}"))?;
+    Ok(())
+}
+
 /// Parse a validated `claude://code/new?...` URL, bind the `folder` parameter
 /// to the HQ root, verify hook health, and return the rewritten URL.
 pub fn preflight_claude_code_url(url: &str) -> Result<String, String> {
@@ -312,13 +350,17 @@ pub fn preflight_claude_code_url(url: &str) -> Result<String, String> {
         .map(|(_, value)| value.into_owned())
         .unwrap_or_default();
 
-    let setup_repair = prompt.contains("/setup");
+    let short_setup = prompt.trim() == "Run the setup skill";
+    let setup_repair = short_setup || prompt.contains("/setup");
     let hq_root = if setup_repair {
         bind_hq_root_for_setup_repair(folder.as_deref())?
     } else {
         bind_hq_root_for_claude_launch(folder.as_deref())?
     };
-    if !setup_repair {
+    if short_setup {
+        ensure_setup_skill(&hq_root)?;
+        folder = Some(hq_root.clone());
+    } else if !setup_repair {
         check_hq_hooks_ready(&hq_root)?;
     }
 
@@ -339,6 +381,79 @@ pub fn preflight_claude_code_url(url: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    fn short_setup_url(root: &Path) -> String {
+        let mut url = Url::parse("claude://code/new").unwrap();
+        url.query_pairs_mut()
+            .append_pair("q", "Run the setup skill")
+            .append_pair("folder", root.to_str().unwrap());
+        url.to_string()
+    }
+
+    #[test]
+    fn short_setup_prepares_empty_folder_without_expanding_composer() {
+        let root = tempfile::tempdir().unwrap();
+        let url = preflight_claude_code_url(&short_setup_url(root.path())).unwrap();
+        let parsed = Url::parse(&url).unwrap();
+        assert_eq!(
+            parsed.query_pairs().find(|(k, _)| k == "q").unwrap().1,
+            "Run the setup skill"
+        );
+        let skill = fs::read_to_string(root.path().join(".claude/skills/setup/SKILL.md")).unwrap();
+        assert!(skill.contains("npx create-hq@latest ."));
+        assert!(skill.contains("hq rescue -y --paths .claude"));
+        assert!(skill.contains("Do not loop"));
+        assert!(!root.path().join("core/core.yaml").exists());
+    }
+
+    #[test]
+    fn short_setup_preserves_installed_wizard_and_user_content() {
+        let root = tempfile::tempdir().unwrap();
+        write_core_yaml(root.path());
+        let skill = root.path().join(".claude/skills/setup/SKILL.md");
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs::write(&skill, "User's existing setup wizard").unwrap();
+        preflight_claude_code_url(&short_setup_url(root.path())).unwrap();
+        assert_eq!(
+            fs::read_to_string(skill).unwrap(),
+            "User's existing setup wizard"
+        );
+        assert!(root.path().join("core/core.yaml").exists());
+    }
+
+    #[test]
+    fn short_setup_repairs_partial_install_and_is_idempotent() {
+        let root = tempfile::tempdir().unwrap();
+        write_core_yaml(root.path());
+        let url = short_setup_url(root.path());
+        preflight_claude_code_url(&url).unwrap();
+        preflight_claude_code_url(&url).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join(".claude/skills/setup/SKILL.md")).unwrap(),
+            include_str!("setup-recovery.md")
+        );
+    }
+
+    #[test]
+    fn short_setup_surfaces_unwritable_layout_instead_of_launching() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(".claude"), "user file").unwrap();
+        assert!(preflight_claude_code_url(&short_setup_url(root.path())).is_err());
+        assert_eq!(
+            fs::read_to_string(root.path().join(".claude")).unwrap(),
+            "user file"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn short_setup_does_not_write_through_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join(".claude")).unwrap();
+        assert!(preflight_claude_code_url(&short_setup_url(root.path())).is_err());
+        assert!(!outside.path().join("skills").exists());
+    }
 
     fn write_core_yaml(root: &Path) {
         fs::create_dir_all(root.join("core")).unwrap();
