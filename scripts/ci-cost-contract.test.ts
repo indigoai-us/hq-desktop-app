@@ -92,6 +92,27 @@ function jobConfig(workflow: string, name: string): string {
     .join("\n");
 }
 
+/**
+ * One `- name:`d step out of a job body, ending at the next step.
+ *
+ * `job.slice(job.indexOf(name))` is not this: it returns the whole remainder of
+ * the job, so an assertion about a step's `if:` stays green when that step loses
+ * its condition and any LATER step happens to carry the one being looked for.
+ */
+function stepConfig(workflow: string, job: string, step: string): string {
+  const body = jobConfig(workflow, job);
+  const start = body.indexOf(`- name: ${step}`);
+
+  if (start < 0) {
+    throw new Error(`job ${job} is missing the "${step}" step`);
+  }
+
+  const rest = body.slice(start + 1);
+  const next = rest.indexOf("- name: ");
+
+  return next < 0 ? body.slice(start) : body.slice(start, start + 1 + next);
+}
+
 /** Every top-level job key, discovered rather than listed. */
 function jobNames(workflow: string): string[] {
   const jobs = workflow.slice(workflow.indexOf("\njobs:"));
@@ -872,24 +893,52 @@ describe("the live job keeps its diagnostics upload unconditional", () => {
   // mid-range. The cause is unknown and it is not stray processes.
 
   it("uploads on success as well as failure", () => {
-    const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
-    const upload = job.slice(job.indexOf("name: Upload WebDriver diagnostics"));
+    // Scoped to the step, not to the rest of the job: `slice(indexOf(name))`
+    // would keep this green if the upload lost its condition and any later
+    // step carried an `if: always()` of its own.
+    const upload = stepConfig(
+      windowsCheckWorkflow,
+      "windows-check-live",
+      "Upload WebDriver diagnostics",
+    );
 
     expect(upload).toContain("if: always()");
     expect(upload).not.toContain("if: failure()");
   });
 
-  it("still uploads the driver log directory the live spec writes", () => {
-    // The saving is only tempting because the artifact is tiny. Narrowing the
-    // path to buy the same time back would be the same trade in a different
-    // shape, so pin what is collected too.
+  it("uploads the directory the live spec was told to write to", () => {
+    // Not just "the env var is mentioned somewhere". The spec writes wherever
+    // HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR points; the upload collects whatever
+    // `path:` names. Point them at different directories and the contract is
+    // broken SILENTLY -- `if-no-files-found: warn` means the job stays green
+    // while collecting nothing. So compare the two values.
     const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
-    const upload = job.slice(job.indexOf("name: Upload WebDriver diagnostics"));
+    const upload = stepConfig(
+      windowsCheckWorkflow,
+      "windows-check-live",
+      "Upload WebDriver diagnostics",
+    );
 
-    expect(upload).toContain("desktop-alt-driver-logs/**");
+    // Capture to end of line, not `\S+`: both values contain `${{ runner.temp }}`,
+    // which has spaces in it.
+    const configured = /HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR:[ \t]*(.+)/.exec(job);
+    const collected = /path:[ \t]*(.+)/.exec(upload);
 
-    // The spec writes there because the job points it there; if that env var
-    // moves, the upload path is stale and silently collects nothing.
-    expect(job).toContain("HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR");
+    expect(configured, "the live spec is never told where to write").not.toBeNull();
+    expect(collected, "the upload step declares no path").not.toBeNull();
+
+    // The env var uses Windows separators and the upload a glob; compare the
+    // directory both resolve to.
+    const normalise = (value: string) =>
+      value
+        .trim()
+        .replace(/\\/g, "/")
+        .replace(/\/\*+$/, "")
+        .replace(/\/$/, "");
+
+    expect(normalise(collected![1])).toBe(normalise(configured![1]));
+
+    // And it is still a recursive collect, not just the directory entry.
+    expect(collected![1].trim()).toMatch(/\*\*$/);
   });
 });
