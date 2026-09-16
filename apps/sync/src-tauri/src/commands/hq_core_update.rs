@@ -63,7 +63,7 @@ const APPLE_GIT_LICENSE_UNACCEPTED: &str = "you have not agreed to the xcode lic
 const GIT_REMOTE_HTTPS_MISSING: &str = "git: 'remote-https' is not a git command";
 const GIT_REMOTE_HTTPS_ABORTED: &str = "fatal: remote helper 'https' aborted session";
 const GIT_CLONE_USAGE: &str = "usage: git clone";
-const GIT_CLONE_USAGE_SHALLOW_EXCLUDE: &str = "--shallow-exclude";
+const GIT_CLONE_UNKNOWN_SHALLOW_EXCLUDE: &str = "error: unknown option 'shallow-exclude'";
 
 struct CoreUpdateRescueCommand {
     command: tokio::process::Command,
@@ -706,7 +706,7 @@ fn rescue_needs_managed_git_retry(exit_code: i32, rescue_stderr: &str) -> bool {
             || (rescue_stderr.contains(GIT_REMOTE_HTTPS_MISSING)
                 && rescue_stderr.contains(GIT_REMOTE_HTTPS_ABORTED))
             || (rescue_stderr.contains(GIT_CLONE_USAGE)
-                && rescue_stderr.contains(GIT_CLONE_USAGE_SHALLOW_EXCLUDE)))
+                && rescue_stderr.contains(GIT_CLONE_UNKNOWN_SHALLOW_EXCLUDE)))
 }
 
 async fn retry_rescue_with_managed_git_if_needed<F, RetryFuture>(
@@ -1077,7 +1077,7 @@ mod tests {
         let signatures = [
             "You have not agreed to the Xcode license agreements.\nerror: clone failed",
             "git: 'remote-https' is not a git command. See 'git --help'.\nfatal: remote helper 'https' aborted session\nerror: clone failed",
-            "usage: git clone [<options>] [--] <repo> [<dir>]\n    --shallow-exclude <revision>\n    --single-branch       clone only one branch, HEAD or --branch\nerror: clone failed",
+            "error: unknown option 'shallow-exclude'\nusage: git clone [<options>] [--] <repo> [<dir>]\n    --single-branch       clone only one branch, HEAD or --branch\nerror: clone failed",
         ];
 
         for stderr in signatures {
@@ -1127,6 +1127,14 @@ mod tests {
             crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded
         );
         assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_different_unknown_clone_option_does_not_request_a_managed_git_retry() {
+        assert!(!rescue_needs_managed_git_retry(
+            5,
+            "error: unknown option 'filter'\nusage: git clone [<options>] [--] <repo> [<dir>]\n    --single-branch       clone only one branch, HEAD or --branch\nerror: clone failed",
+        ));
     }
 
     #[cfg(not(windows))]
