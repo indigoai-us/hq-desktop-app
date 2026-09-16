@@ -72,6 +72,13 @@ describe('setup failure telemetry details', () => {
     ).toEqual({ errorCategory: 'permission' });
   });
 
+  it('uses the unknown bucket when a failed stage has no native detail', () => {
+    expect(setupFailureTelemetryDetails({ stageId: 'deps' })).toEqual({
+      failedDependency: 'unknown',
+      errorCategory: 'unknown',
+    });
+  });
+
   it('keeps only known failed stages in a bounded completion list', () => {
     const failedStages = normalizeFailedStageIds([
       ...STAGE_ORDER,

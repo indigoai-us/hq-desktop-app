@@ -539,6 +539,7 @@ describe('onboarding step telemetry', () => {
           action: 'failed',
           outcome: 'stage_command_failed',
           component: 'deps',
+          appVersion: 'unknown',
           surface: 'desktop_installer',
           platform: expect.any(String),
         },
