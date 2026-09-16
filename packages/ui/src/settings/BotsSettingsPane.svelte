@@ -16,10 +16,24 @@
    * Nothing here talks to hq-pro directly and no credential is ever shown.
    */
   import { onDestroy, onMount } from "svelte";
-  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption, PlatformAdapter } from "@hq/platform";
+  import type {
+    BotRestoreResult,
+    LocalBotCreateInput,
+    LocalBotRow,
+    LocalBotWorkerOption,
+    PlatformAdapter,
+    RemoteBotRow,
+  } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import BotKindChip from "../chat/BotKindChip.svelte";
   import { LOCAL_BOT_RUNTIMES, localBotCompanies, localBotKindLabel } from "../chat/local-bots.js";
+  import {
+    BOT_RESTORE_FAILED,
+    BOT_RESTORE_FROM_SETTINGS,
+    botRestoreRowLine,
+    botRestoreSummary,
+    botsNotHere,
+  } from "../chat/bot-restore.js";
   import { botNeedsSignIn } from "../chat/runtime-sign-in-again.js";
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
@@ -61,6 +75,17 @@
   let workers = $state<LocalBotWorkerOption[] | null>(null);
   let confirmRemove = $state<string | null>(null);
   let timer: ReturnType<typeof setInterval> | undefined;
+
+  // ── Bots this account owns that are not set up on this Mac ─────────────────
+  // `hq bot list` only knows this computer, so a reinstall (or a second Mac)
+  // used to make an owned bot simply vanish from Settings. `hq bot list
+  // --remote` is the account's own listing; the rows it flags `here: false`
+  // get their own group with the one action that fixes them.
+  let remoteBots = $state<RemoteBotRow[] | null>(null);
+  let adoptBusy = $state<string | null>(null);
+  let restoreBusy = $state(false);
+  let restoreResult = $state<BotRestoreResult | null>(null);
+  const missingHere = $derived(botsNotHere(remoteBots));
 
   // ── Cloud group ─────────────────────────────────────────────────────────────
   let cloudBots = $state<CloudBotRow[]>([]);
@@ -197,6 +222,53 @@
     await load(true);
   }
 
+  async function loadRemote(): Promise<void> {
+    const listRemote = adapter?.bots?.listRemote;
+    if (!listRemote) return;
+    const result = await listRemote();
+    if (result.ok) remoteBots = result.value?.bots ?? [];
+  }
+
+  /** "Start here" on a row that lives elsewhere: `hq bot adopt <name>`. */
+  async function adopt(name: string): Promise<void> {
+    const api = adapter?.bots;
+    if (!api?.adopt || adoptBusy) return;
+    adoptBusy = name;
+    line = `Bringing ${name} back to this Mac…`;
+    lineIsError = false;
+    const result = await api.adopt(name);
+    if (!result.ok) {
+      // The CLI's own words go to the log, never onto the pane.
+      if (result.message) console.warn("[hq-desktop] bot adopt failed:", result.message);
+      line = `Could not bring ${name} back to this Mac. Please try again.`;
+      lineIsError = true;
+    } else {
+      line = `${name} is back on this Mac.`;
+      await Promise.all([load(true), loadRemote()]);
+    }
+    adoptBusy = null;
+  }
+
+  /** The re-offer of the first-launch prompt: `hq bot restore --all`. */
+  async function restoreAll(): Promise<void> {
+    const api = adapter?.bots;
+    if (!api?.restore || restoreBusy) return;
+    restoreBusy = true;
+    restoreResult = null;
+    line = "";
+    lineIsError = false;
+    const result = await api.restore({ all: true });
+    restoreBusy = false;
+    if (!result.ok || !result.value) {
+      if (!result.ok && result.message) console.warn("[hq-desktop] bot restore failed:", result.message);
+      line = BOT_RESTORE_FAILED;
+      lineIsError = true;
+      return;
+    }
+    restoreResult = result.value;
+    await Promise.all([load(true), loadRemote()]);
+  }
+
   async function loadPreflight(): Promise<void> {
     const preflight = adapter?.sessions?.preflight;
     if (!preflight) return;
@@ -268,10 +340,12 @@
 
   onMount(() => {
     void load();
+    void loadRemote();
     void loadPreflight();
     void loadCloud();
     timer = setInterval(() => {
       void load(true);
+      void loadRemote();
       void loadCloud(true);
     }, POLL_MS);
   });
@@ -361,6 +435,69 @@
           </div>
         {/each}
       </div>
+
+      {#if missingHere.length > 0}
+        <!-- Owned elsewhere: the bot's identity, memory and conversations are
+             safe in HQ; only the half that runs it is missing here. -->
+        <div class="settings-card" data-testid="settings-bots-elsewhere">
+          <div class="bot-row">
+            <div class="bot-main">
+              <strong>On another computer</strong>
+              <small>
+                These bots are yours, but they aren't set up on this Mac yet.
+                Bringing one back keeps its name, its memory and your
+                conversations with it.
+              </small>
+            </div>
+            {#if adapter?.bots?.restore}
+              <div class="actions">
+                <button
+                  type="button"
+                  data-testid="settings-bots-restore-all"
+                  disabled={restoreBusy || Boolean(adoptBusy)}
+                  onclick={() => void restoreAll()}
+                >
+                  {restoreBusy ? "Restoring…" : BOT_RESTORE_FROM_SETTINGS}
+                </button>
+              </div>
+            {/if}
+          </div>
+          {#each missingHere as bot (bot.agentUid)}
+            <div class="bot-row" data-testid={`settings-remote-bot-${bot.name}`}>
+              <div class="bot-main">
+                <strong>
+                  <span class="dot" aria-hidden="true"></span>
+                  {bot.name}
+                </strong>
+                <small>Set up on another computer{bot.online ? " · Online there" : ""}</small>
+              </div>
+              {#if adapter?.bots?.adopt}
+                <div class="actions">
+                  <button
+                    type="button"
+                    data-testid={`settings-remote-bot-${bot.name}-start`}
+                    disabled={Boolean(adoptBusy) || restoreBusy}
+                    onclick={() => void adopt(bot.name)}
+                  >
+                    {adoptBusy === bot.name ? "Starting…" : "Start here"}
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      {#if restoreResult}
+        <div class="settings-card" data-testid="settings-bots-restore-result">
+          <div class="bot-main">
+            <strong>{botRestoreSummary(restoreResult)}</strong>
+            {#each restoreResult.bots ?? [] as row (row.agentUid)}
+              <small data-testid={`settings-bots-restore-row-${row.name}`}>{botRestoreRowLine(row)}</small>
+            {/each}
+          </div>
+        </div>
+      {/if}
 
       <div class="settings-card create" data-testid="settings-bots-create">
         <div class="bot-main">

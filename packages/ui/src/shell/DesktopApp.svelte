@@ -172,6 +172,7 @@
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
   import BotSignInBanner from "../chat/BotSignInBanner.svelte";
+  import BotRestoreBanner from "../chat/BotRestoreBanner.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
   import { canEditAgentProfile } from "../avatars/can-edit.js";
   import { loadAvatarGallery } from "../avatars/gallery.js";
@@ -306,11 +307,39 @@
     promotedBotCompany,
   } from "../chat/local-bots.js";
   import {
+    adoptFallbackNotice,
+    BOT_RESTORE_ALL,
+    BOT_RESTORE_ALL_BUSY,
+    BOT_RESTORE_DISMISS,
+    BOT_RESTORE_FAILED,
+    BOT_RESTORE_TITLE,
+    BOT_START_HERE,
+    BOT_START_HERE_BUSY,
+    BOT_START_HERE_EXPLAINER,
+    BOT_START_HERE_RETRY,
+    botRestorePromptBody,
+    botRestorePromptDismissed,
+    botRestoreRowFailed,
+    botRestoreRowLine,
+    botRestoreSummary,
+    botsNotHere,
+    ownedBotNotHere,
+    REMOTE_BOTS_POLL_MS,
+    rememberBotRestoreDismissed,
+  } from "../chat/bot-restore.js";
+  import {
     botNeedsSignIn,
     restartBotsNeedingSignIn,
     runtimesNeedingSignIn,
   } from "../chat/runtime-sign-in-again.js";
-  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption, SessionProviderId } from "@hq/platform";
+  import type {
+    BotRestoreResult,
+    LocalBotCreateInput,
+    LocalBotRow,
+    LocalBotWorkerOption,
+    RemoteBotRow,
+    SessionProviderId,
+  } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
@@ -980,6 +1009,28 @@
     if (result.ok) localBotRecords = result.value.bots ?? [];
   }
   /**
+   * BOTS COME BACK AFTER A REINSTALL.
+   *
+   * `hq bot list` above only knows THIS computer, which is why the app could
+   * not tell "no such bot" from "your bot, safe in HQ, with nothing here to
+   * run it" — the state that had test-bot's DM spinning for 41 s while its own
+   * setup said it could not run here. `hq bot list --remote` is the account's
+   * own view: every local bot the person owns, each flagged `here` or not.
+   * Null until the first listing lands (and on hosts without the command), so
+   * "not here" is never inferred from an answer that has not arrived.
+   */
+  let remoteBotRecords = $state<RemoteBotRow[] | null>(null);
+  async function refreshRemoteBots(): Promise<void> {
+    const listRemote = adapter.bots?.listRemote;
+    if (!listRemote) return;
+    const result = await listRemote();
+    // A host that answers with nothing is not evidence that a bot is missing:
+    // an empty listing and "no answer" must not read the same, so anything
+    // unreadable leaves the previous listing (and `null`) in place.
+    if (result.ok) remoteBotRecords = result.value?.bots ?? [];
+    else if (result.message) console.warn("[hq-desktop] remote bot list failed:", result.message);
+  }
+  /**
    * A start that actually ran: the budget resets and the honest "cannot run
    * here" notice goes with it. Every successful start in the shell — the
    * progress card's Retry, the offline notice's Start, the bot's own profile
@@ -1046,6 +1097,28 @@
       botStartGate = gate;
     });
   });
+  /**
+   * The remote listing is the SOURCE OF TRUTH for runnability, so a DM with an
+   * owned local bot that is not set up here shows the honest notice from the
+   * first frame — no start is issued, and nothing spins. Cloud and fleet
+   * agents are not on this listing at all (`hq bot list --remote` reports
+   * local bots only), so their behaviour is untouched.
+   */
+  $effect(() => {
+    const remote = remoteBotRecords;
+    if (!remote) return;
+    untrack(() => {
+      for (const bot of botsNotHere(remote)) {
+        const uid = bot.agentUid.trim();
+        if (unrunnableBotUids[uid]) continue;
+        noteBotCannotRunHere(uid);
+      }
+    });
+  });
+  /** The open DM's bot, when the account owns it and this computer cannot run it. */
+  const selectedBotNotHere = $derived(
+    selectedRow?.kind === "dm" ? ownedBotNotHere(remoteBotRecords, selectedRow.personUid) : null,
+  );
   /** The open DM's bot cannot run here — the honest state, or null. */
   const selectedBotCannotRun = $derived(
     selectedRow?.kind === "dm" && selectedRow.personUid
@@ -1065,7 +1138,9 @@
     if (!uid || botRecheckBusy) return;
     botRecheckBusy = true;
     try {
-      await refreshLocalBots();
+      // Both halves: this computer's bots, and the account's own listing that
+      // decides whether the bot is here at all.
+      await Promise.all([refreshLocalBots(), refreshRemoteBots()]);
       const bot = localBotRecords.find((row) => row.agentUid.trim() === uid);
       if (!bot) return;
       botStartGate = clearBotStartGate(botStartGate, bot.name);
@@ -1078,8 +1153,13 @@
   onMount(() => {
     if (!adapter.bots) return;
     void refreshLocalBots();
+    void refreshRemoteBots();
     const handle = window.setInterval(() => void refreshLocalBots(), LOCAL_BOTS_POLL_MS);
-    return () => clearInterval(handle);
+    const remoteHandle = window.setInterval(() => void refreshRemoteBots(), REMOTE_BOTS_POLL_MS);
+    return () => {
+      clearInterval(handle);
+      clearInterval(remoteHandle);
+    };
   });
   /** Which runtimes are signed in here (`{ claude: true, … }`); null until known. */
   let localBotRuntimeReady = $state<Record<string, boolean> | null>(null);
@@ -1121,8 +1201,15 @@
     state: BotProgressState;
     reason: string | null;
     /** The draft that made it, so Retry can re-run the same create. */
-    input: LocalBotCreateInput;
+    input?: LocalBotCreateInput;
     extras: CreateBotExtras;
+    /**
+     * Set when this card is a bot being brought back (`hq bot adopt`), not one
+     * being created. Retry then re-runs the adopt: the account already owns
+     * this bot, and creating a second one is exactly what adopt exists to
+     * prevent.
+     */
+    adoptName?: string;
     startedAt: number;
     retrying: boolean;
   }
@@ -1230,7 +1317,13 @@
    * of presenting a normal bot that will never answer.
    */
   function openSetupBotDm(bot: SetupBotRef): void {
-    if (!botRunsHere(localBotRecords, bot.agentUid)) noteBotCannotRunHere(bot.agentUid);
+    if (!botRunsHere(localBotRecords, bot.agentUid)) {
+      noteBotCannotRunHere(bot.agentUid);
+      // A cloud-only setup bot is one the account owns, so the notice can
+      // offer to bring it back here rather than only "Check again" — but only
+      // once the account's own listing says so. Ask for it now.
+      void refreshRemoteBots();
+    }
     const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
     handleSelect(
       existing ?? {
@@ -1382,6 +1475,15 @@
       setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
       return;
     }
+    if (entry.adoptName) {
+      const brought = await startBotHere(entry.adoptName, uid);
+      if (!brought.ok) setBotProgress(uid, { retrying: false, state: "failed", reason: brought.reason });
+      return;
+    }
+    if (!entry.input) {
+      setBotProgress(uid, { retrying: false });
+      return;
+    }
     clearBotProgress(uid);
     const created = await createBotEntry(entry.input, entry.extras);
     if (!created.ok) {
@@ -1421,6 +1523,13 @@
   const selectedBotProgress = $derived(
     selectedRow?.kind === "dm" && selectedRow.personUid ? (botProgressByUid[selectedRow.personUid] ?? null) : null,
   );
+  /**
+   * The open DM's card is a bot being brought back, not one being created. The
+   * bot is still "not here" while the adopt runs, so the progress card has to
+   * outrank the honest notice for exactly that window — otherwise pressing
+   * "Start on this computer" looks like it did nothing.
+   */
+  const selectedBotAdopting = $derived(Boolean(selectedBotProgress?.adoptName));
   const existingBotNames = $derived(localBots.map((b) => b.name));
   /** Inline runtime sign-in for the flow's Home step (browser login + status poll). */
   const botSignIn = $derived.by<RuntimeSignInApi | null>(() => {
@@ -1501,6 +1610,103 @@
   /** The bot's own profile panel starts it through the same gate. */
   async function startBotFromProfile(bot: LocalBotRow): Promise<{ ok: boolean; reason: string | null }> {
     return startBotByName(bot.name, bot.agentUid);
+  }
+  // ── Bringing bots back to this computer ────────────────────────────────────
+  /** The bot currently being brought back, so its button can say so. */
+  let botAdoptBusy = $state<string | null>(null);
+  /** The last adopt failure, as a sentence a person can act on. */
+  let botAdoptError = $state<string | null>(null);
+  /**
+   * "Start on this computer" — `hq bot adopt <name>`.
+   *
+   * The bot the account owns gets its machine credentials re-issued here, its
+   * saved settings, worker folder and startup agent rebuilt, and a start. It
+   * keeps its identity, its memory and this conversation; only the half a
+   * reinstall took away is put back. Progress rides the same card a new bot
+   * uses, and a success clears the gate so the DM becomes a normal bot.
+   */
+  async function startBotHere(name: string, agentUid: string): Promise<{ ok: boolean; reason: string | null }> {
+    const adopt = adapter.bots?.adopt;
+    const uid = (agentUid ?? "").trim();
+    if (!adopt) return { ok: false, reason: adoptFallbackNotice(name) };
+    if (botAdoptBusy) return { ok: false, reason: null };
+    botAdoptBusy = name;
+    botAdoptError = null;
+    if (uid) {
+      botProgressByUid = {
+        ...botProgressByUid,
+        [uid]: { name, state: "installing", reason: null, extras: {}, adoptName: name, startedAt: Date.now(), retrying: false },
+      };
+    }
+    const result = await adopt(name);
+    botAdoptBusy = null;
+    if (!result.ok) {
+      // The bots API shells out to the CLI, so `message` can be its own words
+      // (or hq-pro's). They belong in the log; the notice gets a sentence.
+      const raw = result.message ?? "";
+      if (raw) console.warn("[hq-desktop] bot adopt failed:", raw);
+      const reason = plainBotFailure(raw, adoptFallbackNotice(name));
+      if (uid) clearBotProgress(uid);
+      botAdoptError = reason;
+      return { ok: false, reason };
+    }
+    // It runs here now: the gate reopens and the honest notice goes with it.
+    noteBotStarted(name, uid);
+    await Promise.all([refreshLocalBots(), refreshRemoteBots()]);
+    if (uid) setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
+    return { ok: true, reason: null };
+  }
+  /** Start the open DM's bot here, from the "cannot run here" notice. */
+  async function startSelectedBotHere(): Promise<void> {
+    const bot = selectedBotNotHere;
+    if (!bot) return;
+    await startBotHere(bot.name, bot.agentUid);
+  }
+  /**
+   * RESTORE MY BOTS — the one prompt after a fresh install or a new Mac.
+   *
+   * Non-blocking, shown once, and remembered per machine so it never nags at
+   * launch. Settings › Bots is where a person asks for it again.
+   */
+  const restoreMemory = (() => {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch {
+      return null;
+    }
+  })();
+  let botRestoreDismissed = $state(botRestorePromptDismissed(restoreMemory));
+  let botRestoreBusy = $state(false);
+  let botRestoreResult = $state<BotRestoreResult | null>(null);
+  let botRestoreError = $state<string | null>(null);
+  const botsMissingHere = $derived(botsNotHere(remoteBotRecords));
+  const showBotRestorePrompt = $derived(
+    Boolean(adapter.bots?.restore) && !botRestoreDismissed && !botRestoreResult && botsMissingHere.length > 0,
+  );
+  function dismissBotRestorePrompt(): void {
+    botRestoreDismissed = true;
+    rememberBotRestoreDismissed(restoreMemory);
+  }
+  async function restoreMyBots(): Promise<void> {
+    const restore = adapter.bots?.restore;
+    if (!restore || botRestoreBusy) return;
+    botRestoreBusy = true;
+    botRestoreError = null;
+    const result = await restore({ all: true });
+    botRestoreBusy = false;
+    if (!result.ok || !result.value) {
+      const raw = (result.ok ? "" : result.message) ?? "";
+      if (raw) console.warn("[hq-desktop] bot restore failed:", raw);
+      botRestoreError = plainBotFailure(raw, BOT_RESTORE_FAILED);
+      return;
+    }
+    botRestoreResult = result.value;
+    // Asking counts as answering the prompt: it is not offered again by itself.
+    rememberBotRestoreDismissed(restoreMemory);
+    for (const row of result.value.bots ?? []) {
+      if (row.action === "restored" || row.action === "repaired") noteBotStarted(row.name, row.agentUid);
+    }
+    await Promise.all([refreshLocalBots(), refreshRemoteBots()]);
   }
   /**
    * One place where a failed start becomes state: it counts against the bot's
@@ -5999,6 +6205,24 @@
     />
   {/if}
 
+  {#if showBotRestorePrompt || botRestoreResult}
+    <!-- Bots come back after a reinstall: one non-blocking prompt, in the
+         shell's existing banner slot so it reaches the person wherever they
+         landed. Dismissal is remembered per machine; Settings › Bots offers
+         it again. -->
+    <BotRestoreBanner
+      count={botsMissingHere.length}
+      busy={botRestoreBusy}
+      result={botRestoreResult}
+      error={botRestoreError}
+      onrestore={() => void restoreMyBots()}
+      ondismiss={() => {
+        botRestoreResult = null;
+        dismissBotRestorePrompt();
+      }}
+    />
+  {/if}
+
   {#if embeddedNavigationError}
     <div
       class="embedded-navigation-error"
@@ -6807,6 +7031,25 @@
                          actually perform: look again. -->
                     <div class="local-bot-notice" data-testid="bot-not-runnable-notice" role="status">
                       <span class="local-bot-notice-text">{selectedBotCannotRun}</span>
+                      {#if selectedBotNotHere && adapter.bots?.adopt}
+                        <!-- The account owns this bot, so there IS something
+                             the desktop can do: bring it back here. Its name,
+                             memory and this conversation come with it. -->
+                        <button
+                          type="button"
+                          class="local-bot-notice-start"
+                          data-testid="bot-start-here"
+                          disabled={botAdoptBusy !== null}
+                          onclick={() => void startSelectedBotHere()}
+                        >
+                          {botAdoptBusy === selectedBotNotHere.name
+                            ? BOT_START_HERE_BUSY
+                            : botAdoptError
+                              ? BOT_START_HERE_RETRY
+                              : BOT_START_HERE}
+                        </button>
+                        <span class="local-bot-notice-hint">{BOT_START_HERE_EXPLAINER}</span>
+                      {/if}
                       <button
                         type="button"
                         class="local-bot-notice-start"
@@ -6816,6 +7059,11 @@
                       >
                         {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
                       </button>
+                      {#if botAdoptError}
+                        <span class="local-bot-notice-error" role="alert" data-testid="bot-start-here-error">
+                          {botAdoptError}
+                        </span>
+                      {/if}
                     </div>
                   {:else if selectedLocalBot && selectedLocalBotOffline}
                     <div class="local-bot-notice" data-testid="local-bot-offline-notice" role="status">
@@ -6909,7 +7157,7 @@
                     ? setupHeader
                     : isCompanyChannel
                       ? companyHeader
-                      : selectedBotCannotRun
+                      : selectedBotCannotRun && !selectedBotAdopting
                         ? localBotHeader
                         : selectedBotProgress
                           ? botProgressHeader
@@ -7725,6 +7973,11 @@
   .local-bot-notice-start:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  .local-bot-notice-hint {
+    flex-basis: 100%;
+    color: var(--t2);
+    opacity: 0.85;
   }
   .local-bot-notice-error {
     flex-basis: 100%;

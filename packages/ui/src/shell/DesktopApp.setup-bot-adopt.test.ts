@@ -216,6 +216,54 @@ describe("the setup bot this account already owns is adopted, never re-created",
     expect(create).not.toHaveBeenCalled();
   });
 
+  it("offers to start the cloud-only setup bot on this computer, and still never creates one", async () => {
+    // Adopting its conversation does not give this Mac a way to RUN it. Until
+    // `hq bot adopt` existed the only honest thing the DM could offer was
+    // "Check again"; now the account's own listing says the bot is the
+    // person's and is not here, so the way through is on the notice.
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: "agt_new" }));
+    const adopt = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: CLOUD_SETUP_UID }));
+    mountApp(
+      adapter({
+        bots: {
+          create,
+          adopt,
+          list: async () => ok({ bots: [] }),
+          listRemote: async () =>
+            ok({
+              bots: [
+                {
+                  name: "setup",
+                  agentUid: CLOUD_SETUP_UID,
+                  kind: "personal",
+                  online: false,
+                  lastHeartbeatAt: null,
+                  here: false,
+                  settings: "claude, synced memory",
+                },
+              ],
+            }),
+        },
+        contacts: [{ personUid: CLOUD_SETUP_UID, displayName: "setup", companyUid: null }],
+      }),
+    );
+
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    const button = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="bot-start-here"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(button.textContent).toContain("Start on this computer");
+    // "Check again" is still there for a bot that is simply running elsewhere.
+    expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeTruthy();
+
+    button.click();
+    await settle(24);
+    expect(adopt).toHaveBeenCalledWith("setup");
+    expect(create, "the identity already exists; never a second setup bot").not.toHaveBeenCalled();
+  });
+
   it("a create that comes back 409 adopts the bot and shows the person nothing at all", async () => {
     // The roster has not caught up when the create is attempted, so the race
     // is only discoverable from the 409; `hq bot list` sees the bot right
