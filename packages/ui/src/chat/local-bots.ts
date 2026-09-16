@@ -50,7 +50,79 @@ export function localBotsAsContacts<T extends { personUid: string }>(
 }
 
 /** Result of the sidebar "New bot" entry point (see CreateModal). */
-export type LocalBotEntryResult = { ok: true; agentUid: string; name: string } | { ok: false; reason: string };
+export type LocalBotEntryResult =
+  | { ok: true; agentUid: string; name: string }
+  | {
+      ok: false;
+      /** Plain sentence, safe to render (see `plainBotFailure`). */
+      reason: string;
+      /**
+       * The host's / CLI's own words, kept for logs and for matching known
+       * conditions (see `isAlreadyExistsFailure`). NEVER rendered: it can be
+       * hq-pro's raw `HQ API /v1/agents → 409: Entity with type="agent" and
+       * slug="setup-…" already exists`, relayed verbatim by `hq bot create`.
+       */
+      raw?: string;
+    };
+
+/**
+ * Shapes that mean "this text came from a machine, not for a person". The
+ * bots API shells out to `hq bot …`, whose stderr is the CLI's (and often
+ * hq-pro's) own message, so anything here can and did reach a person on the
+ * #welcome hero. A match is replaced by a written sentence; the raw text is
+ * logged instead.
+ */
+const RAW_FAILURE_SHAPES: readonly RegExp[] = [
+  /\bHQ API\b/i,
+  /https?:\/\//i,
+  /\/v\d+\//,
+  /→\s*\d{3}\b/,
+  /\b(?:HTTP|status)\s*[:=]?\s*\d{3}\b/i,
+  /\b\d{3}\s+(?:Bad Request|Unauthorized|Forbidden|Not Found|Conflict|Internal Server Error)\b/i,
+  /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/,
+  /type="|slug="|uid="/,
+  /\b(?:Error|TypeError|RangeError|SyntaxError):/,
+  /\bat\s+\S+\s+\([^)]*:\d+:\d+\)/,
+  /\{[\s\S]*"\w+"\s*:/,
+  /(?:^|\s)\/(?:Users|home|private|tmp|var|opt)\//,
+  /\bhq\s+bot\b/,
+];
+
+/** True when `raw` is machine text that must not be shown to a person. */
+export function isRawBotFailureText(raw: string | null | undefined): boolean {
+  const text = (raw ?? "").trim();
+  if (!text) return false;
+  return RAW_FAILURE_SHAPES.some((shape) => shape.test(text));
+}
+
+/**
+ * A sentence a person can act on. Plain host messages ("Claude Code is not
+ * signed in.") pass through unchanged; machine text falls back to `fallback`.
+ * Only the first line survives either way — a CLI message often appends a
+ * "run this command" line that means nothing inside the app.
+ */
+export function plainBotFailure(raw: string | null | undefined, fallback: string): string {
+  const text = (raw ?? "").trim();
+  if (!text || isRawBotFailureText(text)) return fallback;
+  const firstLine = (text.split(/\r?\n/)[0] ?? "").trim();
+  if (!firstLine || firstLine.length > 200 || isRawBotFailureText(firstLine)) return fallback;
+  return firstLine;
+}
+
+/**
+ * The create failed because the bot is already there — a 409 from
+ * `POST /v1/agents` (the cloud account still owns the agent entity after a
+ * local wipe, or two callers raced), or the CLI's own "already exists" for a
+ * bot folder on this Mac. Both mean "adopt it", never "show an error".
+ */
+export function isAlreadyExistsFailure(raw: string | null | undefined): boolean {
+  const text = (raw ?? "").toLowerCase();
+  if (!text) return false;
+  if (/already exists/.test(text)) return true;
+  if (/\b(?:entity_exists|already_exists|duplicate_entity)\b/.test(text)) return true;
+  if (/→\s*409\b/.test(text)) return true;
+  return /\b409\b/.test(text) && /conflict/.test(text);
+}
 
 export type LocalBotPresence = "online" | "offline";
 

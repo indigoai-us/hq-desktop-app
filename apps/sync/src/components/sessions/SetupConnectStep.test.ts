@@ -27,7 +27,10 @@ describe('welcome missing runtime recovery',()=>{
  });
  it('does not start login after failed installation and offers retry',async()=>{
   const {login}=render(vi.fn().mockRejectedValue(new Error('private details')));await settle();
-  expect(login).not.toHaveBeenCalled();expect(document.body.textContent).toContain('Could not connect the coding tool');
+  expect(login).not.toHaveBeenCalled();
+  // The tool is not on this Mac, so installing is what failed — saying
+  // "could not connect" sent people looking for a sign-in problem instead.
+  expect(document.body.textContent).toContain('Could not install Claude Code on this Mac');
   expect(document.body.textContent).not.toContain('private details');expect(document.body.textContent).toContain('Try again');
  });
 });

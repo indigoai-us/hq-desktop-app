@@ -8,7 +8,9 @@ import type { LocalBotRow } from "@hq/platform";
 
 import {
   findSetupBot,
+  findSetupBotContact,
   firstSignedInRuntime,
+  singleFlightStart,
   setupBotActionLabel,
   SETUP_BOT_COPY,
   SETUP_BOT_INTRO,
@@ -17,6 +19,7 @@ import {
   SETUP_BOT_MODE,
   SETUP_BOT_NAME,
   SETUP_BOT_WORKER,
+  type SetupBotStart,
 } from "./setup-bot";
 
 function bot(name: string, agentUid = `agt_${name}`): LocalBotRow {
@@ -118,5 +121,97 @@ describe("copy", () => {
     expect(SETUP_BOT_WORKER).toBe("setup");
     // The scripted run stays behind this flag for one build.
     expect(SETUP_BOT_MODE).toBe(true);
+  });
+});
+
+/**
+ * A local wipe that keeps the same HQ account (a reinstall, or a second Mac)
+ * leaves the cloud owning the setup agent while `hq bot list` reports nothing,
+ * so the create 409s. The DM roster is the desktop's cloud-side view of the
+ * person's own bots; this is what the start path asks before creating.
+ */
+describe("findSetupBotContact", () => {
+  const contact = (personUid: string, displayName: string) => ({ personUid, displayName, companyUid: null });
+
+  it("finds a setup bot that exists only in the cloud", () => {
+    const roster = { contacts: [contact("prs_mate", "Sam"), contact("agt_cloud_setup", "setup")] };
+    expect(findSetupBotContact(roster)).toEqual({ agentUid: "agt_cloud_setup", name: "setup" });
+  });
+
+  it("reads a bare array as well as a { contacts } payload", () => {
+    expect(findSetupBotContact([contact("agt_cloud_setup", "  Setup  ")])).toEqual({
+      agentUid: "agt_cloud_setup",
+      name: "Setup",
+    });
+  });
+
+  it("only ever matches an agent uid — a person called setup is not a bot", () => {
+    expect(findSetupBotContact([contact("prs_setup", "setup")])).toBeNull();
+  });
+
+  it("ignores every other bot on the roster", () => {
+    expect(findSetupBotContact([contact("agt_scout", "scout"), contact("agt_setupper", "setup-helper")])).toBeNull();
+  });
+
+  it("answers null for nothing, junk and empty rows", () => {
+    expect(findSetupBotContact(null)).toBeNull();
+    expect(findSetupBotContact({ contacts: [] })).toBeNull();
+    expect(findSetupBotContact("nope")).toBeNull();
+    expect(findSetupBotContact([null, 7, { personUid: "agt_x" }])).toBeNull();
+  });
+});
+
+/**
+ * Two `hq bot create setup` calls 1.3 s apart is what the owner's VM log
+ * caught: #welcome's automatic first-open start and a Run Setup click (or
+ * Home's setup card) each reached the host's start, and each surface only
+ * disables its own button.
+ */
+describe("singleFlightStart", () => {
+  it("runs the start once for callers that arrive while it is still running", async () => {
+    let calls = 0;
+    let release!: (value: SetupBotStart) => void;
+    const gated = singleFlightStart(() => {
+      calls += 1;
+      return new Promise<SetupBotStart>((resolve) => {
+        release = resolve;
+      });
+    });
+
+    const first = gated();
+    const second = gated();
+    const third = gated();
+    expect(calls).toBe(1);
+
+    release({ ok: true, existing: false });
+    // Everyone gets the one start's own answer.
+    expect(await first).toEqual({ ok: true, existing: false });
+    expect(await second).toEqual({ ok: true, existing: false });
+    expect(await third).toEqual({ ok: true, existing: false });
+    expect(calls).toBe(1);
+  });
+
+  it("opens again once the start settles, so Retry still works", async () => {
+    let calls = 0;
+    const gated = singleFlightStart(async () => {
+      calls += 1;
+      return { ok: false as const, reason: "nope" };
+    });
+
+    expect(await gated()).toEqual({ ok: false, reason: "nope" });
+    expect(await gated()).toEqual({ ok: false, reason: "nope" });
+    expect(calls).toBe(2);
+  });
+
+  it("opens again after a start that throws, and lets the throw through", async () => {
+    let calls = 0;
+    const gated = singleFlightStart(async () => {
+      calls += 1;
+      throw new Error("boom");
+    });
+
+    await expect(gated()).rejects.toThrow("boom");
+    await expect(gated()).rejects.toThrow("boom");
+    expect(calls).toBe(2);
   });
 });

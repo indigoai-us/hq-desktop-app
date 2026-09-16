@@ -110,17 +110,29 @@
     busy = true;
     message = "";
     const token = ++generation;
+    // "Could not connect" is the wrong sentence when there is nothing to
+    // connect TO yet: a tool that is not on this Mac has to be installed
+    // first, and the row already offers the download. Say which of the two
+    // actually went wrong.
+    const name = TOOLS.find((entry) => entry.id === tool)?.name ?? "the coding tool";
+    let installing = false;
     try {
+      // The row only offers Connect when the tool is here or the host can
+      // install it (otherwise it offers the download instead).
       if (!available(tool) && api.providerInstall) {
-        message = `Installing ${TOOLS.find((entry) => entry.id === tool)?.name}…`;
+        installing = true;
+        message = `Installing ${name}…`;
         await api.providerInstall(tool);
         await onrefresh();
+        installing = false;
       }
       await apply(await (force ? api.providerLoginStart(tool, { force: true }) : api.providerLoginStart(tool)), tool, token);
     } catch {
       if (token === generation) {
         loginState = "error";
-        message = "Could not connect the coding tool. Please try again.";
+        message = installing
+          ? `Could not install ${name} on this Mac. Download it below, then connect.`
+          : "Could not connect the coding tool. Please try again.";
       }
     } finally {
       if (token === generation) busy = false;

@@ -71,7 +71,10 @@
   } from "../chat/setup-channel.js";
   import {
     findSetupBot,
+    findSetupBotContact,
     firstSignedInRuntime,
+    SETUP_BOT_ALREADY_ELSEWHERE,
+    SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_INTRO,
     SETUP_BOT_KICKOFF,
     SETUP_BOT_MODE,
@@ -79,6 +82,7 @@
     SETUP_BOT_NO_RUNTIME,
     SETUP_BOT_UNAVAILABLE,
     SETUP_BOT_WORKER,
+    singleFlightStart,
     type SetupBotLauncher,
     type SetupBotRef,
     type SetupBotStart,
@@ -275,12 +279,14 @@
     type ThinkingEntry,
   } from "../chat/agent-thinking.js";
   import {
+    isAlreadyExistsFailure,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
     localBotOfflineNotice,
     localBotPresence,
     type LocalBotEntryResult,
     locallyHostedBots,
+    plainBotFailure,
     promotedBotCompany,
   } from "../chat/local-bots.js";
   import {
@@ -995,7 +1001,16 @@
     const api = adapter.bots;
     if (!api) return { ok: false, reason: "Bots are only available in the HQ desktop app." };
     const result = await api.create(input);
-    if (!result.ok) return { ok: false, reason: result.message || `Could not create ${input.name}.` };
+    if (!result.ok) {
+      // The bots API shells out to `hq bot create`, so `message` can be the
+      // CLI's relay of hq-pro's own words ("HQ API /v1/agents → 409: Entity
+      // with type=… already exists"). That belongs in the log, never on
+      // screen: the caller gets a written sentence plus the raw text to match
+      // known conditions against.
+      const raw = result.message ?? "";
+      if (raw) console.warn("[hq-desktop] bot create failed:", raw);
+      return { ok: false, reason: plainBotFailure(raw, `Could not create ${input.name}.`), raw };
+    }
     const value = (result.value ?? {}) as Record<string, unknown>;
     const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
     await refreshLocalBots();
@@ -1053,7 +1068,10 @@
   /** True while startSetupBot is creating the bot, so #welcome can say so. */
   let setupBotStarting = $state(false);
   let setupBotStartError = $state<string | null>(null);
-  const existingSetupBot = $derived(findSetupBot(localBots));
+  // Every hosting kind counts as "already here": a setup bot promoted to the
+  // cloud is filtered out of `localBots`, but it is still the person's bot and
+  // must be opened, never re-created.
+  const existingSetupBot = $derived(findSetupBot(localBotRecords));
   const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
   const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
     adapter.bots && SETUP_BOT_MODE
@@ -1078,30 +1096,57 @@
     recordWelcomeSetupRun();
   }
   /**
-   * Create the setup bot (or open the one that already exists). Never creates
-   * a second one: the list is re-read first, because another window — or an
-   * earlier run on this Mac — may already have made it.
+   * Create the setup bot, or open the one that already exists — on this Mac
+   * OR in the cloud account. Never creates a second one: `singleFlightStart`
+   * hands a caller that arrives mid-start the running start's own result,
+   * because each surface only disables its own button (the owner's log caught
+   * two `hq bot create setup` calls 1.3 s apart).
    */
-  async function startSetupBot(): Promise<SetupBotStart> {
+  const setupBotStartGate = singleFlightStart(async (): Promise<SetupBotStart> => {
     setupBotStarting = true;
     setupBotStartError = null;
     try {
-      const result = await startSetupBotNow();
+      const result = await runSetupBotStart();
       if (!result.ok) setupBotStartError = result.reason;
       return result;
-    } catch {
-      setupBotStartError = "Could not start your setup bot. Please try again.";
-      return { ok: false, reason: setupBotStartError };
+    } catch (err) {
+      // A sentence, never a stack: the surfaces render this verbatim.
+      console.warn("[hq-desktop] setup bot start threw:", err);
+      setupBotStartError = SETUP_BOT_GENERIC_FAILURE;
+      return { ok: false, reason: SETUP_BOT_GENERIC_FAILURE };
     } finally {
       setupBotStarting = false;
     }
+  });
+  function startSetupBot(): Promise<SetupBotStart> {
+    return setupBotStartGate();
   }
-  async function startSetupBotNow(): Promise<SetupBotStart> {
+  /**
+   * The setup bot this account already owns, wherever it lives. `hq bot list`
+   * only knows this Mac, so after a reinstall — or on a second Mac — the local
+   * list is empty while the cloud account still owns the agent entity, and a
+   * create 409s. The DM roster is the desktop's one cloud-side view of the
+   * person's own bots, so it is asked before anything is created.
+   */
+  async function findExistingSetupBot(): Promise<SetupBotRef | null> {
+    const local = findSetupBot(localBotRecords);
+    if (local) return local;
+    try {
+      const contacts = await adapter.messaging?.listContacts?.();
+      if (contacts?.ok) return findSetupBotContact(contacts.value);
+    } catch (err) {
+      // A roster we cannot read only costs us the early adoption: a create
+      // that then 409s is adopted below.
+      console.warn("[hq-desktop] could not check the cloud roster for a setup bot:", err);
+    }
+    return null;
+  }
+  async function runSetupBotStart(): Promise<SetupBotStart> {
     // Any start (the automatic one or a click) settles the automatic start.
     setupBotAutoStarted = true;
     if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
     await refreshLocalBots();
-    const existing = findSetupBot(localBots);
+    const existing = await findExistingSetupBot();
     if (existing) {
       openSetupBotDm(existing);
       return { ok: true, existing: true };
@@ -1124,9 +1169,23 @@
       kickoff: SETUP_BOT_KICKOFF,
       // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
     });
-    if (!created.ok) return { ok: false, reason: created.reason };
-    recordWelcomeSetupRun();
-    return { ok: true, existing: false };
+    if (created.ok) {
+      recordWelcomeSetupRun();
+      return { ok: true, existing: false };
+    }
+    // "It already exists" is the opposite of a failure: the bot the person
+    // needs is there. Another window, another Mac, or this account's earlier
+    // install got in first — re-read both views and open it.
+    if (isAlreadyExistsFailure(created.raw ?? created.reason)) {
+      await refreshLocalBots();
+      const adopted = await findExistingSetupBot();
+      if (adopted) {
+        openSetupBotDm(adopted);
+        return { ok: true, existing: true };
+      }
+      return { ok: false, reason: SETUP_BOT_ALREADY_ELSEWHERE };
+    }
+    return { ok: false, reason: created.reason };
   }
   /**
    * First open on this Mac: the setup bot starts by itself, so the person is
@@ -1159,7 +1218,10 @@
     if (bot) {
       const result = await api.start(bot.name);
       if (!result.ok) {
-        setBotProgress(uid, { retrying: false, state: "failed", reason: result.message || `Could not start ${bot.name}.` });
+        // Same rule as createBotEntry: the card carries a sentence, the log
+        // carries the CLI's own words.
+        if (result.message) console.warn("[hq-desktop] bot start failed:", result.message);
+        setBotProgress(uid, { retrying: false, state: "failed", reason: plainBotFailure(result.message, `Could not start ${bot.name}.`) });
         return;
       }
       // Re-read presence FIRST: flipping to "installing" while the list still
@@ -1272,7 +1334,10 @@
     localBotBusy = bot.name;
     localBotActionError = null;
     const result = await api.start(bot.name);
-    if (!result.ok) localBotActionError = result.message || `Could not start ${bot.name}.`;
+    if (!result.ok) {
+      if (result.message) console.warn("[hq-desktop] bot action failed:", result.message);
+      localBotActionError = plainBotFailure(result.message, `Could not start ${bot.name}.`);
+    }
     await refreshLocalBots();
     localBotBusy = null;
   }
