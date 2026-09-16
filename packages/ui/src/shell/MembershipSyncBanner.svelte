@@ -12,29 +12,56 @@
     /** Already filtered to joinable + not-dismissed-this-session. Non-empty when rendered. */
     memberships: Workspace[];
     syncing?: boolean;
+    /**
+     * User-facing failure text. The popover's Sync surfaces reauth and runner
+     * errors; this banner must too, or a failed pull looks like a no-op.
+     */
+    error?: string | null;
     onsync?: () => void | Promise<void>;
-    ondismiss?: (slug: string) => void;
+    /**
+     * Receives EVERY slug the banner is currently speaking for, not just the
+     * named one. The copy aggregates ("Added to Acme + 2 more"), so a dismiss
+     * that dropped only the first would silently re-render for the second and
+     * read as the button being ignored.
+     */
+    ondismiss?: (slugs: string[]) => void;
   }
 
-  let { memberships, syncing = false, onsync, ondismiss }: Props = $props();
+  let {
+    memberships,
+    syncing = false,
+    error = null,
+    onsync,
+    ondismiss,
+  }: Props = $props();
 
   const first = $derived(memberships[0]);
-  const title = $derived(
-    first ? `Added to ${first.displayName}` : "",
-  );
+  const title = $derived(first ? `Added to ${first.displayName}` : "");
   const extra = $derived(memberships.length > 1 ? memberships.length - 1 : 0);
+  const allSlugs = $derived(memberships.map((w) => w.slug));
 </script>
 
 {#if first}
   <div
     class="membership-banner"
-    role="status"
+    role="region"
+    aria-label="Company memberships to sync"
     data-testid="membership-sync-banner"
   >
     <div class="membership-copy">
       <strong>{title}{extra > 0 ? ` + ${extra} more` : ""}</strong>
       <span>
         Sync to pull {memberships.length > 1 ? "them" : "it"} onto this machine.
+      </span>
+      <!--
+        Own live region: the banner itself is a static region, so an error
+        arriving after mount is only announced if it lands in something the
+        screen reader is watching.
+      -->
+      <span class="membership-error" role="alert" aria-live="assertive">
+        {#if error}
+          <span data-testid="membership-sync-error">{error}</span>
+        {/if}
       </span>
     </div>
     <div class="membership-actions">
@@ -46,13 +73,13 @@
         aria-busy={syncing}
         onclick={() => void onsync?.()}
       >
-        {syncing ? "Syncing…" : "Sync now"}
+        {syncing ? "Syncing…" : error ? "Try again" : "Sync now"}
       </button>
       <button
         type="button"
         class="membership-dismiss"
         data-testid="membership-sync-dismiss"
-        onclick={() => ondismiss?.(first.slug)}
+        onclick={() => ondismiss?.(allSlugs)}
       >
         Dismiss
       </button>
@@ -89,6 +116,15 @@
 
   .membership-copy span {
     color: var(--v4-text-2, var(--t2, rgba(0, 0, 0, 0.62)));
+  }
+
+  /* Empty until something fails — collapses so the banner keeps its height. */
+  .membership-error:empty {
+    display: none;
+  }
+
+  .membership-error {
+    color: var(--v4-danger, #b3261e);
   }
 
   .membership-actions {
