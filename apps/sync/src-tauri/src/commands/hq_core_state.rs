@@ -482,6 +482,24 @@ pub(crate) struct CoreUpdateFailureDetails<'a> {
     pub(crate) npx_resolution: Option<CoreUpdateNpxResolution>,
 }
 
+pub(crate) fn core_update_failure_details(error: &CoreUpdateError) -> CoreUpdateFailureDetails<'_> {
+    let detail = error.message();
+    let rescue_stderr_tail = match error.kind() {
+        CoreUpdateErrorKind::RescueSpawn | CoreUpdateErrorKind::BaselinePersistence => Some(detail),
+        _ => None,
+    };
+
+    CoreUpdateFailureDetails {
+        rescue_stderr_tail,
+        rescue_failure_category: classify_core_update_error(
+            error.kind(),
+            detail,
+            error.npx_resolution(),
+        ),
+        npx_resolution: error.npx_resolution(),
+    }
+}
+
 impl std::fmt::Display for CoreUpdateError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.message)
@@ -933,7 +951,7 @@ fn claim_core_update_sentry_signature(signature: CoreUpdateSentryFailureSignatur
 
 fn send_core_update_failure_report(report: CoreUpdateSentryFailureReport) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let fingerprint = [report.error_kind, report.error_category.label()];
+        let fingerprint = core_update_sentry_fingerprint(report.error_kind, report.error_category);
         sentry::with_scope(
             |sentry_scope| {
                 sentry_scope.set_fingerprint(Some(&fingerprint));
@@ -976,6 +994,33 @@ fn send_core_update_failure_report(report: CoreUpdateSentryFailureReport) {
     }));
 }
 
+fn core_update_sentry_fingerprint(
+    error_kind: &'static str,
+    error_category: RescueFailureCategory,
+) -> [&'static str; 2] {
+    [error_kind, error_category.label()]
+}
+
+fn core_update_sentry_failure_report(
+    source: &'static str,
+    channel: Channel,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    details: CoreUpdateFailureDetails<'_>,
+) -> CoreUpdateSentryFailureReport {
+    CoreUpdateSentryFailureReport {
+        source,
+        channel,
+        exit_code,
+        error_kind: core_update_sentry_error_kind(error_kind),
+        error_category: details.rescue_failure_category,
+        rescue_stderr_tail: details
+            .rescue_stderr_tail
+            .map(hq_telemetry::redact_core_update_diagnostic_tail),
+        npx_resolution: details.npx_resolution,
+    }
+}
+
 fn report_core_update_failure_once(report: CoreUpdateSentryFailureReport) {
     let signature = CoreUpdateSentryFailureSignature {
         error_kind: report.error_kind,
@@ -998,17 +1043,8 @@ fn queue_core_update_failure_report(
         if source_hub.client().is_none() {
             return;
         }
-        let report = CoreUpdateSentryFailureReport {
-            source,
-            channel,
-            exit_code,
-            error_kind: core_update_sentry_error_kind(error_kind),
-            error_category: details.rescue_failure_category,
-            rescue_stderr_tail: details
-                .rescue_stderr_tail
-                .map(hq_telemetry::redact_core_update_diagnostic_tail),
-            npx_resolution: details.npx_resolution,
-        };
+        let report =
+            core_update_sentry_failure_report(source, channel, exit_code, error_kind, details);
         let hub = std::sync::Arc::new(sentry::Hub::new_from_top(source_hub));
         hq_telemetry::dispatch_sentry_report(move || {
             sentry::Hub::run(hub, || report_core_update_failure_once(report));
@@ -2958,6 +2994,137 @@ error: clone failed";
                 "{label:?} violates hq-pro SAFE_MARKETING_LABEL_RE"
             );
         }
+    }
+
+    fn report_for_core_update_error(error: &CoreUpdateError) -> CoreUpdateSentryFailureReport {
+        core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            error.kind().label(),
+            core_update_failure_details(error),
+        )
+    }
+
+    #[test]
+    fn rescue_spawn_report_keeps_a_bounded_redacted_detail() {
+        let error = CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "npx failed: Access is denied for /Users/alice/.npm; token npm_abcdefghijklmnop",
+        );
+
+        let report = report_for_core_update_error(&error);
+        let tail = report
+            .rescue_stderr_tail
+            .expect("RescueSpawn reports retain a redacted diagnostic tail");
+
+        assert!(tail.contains("Access is denied"));
+        assert!(!tail.contains("/Users/alice"));
+        assert!(!tail.contains("npm_abcdefghijklmnop"));
+        assert!(tail.len() <= hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn baseline_persistence_report_keeps_a_bounded_redacted_detail() {
+        let error = CoreUpdateError::new(
+            CoreUpdateErrorKind::BaselinePersistence,
+            "baseline persistence failed: connection refused at /home/alice/.hq; token ghp_abcdefghijklmnop",
+        );
+
+        let report = report_for_core_update_error(&error);
+        let tail = report
+            .rescue_stderr_tail
+            .expect("BaselinePersistence reports retain a redacted diagnostic tail");
+
+        assert!(tail.contains("connection refused"));
+        assert!(!tail.contains("/home/alice"));
+        assert!(!tail.contains("ghp_abcdefghijklmnop"));
+        assert!(tail.len() <= hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn core_update_error_report_keeps_origin_main_dimensions() {
+        let cases = [
+            (
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: Access is denied (os error 5)",
+                RescueFailureCategory::Permission,
+                "rescue_spawn",
+                "not_available",
+            ),
+            (
+                CoreUpdateErrorKind::BaselinePersistence,
+                "baseline persistence failed: connection refused",
+                RescueFailureCategory::Network,
+                "baseline_persistence",
+                "not_available",
+            ),
+            (
+                CoreUpdateErrorKind::Network,
+                "unrelated network wording",
+                RescueFailureCategory::Network,
+                "network",
+                "not_available",
+            ),
+            (
+                CoreUpdateErrorKind::Internal,
+                "connection refused",
+                RescueFailureCategory::Unknown,
+                "internal",
+                "not_available",
+            ),
+        ];
+
+        for (kind, detail, category, error_kind, exit_code) in cases {
+            let error = CoreUpdateError::new(kind, detail);
+            let report = report_for_core_update_error(&error);
+
+            assert_eq!(report.error_category, category);
+            assert_eq!(report.error_kind, error_kind);
+            assert_eq!(core_update_sentry_exit_code(report.exit_code), exit_code);
+        }
+    }
+
+    #[test]
+    fn rescue_exit_report_keeps_its_existing_redacted_tail() {
+        let stderr =
+            "fatal: unable to access https://github.com/indigoai-us/hq-core at /Users/alice/.npm";
+        let details = CoreUpdateFailureDetails {
+            rescue_stderr_tail: Some(stderr),
+            rescue_failure_category: RescueFailureCategory::Unknown,
+            npx_resolution: None,
+        };
+
+        let report = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            Some(5),
+            "rescue_exit",
+            details,
+        );
+
+        assert_eq!(
+            report.rescue_stderr_tail,
+            Some(hq_telemetry::redact_core_update_diagnostic_tail(stderr))
+        );
+    }
+
+    #[test]
+    fn spawn_failure_fingerprint_excludes_the_detail() {
+        let first = report_for_core_update_error(&CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "npx failed: Access is denied while opening its cache",
+        ));
+        let second = report_for_core_update_error(&CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "npx failed: Access is denied while launching its shim",
+        ));
+
+        assert_eq!(first.error_category, second.error_category);
+        assert_eq!(
+            core_update_sentry_fingerprint(first.error_kind, first.error_category),
+            core_update_sentry_fingerprint(second.error_kind, second.error_category)
+        );
     }
 
     #[test]
