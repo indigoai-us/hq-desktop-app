@@ -856,17 +856,23 @@ describe("the installer fixture build does only what the E2E consumes", () => {
 });
 
 describe("the live job reaps its WebDriver stack before uploading", () => {
-  // `Upload WebDriver diagnostics` in windows-check-live took 62/69/81/91/95/109s
-  // across six green runs. The byte-identical step in windows-installer-e2e --
-  // same action, same path expression, same `if:` -- takes 1-2s for a comparable
+  // `Upload WebDriver diagnostics` in windows-check-live takes 62/67/69/81/91/95/109s
+  // across seven runs. The byte-identical step in windows-installer-e2e -- same
+  // action, same path expression, same `if:` -- takes 1-2s for a comparable
   // 13 KB artifact, and the bridge job pushes 99 MB in 7s. The step log shows
-  // ~82 of those 91s elapsing before upload-artifact's node process prints its
-  // first line, so it is runner contention, not transfer.
+  // ~59-82s elapsing before upload-artifact's node process prints its first
+  // line, so it is neither transfer nor action overhead.
   //
-  // The contention is this job's own orphans. `reapSharedDriver()` in
+  // The first hypothesis was this job's own orphans: `reapSharedDriver()` in
   // live-driver.ts kills the tauri-driver process, and on Windows that does not
-  // reap the tree below it, so msedgedriver, the app, and the msedgewebview2
-  // render/GPU processes run on to the end of the job.
+  // reap the tree below it. The reaping step was added to test that and DID NOT
+  // CONFIRM IT -- the reap takes 0s and the upload came back at 67s, inside the
+  // range it already had.
+  //
+  // These assertions therefore guard hygiene and the evidence, not a saving:
+  // the job must not hand the runner back with its test subjects running, and
+  // the diagnostics upload must stay unconditional. The slow upload is an open
+  // question, not a solved one.
 
   const PROCESS_NAMES = [
     "hq-sync-menubar",
