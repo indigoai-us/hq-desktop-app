@@ -37,7 +37,6 @@ let windowsCheckWorkflow = "";
 let releaseWorkflow = "";
 let fixtureProfile = "";
 let appManifest = "";
-let liveDriver = "";
 
 beforeAll(async () => {
   [
@@ -46,7 +45,6 @@ beforeAll(async () => {
     releaseWorkflow,
     fixtureProfile,
     appManifest,
-    liveDriver,
   ] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/ci.yml"), "utf8"),
     readFile(resolve(rootDir, ".github/workflows/windows-check.yml"), "utf8"),
@@ -56,10 +54,6 @@ beforeAll(async () => {
       "utf8",
     ),
     readFile(resolve(rootDir, "apps/sync/src-tauri/Cargo.toml"), "utf8"),
-    readFile(
-      resolve(rootDir, "apps/sync/e2e/desktop-alt/live-driver.ts"),
-      "utf8",
-    ),
   ]);
 });
 
