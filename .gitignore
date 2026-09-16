@@ -13,3 +13,6 @@ apps/sync/.dmgbuild-venv/
 
 # node_modules symlinks (the trailing-slash rule above only matches directories)
 **/node_modules
+
+# Machine-local dev-server launch config
+.claude/launch.json
