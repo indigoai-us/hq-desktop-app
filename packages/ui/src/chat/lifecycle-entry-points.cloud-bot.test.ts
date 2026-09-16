@@ -44,16 +44,33 @@ function card(
   };
 }
 
-function message(card: Record<string, unknown>) {
+/**
+ * One wire row. `age` is how many minutes back it sits, so a page written
+ * newest-first carries descending timestamps, the way a real one does.
+ */
+function message(card: Record<string, unknown>, age = 0) {
+  const at = new Date(Date.parse("2026-09-15T12:00:00.000Z") - age * 60_000).toISOString();
   return {
     eventId: `evt_${card.cardId}`,
     fromDisplayName: "HQ",
     body: "Create an agent",
-    createdAt: "2026-09-15T12:00:00.000Z",
+    createdAt: at,
     direction: "in",
     messageKind: "system",
     systemEvent: card,
   };
+}
+
+/**
+ * A `fetch_channel` page, in the order the wire really delivers one: NEWEST
+ * first (crates/hq-desktop-core/src/messages.rs, `ChannelDetail`). Fixtures
+ * hand this the cards in the order the turns happened, so what the driver
+ * reads is always the reverse of what the server posted — exactly like
+ * production.
+ */
+function wirePage(oldestFirst: ReadonlyArray<Record<string, unknown>>) {
+  const newestFirst = [...oldestFirst].reverse();
+  return { messages: newestFirst.map((row, i) => message(row, i)), nextCursor: null };
 }
 
 const TURN_1 = card(
@@ -110,7 +127,7 @@ function server(turns = [TURN_1, TURN_2, TURN_3]) {
     posted = [...posted, turns[index + 1]!];
     return { cardId: args.cardId, actionId: args.actionId, state: "done" };
   });
-  const fetchChannel = vi.fn(async () => ({ messages: posted.map(message), nextCursor: null }));
+  const fetchChannel = vi.fn(async () => wirePage(posted));
   const runCompanyTabAction = vi.fn(async () => ({
     cardId: turns[0]?.cardId ?? "",
     actionId: "add_agent",
@@ -188,7 +205,7 @@ describe("runCreateCloudBotEntry", () => {
     const api = {
       runCompanyTabAction,
       runCardAction,
-      fetchChannel: async () => ({ messages: [message(upgrade)], nextCursor: null }),
+      fetchChannel: async () => wirePage([upgrade]),
     } as unknown as CloudBotEntryApi;
 
     // That card still renders, so it is a destination, not a failure — and
@@ -228,7 +245,7 @@ describe("runCreateCloudBotEntry", () => {
       actionId: "next",
       state: "done",
     }));
-    const fetchChannel = vi.fn(async () => ({ messages: [message(TURN_1)], nextCursor: null }));
+    const fetchChannel = vi.fn(async () => wirePage([TURN_1]));
     const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
 
     expect(
@@ -335,7 +352,7 @@ function liveServer(options: { taken?: readonly string[]; dismissable?: boolean 
     },
   );
 
-  const fetchChannel = vi.fn(async () => ({ messages: cards.map(message), nextCursor: null }));
+  const fetchChannel = vi.fn(async () => wirePage(cards));
 
   return {
     api: { runCardAction, fetchChannel, runCompanyTabAction } as unknown as CloudBotEntryApi,
@@ -473,9 +490,9 @@ describe("runCreateCloudBotEntry — the card nobody can see", () => {
     // The first read-back is empty: the card lands a beat later, the same way
     // every later turn does.
     const fetchChannel = vi.fn(async () => {
-      const messages = posted ? [message(TURN_1)] : [];
+      const page = wirePage(posted ? [TURN_1] : []);
       posted = true;
-      return { messages, nextCursor: null };
+      return page;
     });
     const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
 
@@ -494,9 +511,10 @@ describe("runCreateCloudBotEntry — the card nobody can see", () => {
       ],
       "next",
     );
-    // Oldest first, the way a channel page arrives: a leftover open card sits
-    // in front of the turn the server just posted.
-    let posted: Array<Record<string, unknown>> = [stale, TURN_1];
+    // Written the way the wire really answers — NEWEST first — and by hand,
+    // not through `wirePage`, so this test states the order itself: the
+    // leftover open card is the OLDEST row, behind the turn just posted.
+    let wire: Array<Record<string, unknown>> = [TURN_1, stale];
     const runCompanyTabAction = vi.fn(async () => ({
       cardId: "card_create_agent_1",
       actionId: "add_agent",
@@ -505,7 +523,7 @@ describe("runCreateCloudBotEntry — the card nobody can see", () => {
     }));
     const runCardAction = vi.fn(async (args: { cardId: string }) => {
       if (args.cardId === "card_create_agent_1") {
-        posted = [stale, { ...TURN_1, state: "done" }, TURN_3];
+        wire = [TURN_3, { ...TURN_1, state: "done" }, stale];
         return { cardId: args.cardId, actionId: "next", state: "done" };
       }
       return {
@@ -515,10 +533,94 @@ describe("runCreateCloudBotEntry — the card nobody can see", () => {
         agentChannelId: AGENT_CHANNEL,
       };
     });
-    const fetchChannel = vi.fn(async () => ({ messages: posted.map(message), nextCursor: null }));
+    const fetchChannel = vi.fn(async () => ({
+      messages: wire.map((row, i) => message(row, i)),
+      nextCursor: null,
+    }));
     const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
 
     expect((await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, fast)).ok).toBe(true);
     expect(runCardAction).toHaveBeenNthCalledWith(2, expect.objectContaining({ cardId: "card_create_agent_3" }));
+  });
+
+  it("reads a newest-first page: the newer open card wins and the stale guard sees it", async () => {
+    // One page, two live cards: an opening turn finished for @polar, and the
+    // turn-2 card it left behind. On the wire the turn-2 card is the NEWEST
+    // row and the opening turn sits behind it — the shape that made a driver
+    // reading the page backwards submit @polar's sequence for someone else.
+    const openedForPolar = card(
+      "card_create_agent_1",
+      [
+        { id: "name", label: "Agent name", control: "text", required: true, value: "polar" },
+        { id: "handle", label: "Handle", control: "text", required: true, value: "polar" },
+      ],
+      "next",
+      { state: "done", statusLabel: "@polar", actions: [] },
+    );
+    const leftBehind = card(
+      "card_create_agent_2",
+      [
+        { id: "runtime", label: "Runtime", control: "radio", required: true, value: "codex", options: [{ id: "codex", label: "Codex" }] },
+      ],
+      "next",
+    );
+    const runCompanyTabAction = vi.fn(async () => ({
+      // `add_agent` resurfaces the live card, exactly as the server does.
+      cardId: "card_create_agent_2",
+      actionId: "add_agent",
+      state: "open",
+      channelId: CHANNEL,
+    }));
+    const runCardAction = vi.fn(async (args: { cardId: string }) => ({
+      cardId: args.cardId,
+      actionId: "next",
+      state: "done",
+    }));
+    const fetchChannel = vi.fn(async () => ({
+      // NEWEST first: [turn 2, the opening turn behind it].
+      messages: [message(leftBehind, 0), message(openedForPolar, 1)],
+      nextCursor: null,
+    }));
+    const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
+
+    // Someone else's draft: the guard must find the opening turn that is
+    // OLDER than the card it was handed, read @polar off it, and refuse.
+    expect(
+      await runCreateCloudBotEntry(api, "cmp_acme", { name: "Scout", handle: "scout" }, fast),
+    ).toEqual({ ok: false, reason: cloudBotStaleCardReason("polar"), blocked: false });
+    // Nothing was submitted: no bot made under the previous draft's handle.
+    expect(runCardAction).not.toHaveBeenCalled();
+  });
+
+  it("keeps the server's own refusal when its 'try again' asks for something it cannot fill", async () => {
+    // The refusal re-renders with a field this draft has no value for, so
+    // the recovery cannot be run. That does not turn a refusal into a miss.
+    const refused = card(
+      "card_create_agent_1",
+      [
+        { id: "name", label: "Agent name", control: "text", required: true, value: "acme" },
+        { id: "handle", label: "Handle", control: "text", required: true, value: "acme" },
+        { id: "budget", label: "Monthly budget", control: "text", required: true, value: "" },
+      ],
+      "retry",
+      { state: "blocked", statusLabel: "Blocked", reason: "@acme is already taken in Acme." },
+    );
+    const runCompanyTabAction = vi.fn(async () => ({
+      cardId: "card_create_agent_1",
+      actionId: "add_agent",
+      state: "open",
+      channelId: CHANNEL,
+    }));
+    const runCardAction = vi.fn();
+    const fetchChannel = vi.fn(async () => wirePage([refused]));
+    const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
+
+    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, fast)).toEqual({
+      ok: false,
+      // The server's words, in plain language, and still flagged a refusal.
+      reason: "@acme is already taken in Acme.",
+      blocked: true,
+    });
+    expect(runCardAction).not.toHaveBeenCalled();
   });
 });

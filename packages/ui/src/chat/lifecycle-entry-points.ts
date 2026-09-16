@@ -27,6 +27,7 @@ import {
   type LifecycleCardModel,
 } from "./messaging/channelMessageModels.js";
 import { botHandle } from "./create-bot/create-bot-model.js";
+import { messagesForDisplay } from "./live-messages.js";
 import { SETUP_CHANNEL_ID } from "./setup-channel.js";
 
 /** #setup summary card + its action that posts a fresh create_company card. */
@@ -203,14 +204,32 @@ interface PollBudget {
   sleep: (ms: number) => Promise<void>;
 }
 
-/** Every lifecycle card currently on a channel page, oldest first. */
+/**
+ * Every lifecycle card currently on a channel page, in the order its turns
+ * happened: oldest first.
+ *
+ * The WIRE order is the opposite. `fetch_channel` answers NEWEST-first — the
+ * Rust type says so (`ChannelDetail` in crates/hq-desktop-core/src/messages.rs:
+ * "a page of messages (newest-first)"), the `ConversationApi.fetchChannel`
+ * seam repeats it, and the dev harness builds its pages that way
+ * (apps/sync/dev-harness/lifecycle-scenario.ts, "Desktop fetch_channel pages
+ * are newest-first").
+ *
+ * So the page is turned around exactly ONCE, here, and through the same named
+ * helper the timeline itself uses rather than a reverse of our own:
+ * `messagesForDisplay` is where this app states the wire order, and
+ * live-messages.test.ts "reverses newest-first REST pages for display" pins
+ * it. If the wire order ever changes, that one helper and that one test move
+ * — and this driver follows — instead of every reader here silently
+ * inverting. Everything below may assume oldest-first.
+ */
 async function readLifecycleCards(
   api: CloudBotEntryApi,
   channelId: string,
 ): Promise<LifecycleCardModel[]> {
   const page = await api.fetchChannel({ channelId, limit: 50 });
   const cards: LifecycleCardModel[] = [];
-  for (const message of page.messages ?? []) {
+  for (const message of messagesForDisplay(page)) {
     const card = parseLifecycleCard(message.systemEvent);
     if (card) cards.push(card);
   }
@@ -218,8 +237,9 @@ async function readLifecycleCards(
 }
 
 /**
- * The NEWEST card `match` accepts. A channel page is oldest-first, so scanning
- * forward would hand a fresh turn's poll a stale card of the same shape.
+ * The NEWEST card `match` accepts. `readLifecycleCards` hands its list over
+ * oldest-first, so scanning forward would hand a fresh turn's poll a stale
+ * card of the same shape; this walks back from the newest end.
  */
 function newestCard(
   cards: readonly LifecycleCardModel[],
@@ -556,6 +576,18 @@ export async function runCreateCloudBotEntry(
     const values = valuesForCard(card, draft);
     if (!actionId || !values) {
       await abandonCard(api, channelId, card);
+      // A refusal we cannot answer is still the server's refusal: a blocked
+      // card whose "try again" re-asks for something this draft has no value
+      // for keeps the card's own words — "@acme is already taken in Acme" —
+      // and stays `blocked`, the flag callers read to tell a refusal from a
+      // transient miss. Only an ordinary turn we cannot fill is "needs more".
+      if (card.state === "blocked") {
+        return {
+          ok: false,
+          reason: trimmed(card.reason) || CLOUD_BOT_REFUSED_REASON,
+          blocked: true,
+        };
+      }
       return { ok: false, reason: CLOUD_BOT_NEEDS_MORE_REASON, blocked: false };
     }
     const answered = card;

@@ -10,7 +10,9 @@
    * and hands them to `onCloudCreate` (today's company team action). Local
    * drafts hand `oncreate` the CLI input plus the avatar pick, which the host
    * saves once the bot exists. Cmd-Enter creates from any step once every
-   * walked step is valid.
+   * walked step is valid — except on a Cloud draft, where it moves to the
+   * next step until the details step is reached, so a company bot is never
+   * made under a name nobody has seen.
    */
   import { untrack } from "svelte";
   import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
@@ -213,10 +215,18 @@
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       event.preventDefault();
       event.stopPropagation();
-      // `submit` is the gate: it creates only when every walked step is valid,
-      // and otherwise moves the user to the step that still needs them rather
-      // than swallowing the keystroke.
-      if (!busy) void submit();
+      if (busy) return;
+      // A cloud bot is named on the details step, and nothing is created
+      // until the person has seen that name — so from an earlier step the
+      // shortcut takes them there rather than creating under the suggestion.
+      if (draft.home === "cloud" && !isLast && advanceOk) {
+        advance();
+        return;
+      }
+      // Otherwise `submit` is the gate: it creates only when every walked
+      // step is valid, and otherwise moves the user to the step that still
+      // needs them rather than swallowing the keystroke.
+      void submit();
       return;
     }
     if (event.key === "Enter" && !isLast && advanceOk) {
