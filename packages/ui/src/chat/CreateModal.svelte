@@ -750,7 +750,10 @@
   function activateIndex(index: number): void {
     const row = findResults.rows[index];
     if (row) {
-      onpick(row.row);
+      // Same split as the click handler: a channel is a destination, a person
+      // is the first member of something being composed.
+      if (row.kind === "channel") onpick(row.row);
+      else enterCreateWithPerson(row);
       return;
     }
     // Only the trailing create row may fall through here — a stale index into
@@ -798,6 +801,73 @@
       });
       if (raw.createSlug) enterCreate(query);
     }
+  }
+
+  /**
+   * Picking a PERSON from the find list starts a group, it does not navigate.
+   *
+   * Clicking the first name used to call `onpick` straight through, which
+   * opened that DM and tore the modal down — so a second person could never be
+   * added and a group was unreachable from here. Land in the create step with
+   * them already added instead: the "With" picker takes more people, the name
+   * field is required before Create, and the first message is optional.
+   * A one-to-one DM is still one click away (`Message … directly`).
+   */
+  function enterCreateWithPerson(row: FindRow): void {
+    const uid = row.row.personUid?.trim() ?? "";
+    // Staging a group is only worth it when this host can actually finish one.
+    // Without create/add-member seams the create step is a dead end — a
+    // disabled Create button and no way to add anybody — so opening the DM is
+    // strictly better than stranding the user there.
+    if (!uid || !canCreate || !canAddMembers) {
+      onpick(row.row);
+      return;
+    }
+    channelName = "";
+    slugOverride = null;
+    companyUid = defaultCompanyUid(activeScope, targetCompanies);
+    members = [
+      chipFor(
+        {
+          key: `${row.kind === "agent" ? "agent" : "person"}:${uid}`,
+          type: row.kind === "agent" ? "agent" : "person",
+          personUid: uid,
+          email: null,
+          label: row.label,
+          sublabel: row.sublabel,
+          companyUid: row.row.companyUid ?? null,
+        },
+        null,
+      ),
+    ];
+    syncScope();
+    firstMessage = "";
+    createError = null;
+    createUnconfirmed = false;
+    pickerQuery = "";
+    confirmPick = null;
+    step = "create";
+  }
+
+  /**
+   * The direct-DM escape from the create step. Only offered while the group is
+   * still exactly one person and unnamed, which is precisely the state the old
+   * click-through produced — so the fast path costs one extra click, not a
+   * dead end.
+   */
+  const soleHumanMember = $derived(
+    members.length === 1 &&
+      members[0].personUid &&
+      members[0].type !== "email" &&
+      channelName.trim() === ""
+      ? members[0]
+      : null,
+  );
+
+  function messageSoleMemberDirectly(): void {
+    const uid = soleHumanMember?.personUid?.trim();
+    if (!uid) return;
+    onpick(dmRowFor(uid));
   }
 
   function enterCreate(raw: string): void {
@@ -1727,7 +1797,10 @@
                 data-testid="chat-create-result"
                 aria-selected={highlightIndex === item.index}
                 onmouseenter={() => (activeIndex = item.index)}
-                onclick={() => onpick(item.row.row)}
+                onclick={() =>
+                  item.row.kind === "channel"
+                    ? onpick(item.row.row)
+                    : enterCreateWithPerson(item.row)}
               >
                 {#if item.row.kind === "channel"}
                   <span class="create-glyph" aria-hidden="true">#</span>
@@ -2268,6 +2341,18 @@
       {/if}
 
       <div class="create-footer" inert={confirmSubject !== null}>
+        {#if soleHumanMember}
+          <!-- Still one unnamed person: a plain DM needs no channel at all. -->
+          <button
+            type="button"
+            class="create-direct"
+            data-testid="chat-channel-message-directly"
+            disabled={creating}
+            onclick={messageSoleMemberDirectly}
+          >
+            Message {soleHumanMember.label} directly
+          </button>
+        {/if}
         {#if blockReason}
           <span class="create-hint create-hint-block" id="create-submit-reason"
             >{blockReason}</span
@@ -2798,6 +2883,22 @@
     color: var(--t1);
     font: inherit;
     cursor: pointer;
+  }
+
+  .create-direct {
+    margin: 0;
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--v4-text-2, inherit);
+    font: 500 12px/1 var(--font-ui, system-ui);
+    cursor: pointer;
+  }
+
+  .create-direct:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
 
   .create-chips {
