@@ -163,7 +163,7 @@
           <span class="cb-card-meta">Company credits</span>
         </span>
         <span class="cb-card-sub">
-          Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Set up in the company channel.
+          Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this Mac is off.
         </span>
       </button>
     {/if}
@@ -288,7 +288,7 @@
         </div>
       </div>
     {/if}
-    <p class="cb-help">Opens the bot setup step in {companies.find((c) => c.companyUid === draft.companyUid)?.label ?? "the company"}'s channel — name, role, and avatar are chosen there.</p>
+    <p class="cb-help">Hosted by {companies.find((c) => c.companyUid === draft.companyUid)?.label ?? "the company"} and always on. You name it on the next step; it gets its own channel once it is set up.</p>
   {/if}
 </div>
 

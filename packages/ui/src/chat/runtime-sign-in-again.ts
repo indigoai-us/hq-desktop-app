@@ -68,6 +68,11 @@ export interface SignInAgainDeps {
     start(name: string): Promise<Outcome<unknown>>;
     stop(name: string): Promise<Outcome<unknown>>;
   } | null;
+  /**
+   * The host's start gate, so this recovery obeys the same rule as every
+   * other start. A host that omits it starts every paused bot unconditionally.
+   */
+  gate?: RestartGate;
   /** Called once the browser sign-in is open and HQ is waiting on it. */
   onwaiting?: () => void;
   /** Stop waiting (the view went away). */
@@ -94,7 +99,8 @@ function stateOf(result: Outcome<unknown>): LoginState {
 
 /**
  * Force a fresh vendor sign-in for `runtime`, wait for it, then restart the
- * bots paused on it. Bots are only touched after the sign-in is connected.
+ * bots paused on it through the host's start gate. Bots are only touched
+ * after the sign-in is connected.
  */
 export async function signInAgain(runtime: BotRuntimeId, deps: SignInAgainDeps): Promise<SignInAgainResult> {
   const { sessions } = deps;
@@ -133,7 +139,7 @@ export async function signInAgain(runtime: BotRuntimeId, deps: SignInAgainDeps):
   }
   if (current.state !== "connected") return { ok: false, reason: didNotFinish };
 
-  return { ok: true, ...(await restartBotsNeedingSignIn(runtime, deps.bots ?? null)) };
+  return { ok: true, ...(await restartBotsNeedingSignIn(runtime, deps.bots ?? null, deps.gate ?? {})) };
 }
 
 /**

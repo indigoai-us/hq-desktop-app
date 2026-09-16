@@ -106,7 +106,7 @@
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
     oncreateagent?:
-      | ((companyUid: string, draft: { name: string }) => Promise<EntryPointResult>)
+      | ((companyUid: string, draft: { name: string; handle: string }) => Promise<EntryPointResult>)
       | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
@@ -212,7 +212,7 @@
   }
 
   /** Cloud bot: the host runs the company's create sequence and opens its channel. */
-  function newAgentFor(companyUid: string, draft: { name: string }): void {
+  function newAgentFor(companyUid: string, draft: { name: string; handle: string }): void {
     if (!oncreateagent) return;
     void runEntry("agent", () => oncreateagent!(companyUid, draft));
   }

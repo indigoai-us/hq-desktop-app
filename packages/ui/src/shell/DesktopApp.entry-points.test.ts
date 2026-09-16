@@ -325,6 +325,15 @@ describe("DesktopApp New bot: the Cloud option", () => {
       expect(cloud, "the Cloud option renders").toBeTruthy();
       cloud!.click();
       await settle(10);
+      // The cloud bot is named HERE, in front of the person, because the card
+      // that used to ask for its name is no longer rendered anywhere.
+      clickAnywhere('[data-testid="create-bot-next"]');
+      await settle(10);
+      const nameField = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]');
+      expect(nameField, "the cloud details step asks for a name").toBeTruthy();
+      nameField!.value = "Polar";
+      nameField!.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle(10);
       clickAnywhere('[data-testid="chat-bot-create"]');
 
       // The server's own sequence runs, and the shell opens the bot's channel.
@@ -336,9 +345,12 @@ describe("DesktopApp New bot: the Cloud option", () => {
         expect.objectContaining({ tab: "team", cardId: "team:spend", actionId: "add_agent" }),
       );
       expect(runCardAction).toHaveBeenCalledTimes(2);
+      // The name the person typed reaches the server as-is: no cloud bot is
+      // ever created under a suggestion they never saw.
       expect(runCardAction.mock.calls[0]![0]).toMatchObject({
         cardId: "card_create_agent_1",
         actionId: "next",
+        values: { name: "Polar", handle: "polar" },
       });
 
       // Nothing was ever drawn: the card that collects these details is a
