@@ -3509,7 +3509,16 @@
     gap: 0;
   }
 
+  /* Skip style/layout/paint for rows scrolled out of the rail. Safe to
+     contain: the row draws no focus outline of its own, `.chat-row-reveal` is
+     absolutely positioned INSIDE the row, and the row's menus are portaled to
+     the shell so containment cannot clip them. See chat/scroll-perf.css.
+
+     A one-line row is 14px of text plus 6px padding each side, about 32px. */
   .chat-row {
+    contain: content;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 32px;
     position: relative;
     display: flex;
     align-items: center;
