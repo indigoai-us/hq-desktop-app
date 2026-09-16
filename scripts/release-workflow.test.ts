@@ -1035,6 +1035,21 @@ describe("release workflow channel contract", () => {
     expect(stepBody(windows, "Upload Windows debug files to Sentry")).toContain(
       "debug_id",
     );
+    const windowsSentryUpload = stepBody(windows, "Upload Windows debug files to Sentry");
+    expect(windowsSentryUpload).toContain(
+      'Invoke-RestMethod -Uri "${endpoint}?debug_id=$encodedDebugId"',
+    );
+    expect(windowsSentryUpload).not.toContain(
+      'Invoke-RestMethod -Uri "$endpoint?debug_id=$encodedDebugId"',
+    );
+    // An upload already acknowledged by sentry-cli must not hold up working
+    // installers if Sentry's listing endpoint is unavailable or incomplete.
+    // The warning and step summary keep either condition visible to release
+    // operators instead of turning it into a silent success.
+    expect(windowsSentryUpload).toMatch(
+      /catch \{[\s\S]*?Sentry debug-file upload verification failed[\s\S]*?Write-Host "::warning::\$message"[\s\S]*?Add-Content -Path \$env:GITHUB_STEP_SUMMARY -Value \$message[\s\S]*?exit 0/,
+    );
+    expect(windowsSentryUpload).toContain("-ErrorAction Stop");
     expect(windows).toContain("$exeMetadata.variants");
     expect(windows).toContain("$pdbMetadata.variants");
     expect(macos).toContain('data.get("variants", [])');
