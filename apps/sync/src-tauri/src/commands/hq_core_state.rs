@@ -407,6 +407,22 @@ const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
         category: RescueFailureCategory::Permission,
         needle: "eacces",
     },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "this account cannot write to it",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "installation is not executable",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "node.js was not found",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "check your network and npm setup",
+    },
 ];
 
 fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
@@ -2830,6 +2846,64 @@ error: clone failed";
                 None,
             ),
             RescueFailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn rescue_spawn_classifies_normalized_npx_materialization_failures() {
+        let cases = [
+            (
+                "HQ Sync cannot update its npm cache because this account cannot write to it. Fix the npm cache permissions, then try Sync again.",
+                RescueFailureCategory::Permission,
+            ),
+            (
+                "HQ Sync cannot run the sync engine because the Node/npm installation is not executable. Reinstall Node 20 or newer, then reopen HQ Sync.",
+                RescueFailureCategory::MissingDependency,
+            ),
+            (
+                "HQ Sync cannot start the sync engine because Node.js was not found. Install Node 20 or newer, then reopen HQ Sync.",
+                RescueFailureCategory::MissingDependency,
+            ),
+            (
+                "HQ Sync could not prepare its npm cache (npx exited with code 1). Check your network and npm setup, then try Sync again.",
+                RescueFailureCategory::Network,
+            ),
+        ];
+
+        for (message, expected) in cases {
+            assert_eq!(
+                classify_core_update_error(CoreUpdateErrorKind::RescueSpawn, message, None),
+                expected,
+                "normalized npx materialization message must classify as {expected:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_npx_materialization_remains_unknown() {
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "HQ Sync could not prepare its npm cache because npx was interrupted. Try Sync again.",
+                None,
+            ),
+            RescueFailureCategory::Unknown,
+            "an interrupted npx process has no sufficiently specific failure category"
+        );
+    }
+
+    #[test]
+    fn rescue_exit_keeps_auth_precedence_over_spawn_needles() {
+        assert_eq!(
+            classify_rescue_exit_failure(
+                "authentication failed: no such file or directory",
+                CoreUpdateNpxResolution {
+                    resolved: true,
+                    source: "managed_toolchain",
+                },
+            ),
+            RescueFailureCategory::Auth,
+            "rescue-exit classification must not use spawn-pattern precedence"
         );
     }
 
