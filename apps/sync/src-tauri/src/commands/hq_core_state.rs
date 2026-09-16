@@ -3264,6 +3264,9 @@ error: clone failed";
                 resolved: true,
                 source: "managed_toolchain",
             }),
+            // This fixture models a directly reported failure, before any
+            // managed-Git retry can have been attempted.
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
         };
         let events = sentry::test::with_captured_events_options(
             || {
