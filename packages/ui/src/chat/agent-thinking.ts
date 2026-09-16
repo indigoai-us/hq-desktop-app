@@ -420,7 +420,8 @@ export interface ThinkingLineOpts {
 /**
  * What the row shows at `now`. A status the agent reported wins outright; with
  * none, the phrases walk on `rotateMs` and hold on the last one (they never
- * loop back to "is thinking" on a turn that has been going for minutes).
+ * loop back to "is thinking" on a turn that has been going for minutes), and a
+ * row `tick` has promoted to `'slow'` says so instead.
  */
 export function thinkingLine(
   entry: ThinkingEntry,
@@ -439,6 +440,10 @@ export function thinkingLine(
     label = /^is\s/i.test(detail)
       ? `${entry.agentName} ${detail}`
       : `${entry.agentName}: ${detail}`;
+  } else if (entry.phase === 'slow') {
+    // `tick` promotes a row that has been going for `slowAfterMs`. Saying so
+    // is more honest than another rotation of the same phrases.
+    label = `${entry.agentName} is taking longer than usual`;
   } else {
     const index = Math.min(
       THINKING_PHRASES.length - 1,
@@ -454,21 +459,6 @@ export function thinkingLine(
         ? `working for ${formatThinkingElapsed(workingMs)}`
         : null,
   };
-}
-
-/** Status copy for a row. Unicode ellipsis (U+2026) matches the rest of
- * the messaging UI (`Sending…`, `Joining…`). Kept for hosts that render a
- * single static string; {@link thinkingLine} is what the row uses. */
-export function labelFor(entry: ThinkingEntry): string {
-  const detail = entry.detail?.trim() ?? '';
-  // "is thinking…" is the generic status local bots send; say it the usual way.
-  if (detail && !/^is thinking/i.test(detail)) {
-    return /^is\s/i.test(detail) ? `${entry.agentName} ${detail}` : `${entry.agentName}: ${detail}`;
-  }
-  if (entry.phase === 'slow') {
-    return `${entry.agentName} is taking longer than usual…`;
-  }
-  return `${entry.agentName} is thinking…`;
 }
 
 // ---------------------------------------------------------------------------

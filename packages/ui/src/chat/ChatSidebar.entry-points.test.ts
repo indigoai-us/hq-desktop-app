@@ -164,7 +164,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(create?.textContent).toContain("Continue in Indigo");
     create!.click();
     await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo");
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo", {
+      name: expect.stringMatching(/\S/),
+    });
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
 
@@ -200,7 +202,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     await toHomeStep();
     click('[data-testid="chat-bot-create"]');
     await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_ramen_bae");
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_ramen_bae", {
+      name: expect.stringMatching(/\S/),
+    });
   });
 
   it("Cloud with several companies shows the company picker, keyboard included, and Create uses the pick", async () => {
@@ -247,7 +251,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Continue in Acme");
     click('[data-testid="chat-bot-create"]');
     await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme");
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", {
+      name: expect.stringMatching(/\S/),
+    });
     expect(oncreatebot).not.toHaveBeenCalled();
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
@@ -270,7 +276,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     await settle();
     click('[data-testid="chat-bot-create"]');
     await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme");
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", {
+      name: expect.stringMatching(/\S/),
+    });
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
     const error = q('[data-testid="chat-create-entry-error"]');

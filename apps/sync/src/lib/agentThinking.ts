@@ -10,7 +10,6 @@ export {
   startThinking,
   tick,
   clearForAgents,
-  labelFor,
   thinkingLine,
   formatThinkingElapsed,
   THINKING_PHRASES,

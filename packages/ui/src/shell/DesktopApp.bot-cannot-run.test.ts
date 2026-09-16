@@ -25,6 +25,7 @@ import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { BOT_START_MAX_ATTEMPTS } from "../chat/bot-runnability.js";
+import { LOCAL_BOTS_POLL_MS } from "../chat/local-bots.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 
@@ -248,6 +249,73 @@ describe("a start that cannot succeed is issued once", () => {
     await settle(40);
     expect(start).toHaveBeenCalledOnce();
   });
+
+  it("drops the notice once the bot turns up alive on this computer", async () => {
+    // A closed gate outranks a bare listing — but not a listing that shows a
+    // live local process. Starting the bot another way (its own profile, a
+    // terminal, the sign-in-again recovery) has to end the notice.
+    let rows = [botRow()];
+    const start = vi.fn(async () => ({ ok: false as const, reason: "unavailable" as const, message: NO_SUCH_BOT }));
+    // Fake timers from the start so the routine `hq bot list` poll (30s) can
+    // be driven; `shouldAdvanceTime` keeps `vi.waitFor` working as usual.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mountApp(
+      adapter({ bots: { start: start as never, list: async () => ok({ bots: rows }) } }),
+      SETUP_DM_ROW,
+    );
+    const button = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="local-bot-start"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    button.click();
+    await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
+
+    // The next routine listing is the event; nothing else happens in between.
+    rows = [botRow({ processAlive: true, pid: 4242, state: "running" })];
+    try {
+      await vi.advanceTimersByTimeAsync(LOCAL_BOTS_POLL_MS + 1_000);
+      await settle(20);
+      expect(q('[data-testid="bot-not-runnable-notice"]')).toBeNull();
+      // The gate reopened with it: the bot may be started here again.
+      expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 20_000);
+
+  it("offers Check again for a blocked failure, not only a missing one", async () => {
+    // Unrecognised failure text classifies as blocked, which closes the gate
+    // on the first attempt. Without this the DM had no way back at all.
+    const start = vi.fn(async () => ({
+      ok: false as const,
+      reason: "unavailable" as const,
+      message: "the runtime refused to launch",
+    }));
+    const list = vi.fn(async () => ok({ bots: [botRow()] }));
+    mountApp(adapter({ bots: { start: start as never, list } }), SETUP_DM_ROW);
+    const button = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="local-bot-start"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    button.click();
+
+    const recheck = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="local-bot-recheck"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(recheck.textContent).toContain("Check again");
+    expect(q('[data-testid="local-bot-start"]')).toBeNull();
+    expect(start).toHaveBeenCalledOnce();
+
+    // One click, one listing — and the gate reopens, so Start is offered again.
+    const listCalls = list.mock.calls.length;
+    recheck.click();
+    await vi.waitFor(() => expect(q('[data-testid="local-bot-start"]')).toBeTruthy());
+    expect(list.mock.calls.length).toBeGreaterThan(listCalls);
+  }, 20_000);
 
   it("retries a transient failure, but a bounded number of times", async () => {
     const start = mountWithFailingStart(CLI_TIMEOUT);

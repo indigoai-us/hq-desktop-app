@@ -356,7 +356,11 @@ describe("CreateBotFlow", () => {
     expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Continue in Acme");
     click('[data-testid="chat-bot-create"]');
     await settle();
-    expect(onCloudCreate).toHaveBeenCalledWith("cmp_acme");
+    // The picked company AND the name the draft already carries: the host
+    // needs both to run the server's create sequence without a card.
+    expect(onCloudCreate).toHaveBeenCalledWith("cmp_acme", {
+      name: expect.stringMatching(/\S/),
+    });
     expect(oncreate).not.toHaveBeenCalled();
   });
 

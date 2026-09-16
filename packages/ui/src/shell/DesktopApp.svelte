@@ -89,6 +89,7 @@
   } from "../chat/setup-bot.js";
   import {
     findLifecycleCardElement,
+    runCreateCloudBotEntry,
     runCreateCompanyEntry,
     type EntryPointResult,
     type EntryPointTarget,
@@ -284,6 +285,7 @@
     BOT_NOT_RUNNABLE_HERE,
     BOT_NOT_RUNNABLE_RECHECK,
     BOT_START_NO_MORE_RETRIES,
+    botIsConfiguredHere,
     botRunsHere,
     botStartFallbackNotice,
     canStartBot,
@@ -978,6 +980,41 @@
     if (result.ok) localBotRecords = result.value.bots ?? [];
   }
   /**
+   * A start that actually ran: the budget resets and the honest "cannot run
+   * here" notice goes with it. Every successful start in the shell — the
+   * progress card's Retry, the offline notice's Start, the bot's own profile
+   * panel, the sign-in-again restart — comes through here, so a bot that is
+   * now running never keeps a notice that says it is not.
+   */
+  function noteBotStarted(name: string, agentUid: string): void {
+    botStartGate = clearBotStartGate(botStartGate, name);
+    const uid = (agentUid ?? "").trim();
+    if (!uid || !unrunnableBotUids[uid]) return;
+    const { [uid]: _running, ...rest } = unrunnableBotUids;
+    unrunnableBotUids = rest;
+  }
+  /**
+   * The one place a bot start happens. The gate decides whether it may run at
+   * all, a success reopens the gate, and a failure is classified exactly once.
+   */
+  async function startBotByName(name: string, agentUid: string): Promise<{ ok: boolean; reason: string | null }> {
+    const api = adapter.bots;
+    if (!api) return { ok: false, reason: botStartFallbackNotice(name) };
+    if (!canStartBot(botStartGate, name)) {
+      return { ok: false, reason: `${botStartFallbackNotice(name)} ${BOT_START_NO_MORE_RETRIES}` };
+    }
+    const result = await api.start(name);
+    if (result.ok) {
+      noteBotStarted(name, agentUid);
+      return { ok: true, reason: null };
+    }
+    // The bots API shells out to the CLI, so `message` can be its own words.
+    // They belong in the log; the caller gets a written sentence.
+    const raw = result.message ?? "";
+    if (raw) console.warn("[hq-desktop] bot start failed:", raw);
+    return { ok: false, reason: applyBotStartFailure(name, agentUid, raw) };
+  }
+  /**
    * A bot that turned up in this Mac's list can run here after all (the person
    * created it, or its config arrived): drop the notice.
    *
@@ -989,14 +1026,24 @@
   $effect(() => {
     const records = localBotRecords;
     untrack(() => {
-      const uids = Object.keys(unrunnableBotUids).filter((uid) => {
-        const bot = records.find((row) => row.agentUid.trim() === uid);
-        return Boolean(bot) && canStartBot(botStartGate, bot!.name);
-      });
-      if (uids.length === 0) return;
+      const cleared = Object.keys(unrunnableBotUids)
+        .map((uid) => records.find((row) => row.agentUid.trim() === uid))
+        .filter((bot): bot is LocalBotRow => Boolean(bot))
+        // A closed gate outranks a bare listing — but not a listing that
+        // shows the bot's own launch agent installed here, or its process
+        // alive here. That local config is exactly what was missing when
+        // every start answered "no such bot", so its arrival is the newer
+        // event the notice was waiting for, and the gate reopens with it.
+        .filter((bot) => canStartBot(botStartGate, bot.name) || botIsConfiguredHere(bot));
+      if (cleared.length === 0) return;
       const next = { ...unrunnableBotUids };
-      for (const uid of uids) delete next[uid];
+      let gate = botStartGate;
+      for (const bot of cleared) {
+        delete next[bot.agentUid.trim()];
+        gate = clearBotStartGate(gate, bot.name);
+      }
       unrunnableBotUids = next;
+      botStartGate = gate;
     });
   });
   /** The open DM's bot cannot run here — the honest state, or null. */
@@ -1318,22 +1365,17 @@
     const api = adapter.bots;
     if (!entry || !api || entry.retrying) return;
     const bot = localBots.find((b) => b.agentUid === uid);
-    // Nothing is re-issued once the gate is closed; the card keeps the reason
-    // it already carries instead of blanking it for a retry that cannot run.
+    // Nothing is re-issued once the gate is closed; the card renders its
+    // Retry disabled in that state (`canRetry` below) so the click cannot
+    // happen at all rather than happening and doing nothing.
     if (bot && !canStartBot(botStartGate, bot.name)) return;
     setBotProgress(uid, { retrying: true, reason: null });
     if (bot) {
-      const result = await api.start(bot.name);
-      if (!result.ok) {
-        // Same rule as createBotEntry: the card carries a sentence, the log
-        // carries the CLI's own words. A definitive failure also closes the
-        // gate, so the card stops offering a Retry that cannot work.
-        const raw = result.message ?? "";
-        if (raw) console.warn("[hq-desktop] bot start failed:", raw);
-        setBotProgress(uid, { retrying: false, state: "failed", reason: applyBotStartFailure(bot.name, bot.agentUid, raw) });
+      const started = await startBotByName(bot.name, bot.agentUid);
+      if (!started.ok) {
+        setBotProgress(uid, { retrying: false, state: "failed", reason: started.reason });
         return;
       }
-      botStartGate = clearBotStartGate(botStartGate, bot.name);
       // Re-read presence FIRST: flipping to "installing" while the list still
       // says "failed" lets the presence effect below stamp it failed again.
       await refreshLocalBots();
@@ -1434,28 +1476,31 @@
   }
   /** Restart the bots paused on a tool after it was signed in again elsewhere. */
   async function afterRuntimeSignedIn(runtime: string): Promise<void> {
-    await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], adapter.bots ?? null);
+    await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], adapter.bots ?? null, {
+      // Same gate as every other start: a bot whose start already failed
+      // definitively is not re-issued here either, and one that does start
+      // drops its "cannot run here" notice.
+      canStart: (bot) => canStartBot(botStartGate, bot.name),
+      onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
+    });
     await refreshLocalBots();
   }
   async function startSelectedLocalBot(): Promise<void> {
     const bot = selectedLocalBot;
-    const api = adapter.bots;
-    if (!bot || !api || localBotBusy) return;
+    if (!bot || !adapter.bots || localBotBusy) return;
     // A definitive failure is never re-issued, and transient ones are bounded:
     // the owner's VM retried the same doomed start ~48 times.
     if (!canStartBot(botStartGate, bot.name)) return;
     localBotBusy = bot.name;
     localBotActionError = null;
-    const result = await api.start(bot.name);
-    if (result.ok) {
-      botStartGate = clearBotStartGate(botStartGate, bot.name);
-    } else {
-      const raw = result.message ?? "";
-      if (raw) console.warn("[hq-desktop] bot action failed:", raw);
-      localBotActionError = applyBotStartFailure(bot.name, bot.agentUid, raw);
-    }
+    const started = await startBotByName(bot.name, bot.agentUid);
+    if (!started.ok) localBotActionError = started.reason;
     await refreshLocalBots();
     localBotBusy = null;
+  }
+  /** The bot's own profile panel starts it through the same gate. */
+  async function startBotFromProfile(bot: LocalBotRow): Promise<{ ok: boolean; reason: string | null }> {
+    return startBotByName(bot.name, bot.agentUid);
   }
   /**
    * One place where a failed start becomes state: it counts against the bot's
@@ -3359,6 +3404,10 @@
   const canRunEntryPoints = $derived(
     typeof adapter.messaging.runCardAction === "function",
   );
+  /** A cloud bot needs the team action to open its sequence and a card read-back. */
+  const canCreateCloudBots = $derived(
+    canRunEntryPoints && typeof adapter.messaging.runCompanyTabAction === "function",
+  );
 
   /**
    * Companies the roster already knows about, whatever their sync state. Any
@@ -3461,11 +3510,21 @@
     if (uid) changeTenantCompany(uid);
   }
 
-  // There is no "add a bot to this company" entry point here any more. It ran
-  // the Team tab's `add_agent` action, whose only effect was to post the
-  // server's "Create a bot" card into the company channel — a second, rival way
-  // to make a bot that the local bot flow (bot kinds) replaced. Both the card
-  // and the buttons that posted it are gone; new bots come from "New bot".
+  /**
+   * New bot → Cloud. Creating a company-hosted bot exists on the server only
+   * as the Team tab's `add_agent` action plus the `create_agent` card's own
+   * turns, so this runs exactly those — headlessly. The card is never rendered
+   * (it is a retired timeline kind) and never focused: the person stays in the
+   * New bot flow and lands in the new bot's channel when it is made.
+   */
+  async function createCloudBotEntry(
+    companyUid: string,
+    draft: { name: string },
+  ): Promise<EntryPointResult> {
+    const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
+    if (result.ok) navigateToEntryTarget(result.target, companyUid);
+    return result;
+  }
 
   const cardActionKeys: CardActionIdempotencyStore = new Map();
 
@@ -6074,6 +6133,7 @@
           onopenSettings={() => openSettings()}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+          oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
           botWorkers={localBotWorkers}
@@ -6552,6 +6612,7 @@
               avatarUrl={avatarByUid[agentChannelLocalBot.agentUid] ?? null}
               {adapter}
               onchanged={refreshLocalBots}
+              onstart={startBotFromProfile}
               onclose={() => void leaveCurrentDestination()}
             />
           {:else if isAgentChannel && agentSurface === "details" && agentChannelUid}
@@ -6734,6 +6795,7 @@
                       phase={selectedBotProgress.state}
                       reason={selectedBotProgress.reason}
                       retrying={selectedBotProgress.retrying}
+                      canRetry={canStartBot(botStartGate, selectedBotProgress.name)}
                       onretry={() => void retryBotProgress(uid)}
                     />
                   {/if}
@@ -6758,16 +6820,33 @@
                   {:else if selectedLocalBot && selectedLocalBotOffline}
                     <div class="local-bot-notice" data-testid="local-bot-offline-notice" role="status">
                       <span class="local-bot-notice-text">{localBotOfflineNotice(selectedLocalBot)}</span>
-                      {#if !selectedLocalBot.processAlive && !selectedLocalBot.promotionHold && canStartBot(botStartGate, selectedLocalBot.name)}
-                        <button
-                          type="button"
-                          class="local-bot-notice-start"
-                          data-testid="local-bot-start"
-                          disabled={localBotBusy === selectedLocalBot.name}
-                          onclick={() => void startSelectedLocalBot()}
-                        >
-                          {localBotBusy === selectedLocalBot.name ? "Starting…" : "Start"}
-                        </button>
+                      {#if !selectedLocalBot.processAlive && !selectedLocalBot.promotionHold}
+                        {#if canStartBot(botStartGate, selectedLocalBot.name)}
+                          <button
+                            type="button"
+                            class="local-bot-notice-start"
+                            data-testid="local-bot-start"
+                            disabled={localBotBusy === selectedLocalBot.name}
+                            onclick={() => void startSelectedLocalBot()}
+                          >
+                            {localBotBusy === selectedLocalBot.name ? "Starting…" : "Start"}
+                          </button>
+                        {:else}
+                          <!-- The gate is closed, so nothing is re-issued by
+                               itself. A person asking still counts as consent
+                               to look once more — the same one-listing recheck
+                               the "cannot run here" notice offers, so a blocked
+                               bot is never a dead end inside its own DM. -->
+                          <button
+                            type="button"
+                            class="local-bot-notice-start"
+                            data-testid="local-bot-recheck"
+                            disabled={botRecheckBusy}
+                            onclick={() => void recheckSelectedBot()}
+                          >
+                            {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
+                          </button>
+                        {/if}
                       {/if}
                       {#if localBotActionError}
                         <span class="local-bot-notice-error" role="alert">{localBotActionError}</span>
@@ -6872,6 +6951,7 @@
                       null}
                     {adapter}
                     onchanged={refreshLocalBots}
+                    onstart={startBotFromProfile}
                     onclose={closeAgentDetail}
                   />
                 </div>

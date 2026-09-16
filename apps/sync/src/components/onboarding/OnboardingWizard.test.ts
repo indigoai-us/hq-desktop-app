@@ -1344,6 +1344,133 @@ describe('setup failure correlation', () => {
   });
 });
 
+describe('setup restart', () => {
+  /** Counts every attempt at the first stage's command. */
+  function contentAttempts(): number {
+    return tauri.invoke.mock.calls.filter(
+      ([command]) => command === 'fetch_and_extract_template',
+    ).length;
+  }
+
+  function clickIn(panel: string, selector: string): void {
+    const button = host.querySelector<HTMLButtonElement>(
+      `[data-testid="${panel}"] ${selector}`,
+    );
+    if (!button) throw new Error(`Expected ${selector} inside ${panel}.`);
+    if (button.disabled) throw new Error(`${selector} inside ${panel} is disabled.`);
+    button.click();
+  }
+
+  /** Leave the setup step, then come back through Install. */
+  async function leaveAndReturn(): Promise<void> {
+    clickIn('onboarding-setup', '.btn-secondary');
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    clickIn('onboarding-directory', '.btn-primary');
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+  }
+
+  it('starts over when the person leaves mid-stage and comes back', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          // Never settles: the stage is still in flight when the person
+          // leaves, exactly as a slow download would be.
+          return new Promise<never>(() => {});
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    expect(contentAttempts()).toBe(1);
+
+    await leaveAndReturn();
+
+    // The cancelled run still owns its hung stage; the restart must not be
+    // swallowed by it, or setup sits at 0% with nothing running.
+    expect(contentAttempts()).toBe(2);
+  });
+
+  it('starts over after a stage failed and the person came back', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          throw new Error('template archive is corrupt');
+        case 'install_deps':
+          return new Promise<never>(() => {});
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    const afterFailure = contentAttempts();
+    expect(afterFailure).toBeGreaterThanOrEqual(1);
+
+    await leaveAndReturn();
+
+    expect(contentAttempts()).toBeGreaterThan(afterFailure);
+  });
+
+  it('leaves no stage waiting on a retry that will never come', async () => {
+    let attempts = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'fetch_and_extract_template':
+          attempts += 1;
+          // Transient: the stage goes to 'retrying' and waits for its next go.
+          if (attempts === 1) throw new Error('network timeout while fetching the template');
+          return new Promise<never>(() => {});
+        case 'record_install_complete':
+          return new Promise<never>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flush();
+    // Inside the 1s auto-retry wait: the stage is 'retrying', not running.
+    await vi.advanceTimersByTimeAsync(200);
+    await flush();
+    const subStatus = () =>
+      host.querySelector('[data-testid="onboarding-setup-substatus"]')?.textContent ?? '';
+    expect(subStatus()).toContain('Retrying');
+
+    // Leaving while the stage waits must not strand it: coming back runs it.
+    await leaveAndReturn();
+
+    expect(subStatus()).not.toContain('Retrying');
+    expect(attempts).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('setup progress direction', () => {
   interface ProgressSample {
     percent: number;

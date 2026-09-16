@@ -265,8 +265,16 @@
   // One high-water mark per visit to the setup step. Shown progress is read
   // through it so a retry or a rebuilt stage list can never walk it backward.
   const setupProgressTracker = createSetupProgressTracker();
-  /** Guards the stage list from a second run rebuilding it under a live one. */
-  let setupRunInFlight = false;
+  /**
+   * The run that currently owns the start guard, or 0 when none does.
+   *
+   * It holds the run id rather than a bare boolean so a restart can TAKE the
+   * guard from a run that is still unwinding. A cancelled run keeps awaiting
+   * its current stage for as long as that stage's timeout (minutes), and
+   * dropping the restart on the floor left the setup screen at 0% with
+   * nothing running and no way back.
+   */
+  let inFlightRunId = 0;
   let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
   let currentSetupRunId = '';
@@ -872,6 +880,9 @@
     currentSetupRunId = createSetupRunId();
     setupCancelled = false;
     setupRetry = null;
+    // Supersession: the previous run may have left a stage mid-retry. This
+    // run owns the list now, so nothing may still be waiting on that retry.
+    stages = resetRetryingStages(stages);
     activeInstallHandles.clear();
     activeContentHandles.clear();
     return currentRunId;
@@ -1388,13 +1399,19 @@
   }
 
   async function startSetupRun() {
-    // The setup `$effect` is guarded by `setupStarted`, but a second entry
-    // from any other path must not rebuild the stage list underneath a live
-    // run — the rebuilt list would drop finished stages and restart the bands.
-    if (setupRunInFlight) return;
-    setupRunInFlight = true;
+    // A second entry must not rebuild the stage list underneath a LIVE run —
+    // the rebuilt list would drop finished stages and restart the bands. But
+    // a restart has to win: leaving the setup step cancels the run without
+    // waiting for its current stage, so coming back finds the guard still
+    // held by a run that is no longer current. That run is superseded here
+    // instead of being allowed to swallow the restart.
+    if (inFlightRunId !== 0) {
+      if (inFlightRunId === currentRunId && !setupCancelled) return;
+      cancelSetupRun();
+    }
+    const runId = beginSetupRun();
+    inFlightRunId = runId;
     try {
-      const runId = beginSetupRun();
       if (installPath) effectiveInstallPath = installPath;
       await listenForProgress(runId);
       let startStage: StageId = STAGE_ORDER[0];
@@ -1411,7 +1428,10 @@
       if (!isCurrentRun(runId)) return;
       await runSetup(runId, startStage);
     } finally {
-      setupRunInFlight = false;
+      // Only the run that still owns the guard may release it: a superseded
+      // run finishing late must not clear a newer run's claim. Every exit —
+      // cancel, error, completion, supersession — passes through here.
+      if (inFlightRunId === runId) inFlightRunId = 0;
     }
   }
 
@@ -1421,7 +1441,21 @@
     unlistenInstallProgress = null;
     unlistenContentProgress?.();
     unlistenContentProgress = null;
+    // A stage that failed and is waiting on its auto-retry never settles once
+    // its run stops being current, so `allSettled` would stay false forever
+    // and the completion gate would never fire. Put it back to 'pending': the
+    // next run owns it again.
+    stages = resetRetryingStages(stages);
+    setupRetry = null;
     void cancelForegroundWork(currentRunId);
+  }
+
+  /** Any stage left waiting on a retry goes back to 'pending'. */
+  function resetRetryingStages(list: StageState[]): StageState[] {
+    if (!list.some((stage) => stage.status === 'retrying')) return list;
+    return list.map((stage) =>
+      stage.status === 'retrying' ? { ...stage, status: 'pending' as const } : stage,
+    );
   }
 
   async function probeAiTools() {

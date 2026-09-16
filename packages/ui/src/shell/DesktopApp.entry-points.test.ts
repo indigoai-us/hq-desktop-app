@@ -2,8 +2,10 @@
 
 /**
  * Lifecycle entry points in the shell: the #setup summary card's primary action
- * landing on the create_company card the server posts, and the absence of the
- * retired company-header "Add bot" button and its create_agent card.
+ * landing on the create_company card the server posts, the absence of the
+ * retired company-header "Add bot" button and its create_agent card, and the
+ * New bot flow's Cloud option — which creates a company-hosted bot by running
+ * the server's own card sequence headlessly and landing in the bot's channel.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -34,6 +36,24 @@ const SETUP_ROW: ConversationRow = {
 } as ConversationRow;
 
 const viewerOwner = { canAct: true, role: "owner" };
+
+/** One cloud company, so the New bot flow has somewhere to host a bot. */
+const ACME_WORKSPACE = {
+  slug: "acme",
+  displayName: "Acme",
+  kind: "company",
+  state: "synced",
+  cloudUid: "cmp_acme",
+  bucketName: null,
+  hasLocalFolder: true,
+  localPath: null,
+  membershipStatus: "active",
+  role: "owner",
+  lastSyncedAt: null,
+  brokenReason: null,
+  invitedBy: null,
+  invitedAt: null,
+} as const;
 
 function teamTab(canAct: boolean) {
   return {
@@ -154,7 +174,11 @@ async function settle(times = 8): Promise<void> {
   }
 }
 
-function mountApp(adapterValue: PlatformAdapter, initialRow: ConversationRow): void {
+function mountApp(
+  adapterValue: PlatformAdapter,
+  initialRow: ConversationRow,
+  extra: Record<string, unknown> = {},
+): void {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
@@ -166,8 +190,15 @@ function mountApp(adapterValue: PlatformAdapter, initialRow: ConversationRow): v
       self: { uid: "prs_test", displayName: "Stefan Johnson", email: "stefan@example.com" },
       coreFixtures: false,
       initialRow,
+      ...extra,
     },
   });
+}
+
+function clickAnywhere(selector: string): void {
+  const el = document.querySelector<HTMLButtonElement>(selector);
+  if (!el) throw new Error(`missing ${selector}`);
+  el.click();
 }
 
 describe("DesktopApp company header: no server bot form", () => {
@@ -199,6 +230,151 @@ describe("DesktopApp company header: no server bot form", () => {
     ).toBeNull();
     expect(host.textContent).not.toContain("Create an agent");
     expect(runCompanyTabAction).not.toHaveBeenCalled();
+  }, 30_000);
+});
+
+describe("DesktopApp New bot: the Cloud option", () => {
+  /** Server turns, posted one at a time exactly as hq-pro does. */
+  const TURNS = [
+    {
+      v: 1,
+      type: "lifecycle_card",
+      cardId: "card_create_agent_1",
+      kind: "create_agent",
+      companyUid: "cmp_acme",
+      state: "open",
+      title: "Create an agent",
+      fields: [
+        { id: "name", label: "Agent name", control: "text", required: true, value: "" },
+        { id: "handle", label: "Handle", control: "text", required: true, value: "" },
+      ],
+      actions: [{ id: "next", label: "Next", style: "primary" }],
+      viewer: viewerOwner,
+    },
+    {
+      v: 1,
+      type: "lifecycle_card",
+      cardId: "card_create_agent_2",
+      kind: "create_agent",
+      companyUid: "cmp_acme",
+      state: "open",
+      title: "Create an agent",
+      fields: [
+        {
+          id: "size",
+          label: "Size",
+          control: "radio",
+          required: true,
+          value: "basic",
+          options: [{ id: "basic", label: "Basic" }],
+        },
+      ],
+      actions: [{ id: "create", label: "Create agent", style: "primary" }],
+      viewer: viewerOwner,
+    },
+  ];
+
+  it("creates a cloud bot and lands in its channel, with no create_agent card on the way", async () => {
+    let posted = [TURNS[0]!];
+    const runCompanyTabAction = vi.fn(async () =>
+      ok({ cardId: "card_create_agent_1", actionId: "add_agent", state: "open", channelId: "chn_acme" }),
+    );
+    const runCardAction = vi.fn(async (args: { cardId: string; actionId: string }) => {
+      if (args.cardId === "card_create_agent_1") {
+        posted = [...posted, TURNS[1]!];
+        return ok({ cardId: args.cardId, actionId: args.actionId, state: "done" });
+      }
+      return ok({
+        cardId: args.cardId,
+        actionId: args.actionId,
+        state: "done",
+        agentChannelId: "chn_polar",
+        agentUid: "agt_polar",
+      });
+    });
+    const fetchChannel = vi.fn(async () =>
+      ok({ messages: posted.map((card, i) => systemMessage(`evt_${i}`, card)), nextCursor: null }),
+    );
+    const getCompanyTab = vi.fn(async (_uid: string, tab: string) =>
+      ok(tab === "team" ? teamTab(true) : { tab, companyUid: "cmp_acme", viewer: viewerOwner, sections: [] }),
+    );
+
+    const opened: string[] = [];
+    const onOpen = (event: Event) => {
+      opened.push(String((event as CustomEvent).detail?.channelId ?? ""));
+    };
+    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    try {
+      mountApp(
+        adapter({ runCompanyTabAction, runCardAction, fetchChannel, getCompanyTab }),
+        COMPANY_ROW,
+        { companies: [ACME_WORKSPACE] },
+      );
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-testid="chat-new-message"]')).toBeTruthy(),
+      );
+      clickAnywhere('[data-testid="chat-new-message"]');
+      await settle(10);
+      clickAnywhere('[data-testid="chat-create-new-bot"]');
+      await settle(10);
+      clickAnywhere('[data-testid="create-bot-next"]');
+      await settle(10);
+
+      // A company can host a bot, so the Cloud home option is offered.
+      const cloud = document.querySelector<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]');
+      expect(cloud, "the Cloud option renders").toBeTruthy();
+      cloud!.click();
+      await settle(10);
+      clickAnywhere('[data-testid="chat-bot-create"]');
+
+      // The server's own sequence runs, and the shell opens the bot's channel.
+      await vi.waitFor(() => expect(opened).toContain("chn_polar"), {
+        timeout: 10_000,
+        interval: 50,
+      });
+      expect(runCompanyTabAction).toHaveBeenCalledWith(
+        expect.objectContaining({ tab: "team", cardId: "team:spend", actionId: "add_agent" }),
+      );
+      expect(runCardAction).toHaveBeenCalledTimes(2);
+      expect(runCardAction.mock.calls[0]![0]).toMatchObject({
+        cardId: "card_create_agent_1",
+        actionId: "next",
+      });
+
+      // Nothing was ever drawn: the card that collects these details is a
+      // retired timeline kind, and nothing was focused on it either.
+      await settle(12);
+      expect(document.querySelector('[data-card-kind="create_agent"]')).toBeNull();
+      expect(document.querySelector('[data-card-id="card_create_agent_1"]')).toBeNull();
+      expect(document.body.textContent).not.toContain("Create an agent");
+    } finally {
+      window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    }
+  }, 30_000);
+
+  it("hides the Cloud option on a host with no company tab action", async () => {
+    // Local bots exist here, so the New bot flow opens — but without the team
+    // action there is no way to make a cloud bot, and the option stays hidden
+    // rather than offering a button that cannot work.
+    const local = adapter({ runCompanyTabAction: undefined });
+    (local as { bots?: unknown }).bots = {
+      list: async () => ok({ bots: [] }),
+      create: async () => ok({}),
+      start: async () => ok({}),
+      stop: async () => ok({}),
+      remove: async () => ok({}),
+    };
+    mountApp(local, COMPANY_ROW, { companies: [ACME_WORKSPACE] });
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-testid="chat-new-message"]')).toBeTruthy(),
+    );
+    clickAnywhere('[data-testid="chat-new-message"]');
+    await settle(10);
+    clickAnywhere('[data-testid="chat-create-new-bot"]');
+    await settle(10);
+    clickAnywhere('[data-testid="create-bot-next"]');
+    await settle(10);
+    expect(document.querySelector('[data-testid="chat-bot-where-cloud"]')).toBeNull();
   }, 30_000);
 });
 

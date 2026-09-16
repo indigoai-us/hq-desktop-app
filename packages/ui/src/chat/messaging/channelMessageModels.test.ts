@@ -7,7 +7,6 @@ import {
   parseMessageAttachments,
   isHiddenTimelineMessage,
   parseSystemEvent,
-  shouldHideSystemMessage,
   systemModelForMessage,
 } from "./channelMessageModels.js";
 
@@ -79,12 +78,6 @@ describe("parseSystemEvent — work_session card", () => {
       status: "done",
       note: "US-006 throwaway cleanup",
     });
-    expect(
-      shouldHideSystemMessage({
-        messageKind: "system",
-        systemEvent: { v: 1, type: "work_session", status: "in_progress" },
-      }),
-    ).toBe(false);
   });
 
   it("accepts additive envelope fields and ignores unknown keys", () => {
@@ -305,14 +298,6 @@ describe("parseSystemEvent — lifecycle_card", () => {
     });
   });
 
-  it("does not hide a parseable lifecycle_card system message", () => {
-    expect(
-      shouldHideSystemMessage({
-        messageKind: "system",
-        systemEvent: envelope,
-      }),
-    ).toBe(false);
-  });
 });
 
 describe("systemModelForMessage — member_added", () => {

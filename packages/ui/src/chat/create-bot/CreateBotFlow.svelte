@@ -54,7 +54,7 @@
     /** The owner's companies (slugs) a Local company bot can belong to. */
     botCompanies?: ReadonlyArray<{ slug: string; label: string }> | null;
     /** Cloud: the host runs the company team action and navigates. */
-    onCloudCreate?: ((companyUid: string) => void | Promise<void>) | null;
+    onCloudCreate?: ((companyUid: string, draft: { name: string }) => void | Promise<void>) | null;
     /** Local: the host creates through the CLI and opens the DM. */
     oncreate?: ((input: LocalBotCreateInput, extras: CreateBotExtras) => void | Promise<LocalBotEntryResult | void>) | null;
     /** Back from the first step (the host returns to its previous view). */
@@ -194,7 +194,7 @@
       return;
     }
     if (draft.home === "cloud") {
-      if (draft.companyUid) await onCloudCreate?.(draft.companyUid);
+      if (draft.companyUid) await onCloudCreate?.(draft.companyUid, { name: draft.name });
       return;
     }
     await oncreate?.(toCreateInput(draft), draft.avatar ? { avatar: draft.avatar } : {});

@@ -11,6 +11,7 @@
     countSettledStages,
     createSetupProgressTracker,
     isContentRetryEligible,
+    isActiveStageStatus,
     isStageSkipEligible,
     resumeStartStageFromManifest,
     setStageStatus,
@@ -20,6 +21,7 @@
     stageCommandInvocations,
     stageCreepAt,
     stageSkipThresholdMs,
+    stageStatusLabel,
     stageTimeoutMs,
     StageTimeoutError,
     STAGE_ORDER,
@@ -658,7 +660,7 @@
         {/if}
         <span class="stage-main">
           <span class="stage-label">{stage.label}</span>
-          {#if stage.status === 'running'}
+          {#if isActiveStageStatus(stage.status)}
             {@const contentPercent =
               stage.id === 'content' && typeof contentProgress?.percent === 'number'
                 ? contentProgress.percent
@@ -701,7 +703,7 @@
             <span class="stage-error">{stage.error}</span>
           {/if}
         </span>
-        <span class="stage-status">{stage.status}</span>
+        <span class="stage-status">{stageStatusLabel(stage.status)}</span>
       </li>
     {/each}
   </ol>

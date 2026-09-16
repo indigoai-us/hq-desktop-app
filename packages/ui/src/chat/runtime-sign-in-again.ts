@@ -80,7 +80,7 @@ export interface SignInAgainDeps {
 }
 
 export type SignInAgainResult =
-  | { ok: true; restarted: string[]; restartFailed: string[] }
+  | { ok: true; restarted: string[]; restartFailed: string[]; skipped: string[] }
   | { ok: false; reason: string; cancelled?: boolean };
 
 const POLL_MS = 1500;
@@ -137,16 +137,30 @@ export async function signInAgain(runtime: BotRuntimeId, deps: SignInAgainDeps):
 }
 
 /**
+ * The host's start gate, so this recovery obeys the same rule as every other
+ * start: a bot whose start already failed definitively is not re-issued, and
+ * one that does start has its failure state cleared.
+ */
+export interface RestartGate {
+  /** False → skip this bot entirely (its gate is closed). */
+  canStart?(bot: LocalBotRow): boolean;
+  /** Called once for each bot whose start actually succeeded. */
+  onstarted?(bot: LocalBotRow): void;
+}
+
+/**
  * Restart every bot paused on `runtime`'s sign-in so it retries now (a paused
  * bot also retries by itself about once a minute). Reads a fresh list first.
  */
 export async function restartBotsNeedingSignIn(
   runtime: BotRuntimeId,
   bots: SignInAgainDeps["bots"],
-): Promise<{ restarted: string[]; restartFailed: string[] }> {
+  gate: RestartGate = {},
+): Promise<{ restarted: string[]; restartFailed: string[]; skipped: string[] }> {
   const restarted: string[] = [];
   const restartFailed: string[] = [];
-  if (!bots) return { restarted, restartFailed };
+  const skipped: string[] = [];
+  if (!bots) return { restarted, restartFailed, skipped };
   let rows: LocalBotRow[] = [];
   try {
     const listed = await bots.list();
@@ -155,14 +169,23 @@ export async function restartBotsNeedingSignIn(
     rows = [];
   }
   for (const bot of botsNeedingSignIn(rows, runtime)) {
+    if (gate.canStart && !gate.canStart(bot)) {
+      skipped.push(bot.name);
+      continue;
+    }
     try {
       // Stop may fail on a bot that already exited; start is what matters.
       await bots.stop(bot.name);
       const started = await bots.start(bot.name);
-      (started.ok ? restarted : restartFailed).push(bot.name);
+      if (started.ok) {
+        restarted.push(bot.name);
+        gate.onstarted?.(bot);
+      } else {
+        restartFailed.push(bot.name);
+      }
     } catch {
       restartFailed.push(bot.name);
     }
   }
-  return { restarted, restartFailed };
+  return { restarted, restartFailed, skipped };
 }

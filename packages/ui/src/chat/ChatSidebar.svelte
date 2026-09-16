@@ -206,7 +206,9 @@
      * card seams leave these unset and the rows are hidden.
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
-    oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
+    oncreateagent?:
+      | ((companyUid: string, draft: { name: string }) => Promise<EntryPointResult>)
+      | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
     oncreatebot?:
       | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)

@@ -39,7 +39,6 @@ export {
   tick,
   clearForAgents,
   clearFromMessages,
-  labelFor,
   thinkingLine,
   formatThinkingElapsed,
   THINKING_PHRASES,

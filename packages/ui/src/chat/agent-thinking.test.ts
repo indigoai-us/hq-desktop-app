@@ -10,7 +10,6 @@ import {
   clearForAgents,
   clearFromMessages,
   newestMessageAtFrom,
-  labelFor,
   thinkingLine,
   formatThinkingElapsed,
   THINKING_PHRASES,
@@ -23,7 +22,6 @@ import {
   applyAgentStatus,
   parseAgentStatusWake,
   clearFromMessages as clearRows,
-  labelFor as label,
 } from './agent-thinking.js';
 
 function member(personUid: string, displayName: string): MentionCandidate {
@@ -197,14 +195,25 @@ describe('clearForAgents', () => {
   });
 });
 
-describe('labelFor', () => {
-  it('renders both phases', () => {
-    expect(
-      labelFor(entry({ agentUid: 'agt_izzy', agentName: 'Izzy', phase: 'thinking' })),
-    ).toBe('Izzy is thinking…');
-    expect(
-      labelFor(entry({ agentUid: 'agt_izzy', agentName: 'Izzy', phase: 'slow' })),
-    ).toBe('Izzy is taking longer than usual…');
+describe('thinkingLine and the slow phase', () => {
+  it('says so once tick has promoted the row to slow', () => {
+    const row = entry({ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: 0, since: 0 });
+    expect(thinkingLine(row, 1_000).label).toBe('Izzy is thinking');
+    const slow = tick([row], 150_000)[0]!;
+    expect(slow.phase).toBe('slow');
+    expect(thinkingLine(slow, 150_000).label).toBe('Izzy is taking longer than usual');
+  });
+
+  it("still prefers the agent's own words over the slow copy", () => {
+    const slow = entry({
+      agentUid: 'agt_izzy',
+      agentName: 'Izzy',
+      startedAt: 0,
+      since: 0,
+      phase: 'slow',
+      detail: 'is running the tests',
+    });
+    expect(thinkingLine(slow, 150_000).label).toBe('Izzy is running the tests');
   });
 });
 
@@ -420,10 +429,10 @@ describe("agent status keeps the row up while the agent works", () => {
   });
 
   it("shows the agent's own status text, and the usual copy for a plain thinking status", () => {
-    expect(label(applyAgentStatus([], wake(0), "connor", [], 1)[0]!)).toBe("connor is thinking\u2026");
-    expect(label(applyAgentStatus([], wake(0, "still working (1m20s)"), "connor", [], 1)[0]!)).toBe(
-      "connor: still working (1m20s)",
-    );
+    const plain = applyAgentStatus([], wake(0), "connor", [], 1)[0]!;
+    expect(thinkingLine(plain, plain.startedAt).label).toBe("connor is thinking");
+    const reported = applyAgentStatus([], wake(0, "still working (1m20s)"), "connor", [], 1)[0]!;
+    expect(thinkingLine(reported, reported.startedAt).label).toBe("connor: still working (1m20s)");
   });
 
   it("parses only well-formed agent_status payloads", () => {

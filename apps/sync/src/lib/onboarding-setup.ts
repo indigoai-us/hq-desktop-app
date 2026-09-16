@@ -293,6 +293,15 @@ export function isActiveStageStatus(status: StageStatus): boolean {
   return status === 'running' || status === 'retrying';
 }
 
+/**
+ * What a stage row shows for its status. Only `retrying` needs translating:
+ * it is an internal token for the gap between a transient failure and the
+ * next attempt, and the rest of setup calls that moment "Retrying…".
+ */
+export function stageStatusLabel(status: StageStatus): string {
+  return status === 'retrying' ? 'Retrying…' : status;
+}
+
 export function countSettledStages(stages: StageState[]): number {
   return stages.filter((stage) => isSettledStageStatus(stage.status)).length;
 }

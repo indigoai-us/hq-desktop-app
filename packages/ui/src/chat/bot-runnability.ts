@@ -140,6 +140,21 @@ export function botStartFallbackNotice(name: string): string {
   return `Could not start ${name} on this computer.`;
 }
 
+/**
+ * Positive evidence from a fresh `hq bot list` that this bot really is running
+ * on THIS computer: a live local process.
+ *
+ * Deliberately narrow. Presence in the listing is not evidence — the failure
+ * this module exists for had `hq bot list` naming the bot, with its launch
+ * agent reported installed, while every start answered "no such bot". Nor is
+ * `online`: that is a server-side heartbeat, which a bot running on another
+ * computer reports too. A local pid is the one claim only this Mac can make,
+ * so it is the one that may reopen a closed gate without a person asking.
+ */
+export function botIsConfiguredHere(bot: LocalBotRow | null | undefined): boolean {
+  return bot?.processAlive === true;
+}
+
 /** True when this Mac has the bot's own config (so it can actually run). */
 export function botRunsHere(
   bots: readonly LocalBotRow[] | null | undefined,

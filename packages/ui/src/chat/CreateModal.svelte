@@ -105,7 +105,9 @@
      * navigates; the modal only closes on success or shows the reason inline.
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
-    oncreateagent?: ((companyUid: string) => Promise<EntryPointResult>) | null;
+    oncreateagent?:
+      | ((companyUid: string, draft: { name: string }) => Promise<EntryPointResult>)
+      | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
     /**
@@ -209,10 +211,10 @@
     void runEntry("company", oncreatecompany);
   }
 
-  /** Cloud bot: the company's team action posts the create step in its channel. */
-  function newAgentFor(companyUid: string): void {
+  /** Cloud bot: the host runs the company's create sequence and opens its channel. */
+  function newAgentFor(companyUid: string, draft: { name: string }): void {
     if (!oncreateagent) return;
-    void runEntry("agent", () => oncreateagent!(companyUid));
+    void runEntry("agent", () => oncreateagent!(companyUid, draft));
   }
 
   // ── New bot: the create-bot flow (kind → home → details) ──────────────────

@@ -1,24 +1,34 @@
 /**
- * The "New company" entry point.
+ * The "New company" and "New cloud bot" entry points.
  *
- * It reuses the server-stamped lifecycle cards instead of a form of its own:
- * the host runs one card action, the server posts (or resurfaces) the right
- * card, and the shell selects that channel and scrolls to the card.
- * Zero-network: callers hand in the `ConversationApi` seam.
+ * Both reuse the server-stamped lifecycle cards instead of a form of their
+ * own: the host runs one card action and the shell lands where the server
+ * says. Zero-network: callers hand in the `ConversationApi` seam.
  *
- * There is no "New bot" entry point here. It ran the Team tab's `add_agent`
- * action to post the server's "Create a bot" card into a company channel; bots
- * are made through the local bot flow (bot kinds) now, and that card is no
- * longer rendered, so posting it would have produced nothing a person sees.
+ * The cloud-bot entry is a HEADLESS driver over that card sequence. Creating a
+ * company-hosted bot exists only as the Team tab's `add_agent` action followed
+ * by the `create_agent` card's own turns — there is no direct create route —
+ * but that card is no longer RENDERED (it was a second, rival way to make a
+ * bot inside a company channel). So the flow runs the same actions the card's
+ * buttons ran, filling each turn from the New bot draft, and lands the person
+ * in the bot's own channel. Nothing is drawn and nothing is focused on the way.
  */
 
 import type { CardActionResult, ConversationApi } from "./chat-api.js";
 import { cardActionFailureMessage } from "./card-action.js";
+import {
+  parseLifecycleCard,
+  type LifecycleCardModel,
+} from "./messaging/channelMessageModels.js";
+import { slugifyBotName } from "./create-bot/create-bot-model.js";
 import { SETUP_CHANNEL_ID } from "./setup-channel.js";
 
 /** #setup summary card + its action that posts a fresh create_company card. */
 export const COMPANIES_SUMMARY_CARD_ID = "companies_summary";
 export const CREATE_COMPANY_ACTION_ID = "create_company";
+/** Team tab spend row + its action that opens the cloud-bot sequence. */
+export const TEAM_SPEND_CARD_ID = "team:spend";
+export const ADD_AGENT_ACTION_ID = "add_agent";
 
 /** Where the shell should land after an entry-point action. */
 export interface EntryPointTarget {
@@ -40,6 +50,12 @@ export type EntryPointResult =
     };
 
 export type EntryPointApi = Pick<ConversationApi, "runCardAction">;
+
+/** What the cloud-bot entry needs: the team action, the card turns, the read-back. */
+export type CloudBotEntryApi = Pick<
+  ConversationApi,
+  "runCardAction" | "fetchChannel" | "runCompanyTabAction"
+>;
 
 function isNotFound(err: unknown): boolean {
   const raw = err instanceof Error ? err.message : String(err ?? "");
@@ -123,6 +139,209 @@ export async function runCreateCompanyEntry(
       cardKind: CREATE_COMPANY_ACTION_ID,
     },
   };
+}
+
+/** Shown when the desktop cannot finish the server's bot sequence by itself. */
+export const CLOUD_BOT_NEEDS_MORE_REASON =
+  "Setting up a cloud bot needs a step this app can't fill in yet. Try again after updating HQ.";
+
+/** Shown when the server stopped answering mid-sequence. */
+export const CLOUD_BOT_NO_NEXT_STEP_REASON =
+  "The server didn't send the next step for the new bot. Try again in a moment.";
+
+/** How many card turns the sequence may take before we stop following it. */
+const CLOUD_BOT_MAX_TURNS = 6;
+/** How many read-backs we allow while waiting for the server to post a turn. */
+const CLOUD_BOT_POLL_ATTEMPTS = 8;
+const CLOUD_BOT_POLL_MS = 150;
+
+export interface CloudBotDraft {
+  /** The name the New bot flow already collected; also seeds the handle. */
+  name: string;
+}
+
+export interface CloudBotEntryOptions {
+  idempotencyKey?: string;
+  maxTurns?: number;
+  pollAttempts?: number;
+  pollMs?: number;
+  /** Injected by tests so the waits are instant. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Every lifecycle card currently on a channel page, newest page first. */
+async function readLifecycleCards(
+  api: CloudBotEntryApi,
+  channelId: string,
+): Promise<LifecycleCardModel[]> {
+  const page = await api.fetchChannel({ channelId, limit: 50 });
+  const cards: LifecycleCardModel[] = [];
+  for (const message of page.messages ?? []) {
+    const card = parseLifecycleCard(message.systemEvent);
+    if (card) cards.push(card);
+  }
+  return cards;
+}
+
+/** The action a card's own primary button would have run. */
+function primaryActionOf(card: LifecycleCardModel): string | null {
+  const primary = card.actions.find((action) => action.style === "primary" && !action.href);
+  const fallback = card.actions.find((action) => !action.href);
+  return (primary ?? fallback)?.id ?? null;
+}
+
+/**
+ * The values the card's form would have carried. Every field keeps whatever
+ * the server pre-filled; the two the person actually chose in the New bot
+ * flow — name and handle — come from the draft.
+ */
+function valuesForCard(
+  card: LifecycleCardModel,
+  draft: CloudBotDraft,
+): Record<string, string> | null {
+  const name = draft.name.trim();
+  const values: Record<string, string> = {};
+  for (const field of card.fields) {
+    if (field.control === "readonly") continue;
+    let value = field.value.trim();
+    if (field.id === "name" && name) value = name;
+    else if (field.id === "handle" && name) value = slugifyBotName(name) || name;
+    if (!value && field.required) return null;
+    values[field.id] = value;
+  }
+  return values;
+}
+
+/**
+ * Create a company-hosted bot and land in its channel.
+ *
+ * Runs the Team tab's `add_agent` action, then drives the `create_agent` card
+ * sequence it opens — the same actions the card's buttons ran — until the
+ * server answers with the minted agent channel. The card itself is never
+ * rendered or focused: the New bot flow is the only surface the person sees.
+ *
+ * A company on a plan that cannot host a bot gets the server's upgrade card
+ * instead; that one still renders, so the caller is sent to it.
+ */
+export async function runCreateCloudBotEntry(
+  api: CloudBotEntryApi,
+  companyUid: string,
+  draft: CloudBotDraft,
+  options: CloudBotEntryOptions = {},
+): Promise<EntryPointResult> {
+  const uid = companyUid.trim();
+  if (!uid) return { ok: false, reason: "Pick a company first", blocked: false };
+  const runTabAction = api.runCompanyTabAction;
+  if (typeof runTabAction !== "function") {
+    return { ok: false, reason: "Adding bots isn't available in this build", blocked: false };
+  }
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const pollAttempts = options.pollAttempts ?? CLOUD_BOT_POLL_ATTEMPTS;
+  const pollMs = options.pollMs ?? CLOUD_BOT_POLL_MS;
+
+  let opened: CardActionResult;
+  try {
+    opened = await runTabAction({
+      companyUid: uid,
+      tab: "team",
+      cardId: TEAM_SPEND_CARD_ID,
+      actionId: ADD_AGENT_ACTION_ID,
+      values: {},
+      idempotencyKey: options.idempotencyKey,
+    });
+  } catch (err) {
+    return { ok: false, reason: cardActionFailureMessage(err), blocked: isPermission(err) };
+  }
+  if (opened.state === "blocked") {
+    return {
+      ok: false,
+      reason: trimmed(opened.reason) || "You don't have permission to add bots here",
+      blocked: true,
+    };
+  }
+  const channelId = trimmed(opened.channelId);
+  if (!channelId) {
+    return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
+  }
+  let cardId = trimmed(opened.cardId);
+  if (!cardId || cardId === TEAM_SPEND_CARD_ID) {
+    return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
+  }
+
+  let cards: LifecycleCardModel[];
+  try {
+    cards = await readLifecycleCards(api, channelId);
+  } catch (err) {
+    return { ok: false, reason: cardActionFailureMessage(err), blocked: isPermission(err) };
+  }
+  const first = cards.find((card) => card.cardId === cardId);
+  if (first && first.cardKind !== "create_agent") {
+    // A plan that cannot host a bot answers with the upgrade card instead.
+    // That card still renders, so this is a destination, not a failure.
+    return { ok: true, target: { channelId, cardId, cardKind: null } };
+  }
+
+  const maxTurns = options.maxTurns ?? CLOUD_BOT_MAX_TURNS;
+  const submitted = new Set<string>();
+  let card = first ?? null;
+  for (let turn = 0; turn < maxTurns; turn += 1) {
+    if (!card) return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
+    if (card.state === "blocked") {
+      return {
+        ok: false,
+        reason: trimmed(card.reason) || "The server refused the new bot.",
+        blocked: true,
+      };
+    }
+    if (!card.viewer.canAct) {
+      return { ok: false, reason: "You don't have permission to add bots here", blocked: true };
+    }
+    const actionId = primaryActionOf(card);
+    const values = valuesForCard(card, draft);
+    if (!actionId || !values) {
+      return { ok: false, reason: CLOUD_BOT_NEEDS_MORE_REASON, blocked: false };
+    }
+    let result: CardActionResult;
+    try {
+      result = await api.runCardAction({ channelId, cardId: card.cardId, actionId, values });
+    } catch (err) {
+      return { ok: false, reason: cardActionFailureMessage(err), blocked: isPermission(err) };
+    }
+    const agentChannelId = trimmed(result.agentChannelId);
+    if (agentChannelId) {
+      // The bot exists and has its own channel. Nothing to focus: no card was
+      // ever drawn, and the person lands in the conversation with their bot.
+      return { ok: true, target: { channelId: agentChannelId, cardId: null, cardKind: null } };
+    }
+    submitted.add(card.cardId);
+    if (result.state === "blocked") {
+      const settled = await readLifecycleCards(api, channelId).catch(() => [] as LifecycleCardModel[]);
+      const refused = settled.find((row) => row.cardId === card!.cardId);
+      return {
+        ok: false,
+        reason: trimmed(refused?.reason) || "The server refused the new bot.",
+        blocked: true,
+      };
+    }
+    // The server posts the next turn asynchronously; read the channel back
+    // until it lands rather than guessing the next card's id.
+    card = null;
+    for (let attempt = 0; attempt < pollAttempts && !card; attempt += 1) {
+      await sleep(pollMs);
+      const next = await readLifecycleCards(api, channelId).catch(
+        () => [] as LifecycleCardModel[],
+      );
+      card =
+        next.find(
+          (row) =>
+            row.cardKind === "create_agent" &&
+            row.state === "open" &&
+            !submitted.has(row.cardId),
+        ) ?? null;
+    }
+    cardId = card?.cardId ?? cardId;
+  }
+  return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
 }
 
 /** Selector for the card an entry point landed on, by id then by kind. */

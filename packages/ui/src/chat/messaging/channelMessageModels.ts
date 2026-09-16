@@ -685,19 +685,6 @@ export function systemModelForMessage(message: {
 }
 
 /**
- * Whether a channel message row should be suppressed entirely.
- * System-kind messages with an unparseable/unknown systemEvent render nothing.
- */
-export function shouldHideSystemMessage(message: {
-  messageKind?: string | null;
-  systemEvent?: unknown;
-}): boolean {
-  const kind = message.messageKind?.trim().toLowerCase();
-  if (kind !== "system") return false;
-  return parseSystemEvent(message.systemEvent) == null;
-}
-
-/**
  * Whether the timeline should drop this row outright rather than render it.
  * A retired lifecycle card would otherwise fall through to the ordinary
  * message branch and paint an empty bubble with an avatar and a timestamp.
