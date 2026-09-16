@@ -2943,23 +2943,27 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = TempDir::new().unwrap();
         let _home = scoped_home(home.path());
-        let target = "15.0.117-manual-baseline-repair-contract";
 
-        reset_automatic_target_states_for_test();
         // Both manual wrappers call this shared post-result hook. The IPC
         // result remains a successful zero-exit update, while the next native
         // check is now armed to repair the missing baseline.
-        arm_baseline_retry_after_successful_core_update(Channel::Release, target, 0, false);
+        for (channel, target) in [
+            (Channel::Release, "15.0.117-manual-baseline-repair-contract"),
+            (Channel::Staging, "main"),
+        ] {
+            reset_automatic_target_states_for_test();
+            arm_baseline_retry_after_successful_core_update(channel, target, 0, false);
 
-        assert!(automatic_target_baseline_retry_pending(Channel::Release));
-        assert_eq!(
-            persisted_baseline_retry_target(Channel::Release).as_deref(),
-            Some(target)
-        );
-        assert_eq!(
-            core_auto_update_decision(true, true, false),
-            CoreAutoUpdateDecision::Install
-        );
+            assert!(automatic_target_baseline_retry_pending(channel));
+            assert_eq!(
+                persisted_baseline_retry_target(channel).as_deref(),
+                Some(target)
+            );
+            assert_eq!(
+                core_auto_update_decision(true, true, false),
+                CoreAutoUpdateDecision::Install
+            );
+        }
     }
 
     #[tokio::test]
