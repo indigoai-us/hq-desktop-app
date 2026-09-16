@@ -23,6 +23,7 @@ export type NotificationDisplayKind =
   | "agent_finished_story"
   | "agent_review_request"
   | "file_shared"
+  | "new_file"
   | "dm_received"
   | "channel_message"
   | "infra_flag"
@@ -190,6 +191,11 @@ export function mapServerType(
     return "agent_review_request";
   }
 
+  // Before the share branch: a file appearing in a synced folder is not
+  // someone deliberately sharing it with you, and the two read differently in
+  // the feed ("added a file" vs "shared a file").
+  if (t === "new_file" || t === "file_added") return "new_file";
+
   if (
     t === "file_share" ||
     t === "file_shared" ||
@@ -229,6 +235,7 @@ export function typeIconForKind(
     case "agent_review_request":
       return "review";
     case "file_shared":
+    case "new_file":
       return "file";
     case "dm_received":
     case "channel_message":
@@ -258,6 +265,8 @@ export function verbForKind(
       return "requested review";
     case "file_shared":
       return "shared a file";
+    case "new_file":
+      return "added a file";
     case "dm_received":
     case "channel_message":
       return "sent a message";
@@ -687,6 +696,7 @@ export function notificationDestination(
     item.displayKind === "dm_received" || target.startsWith("/messages");
   const isShare =
     item.displayKind === "file_shared" ||
+    item.displayKind === "new_file" ||
     target === "/files" ||
     target.startsWith("/files/");
   const channelMatch = target.match(/^\/channels\/(chn_[A-Za-z0-9_-]+)\b/);

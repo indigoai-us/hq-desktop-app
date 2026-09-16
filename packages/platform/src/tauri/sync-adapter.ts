@@ -681,6 +681,17 @@ export function createSyncPlatformAdapter(
       },
       ackSharedWithMe: (eventIds) =>
         hqProJson('POST', WEB_PATHS.sharedWithMeAck, { eventIds }),
+      fetchFileHistory: (opts) => {
+        const rec = asRecord(opts) ?? {};
+        return hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.fileHistory, {
+            limit: typeof rec.limit === 'number' ? rec.limit : undefined,
+            cursor: typeof rec.cursor === 'string' ? rec.cursor : undefined,
+            since: typeof rec.since === 'string' ? rec.since : undefined,
+          }),
+        );
+      },
     },
 
     meetings: {

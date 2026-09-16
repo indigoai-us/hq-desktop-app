@@ -112,6 +112,8 @@ export const WEB_PATHS = {
   dmThreads: "/v1/notify/dm-threads",
   sharedWithMe: "/v1/files/shared-with-me",
   sharedWithMeAck: "/v1/files/shared-with-me/ack",
+  /** Cross-session new-file activity. No ack endpoint — read-only history. */
+  fileHistory: "/v1/notify/file-history",
   reactions: "/v1/notify/reactions",
 
   // Real hq-pro meetings/calendar surface (same as V1 desktop meetings.rs).
@@ -773,6 +775,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
         opts && Object.keys(opts).length > 0
           ? `${WEB_PATHS.sharedWithMe}?${new URLSearchParams(opts as Record<string, string>).toString()}`
           : WEB_PATHS.sharedWithMe,
+      ),
+    fetchFileHistory: (opts) =>
+      this.get(
+        opts && Object.keys(opts).length > 0
+          ? `${WEB_PATHS.fileHistory}?${new URLSearchParams(opts as Record<string, string>).toString()}`
+          : WEB_PATHS.fileHistory,
       ),
     ackSharedWithMe: (eventIds) =>
       this.post(WEB_PATHS.sharedWithMeAck, { eventIds }),
