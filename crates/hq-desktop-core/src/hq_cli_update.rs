@@ -2046,6 +2046,14 @@ pub fn managed_retry_user_prefix_aim(
         .flatten()
 }
 
+/// User-facing guidance when HQ can identify the executable user-owned CLI but
+/// cannot safely install packages built by its managed runtime into that prefix.
+/// Kept in the core module so the app's action text has a platform-independent
+/// regression test.
+pub fn managed_retry_user_copy_detail() -> String {
+    "HQ could not safely update the `hq` command this Mac is using because its Node runtime is incompatible with HQ's managed updater. Install or select Node 22 LTS, then reinstall the CLI with that runtime. If you use nvm, run `nvm install 22 && nvm use 22 && npm install -g @indigoai-us/hq-cli@latest`. HQ left that command unchanged.".to_string()
+}
+
 /// Pure core of the ordinary-update selector: choose to aim at the executed
 /// copy's own user-owned prefix (running that prefix's co-located npm) exactly
 /// when all three hold — a derivable hq prefix, that prefix is user-owned
@@ -8491,6 +8499,22 @@ mod tests {
             None
         );
         assert_eq!(managed_retry_user_prefix_aim(None, Some(127), 127), None);
+    }
+
+    #[test]
+    fn incompatible_user_runtime_guidance_names_node_22_and_nvm_reinstall_command() {
+        let detail = managed_retry_user_copy_detail();
+
+        assert!(
+            detail.contains("Node 22 LTS"),
+            "the refusal must name a supported runtime"
+        );
+        assert!(
+            detail.contains(
+                "nvm install 22 && nvm use 22 && npm install -g @indigoai-us/hq-cli@latest"
+            ),
+            "the refusal must give nvm users a command that changes their runtime before reinstalling"
+        );
     }
 
     #[test]

@@ -96,14 +96,14 @@ pub use hq_desktop_core::hq_cli_update::{
     installed_hq_cli_version_in_prefix, is_cli_update_dismissed, is_missing_global_install_target,
     is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
     is_windows_locked_binary_failure, launch_cli_check, launch_cli_check_with_floor,
-    legacy_marker_needs_recovery, managed_retry_start_decision, managed_retry_user_prefix_aim,
-    non_convergent_cli_contract, non_convergent_cli_version, non_convergent_detail,
-    non_convergent_episode_blocked, non_convergent_episode_key, non_convergent_episode_record,
-    non_convergent_episode_reported, npm_install_attempt_summary, npm_lifecycle_cause,
-    npm_prefix_from_hq_bin, partial_install_scope_from_npm_path, path_contains_dir,
-    pnpm_child_path, pnpm_global_env, pnpm_global_ls_hq_cli_version, pnpm_install_argv,
-    pnpm_store_family, read_installed_version, redact_home, redact_home_in, repair_managed_shadow,
-    report_install_failure, report_install_failure_episode,
+    legacy_marker_needs_recovery, managed_retry_start_decision, managed_retry_user_copy_detail,
+    managed_retry_user_prefix_aim, non_convergent_cli_contract, non_convergent_cli_version,
+    non_convergent_detail, non_convergent_episode_blocked, non_convergent_episode_key,
+    non_convergent_episode_record, non_convergent_episode_reported, npm_install_attempt_summary,
+    npm_lifecycle_cause, npm_prefix_from_hq_bin, partial_install_scope_from_npm_path,
+    path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_global_ls_hq_cli_version,
+    pnpm_install_argv, pnpm_store_family, read_installed_version, redact_home, redact_home_in,
+    repair_managed_shadow, report_install_failure, report_install_failure_episode,
     report_install_failure_with_environment, report_install_failure_with_final_attempt,
     report_non_convergent_install, report_non_convergent_marker_unpersisted,
     report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
@@ -3357,14 +3357,6 @@ async fn managed_toolchain_retry(
         &reported_episode_keys,
     ));
     ManagedRetryAttempt::RanAndReported(detail)
-}
-
-/// The one-time user-facing escape hatch when HQ identified the CLI the user
-/// runs but cannot safely update it with its managed runtime. This is intentionally
-/// returned to the UI rather than reduced to a Sentry warning: installing a second
-/// managed copy would hide the problem while leaving the active command old.
-fn managed_retry_user_copy_detail() -> String {
-    "HQ could not safely update the `hq` command this Mac is using because it could not confirm that its Node version matches the updater. In Terminal, select the Node version that provides `hq`, then run `npm install -g @indigoai-us/hq-cli@latest`. HQ left that command unchanged.".to_string()
 }
 
 /// Persist the `latest` that installed cleanly but did not move the detected
