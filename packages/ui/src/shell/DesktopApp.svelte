@@ -142,6 +142,7 @@
     type ShellSettingsProfile,
   } from "../settings/ShellSettings.svelte";
   import RecommendedUpdateBanner from "../settings/RecommendedUpdateBanner.svelte";
+  import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
   import {
     dismissRecommendBanner,
     installRecommendedUpdate,
@@ -478,7 +479,7 @@
     mergePaletteRows,
     paletteConversationItems,
   } from "./palette-rows.js";
-  import type { Workspace } from "../chat/workspaces.js";
+  import { joinableMemberships, type Workspace } from "../chat/workspaces.js";
   import {
     buildCompanyDisplayMap,
     buildCompanyIconMap,
@@ -769,6 +770,38 @@
   );
   const recommendBanner = $derived(updateStore.recommendBanner);
   let recommendInstalling = $state(false);
+
+  /**
+   * Desktop-window counterpart of the menubar popover's "You've been added
+   * to {company} — Sync to pull it" notice (see MembershipSyncBanner.svelte).
+   * Dismissal is session-only (in-memory), matching the popover.
+   */
+  let dismissedMemberships = $state(new Set<string>());
+  let membershipSyncPending = $state(false);
+  const membershipsToPull = $derived(
+    joinableMemberships(companies ?? []).filter(
+      (w) => !dismissedMemberships.has(w.slug),
+    ),
+  );
+
+  function dismissMembershipPrompt(slug: string): void {
+    dismissedMemberships = new Set(dismissedMemberships).add(slug);
+  }
+
+  async function syncMembership(): Promise<void> {
+    if (membershipSyncPending || !adapter.isAvailable("canSync")) return;
+    membershipSyncPending = true;
+    try {
+      const result = await adapter.sync.startSync();
+      if (!result.ok) {
+        console.error("membership sync failed:", result.reason, result.message);
+      }
+    } catch (err) {
+      console.error("membership sync failed:", err);
+    } finally {
+      membershipSyncPending = false;
+    }
+  }
 
   function updateOrchAdapter(): UpdateStoreAdapter {
     const updates = adapter.updates;
@@ -6281,6 +6314,15 @@
         botRestoreResult = null;
         dismissBotRestorePrompt();
       }}
+    />
+  {/if}
+
+  {#if adapter.isAvailable("canSync") && membershipsToPull.length > 0}
+    <MembershipSyncBanner
+      memberships={membershipsToPull}
+      syncing={membershipSyncPending}
+      onsync={() => void syncMembership()}
+      ondismiss={dismissMembershipPrompt}
     />
   {/if}
 
