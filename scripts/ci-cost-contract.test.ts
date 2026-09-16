@@ -95,17 +95,30 @@ function jobConfig(workflow: string, name: string): string {
     .join("\n");
 }
 
-/** Slice one action step out of a job's uncommented configuration. */
-function stepConfig(workflow: string, job: string, action: string): string {
+/**
+ * One named or action step out of a job body, ending at the next step.
+ *
+ * `job.slice(job.indexOf(name))` is not this: it returns the whole remainder of
+ * the job, so an assertion about a step's configuration stays green when that
+ * step loses it and any later step happens to carry it instead.
+ */
+function stepConfig(
+  workflow: string,
+  job: string,
+  step: string,
+  field: "name" | "uses" = "name",
+): string {
   const body = jobConfig(workflow, job);
-  const start = body.indexOf(`\n      - uses: ${action}\n`);
+  const start = body.indexOf(`- ${field}: ${step}`);
 
-  if (start === -1) {
-    throw new Error(`the ${job} job is missing the ${action} step`);
+  if (start < 0) {
+    throw new Error(`job ${job} is missing the ${field} step "${step}"`);
   }
 
-  const end = body.indexOf("\n      - ", start + 1);
-  return body.slice(start, end === -1 ? undefined : end);
+  const rest = body.slice(start + 1);
+  const next = rest.indexOf("\n      - ");
+
+  return next < 0 ? body.slice(start) : body.slice(start, start + 1 + next);
 }
 
 /** Every top-level job key, discovered rather than listed. */
@@ -378,11 +391,13 @@ describe("release tag builds never write a Rust cache", () => {
         releaseWorkflow,
         job,
         "Swatinem/rust-cache@v2",
+        "uses",
       );
       const warmerCache = stepConfig(
         cacheWarmWorkflow,
         warmer,
         "Swatinem/rust-cache@v2",
+        "uses",
       );
 
       expect(releaseCache).toContain("save-if: false");
@@ -894,5 +909,78 @@ describe("the installer fixture build does only what the E2E consumes", () => {
     ].map((m) => m[0]);
 
     expect(overridden).toEqual(["[profile.release.package.hq-sync-menubar]"]);
+  });
+});
+
+describe("the live job keeps its diagnostics upload unconditional", () => {
+  // `Upload WebDriver diagnostics` in windows-check-live takes
+  // 62/67/69/78/81/91/95/109s across eight runs, for a 15 KB artifact. The
+  // byte-identical step in windows-installer-e2e -- same action, same path
+  // expression, same `if:` -- takes 1-2s for a comparable 13 KB artifact, and
+  // the bridge job pushes 99 MB in 7s. In the step log ~59-82s elapse before
+  // upload-artifact's node process emits its first line, so it is neither
+  // transfer nor action overhead.
+  //
+  // That makes it a standing temptation to flip to `if: failure()`, which is
+  // what this assertion exists to stop. The captured msedgewebview2.exe command
+  // line is the evidence that the WebView2 automation switches landed, and a
+  // green run is exactly when that evidence is worth keeping.
+  //
+  // The obvious cause has been tested and ruled out. `reapSharedDriver()` in
+  // live-driver.ts kills the tauri-driver process, and on Windows that does not
+  // reap the tree beneath it -- so orphans contending the runner was the
+  // hypothesis. An observe-only step measured the population: exactly ONE
+  // leaked msedgewebview2, started 8s earlier, with no app binary, no
+  // msedgedriver and no tauri-driver. Killing it gave 78s -> 67s, both
+  // mid-range. The cause is unknown and it is not stray processes.
+
+  it("uploads on success as well as failure", () => {
+    // Scoped to the step, not to the rest of the job: `slice(indexOf(name))`
+    // would keep this green if the upload lost its condition and any later
+    // step carried an `if: always()` of its own.
+    const upload = stepConfig(
+      windowsCheckWorkflow,
+      "windows-check-live",
+      "Upload WebDriver diagnostics",
+    );
+
+    expect(upload).toContain("if: always()");
+    expect(upload).not.toContain("if: failure()");
+  });
+
+  it("uploads the directory the live spec was told to write to", () => {
+    // Not just "the env var is mentioned somewhere". The spec writes wherever
+    // HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR points; the upload collects whatever
+    // `path:` names. Point them at different directories and the contract is
+    // broken SILENTLY -- `if-no-files-found: warn` means the job stays green
+    // while collecting nothing. So compare the two values.
+    const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
+    const upload = stepConfig(
+      windowsCheckWorkflow,
+      "windows-check-live",
+      "Upload WebDriver diagnostics",
+    );
+
+    // Capture to end of line, not `\S+`: both values contain `${{ runner.temp }}`,
+    // which has spaces in it.
+    const configured = /HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR:[ \t]*(.+)/.exec(job);
+    const collected = /path:[ \t]*(.+)/.exec(upload);
+
+    expect(configured, "the live spec is never told where to write").not.toBeNull();
+    expect(collected, "the upload step declares no path").not.toBeNull();
+
+    // The env var uses Windows separators and the upload a glob; compare the
+    // directory both resolve to.
+    const normalise = (value: string) =>
+      value
+        .trim()
+        .replace(/\\/g, "/")
+        .replace(/\/\*+$/, "")
+        .replace(/\/$/, "");
+
+    expect(normalise(collected![1])).toBe(normalise(configured![1]));
+
+    // And it is still a recursive collect, not just the directory entry.
+    expect(collected![1].trim()).toMatch(/\*\*$/);
   });
 });
