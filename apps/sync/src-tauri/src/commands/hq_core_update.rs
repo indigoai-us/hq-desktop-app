@@ -614,7 +614,7 @@ mod tests {
     use super::*;
     use crate::commands::hq_core_staging::build_rescue_args;
     #[cfg(not(windows))]
-    use crate::util::test_support::{scoped_home, ENV_MUTEX};
+    use crate::util::test_support::{scoped_home, write_usable_managed_git, ENV_MUTEX};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -702,16 +702,7 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
 
         let managed_home = tempfile::tempdir().unwrap();
-        let git = managed_home
-            .path()
-            .join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
-        std::fs::create_dir_all(git.parent().unwrap()).unwrap();
-        std::fs::write(&git, "#!/bin/sh\nprintf 'git version fixture'\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        write_usable_managed_git(managed_home.path());
         {
             let _home = scoped_home(managed_home.path());
             let _ = core_update_rescue_command();
@@ -732,6 +723,74 @@ mod tests {
         assert!(
             !crate::commands::install_deps::managed_git_shim_dir_in(no_git_home.path()).exists(),
             "a machine without managed Git must not gain a shim directory"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn core_update_rescue_command_uses_users_git_when_managed_git_is_not_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let managed_git = write_usable_managed_git(home.path());
+        std::fs::set_permissions(&managed_git, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let users_git = home.path().join("user-bin/git");
+        std::fs::create_dir_all(users_git.parent().expect("user Git parent")).unwrap();
+        std::fs::write(&users_git, "#!/bin/sh\nprintf 'git version user-fixture'\n").unwrap();
+        std::fs::set_permissions(&users_git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let settings = home.path().join("HQ/.claude/settings.local.json");
+        std::fs::create_dir_all(settings.parent().expect("settings parent")).unwrap();
+        std::fs::write(
+            settings,
+            format!(
+                r#"{{"env":{{"PATH":"{}"}}}}"#,
+                users_git.parent().expect("user Git directory").display()
+            ),
+        )
+        .unwrap();
+
+        let _home = scoped_home(home.path());
+        let (command, _) = core_update_rescue_command();
+        let path = command
+            .as_std()
+            .get_envs()
+            .find_map(|(name, value)| {
+                (name == "PATH").then(|| value.map(|value| value.to_os_string()))
+            })
+            .flatten()
+            .expect("rescue PATH");
+
+        let env_names: Vec<_> = command
+            .as_std()
+            .get_envs()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !crate::commands::install_deps::managed_git_shim_dir_in(home.path())
+                .join("git")
+                .exists(),
+            "a non-executable managed Git must not gain a shim"
+        );
+        assert!(
+            !env_names.iter().any(|name| name == "GIT_EXEC_PATH"),
+            "a user's Git must not inherit the managed exec path: {env_names:?}"
+        );
+        assert!(
+            !env_names.iter().any(|name| name == "GIT_TEMPLATE_DIR"),
+            "a user's Git must not inherit the managed templates: {env_names:?}"
+        );
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "git --version"])
+            .env_clear()
+            .env("PATH", path)
+            .output()
+            .expect("run rescue-path Git");
+        assert!(output.status.success(), "user Git failed: {output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "git version user-fixture"
         );
     }
 }

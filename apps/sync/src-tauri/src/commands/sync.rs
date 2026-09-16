@@ -3180,6 +3180,8 @@ pub fn cancel_sync() -> bool {
 mod tests {
     use super::*;
     use crate::commands::cognito::CognitoTokens;
+    #[cfg(not(windows))]
+    use crate::util::test_support::write_usable_managed_git;
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::fs;
     use tempfile::TempDir;
@@ -3517,11 +3519,7 @@ mod tests {
     fn test_build_sync_spawn_args_sets_managed_git_environment_when_installed() {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
         let home = tempfile::tempdir().unwrap();
-        let git = home
-            .path()
-            .join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
-        std::fs::create_dir_all(git.parent().unwrap()).unwrap();
-        std::fs::write(&git, "").unwrap();
+        write_usable_managed_git(home.path());
         crate::commands::install_deps::ensure_managed_git_shim_in(home.path())
             .expect("managed git shim");
         let _home = scoped_home(home.path());

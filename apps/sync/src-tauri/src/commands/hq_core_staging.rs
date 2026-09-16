@@ -918,7 +918,7 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
 mod tests {
     use super::*;
     #[cfg(not(windows))]
-    use crate::util::test_support::{scoped_home, ENV_MUTEX};
+    use crate::util::test_support::{scoped_home, write_usable_managed_git, ENV_MUTEX};
 
     #[test]
     fn non_spawnable_windows_npx_shim_is_not_reported_as_resolved() {
@@ -940,11 +940,7 @@ mod tests {
     fn rescue_command_sets_managed_git_environment_when_installed() {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
         let home = tempfile::tempdir().unwrap();
-        let git = home
-            .path()
-            .join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
-        std::fs::create_dir_all(git.parent().unwrap()).unwrap();
-        std::fs::write(&git, "").unwrap();
+        write_usable_managed_git(home.path());
         crate::commands::install_deps::ensure_managed_git_shim_in(home.path())
             .expect("managed git shim");
         let _home = scoped_home(home.path());

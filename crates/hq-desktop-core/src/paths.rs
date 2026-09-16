@@ -4375,7 +4375,10 @@ mod managed_git_shim_resolution_tests {
         let home = tmp.path();
         let shim = managed_toolchain_dir(home).join("git-shim");
         std::fs::create_dir_all(&shim).unwrap();
-        std::fs::write(shim.join("git"), "#!/bin/sh\n").unwrap();
+        write_executable(
+            &shim.join("git"),
+            "#!/bin/sh\nprintf 'git version fixture'\n",
+        );
         let local = home.join(".local").join("bin");
         std::fs::create_dir_all(&local).unwrap();
         std::fs::write(local.join("jq"), "").unwrap();
