@@ -196,6 +196,7 @@ pub(crate) struct CoreUpdateError {
     kind: CoreUpdateErrorKind,
     message: String,
     npx_resolution: Option<CoreUpdateNpxResolution>,
+    managed_git_retry: ManagedGitRetryOutcome,
 }
 
 impl CoreUpdateError {
@@ -204,11 +205,20 @@ impl CoreUpdateError {
             kind,
             message: message.into(),
             npx_resolution: None,
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
         }
     }
 
     pub(crate) fn with_npx_resolution(mut self, npx_resolution: CoreUpdateNpxResolution) -> Self {
         self.npx_resolution = Some(npx_resolution);
+        self
+    }
+
+    pub(crate) fn with_managed_git_retry(
+        mut self,
+        managed_git_retry: ManagedGitRetryOutcome,
+    ) -> Self {
+        self.managed_git_retry = managed_git_retry;
         self
     }
 
@@ -218,6 +228,10 @@ impl CoreUpdateError {
 
     pub(crate) const fn npx_resolution(&self) -> Option<CoreUpdateNpxResolution> {
         self.npx_resolution
+    }
+
+    pub(crate) const fn managed_git_retry(&self) -> ManagedGitRetryOutcome {
+        self.managed_git_retry
     }
 
     pub(crate) fn message(&self) -> &str {
@@ -233,6 +247,31 @@ pub(crate) struct CoreUpdateNpxResolution {
     /// missing `npx` and a Windows shim that exists but the loader rejects.
     pub(crate) resolved: bool,
     pub(crate) source: &'static str,
+}
+
+/// Closed outcome of the one-time Core-update retry that can put HQ's managed
+/// Git ahead of a user-selected Git after the latter fails a recognized clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedGitRetryOutcome {
+    NotNeeded,
+    ManagedGitUnavailable,
+    Succeeded,
+    Failed,
+}
+
+impl ManagedGitRetryOutcome {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::NotNeeded => "not_needed",
+            Self::ManagedGitUnavailable => "managed_git_unavailable",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+
+    const fn attempted(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed)
+    }
 }
 
 /// Closed telemetry dimension for why a Core rescue failed.
@@ -480,6 +519,7 @@ pub(crate) struct CoreUpdateFailureDetails<'a> {
     pub(crate) rescue_stderr_tail: Option<&'a str>,
     pub(crate) rescue_failure_category: RescueFailureCategory,
     pub(crate) npx_resolution: Option<CoreUpdateNpxResolution>,
+    pub(crate) managed_git_retry: ManagedGitRetryOutcome,
 }
 
 pub(crate) fn core_update_failure_details(error: &CoreUpdateError) -> CoreUpdateFailureDetails<'_> {
@@ -497,6 +537,7 @@ pub(crate) fn core_update_failure_details(error: &CoreUpdateError) -> CoreUpdate
             error.npx_resolution(),
         ),
         npx_resolution: error.npx_resolution(),
+        managed_git_retry: error.managed_git_retry(),
     }
 }
 
@@ -892,6 +933,7 @@ struct CoreUpdateSentryFailureReport {
     error_category: RescueFailureCategory,
     rescue_stderr_tail: Option<String>,
     npx_resolution: Option<CoreUpdateNpxResolution>,
+    managed_git_retry: ManagedGitRetryOutcome,
 }
 
 fn core_update_sentry_error_kind(error_kind: &'static str) -> &'static str {
@@ -961,6 +1003,7 @@ fn send_core_update_failure_report(report: CoreUpdateSentryFailureReport) {
                 sentry_scope.set_tag("platform", core_update_sentry_platform());
                 sentry_scope.set_tag("source", core_update_sentry_source(report.source));
                 sentry_scope.set_tag("exitCode", core_update_sentry_exit_code(report.exit_code));
+                sentry_scope.set_tag("managedGitRetryOutcome", report.managed_git_retry.label());
                 sentry_scope.set_extra(
                     "coreUpdateExitCode",
                     report
@@ -971,6 +1014,10 @@ fn send_core_update_failure_report(report: CoreUpdateSentryFailureReport) {
                 sentry_scope.set_extra(
                     "coreUpdateAppVersion",
                     sentry::protocol::Value::String(env!("APP_VERSION").to_string()),
+                );
+                sentry_scope.set_extra(
+                    "managedGitRetryAttempted",
+                    sentry::protocol::Value::Bool(report.managed_git_retry.attempted()),
                 );
                 if let Some(rescue_stderr_tail) = report.rescue_stderr_tail {
                     sentry_scope.set_extra(
@@ -1018,6 +1065,7 @@ fn core_update_sentry_failure_report(
             .rescue_stderr_tail
             .map(hq_telemetry::redact_core_update_diagnostic_tail),
         npx_resolution: details.npx_resolution,
+        managed_git_retry: details.managed_git_retry,
     }
 }
 
@@ -2667,6 +2715,7 @@ mod tests {
                 rescue_stderr_tail: Some(stderr),
                 rescue_failure_category: classify_rescue_exit_failure(stderr, npx_resolution),
                 npx_resolution: Some(npx_resolution),
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
             },
         );
 
@@ -3096,6 +3145,7 @@ error: clone failed";
             rescue_stderr_tail: Some(stderr),
             rescue_failure_category: RescueFailureCategory::Unknown,
             npx_resolution: None,
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
         };
 
         let report = core_update_sentry_failure_report(
@@ -3216,6 +3266,7 @@ error: clone failed";
             rescue_stderr_tail: None,
             rescue_failure_category: RescueFailureCategory::Permission,
             npx_resolution: None,
+            managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
         }
     }
 
@@ -3226,6 +3277,21 @@ error: clone failed";
             None,
             "rescue_spawn",
             core_update_sentry_test_details(),
+        );
+    }
+
+    fn queue_core_update_sentry_retry_test_report() {
+        queue_core_update_failure_report(
+            "automatic",
+            Channel::Release,
+            Some(5),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some("error: clone failed"),
+                rescue_failure_category: RescueFailureCategory::MissingDependency,
+                npx_resolution: None,
+                managed_git_retry: ManagedGitRetryOutcome::Failed,
+            },
         );
     }
 
@@ -3314,6 +3380,21 @@ error: clone failed";
     }
 
     #[test]
+    fn dispatched_core_update_report_names_a_failed_managed_git_retry() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let events =
+            captured_dispatched_core_update_events(queue_core_update_sentry_retry_test_report);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["managedGitRetryOutcome"], "failed");
+        assert_eq!(
+            events[0].extra["managedGitRetryAttempted"],
+            sentry::protocol::Value::Bool(true)
+        );
+    }
+
+    #[test]
     fn malformed_or_missing_id_token_still_clears_the_sentry_user() {
         let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
 
@@ -3370,6 +3451,7 @@ error: clone failed";
                 rescue_stderr_tail: Some("fatal: could not clone hq-core"),
                 rescue_failure_category: RescueFailureCategory::Unknown,
                 npx_resolution: Some(npx_resolution),
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
             },
         );
         let mut missing: Vec<&str> = properties

@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On a Mac, Core update can now finish when the Git already on your computer cannot clone. HQ tries that Git first as before; if it finds an Xcode license prompt, a missing HTTPS piece, or an old Git that rejects the clone options, it tries once more with HQ's own Git. It never accepts an Apple license for you, and ordinary network failures still keep their original error.
+
 ## [0.10.276] — 2026-09-16
 
 - Bots are never taken off a computer they are running on. Opening HQ on a second Mac used to quietly bring every bot you own over to it, which stopped them on the first one — no click, and nothing said. HQ now leaves any bot that is still running elsewhere alone and only brings back the ones with nothing running them. You can still move one over whenever you want, from the banner, from Settings › Bots or from the bot's own conversation; those now say, in one line, "This bot is running on another computer. Starting it here stops it there." Bots after a reinstall or on a wiped Mac come back by themselves exactly as before.
