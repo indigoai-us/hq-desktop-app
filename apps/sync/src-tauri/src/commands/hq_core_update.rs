@@ -422,6 +422,9 @@ async fn install_hq_core_update_inner() -> Result<
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so this prod Update can't race prewarm/sync into a corrupt
     // `_npx` tree (especially likely right after an HQ_CLOUD_VERSION bump).
+    #[cfg(windows)]
+    ensure_managed_rsync_for_core_update_rescue().await;
+
     let (mut cmd, npx_resolution) = core_update_rescue_command();
     crate::commands::hq_core_staging::materialize_rescue_cache()
         .await
@@ -566,6 +569,55 @@ fn core_update_rescue_command() -> (
     }
 
     (cmd, resolution)
+}
+
+/// Best-effort managed-rsync preflight for the Windows Core-update rescue.
+///
+/// The rescue's own rsync preflight remains authoritative. Provisioning is
+/// intentionally non-fatal so a transient network, checksum, or filesystem
+/// failure cannot turn an otherwise runnable rescue into an earlier failure.
+#[cfg(windows)]
+async fn ensure_managed_rsync_for_core_update_rescue() {
+    match crate::commands::install_deps::ensure_rsync_for_core_update_rescue().await {
+        crate::commands::install_deps::RsyncRescueProvisioning::AlreadyRescueReady => {
+            log(
+                "hq-core-update",
+                "rsync and its path shim already ready before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ShimRefreshed => {
+            log(
+                "hq-core-update",
+                "rsync was resolvable but its path shim was refreshed before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::Provisioned => {
+            log(
+                "hq-core-update",
+                "managed rsync provisioned and resolvable before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningTimedOut => {
+            log(
+                "hq-core-update",
+                "managed rsync preflight timed out before rescue; continuing with current rsync resolution",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningFailed(reason) => {
+            log(
+                "hq-core-update",
+                &format!(
+                    "managed rsync unavailable before rescue ({reason}); continuing with current rsync resolution"
+                ),
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisionedButNotRescueReady => {
+            log(
+                "hq-core-update",
+                "managed rsync installer completed but rsync or its path shim remained unavailable before rescue; continuing with current rsync resolution",
+            );
+        }
+    }
 }
 
 #[cfg(test)]
