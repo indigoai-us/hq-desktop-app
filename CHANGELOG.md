@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- HQ no longer treats a damaged or temporarily unreadable settings file as a brand-new install. If it needs to replace a corrupt file, it keeps the original copy so its settings can be recovered.
 - An HQ Core update no longer looks failed when the update finishes but HQ cannot save its tracking record. HQ still records the problem for support and tries again at the next update check.
 - On Windows, updates no longer crash while finding your HQ folder or say a required part of HQ is missing when it is already there.
 - On Macs, Core update can now recover safely after two interrupted updates leave unverified safety snapshots behind. It checks the restored files before retrying and keeps them if it cannot prove they are safe.

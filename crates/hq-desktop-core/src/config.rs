@@ -1,4 +1,3 @@
-use std::fs;
 use std::io::Write;
 
 use serde::{Deserialize, Serialize};
@@ -345,39 +344,25 @@ pub fn ensure_machine_id() -> Result<String, String> {
     let path: std::path::PathBuf = dirs::home_dir()
         .ok_or("home dir unavailable")?
         .join(".hq/menubar.json");
+    ensure_machine_id_at(&path)
+}
 
-    // 1. Read existing JSON as untyped Map.
-    let mut obj: Map<String, Value> = if path.exists() {
-        fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default()
-    } else {
-        Map::new()
-    };
+fn ensure_machine_id_at(path: &std::path::Path) -> Result<String, String> {
+    let obj = crate::first_run::prepare_menubar_write(path)?;
 
-    // 2. Return existing machineId unchanged if already populated.
-    if let Some(Value::String(id)) = obj.get("machineId") {
-        if !id.is_empty() {
-            return Ok(id.clone());
+    // 1. Return an existing machineId unchanged if already populated.
+    if let Some(obj) = obj.as_ref() {
+        if let Some(Value::String(id)) = obj.get("machineId") {
+            if !id.is_empty() {
+                return Ok(id.clone());
+            }
         }
     }
 
-    // 3. Insert a new v4 UUID; do not touch other keys.
+    // 2. Insert a new v4 UUID. The guarded merger preserves corrupt input
+    // before replacement and refuses to overwrite an unreadable file.
     let id = Uuid::new_v4().to_string();
-    obj.insert("machineId".into(), Value::String(id.clone()));
-
-    // 4. Atomic write.
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let body = serde_json::to_string_pretty(&Value::Object(obj)).map_err(|e| e.to_string())?;
-    let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
-    f.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
-    f.sync_all().ok();
-    fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    crate::first_run::merge_menubar_flags(path, &[("machineId", Value::String(id.clone()))])?;
     Ok(id)
 }
 
@@ -1022,6 +1007,21 @@ mod ensure_machine_id_tests {
         assert_eq!(v["some_unknown_future_key"], Value::String("x".into()));
         assert!(v["machineId"].is_string());
         assert!(uuid::Uuid::parse_str(v["machineId"].as_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn ensure_machine_id_does_not_overwrite_unreadable_settings() {
+        let tmp = fixture();
+        let path = tmp.path().join(".hq/menubar.json");
+        fs::create_dir(&path).unwrap();
+
+        let error = ensure_machine_id_at(&path).unwrap_err();
+
+        assert_eq!(
+            error,
+            "HQ settings file could not be read; it was not changed"
+        );
+        assert!(path.is_dir());
     }
 }
 
