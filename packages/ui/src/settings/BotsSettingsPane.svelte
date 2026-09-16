@@ -33,8 +33,11 @@
     BOT_START_HERE,
     BOT_START_HERE_BUSY,
     botFailureReason,
+    BOT_LIVE_ELSEWHERE_NOTICE,
+    botLiveElsewhere,
     botRestoreRowLine,
     botRestoreSummary,
+    botsLiveElsewhereNotice,
     botsNotHere,
     botStaysInCloudLine,
     botStoppedRemedy,
@@ -114,6 +117,14 @@
    * runtime refuses it at every login — round 4, Defect 7.
    */
   const missingHere = $derived(botsNotHere(remoteBots));
+  /**
+   * The ones among those that are RUNNING on another computer.
+   *
+   * Bringing a bot here re-issues its machine credentials, and the old secret
+   * stops working — so starting it here stops it there. The row says that
+   * before the button is pressed; the app never does it unasked.
+   */
+  const liveElsewhere = $derived(missingHere.filter((bot) => botLiveElsewhere(bot)));
   /** The account's listing by identity, for the stopped-bot remedy below. */
   const remoteByUid = $derived.by(() => {
     const out = new Map<string, RemoteBotRow>();
@@ -546,6 +557,11 @@
                 Bringing one back keeps its name, its memory and your
                 conversations with it.
               </small>
+              {#if liveElsewhere.length > 0}
+                <small data-testid="settings-bots-live-elsewhere">
+                  {botsLiveElsewhereNotice(liveElsewhere.length)}
+                </small>
+              {/if}
             </div>
             {#if adapter?.bots?.restore && !remoteFailure}
               <div class="actions">
@@ -567,7 +583,11 @@
                   <span class="dot" aria-hidden="true"></span>
                   {bot.name}
                 </strong>
-                <small>Set up on another computer{bot.online ? " · Online there" : ""}</small>
+                <small>
+                  {botLiveElsewhere(bot)
+                    ? BOT_LIVE_ELSEWHERE_NOTICE
+                    : "Set up on another computer"}
+                </small>
               </div>
               {#if adapter?.bots?.adopt && !remoteFailure}
                 <div class="actions">

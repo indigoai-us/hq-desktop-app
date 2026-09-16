@@ -313,6 +313,8 @@
     botRestoreRowLine,
     botRestoreSummary,
     botFailureReason,
+    BOT_LIVE_ELSEWHERE_NOTICE,
+    botsLiveElsewhereNotice,
     botsNotHere,
     botStaysInCloudLine,
     classifyRemoteBotFailure,
@@ -335,13 +337,16 @@
     AUTO_RESTORE_STARTING_THIS_BOT,
     autoRestoreAllowed,
     autoRestoreCandidates,
+    autoRestoreCoversAll,
     autoRestoreDoneLine,
+    autoRestoreDue,
     autoRestoreExhausted,
     autoRestoreFailedLine,
-    autoRestoreStateKey,
-    canRetryAutoRestore,
+    autoRestoreHeldBack,
     countAutoRestoreAttempt,
+    noteAutoRestoreAttempt,
     type AutoRestoreAttempts,
+    type AutoRestoreLastAttempts,
   } from "../chat/bot-auto-restore.js";
   import {
     botNeedsSignIn,
@@ -1192,12 +1197,36 @@
   const ownedBotsMissingHere = $derived(
     ownedBotsNotHere(remoteBotListing, localBotTrace, localBotRecords),
   );
+  /**
+   * The owned bots that are RUNNING on another computer right now.
+   *
+   * They are still offered — every manual surface can bring one here — but
+   * nothing takes them automatically, and every notice about one says what
+   * starting it here costs, because the machine credentials rotate and the
+   * other Mac's copy stops at its next token refresh.
+   */
+  const botsLiveElsewhere = $derived(autoRestoreHeldBack(remoteBotListing, localBotRecords));
+  const liveElsewhereUids = $derived(
+    new Set(botsLiveElsewhere.map((bot) => bot.agentUid.trim()).filter(Boolean)),
+  );
   $effect(() => {
     const owned = ownedBotsMissingHere;
+    const live = liveElsewhereUids;
     untrack(() => {
       for (const bot of owned) {
-        if (unrunnableBotUids[bot.agentUid]) continue;
-        noteBotCannotRunHere(bot.agentUid);
+        // A bot that is live elsewhere gets the sentence that names the
+        // consequence instead of the "open it on that computer" one, and it
+        // is re-read when the listing changes: a bot that goes offline over
+        // there must stop being described as running.
+        const reason = live.has(bot.agentUid) ? BOT_LIVE_ELSEWHERE_NOTICE : BOT_NOT_RUNNABLE_HERE;
+        const current = unrunnableBotUids[bot.agentUid];
+        if (current === reason) continue;
+        // Only the two listing-derived sentences are re-written here: a reason
+        // a failed START put there is newer evidence than the listing is.
+        if (current && current !== BOT_LIVE_ELSEWHERE_NOTICE && current !== BOT_NOT_RUNNABLE_HERE) {
+          continue;
+        }
+        noteBotCannotRunHere(bot.agentUid, reason);
       }
     });
   });
@@ -1813,9 +1842,14 @@
   // same way a reinstall's does.
   /** Automatic attempts this session, per bot. Never persisted. */
   let autoRestoreAttempts = $state<AutoRestoreAttempts>({});
-  /** The listing state last acted on, and when — see `autoRestoreIfNeeded`. */
-  let autoRestoreLastKey = "";
-  let autoRestoreLastAt: number | null = null;
+  /**
+   * When each bot was last tried automatically — the back-off, per bot.
+   *
+   * Per bot rather than per listing, so what is charged and what is waited for
+   * can never drift apart: a send that brings ONE bot back charges that bot
+   * and waits for that bot, and the others are neither spent nor held.
+   */
+  let autoRestoreLastAt = $state<AutoRestoreLastAttempts>({});
   /** Single-flight: one automatic restore at a time, ever. */
   let autoRestoreBusy = $state(false);
   /** The bots this automatic restore is bringing back, by uid. */
@@ -1870,53 +1904,82 @@
     // Never overlapping with a person-driven restore or adopt: two `hq bot`
     // writes at once is exactly what `singleFlightStart` exists to prevent.
     if (autoRestoreBusy || botRestoreBusy || botAdoptBusy) return;
-    const allowed = autoRestoreAllowed(autoRestoreAttempts, candidates);
+    // A bot never tried goes at once — one wiped by an update or a crash comes
+    // back the same way a reinstall's does. One tried already waits: a fresh
+    // install lands two listings inside a second (the poll, then the setup
+    // bot's DM asking for one), and spending the whole budget on the same
+    // evidence twice would leave a transient failure with nothing left.
+    const allowed = autoRestoreDue(
+      autoRestoreLastAt,
+      autoRestoreAllowed(autoRestoreAttempts, candidates),
+      Date.now(),
+    );
     if (allowed.length === 0) return;
-    const key = autoRestoreStateKey(allowed);
-    // A NEW state goes at once — a bot wiped by an update or a crash comes
-    // back the same way a reinstall's does. The SAME state is a retry, and a
-    // retry waits: a fresh install lands two listings inside a second (the
-    // poll, then the setup bot's DM asking for one), and spending the whole
-    // budget on that would leave a transient failure with nothing left.
-    if (key === autoRestoreLastKey && !canRetryAutoRestore(autoRestoreLastAt, Date.now())) return;
     await runAutoRestore(allowed);
   }
   /**
-   * `hq bot restore --all --json`, with no click.
+   * Bring these bots back, with no click — and ONLY these bots.
    *
-   * A failure BACKS OFF rather than stopping: the state key is released so the
-   * next listing tries again, and the per-bot budget is what ends it. When the
-   * budget is gone the manual notice is the honest surface again — which is
-   * why nothing here dismisses it permanently.
+   * `hq bot restore` takes no names: it brings back every bot the account owns
+   * that is not set up here. That is the right call whenever the app is asking
+   * for exactly that set — one process, one token, one pass — and the wrong
+   * one the moment it is not. A bot held back because it is running on another
+   * Mac, or one whose automatic budget is spent, would be taken by the bulk
+   * call anyway and charged to nobody, so those go one at a time through
+   * `hq bot adopt <name>` instead. What is restored and what is charged are
+   * the same set, always.
+   *
+   * A failure BACKS OFF rather than stopping: the per-bot budget is what ends
+   * it. When the budget is gone the manual notice is the honest surface again
+   * — which is why nothing here dismisses it permanently.
    */
   async function runAutoRestore(bots: readonly RemoteBotRow[]): Promise<void> {
     const restore = adapter.bots?.restore;
-    if (!restore || autoRestoreBusy) return;
+    const adoptOne = adapter.bots?.adopt;
+    if (autoRestoreBusy || bots.length === 0) return;
+    const bulk = Boolean(restore) && autoRestoreCoversAll(bots, botsMissingHere);
+    if (!bulk && !adoptOne) return;
     autoRestoreBusy = true;
-    autoRestoreLastKey = autoRestoreStateKey(bots);
-    autoRestoreLastAt = Date.now();
+    const startedAt = Date.now();
+    autoRestoreLastAt = noteAutoRestoreAttempt(autoRestoreLastAt, bots, startedAt);
     autoRestoreAttempts = countAutoRestoreAttempt(autoRestoreAttempts, bots);
     autoRestoringUids = bots.map((bot) => bot.agentUid.trim()).filter(Boolean);
     const names = bots.map((bot) => bot.name);
     autoRestoreStatus = AUTO_RESTORE_RUNNING;
     try {
-      const result = await restore({ all: true });
-      if (!result.ok || !result.value) {
-        // The bots API shells out to the CLI, so `message` can be its own
-        // words. They belong in the log; the line gets a written sentence.
-        const raw = (result.ok ? "" : result.message) ?? "";
-        if (raw) console.warn("[hq-desktop] automatic bot restore failed:", raw);
-        autoRestoreStatus = autoRestoreFailedLine(names, remoteListingNotice);
-        return;
-      }
       const back: string[] = [];
       const stuck: string[] = [];
-      for (const row of result.value.bots ?? []) {
-        if (row.action === "restored" || row.action === "repaired") {
-          noteBotStarted(row.name, row.agentUid);
-          back.push(row.name);
-        } else if (botRestoreRowFailed(row)) {
-          stuck.push(row.name);
+      if (bulk) {
+        // No `--all`: that flag additionally re-issues credentials for the
+        // bots already set up here, which this run neither named nor charged.
+        const result = await restore!({ all: false });
+        if (!result.ok || !result.value) {
+          // The bots API shells out to the CLI, so `message` can be its own
+          // words. They belong in the log; the line gets a written sentence.
+          const raw = (result.ok ? "" : result.message) ?? "";
+          if (raw) console.warn("[hq-desktop] automatic bot restore failed:", raw);
+          autoRestoreStatus = autoRestoreFailedLine(names, remoteListingNotice);
+          return;
+        }
+        for (const row of result.value.bots ?? []) {
+          if (row.action === "restored" || row.action === "repaired") {
+            noteBotStarted(row.name, row.agentUid);
+            back.push(row.name);
+          } else if (botRestoreRowFailed(row)) {
+            stuck.push(row.name);
+          }
+        }
+      } else {
+        for (const bot of bots) {
+          const result = await adoptOne!(bot.name);
+          if (result.ok) {
+            noteBotStarted(bot.name, bot.agentUid);
+            back.push(bot.name);
+            continue;
+          }
+          const raw = result.message ?? "";
+          if (raw) console.warn("[hq-desktop] automatic bot adopt failed:", raw);
+          stuck.push(bot.name);
         }
       }
       autoRestoreStatus =
@@ -1950,6 +2013,10 @@
   function autoRestoreForSend(agentUid: string): boolean {
     const uid = (agentUid ?? "").trim();
     if (!uid || !autoRestoreReady) return false;
+    // `autoRestorableBots` is the automatic set, so a bot that is RUNNING on
+    // another computer is not in it — writing to a bot must not take it off
+    // the Mac it is answering on. The conversation says so in one sentence and
+    // keeps the button, which is the person's to press.
     const bot = autoRestorableBots.find((row) => row.agentUid.trim() === uid);
     if (!bot) return false;
     if (autoRestoreBusy || botRestoreBusy || botAdoptBusy) return autoRestoringUids.includes(uid);
@@ -6205,6 +6272,7 @@
          it again. -->
     <BotRestoreBanner
       count={botsMissingHere.length}
+      liveElsewhere={botsLiveElsewhere.length}
       busy={botRestoreBusy}
       result={botRestoreResult}
       error={botRestoreError}

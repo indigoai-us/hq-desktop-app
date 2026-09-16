@@ -149,6 +149,58 @@ export function botsNotHere(
   );
 }
 
+// ── A bot that is RUNNING on another computer ───────────────────────────────
+//
+// One machine runs a local bot at a time. Bringing a bot here re-issues its
+// machine credentials, and the previous secret stops working — so adopting a
+// bot that is live on another Mac takes it off that Mac at its next token
+// refresh. That is a fine thing for a person to CHOOSE and a terrible thing
+// for the app to do by itself, which is what these two say out loud: the
+// automatic path skips these rows, and the manual ones name the consequence.
+
+/**
+ * How recent a heartbeat still counts as "running over there".
+ *
+ * Neither flag is enough on its own. `online` is a server-side view that lags
+ * both ways — a bot that died minutes ago can still read online, and a bot
+ * that is very much alive can read offline while its last beat is in flight —
+ * so the listing's own timestamp is the second half of the answer. Five
+ * minutes is comfortably longer than the beat and short enough that a Mac
+ * whose bots were wiped an hour ago is not held back by it.
+ */
+export const BOT_LIVE_ELSEWHERE_WINDOW_MS = 5 * 60_000;
+
+/**
+ * Is this bot running on ANOTHER computer right now?
+ *
+ * A row that is here is never "elsewhere", whatever the heartbeat says. What
+ * is left is live when the listing says so, or when its last heartbeat is
+ * inside the window above — a beat from the future (two machines, two clocks)
+ * counts as live too, because the one answer that must never be wrong is
+ * "no, go ahead and take it".
+ */
+export function botLiveElsewhere(
+  bot: RemoteBotRow | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!bot || bot.here === true) return false;
+  if (bot.online === true) return true;
+  const beat = Date.parse((bot.lastHeartbeatAt ?? "").trim());
+  if (Number.isNaN(beat)) return false;
+  return now - beat < BOT_LIVE_ELSEWHERE_WINDOW_MS;
+}
+
+/** The one sentence a person reads before taking a live bot off another Mac. */
+export const BOT_LIVE_ELSEWHERE_NOTICE =
+  "This bot is running on another computer. Starting it here stops it there.";
+
+/** The same thing about several of them, on a prompt that offers them all. */
+export function botsLiveElsewhereNotice(count: number): string {
+  if (count <= 0) return "";
+  if (count === 1) return BOT_LIVE_ELSEWHERE_NOTICE;
+  return `${count} of these bots are running on another computer. Starting them here stops them there.`;
+}
+
 /** The action on the "cannot run here" notice, now that there is a real one. */
 export const BOT_START_HERE = "Start on this computer";
 /** While `hq bot adopt` is running. */

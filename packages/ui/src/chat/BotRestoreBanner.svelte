@@ -24,11 +24,18 @@
     botRestoreRowFailed,
     botRestoreRowLine,
     botRestoreSummary,
+    botsLiveElsewhereNotice,
   } from "./bot-restore.js";
 
   interface Props {
     /** How many owned bots are not set up on this computer. */
     count: number;
+    /**
+     * How many of those are RUNNING on another computer right now. Restoring
+     * one takes it off that computer, so the prompt says so before it is
+     * pressed rather than after.
+     */
+    liveElsewhere?: number;
     busy?: boolean;
     /** Set once a restore finished; the banner then reports instead of asking. */
     result?: BotRestoreResult | null;
@@ -40,6 +47,7 @@
 
   let {
     count,
+    liveElsewhere = 0,
     busy = false,
     result = null,
     error = null,
@@ -74,6 +82,9 @@
     <div class="restore-copy">
       <strong>{BOT_RESTORE_TITLE}</strong>
       <span>{botRestorePromptBody(count)}</span>
+      {#if liveElsewhere > 0}
+        <span data-testid="bot-restore-live-elsewhere">{botsLiveElsewhereNotice(liveElsewhere)}</span>
+      {/if}
       {#if error}
         <span class="restore-error" role="alert" data-testid="bot-restore-error">{error}</span>
       {/if}

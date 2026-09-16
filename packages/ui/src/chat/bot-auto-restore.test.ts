@@ -3,18 +3,37 @@ import type { LocalBotRow, RemoteBotRow } from "@hq/platform";
 
 import {
   AUTO_RESTORE_MAX_ATTEMPTS,
+  AUTO_RESTORE_RETRY_MS,
   AUTO_RESTORE_RUNNING,
   AUTO_RESTORE_STARTING_THIS_BOT,
   autoRestoreAllowed,
   autoRestoreCandidates,
+  autoRestoreCoversAll,
   autoRestoreDoneLine,
+  autoRestoreDue,
   autoRestoreExhausted,
   autoRestoreFailedLine,
+  autoRestoreHeldBack,
   autoRestoreStateKey,
   countAutoRestoreAttempt,
   joinBotNames,
+  noteAutoRestoreAttempt,
 } from "./bot-auto-restore.js";
-import { remoteBotListingFailed, remoteBotListingOk, NO_REMOTE_BOT_LISTING } from "./bot-restore.js";
+import {
+  BOT_LIVE_ELSEWHERE_NOTICE,
+  BOT_LIVE_ELSEWHERE_WINDOW_MS,
+  botLiveElsewhere,
+  botsLiveElsewhereNotice,
+  remoteBotListingFailed,
+  remoteBotListingOk,
+  NO_REMOTE_BOT_LISTING,
+} from "./bot-restore.js";
+
+const NOW = Date.parse("2026-09-16T12:00:00.000Z");
+/** A heartbeat `ago` milliseconds before `NOW`. */
+function beat(ago: number): string {
+  return new Date(NOW - ago).toISOString();
+}
 
 function remote(over: Partial<RemoteBotRow> = {}): RemoteBotRow {
   return {
@@ -62,14 +81,86 @@ describe("autoRestoreCandidates", () => {
   });
 });
 
-describe("one listing state is acted on once", () => {
-  it("is order-independent, so the same bots are the same state", () => {
+describe("a bot that is RUNNING on another computer is never taken by itself", () => {
+  // Adopting rotates the machine secret, so the other Mac's copy stops at its
+  // next token refresh. Opening the app on a second computer must not do that
+  // to every bot with no click and nothing said.
+  it("skips a bot the listing says is online elsewhere", () => {
+    const listing = remoteBotListingOk([
+      remote({ online: true }),
+      remote({ name: "test-bot", agentUid: "agt_test" }),
+    ]);
+    expect(autoRestoreCandidates(listing, [], NOW).map((b) => b.name)).toEqual(["test-bot"]);
+    expect(autoRestoreHeldBack(listing, [], NOW).map((b) => b.name)).toEqual(["setup"]);
+  });
+
+  it("skips a bot whose heartbeat is still fresh, even with online false", () => {
+    // `online` lags both ways; the listing's own timestamp is the other half.
+    const listing = remoteBotListingOk([remote({ online: false, lastHeartbeatAt: beat(60_000) })]);
+    expect(autoRestoreCandidates(listing, [], NOW)).toEqual([]);
+    expect(autoRestoreHeldBack(listing, [], NOW).map((b) => b.name)).toEqual(["setup"]);
+  });
+
+  it("still brings back the wiped Mac's bots: offline, and the heartbeat is old", () => {
+    const listing = remoteBotListingOk([
+      remote({ online: false, lastHeartbeatAt: beat(BOT_LIVE_ELSEWHERE_WINDOW_MS + 1_000) }),
+      remote({ name: "test-bot", agentUid: "agt_test", online: false, lastHeartbeatAt: null }),
+    ]);
+    expect(autoRestoreCandidates(listing, [], NOW).map((b) => b.name)).toEqual([
+      "setup",
+      "test-bot",
+    ]);
+    expect(autoRestoreHeldBack(listing, [], NOW)).toEqual([]);
+  });
+
+  it("reads an unreadable or future heartbeat on the safe side", () => {
+    expect(botLiveElsewhere(remote({ lastHeartbeatAt: "not a date" }), NOW)).toBe(false);
+    // Two machines, two clocks: a beat from the future is still a live bot.
+    expect(botLiveElsewhere(remote({ lastHeartbeatAt: beat(-30_000) }), NOW)).toBe(true);
+  });
+
+  it("is never 'elsewhere' for a bot that is set up HERE", () => {
+    expect(botLiveElsewhere(remote({ here: true, online: true }), NOW)).toBe(false);
+  });
+});
+
+describe("what is restored is what is charged", () => {
+  const setup = remote();
+  const test = remote({ name: "test-bot", agentUid: "agt_test" });
+
+  it("uses the bulk restore only when the app is asking for exactly its set", () => {
+    // `hq bot restore` takes no names: it brings back everything missing here.
+    expect(autoRestoreCoversAll([setup, test], [test, setup])).toBe(true);
+    expect(autoRestoreCoversAll([setup], [setup, test])).toBe(false);
+    expect(autoRestoreCoversAll([], [])).toBe(true);
+  });
+
+  it("backs off per bot, so one bot's try never holds or spends another's", () => {
+    let last = noteAutoRestoreAttempt({}, [setup], NOW);
+    expect(autoRestoreDue(last, [setup, test], NOW).map((b) => b.name)).toEqual(["test-bot"]);
+    // Inside the back-off it stays held…
+    expect(autoRestoreDue(last, [setup], NOW + AUTO_RESTORE_RETRY_MS - 1)).toEqual([]);
+    // …and after it, it is due again.
+    expect(autoRestoreDue(last, [setup], NOW + AUTO_RESTORE_RETRY_MS).map((b) => b.name)).toEqual([
+      "setup",
+    ]);
+    last = noteAutoRestoreAttempt(last, [test], NOW);
+    expect(autoRestoreDue(last, [setup, test], NOW)).toEqual([]);
+  });
+
+  it("lets a bot never tried go at once", () => {
+    expect(autoRestoreDue({}, [setup], NOW).map((b) => b.name)).toEqual(["setup"]);
+  });
+});
+
+describe("the set fingerprint", () => {
+  it("is order-independent, so the same bots are the same set", () => {
     const a = autoRestoreStateKey([remote(), remote({ agentUid: "agt_test" })]);
     const b = autoRestoreStateKey([remote({ agentUid: "agt_test" }), remote()]);
     expect(a).toBe(b);
   });
 
-  it("changes when a bot appears — a bot wiped by an update comes back too", () => {
+  it("changes when a bot appears, so a wider set is never mistaken for a narrower one", () => {
     const before = autoRestoreStateKey([remote()]);
     const after = autoRestoreStateKey([remote(), remote({ agentUid: "agt_test" })]);
     expect(after).not.toBe(before);
@@ -129,6 +220,21 @@ describe("what the person reads", () => {
       autoRestoreFailedLine(["setup"], null),
     ]) {
       expect(line).not.toMatch(/hq bot|HQ API|\/v1\/|\b\d{3}\b/);
+      expect(line).not.toMatch(/\bagent\b/i);
+    }
+  });
+
+  it("says what starting a live bot here costs, in one sentence", () => {
+    expect(BOT_LIVE_ELSEWHERE_NOTICE).toBe(
+      "This bot is running on another computer. Starting it here stops it there.",
+    );
+    expect(botsLiveElsewhereNotice(1)).toBe(BOT_LIVE_ELSEWHERE_NOTICE);
+    expect(botsLiveElsewhereNotice(3)).toBe(
+      "3 of these bots are running on another computer. Starting them here stops them there.",
+    );
+    expect(botsLiveElsewhereNotice(0)).toBe("");
+    for (const line of [BOT_LIVE_ELSEWHERE_NOTICE, botsLiveElsewhereNotice(2)]) {
+      expect(line).not.toMatch(/hq bot|HQ API|\/v1\/|credential|secret/i);
       expect(line).not.toMatch(/\bagent\b/i);
     }
   });

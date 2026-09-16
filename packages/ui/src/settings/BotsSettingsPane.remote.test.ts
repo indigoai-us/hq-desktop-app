@@ -23,8 +23,10 @@ import {
 
 import BotsSettingsPane from "./BotsSettingsPane.svelte";
 import {
+  BOT_LIVE_ELSEWHERE_NOTICE,
   BOT_RESTORE_CLOUD_UNREACHABLE,
   BOT_RESTORE_NEEDS_NEWER_CLOUD,
+  botsLiveElsewhereNotice,
 } from "../chat/bot-restore.js";
 
 const HERE: LocalBotRow = {
@@ -141,6 +143,63 @@ describe("bots that live on another computer", () => {
     q<HTMLButtonElement>('[data-testid="settings-remote-bot-scout-start"]')!.click();
     await settle(14);
     expect(adopt).toHaveBeenCalledWith("scout");
+  });
+
+  it("says what starting a bot here costs while it is running over there", async () => {
+    // Bringing a bot here re-issues its machine credentials and the old secret
+    // stops working, so the other Mac's copy stops. The row is still offered —
+    // it is the person's call — but never without the sentence.
+    const adopt = vi.fn(async () => ok({ ok: true }));
+    await mountPane(
+      fakeAdapter({
+        adopt,
+        listRemote: vi.fn(async () =>
+          ok({
+            bots: [
+              remote({ online: true }),
+              remote({
+                name: "drafter",
+                agentUid: "agt_drafter",
+                online: false,
+                lastHeartbeatAt: new Date(Date.now() - 60_000).toISOString(),
+              }),
+            ],
+          }),
+        ),
+      }),
+    );
+    await settle(14);
+
+    expect(q('[data-testid="settings-remote-bot-scout"]')?.textContent).toContain(
+      BOT_LIVE_ELSEWHERE_NOTICE,
+    );
+    // A fresh heartbeat is the same answer: `online` lags, the timestamp does not.
+    expect(q('[data-testid="settings-remote-bot-drafter"]')?.textContent).toContain(
+      BOT_LIVE_ELSEWHERE_NOTICE,
+    );
+    // And the card that restores them all warns about both of them at once.
+    expect(q('[data-testid="settings-bots-live-elsewhere"]')?.textContent?.trim()).toBe(
+      botsLiveElsewhereNotice(2),
+    );
+    // Still the person's to take: the button is there and still works.
+    q<HTMLButtonElement>('[data-testid="settings-remote-bot-scout-start"]')!.click();
+    await settle(14);
+    expect(adopt).toHaveBeenCalledWith("scout");
+  });
+
+  it("keeps the plain wording for a bot that is not running anywhere", async () => {
+    await mountPane(
+      fakeAdapter({
+        listRemote: vi.fn(async () =>
+          ok({ bots: [remote({ online: false, lastHeartbeatAt: null })] }),
+        ),
+      }),
+    );
+    await settle(14);
+    const row = q('[data-testid="settings-remote-bot-scout"]');
+    expect(row?.textContent).toContain("Set up on another computer");
+    expect(row?.textContent).not.toContain(BOT_LIVE_ELSEWHERE_NOTICE);
+    expect(q('[data-testid="settings-bots-live-elsewhere"]')).toBeNull();
   });
 
   it("re-offers the restore a person turned down at launch", async () => {

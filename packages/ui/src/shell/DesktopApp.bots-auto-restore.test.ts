@@ -29,7 +29,11 @@ import {
   AUTO_RESTORE_STARTING_THIS_BOT,
   autoRestoreDoneLine,
 } from "../chat/bot-auto-restore.js";
-import { REMOTE_BOTS_POLL_MS } from "../chat/bot-restore.js";
+import {
+  BOT_LIVE_ELSEWHERE_NOTICE,
+  BOT_LIVE_ELSEWHERE_WINDOW_MS,
+  REMOTE_BOTS_POLL_MS,
+} from "../chat/bot-restore.js";
 import {
   BOT_MESSAGE_NOT_ANSWERED,
   BOT_MESSAGE_START_HERE,
@@ -262,7 +266,7 @@ describe("a fresh install brings the bots back by itself", () => {
     );
 
     // No click anywhere: the app asks for itself, and says what it is doing.
-    await vi.waitFor(() => expect(restore).toHaveBeenCalledWith({ all: true }));
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledWith({ all: false }));
     await vi.waitFor(() =>
       expect(q('[data-testid="bot-auto-restore-status"]')?.textContent?.trim()).toBe(
         AUTO_RESTORE_RUNNING,
@@ -325,7 +329,7 @@ describe("a fresh install brings the bots back by itself", () => {
       grokLoggedIn: false,
     });
     await waitFor("the automatic restore", () => restore.mock.calls.length > 0);
-    expect(restore).toHaveBeenCalledWith({ all: true });
+    expect(restore).toHaveBeenCalledWith({ all: false });
     // And the prompt stands down the moment the app takes it over.
     await waitFor("the prompt to stand down", () => q('[data-testid="bot-restore-banner"]') === null);
   });
@@ -474,6 +478,168 @@ describe("when a bot cannot be brought back", () => {
     const line = q('[data-testid="bot-message-unanswered"]');
     expect(line?.textContent).toContain(BOT_MESSAGE_NOT_ANSWERED);
     expect(line!.querySelector('[data-testid="bot-message-recheck"]')).toBeTruthy();
+  });
+});
+
+describe("a bot that is running on another computer is never taken by itself", () => {
+  /**
+   * Bringing a bot here re-issues its machine credentials and the previous
+   * secret stops working, so an automatic restore on a second Mac takes every
+   * bot off the first one — with no click, and nothing on either screen saying
+   * so. These pin the one rule that stops it: the app never does that by
+   * itself, and every surface that still offers it says what it costs.
+   */
+  function liveElsewhereAdapter(
+    over: Partial<RemoteBotRow>,
+    calls: { restore: ReturnType<typeof vi.fn>; adopt: ReturnType<typeof vi.fn> },
+  ): PlatformAdapter {
+    return adapter({
+      bots: {
+        restore: calls.restore as never,
+        adopt: calls.adopt as never,
+        list: async () => ok({ bots: [] }),
+        listRemote: async () => ok({ bots: [remoteBot(over)] }),
+      },
+      contacts: [{ personUid: SETUP_UID, displayName: "setup", companyUid: null }],
+    });
+  }
+
+  function spies() {
+    return {
+      restore: vi.fn(async () => ok(restoreResult([]))),
+      adopt: vi.fn(async () => ok({ ok: true })),
+    };
+  }
+
+  it("leaves a bot the listing says is online there, and says what starting it here costs", async () => {
+    const calls = spies();
+    mountApp(liveElsewhereAdapter({ online: true }, calls), dmRow(SETUP_UID, "setup"));
+
+    await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
+    await settle(30);
+    expect(calls.restore, "never taken off the other Mac by itself").not.toHaveBeenCalled();
+    expect(calls.adopt).not.toHaveBeenCalled();
+
+    // The notice is the one sentence that names the consequence, and the
+    // person's own way to do it anyway is still right there.
+    expect(q('[data-testid="bot-not-runnable-notice"]')?.textContent).toContain(
+      BOT_LIVE_ELSEWHERE_NOTICE,
+    );
+    expect(q('[data-testid="bot-start-here"]')?.textContent).toContain("Start on this computer");
+    // And the prompt that restores them all is offered, with the same warning.
+    const banner = await vi.waitFor(() => {
+      const el = q('[data-testid="bot-restore-banner"]');
+      expect(el, "the manual prompt stays available").toBeTruthy();
+      return el!;
+    });
+    expect(banner.querySelector('[data-testid="bot-restore-live-elsewhere"]')?.textContent).toContain(
+      BOT_LIVE_ELSEWHERE_NOTICE,
+    );
+  });
+
+  it("leaves a bot whose heartbeat is still fresh, even when it reads offline", async () => {
+    // `online` lags both ways, so a live bot can read offline for a beat.
+    const calls = spies();
+    mountApp(
+      liveElsewhereAdapter(
+        { online: false, lastHeartbeatAt: new Date(Date.now() - 60_000).toISOString() },
+        calls,
+      ),
+      dmRow(SETUP_UID, "setup"),
+    );
+
+    await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
+    await settle(30);
+    expect(calls.restore).not.toHaveBeenCalled();
+    expect(calls.adopt).not.toHaveBeenCalled();
+    expect(q('[data-testid="bot-not-runnable-notice"]')?.textContent).toContain(
+      BOT_LIVE_ELSEWHERE_NOTICE,
+    );
+  });
+
+  it("still brings back the wiped Mac's bot: offline, with an old heartbeat", async () => {
+    // The case this whole feature exists for. Nothing is running over there,
+    // so there is nothing to take — and it comes back with no click, as before.
+    const calls = spies();
+    mountApp(
+      liveElsewhereAdapter(
+        {
+          online: false,
+          lastHeartbeatAt: new Date(Date.now() - BOT_LIVE_ELSEWHERE_WINDOW_MS - 60_000).toISOString(),
+        },
+        calls,
+      ),
+    );
+    await vi.waitFor(() => expect(calls.restore).toHaveBeenCalledWith({ all: false }));
+  });
+
+  it("does not start it from a send either — it shows the sentence and the button", async () => {
+    // Writing to a bot is what brings it back, EXCEPT when bringing it back
+    // would stop it answering on the computer it is answering on.
+    const calls = spies();
+    mountApp(liveElsewhereAdapter({ online: true }, calls), dmRow(SETUP_UID, "setup"));
+    await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
+
+    await sendPlainMessage();
+    expect(calls.restore, "a send never takes a live bot").not.toHaveBeenCalled();
+    expect(calls.adopt).not.toHaveBeenCalled();
+    expect(q('[data-testid="bot-message-starting"]'), "nothing is being started").toBeNull();
+
+    const line = q('[data-testid="bot-message-unanswered"]');
+    expect(line?.textContent).toContain(BOT_MESSAGE_NOT_ANSWERED);
+    expect(line!.querySelector('[data-testid="bot-message-start-here"]')?.textContent).toContain(
+      BOT_MESSAGE_START_HERE,
+    );
+    expect(q('[data-testid="bot-not-runnable-notice"]')?.textContent).toContain(
+      BOT_LIVE_ELSEWHERE_NOTICE,
+    );
+  });
+});
+
+describe("what is restored is what is charged", () => {
+  it("a send brings back THAT bot, and does not re-run on the next tick", async () => {
+    // `hq bot restore` takes no names, so the send path used to charge one bot
+    // and restore every one of them — and then see a different state key on
+    // the next tick and go again. One bot asked for, one bot brought back.
+    const restore = vi.fn(async () => ({
+      ok: false as const,
+      reason: "error" as const,
+      message: "boom",
+    }));
+    const adopt = vi.fn(async () => ({ ok: false as const, reason: "error" as const, message: "boom" }));
+    mountApp(
+      adapter({
+        bots: {
+          restore: restore as never,
+          adopt: adopt as never,
+          list: async () => ok({ bots: [] }),
+          listRemote: async () =>
+            ok({ bots: [remoteBot(), remoteBot({ name: "test-bot", agentUid: TEST_UID })] }),
+        },
+        contacts: [{ personUid: SETUP_UID, displayName: "setup", companyUid: null }],
+      }),
+      dmRow(SETUP_UID, "setup"),
+    );
+
+    // Both bots are missing, so the first automatic try is the one bulk call —
+    // which is exactly the set it charges.
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledTimes(1));
+    expect(restore).toHaveBeenCalledWith({ all: false });
+    await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
+
+    // The person writes to ONE of them. That bot comes back by name; the other
+    // is neither restored nor charged.
+    await sendPlainMessage();
+    expect(adopt.mock.calls, "only the bot that was written to").toEqual([["setup"]]);
+    expect(restore, "no second bulk restore behind its back").toHaveBeenCalledTimes(1);
+
+    // And the tick after it does not go again: both bots are inside their own
+    // back-off, which is now the same thing the attempt charged.
+    await settle(30);
+    await new Promise((r) => setTimeout(r, 20));
+    await settle(20);
+    expect(adopt).toHaveBeenCalledTimes(1);
+    expect(restore).toHaveBeenCalledTimes(1);
   });
 });
 
