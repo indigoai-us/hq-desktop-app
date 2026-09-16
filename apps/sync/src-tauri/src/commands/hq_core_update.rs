@@ -530,24 +530,50 @@ async fn install_hq_core_update_inner() -> Result<
 
 /// Build the core-update rescue command after preparing the managed Git shim.
 ///
-/// `child_path()` selects this shim ahead of `/usr/bin/git`. Preparing it here
-/// keeps a core update on the managed Git when the installer provisioned Git
-/// before it had a chance to write the shim. A missing Git or unwritable shim
-/// remains non-fatal so the update retains its existing fallback behavior.
+/// The rescue PATH alone is adjusted: a raw managed Git from generated Claude
+/// settings is replaced with its shim, but a foreign Git the user put first is
+/// left first. A missing or unhealthy managed Git is removed from this rescue
+/// PATH so the user's next Git remains available.
 fn core_update_rescue_command() -> (
     tokio::process::Command,
     crate::commands::hq_core_state::CoreUpdateNpxResolution,
 ) {
+    let (mut cmd, resolution) = crate::commands::hq_core_staging::rescue_command();
+
     #[cfg(not(windows))]
-    match crate::commands::install_deps::ensure_managed_git_shim() {
-        Some(_) => log("hq-core-update", "managed Git shim ready for rescue"),
-        None => log(
+    if let Some(home) = dirs::home_dir() {
+        let healthy = match crate::commands::install_deps::ensure_managed_git_shim_in(&home) {
+            Ok(shim) => {
+                log(
+                    "hq-core-update",
+                    &format!("managed Git shim ready for rescue at {}", shim.display()),
+                );
+                true
+            }
+            Err(reason) => {
+                log(
+                    "hq-core-update",
+                    &format!(
+                        "managed Git shim unavailable before rescue ({reason}); using the user's Git"
+                    ),
+                );
+                false
+            }
+        };
+        let rescue_path = hq_desktop_core::paths::managed_git_rescue_path_for_home(
+            &hq_desktop_core::paths::child_path(),
+            &home,
+            healthy,
+        );
+        cmd.env("PATH", rescue_path);
+    } else {
+        log(
             "hq-core-update",
-            "managed Git shim unavailable before rescue; continuing with existing Git resolution",
-        ),
+            "managed Git shim skipped before rescue: home directory unavailable",
+        );
     }
 
-    crate::commands::hq_core_staging::rescue_command()
+    (cmd, resolution)
 }
 
 #[cfg(test)]
@@ -680,7 +706,12 @@ mod tests {
             .path()
             .join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
         std::fs::create_dir_all(git.parent().unwrap()).unwrap();
-        std::fs::write(&git, "").unwrap();
+        std::fs::write(&git, "#!/bin/sh\nprintf 'git version fixture'\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         {
             let _home = scoped_home(managed_home.path());
             let _ = core_update_rescue_command();
