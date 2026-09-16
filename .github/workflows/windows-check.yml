@@ -654,6 +654,31 @@ jobs:
       # always(), not failure(): the captured msedgewebview2.exe command line is
       # the evidence that the WebView2 automation switches landed, and a green
       # run is exactly when that evidence is worth keeping.
+      #
+      # This step is also the slowest thing in the job that is not a compile,
+      # and it has already survived one attempt to make it cheaper. Recording
+      # that here so the next person does not repeat it:
+      #
+      #   It takes 62/67/69/78/81/91/95/109s across eight runs, for a 15 KB
+      #   artifact. The byte-identical step in windows-installer-e2e -- same
+      #   action, same path expression, same `if:` -- takes 1-2s for a
+      #   comparable 13 KB artifact, and the bridge job pushes 99 MB in 7s. In
+      #   the step log ~59-82s elapse before upload-artifact's node process
+      #   emits its first line, so it is neither transfer nor action overhead.
+      #
+      #   The hypothesis was orphaned processes contending the runner:
+      #   `reapSharedDriver()` in e2e/desktop-alt/live-driver.ts kills the
+      #   tauri-driver process, and on Windows that does not reap the tree
+      #   beneath it. An observe-only step measured the actual population --
+      #   exactly ONE leaked `msedgewebview2`, started 8s earlier. No app
+      #   binary, no msedgedriver, no tauri-driver. Killing it gave 78s -> 67s,
+      #   both mid-range. One idle WebView2 process does not stall a runner for
+      #   a minute, and the timing says it does not.
+      #
+      #   So the cause is still unknown, and it is NOT stray processes. Do not
+      #   re-run that experiment. In particular do not "fix" this by flipping
+      #   to `if: failure()` -- that trades the evidence above for a saving on
+      #   green runs, and ci-cost-contract.test.ts fails if you try.
       - name: Upload WebDriver diagnostics
         if: always()
         uses: actions/upload-artifact@v4
