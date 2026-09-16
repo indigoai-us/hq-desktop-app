@@ -142,6 +142,8 @@
     type ShellSettingsProfile,
   } from "../settings/ShellSettings.svelte";
   import RecommendedUpdateBanner from "../settings/RecommendedUpdateBanner.svelte";
+  import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
+  import type { SyncEventHost } from "./sync-events.js";
   import {
     dismissRecommendBanner,
     installRecommendedUpdate,
@@ -478,7 +480,7 @@
     mergePaletteRows,
     paletteConversationItems,
   } from "./palette-rows.js";
-  import type { Workspace } from "../chat/workspaces.js";
+  import { joinableMemberships, type Workspace } from "../chat/workspaces.js";
   import {
     buildCompanyDisplayMap,
     buildCompanyIconMap,
@@ -530,6 +532,13 @@
     wakes?: ChatWakeBus | null;
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
+    /**
+     * App-level event subscription (Tauri `listen`, or a web bridge), used to
+     * observe sync outcomes the command result cannot report — see
+     * `syncMembership`. Omitted on platforms without an event bus; the
+     * membership banner degrades to reporting dispatch errors only.
+     */
+    syncEvents?: SyncEventHost | null;
     /**
      * Where the host is in loading `companies` for this session. #setup
      * hides the seeded "Create a company" card and the create hero copy
@@ -714,6 +723,7 @@
     oncardaction,
     wakes = null,
     companies = null,
+    syncEvents = null,
     rosterStatus = null,
     onretryroster,
     self = null,
@@ -769,6 +779,150 @@
   );
   const recommendBanner = $derived(updateStore.recommendBanner);
   let recommendInstalling = $state(false);
+
+  /**
+   * Desktop-window counterpart of the menubar popover's "You've been added
+   * to {company} — Sync to pull it" notice (see MembershipSyncBanner.svelte).
+   * Dismissal is session-only (in-memory), matching the popover.
+   */
+  let dismissedMemberships = $state(new Set<string>());
+  let membershipSyncPending = $state(false);
+  let membershipSyncError = $state<string | null>(null);
+  /** Company slug of the in-flight pull, so outcome events can be matched. */
+  let membershipSyncTarget = $state<string | null>(null);
+  const membershipsToPull = $derived(
+    joinableMemberships(companies ?? []).filter(
+      (w) => !dismissedMemberships.has(w.slug),
+    ),
+  );
+
+  function dismissMembershipPrompt(slugs: string[]): void {
+    const next = new Set(dismissedMemberships);
+    for (const slug of slugs) next.add(slug);
+    dismissedMemberships = next;
+  }
+
+  /**
+   * `start_sync` returns as soon as the runner is REGISTERED, not when the
+   * pull finishes, and it deliberately returns Ok on the needs-reauth path
+   * (commands/sync.rs — "avoids red error UI", emitting `sync:auth-error`
+   * instead). So the command result alone can neither confirm the membership
+   * arrived nor report the most likely failure. Completion and auth failure
+   * both arrive as events; `syncEvents` is how this platform-agnostic shell
+   * hears them.
+   */
+  async function syncMembership(): Promise<void> {
+    if (membershipSyncPending || !adapter.isAvailable("canSync")) return;
+    const target = membershipsToPull[0];
+    if (!target) return;
+    membershipSyncPending = true;
+    membershipSyncError = null;
+    membershipSyncTarget = target.slug;
+    try {
+      // Scoped to the company the banner names — an unscoped call is
+      // SyncRunScope::All, which syncs every workspace on the machine and is
+      // not what "pull it onto this machine" promises. Matches CompanyPage.
+      const result = await adapter.sync.startSync(target.slug);
+      if (!result.ok) {
+        console.error("membership sync failed:", result.reason, result.message);
+        membershipSyncError =
+          result.message?.trim() || "Sync could not be started.";
+        membershipSyncPending = false;
+      } else if (!syncEvents) {
+        // No event bridge on this platform: the run was dispatched, but this
+        // shell cannot observe its outcome. Release the control rather than
+        // leave a spinner that can never resolve.
+        membershipSyncPending = false;
+      }
+    } catch (err) {
+      console.error("membership sync failed:", err);
+      membershipSyncError =
+        err instanceof Error && err.message.trim()
+          ? err.message
+          : "Sync could not be started.";
+      membershipSyncPending = false;
+    }
+  }
+
+  /**
+   * Sync outcome events. Without these the banner cannot distinguish "pulled"
+   * from "silently did nothing because the session needs a refresh", which is
+   * exactly the state a newly-added user is most likely to be in.
+   */
+  $effect(() => {
+    const host = syncEvents;
+    if (!host) return;
+    let disposed = false;
+    const handles: Array<() => void> = [];
+
+    const track = (pending: Promise<() => void>): void => {
+      void pending.then(
+        (un) => {
+          if (disposed) un();
+          else handles.push(un);
+        },
+        (err) => {
+          console.error("membership sync: event subscribe failed:", err);
+        },
+      );
+    };
+
+    track(
+      host.listen("sync:auth-error", (event) => {
+        const message = (
+          event as { payload?: { message?: string } } | undefined
+        )?.payload?.message;
+        membershipSyncPending = false;
+        membershipSyncError =
+          message?.trim() ||
+          "Your HQ session needs a quick refresh. Sign in again to keep sync moving.";
+      }),
+    );
+    // `sync:complete` is emitted PER COMPANY (SyncCompleteEvent carries
+    // `company`), and the daemon syncs in the background, so an unfiltered
+    // handler would clear this banner on some other workspace's run. Match the
+    // company this banner actually started.
+    track(
+      host.listen("sync:complete", (event) => {
+        const company = (
+          event as { payload?: { company?: string } } | undefined
+        )?.payload?.company;
+        if (!company || company === membershipSyncTarget) {
+          membershipSyncPending = false;
+          membershipSyncError = null;
+        }
+      }),
+    );
+    // Terminal backstop: a run that attempts the company but never emits a
+    // per-company complete (aborted, company-level error) still ends here.
+    track(
+      host.listen("sync:all-complete", (event) => {
+        const errors =
+          (event as { payload?: { errors?: Array<{ company?: string; message?: string }> } }
+            | undefined)?.payload?.errors ?? [];
+        const mine = errors.find(
+          (e) => !membershipSyncTarget || e.company === membershipSyncTarget,
+        );
+        membershipSyncPending = false;
+        if (mine) membershipSyncError = mine.message?.trim() || "Sync failed.";
+      }),
+    );
+    // NOTE: deliberately NOT listening to `sync:error`. That event is PER FILE
+    // (`SyncErrorEvent { company, path, message }`) and a run continues past
+    // it, so treating one as terminal would flash a failure — and release the
+    // button — while the pull is still going.
+
+    return () => {
+      disposed = true;
+      for (const un of handles) {
+        try {
+          un();
+        } catch (err) {
+          console.error("membership sync: unlisten failed:", err);
+        }
+      }
+    };
+  });
 
   function updateOrchAdapter(): UpdateStoreAdapter {
     const updates = adapter.updates;
@@ -6281,6 +6435,16 @@
         botRestoreResult = null;
         dismissBotRestorePrompt();
       }}
+    />
+  {/if}
+
+  {#if adapter.isAvailable("canSync") && membershipsToPull.length > 0}
+    <MembershipSyncBanner
+      memberships={membershipsToPull}
+      syncing={membershipSyncPending}
+      error={membershipSyncError}
+      onsync={() => void syncMembership()}
+      ondismiss={dismissMembershipPrompt}
     />
   {/if}
 

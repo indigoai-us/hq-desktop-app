@@ -291,6 +291,7 @@ pub(crate) enum RescueFailureCategory {
     NotFound,
     NpxResolveFailed,
     Timeout,
+    LockContention,
     Unknown,
 }
 
@@ -306,6 +307,7 @@ impl RescueFailureCategory {
         Self::NotFound,
         Self::NpxResolveFailed,
         Self::Timeout,
+        Self::LockContention,
         Self::Unknown,
     ];
 
@@ -321,6 +323,7 @@ impl RescueFailureCategory {
             Self::NotFound => "not-found",
             Self::NpxResolveFailed => "npx-resolve-failed",
             Self::Timeout => "timeout",
+            Self::LockContention => "lock-contention",
             Self::Unknown => "unknown",
         }
     }
@@ -373,6 +376,10 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
         needle: "no space left on device",
     },
     RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "have not agreed to the xcode license",
+    },
+    RescueStderrPattern {
         category: RescueFailureCategory::Permission,
         needle: "operation not permitted",
     },
@@ -420,7 +427,8 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
 
 // These are OS-error renderings emitted before the rescue process can start or
 // while its update baseline is being persisted. They intentionally do not
-// participate in rescue-exit classification, whose ordering is already shipped.
+// participate in rescue-exit classification. Keep specific causes before their
+// broader counterparts so an actionable diagnosis is not shadowed.
 const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
     RescueStderrPattern {
         category: RescueFailureCategory::MissingDependency,
@@ -437,6 +445,10 @@ const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
     RescueStderrPattern {
         category: RescueFailureCategory::MissingDependency,
         needle: "enoent",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::LockContention,
+        needle: "another process has locked a portion of the file",
     },
     RescueStderrPattern {
         category: RescueFailureCategory::Permission,
@@ -2746,15 +2758,39 @@ mod tests {
     }
 
     #[test]
-    fn rescue_rsync_preflight_failure_precedes_broader_transport_needles() {
-        let stderr = "error: rsync preflight failed before any safety snapshot was allocated.\n\
-       version output: permission denied";
+    fn rescue_xcode_license_refusal_is_a_missing_dependency() {
+        let stderr = "==> Cloning [Filtered] @main (full history, blob:none filter) ...\n\
+You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode and Apple SDKs license.\n\
+error: clone failed";
 
         assert_eq!(
             classify_rescue_stderr_failure(stderr),
-            RescueFailureCategory::MissingDependency,
-            "the rsync preflight diagnostic must not be shadowed by a transport needle"
+            RescueFailureCategory::MissingDependency
         );
+    }
+
+    #[test]
+    fn rescue_specific_preflight_failures_precede_broader_permission_needles() {
+        let cases = [
+            (
+                "error: rsync preflight failed before any safety snapshot was allocated.\n\
+       version output: permission denied",
+                "rsync preflight",
+            ),
+            (
+                "You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode and Apple SDKs license.\n\
+permission denied",
+                "Xcode license refusal",
+            ),
+        ];
+
+        for (stderr, diagnosis) in cases {
+            assert_eq!(
+                classify_rescue_stderr_failure(stderr),
+                RescueFailureCategory::MissingDependency,
+                "the {diagnosis} diagnostic must not be shadowed by a broader permission needle"
+            );
+        }
     }
 
     #[test]
@@ -2934,6 +2970,16 @@ error: clone failed";
                 None,
             ),
             RescueFailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn rescue_spawn_classifies_windows_npm_cache_lock_contention() {
+        let detail = "HQ Sync could not coordinate npm cache preparation: The process cannot access the file because another process has locked a portion of the file. (os error 33)";
+
+        assert_eq!(
+            classify_core_update_error(CoreUpdateErrorKind::RescueSpawn, detail, None),
+            RescueFailureCategory::LockContention
         );
     }
 
@@ -3181,6 +3227,27 @@ error: clone failed";
     }
 
     #[test]
+    fn lock_contention_uses_its_own_sentry_fingerprint_without_changing_existing_groups() {
+        let report = report_for_core_update_error(&CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "HQ Sync could not coordinate npm cache preparation: The process cannot access the file because another process has locked a portion of the file. (os error 33)",
+        ));
+
+        assert_eq!(report.error_category, RescueFailureCategory::LockContention);
+        assert_eq!(
+            core_update_sentry_fingerprint(report.error_kind, report.error_category),
+            ["rescue_spawn", "lock-contention"]
+        );
+        assert_eq!(
+            core_update_sentry_fingerprint(
+                "rescue_spawn",
+                RescueFailureCategory::MissingDependency,
+            ),
+            ["rescue_spawn", "missing-dependency"]
+        );
+    }
+
+    #[test]
     fn sentry_reports_one_event_per_failure_signature_per_process() {
         let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
         reset_core_update_sentry_signatures_for_test();
@@ -3215,6 +3282,11 @@ error: clone failed";
                     RescueFailureCategory::Network,
                     None,
                 ));
+                report_core_update_failure_once(report(
+                    "rescue_spawn",
+                    RescueFailureCategory::LockContention,
+                    None,
+                ));
             },
             sentry::ClientOptions {
                 before_send: Some(std::sync::Arc::new(hq_telemetry::before_send)),
@@ -3222,9 +3294,13 @@ error: clone failed";
             },
         );
 
-        assert_eq!(events.len(), 2, "identical failures must dedupe in-process");
+        assert_eq!(events.len(), 3, "identical failures must dedupe in-process");
         assert_eq!(events[0].fingerprint, vec!["rescue_exit", "unknown"]);
         assert_eq!(events[1].fingerprint, vec!["network", "network"]);
+        assert_eq!(
+            events[2].fingerprint,
+            vec!["rescue_spawn", "lock-contention"]
+        );
         assert_eq!(events[0].tags["errorKind"], "rescue_exit");
         assert_eq!(events[0].tags["errorCategory"], "unknown");
         assert_eq!(events[0].tags["channel"], "release");
@@ -3232,6 +3308,8 @@ error: clone failed";
         assert_eq!(events[0].tags["source"], "automatic");
         assert_eq!(events[0].tags["exitCode"], "5");
         assert_eq!(events[1].tags["exitCode"], "not_available");
+        assert_eq!(events[2].tags["errorCategory"], "lock-contention");
+        assert_eq!(events[2].tags["exitCode"], "not_available");
         assert_eq!(
             events[0].extra["rescueStderrTail"],
             sentry::protocol::Value::String("fatal: could not clone Core source".to_string())
