@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 - Core update now identifies Node/npm setup, npm cache permission, and network failures when it cannot start or save its baseline instead of reporting them as unknown.
 - Core update now explains when a broken Git HTTPS setup prevents it from updating, instead of showing an unknown failure.
+- On Macs, background updates and Auto-sync now configure HQ's portable Git only when it is the Git selected to run, so Core downloads work without affecting another Git installation.
 
 ## [0.10.270] — 2026-09-16
 
