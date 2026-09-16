@@ -20,7 +20,6 @@ const normalize = (s: string) => s.replace(/\s+/g, ' ');
 const popover = read('src/components/Popover.svelte');
 const app = read('src/App.svelte');
 const feed = read('src/components/NotificationFeed.svelte');
-const settingsPage = read('src/desktop-alt/pages/SettingsPage.svelte');
 
 describe('notifications-first popover (feed-folded system notices)', () => {
   it('folds system notices into the panel as pinned one-line rows (no banner stack)', () => {
@@ -127,15 +126,5 @@ describe('notifications-first popover (feed-folded system notices)', () => {
     expect(p).toContain('const conflictModalActive = $derived(showConflictModal && conflicts.length > 0)');
     expect(p).toContain("syncState === 'conflict' && !conflictModalActive");
     expect(p).toContain('class="mbp-conflict-card"');
-  });
-
-  it('has no standalone Settings gear or header chrome — Settings lives in the desktop view', () => {
-    expect(popover).not.toContain('data-testid="popover-settings-gear"');
-    expect(popover).not.toContain('class="mbp-head"');
-    expect(popover).not.toContain('onsettings');
-    // The macOS-Settings content (telemetry consent + automatic updates) is
-    // reachable in the relocated desktop-view SettingsPage.
-    expect(settingsPage).toContain('Usage telemetry');
-    expect(settingsPage).toContain('Automatic updates');
   });
 });

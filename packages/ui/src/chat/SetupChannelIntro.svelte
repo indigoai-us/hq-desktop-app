@@ -628,6 +628,7 @@
     flex-direction: column;
     gap: var(--space-4, 16px);
     border-bottom: 0;
+    pointer-events: auto;
   }
 
   .advanced-body .resource-link {
@@ -648,7 +649,10 @@
   .hero {
     position: relative;
     color: var(--t1);
-    background: transparent;
+    /* Stay visually on the window ground, but keep a 1% fill so a transparent
+       WKWebView on macOS 26 still hit-tests the Run Setup control. */
+    background: color-mix(in srgb, var(--t1, #111) 1%, transparent);
+    pointer-events: auto;
     --setup-btn-fg: var(--t1);
     --setup-btn-line: var(--line2);
     --setup-btn-primary-bg: var(--btn-bg);

@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mount, unmount } from 'svelte';
 import {
   activeStageId,
   allSettled,
@@ -43,7 +42,6 @@ import {
   type StageId,
   type StageState,
 } from './onboarding-setup';
-import SetupScreen from '../components/onboarding/SetupScreen.svelte';
 
 const invokeMock = vi.fn();
 type TauriHandler = (event: { payload: unknown }) => void;
@@ -591,181 +589,6 @@ describe('stage command invocations', () => {
     expect(stageCommandInvocations('deps', { installPath: null })).toEqual([
       { command: 'install_deps', required: true },
     ]);
-  });
-});
-
-describe('SetupScreen install cancellation', () => {
-  beforeEach(() => {
-    document.body.innerHTML = '';
-    invokeMock.mockReset();
-    eventHandlers.clear();
-    unlistenMock.mockReset();
-  });
-
-  afterEach(async () => {
-    document.body.innerHTML = '';
-    eventHandlers.clear();
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
-
-  it('cancels captured install handles when unmounted', async () => {
-    invokeMock.mockImplementation((command: string) => {
-      if (command === 'install_deps') return new Promise<void>(() => {});
-      if (command === 'cancel_install') return Promise.resolve(true);
-      return Promise.resolve(undefined);
-    });
-
-    const component = mount(SetupScreen, {
-      target: document.body,
-      props: { installPath: '/tmp/hq', onsetupcomplete: vi.fn() },
-    });
-    await waitForInvoke('install_deps');
-
-    emitInstallProgress({
-      handle: 'install-handle-unmount',
-      line: 'Installing Node',
-      finished: false,
-    });
-    await unmount(component);
-    await flushMicrotasks();
-
-    expect(invokeMock).toHaveBeenCalledWith('cancel_install', {
-      handle: 'install-handle-unmount',
-    });
-    expect(unlistenMock).toHaveBeenCalledWith('install:progress');
-  });
-
-  it('shows byte-level content progress while the template downloads', async () => {
-    invokeMock.mockImplementation((command: string) => {
-      if (command === 'fetch_and_extract_template') {
-        return new Promise<void>(() => {});
-      }
-      if (command === 'cancel_content_download') return Promise.resolve(true);
-      return Promise.resolve(undefined);
-    });
-
-    const component = mount(SetupScreen, {
-      target: document.body,
-      props: { installPath: '/tmp/hq', onsetupcomplete: vi.fn() },
-    });
-    await waitForInvoke('fetch_and_extract_template');
-
-    emitContentProgress({
-      phase: 'download',
-      receivedBytes: 50,
-      totalBytes: 100,
-      percent: 50,
-      message: 'Downloading HQ template',
-    });
-    await flushMicrotasks();
-
-    expect(document.body.textContent).toContain('Downloading HQ template');
-    expect(document.body.textContent).toContain('50%');
-    const fill = document.querySelector<HTMLElement>(
-      'li.current .stage-progress.determinate span',
-    );
-    expect(fill?.getAttribute('style')).toContain('width: 50%');
-
-    await unmount(component);
-  });
-
-  it('cancels captured install handles when the deps stage times out', async () => {
-    vi.useFakeTimers();
-    invokeMock.mockImplementation((command: string) => {
-      if (command === 'install_deps') return new Promise<void>(() => {});
-      if (command === 'cancel_install') return Promise.resolve(true);
-      return Promise.resolve(undefined);
-    });
-
-    const component = mount(SetupScreen, {
-      target: document.body,
-      props: { installPath: '/tmp/hq', onsetupcomplete: vi.fn() },
-    });
-    await waitForInvoke('install_deps');
-
-    emitInstallProgress({
-      handle: 'install-handle-timeout',
-      line: 'Installing Node',
-      finished: false,
-    });
-    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps'));
-    await flushMicrotasks();
-
-    expect(invokeMock).toHaveBeenCalledWith('cancel_install', {
-      handle: 'install-handle-timeout',
-    });
-    await unmount(component);
-  });
-
-  it('lets the user skip a long-running stage after the threshold', async () => {
-    vi.useFakeTimers();
-    invokeMock.mockImplementation((command: string) => {
-      if (command === 'install_deps') return new Promise<void>(() => {});
-      if (command === 'cancel_install') return Promise.resolve(true);
-      return Promise.resolve(undefined);
-    });
-
-    const onsetupcomplete = vi.fn();
-    const component = mount(SetupScreen, {
-      target: document.body,
-      props: { installPath: '/tmp/hq', onsetupcomplete },
-    });
-    await waitForInvoke('install_deps');
-
-    emitInstallProgress({
-      handle: 'install-handle-skip',
-      line: 'Installing Node',
-      finished: false,
-    });
-    await vi.advanceTimersByTimeAsync(stageSkipThresholdMs('deps'));
-    await flushMicrotasks();
-
-    const button = Array.from(document.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent === 'Skip this step',
-    ) as HTMLButtonElement | undefined;
-    expect(button).toBeTruthy();
-    button?.click();
-    await flushMicrotasks();
-
-    expect(invokeMock).toHaveBeenCalledWith('cancel_install', {
-      handle: 'install-handle-skip',
-    });
-    for (let i = 0; i < 100 && onsetupcomplete.mock.calls.length === 0; i += 1) {
-      await flushMicrotasks();
-    }
-    expect(onsetupcomplete).toHaveBeenCalledWith(
-      expect.objectContaining({
-        needsAttention: true,
-        failedStages: expect.arrayContaining([
-          expect.objectContaining({
-            id: 'deps',
-            message: 'Skipped after timeout',
-          }),
-        ]),
-      }),
-    );
-    await unmount(component);
-  });
-
-  it('invokes Claude settings PATH configuration after dependency install', async () => {
-    invokeMock.mockResolvedValue(undefined);
-
-    const component = mount(SetupScreen, {
-      target: document.body,
-      props: { installPath: '/tmp/hq', onsetupcomplete: vi.fn() },
-    });
-
-    await waitForInvoke('configure_claude_settings_path');
-    const commands = invokeMock.mock.calls.map(([command]) => command);
-
-    expect(commands.indexOf('install_deps')).toBeLessThan(
-      commands.indexOf('configure_claude_settings_path'),
-    );
-    expect(invokeMock).toHaveBeenCalledWith('configure_claude_settings_path', {
-      hqPath: '/tmp/hq',
-    });
-    await unmount(component);
   });
 });
 

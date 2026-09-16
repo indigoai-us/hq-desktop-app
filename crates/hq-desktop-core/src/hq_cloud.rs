@@ -603,7 +603,26 @@
 /// A desktop holding a cached 6.16.36 satisfies `~6.16.36` forever and would
 /// retain the older runner; changing this requested spec is what moves npm's
 /// cache key and delivers these releases.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.38";
+///
+/// `~6.16.38` -> `~6.16.45`: floors the runner at the release that fixes the
+/// rescue rsync-preflight diagnostic (hq-cloud#557). On Windows the diagnostic
+/// reported `resolved PATH: (unset)` on every machine because the rescue
+/// environment is built with `{ ...process.env }`, which loses Node's
+/// case-insensitive Windows lookup and reads a `Path`-spelled variable as
+/// undefined. The message now distinguishes rsync being absent, exiting
+/// non-zero, and producing unrecognised version output, and reports the PATH
+/// entry count and whether an rsync executable was found. It also picks up
+/// 6.16.44, which names unrecognised snapshot magics as an unsupported format
+/// rather than corruption, and 6.16.43, which prevents personal-vault
+/// decommission from erroring on denied session-log deletes. These are runner
+/// diagnostic and error-reporting changes rather than a new desktop-visible
+/// capability contract, so they deliberately add no `*_MIN_HQ_CLOUD` floor
+/// constant.
+///
+/// A desktop holding a cached 6.16.38 satisfies `~6.16.38` forever and would
+/// retain the older runner; changing this requested spec is what moves npm's
+/// cache key and delivers the new runner.
+pub const HQ_CLOUD_VERSION: &str = "~6.16.45";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -731,7 +750,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.38");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.45");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

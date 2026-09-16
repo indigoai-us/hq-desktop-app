@@ -67,6 +67,7 @@
     white-space: nowrap;
     text-decoration: none;
     cursor: pointer;
+    pointer-events: auto;
     transition:
       background 140ms ease,
       color 140ms ease,

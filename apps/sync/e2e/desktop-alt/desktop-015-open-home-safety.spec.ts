@@ -7,16 +7,27 @@ function rule(source: string, selector: string): string {
 }
 
 describe('DESKTOP-015: open Home hierarchy and safe-delete visibility', () => {
-  const app = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-  const home = readRepoFile('src/desktop-alt/pages/HomePage.svelte');
+  const app = readRepoFile('../../packages/ui/src/shell/DesktopApp.svelte');
+  const home = readRepoFile('../../packages/ui/src/home/HomePage.svelte');
 
-  it('surfaces currency-gated delete refusals persistently on Home', () => {
-    expect(app).toContain("listen<{");
-    expect(app).toContain("'sync:delete-refused-stale-etag'");
-    expect(app).toContain('syncDeleteRefusals');
-    expect(app).toContain('deleteRefusals={syncDeleteRefusals}');
+  /**
+   * KNOWN GAP, pre-existing and NOT introduced by the Sessions removal.
+   *
+   * Home still RENDERS the safe-delete notices, but nothing produces them:
+   * the only `sync:delete-refused-stale-etag` listener lived in the
+   * desktop-alt DesktopApp.svelte tree, which had been unreachable for some
+   * time and went with the removal, and nothing passes `deleteRefusals` into
+   * HomePage. So a delete refused to protect a newer remote copy is currently
+   * invisible to the user.
+   *
+   * The render half is asserted below so the surface cannot be deleted while
+   * that is fixed. The producer half is not re-pointed at code that does not
+   * exist — that would assert nothing. Filed separately.
+   */
+  it('still renders the delete-refusal surface on Home', () => {
     expect(home).toContain('getDeleteRefusalCopy');
     expect(home).toContain('data-testid="home-safe-delete-notices"');
+    expect(home).toContain('deleteRefusals');
   });
 
   it('renders safety notices as open rows rather than another box', () => {

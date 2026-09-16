@@ -293,7 +293,13 @@ describe("DesktopApp New bot: the Cloud option", () => {
       });
     });
     const fetchChannel = vi.fn(async () =>
-      ok({ messages: posted.map((card, i) => systemMessage(`evt_${i}`, card)), nextCursor: null }),
+      // NEWEST first, the order the wire really delivers a page in
+      // (crates/hq-desktop-core/src/messages.rs, `ChannelDetail`). `posted` is
+      // kept in turn order, so the page is its reverse — as in production.
+      ok({
+        messages: posted.map((card, i) => systemMessage(`evt_${i}`, card)).reverse(),
+        nextCursor: null,
+      }),
     );
     const getCompanyTab = vi.fn(async (_uid: string, tab: string) =>
       ok(tab === "team" ? teamTab(true) : { tab, companyUid: "cmp_acme", viewer: viewerOwner, sections: [] }),

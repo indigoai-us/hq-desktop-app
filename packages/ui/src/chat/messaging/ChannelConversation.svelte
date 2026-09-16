@@ -143,7 +143,6 @@
     /** Open an existing in-channel session from a work-session card. */
     onopensession?: (sessionId: string) => void;
     /** Start a channel-level session (posts a card). */
-    onstartchannelsession?: () => void;
     /** Host-owned attachment modal (must render outside this column). */
     onopenattachment?: (
       item: FileAttachmentModel,
@@ -264,7 +263,6 @@
     onreply,
     onstartsession,
     onopensession,
-    onstartchannelsession,
     onopenattachment,
     onopenartifact,
     onreleaseurl,
@@ -1579,18 +1577,6 @@
     </div>
     <div class="dm-reply-footer">
       <div class="dm-reply-tools">
-        {#if onstartchannelsession}
-          <button
-            type="button"
-            class="dm-tool-btn"
-            data-testid="composer-start-session"
-            aria-label="Start a session in this channel"
-            title="Start session"
-            onclick={() => onstartchannelsession()}
-          >
-            Session
-          </button>
-        {/if}
         <label
           class="dm-tool-btn composer-attach"
           title="Attach a file"
@@ -1751,6 +1737,13 @@
     min-width: 0;
     font: 400 13px/1.45 var(--font-ui);
     color: var(--t1);
+    /* WKWebView on a transparent macOS window hit-tests composited alpha.
+       isolation: isolate puts this pane on its own layer; a fully transparent
+       layer drops clicks through to the native glass, so #welcome (hero on the
+       window ground) looked dead. 1% of the ink color is invisible and enough
+       for WebKit to take the hit. */
+    background: color-mix(in srgb, var(--t1, #111) 1%, transparent);
+    pointer-events: auto;
   }
 
   .conversation-body {
