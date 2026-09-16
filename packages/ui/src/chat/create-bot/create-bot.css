@@ -49,12 +49,43 @@
   background: var(--v4-control-faint, rgba(127, 127, 127, 0.08));
 }
 
+/*
+ * SELECTION. The brand accent token is `transparent` in the default themes,
+ * so an accent border/ring made the chosen card look exactly like the others
+ * (worse, in fact — it erased the border). Selection is drawn from the
+ * foreground token instead: a full-strength outline plus the active-row
+ * background, with every other option in the group faded back.
+ * Background/outline/opacity only — never a left accent bar
+ * (policy hq-ui-selection-background-highlight-only).
+ */
 .cb-card.selected,
 .cb-card[aria-checked="true"],
 .cb-card[aria-selected="true"] {
-  border-color: var(--v4-brand-accent, var(--v4-focus-ring));
+  opacity: 1;
+  border-color: var(--t1);
   background: var(--v4-active-row, rgba(127, 127, 127, 0.14));
-  box-shadow: inset 0 0 0 1px var(--v4-brand-accent, var(--v4-focus-ring));
+  box-shadow: inset 0 0 0 1px var(--t1);
+}
+
+/*
+ * Unchosen options in a single-choice group fade back. Scoped to the card
+ * grids and the cloud company list, where exactly one option is always
+ * chosen; the template library is left alone so a not-yet-picked library
+ * does not read as disabled.
+ */
+.cb-cards .cb-card[aria-checked="false"],
+.cb-cards .cb-card[aria-selected="false"],
+.company-picker .cb-card[aria-selected="false"] {
+  opacity: 0.5;
+}
+
+.cb-cards .cb-card[aria-checked="false"]:hover:not(:disabled),
+.cb-cards .cb-card[aria-checked="false"]:focus-visible,
+.cb-cards .cb-card[aria-selected="false"]:hover:not(:disabled),
+.cb-cards .cb-card[aria-selected="false"]:focus-visible,
+.company-picker .cb-card[aria-selected="false"]:hover:not(:disabled),
+.company-picker .cb-card[aria-selected="false"]:focus-visible {
+  opacity: 1;
 }
 
 .cb-card:disabled {
@@ -141,9 +172,20 @@
 
 .cb-pill[aria-checked="true"],
 .cb-pill[aria-pressed="true"] {
+  opacity: 1;
   background: var(--v4-active-row, rgba(127, 127, 127, 0.18));
-  border-color: var(--v4-brand-accent, var(--v4-focus-ring));
+  border-color: var(--t1);
   color: var(--t1);
+}
+
+/* Same fade for the "Thinks with" / Memory radio pills. */
+[role="radiogroup"] > .cb-pill[aria-checked="false"] {
+  opacity: 0.5;
+}
+
+[role="radiogroup"] > .cb-pill[aria-checked="false"]:hover:not(:disabled),
+[role="radiogroup"] > .cb-pill[aria-checked="false"]:focus-visible {
+  opacity: 1;
 }
 
 .cb-pill:focus-visible {
