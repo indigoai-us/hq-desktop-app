@@ -250,7 +250,7 @@ async fn install_hq_core_update_observed(
         None,
     );
 
-    let outcome = install_hq_core_update_inner().await;
+    let outcome = install_hq_core_update_inner(observation.source()).await;
     match &outcome {
         Ok(run) if run.exit_code == 0 => {
             let installed = get_local_version();
@@ -306,7 +306,9 @@ async fn install_hq_core_update_observed(
     outcome
 }
 
-async fn install_hq_core_update_inner() -> Result<
+async fn install_hq_core_update_inner(
+    update_source: &'static str,
+) -> Result<
     crate::commands::hq_core_staging::RescueRunResult,
     crate::commands::hq_core_state::CoreUpdateError,
 > {
@@ -469,35 +471,54 @@ async fn install_hq_core_update_inner() -> Result<
     })?;
 
     let exit_code = status.code().unwrap_or(-1);
-    if exit_code == 0 {
-        let client = reqwest::Client::builder()
+    let baseline_persisted = if exit_code == 0 {
+        match reqwest::Client::builder()
             .default_headers(crate::util::client_info::client_headers())
             .timeout(std::time::Duration::from_secs(15))
             .build()
-            .map_err(|error| {
-                crate::commands::hq_core_state::CoreUpdateError::new(
-                    crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
-                    format!("build baseline client: {error}"),
-                )
-            })?;
-        let commit = crate::commands::hq_core_state::persist_remote_baseline(
-            &hq_folder,
-            &client,
-            PROD_HQ_CORE_REPO,
-            &git_ref,
-        )
-        .await
-        .map_err(|error| {
-            crate::commands::hq_core_state::CoreUpdateError::new(
-                crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
-                format!("core update applied but baseline persistence failed: {error}"),
+        {
+            Ok(client) => match crate::commands::hq_core_state::persist_remote_baseline(
+                &hq_folder,
+                &client,
+                PROD_HQ_CORE_REPO,
+                &git_ref,
             )
-        })?;
-        log(
-            "hq-core-update",
-            &format!("persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit}"),
-        );
-    }
+            .await
+            {
+                Ok(commit) => {
+                    log(
+                        "hq-core-update",
+                        &format!(
+                            "persisted normalized drift baseline {PROD_HQ_CORE_REPO}@{commit}"
+                        ),
+                    );
+                    true
+                }
+                Err(error) => {
+                    crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                        update_source,
+                        crate::commands::hq_core_state::Channel::Release,
+                        "hq-core-update",
+                        &format!("core update applied but baseline persistence failed: {error}"),
+                    );
+                    false
+                }
+            },
+            Err(error) => {
+                crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                    update_source,
+                    crate::commands::hq_core_state::Channel::Release,
+                    "hq-core-update",
+                    &format!(
+                        "core update applied but baseline persistence failed: build baseline client: {error}"
+                    ),
+                );
+                false
+            }
+        }
+    } else {
+        true
+    };
     let log_tail = crate::commands::hq_core_staging::tail_log(&log_path, 40)
         .unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
     let rescue_stderr_tail =
@@ -520,6 +541,7 @@ async fn install_hq_core_update_inner() -> Result<
         log_path: log_path.display().to_string(),
         rescue_stderr_tail,
         npx_resolution,
+        baseline_persisted,
     })
 }
 

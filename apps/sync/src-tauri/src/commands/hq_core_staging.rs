@@ -471,6 +471,11 @@ pub struct RescueRunResult {
     /// Path-free provenance of the `npx` executable used for this rescue.
     #[serde(skip_serializing)]
     pub(crate) npx_resolution: crate::commands::hq_core_state::CoreUpdateNpxResolution,
+    /// Whether the post-update drift baseline was written. This stays off the
+    /// IPC result: exit code remains the user's update outcome, while native
+    /// retry bookkeeping must know that drift data still needs repair.
+    #[serde(skip_serializing)]
+    pub(crate) baseline_persisted: bool,
 }
 
 /// Resolve the user's HQ folder using the same 4-tier resolver the rest of
@@ -662,7 +667,7 @@ async fn run_replace_from_staging_observed(
         None,
     );
 
-    let outcome = run_replace_from_staging_inner().await;
+    let outcome = run_replace_from_staging_inner(observation.source()).await;
     match &outcome {
         Ok(run) if run.exit_code == 0 => {
             crate::commands::hq_core_state::emit_core_update_event(
@@ -718,6 +723,7 @@ async fn run_replace_from_staging_observed(
 }
 
 async fn run_replace_from_staging_inner(
+    update_source: &'static str,
 ) -> Result<RescueRunResult, crate::commands::hq_core_state::CoreUpdateError> {
     // Settings toggle: @indigo user opted out of the DEFAULT staging
     // channel. The pill should already be hidden when the toggle is
@@ -829,28 +835,45 @@ async fn run_replace_from_staging_inner(
     })?;
 
     let exit_code = status.code().unwrap_or(-1);
-    if exit_code == 0 {
-        let client = authed_client(&token).map_err(|error| {
-            crate::commands::hq_core_state::CoreUpdateError::new(
-                crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
-                error,
+    let baseline_persisted = if exit_code == 0 {
+        match authed_client(&token) {
+            Ok(client) => match crate::commands::hq_core_state::persist_remote_baseline(
+                &hq_folder, &client, &repo, "main",
             )
-        })?;
-        let commit = crate::commands::hq_core_state::persist_remote_baseline(
-            &hq_folder, &client, &repo, "main",
-        )
-        .await
-        .map_err(|error| {
-            crate::commands::hq_core_state::CoreUpdateError::new(
-                crate::commands::hq_core_state::CoreUpdateErrorKind::BaselinePersistence,
-                format!("staging update applied but baseline persistence failed: {error}"),
-            )
-        })?;
-        log(
-            "hq-core-staging",
-            &format!("persisted normalized drift baseline {repo}@{commit}"),
-        );
-    }
+            .await
+            {
+                Ok(commit) => {
+                    log(
+                        "hq-core-staging",
+                        &format!("persisted normalized drift baseline {repo}@{commit}"),
+                    );
+                    true
+                }
+                Err(error) => {
+                    crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                        update_source,
+                        crate::commands::hq_core_state::Channel::Staging,
+                        "hq-core-staging",
+                        &format!("staging update applied but baseline persistence failed: {error}"),
+                    );
+                    false
+                }
+            },
+            Err(error) => {
+                crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
+                    update_source,
+                    crate::commands::hq_core_state::Channel::Staging,
+                    "hq-core-staging",
+                    &format!(
+                        "staging update applied but baseline persistence failed: build baseline client: {error}"
+                    ),
+                );
+                false
+            }
+        }
+    } else {
+        true
+    };
     let log_tail =
         tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
     let rescue_stderr_tail = read_rescue_diagnostic_tail(&log_path).unwrap_or_default();
@@ -866,6 +889,7 @@ async fn run_replace_from_staging_inner(
         log_path: log_path.display().to_string(),
         rescue_stderr_tail,
         npx_resolution,
+        baseline_persisted,
     })
 }
 
