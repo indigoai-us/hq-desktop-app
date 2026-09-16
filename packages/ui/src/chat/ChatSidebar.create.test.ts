@@ -51,9 +51,31 @@ const seedDirectory = [
 const QUERY_SETTLE_TIMEOUT_MS = 3_000;
 const QUERY_SETTLE_INTERVAL_MS = 20;
 
-/** Wait until the modal has rendered the query result the caller needs. */
-async function settleQuery<T>(condition: () => T): Promise<T> {
-  return vi.waitFor(condition, {
+function queryResultSnapshot(): string {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[data-testid="chat-create-result"], [data-testid="chat-create-channel-row"]',
+    ),
+    (row) => `${row.dataset.testid}:${row.textContent?.trim() ?? ""}`,
+  ).join("\\n");
+}
+
+/** Type a query while preserving the initial Recent result set. */
+function typeQuery(value: string): string {
+  const beforeQueryResults = queryResultSnapshot();
+  type(queryInput(), value);
+  return beforeQueryResults;
+}
+
+/** Wait for a post-query result set, then check the caller's needed outcome. */
+async function settleQuery<T>(
+  beforeQueryResults: string,
+  condition: () => T,
+): Promise<T> {
+  return vi.waitFor(() => {
+    expect(queryResultSnapshot()).not.toBe(beforeQueryResults);
+    return condition();
+  }, {
     timeout: QUERY_SETTLE_TIMEOUT_MS,
     interval: QUERY_SETTLE_INTERVAL_MS,
   });
@@ -139,8 +161,8 @@ describe("ChatSidebar create flow", () => {
     openModal();
     await tick();
 
-    type(queryInput(), "hq-desktop");
-    const suggestion = await settleQuery(() => {
+    const beforeQueryResults = typeQuery("hq-desktop");
+    const suggestion = await settleQuery(beforeQueryResults, () => {
       const row = document.querySelector<HTMLButtonElement>(
         '[data-testid="chat-create-result"]',
       );
@@ -171,10 +193,10 @@ describe("ChatSidebar create flow", () => {
     openModal();
     await tick();
 
-    type(queryInput(), "Bryan");
+    const beforeQueryResults = typeQuery("Bryan");
     // Select by text, not position: the result order depends on the fixture
     // roster and a positional pick silently tests the wrong row.
-    const suggestion = await settleQuery(() => {
+    const suggestion = await settleQuery(beforeQueryResults, () => {
       const row = [
         ...document.querySelectorAll<HTMLButtonElement>(
           '[data-testid="chat-create-result"]',
@@ -210,8 +232,8 @@ describe("ChatSidebar create flow", () => {
     openModal();
     await tick();
 
-    type(queryInput(), "Q4 board");
-    const createRow = await settleQuery(() => {
+    const beforeQueryResults = typeQuery("Q4 board");
+    const createRow = await settleQuery(beforeQueryResults, () => {
       const row = document.querySelector<HTMLButtonElement>(
         '[data-testid="chat-create-channel-row"]',
       );
@@ -256,8 +278,8 @@ describe("ChatSidebar create flow", () => {
     openModal();
     await tick();
 
-    type(queryInput(), "Q4 board");
-    const createRow = await settleQuery(() => {
+    const beforeQueryResults = typeQuery("Q4 board");
+    const createRow = await settleQuery(beforeQueryResults, () => {
       const row = document.querySelector<HTMLButtonElement>('[data-testid="chat-create-channel-row"]');
       expect(row).toBeTruthy();
       return row!;
@@ -348,8 +370,8 @@ describe("ChatSidebar create flow", () => {
     openModal();
     await tick();
 
-    type(queryInput(), "Alpha");
-    await settleQuery(() => {
+    const beforeQueryResults = typeQuery("Alpha");
+    await settleQuery(beforeQueryResults, () => {
       expect(
         document.querySelectorAll('[data-testid="chat-create-result"]').length,
       ).toBe(3);
@@ -394,8 +416,8 @@ describe("ChatSidebar create flow", () => {
     openModal();
     await tick();
 
-    type(queryInput(), "hq");
-    await settleQuery(() => {
+    const beforeQueryResults = typeQuery("hq");
+    await settleQuery(beforeQueryResults, () => {
       expect(
         document.querySelectorAll('[data-testid="chat-create-result"]').length,
       ).toBeGreaterThan(0);
@@ -444,8 +466,8 @@ describe("ChatSidebar create flow", () => {
       expect(node.textContent).not.toMatch(/#?\bwelcome\b/i);
     }
 
-    type(queryInput(), "welcome");
-    await settleQuery(() => {
+    const beforeQueryResults = typeQuery("welcome");
+    await settleQuery(beforeQueryResults, () => {
       expect(
         document.querySelector('[data-testid="chat-create-result"]'),
       ).toBeNull();
@@ -464,8 +486,8 @@ describe("ChatSidebar create flow", () => {
     openModal();
     await tick();
 
-    type(queryInput(), "bryan");
-    await settleQuery(() => {
+    const beforeQueryResults = typeQuery("bryan");
+    await settleQuery(beforeQueryResults, () => {
       const results = Array.from(
         document.querySelectorAll('[data-testid="chat-create-result"]'),
       );
@@ -517,8 +539,8 @@ describe("ChatSidebar create flow", () => {
     openModal();
     await tick();
 
-    type(queryInput(), "jacob posel");
-    await settleQuery(() => {
+    const beforeQueryResults = typeQuery("jacob posel");
+    await settleQuery(beforeQueryResults, () => {
       const results = Array.from(
         document.querySelectorAll('[data-testid="chat-create-result"]'),
       ).filter((node) => (node.textContent ?? "").includes("Jacob Posel"));
