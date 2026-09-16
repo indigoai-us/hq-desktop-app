@@ -72,6 +72,10 @@ static CORE_UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 const MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES: u8 = 3;
 const CONSECUTIVE_FAILURE_CAP_SKIP_REASON: &str = "consecutive_failure_cap_reached";
 const RETRY_INTERVAL_NOT_ELAPSED_SKIP_REASON: &str = "retry_interval_not_elapsed";
+/// Per-channel target marker in `~/.hq/menubar.json`. This intentionally uses
+/// the established untyped, atomic menubar merge path: typed preferences would
+/// discard this update-bookkeeping key on an unrelated settings save.
+const BASELINE_RETRY_TARGETS_KEY: &str = "coreBaselineRetryTargets";
 
 /// Automatic retry eligibility is intentionally separate from the update run
 /// guard. The guard prevents overlapping Core writes; this state remembers a
@@ -593,6 +597,89 @@ fn channel_label(channel: Channel) -> &'static str {
     }
 }
 
+/// Read the durable baseline-repair target for one channel from the untyped
+/// menubar map. The target is diagnostic context; a pending repair is scoped
+/// to the channel so that a newer remote target can still repair a baseline
+/// left behind by the previously installed target.
+fn baseline_retry_target_from_menubar(
+    menubar: &Map<String, Value>,
+    channel: Channel,
+) -> Option<String> {
+    menubar
+        .get(BASELINE_RETRY_TARGETS_KEY)
+        .and_then(Value::as_object)
+        .and_then(|targets| targets.get(channel_label(channel)))
+        .and_then(Value::as_str)
+        .filter(|target| !target.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn baseline_retry_menubar_path() -> Result<Option<std::path::PathBuf>, String> {
+    // Tests that do not exercise persistence deliberately leave this unset so
+    // they cannot write the developer's real menubar.json. Persistence tests
+    // set HQ_TEST_HOME and exercise the same atomic path against a temp home.
+    #[cfg(test)]
+    {
+        let Some(home) = std::env::var_os("HQ_TEST_HOME") else {
+            return Ok(None);
+        };
+        if home.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(
+            std::path::PathBuf::from(home).join(".hq/menubar.json"),
+        ));
+    }
+
+    #[cfg(not(test))]
+    {
+        paths::menubar_json_path().map(Some)
+    }
+}
+
+fn persisted_baseline_retry_target(channel: Channel) -> Option<String> {
+    let path = baseline_retry_menubar_path().ok().flatten()?;
+    let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
+    baseline_retry_target_from_menubar(&menubar, channel)
+}
+
+fn persist_baseline_retry_target(channel: Channel, target: &str) -> Result<(), String> {
+    let Some(path) = baseline_retry_menubar_path()? else {
+        return Ok(());
+    };
+    let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
+    let mut targets = menubar
+        .get(BASELINE_RETRY_TARGETS_KEY)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    targets.insert(
+        channel_label(channel).to_string(),
+        Value::String(target.to_string()),
+    );
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(BASELINE_RETRY_TARGETS_KEY, Value::Object(targets))],
+    )
+}
+
+fn clear_persisted_baseline_retry_target(channel: Channel) -> Result<(), String> {
+    let Some(path) = baseline_retry_menubar_path()? else {
+        return Ok(());
+    };
+    let menubar = hq_desktop_core::first_run::read_menubar_obj(&path);
+    let mut targets = menubar
+        .get(BASELINE_RETRY_TARGETS_KEY)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    targets.remove(channel_label(channel));
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(BASELINE_RETRY_TARGETS_KEY, Value::Object(targets))],
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AutomaticTargetState {
     target: String,
@@ -619,6 +706,7 @@ fn automatic_target_eligibility_at(
     target: &str,
     attempted_at: Instant,
 ) -> AutomaticTargetEligibility {
+    let persisted_baseline_retry_pending = persisted_baseline_retry_target(channel).is_some();
     let states = AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -628,10 +716,17 @@ fn automatic_target_eligibility_at(
     };
     if state.target != target {
         // State belongs to a single target per channel, so observing a newer
-        // target starts a fresh retry budget and drops old non-convergence.
+        // target starts a fresh retry budget and drops old non-convergence. A
+        // baseline repair is different: it is an outstanding channel-level
+        // obligation, and the newer target's rescue can establish that floor.
         return AutomaticTargetEligibility::Eligible;
     }
-    if state.completed_without_version_move {
+    if state.baseline_retry_pending || persisted_baseline_retry_pending {
+        // A baseline-repair run must keep trying until it actually persists a
+        // baseline. It is not an update failure, so neither the update retry
+        // interval nor its failure cap may strand it.
+        AutomaticTargetEligibility::Eligible
+    } else if state.completed_without_version_move {
         AutomaticTargetEligibility::CompletedWithoutVersionMove
     } else if state.consecutive_failures >= MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES {
         AutomaticTargetEligibility::ConsecutiveFailureCapReached
@@ -644,16 +739,21 @@ fn automatic_target_eligibility_at(
     }
 }
 
-fn automatic_target_baseline_retry_pending(channel: Channel, target: &str) -> bool {
+fn automatic_target_baseline_retry_pending(channel: Channel) -> bool {
     AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(&channel)
-        .is_some_and(|state| state.target == target && state.baseline_retry_pending)
+        .is_some_and(|state| state.baseline_retry_pending)
+        || persisted_baseline_retry_target(channel).is_some()
 }
 
 fn record_automatic_target_failure_at(channel: Channel, target: &str, attempted_at: Instant) {
+    // A failed repair is not proof that the prior successful rescue wrote its
+    // baseline. Preserve the marker until a run explicitly reports that it
+    // persisted one, including when this invocation is for a newer target.
+    let baseline_retry_pending = automatic_target_baseline_retry_pending(channel);
     let mut states = AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -664,7 +764,7 @@ fn record_automatic_target_failure_at(channel: Channel, target: &str, attempted_
             target: target.to_string(),
             consecutive_failures: 0,
             completed_without_version_move: false,
-            baseline_retry_pending: false,
+            baseline_retry_pending,
             last_failure_at: None,
         });
     if state.target != target {
@@ -672,11 +772,11 @@ fn record_automatic_target_failure_at(channel: Channel, target: &str, attempted_
             target: target.to_string(),
             consecutive_failures: 0,
             completed_without_version_move: false,
-            baseline_retry_pending: false,
+            baseline_retry_pending,
             last_failure_at: None,
         };
     }
-    state.baseline_retry_pending = false;
+    state.baseline_retry_pending = baseline_retry_pending;
     state.consecutive_failures = state.consecutive_failures.saturating_add(1);
     state.last_failure_at = Some(attempted_at);
 }
@@ -684,7 +784,7 @@ fn record_automatic_target_failure_at(channel: Channel, target: &str, attempted_
 fn record_automatic_target_baseline_persistence_failure_at(
     channel: Channel,
     target: &str,
-    attempted_at: Instant,
+    _attempted_at: Instant,
 ) {
     let mut states = AUTO_TARGET_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -709,8 +809,21 @@ fn record_automatic_target_baseline_persistence_failure_at(
         };
     }
     state.baseline_retry_pending = true;
-    state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-    state.last_failure_at = Some(attempted_at);
+    // The rescue already moved the version. This is degraded bookkeeping, not
+    // another failed update attempt, so start its repair with a fresh budget.
+    state.consecutive_failures = 0;
+    state.completed_without_version_move = false;
+    state.last_failure_at = None;
+    if let Err(error) = persist_baseline_retry_target(channel, target) {
+        log(
+            "hq-core-state",
+            &format!(
+                "could not persist pending Core baseline repair for {} target {}: {error}",
+                channel_label(channel),
+                target
+            ),
+        );
+    }
 }
 
 fn record_automatic_target_completed(channel: Channel, target: &str) {
@@ -728,6 +841,30 @@ fn record_automatic_target_completed(channel: Channel, target: &str) {
                 last_failure_at: None,
             },
         );
+    if let Err(error) = clear_persisted_baseline_retry_target(channel) {
+        log(
+            "hq-core-state",
+            &format!(
+                "could not clear completed Core baseline repair for {} target {}: {error}",
+                channel_label(channel),
+                target
+            ),
+        );
+    }
+}
+
+/// Both manual wrappers and the automatic executor call this after a zero-exit
+/// rescue result. Keeping the decision here makes a baseline failure retryable
+/// regardless of who initiated the successful update.
+pub(crate) fn arm_baseline_retry_after_successful_core_update(
+    channel: Channel,
+    target: &str,
+    exit_code: i32,
+    baseline_persisted: bool,
+) {
+    if exit_code == 0 && !baseline_persisted {
+        record_automatic_target_baseline_persistence_failure_at(channel, target, Instant::now());
+    }
 }
 
 #[cfg(test)]
@@ -2216,8 +2353,7 @@ where
     Fut: Future<Output = Result<CoreUpdateAutoInstall, CoreUpdateError>>,
     Now: Fn() -> Instant,
 {
-    let baseline_retry_pending =
-        automatic_target_baseline_retry_pending(candidate.channel, candidate.target_version);
+    let baseline_retry_pending = automatic_target_baseline_retry_pending(candidate.channel);
     match core_auto_update_decision(
         auto_updates,
         candidate.version_behind || baseline_retry_pending,
@@ -2388,10 +2524,11 @@ where
                     NativeCoreAutoUpdateOutcome::Succeeded
                 }
                 Ok(result) if result.exit_code == 0 => {
-                    record_automatic_target_baseline_persistence_failure_at(
+                    arm_baseline_retry_after_successful_core_update(
                         candidate.channel,
                         candidate.target_version,
-                        now(),
+                        result.exit_code,
+                        result.baseline_persisted,
                     );
                     log(
                         "hq-core-update",
@@ -2538,10 +2675,12 @@ pub fn setup_core_state_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
+    use tempfile::TempDir;
 
     static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static CORE_UPDATE_SENTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -2729,6 +2868,168 @@ mod tests {
             calls.load(Ordering::Acquire),
             2,
             "a failed baseline must not mark the target completed and suppress its retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_baseline_repair_survives_restart_and_arms_the_next_check() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let _env_lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir_all(home.path().join(".hq")).unwrap();
+        std::fs::write(
+            home.path().join(".hq/menubar.json"),
+            r#"{"futureKey":"must-survive"}"#,
+        )
+        .unwrap();
+        let _home = scoped_home(home.path());
+        let target = "15.0.117-baseline-repair-restart-contract";
+
+        reset_automatic_target_states_for_test();
+        arm_baseline_retry_after_successful_core_update(Channel::Release, target, 0, false);
+        assert_eq!(
+            persisted_baseline_retry_target(Channel::Release).as_deref(),
+            Some(target),
+            "the marker is written before this process can exit"
+        );
+
+        // Clearing the process-local map models a fresh desktop process. The
+        // local version is already current, so only the durable marker can
+        // cause this scheduled check to repair the baseline.
+        reset_automatic_target_states_for_test();
+        assert!(automatic_target_baseline_retry_pending(Channel::Release));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let retry_calls = Arc::clone(&calls);
+        let retry = execute_native_core_auto_update_at(
+            CoreAutoUpdateCandidate {
+                channel: Channel::Release,
+                local_version: Some(target),
+                target_version: target,
+                is_eligible: true,
+                version_behind: false,
+            },
+            true,
+            false,
+            Instant::now(),
+            move |_, run_guard, _| async move {
+                let _run_guard = run_guard;
+                retry_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(CoreUpdateAutoInstall::new(0, true))
+            },
+        )
+        .await;
+
+        assert_eq!(retry, NativeCoreAutoUpdateOutcome::Succeeded);
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert!(
+            !automatic_target_baseline_retry_pending(Channel::Release),
+            "only a run that persisted the baseline clears the durable marker"
+        );
+        let menubar =
+            hq_desktop_core::first_run::read_menubar_obj(&home.path().join(".hq/menubar.json"));
+        assert_eq!(
+            menubar.get("futureKey"),
+            Some(&Value::String("must-survive".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_success_with_missing_baseline_arms_the_same_durable_repair() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let _env_lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = TempDir::new().unwrap();
+        let _home = scoped_home(home.path());
+        let target = "15.0.117-manual-baseline-repair-contract";
+
+        reset_automatic_target_states_for_test();
+        // Both manual wrappers call this shared post-result hook. The IPC
+        // result remains a successful zero-exit update, while the next native
+        // check is now armed to repair the missing baseline.
+        arm_baseline_retry_after_successful_core_update(Channel::Release, target, 0, false);
+
+        assert!(automatic_target_baseline_retry_pending(Channel::Release));
+        assert_eq!(
+            persisted_baseline_retry_target(Channel::Release).as_deref(),
+            Some(target)
+        );
+        assert_eq!(
+            core_auto_update_decision(true, true, false),
+            CoreAutoUpdateDecision::Install
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_baseline_retry_keeps_the_pending_repair_marker() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-baseline-retry-failure-contract";
+
+        arm_baseline_retry_after_successful_core_update(Channel::Release, target, 0, false);
+        record_automatic_target_failure_at(Channel::Release, target, Instant::now());
+
+        assert!(
+            automatic_target_baseline_retry_pending(Channel::Release),
+            "a failed retry has not established a baseline and must not clear the repair"
+        );
+        assert_eq!(
+            automatic_target_eligibility(Channel::Release, target),
+            AutomaticTargetEligibility::Eligible,
+            "a pending baseline repair is not blocked by ordinary update retry gates"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_apply_baseline_failure_resets_the_update_failure_budget() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        let target = "15.0.117-baseline-budget-reset-contract";
+        let first_failure_at = Instant::now();
+
+        for failure_number in 0..(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES - 1) {
+            record_automatic_target_failure_at(
+                Channel::Release,
+                target,
+                first_failure_at + CHECK_INTERVAL * u32::from(failure_number),
+            );
+        }
+        assert_eq!(
+            automatic_target_eligibility_at(
+                Channel::Release,
+                target,
+                first_failure_at
+                    + CHECK_INTERVAL * u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES - 1),
+            ),
+            AutomaticTargetEligibility::Eligible
+        );
+
+        // This represents the next rescue applying the update but failing its
+        // post-apply baseline write. It must not turn the prior two update
+        // failures into a capped, permanently stranded repair.
+        record_automatic_target_baseline_persistence_failure_at(
+            Channel::Release,
+            target,
+            first_failure_at
+                + CHECK_INTERVAL * u32::from(MAX_CONSECUTIVE_AUTOMATIC_TARGET_FAILURES - 1),
+        );
+
+        let state = AUTO_TARGET_STATES
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&Channel::Release)
+            .cloned()
+            .unwrap();
+        assert_eq!(state.consecutive_failures, 0);
+        assert!(state.baseline_retry_pending);
+        assert_eq!(
+            automatic_target_eligibility(Channel::Release, target),
+            AutomaticTargetEligibility::Eligible,
+            "the repaired update gets another baseline attempt instead of the old failure cap"
         );
     }
 

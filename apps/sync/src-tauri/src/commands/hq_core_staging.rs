@@ -476,6 +476,11 @@ pub struct RescueRunResult {
     /// retry bookkeeping must know that drift data still needs repair.
     #[serde(skip_serializing)]
     pub(crate) baseline_persisted: bool,
+    /// Target recorded with a failed baseline write. This stays off IPC just
+    /// like `baseline_persisted`; it lets both manual and automatic wrappers
+    /// arm the same durable repair path without re-resolving the target.
+    #[serde(skip_serializing)]
+    pub(crate) baseline_retry_target: String,
 }
 
 /// Resolve the user's HQ folder using the same 4-tier resolver the rest of
@@ -668,6 +673,14 @@ async fn run_replace_from_staging_observed(
     );
 
     let outcome = run_replace_from_staging_inner(observation.source()).await;
+    if let Ok(run) = &outcome {
+        crate::commands::hq_core_state::arm_baseline_retry_after_successful_core_update(
+            crate::commands::hq_core_state::Channel::Staging,
+            &run.baseline_retry_target,
+            run.exit_code,
+            run.baseline_persisted,
+        );
+    }
     match &outcome {
         Ok(run) if run.exit_code == 0 => {
             crate::commands::hq_core_state::emit_core_update_event(
@@ -890,6 +903,9 @@ async fn run_replace_from_staging_inner(
         rescue_stderr_tail,
         npx_resolution,
         baseline_persisted,
+        // The staged rescue follows `main`; the durable marker is channel
+        // scoped, so a later resolved main SHA can perform the repair.
+        baseline_retry_target: "main".to_string(),
     })
 }
 

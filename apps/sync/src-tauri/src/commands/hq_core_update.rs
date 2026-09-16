@@ -251,6 +251,14 @@ async fn install_hq_core_update_observed(
     );
 
     let outcome = install_hq_core_update_inner(observation.source()).await;
+    if let Ok(run) = &outcome {
+        crate::commands::hq_core_state::arm_baseline_retry_after_successful_core_update(
+            crate::commands::hq_core_state::Channel::Release,
+            &run.baseline_retry_target,
+            run.exit_code,
+            run.baseline_persisted,
+        );
+    }
     match &outcome {
         Ok(run) if run.exit_code == 0 => {
             let installed = get_local_version();
@@ -542,6 +550,7 @@ async fn install_hq_core_update_inner(
         rescue_stderr_tail,
         npx_resolution,
         baseline_persisted,
+        baseline_retry_target: latest,
     })
 }
 
