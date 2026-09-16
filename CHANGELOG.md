@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Clicking Session on the welcome page, or in a company that has no project yet, now starts a Claude session instead of doing nothing.
+- On a Mac, clicks on the welcome page reach the buttons instead of falling through the glass background.
+
 ## [0.10.268] — 2026-09-16
 
 - HQ now updates its command line right away at launch when it is older than 5.115.4, instead of waiting for the next scheduled check. The new bot kinds need that version; an older one showed "unknown option '--kind'" when creating a company bot.

@@ -248,6 +248,7 @@
     rosterStatusForRow,
     type LiveChannelTabs,
   } from "./live-channel-tabs.js";
+  import { liveSessionStartTarget } from "./live-session-start.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import LinkContextMenu from "../common/LinkContextMenu.svelte";
   import {
@@ -3531,14 +3532,13 @@
   async function bindLiveSession(thread: SessionThread): Promise<void> {
     patchSessionThread(thread.id, { status: "starting" });
     const row = selectedRow;
-    const companyUid = row?.companyUid?.trim();
-    const projectId = row ? projectIdForRow(row) : null;
-    const companySlug =
-      (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyUid)
-        ?.slug ?? "";
+    const { companySlug, projectId } = liveSessionStartTarget(row, companies);
     try {
-      if (!onstartlivesession || !projectId || !companySlug) {
-        patchSessionThread(thread.id, { status: "idle" });
+      if (!onstartlivesession) {
+        patchSessionThread(thread.id, {
+          status: "idle",
+          startError: "Sessions can only be started in the HQ desktop app.",
+        });
         return;
       }
       const started = await onstartlivesession({

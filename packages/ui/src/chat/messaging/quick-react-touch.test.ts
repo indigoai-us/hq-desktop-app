@@ -18,6 +18,15 @@ function touchRuleFor(source: string, selector: string): string | undefined {
   return blocks?.find((block) => block.includes(`.${selector} {`));
 }
 
+describe("conversation pane captures clicks on a transparent macOS window", () => {
+  it("gives the isolated conversation layer a hittable fill", () => {
+    const block = channelConversation.match(/\.conversation \{[\s\S]*?\n {2}\}/);
+    expect(block?.[0]).toContain("isolation: isolate;");
+    expect(block?.[0]).toContain("pointer-events: auto;");
+    expect(block?.[0]).toMatch(/color-mix\(in srgb, var\(--t1(?:, #111)?\) 1%, transparent\)/);
+  });
+});
+
 describe("quick-react toolbar on touch input", () => {
   it.each([
     ["reply root", () => touchRuleFor(replyPanel, "reply-quick-react-root")],

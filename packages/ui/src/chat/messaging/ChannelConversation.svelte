@@ -1746,6 +1746,13 @@
     min-width: 0;
     font: 400 13px/1.45 var(--font-ui);
     color: var(--t1);
+    /* WKWebView on a transparent macOS window hit-tests composited alpha.
+       isolation: isolate puts this pane on its own layer; a fully transparent
+       layer drops clicks through to the native glass, so #welcome (hero on the
+       window ground) looked dead. 1% of the ink color is invisible and enough
+       for WebKit to take the hit. */
+    background: color-mix(in srgb, var(--t1, #111) 1%, transparent);
+    pointer-events: auto;
   }
 
   .conversation-body {

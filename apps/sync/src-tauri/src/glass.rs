@@ -111,6 +111,10 @@ fn apply_macos_glass_window(window: &tauri::WebviewWindow, role: GlassWindowRole
                 GlassWindowRole::CompactCommunications => 0,
             };
             let _: () = msg_send![glass, setStyle: style];
+            // Decorative only. On macOS 26 a transparent WKWebView can miss
+            // hit-tests on low-alpha CSS (the #welcome hero sits on the window
+            // ground). If this view takes those events, clicks look ignored.
+            let _: () = msg_send![glass, setIgnoresMouseEvents: true];
             // Insert at the very back (NSWindowBelow) so the webview and all its
             // content paint over the glass.
             let below: isize = -1;
@@ -209,4 +213,3 @@ pub fn refresh_liquid_glass_window(window: &tauri::WebviewWindow) {
         );
     }
 }
-
