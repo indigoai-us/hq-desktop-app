@@ -80,6 +80,7 @@
     type ReactionMap,
   } from "./reactions";
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
+  import { coalesceScroll } from "./scroll-coalesce";
   import { formatComposerSendError } from "./composer-send-error";
   import {
     clearDraft,
@@ -449,15 +450,42 @@
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }
 
-  /** Recompute stickiness from the user's actual position on every scroll. */
-  function onThreadScroll(): void {
+  /**
+   * Recompute stickiness from the user's actual position, once per frame.
+   *
+   * Reading `scrollHeight` forces a layout flush. macOS momentum scrolling
+   * delivers scroll events faster than frames, so doing this per event paid
+   * that flush several times over for a single painted frame. The question
+   * asked here is only "where is the scroller now", which one read per frame
+   * answers at exactly the freshness a frame can display.
+   */
+  /**
+   * Was the user already inside the top zone last time we looked? Loading
+   * older history is edge-triggered on entering that zone, never level-
+   * triggered while sitting in it.
+   *
+   * Level-triggering re-fires for as long as the user stays parked at the top,
+   * which quietly defeats the failure UI: a load that fails leaves a Retry
+   * button, and the next scroll read would clear the error and request again
+   * on its own. The user never gets to decide, and a server that is down gets
+   * asked repeatedly. `loadingEarlier` hides this only while a request is in
+   * flight — the moment one settles, the next read re-fires.
+   */
+  let wasAtTop = false;
+
+  function readScrollPosition(): void {
     if (!scroller) return;
     const distance =
       scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     stickToBottom = distance <= STICK_THRESHOLD_PX;
     if (stickToBottom) hasUnseenBelow = false;
-    if (scroller.scrollTop <= STICK_THRESHOLD_PX) showEarlier();
+    const atTop = scroller.scrollTop <= STICK_THRESHOLD_PX;
+    if (atTop && !wasAtTop) showEarlier();
+    wasAtTop = atTop;
   }
+
+  const threadScroll = coalesceScroll(readScrollPosition);
+  const onThreadScroll = threadScroll.onScroll;
 
   function jumpToLatest(): void {
     stickToBottom = true;
@@ -601,6 +629,7 @@
   });
 
   onDestroy(() => {
+    threadScroll.cancel();
     flushDraft();
   });
 
