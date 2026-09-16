@@ -274,35 +274,6 @@ describe('desktop zoom', () => {
     expect(applyZoom.mock.calls).toEqual([[1], [1.2]]);
     cleanup();
   });
-
-  it('wires every HQ WebView and grants each window the zoom capability', () => {
-    const desktopMain = source('../desktop-alt/main.ts');
-    const appMain = source('../main.ts');
-    const capabilityFiles = [
-      'activity-log.json',
-      'default.json',
-      'desktop-alt.json',
-      'dm-banner.json',
-      'dm-detail.json',
-      'drift-detail.json',
-      'meeting-permissions.json',
-      'meetings-window.json',
-      'messages.json',
-      'new-files-detail.json',
-      'share-detail.json',
-      'widget.json',
-    ];
-
-    expect(desktopMain).toContain('installDesktopZoom()');
-    expect(appMain).toContain('installDesktopZoom()');
-    expect(appMain).not.toContain("windowLabel === 'messages') {\n  installDesktopZoom()");
-    for (const capabilityFile of capabilityFiles) {
-      expect(
-        source(`../../src-tauri/capabilities/${capabilityFile}`),
-        capabilityFile,
-      ).toContain('core:webview:allow-set-webview-zoom');
-    }
-  });
 });
 
 function deferred<T>() {

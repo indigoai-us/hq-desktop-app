@@ -196,7 +196,7 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
       // superseded SyncPage in US-003.
       return {
         route,
-        text: sourceText('src/desktop-alt/pages/HomePage.svelte', [
+        text: sourceText('../../packages/ui/src/home/HomePage.svelte', [
           'aria-label="Home"',
           '<ActivityDigest',
         ]),
@@ -207,9 +207,11 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     if (route === 'meetings') {
       return {
         route,
-        text: sourceText('src/desktop-alt/pages/MeetingsPage.svelte', [
+        text: sourceText('../../packages/ui/src/meetings/MeetingsPage.svelte', [
           'aria-label="Meetings"',
-          '<h1>Meetings</h1>',
+          // The page heading moved into the shared page header when this
+          // surface became a @hq/ui component; the landmark + the calendar
+          // section are the markers that still live here.
           'Connected calendars',
         ]),
         consoleErrors: [...this.consoleErrors],
@@ -218,7 +220,7 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
 
     return {
       route,
-      text: sourceText('src/desktop-alt/pages/CompanyPage.svelte', [
+      text: sourceText('../../packages/ui/src/company/CompanyPage.svelte', [
         'aria-labelledby="company-page-title"',
         'New project',
         '<CompanyBoardPanel',
@@ -276,25 +278,21 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
   }
 
   private assertDesktopAppRouteContracts(): void {
-    const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
-    const route = readRepoFile('src/desktop-alt/route.ts');
-
-    // US-007 IA: the desktop lands on the last-visited company (persisted),
-    // falling back to the first sidebar company row; the legacy 'sync'
-    // pending-route alias stays functional by resolving to Home.
-    expect(route).toContain('export function getDesktopLandingRoute(');
-    expect(route).toContain("case 'sync':");
-    expect(desktopApp).toContain("route.kind === 'home'");
-    expect(desktopApp).toContain("route.kind === 'meetings'");
-    expect(desktopApp).toContain('<CompanyPage');
-    expect(desktopApp).toContain('company={activeCompany}');
-    expect(desktopApp).toContain('tab={companyTab}');
+    // The route-based page shell (getDesktopLandingRoute, route.kind, the
+    // CompanyPage mount) belonged to the desktop-alt DesktopApp tree, which
+    // had been unreachable for some time and went with the in-app Sessions
+    // removal. The live desktop window mounts HqWorkWorkShell -> the @hq/ui
+    // chat-first shell, which has no equivalent route table, so there is no
+    // contract here to repoint — asserting one would invent a requirement.
+    //
+    // The per-route surfaces the smoke specs navigate are asserted directly
+    // against the live pages in `navigate()` above.
   }
 
   private assertSecretsSourceContracts(): void {
     const rust = readRepoFile('src-tauri/src/commands/desktop_alt.rs');
     const core = readRepoFile('../../crates/hq-desktop-core/src/desktop_alt.rs');
-    const panel = readRepoFile('src/desktop-alt/panels/SecretsPanel.svelte');
+    const panel = readRepoFile('../../packages/ui/src/company/SecretsPanel.svelte');
 
     // The command wrapper returns ONLY the metadata-only projection type — never
     // a value-bearing shape. The type itself is defined + tested in the shared
@@ -307,7 +305,8 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     expect(secretItemStruct).toContain('pub upd: String');
     expect(secretItemStruct).toContain('pub rot: String');
     expect(secretItemStruct).not.toMatch(/pub (value|secret):|serde\(flatten\)/);
-    expect(panel).toContain('companyStore.loadSecrets(slug');
+    // prettier splits the chained call across lines in @hq/ui
+    expect(panel).toMatch(/companyStore\s*\.loadSecrets\(slug/);
     expect(panel).toContain('key: stringOrFallback(item.key');
     expect(panel).toContain('upd: stringOrFallback(item.upd');
     expect(panel).toContain('rot: stringOrFallback(item.rot');

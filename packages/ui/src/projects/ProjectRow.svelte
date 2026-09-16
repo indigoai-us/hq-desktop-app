@@ -23,7 +23,7 @@
     mergeProvenance,
     normalizeProvenance,
   } from "../common/provenance.js";
-  import { relativeActivity } from "../sessions/sessions.js";
+  import { relativeActivity } from "../common/relative-activity.js";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
 
   interface Props {

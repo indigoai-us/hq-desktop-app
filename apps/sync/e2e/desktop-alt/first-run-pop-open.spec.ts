@@ -8,7 +8,7 @@ describe('first-run routes through onboarding before completion', () => {
   const lifecycle = readRepoFile('src/lib/lifecycle.ts');
   const onboarding = readRepoFile('src/components/Onboarding.svelte');
   // US-005: single settings surface (desktop SettingsPage; classic popover Settings gone).
-  const settingsPage = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
+  const settingsPage = readRepoFile('../../packages/ui/src/settings/SettingsPage.svelte');
   const settingsRust = readRepoFile('src-tauri/src/commands/settings.rs');
 
   it('has no onboarding components left in the tree', () => {

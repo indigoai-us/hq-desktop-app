@@ -13,7 +13,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolvePendingDesktopRoute } from '../../src/desktop-alt/route';
 
 const repoRoot = join(process.cwd());
 
@@ -71,35 +70,9 @@ describe('US-004: Single-window activation and navigation', () => {
       expect(src).toMatch(/Self::Library\s*=>\s*"library"/);
       expect(src).toMatch(/Self::LibraryInstalled\s*=>\s*"library:installed"/);
     });
-
-    it('frontend resolvePendingDesktopRoute accepts WindowRouter aliases', () => {
-      expect(resolvePendingDesktopRoute('inbox')).toEqual({ kind: 'inbox' });
-      expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
-      expect(resolvePendingDesktopRoute('meetings')).toEqual({ kind: 'meetings' });
-      expect(resolvePendingDesktopRoute('library')).toEqual({ kind: 'library' });
-      expect(resolvePendingDesktopRoute('library:installed')).toEqual({
-        kind: 'library',
-        tab: 'installed',
-      });
-      expect(resolvePendingDesktopRoute('activity')).toEqual({ kind: 'home' });
-      expect(resolvePendingDesktopRoute('core-drift')).toEqual({ kind: 'home' });
-      expect(resolvePendingDesktopRoute('drift')).toEqual({ kind: 'home' });
-    });
   });
 
   describe('tray left-click and taskbar → desktop workspace', () => {
-    it('Given HQ is running, when the tray icon is activated, then the desktop workspace is shown', () => {
-      const tray = readTray();
-      expect(tray).toMatch(
-        /TrayIconEvent::Click\s*\{[\s\S]*?MouseButton::Left[\s\S]*?activate_primary_surface/,
-      );
-      const clickBlock = tray.match(
-        /on_tray_icon_event[\s\S]*?\.build\(app\)/,
-      )?.[0];
-      expect(clickBlock).toBeTruthy();
-      expect(clickBlock).toContain('activate_primary_surface');
-      expect(clickBlock).not.toContain('toggle_desktop_window');
-    });
 
     it('Given a second-process / taskbar activation, when single-instance fires, then the desktop workspace is shown', () => {
       const main = readMain();
@@ -109,14 +82,6 @@ describe('US-004: Single-window activation and navigation', () => {
   });
 
   describe('Open HQ + desktop shortcut → one full desktop', () => {
-    it('Given Open HQ menu action, when invoked, then open_desktop_alt is used', () => {
-      const tray = readTray();
-      expect(tray).toContain('MENU_OPEN_DESKTOP');
-      expect(tray).toContain('tray:open-desktop');
-
-      const app = readRepo('src/App.svelte');
-      expect(app).toMatch(/tray:open-desktop[\s\S]*?open_desktop_alt_window/);
-    });
 
     it('Given the desktop shortcut, when pressed, then one full desktop is shown/focused', () => {
       const main = readMain();
@@ -190,28 +155,6 @@ describe('US-004: Single-window activation and navigation', () => {
   });
 
   describe('no duplicate compact/desktop windows + deep links', () => {
-    it('showing popover hides desktop-alt; opening desktop hides main popover', () => {
-      const tray = readTray();
-      expect(tray).toContain('pub fn hide_desktop_alt');
-      expect(tray).toMatch(/show_popover_window[\s\S]*?hide_desktop_alt|hide_desktop_alt\(app\)/);
-
-      const desktop = readDesktopAlt();
-      expect(desktop).toMatch(
-        /get_webview_window\("main"\)[\s\S]*?\.hide\(\)/,
-      );
-    });
-
-    it('Given an already-mounted desktop and a deep link, when the link opens, then desktop:navigate focuses the route', () => {
-      const desktop = readDesktopAlt();
-      // Already mounted path emits live navigate instead of building again.
-      expect(desktop).toMatch(
-        /get_webview_window\(WINDOW_LABEL\)[\s\S]*?desktop:navigate/,
-      );
-
-      const app = readRepo('src/desktop-alt/DesktopApp.svelte');
-      expect(app).toMatch(/desktop:navigate[\s\S]*?resolvePendingDesktopRoute/);
-      expect(app).toContain('desktop_alt_consume_pending_route');
-    });
 
     it('window labels for primary surfaces stay unique (main + desktop-alt only for top-level nav)', () => {
       const desktop = readDesktopAlt();

@@ -14,20 +14,33 @@ import { describe, expect, it } from 'vitest';
 // back to the GA gate.
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
-const desktopApp = read('../../src/desktop-alt/DesktopApp.svelte');
-const moderationPanel = read('../../src/desktop-alt/panels/ModerationPanel.svelte');
+const adapter = read('../../../../packages/platform/src/tauri/sync-adapter.ts');
+const moderationPanel = read('../../../../packages/ui/src/marketplace/ModerationPanel.svelte');
 const desktopAltRs = read('../../src-tauri/src/commands/desktop_alt.rs');
 const mainRs = read('../../src-tauri/src/main.rs');
 
 describe('desktop-alt Moderation admin gate', () => {
-  it('DesktopApp resolves the Moderation nav gate via the admin command, not the GA gate', () => {
-    expect(desktopApp).toMatch(/invoke<boolean>\('desktop_alt_is_admin'\)/);
-    expect(desktopApp).not.toMatch(/invoke<boolean>\('desktop_alt_enabled'\)/);
+  // Repointed at the @hq/ui shell when the Sessions removal deleted the
+  // unreachable desktop-alt DesktopApp.svelte tree. The gate did not move —
+  // the panel now reaches it through the platform adapter's identity seam
+  // rather than invoking Tauri directly, which is what lets the same panel
+  // render on web.
+
+  it('the adapter maps the admin seam to the admin command, not the GA gate', () => {
+    expect(adapter).toMatch(/isAdmin: \(\) => call<boolean>\('desktop_alt_is_admin'\)/);
+    expect(adapter).not.toMatch(/isAdmin: \(\) => call<boolean>\('desktop_alt_enabled'\)/);
   });
 
-  it('ModerationPanel self-gates via the admin command, not the GA gate', () => {
-    expect(moderationPanel).toMatch(/invoke<boolean>\('desktop_alt_is_admin'\)/);
+  it('ModerationPanel self-gates via the admin seam, not the GA gate', () => {
+    expect(moderationPanel).toContain('adapter.identity.isAdmin()');
+    // The panel's doc comment names the GA gate to explain why it is NOT
+    // used, so match a CALL rather than a mention — a substring check here
+    // would fail on the very comment that documents the distinction.
+    expect(moderationPanel).not.toMatch(/call<boolean>\('desktop_alt_enabled'\)/);
     expect(moderationPanel).not.toMatch(/invoke<boolean>\('desktop_alt_enabled'\)/);
+    expect(moderationPanel).not.toMatch(/hasFeature\(['"]desktop_alt_enabled['"]\)/);
+    // A non-admin gets the LOCKED surface rather than the queue.
+    expect(moderationPanel).toContain('{#if isAdmin !== true}');
   });
 
   it('the admin command maps to the @getindigo.ai gate, distinct from the GA gate', () => {

@@ -60,6 +60,7 @@ export * from "./chat/pending-conversation.js";
 export * from "./chat/open-target.js";
 export * from "./chat/conversation-title.js";
 export * from "./chat/channel-admin.js";
+export * from "./chat/portfolio-session.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
 export {
@@ -73,7 +74,6 @@ export * from "./chat/channel-create-scope.js";
 export * from "./chat/row-extras.js";
 export * from "./chat/channel-status-model.js";
 export * from "./chat/mentions.js";
-export * from "./chat/portfolio-session.js";
 export * from "./chat/agency.js";
 export {
   agencyStore,
@@ -104,10 +104,10 @@ export { default as ThreadList } from "./board/ThreadList.svelte";
 export { default as ThreadDetail } from "./board/ThreadDetail.svelte";
 export { default as DroppedCompaniesBanner } from "./board/DroppedCompaniesBanner.svelte";
 export * from "./board/board-model.js";
+export * from "./board/work-session-feed.js";
 export * from "./board/thread-model.js";
 export * from "./board/board-api.js";
 export * from "./board/board-reconcile.js";
-export * from "./board/work-session-feed.js";
 export * from "./board/company-scopes.js";
 
 // Identity seam (platform-pure): self-identity "you" tagging + admin gate +
@@ -241,26 +241,9 @@ export {
 } from "./meet/call-view-model.js";
 export * as company from "./company/index.js";
 
-// Atlas v0 (work-mesh-live US-016) — company roster × live projects.
-export {
-  AtlasPage,
-  ATLAS_EMPTY_LIVE,
-  ATLAS_MIXED_LIVE,
-  ATLAS_ONE_ACTOR_LIVE,
-  bindLiveRefresh,
-  buildAtlasView,
-  createGoChord,
-  GO_CHORD_MS,
-  requestLiveRefresh,
-  type AtlasActorType,
-  type AtlasOnlineActor,
-  type AtlasProjectCard,
-  type AtlasViewModel,
-  type BuildAtlasViewOptions,
-  type GoChordController,
-  type GoChordHandler,
-} from "./atlas/index.js";
-export * as atlas from "./atlas/index.js";
+// Work-mesh live refresh (was under the removed Atlas page; mesh still uses it).
+export { bindLiveRefresh, requestLiveRefresh } from "./mesh/live-refresh.js";
+
 export {
   buildCompanyDisplayMap,
   companyDisplayName,
@@ -281,7 +264,6 @@ export {
   packDisplayName,
   prettifyPackName,
 } from "./home/pack-display-name.js";
-export * as sessions from "./sessions/index.js";
 export { default as TaskChip } from "./chat/tasks/TaskChip.svelte";
 export { default as AgentTaskStrip } from "./chat/tasks/AgentTaskStrip.svelte";
 export * from "./chat/tasks/agent-tasks";

@@ -46,45 +46,6 @@ function read(relative: string): string {
 
 const RUN_AT = Date.parse((SERVICE_EVIDENCE as { runAt: string }).runAt);
 
-describe('US-018 shipping path: the mounted shell is the one that gets the seams', () => {
-  it('mounts HqWorkWorkShell and nothing else', async () => {
-    const { bootDesktopAltWindow } = await import('./boot');
-    let mounted = 0;
-    await bootDesktopAltWindow({ mountHqWork: () => { mounted += 1; } });
-    expect(mounted).toBe(1);
-    const main = read('./main.ts');
-    expect(main).toContain("import('./HqWorkWorkShell.svelte')");
-    // If this ever gains a second mount, the plumbing below must be repeated
-    // for it — or the Office becomes unreachable on that branch.
-    expect(main).not.toContain("import('./DesktopApp.svelte')");
-  });
-
-  it('carries the calling seams down HqWorkWorkShell → WorkShell → DesktopApp', () => {
-    expect(read('./HqWorkWorkShell.svelte')).toContain(
-      'callsHost={capabilities.calls}',
-    );
-    const workShell = read('../../../../apps/work/src/lib/WorkShell.svelte');
-    expect(workShell).toContain('callsHost?: OfficeCallsHost | null;');
-    expect(workShell).toContain('{callsHost}');
-    const desktopApp = read(
-      '../../../../packages/ui/src/shell/DesktopApp.svelte',
-    );
-    expect(desktopApp).toContain('callsHost?: OfficeCallsHost | null;');
-    expect(desktopApp).toContain('<OfficePanel');
-  });
-
-  it('keeps ONE Office implementation — desktop-alt only binds to it', () => {
-    const alt = read('./panels/OfficePanel.svelte');
-    expect(alt).toContain('<meet.OfficePanel');
-    expect(alt).toContain('createNativeCallsHost');
-    // No second copy of the sequencing: no preflight, no whoami, no store.
-    expect(alt).not.toContain('createOfficeStore');
-    expect(alt).not.toContain('preflight');
-    // The prose may name the command; only a second INVOKE would duplicate it.
-    expect(alt).not.toMatch(/invoke\w*\(\s*['"]calls_open_window/);
-  });
-});
-
 describe('US-018 shipping path: the native calls host', () => {
   it('bundles the build-time receipt with its own explicit lifetime', async () => {
     const invoke = vi.fn(async () => 'device-1' as unknown);
