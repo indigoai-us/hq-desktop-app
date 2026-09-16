@@ -2119,6 +2119,9 @@ pub fn path_with_interpreter_hint(base_path: &str, hint_dir: &Path) -> String {
     if hint.is_empty() {
         return base_path.to_string();
     }
+    if base_path.is_empty() {
+        return hint.into_owned();
+    }
     let without_hint: Vec<&str> = base_path
         .split(PATH_SEP)
         .filter(|segment| *segment != hint)
