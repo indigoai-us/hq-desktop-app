@@ -427,6 +427,36 @@ describe("when HQ Cloud cannot list your bots", () => {
       bots: [],
     }),
   };
+  /**
+   * VERBATIM from the VM (round 2, defect 4): what the real CLI writes on a
+   * failing `hq bot list --remote --json`. The document goes to stdout and the
+   * same sentence to stderr — the desktop read the sentence, could not
+   * classify it, and drew "couldn't be reached" with a "Check again" button
+   * for a route that will never be there.
+   */
+  const CLI_SERVER_UNSUPPORTED_MESSAGE =
+    "Your HQ Cloud cannot list the bots you own yet, so there is nothing to bring back from here. Update HQ Cloud, or try again later.";
+  const CLI_SERVER_UNSUPPORTED = {
+    ok: false as const,
+    reason: "error" as const,
+    message: JSON.stringify({
+      ok: false,
+      reason: "server-unsupported",
+      message: CLI_SERVER_UNSUPPORTED_MESSAGE,
+      bots: [],
+    }),
+  };
+  /** The same contract, for a cloud that simply did not answer. */
+  const CLI_NETWORK = {
+    ok: false as const,
+    reason: "error" as const,
+    message: JSON.stringify({
+      ok: false,
+      reason: "network",
+      message: "HQ Cloud could not be reached just now.",
+      bots: [],
+    }),
+  };
   const CLOUD_OFFLINE = {
     ok: false as const,
     reason: "error" as const,
@@ -506,6 +536,40 @@ describe("when HQ Cloud cannot list your bots", () => {
       BOT_RESTORE_NEEDS_NEWER_CLOUD,
     );
     expect(q('[data-testid="bot-start-here"]')).toBeNull();
+  });
+
+  it("reads the real CLI's failure document, not the sentence beside it (defect 4)", async () => {
+    await openWipedBotDm(async () => CLI_SERVER_UNSUPPORTED);
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    // The wrong sentence the VM saw, and the CLI's own words, are both absent.
+    const shown = document.body.textContent ?? "";
+    expect(shown).not.toContain(BOT_RESTORE_CLOUD_UNREACHABLE);
+    expect(shown).not.toContain("Update HQ Cloud");
+    expect(q('[data-testid="bot-start-here"]')).toBeNull();
+  });
+
+  it("reads the CLI's sentence the same way when only stderr reaches the app", async () => {
+    // A CLI that wrote no document (or a host that could not parse one): all
+    // the app has is the plain sentence, which names no status code.
+    await openWipedBotDm(async () => ({
+      ok: false as const,
+      reason: "error" as const,
+      message: CLI_SERVER_UNSUPPORTED_MESSAGE,
+    }));
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    expect(q('[data-testid="bot-start-here"]')).toBeNull();
+  });
+
+  it("still says it could not be reached when the CLI's document says network", async () => {
+    await openWipedBotDm(async () => CLI_NETWORK);
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_CLOUD_UNREACHABLE,
+    );
+    expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeTruthy();
   });
 
   it("says it could not be reached, and offers Check again, on a network failure", async () => {

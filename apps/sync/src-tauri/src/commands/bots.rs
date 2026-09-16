@@ -225,13 +225,8 @@ async fn run_hq_bot(args: &[&str], timeout: Duration) -> Result<Value, String> {
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !output.status.success() {
-        let message = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("hq bot {} exited with status {}", args.join(" "), output.status.code().unwrap_or(-1))
-        };
+        let fallback = format!("hq bot {} exited with status {}", args.join(" "), output.status.code().unwrap_or(-1));
+        let message = failure_message(&stdout, &stderr, &fallback);
         log(LOG_TAG, &format!("hq bot {} failed: {}", args.join(" "), message.replace('\n', " | ")));
         return Err(strip_ansi(&message));
     }
@@ -239,6 +234,43 @@ async fn run_hq_bot(args: &[&str], timeout: Duration) -> Result<Value, String> {
     let start = stdout.find('{').unwrap_or(0);
     serde_json::from_str::<Value>(&stdout[start..])
         .map_err(|e| format!("hq bot {} returned unreadable output: {e}", args.join(" ")))
+}
+
+/// The CLI's own failure document, when a non-zero exit wrote one.
+///
+/// On failure `hq bot … --json` prints ONE document on stdout —
+/// `{"ok":false,"reason":…,"message":…,"bots":[]}` — and the same sentence in
+/// plain words on stderr. Only the document names the reason, and the reason
+/// is the whole difference between "this HQ Cloud is too old to list your
+/// bots" and "HQ Cloud could not be reached": without it the app has to guess
+/// from prose and guesses wrong. So the document is re-serialised and handed
+/// to the UI verbatim.
+fn failure_document(stdout: &str) -> Option<String> {
+    let start = stdout.find('{')?;
+    let parsed = serde_json::from_str::<Value>(stdout[start..].trim()).ok()?;
+    let body = parsed.as_object()?;
+    if body.get("ok") != Some(&Value::Bool(false)) {
+        return None;
+    }
+    // A document with no reason is no better than the sentence on stderr.
+    body.get("reason")?.as_str()?;
+    serde_json::to_string(&parsed).ok()
+}
+
+/// What a non-zero exit tells the UI: the CLI's failure document when there is
+/// one, else the plain sentence it wrote on stderr (or stdout), else the bare
+/// exit status.
+fn failure_message(stdout: &str, stderr: &str, fallback: &str) -> String {
+    if let Some(document) = failure_document(stdout) {
+        return document;
+    }
+    if !stderr.trim().is_empty() {
+        return stderr.trim().to_string();
+    }
+    if !stdout.trim().is_empty() {
+        return stdout.trim().to_string();
+    }
+    fallback.to_string()
 }
 
 fn strip_ansi(input: &str) -> String {
@@ -641,5 +673,51 @@ mod promotion_tests {
         }
         assert!(promotion_args("../juniper", "cmp_TEST").is_err());
         assert!(promotion_args("juniper", &format!("cmp_{}", "a".repeat(80))).is_err());
+    }
+}
+
+/// A failing `hq bot … --json` writes BOTH a structured document (stdout) and
+/// a plain sentence (stderr). The desktop showed the sentence and threw the
+/// document away, so `server-unsupported` reached the UI as unclassifiable
+/// prose and was drawn as "HQ Cloud couldn't be reached" — with a "Check
+/// again" button for a route that will never be there (VM round 2, defect 4).
+#[cfg(test)]
+mod failure_output_tests {
+    use super::*;
+
+    /// Verbatim from the VM, on `hq bot list --remote --json` exit 1.
+    const CLI_DOCUMENT: &str = r#"{"ok":false,"reason":"server-unsupported","message":"Your HQ Cloud cannot list the bots you own yet, so there is nothing to bring back from here. Update HQ Cloud, or try again later.","bots":[]}"#;
+    const CLI_SENTENCE: &str = "Your HQ Cloud cannot list the bots you own yet, so there is nothing to bring back from here. Update HQ Cloud, or try again later.";
+
+    #[test]
+    fn the_failure_document_wins_over_the_sentence_on_stderr() {
+        let out = failure_message(CLI_DOCUMENT, CLI_SENTENCE, "hq bot list exited with status 1");
+        let parsed: Value = serde_json::from_str(&out).expect("the UI receives a JSON document");
+        assert_eq!(parsed["ok"], Value::Bool(false));
+        assert_eq!(parsed["reason"], "server-unsupported");
+        assert_eq!(parsed["message"], CLI_SENTENCE);
+
+        // A stray banner line ahead of the document does not hide it.
+        let noisy = format!("Checking HQ Cloud…\n{CLI_DOCUMENT}");
+        let out = failure_message(&noisy, CLI_SENTENCE, "fallback");
+        assert_eq!(
+            serde_json::from_str::<Value>(&out).unwrap()["reason"],
+            "server-unsupported"
+        );
+    }
+
+    #[test]
+    fn stderr_is_the_fallback_when_stdout_is_not_a_failure_document() {
+        // No document at all: today's CLI, and every other `hq bot` subcommand.
+        assert_eq!(failure_message("", "HQ API /v1/agents/mine → 404: Not found", "fallback"), "HQ API /v1/agents/mine → 404: Not found");
+        assert_eq!(failure_message("not json at all", "boom", "fallback"), "boom");
+        // Shapes that are JSON but not the failure contract.
+        assert_eq!(failure_message(r#"{"ok":true,"bots":[]}"#, "boom", "fallback"), "boom");
+        assert_eq!(failure_message(r#"{"ok":false,"message":"no reason given"}"#, "boom", "fallback"), "boom");
+        assert_eq!(failure_message(r#"{"reason":"network"}"#, "boom", "fallback"), "boom");
+        assert_eq!(failure_message(r#"[{"ok":false,"reason":"network"}]"#, "boom", "fallback"), "boom");
+        // Nothing on stderr: stdout, then the bare exit status.
+        assert_eq!(failure_message("could not start", "", "fallback"), "could not start");
+        assert_eq!(failure_message("", "   ", "hq bot list exited with status 2"), "hq bot list exited with status 2");
     }
 }

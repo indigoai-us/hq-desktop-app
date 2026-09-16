@@ -218,7 +218,12 @@ export function remoteBotListingFailed(
   return { rows: previous?.rows ?? null, failure };
 }
 
-/** "This server has no such route." */
+/**
+ * "This server has no such route." The first shapes are the raw HTTP wording
+ * an older CLI relayed; the last two are the CLI's own sentence, which says it
+ * in plain words and mentions no status code at all — the VM saw exactly that
+ * sentence read as "could not be reached" because nothing here matched it.
+ */
 const UNSUPPORTED_SHAPES: readonly RegExp[] = [
   /→\s*404\b/,
   /\b404\b/,
@@ -226,6 +231,8 @@ const UNSUPPORTED_SHAPES: readonly RegExp[] = [
   /\bunsupported\b/i,
   /\bunknown (?:route|endpoint|command)\b/i,
   /\bnot implemented\b/i,
+  /\bcannot list the bots you own yet\b/i,
+  /\bnewer HQ Cloud\b/i,
 ];
 
 /** "You are not allowed to ask." */
@@ -239,26 +246,43 @@ const AUTH_SHAPES: readonly RegExp[] = [
   /\bno (?:api )?(?:token|credentials)\b/i,
 ];
 
-/** The reasons the CLI itself names, mapped onto ours. */
+/**
+ * The reasons the CLI itself names, mapped onto ours. Its whole set is
+ * `server-unsupported | auth | network | server-error | error`; the last two
+ * are network-class here, because "HQ Cloud answered badly" and "HQ Cloud did
+ * not answer" are the same thing to the person reading it — worth another go,
+ * and never a claim that a bot is missing.
+ */
 function failureFromReason(reason: string): RemoteBotListFailure | null {
   const key = reason.trim().toLowerCase();
   if (key === "server-unsupported" || key === "unsupported" || key === "not-found") return "server-unsupported";
   if (key === "auth" || key === "unauthorized" || key === "forbidden") return "auth";
   if (key === "network" || key === "offline" || key === "timeout") return "network";
+  if (key === "server-error" || key === "error") return "network";
   if (key === "malformed" || key === "unreadable") return "malformed";
   return null;
 }
+
+/**
+ * The adapter's own `reason` is a transport discriminant (`error` /
+ * `unavailable`), not one of the CLI's — it says only THAT the call failed.
+ * Reading it as a CLI reason would classify every failure as network-class and
+ * silence the text fallback below, so those two names are ignored here.
+ */
+const ADAPTER_TRANSPORT_REASONS: ReadonlySet<string> = new Set(["error", "unavailable"]);
 
 /**
  * Classify a failed `hq bot list --remote`.
  *
  * Two shapes are tolerated on purpose. The CLI's own contract is a JSON
  * document — `{ok:false, reason, message, bots:[]}` — and when it reaches the
- * app that reason is used verbatim. Until that lands, the host relays the
- * CLI's raw stderr instead (`HQ API /v1/agents/mine → 404: Not found`), so the
- * text is read for the same few conditions. Anything unrecognised is
- * `network`: "try again" is the safe guess, because it never claims a bot is
- * missing and never hides a route that does exist.
+ * app that reason is used verbatim; it is the only thing that tells
+ * "this HQ Cloud is too old" apart from "HQ Cloud did not answer" without
+ * guessing from prose. An older CLI, or any other failure, relays plain text
+ * instead (`HQ API /v1/agents/mine → 404: Not found`, or the CLI's own
+ * sentence), so the text is read for the same few conditions. Anything
+ * unrecognised is `network`: "try again" is the safe guess, because it never
+ * claims a bot is missing and never hides a route that does exist.
  */
 export function classifyRemoteBotFailure(
   adapterReason: string | null | undefined,
@@ -282,8 +306,9 @@ export function classifyRemoteBotFailure(
       // Not the contract after all — fall through and read it as text.
     }
   }
-  if (adapterReason) {
-    const named = failureFromReason(adapterReason);
+  const relayed = (adapterReason ?? "").trim().toLowerCase();
+  if (relayed && !ADAPTER_TRANSPORT_REASONS.has(relayed)) {
+    const named = failureFromReason(relayed);
     if (named) return named;
   }
   if (!text) return "network";

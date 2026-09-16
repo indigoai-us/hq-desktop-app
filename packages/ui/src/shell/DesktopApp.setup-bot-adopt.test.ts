@@ -305,6 +305,42 @@ describe("the setup bot this account already owns is adopted, never re-created",
     expect(create, "never a second setup bot").not.toHaveBeenCalled();
   });
 
+  it("reads the real CLI's failure document on the setup DM too (defect 4)", async () => {
+    // VERBATIM from the VM: the failing CLI writes this document on stdout and
+    // the same sentence on stderr. The desktop read the sentence, could not
+    // classify it, and told the owner HQ Cloud "couldn't be reached".
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: "agt_new" }));
+    mountApp(
+      adapter({
+        bots: {
+          create,
+          adopt: vi.fn(async () => ok({ ok: true })),
+          list: async () => ok({ bots: [] }),
+          listRemote: async () => ({
+            ok: false as const,
+            reason: "error" as const,
+            message: JSON.stringify({
+              ok: false,
+              reason: "server-unsupported",
+              message:
+                "Your HQ Cloud cannot list the bots you own yet, so there is nothing to bring back from here. Update HQ Cloud, or try again later.",
+              bots: [],
+            }),
+          }),
+        },
+        contacts: [{ personUid: CLOUD_SETUP_UID, displayName: "setup", companyUid: null }],
+      }),
+    );
+
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    expect(q('[data-testid="bot-start-here"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("Update HQ Cloud");
+  });
+
   it("a create that comes back 409 adopts the bot and shows the person nothing at all", async () => {
     // The roster has not caught up when the create is attempted, so the race
     // is only discoverable from the 409; `hq bot list` sees the bot right

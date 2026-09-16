@@ -223,6 +223,79 @@ describe("bots that live on another computer", () => {
     expect(q('[data-testid="settings-bot-assistant"]')).toBeTruthy();
   });
 
+  it("reads the real CLI's failure document, and offers no Check again (defect 4)", async () => {
+    // VERBATIM from the VM: the failing CLI writes this document on stdout and
+    // the same sentence on stderr. Settings showed the network sentence AND a
+    // "Check again" button for a route this HQ Cloud does not have.
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await mountPane(
+      fakeAdapter({
+        listRemote: vi.fn(async () => ({
+          ok: false as const,
+          reason: "error" as const,
+          message: JSON.stringify({
+            ok: false,
+            reason: "server-unsupported",
+            message:
+              "Your HQ Cloud cannot list the bots you own yet, so there is nothing to bring back from here. Update HQ Cloud, or try again later.",
+            bots: [],
+          }),
+        })),
+      }),
+    );
+    await settle(14);
+
+    const card = q('[data-testid="settings-bots-remote-unavailable"]');
+    expect(card?.textContent).toContain(BOT_RESTORE_NEEDS_NEWER_CLOUD);
+    expect(card?.textContent).not.toContain(BOT_RESTORE_CLOUD_UNREACHABLE);
+    expect(card?.textContent).not.toContain("Update HQ Cloud");
+    expect(q('[data-testid="settings-bots-remote-recheck"]'), "no retry for a route that is absent").toBeNull();
+    expect(q('[data-testid="settings-bots-restore-all"]')).toBeNull();
+    expect(q('[data-testid="settings-bot-assistant"]')).toBeTruthy();
+  });
+
+  it("reads the CLI's sentence the same way when only stderr reaches the pane", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await mountPane(
+      fakeAdapter({
+        listRemote: vi.fn(async () => ({
+          ok: false as const,
+          reason: "error" as const,
+          message:
+            "Your HQ Cloud cannot list the bots you own yet, so there is nothing to bring back from here. Update HQ Cloud, or try again later.",
+        })),
+      }),
+    );
+    await settle(14);
+    expect(q('[data-testid="settings-bots-remote-unavailable"]')?.textContent).toContain(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    expect(q('[data-testid="settings-bots-remote-recheck"]')).toBeNull();
+  });
+
+  it("still offers Check again when the CLI's document says network", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await mountPane(
+      fakeAdapter({
+        listRemote: vi.fn(async () => ({
+          ok: false as const,
+          reason: "error" as const,
+          message: JSON.stringify({
+            ok: false,
+            reason: "network",
+            message: "HQ Cloud could not be reached just now.",
+            bots: [],
+          }),
+        })),
+      }),
+    );
+    await settle(14);
+    expect(q('[data-testid="settings-bots-remote-unavailable"]')?.textContent).toContain(
+      BOT_RESTORE_CLOUD_UNREACHABLE,
+    );
+    expect(q('[data-testid="settings-bots-remote-recheck"]')).toBeTruthy();
+  });
+
   it("offers Check again when the listing could not be reached, and recovers", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     let reachable = false;

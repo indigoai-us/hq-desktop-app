@@ -122,6 +122,65 @@ describe("when HQ Cloud cannot list your bots", () => {
     expect(classifyRemoteBotFailure("error", json("malformed"))).toBe("malformed");
   });
 
+  it("maps every reason the CLI can name, including its network-class pair", () => {
+    // The CLI's whole set, verbatim: server-unsupported | auth | network |
+    // server-error | error.
+    const doc = (reason: string, message: string) =>
+      JSON.stringify({ ok: false, reason, message, bots: [] });
+    // Exactly what the VM's CLI wrote on a failing `hq bot list --remote --json`.
+    expect(
+      classifyRemoteBotFailure(
+        "error",
+        doc(
+          "server-unsupported",
+          "Your HQ Cloud cannot list the bots you own yet, so there is nothing to bring back from here. Update HQ Cloud, or try again later.",
+        ),
+      ),
+    ).toBe("server-unsupported");
+    expect(classifyRemoteBotFailure("error", doc("auth", "Sign in to HQ again."))).toBe("auth");
+    expect(classifyRemoteBotFailure("error", doc("network", "HQ Cloud could not be reached."))).toBe(
+      "network",
+    );
+    // Network-class: "answered badly" and "did not answer" read the same to a
+    // person — try again, and never a claim that a bot is missing.
+    expect(classifyRemoteBotFailure("error", doc("server-error", "HQ Cloud had a problem."))).toBe(
+      "network",
+    );
+    expect(classifyRemoteBotFailure("error", doc("error", "Something went wrong."))).toBe("network");
+  });
+
+  it("recognises the CLI's server-unsupported sentence, which names no status code", () => {
+    // Defect 4: the desktop showed this sentence as "couldn't be reached" with
+    // a "Check again" button, because every rule here wanted a 404.
+    expect(
+      classifyRemoteBotFailure(
+        "error",
+        "Your HQ Cloud cannot list the bots you own yet, so there is nothing to bring back from here. Update HQ Cloud, or try again later.",
+      ),
+    ).toBe("server-unsupported");
+    expect(classifyRemoteBotFailure("error", "Restoring bots needs a newer HQ Cloud.")).toBe(
+      "server-unsupported",
+    );
+    expect(classifyRemoteBotFailure("error", "this HQ Cloud has an unsupported route")).toBe(
+      "server-unsupported",
+    );
+  });
+
+  it("never reads the adapter's own transport reason as one of the CLI's", () => {
+    // `error` and `unavailable` say only THAT the call failed. Treating them
+    // as CLI reasons would make every failure network-class and silence the
+    // text below.
+    expect(classifyRemoteBotFailure("error", "HQ API /v1/agents/mine → 404: Not found")).toBe(
+      "server-unsupported",
+    );
+    expect(classifyRemoteBotFailure("unavailable", "HQ API /v1/agents/mine → 401: Unauthorized")).toBe(
+      "auth",
+    );
+    // A host that DOES relay the CLI's reason is still read.
+    expect(classifyRemoteBotFailure("server-unsupported", "")).toBe("server-unsupported");
+    expect(classifyRemoteBotFailure("server-error", "")).toBe("network");
+  });
+
   it("classifies today's raw CLI text, which is all the VM had", () => {
     // Verbatim from the VM report (T2.1) — a route the server does not have.
     expect(classifyRemoteBotFailure("error", "HQ API /v1/agents/mine → 404: Not found")).toBe(
