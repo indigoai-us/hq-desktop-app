@@ -131,6 +131,17 @@ export const BOT_NOT_RUNNABLE_RECHECK = "Check again";
 export const BOT_MESSAGE_NOT_ANSWERED =
   "Not answered yet — this bot isn't running on this computer.";
 
+/**
+ * The way out, in the SAME line as the sentence above.
+ *
+ * The owner read that sentence on a fresh install with the "Start on this
+ * computer" notice above the fold, never saw it, and concluded the product was
+ * broken. Nothing that says a message is unanswered may be a dead end: once
+ * the app has stopped trying by itself, the one action that helps is right
+ * there, in the line the person is already reading.
+ */
+export const BOT_MESSAGE_START_HERE = "Start it on this computer";
+
 /** Shown once the app has stopped trying to start a bot by itself. */
 export const BOT_START_NO_MORE_RETRIES =
   "Nothing more will be tried automatically. Open the bot's profile to look into it.";

@@ -267,6 +267,7 @@
   } from "../chat/agent-thinking.js";
   import {
     BOT_MESSAGE_NOT_ANSWERED,
+    BOT_MESSAGE_START_HERE,
     BOT_NOT_RUNNABLE_HERE,
     BOT_NOT_RUNNABLE_RECHECK,
     BOT_START_NO_MORE_RETRIES,
@@ -329,6 +330,19 @@
     withPollTimeout,
     type RemoteBotListing,
   } from "../chat/bot-restore.js";
+  import {
+    AUTO_RESTORE_RUNNING,
+    AUTO_RESTORE_STARTING_THIS_BOT,
+    autoRestoreAllowed,
+    autoRestoreCandidates,
+    autoRestoreDoneLine,
+    autoRestoreExhausted,
+    autoRestoreFailedLine,
+    autoRestoreStateKey,
+    canRetryAutoRestore,
+    countAutoRestoreAttempt,
+    type AutoRestoreAttempts,
+  } from "../chat/bot-auto-restore.js";
   import {
     botNeedsSignIn,
     restartBotsNeedingSignIn,
@@ -1639,6 +1653,22 @@
    * the bot has paused, so the conversation says so above the composer and
    * offers the sign-in instead of looking silently stuck.
    */
+  /**
+   * THE NOTICE BELONGS AT THE BOTTOM, NOT THE TOP.
+   *
+   * The owner's screenshot: the "Start on this computer" card rendered above
+   * the oldest message, under a YESTERDAY divider — "this shouldn't be on the
+   * top because its easy to miss". He never saw it, typed into the composer,
+   * and read that his message was unanswered. So it renders as the LAST thing
+   * in the conversation, directly above the composer, where the person already
+   * is. Precedence is what the header expression had: the honest "cannot run
+   * here" notice outranks the progress card, and the plain offline notice only
+   * shows when neither is in play.
+   */
+  const botNoticeBelow = $derived(
+    Boolean(selectedBotCannotRun && !selectedBotAdopting) ||
+      Boolean(!selectedBotProgress && selectedLocalBot && selectedLocalBotOffline),
+  );
   const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
   /** Coding tools some local bot is paused on — evidence a "Connected" tool is dead. */
   const staleRuntimes = $derived(runtimesNeedingSignIn(localBots));
@@ -1765,11 +1795,180 @@
   const botsMissingHere = $derived(
     botsNotHere(remoteBotListing.rows).filter((bot) => !botRunsHere(localBotRecords, bot.agentUid)),
   );
+  // ── Bots come back BY THEMSELVES ──────────────────────────────────────────
+  //
+  // The owner, on a fresh install: "I don't understand, the whole point of our
+  // project was to automatically start up local bots when you installed the
+  // app." He opened the setup bot's DM, typed "hi", and read "Not answered yet
+  // — this bot isn't running on this computer", with the "Start on this
+  // computer" notice above the fold where he never saw it. The mechanism was
+  // fine: on the VM `hq bot restore --all --json` brought both bots online in
+  // about five seconds. The product was wrong to ask for the click at all.
+  //
+  // So the app asks for itself. Three trigger points, one effect: the first
+  // successful listing after sign-in on a fresh install, the moment a runtime
+  // becomes ready (Connect Claude in the wizard re-reads readiness through
+  // `onBotRuntimeSignedIn`), and any later listing that shows a runnable bot
+  // which is not here — so a bot wiped by an update or a crash comes back the
+  // same way a reinstall's does.
+  /** Automatic attempts this session, per bot. Never persisted. */
+  let autoRestoreAttempts = $state<AutoRestoreAttempts>({});
+  /** The listing state last acted on, and when — see `autoRestoreIfNeeded`. */
+  let autoRestoreLastKey = "";
+  let autoRestoreLastAt: number | null = null;
+  /** Single-flight: one automatic restore at a time, ever. */
+  let autoRestoreBusy = $state(false);
+  /** The bots this automatic restore is bringing back, by uid. */
+  let autoRestoringUids = $state<string[]>([]);
+  /**
+   * The ONE line a person reads about this, cleared by the next newer event
+   * and never by a timer (policy
+   * `transient-indicators-clear-on-newer-event-not-time-window`).
+   */
+  let autoRestoreStatus = $state<string | null>(null);
+  /** Bots the app could bring back by itself right now. */
+  const autoRestorableBots = $derived(autoRestoreCandidates(remoteBotListing, localBotRecords));
+  /**
+   * A runtime is signed in here — the same readiness check Run Setup uses.
+   * Restoring a bot with no runtime to run it only produces a bot that cannot
+   * start, so the app waits for the sign-in rather than spending its budget.
+   */
+  const autoRestoreReady = $derived(
+    Boolean(adapter.bots?.restore) &&
+      !botRestoreUnavailable &&
+      Boolean(firstSignedInRuntime(localBotRuntimeReady)),
+  );
+  /** True while automatic restore owns these bots: the banner stands down. */
+  const autoRestoreHandling = $derived(
+    autoRestoreBusy ||
+      (autoRestoreReady &&
+        autoRestorableBots.length > 0 &&
+        !autoRestoreExhausted(autoRestoreAttempts, autoRestorableBots)),
+  );
+  /** The open DM's bot is one being brought back right now. */
+  const selectedBotAutoRestoring = $derived(
+    selectedRow?.kind === "dm" && selectedRow.personUid
+      ? autoRestoringUids.includes(selectedRow.personUid.trim())
+      : false,
+  );
+  $effect(() => {
+    const candidates = autoRestorableBots;
+    const ready = autoRestoreReady;
+    untrack(() => void autoRestoreIfNeeded(candidates, ready));
+  });
+  /**
+   * Decide, then act. Everything that would make this churn is a guard here:
+   * a listing that failed yields no candidates at all, a person-driven restore
+   * or adopt owns the CLI while it runs, one listing state is acted on once,
+   * and each bot has a budget of `AUTO_RESTORE_MAX_ATTEMPTS`.
+   */
+  async function autoRestoreIfNeeded(
+    candidates: readonly RemoteBotRow[],
+    ready: boolean,
+  ): Promise<void> {
+    if (!ready || candidates.length === 0) return;
+    // Never overlapping with a person-driven restore or adopt: two `hq bot`
+    // writes at once is exactly what `singleFlightStart` exists to prevent.
+    if (autoRestoreBusy || botRestoreBusy || botAdoptBusy) return;
+    const allowed = autoRestoreAllowed(autoRestoreAttempts, candidates);
+    if (allowed.length === 0) return;
+    const key = autoRestoreStateKey(allowed);
+    // A NEW state goes at once — a bot wiped by an update or a crash comes
+    // back the same way a reinstall's does. The SAME state is a retry, and a
+    // retry waits: a fresh install lands two listings inside a second (the
+    // poll, then the setup bot's DM asking for one), and spending the whole
+    // budget on that would leave a transient failure with nothing left.
+    if (key === autoRestoreLastKey && !canRetryAutoRestore(autoRestoreLastAt, Date.now())) return;
+    await runAutoRestore(allowed);
+  }
+  /**
+   * `hq bot restore --all --json`, with no click.
+   *
+   * A failure BACKS OFF rather than stopping: the state key is released so the
+   * next listing tries again, and the per-bot budget is what ends it. When the
+   * budget is gone the manual notice is the honest surface again — which is
+   * why nothing here dismisses it permanently.
+   */
+  async function runAutoRestore(bots: readonly RemoteBotRow[]): Promise<void> {
+    const restore = adapter.bots?.restore;
+    if (!restore || autoRestoreBusy) return;
+    autoRestoreBusy = true;
+    autoRestoreLastKey = autoRestoreStateKey(bots);
+    autoRestoreLastAt = Date.now();
+    autoRestoreAttempts = countAutoRestoreAttempt(autoRestoreAttempts, bots);
+    autoRestoringUids = bots.map((bot) => bot.agentUid.trim()).filter(Boolean);
+    const names = bots.map((bot) => bot.name);
+    autoRestoreStatus = AUTO_RESTORE_RUNNING;
+    try {
+      const result = await restore({ all: true });
+      if (!result.ok || !result.value) {
+        // The bots API shells out to the CLI, so `message` can be its own
+        // words. They belong in the log; the line gets a written sentence.
+        const raw = (result.ok ? "" : result.message) ?? "";
+        if (raw) console.warn("[hq-desktop] automatic bot restore failed:", raw);
+        autoRestoreStatus = autoRestoreFailedLine(names, remoteListingNotice);
+        return;
+      }
+      const back: string[] = [];
+      const stuck: string[] = [];
+      for (const row of result.value.bots ?? []) {
+        if (row.action === "restored" || row.action === "repaired") {
+          noteBotStarted(row.name, row.agentUid);
+          back.push(row.name);
+        } else if (botRestoreRowFailed(row)) {
+          stuck.push(row.name);
+        }
+      }
+      autoRestoreStatus =
+        back.length > 0
+          ? stuck.length > 0
+            ? `${autoRestoreDoneLine(back)} ${autoRestoreFailedLine(stuck, remoteListingNotice)}`
+            : autoRestoreDoneLine(back)
+          : stuck.length > 0
+            ? autoRestoreFailedLine(stuck, remoteListingNotice)
+            : null;
+      await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
+    } catch (err) {
+      // A host that throws must not leave the app claiming it is still working.
+      console.warn("[hq-desktop] automatic bot restore threw:", err);
+      autoRestoreStatus = autoRestoreFailedLine(names, remoteListingNotice);
+    } finally {
+      autoRestoreBusy = false;
+      autoRestoringUids = [];
+    }
+  }
+  /**
+   * A person wrote to a bot that is not running here: bring it back NOW rather
+   * than at the next poll.
+   *
+   * The message is not lost while that happens. `hq dm` puts a message for an
+   * `agt_*` recipient in the agent's OWN durable box inbox server-side
+   * (`GET /v1/notify/inbox`, acked explicitly once read), so it waits there,
+   * unread, until the bot starts and reads it — which is why the send goes
+   * through immediately instead of being held.
+   */
+  function autoRestoreForSend(agentUid: string): boolean {
+    const uid = (agentUid ?? "").trim();
+    if (!uid || !autoRestoreReady) return false;
+    const bot = autoRestorableBots.find((row) => row.agentUid.trim() === uid);
+    if (!bot) return false;
+    if (autoRestoreBusy || botRestoreBusy || botAdoptBusy) return autoRestoringUids.includes(uid);
+    if (autoRestoreAllowed(autoRestoreAttempts, [bot]).length === 0) return false;
+    // A person writing is a NEWER EVENT than the listing that was already
+    // acted on, so this one goes straight to the restore — no waiting for the
+    // next 120 s listing, which is the whole dead-DM moment.
+    void runAutoRestore([bot]);
+    return true;
+  }
   const showBotRestorePrompt = $derived(
     Boolean(adapter.bots?.restore) &&
       !botRestoreUnavailable &&
       !botRestoreDismissed &&
       !botRestoreResult &&
+      // The banner is the FALLBACK now. While the app is bringing the same
+      // bots back by itself, a prompt asking for the click it no longer needs
+      // is the confusion this whole change removes.
+      !autoRestoreHandling &&
       botsMissingHere.length > 0,
   );
   function dismissBotRestorePrompt(): void {
@@ -2094,6 +2293,12 @@
   const welcomeIsBannerOnly = $derived(
     Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupBotLauncher && !setupAgent.active),
   );
+  /**
+   * Where the "bringing your bots back" line lives: at the bottom of the
+   * conversation when there is one, and in the shell's banner slot only when
+   * there is not (the welcome hero, mid-wizard). Never in both.
+   */
+  const autoRestoreStatusInline = $derived(Boolean(selectedRow) && !welcomeIsBannerOnly);
   const inSetupChannelWithAgent = $derived(
     Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupAgent.active),
   );
@@ -5336,7 +5541,13 @@
         // clears it immediately.
         // A bot that cannot run here will not think about this message, so
         // no indicator is started for it; the conversation says it is
-        // unanswered instead.
+        // unanswered instead — unless the app can bring the bot back, in
+        // which case writing to it is what starts that, right now, instead of
+        // at the next 120 s listing. THE DEAD-DM MOMENT MUST BE IMPOSSIBLE
+        // WHILE AUTO-RESTORE IS POSSIBLE.
+        if (isAgentUid(row.personUid) && unrunnableBotUids[row.personUid.trim()]) {
+          autoRestoreForSend(row.personUid);
+        }
         if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()]) {
           // Pin the row to "newer than the agent's last message" — a local
           // bot's previous reply is usually < 2 min old and would otherwise
@@ -5976,6 +6187,15 @@
       onupdate={() => void handleRecommendedUpdateNow()}
       ondismiss={dismissRecommendBanner}
     />
+  {/if}
+
+  {#if autoRestoreStatus && !autoRestoreStatusInline}
+    <!-- Bots are coming back and there is no conversation pane to say so in
+         (the welcome hero, mid-wizard): one calm line in the shell's banner
+         slot instead, so the work is never silent. -->
+    <div class="bot-auto-restore-banner" data-testid="bot-auto-restore-status" role="status">
+      {autoRestoreStatus}
+    </div>
   {/if}
 
   {#if showBotRestorePrompt || botRestoreResult}
@@ -6721,14 +6941,58 @@
                   {/if}
                   <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
                   {#if botMessageUnanswered}
-                    <!-- The person's message is sitting with a bot that cannot
-                         run here: say that, rather than leave it under a
-                         spinner that will never end. -->
-                    <div class="bot-unanswered" data-testid="bot-message-unanswered" role="status">
-                      {BOT_MESSAGE_NOT_ANSWERED}
-                    </div>
+                    {#if selectedBotAutoRestoring}
+                      <!-- Writing to a bot that is not running here is what
+                           STARTS it now. The message is not lost meanwhile:
+                           it waits, unread, in the bot's own durable inbox
+                           until the bot reads it. -->
+                      <div class="bot-unanswered" data-testid="bot-message-starting" role="status">
+                        {AUTO_RESTORE_STARTING_THIS_BOT}
+                      </div>
+                    {:else}
+                      <!-- The app has stopped trying by itself, so this is the
+                           honest state — and it is never a dead end: the one
+                           action that helps is in the same line. -->
+                      <div class="bot-unanswered" data-testid="bot-message-unanswered" role="status">
+                        <span>{BOT_MESSAGE_NOT_ANSWERED}</span>
+                        {#if selectedBotNotHere && adapter.bots?.adopt && !botRestoreUnavailable}
+                          <button
+                            type="button"
+                            class="bot-unanswered-action"
+                            data-testid="bot-message-start-here"
+                            disabled={botAdoptBusy !== null}
+                            onclick={() => void startSelectedBotHere()}
+                          >
+                            {botAdoptBusy === selectedBotNotHere.name
+                              ? BOT_START_HERE_BUSY
+                              : BOT_MESSAGE_START_HERE}
+                          </button>
+                        {:else}
+                          <!-- Nothing on this Mac can run it, so "start it
+                               here" would be a promise the app cannot keep.
+                               Looking again is the one thing that can still
+                               change, and it stays in the same line. -->
+                          <button
+                            type="button"
+                            class="bot-unanswered-action"
+                            data-testid="bot-message-recheck"
+                            disabled={botRecheckBusy}
+                            onclick={() => void recheckSelectedBot()}
+                          >
+                            {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
+                          </button>
+                        {/if}
+                      </div>
+                    {/if}
                   {/if}
                   <AgentTaskStrip tasks={mainPaneTasks} />
+                  {#if autoRestoreStatus && !selectedBotAutoRestoring}
+                    <!-- The one visible, calm line while bots come back. -->
+                    <div class="bot-auto-restore" data-testid="bot-auto-restore-status" role="status">
+                      {autoRestoreStatus}
+                    </div>
+                  {/if}
+                  {#if botNoticeBelow}{@render localBotNotice()}{/if}
                 {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
@@ -6771,7 +7035,7 @@
                     />
                   {/if}
                 {/snippet}
-                {#snippet localBotHeader()}
+                {#snippet localBotNotice()}
                   {#if selectedBotCannotRun}
                     <!-- Adopted, but there is no runtime for it here. One
                          honest sentence and the one action the desktop can
@@ -6909,13 +7173,9 @@
                     ? setupHeader
                     : isCompanyChannel
                       ? companyHeader
-                      : selectedBotCannotRun && !selectedBotAdopting
-                        ? localBotHeader
-                        : selectedBotProgress
-                          ? botProgressHeader
-                          : selectedLocalBot && selectedLocalBotOffline
-                            ? localBotHeader
-                            : undefined}
+                      : selectedBotProgress && !(selectedBotCannotRun && !selectedBotAdopting)
+                        ? botProgressHeader
+                        : undefined}
                   belowMessages={agentThinkingBelow}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
@@ -7690,7 +7950,42 @@
     color: var(--danger, #d05f5f);
   }
   .bot-unanswered {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
     margin: 4px 16px 8px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  /* The way out lives IN the line, not in a card the person has to find. */
+  .bot-unanswered-action {
+    font: inherit;
+    font-weight: 600;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent, var(--t1));
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .bot-unanswered-action:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .bot-auto-restore {
+    margin: 4px 16px 8px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .bot-auto-restore-banner {
+    margin: 8px 16px;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line2);
     color: var(--t2);
     font-size: 12px;
     line-height: 1.4;

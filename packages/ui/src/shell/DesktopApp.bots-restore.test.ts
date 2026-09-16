@@ -77,9 +77,19 @@ function localBot(over: Partial<LocalBotRow> = {}): LocalBotRow {
 interface Options {
   bots?: Partial<NonNullable<PlatformAdapter["bots"]>>;
   contacts?: Array<Record<string, unknown>>;
+  /**
+   * Whether a runtime is signed in here.
+   *
+   * The prompt below is the FALLBACK now: when a runtime IS signed in the app
+   * brings the bots back by itself and never asks (see
+   * `DesktopApp.bots-auto-restore.test.ts`). A fresh Mac before "Connect
+   * Claude" is exactly the state in which a person is offered the click, so
+   * that is the state these prompt tests run in.
+   */
+  runtimeReady?: boolean;
 }
 
-function adapter({ bots = {}, contacts = [] }: Options = {}): PlatformAdapter {
+function adapter({ bots = {}, contacts = [], runtimeReady = true }: Options = {}): PlatformAdapter {
   return {
     kind: "web",
     isAvailable: () => false,
@@ -102,7 +112,7 @@ function adapter({ bots = {}, contacts = [] }: Options = {}): PlatformAdapter {
       preflight: async () =>
         ok({
           claudeAvailable: true,
-          claudeLoggedIn: true,
+          claudeLoggedIn: runtimeReady,
           codexAvailable: false,
           codexLoggedIn: false,
           grokAvailable: false,
@@ -328,6 +338,7 @@ describe("Restore my bots", () => {
     );
     mountApp(
       adapter({
+        runtimeReady: false,
         bots: {
           restore,
           list: async () => ok({ bots: [] }),
@@ -361,6 +372,7 @@ describe("Restore my bots", () => {
     // First launch: offered, and turned down.
     mountApp(
       adapter({
+        runtimeReady: false,
         bots: { restore, list: async () => ok({ bots: [] }), listRemote: async () => ok({ bots: [remoteBot()] }) },
       }),
     );
@@ -375,6 +387,7 @@ describe("Restore my bots", () => {
     host.remove();
     mountApp(
       adapter({
+        runtimeReady: false,
         bots: { restore, list: async () => ok({ bots: [] }), listRemote: async () => ok({ bots: [remoteBot()] }) },
       }),
     );
