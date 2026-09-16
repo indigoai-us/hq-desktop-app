@@ -85,7 +85,8 @@ describe('US-009: bot presence in the DM list and thread', () => {
     expect(shell).toContain('data-testid="local-bot-offline-notice"');
     expect(shell).toContain('data-testid="local-bot-start"');
     expect(shell).toContain('localBotOfflineNotice(selectedLocalBot)');
-    expect(shell).toContain('api.start(bot.name)');
+    // Every start in the shell goes through the one gated host function now.
+    expect(shell).toContain('startBotByName(bot.name, bot.agentUid)');
     expect(shell).toContain('? localBotHeader');
   });
 

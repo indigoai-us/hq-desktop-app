@@ -31,7 +31,11 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 
 import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
 import OnboardingWizard from './OnboardingWizard.svelte';
-import { BUILD_STEP_INDEX, CONNECTOR_IMPORT_STEP_INDEX } from '../../lib/onboarding-wizard';
+import {
+  BUILD_STEP_INDEX,
+  CONNECTOR_IMPORT_STEP_INDEX,
+  __resetWizardRouterCompletionForTests,
+} from '../../lib/onboarding-wizard';
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 
@@ -1345,6 +1349,13 @@ describe('setup failure correlation', () => {
 });
 
 describe('setup restart', () => {
+  // The router's "setup is done" gate is module-level and outlives a test, and
+  // it refuses to navigate back past the setup step. Clear it so these cases
+  // do not depend on which tests ran before them.
+  beforeEach(() => {
+    __resetWizardRouterCompletionForTests();
+  });
+
   /** Counts every attempt at the first stage's command. */
   function contentAttempts(): number {
     return tauri.invoke.mock.calls.filter(
@@ -1467,7 +1478,9 @@ describe('setup restart', () => {
     await leaveAndReturn();
 
     expect(subStatus()).not.toContain('Retrying');
-    expect(attempts).toBeGreaterThanOrEqual(2);
+    // The cancelled run's own retry never fires (it is no longer current), so
+    // the second attempt is the restart's.
+    expect(attempts).toBe(2);
   });
 });
 
