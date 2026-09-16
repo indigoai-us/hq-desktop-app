@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Your bots stay yours when HQ Cloud can't be reached. If HQ can't look up the bots your account owns — an older HQ Cloud, no connection, or a sign-in that has lapsed — your own bots are no longer drawn as cloud bots, a bot this computer can't run still says so plainly, and a message you send it is marked unanswered instead of sitting under a spinner. Where bringing a bot back isn't possible right now, the button is replaced by one sentence saying why, and "Check again" is still there.
 - Your bots come back after a reinstall. When HQ starts and finds bots you own that aren't set up on this computer — after a reinstall, or on a new Mac — it offers "Restore all" once and brings them all back with their names, their memory and your conversations intact. Turn it down and it won't ask again; you can start it any time from Settings › Bots.
 - A bot that can't run on this computer now offers "Start on this computer" instead of only "Check again". One click rebuilds the part a reinstall took away and starts the bot; the conversation then carries on as normal. If it doesn't work, you get one plain sentence and a Retry — never technical text.
 - Settings › Bots now lists the bots you own that live on another computer, each with a "Start here" button, plus a "Restore my bots" action for all of them at once. Bots already running here are unchanged.

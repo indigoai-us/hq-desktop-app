@@ -23,9 +23,10 @@
  * rendered — see `plainBotFailure`.
  */
 
-import type { BotRestoreResult, BotRestoreRow, RemoteBotRow } from "@hq/platform";
+import type { BotRestoreResult, BotRestoreRow, LocalBotRow, RemoteBotRow } from "@hq/platform";
 
 import { plainBotFailure } from "./local-bots.js";
+import { botRunsHere, localBotsTracedButGone, type LocalBotTrace } from "./bot-runnability.js";
 
 /**
  * How often the shell re-reads the account's own bots. Four times slower than
@@ -41,22 +42,6 @@ export function botsNotHere(
   remote: readonly RemoteBotRow[] | null | undefined,
 ): RemoteBotRow[] {
   return (remote ?? []).filter((bot) => bot.here !== true && bot.agentUid.trim() !== "");
-}
-
-/**
- * The owned local bot behind this agent uid that is NOT set up here, or null.
- *
- * Null covers both "not the person's bot" and "runs here fine" — and, by
- * construction, every cloud/fleet agent: `hq bot list --remote` lists local
- * bots only, so an agent that is not on it keeps whatever behaviour it had.
- */
-export function ownedBotNotHere(
-  remote: readonly RemoteBotRow[] | null | undefined,
-  agentUid: string | null | undefined,
-): RemoteBotRow | null {
-  const uid = (agentUid ?? "").trim();
-  if (!uid) return null;
-  return botsNotHere(remote).find((bot) => bot.agentUid.trim() === uid) ?? null;
 }
 
 /** The action on the "cannot run here" notice, now that there is a real one. */
@@ -177,4 +162,210 @@ export function botRestoreSummary(result: BotRestoreResult): string {
       : `${failed} bots could not be brought back.`;
   }
   return `${back} of your bots are back; ${failed} could not be brought back.`;
+}
+
+// ── When HQ Cloud cannot list your bots ─────────────────────────────────────
+//
+// The listing is an ENHANCEMENT, never a gate. The owner's VM ran against a
+// server that does not have the route yet: every call answered 404, and
+// because the app treated the listing as the source of truth for runnability,
+// each of the owner's own local bots was drawn as `Cloud`, a wiped bot's DM
+// showed a normal composer with no notice, and one message spun for 2 m 39 s.
+//
+// So a failed listing changes only what the app can OFFER — never what it
+// claims. The last good listing is kept and marked stale; the failure is
+// classified into the handful of reasons a person can act on; and everything
+// about runnability falls back to local evidence (see `bot-runnability.ts`).
+
+/**
+ * Why the account's own listing could not be read.
+ *
+ * - `server-unsupported` — this HQ Cloud has no such route yet. Nothing the
+ *   person does here will change that, so no action is offered.
+ * - `network`            — it could not be reached; worth another go.
+ * - `auth`               — the account is not (or no longer) allowed to ask.
+ * - `malformed`          — an answer arrived that could not be read at all.
+ */
+export type RemoteBotListFailure = "server-unsupported" | "network" | "auth" | "malformed";
+
+/** The account's own listing, plus what happened to the newest attempt. */
+export interface RemoteBotListing {
+  /**
+   * Rows from the last listing that SUCCEEDED; null until one does. When
+   * `failure` is set these are stale — an earlier answer, kept because losing
+   * them would silently turn every bot on them into a bot the app has never
+   * heard of. They are never presented as fresh: the actions that depend on
+   * the listing are withdrawn while `failure` is set.
+   */
+  rows: RemoteBotRow[] | null;
+  /** Why the newest attempt failed; null while the listing is fine. */
+  failure: RemoteBotListFailure | null;
+}
+
+/** Before the first attempt (and on hosts without the command). */
+export const NO_REMOTE_BOT_LISTING: RemoteBotListing = { rows: null, failure: null };
+
+/** A listing that came back. */
+export function remoteBotListingOk(rows: readonly RemoteBotRow[]): RemoteBotListing {
+  return { rows: [...rows], failure: null };
+}
+
+/** A listing that did not. The last good rows stay, now stale. */
+export function remoteBotListingFailed(
+  previous: RemoteBotListing | null | undefined,
+  failure: RemoteBotListFailure,
+): RemoteBotListing {
+  return { rows: previous?.rows ?? null, failure };
+}
+
+/** "This server has no such route." */
+const UNSUPPORTED_SHAPES: readonly RegExp[] = [
+  /→\s*404\b/,
+  /\b404\b/,
+  /\bnot found\b/i,
+  /\bunsupported\b/i,
+  /\bunknown (?:route|endpoint|command)\b/i,
+  /\bnot implemented\b/i,
+];
+
+/** "You are not allowed to ask." */
+const AUTH_SHAPES: readonly RegExp[] = [
+  /→\s*40[13]\b/,
+  /\b40[13]\b/,
+  /\bunauthori[sz]ed\b/i,
+  /\bforbidden\b/i,
+  /\bnot signed in\b/i,
+  /\bsign in again\b/i,
+  /\bno (?:api )?(?:token|credentials)\b/i,
+];
+
+/** The reasons the CLI itself names, mapped onto ours. */
+function failureFromReason(reason: string): RemoteBotListFailure | null {
+  const key = reason.trim().toLowerCase();
+  if (key === "server-unsupported" || key === "unsupported" || key === "not-found") return "server-unsupported";
+  if (key === "auth" || key === "unauthorized" || key === "forbidden") return "auth";
+  if (key === "network" || key === "offline" || key === "timeout") return "network";
+  if (key === "malformed" || key === "unreadable") return "malformed";
+  return null;
+}
+
+/**
+ * Classify a failed `hq bot list --remote`.
+ *
+ * Two shapes are tolerated on purpose. The CLI's own contract is a JSON
+ * document — `{ok:false, reason, message, bots:[]}` — and when it reaches the
+ * app that reason is used verbatim. Until that lands, the host relays the
+ * CLI's raw stderr instead (`HQ API /v1/agents/mine → 404: Not found`), so the
+ * text is read for the same few conditions. Anything unrecognised is
+ * `network`: "try again" is the safe guess, because it never claims a bot is
+ * missing and never hides a route that does exist.
+ */
+export function classifyRemoteBotFailure(
+  adapterReason: string | null | undefined,
+  message: string | null | undefined,
+): RemoteBotListFailure {
+  const text = (message ?? "").trim();
+  if (text.startsWith("{")) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const body = parsed as { reason?: unknown; message?: unknown };
+        if (typeof body.reason === "string") {
+          const named = failureFromReason(body.reason);
+          if (named) return named;
+        }
+        if (typeof body.message === "string" && body.message.trim()) {
+          return classifyRemoteBotFailure(adapterReason, body.message);
+        }
+      }
+    } catch {
+      // Not the contract after all — fall through and read it as text.
+    }
+  }
+  if (adapterReason) {
+    const named = failureFromReason(adapterReason);
+    if (named) return named;
+  }
+  if (!text) return "network";
+  if (UNSUPPORTED_SHAPES.some((shape) => shape.test(text))) return "server-unsupported";
+  if (AUTH_SHAPES.some((shape) => shape.test(text))) return "auth";
+  return "network";
+}
+
+/** The listing route is missing, so nothing can be brought back yet. */
+export const BOT_RESTORE_NEEDS_NEWER_CLOUD = "Restoring bots needs a newer HQ Cloud.";
+/** It could not be reached, or the answer could not be read. */
+export const BOT_RESTORE_CLOUD_UNREACHABLE =
+  "HQ Cloud couldn't be reached just now, so the bots you own on other computers aren't listed.";
+/** The account is not allowed to ask. */
+export const BOT_RESTORE_CLOUD_SIGN_IN =
+  "Sign in to HQ again to see the bots you own on other computers.";
+
+/**
+ * One plain sentence for a failed listing — the only thing a person is told
+ * about it. Null while the listing is fine, so the sentence never appears on
+ * a working app. Nothing the CLI or the API said is ever part of it.
+ */
+export function remoteBotListingNotice(failure: RemoteBotListFailure | null | undefined): string | null {
+  switch (failure) {
+    case "server-unsupported":
+      return BOT_RESTORE_NEEDS_NEWER_CLOUD;
+    case "auth":
+      return BOT_RESTORE_CLOUD_SIGN_IN;
+    case "network":
+    case "malformed":
+      return BOT_RESTORE_CLOUD_UNREACHABLE;
+    default:
+      return null;
+  }
+}
+
+/**
+ * A bot the person owns that this computer cannot run — the one question the
+ * DM notice, the sidebar chip and the send gate all ask.
+ *
+ * LOCAL EVIDENCE FIRST. A bot on this Mac's own listing runs here, whatever
+ * the account listing says (a stale `here:false` must never take a working bot
+ * away). What is left comes from two places: the account listing when it
+ * answered, and this computer's own trace of bots it has run when it did not.
+ * A peer with neither — a cloud or fleet bot — is not in here at all, so its
+ * behaviour is untouched.
+ */
+export interface OwnedBotNotHere {
+  /** Local folder name, which is what `hq bot adopt` takes. */
+  name: string;
+  agentUid: string;
+  /** True when the account's own listing is what said so. */
+  fromListing: boolean;
+}
+
+export function ownedBotsNotHere(
+  listing: RemoteBotListing | null | undefined,
+  trace: LocalBotTrace,
+  local: readonly LocalBotRow[] | null | undefined,
+): OwnedBotNotHere[] {
+  const out: OwnedBotNotHere[] = [];
+  const seen = new Set<string>();
+  for (const bot of botsNotHere(listing?.rows)) {
+    const uid = bot.agentUid.trim();
+    if (seen.has(uid) || botRunsHere(local, uid)) continue;
+    seen.add(uid);
+    out.push({ name: bot.name, agentUid: uid, fromListing: true });
+  }
+  for (const bot of localBotsTracedButGone(trace, local)) {
+    if (seen.has(bot.agentUid)) continue;
+    seen.add(bot.agentUid);
+    out.push({ name: bot.name, agentUid: bot.agentUid, fromListing: false });
+  }
+  return out;
+}
+
+/** The one in that list behind this agent uid, or null. */
+export function ownedBotNotHere(
+  owned: readonly OwnedBotNotHere[],
+  agentUid: string | null | undefined,
+): OwnedBotNotHere | null {
+  const uid = (agentUid ?? "").trim();
+  if (!uid) return null;
+  return owned.find((bot) => bot.agentUid === uid) ?? null;
 }

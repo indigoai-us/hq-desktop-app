@@ -25,7 +25,14 @@ import { ok, type LocalBotRow, type PlatformAdapter, type RemoteBotRow } from "@
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
-import { BOT_RESTORE_DISMISSED_KEY } from "../chat/bot-restore.js";
+import {
+  BOT_RESTORE_CLOUD_SIGN_IN,
+  BOT_RESTORE_CLOUD_UNREACHABLE,
+  BOT_RESTORE_DISMISSED_KEY,
+  BOT_RESTORE_NEEDS_NEWER_CLOUD,
+} from "../chat/bot-restore.js";
+import { LOCAL_BOT_TRACE_KEY } from "../chat/bot-runnability.js";
+import type { ChatSidebarApi } from "../chat/chat-api";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 
 /** The owner's bot: owned in HQ, and nothing on this Mac can run it. */
@@ -145,14 +152,18 @@ async function settle(times = 12): Promise<void> {
   }
 }
 
-function mountApp(platform: PlatformAdapter, initialRow?: ConversationRow): void {
+function mountApp(
+  platform: PlatformAdapter,
+  initialRow?: ConversationRow,
+  sidebarApi: ChatSidebarApi = createFixtureChatSidebarApi(),
+): void {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
     target: host,
     props: {
       adapter: platform,
-      sidebarApi: createFixtureChatSidebarApi(),
+      sidebarApi,
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_me", displayName: "Corey", email: "me@example.com" },
       coreFixtures: false,
@@ -380,5 +391,201 @@ describe("Restore my bots", () => {
     );
     await settle(24);
     expect(q('[data-testid="bot-restore-banner"]')).toBeNull();
+  });
+});
+
+/**
+ * THE LISTING IS AN ENHANCEMENT, NEVER A GATE.
+ *
+ * The owner's VM ran the whole feature against the production HQ Cloud, which
+ * does not have the listing route yet: `hq bot list --remote` answered
+ * `HQ API /v1/agents/mine → 404: Not found` every time. Because the app read
+ * runnability from that one call, everything the previous round had fixed came
+ * back — four of the owner's own local bots were drawn as `Cloud`, a wiped
+ * bot's DM showed a normal composer with NO notice, and one message spun for
+ * 2 m 39 s (report rows T2.1, T2.4, T5.2).
+ *
+ * These pin the rule that makes the failure harmless: runnability comes from
+ * local evidence first, and a listing that failed can only change what the app
+ * OFFERS — never what it claims.
+ */
+describe("when HQ Cloud cannot list your bots", () => {
+  /** Exactly what the VM's CLI wrote: a route this server does not have. */
+  const CLOUD_UNSUPPORTED = {
+    ok: false as const,
+    reason: "error" as const,
+    message: "HQ API /v1/agents/mine → 404: Not found",
+  };
+  /** The CLI's own JSON contract, once the CLI lane lands. */
+  const CLOUD_UNSUPPORTED_JSON = {
+    ok: false as const,
+    reason: "error" as const,
+    message: JSON.stringify({
+      ok: false,
+      reason: "server-unsupported",
+      message: "This HQ Cloud cannot list the bots you own yet.",
+      bots: [],
+    }),
+  };
+  const CLOUD_OFFLINE = {
+    ok: false as const,
+    reason: "error" as const,
+    message: "hq bot list --remote did not finish within 60s",
+  };
+  const CLOUD_REFUSED = {
+    ok: false as const,
+    reason: "error" as const,
+    message: "HQ API /v1/agents/mine → 401: Unauthorized",
+  };
+
+  /** This Mac ran test-bot; then its config was wiped (the VM's Step E). */
+  function rememberItRanHere(): void {
+    window.localStorage.setItem(LOCAL_BOT_TRACE_KEY, JSON.stringify({ [TEST_BOT_UID]: "test-bot" }));
+  }
+
+  function wipedBotAdapter(listRemote: () => Promise<never> | Promise<unknown>): PlatformAdapter {
+    return adapter({
+      bots: {
+        list: async () => ok({ bots: [] }),
+        listRemote: listRemote as never,
+      },
+      contacts: [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }],
+    });
+  }
+
+  async function openWipedBotDm(
+    listRemote: () => Promise<unknown>,
+    start = vi.fn(async () => ok({})),
+  ): Promise<HTMLElement> {
+    rememberItRanHere();
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: listRemote as never, start },
+        contacts: [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }],
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    return await vi.waitFor(() => {
+      const el = q('[data-testid="bot-not-runnable-notice"]');
+      expect(el, "the honest notice survives a listing that failed").toBeTruthy();
+      return el!;
+    });
+  }
+
+  it("keeps the honest notice and the silence on send when the route is missing (T5.2)", async () => {
+    const start = vi.fn(async () => ok({}));
+    const notice = await openWipedBotDm(async () => CLOUD_UNSUPPORTED, start);
+    expect(notice.textContent).toContain("another computer");
+
+    // The 2 m 39 s spinner: writing to this bot must not start one.
+    await sendPlainMessage();
+    expect(q('[data-testid="agent-thinking-row"]'), "nothing is working on this").toBeNull();
+    expect(q('[data-testid="bot-message-unanswered"]')?.textContent).toContain("isn't running");
+    expect(start, "no doomed start is issued").not.toHaveBeenCalled();
+
+    // Bringing it back goes through HQ Cloud, which has no such route: the
+    // button is not offered, and one plain sentence says why instead.
+    expect(q('[data-testid="bot-start-here"]')).toBeNull();
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    // "Check again" stays: this Mac's own bots can change without HQ Cloud.
+    expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeTruthy();
+    // And nothing raw reaches the screen.
+    const shown = notice.textContent ?? "";
+    expect(shown).not.toContain("404");
+    expect(shown).not.toContain("/v1/");
+    expect(shown).not.toContain("hq bot");
+    // Nothing can be restored, so the prompt is not offered either.
+    expect(q('[data-testid="bot-restore-banner"]')).toBeNull();
+  });
+
+  it("reads the CLI's own failure contract the same way as its raw text", async () => {
+    await openWipedBotDm(async () => CLOUD_UNSUPPORTED_JSON);
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    expect(q('[data-testid="bot-start-here"]')).toBeNull();
+  });
+
+  it("says it could not be reached, and offers Check again, on a network failure", async () => {
+    const start = vi.fn(async () => ok({}));
+    await openWipedBotDm(async () => CLOUD_OFFLINE, start);
+    await sendPlainMessage();
+    expect(q('[data-testid="agent-thinking-row"]')).toBeNull();
+    expect(start).not.toHaveBeenCalled();
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_CLOUD_UNREACHABLE,
+    );
+    expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeTruthy();
+  });
+
+  it("asks the person to sign in again when the listing is refused", async () => {
+    await openWipedBotDm(async () => CLOUD_REFUSED);
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_CLOUD_SIGN_IN,
+    );
+    expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeTruthy();
+  });
+
+  it("treats an answer it cannot read as no answer, never as a bot that is missing", async () => {
+    // A host that answers `ok` with nothing at all (the null payload that once
+    // crashed the refresh). The notice still comes from local evidence.
+    await openWipedBotDm(async () => ok(null as never));
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_CLOUD_UNREACHABLE,
+    );
+  });
+
+  it("offers the way out again as soon as the listing works", async () => {
+    // Same wiped bot, a server that HAS the route: nothing about the honest
+    // notice changes, and "Start on this computer" is back.
+    rememberItRanHere();
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: async () => ok({ bots: [remoteBot()] }) },
+        contacts: [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }],
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    await vi.waitFor(() => expect(q('[data-testid="bot-start-here"]')).toBeTruthy());
+    expect(q('[data-testid="bot-restore-unavailable"]')).toBeNull();
+  });
+
+  it("never draws one of the person's own bots as Cloud because the listing failed", async () => {
+    // The VM's Observation: `setup Cloud`, `cobot Cloud`, `test-bot Cloud` and
+    // a wiped `qa-20260916a Cloud` — every one of them the owner's local bot.
+    rememberItRanHere();
+    const iso = new Date().toISOString();
+    const sidebarApi: ChatSidebarApi = {
+      ...createFixtureChatSidebarApi(),
+      fetchChannelDirectory: async () => ({
+        contractVersion: 2,
+        snapshot: true,
+        cursor: "cur_1",
+        cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        rows: [],
+      }),
+      listContacts: async () => ({
+        contacts: [
+          { personUid: TEST_BOT_UID, displayName: "test-bot", lastActivityAt: iso, lastDmAt: iso },
+          { personUid: FLEET_UID, displayName: "izzy", lastActivityAt: iso, lastDmAt: iso },
+        ],
+      }),
+    } as ChatSidebarApi;
+    mountApp(wipedBotAdapter(async () => CLOUD_UNSUPPORTED), undefined, sidebarApi);
+
+    const chipFor = (uid: string) =>
+      q(`[data-conversation-id="dm:${uid}"] [data-testid="bot-kind-chip"]`);
+    await vi.waitFor(() => {
+      expect(chipFor(TEST_BOT_UID)).toBeTruthy();
+      expect(chipFor(FLEET_UID)).toBeTruthy();
+    });
+    expect(chipFor(TEST_BOT_UID)?.getAttribute("aria-label")).toBe("Local");
+    expect(chipFor(TEST_BOT_UID)?.dataset.kind).toBe("local");
+    // A bot this computer has no trace of is still a cloud teammate: nothing
+    // about anyone else's bot changes.
+    expect(chipFor(FLEET_UID)?.getAttribute("aria-label")).toBe("Cloud");
+    expect(chipFor(FLEET_UID)?.dataset.kind).toBe("cloud");
   });
 });

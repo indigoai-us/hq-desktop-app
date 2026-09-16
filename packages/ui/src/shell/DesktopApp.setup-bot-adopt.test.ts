@@ -22,6 +22,7 @@ import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
+import { BOT_RESTORE_NEEDS_NEWER_CLOUD } from "../chat/bot-restore.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
 
@@ -262,6 +263,46 @@ describe("the setup bot this account already owns is adopted, never re-created",
     await settle(24);
     expect(adopt).toHaveBeenCalledWith("setup");
     expect(create, "the identity already exists; never a second setup bot").not.toHaveBeenCalled();
+  });
+
+  it("says why it cannot bring the setup bot here when HQ Cloud has no such route (T2.4)", async () => {
+    // The owner's VM: `hq bot list --remote` answered 404, so the DM offered
+    // only "Check again" and never explained itself. The listing is an
+    // enhancement — a failure may take the BUTTON away, never the reason.
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: "agt_new" }));
+    const adopt = vi.fn(async () => ok({ ok: true }));
+    mountApp(
+      adapter({
+        bots: {
+          create,
+          adopt,
+          list: async () => ok({ bots: [] }),
+          listRemote: async () => ({
+            ok: false as const,
+            reason: "error" as const,
+            message: "HQ API /v1/agents/mine → 404: Not found",
+          }),
+        },
+        contacts: [{ personUid: CLOUD_SETUP_UID, displayName: "setup", companyUid: null }],
+      }),
+    );
+
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    const notice = await vi.waitFor(() => {
+      const el = q('[data-testid="bot-not-runnable-notice"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    // No button that cannot work, and nothing raw from the API.
+    expect(q('[data-testid="bot-start-here"]')).toBeNull();
+    expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeTruthy();
+    expect(notice.textContent).not.toContain("404");
+    expect(notice.textContent).not.toContain("/v1/");
+    expect(adopt).not.toHaveBeenCalled();
+    expect(create, "never a second setup bot").not.toHaveBeenCalled();
   });
 
   it("a create that comes back 409 adopts the bot and shows the person nothing at all", async () => {

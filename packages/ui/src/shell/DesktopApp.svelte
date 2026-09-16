@@ -276,8 +276,12 @@
     canStartBot,
     classifyBotStartFailure,
     clearBotStartGate,
+    readLocalBotTrace,
+    reconcileLocalBotTrace,
     recordBotStartFailure,
+    rememberLocalBots,
     type BotStartGate,
+    type LocalBotTrace,
   } from "../chat/bot-runnability.js";
   import {
     isAlreadyExistsFailure,
@@ -307,9 +311,16 @@
     botRestoreRowLine,
     botRestoreSummary,
     botsNotHere,
+    classifyRemoteBotFailure,
+    NO_REMOTE_BOT_LISTING,
     ownedBotNotHere,
+    ownedBotsNotHere,
+    remoteBotListingFailed,
+    remoteBotListingNotice,
+    remoteBotListingOk,
     REMOTE_BOTS_POLL_MS,
     rememberBotRestoreDismissed,
+    type RemoteBotListing,
   } from "../chat/bot-restore.js";
   import {
     botNeedsSignIn,
@@ -967,11 +978,35 @@
     unrunnableBotUids = { ...unrunnableBotUids, [uid]: reason };
     thinkingByRow = clearAgentEverywhere(thinkingByRow, uid);
   }
+  /**
+   * Per-machine memory for the bot surfaces: the restore prompt's dismissal
+   * and the trace of bots this computer has run. Read once, never thrown from.
+   */
+  const botMachineMemory = (() => {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch {
+      return null;
+    }
+  })();
+  /**
+   * BOTS THIS COMPUTER HAS RUN (uid → name).
+   *
+   * `hq bot list` reads each bot's own config, so a wiped bot silently drops
+   * off it — which is how one of the owner's own bots came to be drawn as
+   * `Cloud` and to sit under a spinner for 2 m 39 s while the account listing
+   * was unavailable. A uid this app has seen on this Mac's listing, and no
+   * longer sees, is local evidence that needs no server: your bot, here, with
+   * nothing left to run it.
+   */
+  let localBotTrace = $state<LocalBotTrace>(readLocalBotTrace(botMachineMemory));
   async function refreshLocalBots(): Promise<void> {
     const api = adapter.bots;
     if (!api) return;
     const result = await api.list();
-    if (result.ok) localBotRecords = result.value.bots ?? [];
+    if (!result.ok) return;
+    localBotRecords = result.value.bots ?? [];
+    localBotTrace = rememberLocalBots(botMachineMemory, localBotTrace, localBotRecords);
   }
   /**
    * BOTS COME BACK AFTER A REINSTALL.
@@ -984,16 +1019,34 @@
    * Null until the first listing lands (and on hosts without the command), so
    * "not here" is never inferred from an answer that has not arrived.
    */
-  let remoteBotRecords = $state<RemoteBotRow[] | null>(null);
+  let remoteBotListing = $state<RemoteBotListing>(NO_REMOTE_BOT_LISTING);
+  /** One plain sentence when the listing failed; null while it is fine. */
+  const remoteListingNotice = $derived(remoteBotListingNotice(remoteBotListing.failure));
+  /**
+   * This HQ Cloud has no listing route yet, so nothing can be brought back
+   * from it. The actions that depend on it are not offered — the sentence
+   * above says why, instead of a button that cannot work.
+   */
+  const botRestoreUnavailable = $derived(remoteBotListing.failure !== null);
   async function refreshRemoteBots(): Promise<void> {
     const listRemote = adapter.bots?.listRemote;
     if (!listRemote) return;
     const result = await listRemote();
-    // A host that answers with nothing is not evidence that a bot is missing:
-    // an empty listing and "no answer" must not read the same, so anything
-    // unreadable leaves the previous listing (and `null`) in place.
-    if (result.ok) remoteBotRecords = result.value?.bots ?? [];
-    else if (result.message) console.warn("[hq-desktop] remote bot list failed:", result.message);
+    // A LISTING THAT FAILED IS NOT EVIDENCE ABOUT ANY BOT. An empty listing
+    // and "no answer" must never read the same, so a failure keeps the last
+    // good rows (marked stale) and only changes what the app can offer.
+    if (result.ok && Array.isArray(result.value?.bots)) {
+      remoteBotListing = remoteBotListingOk(result.value.bots);
+      localBotTrace = reconcileLocalBotTrace(botMachineMemory, localBotTrace, result.value.bots);
+      return;
+    }
+    if (!result.ok && result.message) {
+      console.warn("[hq-desktop] remote bot list failed:", result.message);
+    }
+    remoteBotListing = remoteBotListingFailed(
+      remoteBotListing,
+      result.ok ? "malformed" : classifyRemoteBotFailure(result.reason, result.message),
+    );
   }
   /**
    * A start that actually ran: the budget resets and the honest "cannot run
@@ -1065,26 +1118,37 @@
     });
   });
   /**
-   * The remote listing is the SOURCE OF TRUTH for runnability, so a DM with an
-   * owned local bot that is not set up here shows the honest notice from the
-   * first frame — no start is issued, and nothing spins. Cloud and fleet
-   * agents are not on this listing at all (`hq bot list --remote` reports
-   * local bots only), so their behaviour is untouched.
+   * RUNNABILITY IS LOCAL EVIDENCE FIRST, enhanced by the account's listing.
+   *
+   * A DM with an owned local bot that is not set up here shows the honest
+   * notice from the first frame — no start is issued, and nothing spins. That
+   * has to hold when the account listing is missing, unreachable or refused,
+   * which is exactly the state the owner's VM was in: the listing answered 404
+   * and a wiped bot's DM went back to a normal composer and a 2 m 39 s
+   * spinner. So the listing only ADDS bots to this set; this computer's own
+   * trace carries it when the listing cannot. Cloud and fleet bots are in
+   * neither, so their behaviour is untouched.
    */
+  const ownedBotsMissingHere = $derived(
+    ownedBotsNotHere(remoteBotListing, localBotTrace, localBotRecords),
+  );
   $effect(() => {
-    const remote = remoteBotRecords;
-    if (!remote) return;
+    const owned = ownedBotsMissingHere;
     untrack(() => {
-      for (const bot of botsNotHere(remote)) {
-        const uid = bot.agentUid.trim();
-        if (unrunnableBotUids[uid]) continue;
-        noteBotCannotRunHere(uid);
+      for (const bot of owned) {
+        if (unrunnableBotUids[bot.agentUid]) continue;
+        noteBotCannotRunHere(bot.agentUid);
       }
     });
   });
+  /**
+   * The person's own local bots, including the ones nothing here can run, so
+   * no bot of theirs is ever drawn as `Cloud` because a listing failed.
+   */
+  const ownedLocalBotUids = $derived(ownedBotsMissingHere.map((bot) => bot.agentUid));
   /** The open DM's bot, when the account owns it and this computer cannot run it. */
   const selectedBotNotHere = $derived(
-    selectedRow?.kind === "dm" ? ownedBotNotHere(remoteBotRecords, selectedRow.personUid) : null,
+    selectedRow?.kind === "dm" ? ownedBotNotHere(ownedBotsMissingHere, selectedRow.personUid) : null,
   );
   /** The open DM's bot cannot run here — the honest state, or null. */
   const selectedBotCannotRun = $derived(
@@ -1635,24 +1699,30 @@
    * Non-blocking, shown once, and remembered per machine so it never nags at
    * launch. Settings › Bots is where a person asks for it again.
    */
-  const restoreMemory = (() => {
-    try {
-      return typeof localStorage === "undefined" ? null : localStorage;
-    } catch {
-      return null;
-    }
-  })();
-  let botRestoreDismissed = $state(botRestorePromptDismissed(restoreMemory));
+  let botRestoreDismissed = $state(botRestorePromptDismissed(botMachineMemory));
   let botRestoreBusy = $state(false);
   let botRestoreResult = $state<BotRestoreResult | null>(null);
   let botRestoreError = $state<string | null>(null);
-  const botsMissingHere = $derived(botsNotHere(remoteBotRecords));
+  /**
+   * What `hq bot restore --all` would actually bring back: bots the account's
+   * own listing named, minus any that this Mac's listing shows are here after
+   * all. Trace-only bots are deliberately not counted — restoring goes
+   * through HQ Cloud, so a listing the app could not read cannot be the basis
+   * for offering it.
+   */
+  const botsMissingHere = $derived(
+    botsNotHere(remoteBotListing.rows).filter((bot) => !botRunsHere(localBotRecords, bot.agentUid)),
+  );
   const showBotRestorePrompt = $derived(
-    Boolean(adapter.bots?.restore) && !botRestoreDismissed && !botRestoreResult && botsMissingHere.length > 0,
+    Boolean(adapter.bots?.restore) &&
+      !botRestoreUnavailable &&
+      !botRestoreDismissed &&
+      !botRestoreResult &&
+      botsMissingHere.length > 0,
   );
   function dismissBotRestorePrompt(): void {
     botRestoreDismissed = true;
-    rememberBotRestoreDismissed(restoreMemory);
+    rememberBotRestoreDismissed(botMachineMemory);
   }
   async function restoreMyBots(): Promise<void> {
     const restore = adapter.bots?.restore;
@@ -1669,7 +1739,7 @@
     }
     botRestoreResult = result.value;
     // Asking counts as answering the prompt: it is not offered again by itself.
-    rememberBotRestoreDismissed(restoreMemory);
+    rememberBotRestoreDismissed(botMachineMemory);
     for (const row of result.value.bots ?? []) {
       if (row.action === "restored" || row.action === "repaired") noteBotStarted(row.name, row.agentUid);
     }
@@ -5995,6 +6065,7 @@
           onbotsignedin={onBotRuntimeSignedIn}
           loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
           {localBots}
+          {ownedLocalBotUids}
           onrows={(rows) => {
             railRows = rows;
             directorySettled = true;
@@ -6120,7 +6191,7 @@
                       </span>
                       <h2 data-testid="channel-name">{headerTitle}</h2>
                       <BotKindChip
-                        kind={botKindFor(selectedRow.personUid, localBots) ?? "cloud"}
+                        kind={botKindFor(selectedRow.personUid, localBots, ownedLocalBotUids) ?? "cloud"}
                         runtime={selectedLocalBot?.runtime ?? null}
                         size="md"
                       />
@@ -6463,6 +6534,7 @@
             <AgentDetailPanel
               agentUid={agentChannelUid}
               {localBots}
+              {ownedLocalBotUids}
               displayName={headerTitle}
               avatarUrl={avatarByUid[agentChannelUid] ?? null}
               companyUid={promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid}
@@ -6654,7 +6726,7 @@
                          actually perform: look again. -->
                     <div class="local-bot-notice" data-testid="bot-not-runnable-notice" role="status">
                       <span class="local-bot-notice-text">{selectedBotCannotRun}</span>
-                      {#if selectedBotNotHere && adapter.bots?.adopt}
+                      {#if selectedBotNotHere && adapter.bots?.adopt && !botRestoreUnavailable}
                         <!-- The account owns this bot, so there IS something
                              the desktop can do: bring it back here. Its name,
                              memory and this conversation come with it. -->
@@ -6672,6 +6744,16 @@
                               : BOT_START_HERE}
                         </button>
                         <span class="local-bot-notice-hint">{BOT_START_HERE_EXPLAINER}</span>
+                      {:else if remoteListingNotice}
+                        <!-- Bringing a bot back goes through HQ Cloud, and the
+                             app could not read it. Rather than a button that
+                             cannot work (or silence, which is what the owner's
+                             VM got), one plain sentence says why — and "Check
+                             again" below still re-reads this Mac's own bots,
+                             which is the half that can change without HQ. -->
+                        <span class="local-bot-notice-hint" data-testid="bot-restore-unavailable">
+                          {remoteListingNotice}
+                        </span>
                       {/if}
                       <button
                         type="button"
@@ -6831,6 +6913,7 @@
                   <AgentDetailPanel
                     agentUid={openAgentMember.personUid}
                     {localBots}
+                    {ownedLocalBotUids}
                     displayName={openAgentMember.displayName}
                     avatarUrl={openAgentMember.avatarUrl ??
                       avatarByUid[openAgentMember.personUid] ??

@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { BotRestoreResult, BotRestoreRow, RemoteBotRow } from "@hq/platform";
+import type { BotRestoreResult, BotRestoreRow, LocalBotRow, RemoteBotRow } from "@hq/platform";
 
 import {
+  BOT_RESTORE_CLOUD_SIGN_IN,
+  BOT_RESTORE_CLOUD_UNREACHABLE,
   BOT_RESTORE_DISMISSED_KEY,
+  BOT_RESTORE_NEEDS_NEWER_CLOUD,
   BOT_START_HERE,
+  NO_REMOTE_BOT_LISTING,
   adoptFallbackNotice,
   botRestorePromptBody,
   botRestorePromptDismissed,
@@ -11,8 +15,13 @@ import {
   botRestoreRowLine,
   botRestoreSummary,
   botsNotHere,
+  classifyRemoteBotFailure,
   ownedBotNotHere,
+  ownedBotsNotHere,
   rememberBotRestoreDismissed,
+  remoteBotListingFailed,
+  remoteBotListingNotice,
+  remoteBotListingOk,
   type RestorePromptMemory,
 } from "./bot-restore.js";
 
@@ -60,15 +69,137 @@ describe("which bots this computer cannot run", () => {
   });
 
   it("answers null for a bot that runs here, and for an agent it has never heard of", () => {
-    const rows = [remote(), remote({ name: "iris", agentUid: "agt_iris", here: false })];
-    expect(ownedBotNotHere(rows, "agt_iris")?.name).toBe("iris");
+    const owned = ownedBotsNotHere(
+      remoteBotListingOk([remote(), remote({ name: "iris", agentUid: "agt_iris", here: false })]),
+      {},
+      [],
+    );
+    expect(ownedBotNotHere(owned, "agt_iris")?.name).toBe("iris");
     // Runs here: nothing to offer.
-    expect(ownedBotNotHere(rows, "agt_scout")).toBeNull();
+    expect(ownedBotNotHere(owned, "agt_scout")).toBeNull();
     // A cloud/fleet agent is never on this listing, so it keeps its own
     // behaviour rather than being called a bot that cannot run.
-    expect(ownedBotNotHere(rows, "agt_fleet_teammate")).toBeNull();
-    expect(ownedBotNotHere(rows, "")).toBeNull();
-    expect(ownedBotNotHere(null, "agt_iris")).toBeNull();
+    expect(ownedBotNotHere(owned, "agt_fleet_teammate")).toBeNull();
+    expect(ownedBotNotHere(owned, "")).toBeNull();
+    expect(ownedBotNotHere([], "agt_iris")).toBeNull();
+  });
+});
+
+/**
+ * THE LISTING IS AN ENHANCEMENT, NEVER A GATE.
+ *
+ * The owner's VM ran against an HQ Cloud that has no `/v1/agents/mine` route:
+ * the listing answered 404 every time, and because the app read runnability
+ * from it, four of the owner's own local bots were drawn as `Cloud`, a wiped
+ * bot's DM showed a normal composer with no notice, and one message spun for
+ * 2 m 39 s. These pin the rules that make a failed listing harmless.
+ */
+describe("when HQ Cloud cannot list your bots", () => {
+  function local(over: Partial<LocalBotRow> = {}): LocalBotRow {
+    return {
+      name: "scout",
+      agentUid: "agt_scout",
+      ownerUid: "prs_me",
+      runtime: "claude",
+      state: "running",
+      pid: 1,
+      processAlive: true,
+      online: true,
+      lastHeartbeatAt: null,
+      daemonInstalled: true,
+      daemonLoaded: true,
+      dir: "/tmp/.hq/bots/scout",
+      ...over,
+    } as LocalBotRow;
+  }
+
+  it("reads the CLI's own reason when it reaches the app as its JSON contract", () => {
+    const json = (reason: string) =>
+      JSON.stringify({ ok: false, reason, message: "whatever the CLI wrote", bots: [] });
+    expect(classifyRemoteBotFailure("error", json("server-unsupported"))).toBe("server-unsupported");
+    expect(classifyRemoteBotFailure("error", json("network"))).toBe("network");
+    expect(classifyRemoteBotFailure("error", json("auth"))).toBe("auth");
+    expect(classifyRemoteBotFailure("error", json("malformed"))).toBe("malformed");
+  });
+
+  it("classifies today's raw CLI text, which is all the VM had", () => {
+    // Verbatim from the VM report (T2.1) — a route the server does not have.
+    expect(classifyRemoteBotFailure("error", "HQ API /v1/agents/mine → 404: Not found")).toBe(
+      "server-unsupported",
+    );
+    expect(classifyRemoteBotFailure("error", "HQ API /v1/agents/mine → 401: Unauthorized")).toBe("auth");
+    expect(classifyRemoteBotFailure("error", "hq bot list --remote did not finish within 60s")).toBe(
+      "network",
+    );
+    // Nothing recognised is "try again": it never claims a bot is missing and
+    // never hides a route that does exist.
+    expect(classifyRemoteBotFailure("error", "something nobody wrote a rule for")).toBe("network");
+    expect(classifyRemoteBotFailure("error", "")).toBe("network");
+    // A JSON document that is not the contract falls back to reading the text.
+    expect(classifyRemoteBotFailure("error", '{"oops": 404}')).toBe("server-unsupported");
+  });
+
+  it("keeps the last good listing instead of losing the rows it named", () => {
+    const good = remoteBotListingOk([remote({ here: false })]);
+    expect(good).toEqual({ rows: [remote({ here: false })], failure: null });
+
+    const failed = remoteBotListingFailed(good, "server-unsupported");
+    expect(failed.rows?.map((b) => b.name)).toEqual(["scout"]);
+    expect(failed.failure).toBe("server-unsupported");
+
+    // Nothing good ever landed: there is nothing to keep.
+    expect(remoteBotListingFailed(NO_REMOTE_BOT_LISTING, "network")).toEqual({
+      rows: null,
+      failure: "network",
+    });
+  });
+
+  it("says one plain sentence per reason, and nothing at all while the listing is fine", () => {
+    expect(remoteBotListingNotice("server-unsupported")).toBe(BOT_RESTORE_NEEDS_NEWER_CLOUD);
+    expect(remoteBotListingNotice("auth")).toBe(BOT_RESTORE_CLOUD_SIGN_IN);
+    expect(remoteBotListingNotice("network")).toBe(BOT_RESTORE_CLOUD_UNREACHABLE);
+    expect(remoteBotListingNotice("malformed")).toBe(BOT_RESTORE_CLOUD_UNREACHABLE);
+    expect(remoteBotListingNotice(null)).toBeNull();
+    // Never the CLI's or the API's own words.
+    for (const failure of ["server-unsupported", "auth", "network", "malformed"] as const) {
+      const sentence = remoteBotListingNotice(failure) ?? "";
+      expect(sentence).not.toMatch(/40\d|\/v\d|HQ API|hq bot/);
+    }
+  });
+
+  it("falls back to this computer's own trace when the listing never answered", () => {
+    // The VM's T5.2: a bot this Mac had run, its config wiped, and a listing
+    // that 404s. It is the person's local bot, not a cloud teammate.
+    const owned = ownedBotsNotHere(
+      remoteBotListingFailed(NO_REMOTE_BOT_LISTING, "server-unsupported"),
+      { agt_scout: "scout" },
+      [],
+    );
+    expect(owned).toEqual([{ name: "scout", agentUid: "agt_scout", fromListing: false }]);
+  });
+
+  it("lets local evidence outrank a stale listing, so a bot that is back stays back", () => {
+    // The listing last said "not here"; this Mac's own listing now has it.
+    const stale = remoteBotListingFailed(remoteBotListingOk([remote({ here: false })]), "network");
+    expect(ownedBotsNotHere(stale, { agt_scout: "scout" }, [local()])).toEqual([]);
+  });
+
+  it("never invents a bot for an agent with neither a listing row nor a trace", () => {
+    const owned = ownedBotsNotHere(
+      remoteBotListingFailed(NO_REMOTE_BOT_LISTING, "server-unsupported"),
+      {},
+      [],
+    );
+    expect(owned).toEqual([]);
+  });
+
+  it("counts a bot once when the listing and the trace both name it", () => {
+    const owned = ownedBotsNotHere(
+      remoteBotListingOk([remote({ here: false })]),
+      { agt_scout: "scout" },
+      [],
+    );
+    expect(owned).toEqual([{ name: "scout", agentUid: "agt_scout", fromListing: true }]);
   });
 });
 

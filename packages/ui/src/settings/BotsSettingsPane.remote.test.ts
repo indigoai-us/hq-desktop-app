@@ -22,6 +22,10 @@ import {
 } from "@hq/platform";
 
 import BotsSettingsPane from "./BotsSettingsPane.svelte";
+import {
+  BOT_RESTORE_CLOUD_UNREACHABLE,
+  BOT_RESTORE_NEEDS_NEWER_CLOUD,
+} from "../chat/bot-restore.js";
 
 const HERE: LocalBotRow = {
   name: "assistant",
@@ -191,6 +195,60 @@ describe("bots that live on another computer", () => {
     expect(status?.textContent).toContain("Could not bring scout back to this Mac");
     expect(status?.textContent).not.toContain("403");
     expect(status?.textContent).not.toContain("/v1/");
+  });
+
+  it("explains itself instead of going blank when HQ Cloud cannot list them", async () => {
+    // The owner's VM: production HQ Cloud has no listing route, so the pane
+    // simply showed nothing at all — no rows, no restore, no reason.
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await mountPane(
+      fakeAdapter({
+        listRemote: vi.fn(async () => ({
+          ok: false as const,
+          reason: "error" as const,
+          message: "HQ API /v1/agents/mine → 404: Not found",
+        })),
+      }),
+    );
+    await settle(14);
+
+    const card = q('[data-testid="settings-bots-remote-unavailable"]');
+    expect(card?.textContent).toContain(BOT_RESTORE_NEEDS_NEWER_CLOUD);
+    expect(card?.textContent).not.toContain("404");
+    expect(card?.textContent).not.toContain("/v1/");
+    // Nothing that could not work is offered, and nothing is claimed about
+    // any bot: the rows this Mac DOES have are exactly as before.
+    expect(q('[data-testid="settings-bots-restore-all"]')).toBeNull();
+    expect(q('[data-testid="settings-bots-remote-recheck"]'), "no retry for a route that is absent").toBeNull();
+    expect(q('[data-testid="settings-bot-assistant"]')).toBeTruthy();
+  });
+
+  it("offers Check again when the listing could not be reached, and recovers", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let reachable = false;
+    await mountPane(
+      fakeAdapter({
+        listRemote: vi.fn(async () =>
+          reachable
+            ? ok({ bots: [remote()] })
+            : {
+                ok: false as const,
+                reason: "error" as const,
+                message: "hq bot list --remote did not finish within 60s",
+              },
+        ),
+      }),
+    );
+    await settle(14);
+    expect(q('[data-testid="settings-bots-remote-unavailable"]')?.textContent).toContain(
+      BOT_RESTORE_CLOUD_UNREACHABLE,
+    );
+
+    reachable = true;
+    q<HTMLButtonElement>('[data-testid="settings-bots-remote-recheck"]')!.click();
+    await settle(16);
+    expect(q('[data-testid="settings-bots-remote-unavailable"]')).toBeNull();
+    expect(q('[data-testid="settings-remote-bot-scout-start"]')).toBeTruthy();
   });
 
   it("stays quiet on a host with no remote listing at all (older app, web build)", async () => {

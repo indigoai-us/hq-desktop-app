@@ -164,3 +164,134 @@ export function botRunsHere(
   if (!uid) return false;
   return (bots ?? []).some((bot) => bot.agentUid.trim() === uid);
 }
+
+// ── Bots this computer has run ───────────────────────────────────────────────
+//
+// `hq bot list` reports the bots this Mac can RUN: it reads each bot's own
+// config, so a bot whose config was wiped (a reinstall, a half-deleted
+// `~/.hq/bots/<name>`) drops off the listing entirely — even though its
+// folder, its log and its startup agent are still on disk and the account
+// still owns it. That silence is how a wiped bot came to be labelled "Cloud"
+// in the rail and to sit under a spinner for 2 m 39 s.
+//
+// The account's own listing (`hq bot list --remote`) tells the two apart, but
+// it is a cloud round trip that can be missing, unreachable or refused, and
+// runnability must never depend on a call that can fail. So the app keeps its
+// own local trace: every bot it has seen on THIS computer's listing, by uid
+// and name. A uid in the trace that is no longer on the listing is the
+// evidence that says "this is your local bot, and nothing here can run it" —
+// no server needed.
+
+/** Where the trace lives (per machine, alongside the restore dismissal). */
+export const LOCAL_BOT_TRACE_KEY = "hq.bots.seen-here";
+
+/** Agent uid → the bot's local folder name (what `adopt`/`start` take). */
+export type LocalBotTrace = Readonly<Record<string, string>>;
+
+/** Minimal `localStorage` shape, so this stays testable and host-agnostic. */
+export interface LocalBotTraceStore {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+function writeLocalBotTrace(store: LocalBotTraceStore | null | undefined, trace: LocalBotTrace): void {
+  try {
+    store?.setItem(LOCAL_BOT_TRACE_KEY, JSON.stringify(trace));
+  } catch {
+    // A host with storage disabled simply forgets between launches; the
+    // in-memory trace still covers everything that happens in this session.
+  }
+}
+
+/** The trace this machine remembers. Never throws: an unreadable trace is none. */
+export function readLocalBotTrace(store: LocalBotTraceStore | null | undefined): LocalBotTrace {
+  try {
+    const raw = store?.getItem(LOCAL_BOT_TRACE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [uid, name] of Object.entries(parsed as Record<string, unknown>)) {
+      if (uid.trim() && typeof name === "string" && name.trim()) out[uid.trim()] = name.trim();
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Fold this computer's listing into the trace.
+ *
+ * Absence is never written back — a bot missing from the listing is exactly
+ * the wipe this trace exists to notice. A bot that finished promotion to the
+ * cloud IS dropped: it is a cloud bot now, and calling it local would put a
+ * "cannot run here" notice on a bot that runs fine.
+ *
+ * Returns the same object when nothing changed, so the caller's state (and the
+ * store) is only written on a real change.
+ */
+export function rememberLocalBots(
+  store: LocalBotTraceStore | null | undefined,
+  previous: LocalBotTrace,
+  bots: readonly LocalBotRow[] | null | undefined,
+): LocalBotTrace {
+  const next: Record<string, string> = { ...previous };
+  let changed = false;
+  for (const bot of bots ?? []) {
+    const uid = bot.agentUid?.trim();
+    const name = bot.name?.trim();
+    if (!uid) continue;
+    if (bot.hosting === "cloud") {
+      if (uid in next) {
+        delete next[uid];
+        changed = true;
+      }
+      continue;
+    }
+    if (!name || next[uid] === name) continue;
+    next[uid] = name;
+    changed = true;
+  }
+  if (!changed) return previous;
+  writeLocalBotTrace(store, next);
+  return next;
+}
+
+/**
+ * Drop traced bots the account no longer owns, using a listing that SUCCEEDED.
+ *
+ * Only a good listing may prune: a failed one is not evidence that a bot is
+ * gone, which is the whole reason the trace exists. This is what keeps a bot
+ * removed with `hq bot rm` from being remembered as local for ever.
+ */
+export function reconcileLocalBotTrace(
+  store: LocalBotTraceStore | null | undefined,
+  previous: LocalBotTrace,
+  owned: ReadonlyArray<{ agentUid: string }> | null | undefined,
+): LocalBotTrace {
+  if (!owned) return previous;
+  const keep = new Set(owned.map((bot) => bot.agentUid?.trim()).filter(Boolean));
+  const next: Record<string, string> = {};
+  let changed = false;
+  for (const [uid, name] of Object.entries(previous)) {
+    if (keep.has(uid)) next[uid] = name;
+    else changed = true;
+  }
+  if (!changed) return previous;
+  writeLocalBotTrace(store, next);
+  return next;
+}
+
+/**
+ * Bots this computer has run that are NOT on its listing any more: the
+ * person's own local bots with nothing here to run them. In trace order.
+ */
+export function localBotsTracedButGone(
+  trace: LocalBotTrace,
+  bots: readonly LocalBotRow[] | null | undefined,
+): Array<{ name: string; agentUid: string }> {
+  return Object.entries(trace)
+    .filter(([uid]) => !botRunsHere(bots, uid))
+    .map(([agentUid, name]) => ({ agentUid, name }));
+}

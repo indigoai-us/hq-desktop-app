@@ -15,14 +15,23 @@ export type BotKind = "cloud" | "local";
 /**
  * Which kind of bot a uid is: "local" when one of the user's local bots owns
  * it, "cloud" for any other bot uid, null for humans and empty uids.
+ *
+ * `ownedLocalUids` is the owner's own local bots that this computer cannot run
+ * right now — a wiped config, a reinstall, a second Mac. They are NOT on this
+ * Mac's listing, and drawing them as "Cloud" is what the owner's VM showed
+ * happening to four of their own bots the moment the account listing was
+ * unavailable. They are local bots with nothing here to run them, so they read
+ * "Local"; a bot with no such trace is still cloud, exactly as before.
  */
 export function botKindFor(
   uid: string | null | undefined,
   localBots: ReadonlyArray<{ agentUid: string }> | null | undefined,
+  ownedLocalUids?: readonly string[] | null,
 ): BotKind | null {
   const id = (uid ?? "").trim();
   if (!id || !isAgentUid(id)) return null;
   if (localBots?.some((bot) => bot.agentUid.trim() === id)) return "local";
+  if (ownedLocalUids?.some((owned) => owned.trim() === id)) return "local";
   return "cloud";
 }
 

@@ -233,6 +233,13 @@
      * from — otherwise a bot could not be added to a channel or group chat.
      */
     localBots?: readonly LocalBotRow[] | null;
+    /**
+     * The user's own local bots that this computer cannot run right now — a
+     * wiped config, a reinstall, a second Mac. They are not on `localBots`,
+     * and drawing them as `Cloud` is what the owner's VM showed happening to
+     * four of their own bots the moment the account listing was unavailable.
+     */
+    ownedLocalBotUids?: readonly string[] | null;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
@@ -314,6 +321,7 @@
     avatarPacks = null,
     loadAvatarPacks = null,
     localBots = null,
+    ownedLocalBotUids = null,
     onrows,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     welcomeFirst = false,
@@ -2912,7 +2920,7 @@
         <span class="chat-row-copy">
           <span class="chat-row-title">{row.title}</span>
           {#if row.kind === "dm"}
-            {@const botKind = botKindFor(row.personUid, localBots)}
+            {@const botKind = botKindFor(row.personUid, localBots, ownedLocalBotUids)}
             {#if botKind}
               <BotKindChip
                 kind={botKind}

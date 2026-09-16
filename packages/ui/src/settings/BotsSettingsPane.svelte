@@ -33,6 +33,9 @@
     botRestoreRowLine,
     botRestoreSummary,
     botsNotHere,
+    classifyRemoteBotFailure,
+    remoteBotListingNotice,
+    type RemoteBotListFailure,
   } from "../chat/bot-restore.js";
   import { botNeedsSignIn } from "../chat/runtime-sign-in-again.js";
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
@@ -82,6 +85,15 @@
   // --remote` is the account's own listing; the rows it flags `here: false`
   // get their own group with the one action that fixes them.
   let remoteBots = $state<RemoteBotRow[] | null>(null);
+  /**
+   * Why the listing could not be read, or null while it is fine. A failure
+   * keeps the last good rows and takes the ACTIONS away, never the rows: an
+   * HQ Cloud without the route is why "Restore my bots" cannot work, and a
+   * pane that simply showed nothing left the person with no explanation at
+   * all (the owner's VM, round 6).
+   */
+  let remoteFailure = $state<RemoteBotListFailure | null>(null);
+  const remoteFailureNotice = $derived(remoteBotListingNotice(remoteFailure));
   let adoptBusy = $state<string | null>(null);
   let restoreBusy = $state(false);
   let restoreResult = $state<BotRestoreResult | null>(null);
@@ -226,7 +238,17 @@
     const listRemote = adapter?.bots?.listRemote;
     if (!listRemote) return;
     const result = await listRemote();
-    if (result.ok) remoteBots = result.value?.bots ?? [];
+    if (result.ok && Array.isArray(result.value?.bots)) {
+      remoteBots = result.value.bots;
+      remoteFailure = null;
+      return;
+    }
+    // An answer we could not read is not evidence that a bot is gone: the
+    // rows stay exactly as they were and only the actions change.
+    if (!result.ok && result.message) {
+      console.warn("[hq-desktop] remote bot list failed:", result.message);
+    }
+    remoteFailure = result.ok ? "malformed" : classifyRemoteBotFailure(result.reason, result.message);
   }
 
   /** "Start here" on a row that lives elsewhere: `hq bot adopt <name>`. */
@@ -436,6 +458,33 @@
         {/each}
       </div>
 
+      {#if remoteFailureNotice}
+        <!-- Bringing bots back goes through HQ Cloud. When the app cannot read
+             the account's own listing, the buttons above would fail, so they
+             are not offered — and this one sentence takes their place rather
+             than leaving the person with an unexplained blank. -->
+        <div class="settings-card" data-testid="settings-bots-remote-unavailable">
+          <div class="bot-row">
+            <div class="bot-main">
+              <strong>Bots on other computers</strong>
+              <small>{remoteFailureNotice}</small>
+            </div>
+            {#if remoteFailure !== "server-unsupported"}
+              <div class="actions">
+                <button
+                  type="button"
+                  data-testid="settings-bots-remote-recheck"
+                  disabled={restoreBusy || Boolean(adoptBusy)}
+                  onclick={() => void loadRemote()}
+                >
+                  Check again
+                </button>
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
       {#if missingHere.length > 0}
         <!-- Owned elsewhere: the bot's identity, memory and conversations are
              safe in HQ; only the half that runs it is missing here. -->
@@ -449,7 +498,7 @@
                 conversations with it.
               </small>
             </div>
-            {#if adapter?.bots?.restore}
+            {#if adapter?.bots?.restore && !remoteFailure}
               <div class="actions">
                 <button
                   type="button"
@@ -471,7 +520,7 @@
                 </strong>
                 <small>Set up on another computer{bot.online ? " · Online there" : ""}</small>
               </div>
-              {#if adapter?.bots?.adopt}
+              {#if adapter?.bots?.adopt && !remoteFailure}
                 <div class="actions">
                   <button
                     type="button"
