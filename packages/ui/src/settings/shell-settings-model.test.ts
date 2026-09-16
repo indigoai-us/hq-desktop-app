@@ -4,6 +4,7 @@ import type { Workspace } from "../chat/workspaces.js";
 import {
   appearanceThemeOptions,
   applyColorTheme,
+  applyReducedTransparency,
   applyUiSize,
   calendarAccountLabel,
   companyAvatarWash,
@@ -12,6 +13,7 @@ import {
   PROFILE_SKELETON_DELAY_MS,
   profileFromMemberProfile,
   profilePanePhase,
+  readReducedTransparency,
   roleLabel,
   settingsCompanyLists,
   type ProfilePanePhase,
@@ -136,6 +138,64 @@ describe("appearance theme", () => {
     applyColorTheme("system", fakeRoot, storage);
     expect(attrs.has("data-force-theme")).toBe(false);
     expect(store["hq-work-color-theme"]).toBe("system");
+  });
+});
+
+describe("reduce transparency", () => {
+  function harness() {
+    const attrs = new Map<string, string>();
+    const store: Record<string, string> = {};
+    return {
+      attrs,
+      store,
+      root: {
+        setAttribute: (k: string, v: string) => attrs.set(k, v),
+        removeAttribute: (k: string) => attrs.delete(k),
+      } as unknown as HTMLElement,
+      storage: {
+        setItem: (k: string, v: string) => {
+          store[k] = v;
+        },
+        getItem: (k: string) => store[k] ?? null,
+      },
+    };
+  }
+
+  it("sets the attribute when on and REMOVES it when off", () => {
+    const h = harness();
+    applyReducedTransparency(true, h.root, h.storage);
+    expect(h.attrs.get("data-reduce-transparency")).toBe("true");
+    applyReducedTransparency(false, h.root, h.storage);
+    // Absent, not "false". The CSS matches [data-reduce-transparency="true"],
+    // but a stale "false" left on <html> invites a later selector written
+    // against mere presence, which would strip the glass for everyone who had
+    // ever toggled the setting on and back off.
+    expect(h.attrs.has("data-reduce-transparency")).toBe(false);
+  });
+
+  it("round-trips through storage", () => {
+    const h = harness();
+    applyReducedTransparency(true, h.root, h.storage);
+    expect(readReducedTransparency(h.storage)).toBe(true);
+    applyReducedTransparency(false, h.root, h.storage);
+    expect(readReducedTransparency(h.storage)).toBe(false);
+  });
+
+  it("defaults to off — the glass is the intended design", () => {
+    expect(readReducedTransparency({ getItem: () => null })).toBe(false);
+  });
+
+  it("survives storage that throws, as private mode does", () => {
+    const throwing = {
+      getItem: () => {
+        throw new Error("denied");
+      },
+      setItem: () => {
+        throw new Error("denied");
+      },
+    };
+    expect(readReducedTransparency(throwing)).toBe(false);
+    expect(() => applyReducedTransparency(true, null, throwing)).not.toThrow();
   });
 });
 
