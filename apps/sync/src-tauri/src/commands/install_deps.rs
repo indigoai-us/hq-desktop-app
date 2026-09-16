@@ -6,6 +6,8 @@
 //! an optional system package-manager provider.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(windows)]
+use std::future::Future;
 use std::io::{BufRead, BufReader};
 #[cfg(windows)]
 use std::mem::size_of;
@@ -5474,19 +5476,75 @@ fn qmd_resolves_in_prefix(prefix: &Path) -> bool {
 #[cfg(windows)]
 const RSYNC_BUNDLE_URL: &str = "https://github.com/small-tech/portable-rsync-with-ssh-for-windows/archive/0fc67b2e08ac0b1740982bcec16b3f2eb26151fa.zip";
 
+/// Result of the best-effort rsync preflight that precedes a Core rescue.
+///
+/// The rescue remains the authoritative gate: every variant lets its spawn
+/// proceed, while callers log the exact unavailable state for diagnosis.
+#[cfg(windows)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RsyncRescueProvisioning {
+    AlreadyResolvable,
+    Provisioned,
+    ProvisioningFailed(String),
+    ProvisionedButUnresolvable,
+}
+
+/// Ensure an optional rescue dependency without making its provisioning a new
+/// failure gate. A usable existing dependency avoids all installer work; a
+/// successful installer must also pass the same probe before it is trusted.
+#[cfg(windows)]
+pub(crate) async fn ensure_rsync_for_core_update_rescue_with<P, F, Fut>(
+    mut is_resolvable: P,
+    provision: F,
+) -> RsyncRescueProvisioning
+where
+    P: FnMut() -> bool,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    if is_resolvable() {
+        return RsyncRescueProvisioning::AlreadyResolvable;
+    }
+
+    match provision().await {
+        Ok(()) if is_resolvable() => RsyncRescueProvisioning::Provisioned,
+        Ok(()) => RsyncRescueProvisioning::ProvisionedButUnresolvable,
+        Err(reason) => RsyncRescueProvisioning::ProvisioningFailed(reason),
+    }
+}
+
+/// Best-effort Windows preflight for the Core-update rescue.
+///
+/// `check_dep_impl` is deliberately used both before and after provisioning:
+/// its successful `rsync --version` probe is the existing definition of a
+/// usable executable for HQ's extended child PATH.
+#[cfg(windows)]
+pub(crate) async fn ensure_rsync_for_core_update_rescue() -> RsyncRescueProvisioning {
+    ensure_rsync_for_core_update_rescue_with(
+        || check_dep_impl("rsync", None).installed,
+        || async { install_rsync_with_progress(|_| {}).await.map(|_| ()) },
+    )
+    .await
+}
+
 #[cfg(windows)]
 #[tauri::command]
 pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
+    install_rsync_with_progress(|message| emit_progress(&app, message)).await
+}
+
+#[cfg(windows)]
+async fn install_rsync_with_progress(mut progress: impl FnMut(&str)) -> Result<String, String> {
     let managed_rsync = managed_toolchain_dir().join("bin").join("rsync.exe");
     let probe = check_dep_impl("rsync", None);
     if probe.installed && !managed_rsync.exists() {
-        emit_progress(&app, "rsync already installed");
+        progress("rsync already installed");
         write_rsync_shim()?;
         return Ok("rsync already present; path shim refreshed".to_string());
     }
 
     let url = std::env::var("HQ_RSYNC_URL").unwrap_or_else(|_| RSYNC_BUNDLE_URL.to_string());
-    emit_progress(&app, &format!("Downloading portable rsync from {url}"));
+    progress(&format!("Downloading portable rsync from {url}"));
 
     let bin_dir = managed_toolchain_dir().join("bin");
     std::fs::create_dir_all(&bin_dir).map_err(|e| format!("Failed to mkdir {bin_dir:?}: {e}"))?;
@@ -5498,7 +5556,7 @@ pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
             .map_err(|e| format!("rsync download task join failed: {e}"))??;
     verify_sha256_bytes("rsync bundle", &bytes, RSYNC_BUNDLE_SHA256)?;
 
-    emit_progress(&app, "Extracting rsync bundle...");
+    progress("Extracting rsync bundle...");
     let staged_bin = managed_toolchain_dir().join(format!(".rsync-bin-{}", Uuid::new_v4()));
     if let Err(e) = extract_rsync_zip_to_bin(&bytes, &staged_bin) {
         let _ = std::fs::remove_dir_all(&staged_bin);
