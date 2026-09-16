@@ -300,15 +300,7 @@ async fn install_hq_core_update_observed(
             started.elapsed(),
             None,
             error.kind().label(),
-            crate::commands::hq_core_state::CoreUpdateFailureDetails {
-                rescue_stderr_tail: None,
-                rescue_failure_category: crate::commands::hq_core_state::classify_core_update_error(
-                    error.kind(),
-                    error.message(),
-                    error.npx_resolution(),
-                ),
-                npx_resolution: error.npx_resolution(),
-            },
+            crate::commands::hq_core_state::core_update_failure_details(error),
         ),
     }
     outcome
