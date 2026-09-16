@@ -212,8 +212,10 @@
   import { onDestroy, onMount, untrack, type Component } from "svelte";
   import {
     applyColorTheme,
+    applyReducedTransparency,
     applyUiSize,
     applyWindowOpacity,
+    readReducedTransparency,
     readStoredTheme,
   } from "../settings/shell-settings-model.js";
   import { readSettingsPrefs } from "../settings/settings-prefs.js";
@@ -6185,6 +6187,10 @@
     const onPointerDown = () => sweepStaleAttachmentTrays("pointerdown");
     window.addEventListener("pointerdown", onPointerDown, true);
     applyColorTheme(readStoredTheme());
+    // Re-apply on boot, not just on toggle: the attribute lives on <html> and
+    // does not survive a reload, so without this the glass returns on every
+    // restart and the setting looks like it silently forgot itself.
+    applyReducedTransparency(readReducedTransparency());
     const prefs = readSettingsPrefs(tenantStorage);
     applyUiSize(prefs.uiSize);
     applyWindowOpacity(prefs.windowOpacity);

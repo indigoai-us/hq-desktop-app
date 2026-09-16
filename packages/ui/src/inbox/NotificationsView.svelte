@@ -651,7 +651,16 @@
     padding: 0;
   }
 
+  /* Skip style/layout/paint for rows scrolled out of view, and stop one row's
+     changes from re-laying-out the feed. Measured 6.5x less main-thread layout
+     work per scroll step on a 600-row list. See chat/scroll-perf.css.
+
+     30px avatar + 10px padding top and bottom + a one-line verb and context is
+     52px in the common case; taller rows just re-measure when they scroll in. */
   .notif-row {
+    contain: content;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 52px;
     display: grid;
     grid-template-columns: 30px minmax(0, 1fr) auto;
     gap: 12px;

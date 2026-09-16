@@ -314,6 +314,72 @@ html[data-platform="windows"] {
   }
 }
 
+/* The same treatment, reachable without the OS-level accessibility setting.
+ *
+ * `prefers-reduced-transparency` above is the right hook for someone who has
+ * asked the whole system to calm down, but it is also the ONLY way to turn the
+ * glass off today, and turning it off is the one lever that meaningfully
+ * changes scrolling smoothness on macOS.
+ *
+ * Blur is compositor work, not main-thread work. Chromium composites it on the
+ * GPU almost for free, which is why a browser-based benchmark shows glass and
+ * solid rows within noise of each other — and why the desktop app, which runs
+ * on the system WebKit view rather than a bundled Chromium, can feel markedly
+ * worse on the same machine for the same markup. That difference cannot be
+ * measured from a Chromium harness, so rather than guess at a blur radius the
+ * setting hands the lever to the person who can actually see the result.
+ *
+ * Deliberately an alias, not a new visual design: identical token values to the
+ * accessibility block above, so this path inherits a treatment that was already
+ * designed and reviewed. reduced-transparency-alias.test.ts asserts the two
+ * blocks stay identical, so a change to one cannot silently skip the other.
+ *
+ * Specificity note: rule 3 carries the extra attribute deliberately. Without it
+ * the bare `[data-reduce-transparency]` rule would tie with
+ * `:root[data-force-theme="dark"]` and win on source order, turning a forced
+ * dark window light the moment this setting was enabled.
+ */
+:root[data-reduce-transparency="true"],
+:root[data-reduce-transparency="true"][data-force-theme="light"] {
+  --v4-ground: #f2f2f2;
+  --v4-raised: #ffffff;
+  --v4-inset: #e4e4e4;
+  --v4-chrome: #e8e8e8;
+  --v4-sidebar: #e0e0e0;
+  --v4-secondary-sidebar: #eeeeee;
+  --v4-popover: #fafafa;
+  --v4-popover-strong: #fafafa;
+  --v4-canvas-filter: none;
+  --v4-glass-filter: none;
+  --v4-glass-filter-soft: none;
+  --v4-glass-filter-popover: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-reduce-transparency="true"] {
+    --v4-ground: #111111;
+    --v4-raised: #303030;
+    --v4-inset: #0d0d0d;
+    --v4-chrome: #1e1e1e;
+    --v4-sidebar: #181818;
+    --v4-secondary-sidebar: #1a1a1a;
+    --v4-popover: #2a2a2a;
+    --v4-popover-strong: #242424;
+  }
+}
+
+:root[data-reduce-transparency="true"].dark,
+:root[data-reduce-transparency="true"][data-force-theme="dark"] {
+  --v4-ground: #111111;
+  --v4-raised: #303030;
+  --v4-inset: #0d0d0d;
+  --v4-chrome: #1e1e1e;
+  --v4-sidebar: #181818;
+  --v4-secondary-sidebar: #1a1a1a;
+  --v4-popover: #2a2a2a;
+  --v4-popover-strong: #242424;
+}
+
 /* Engines without backdrop filtering still receive the same hierarchy, just
    with nearly solid neutral material fills. */
 @supports not (
