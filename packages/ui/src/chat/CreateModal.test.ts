@@ -171,6 +171,76 @@ describe("CreateModal find step", () => {
     expect(document.activeElement).toBe(focusable[focusable.length - 1]);
   });
 
+  it("picking a person stages a group instead of navigating away", async () => {
+    // Clicking the first name used to call `onpick` straight through, which
+    // opened that DM and tore the modal down — so a second person could never
+    // be added and a group was unreachable from this modal.
+    const onpick = vi.fn();
+    open({ rows: [personRow()], onpick });
+    await tick();
+    type($<HTMLInputElement>('[data-testid="chat-create-query"]')!, "Ada");
+    await settleQuery();
+
+    $<HTMLButtonElement>('[data-testid="chat-create-result"]')!.click();
+    await tick();
+
+    expect(onpick, "picking a person must not navigate").not.toHaveBeenCalled();
+    const chips = [
+      ...document.querySelectorAll('[data-testid="chat-channel-chip"]'),
+    ].map((el) => el.textContent ?? "");
+    expect(chips.join(" "), "the person is staged as a member").toContain("Ada");
+    // Naming is what turns the staged people into a channel.
+    expect($('[data-testid="chat-channel-create"]')).not.toBeNull();
+  });
+
+  it("keyboard Enter stages a person the same way a click does", async () => {
+    const onpick = vi.fn();
+    open({ rows: [personRow()], onpick });
+    await tick();
+    const input = $<HTMLInputElement>('[data-testid="chat-create-query"]')!;
+    type(input, "Ada");
+    await settleQuery();
+
+    press(input, "Enter");
+    await tick();
+
+    expect(onpick).not.toHaveBeenCalled();
+    const chips = [
+      ...document.querySelectorAll('[data-testid="chat-channel-chip"]'),
+    ].map((el) => el.textContent ?? "");
+    expect(chips.join(" ")).toContain("Ada");
+  });
+
+  it("a single unnamed person can still go straight to a DM", async () => {
+    const onpick = vi.fn();
+    open({ rows: [personRow()], onpick });
+    await tick();
+    type($<HTMLInputElement>('[data-testid="chat-create-query"]')!, "Ada");
+    await settleQuery();
+    $<HTMLButtonElement>('[data-testid="chat-create-result"]')!.click();
+    await tick();
+
+    const direct = $<HTMLButtonElement>(
+      '[data-testid="chat-channel-message-directly"]',
+    );
+    expect(direct, "one person and no name needs no channel").not.toBeNull();
+    direct!.click();
+    await tick();
+    expect(onpick).toHaveBeenCalledTimes(1);
+    expect(onpick.mock.calls[0][0]?.personUid).toBe("prs_ada");
+  });
+
+  it("picking a channel still opens it", async () => {
+    const onpick = vi.fn();
+    open({ rows: [channelRow()], onpick });
+    await tick();
+    type($<HTMLInputElement>('[data-testid="chat-create-query"]')!, "Q4");
+    await settleQuery();
+    $<HTMLButtonElement>('[data-testid="chat-create-result"]')!.click();
+    await tick();
+    expect(onpick, "a channel is a destination, not a member").toHaveBeenCalledTimes(1);
+  });
+
   it("wraps ArrowDown/ArrowUp and tracks aria-activedescendant", async () => {
     open({ rows: [channelRow(), personRow()] });
     await tick();
