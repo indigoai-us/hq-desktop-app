@@ -7,10 +7,19 @@ const installDeps = readRepoFile('src-tauri/src/commands/install_deps.rs');
 describe('Windows Core-update rsync provisioning', () => {
   it('runs the best-effort preflight before constructing the rescue command', () => {
     const preflight = '#[cfg(windows)]\n    ensure_managed_rsync_for_core_update_rescue().await;';
+    // `false` names the primary rescue construction; the managed-Git retry is
+    // deliberately the distinct `true` call below it.
+    const primaryRescueCommand = 'core_update_rescue_command(false)';
+    const managedGitRetryCommand = 'core_update_rescue_command(true)';
+    const preflightIndex = coreUpdate.indexOf(preflight);
+    const primaryRescueCommandIndex = coreUpdate.indexOf(primaryRescueCommand);
+    const managedGitRetryCommandIndex = coreUpdate.indexOf(managedGitRetryCommand);
+
     expect(coreUpdate).toContain(preflight);
-    expect(coreUpdate.indexOf(preflight)).toBeLessThan(
-      coreUpdate.indexOf('let (mut cmd, npx_resolution) = core_update_rescue_command();'),
-    );
+    expect(primaryRescueCommandIndex).toBeGreaterThan(-1);
+    expect(managedGitRetryCommandIndex).toBeGreaterThan(-1);
+    expect(preflightIndex).toBeLessThan(primaryRescueCommandIndex);
+    expect(primaryRescueCommandIndex).toBeLessThan(managedGitRetryCommandIndex);
   });
 
   it('leaves non-Windows behavior untouched', () => {

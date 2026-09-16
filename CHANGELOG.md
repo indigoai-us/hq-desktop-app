@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 - On Windows, updates no longer crash while finding your HQ folder or say a required part of HQ is missing when it is already there.
 - On Macs, Core update can now recover safely after two interrupted updates leave unverified safety snapshots behind. It checks the restored files before retrying and keeps them if it cannot prove they are safe.
+- On a Mac, Core update can now finish when the Git already on your computer cannot clone. HQ tries that Git first as before; if it finds an Xcode license prompt, a missing HTTPS piece, or an old Git that rejects the clone options, it tries once more with HQ's own Git. It never accepts an Apple license for you, and ordinary network failures still keep their original error.
 - On Windows, an update no longer fails when another HQ window is finishing its setup. HQ waits for it to finish and only shows a problem if it takes too long.
 - When companies you belong to have not been pulled down to this computer yet, the main window now shows a banner offering to sync them, instead of only mentioning it in the menu-bar popover.
 - Starting a new message with someone no longer jumps straight into their DM. The people you pick collect in the dialog, so you can add more, name the group, and optionally write the first message before it is created. Messaging one person directly is still one click.
