@@ -13,7 +13,13 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type LocalBotRow, type PlatformAdapter, type RemoteBotRow } from "@hq/platform";
+import {
+  ok,
+  type LocalBotRow,
+  type LocalBotsApi,
+  type PlatformAdapter,
+  type RemoteBotRow,
+} from "@hq/platform";
 
 import BotsSettingsPane from "./BotsSettingsPane.svelte";
 
@@ -45,7 +51,15 @@ function remote(over: Partial<RemoteBotRow> = {}): RemoteBotRow {
   };
 }
 
-function fakeAdapter(bots: Partial<NonNullable<PlatformAdapter["bots"]>> = {}): PlatformAdapter {
+/**
+ * Every test here mounts the pane against a host that HAS the local-bots
+ * group, so the fake pins `bots` as present. That is what lets a test drop an
+ * optional command (`listRemote`, `adopt`, `restore`) to play an older host
+ * without casting the real adapter away.
+ */
+type FakeAdapter = PlatformAdapter & { bots: LocalBotsApi };
+
+function fakeAdapter(bots: Partial<LocalBotsApi> = {}): FakeAdapter {
   return {
     kind: "tauri",
     isAvailable: () => false,
@@ -65,7 +79,7 @@ function fakeAdapter(bots: Partial<NonNullable<PlatformAdapter["bots"]>> = {}): 
       ),
       ...bots,
     },
-  } as unknown as PlatformAdapter;
+  } as unknown as FakeAdapter;
 }
 
 let host: HTMLDivElement;
@@ -166,7 +180,7 @@ describe("bots that live on another computer", () => {
     }));
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await mountPane(
-      fakeAdapter({ adopt: adopt as never, listRemote: vi.fn(async () => ok({ bots: [remote()] })) }),
+      fakeAdapter({ adopt, listRemote: vi.fn(async () => ok({ bots: [remote()] })) }),
     );
     await settle(14);
 
@@ -182,9 +196,9 @@ describe("bots that live on another computer", () => {
   it("stays quiet on a host with no remote listing at all (older app, web build)", async () => {
     const adapter = fakeAdapter();
     // An older host simply has no such command.
-    delete (adapter.bots as Record<string, unknown>).listRemote;
-    delete (adapter.bots as Record<string, unknown>).adopt;
-    delete (adapter.bots as Record<string, unknown>).restore;
+    delete adapter.bots.listRemote;
+    delete adapter.bots.adopt;
+    delete adapter.bots.restore;
     await mountPane(adapter);
     await settle(14);
     expect(q('[data-testid="settings-bots-elsewhere"]')).toBeNull();
