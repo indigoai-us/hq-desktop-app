@@ -207,7 +207,7 @@
      */
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
     oncreateagent?:
-      | ((companyUid: string, draft: { name: string }) => Promise<EntryPointResult>)
+      | ((companyUid: string, draft: { name: string; handle: string }) => Promise<EntryPointResult>)
       | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
     oncreatebot?:

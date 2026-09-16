@@ -157,15 +157,19 @@ describe("ChatSidebar lifecycle entry points", () => {
     const cloud = q<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]');
     expect(local?.disabled).toBe(true);
     expect(cloud?.getAttribute("aria-checked")).toBe("true");
-    // One company → no picker; Cloud ends here (details live in the company channel).
+    // One company → no picker; the details step then names the bot, because
+    // the company channel's card that used to ask is not shown any more.
     expect(q('[data-testid="chat-create-agent-picker"]')).toBeNull();
-    expect(q('[data-testid="create-bot-next"]')).toBeNull();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
     const create = q<HTMLButtonElement>('[data-testid="chat-bot-create"]');
-    expect(create?.textContent).toContain("Continue in Indigo");
+    expect(create?.textContent).toContain("Create in Indigo");
     create!.click();
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo", {
       name: expect.stringMatching(/\S/),
+      handle: expect.stringMatching(/\S/),
     });
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
@@ -200,10 +204,13 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Ramen Bae");
     await toHomeStep();
+    click('[data-testid="create-bot-next"]');
+    await settle();
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_ramen_bae", {
       name: expect.stringMatching(/\S/),
+      handle: expect.stringMatching(/\S/),
     });
   });
 
@@ -223,7 +230,6 @@ describe("ChatSidebar lifecycle entry points", () => {
     click('[data-testid="chat-bot-where-cloud"]');
     await settle();
     expect(oncreateagent).not.toHaveBeenCalled();
-    expect(q('[data-testid="create-bot-next"]')).toBeNull();
     const picker = q('[data-testid="chat-create-agent-picker"]');
     expect(picker?.getAttribute("role")).toBe("listbox");
     expect(picker?.getAttribute("aria-label")).toBe("Add a bot to which company?");
@@ -248,11 +254,14 @@ describe("ChatSidebar lifecycle entry points", () => {
     await settle();
     expect(oncreateagent).not.toHaveBeenCalled();
     expect(options.map((o) => o.getAttribute("aria-selected"))).toEqual(["false", "true"]);
-    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Continue in Acme");
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Create in Acme");
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", {
       name: expect.stringMatching(/\S/),
+      handle: expect.stringMatching(/\S/),
     });
     expect(oncreatebot).not.toHaveBeenCalled();
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
@@ -274,10 +283,13 @@ describe("ChatSidebar lifecycle entry points", () => {
       .querySelector<HTMLButtonElement>('[data-company="cmp_acme"]')!
       .click();
     await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", {
       name: expect.stringMatching(/\S/),
+      handle: expect.stringMatching(/\S/),
     });
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();

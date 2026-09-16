@@ -1030,10 +1030,12 @@
         .map((uid) => records.find((row) => row.agentUid.trim() === uid))
         .filter((bot): bot is LocalBotRow => Boolean(bot))
         // A closed gate outranks a bare listing — but not a listing that
-        // shows the bot's own launch agent installed here, or its process
-        // alive here. That local config is exactly what was missing when
-        // every start answered "no such bot", so its arrival is the newer
-        // event the notice was waiting for, and the gate reopens with it.
+        // shows the bot's process alive HERE. A live local pid is the one
+        // claim only this Mac can make, and it is exactly what was missing
+        // when every start answered "no such bot", so its arrival is the
+        // newer event the notice was waiting for and the gate reopens with
+        // it. A launch agent reported installed is not that evidence: the
+        // failure this guards against had one (see botIsConfiguredHere).
         .filter((bot) => canStartBot(botStartGate, bot.name) || botIsConfiguredHere(bot));
       if (cleared.length === 0) return;
       const next = { ...unrunnableBotUids };
@@ -3513,13 +3515,14 @@
   /**
    * New bot → Cloud. Creating a company-hosted bot exists on the server only
    * as the Team tab's `add_agent` action plus the `create_agent` card's own
-   * turns, so this runs exactly those — headlessly. The card is never rendered
-   * (it is a retired timeline kind) and never focused: the person stays in the
-   * New bot flow and lands in the new bot's channel when it is made.
+   * turns, so this runs exactly those — headlessly, under the name and handle
+   * the New bot flow just collected. The card is never rendered (it is a
+   * retired timeline kind) and never focused: the person stays in the New bot
+   * flow and lands in the new bot's channel when it is made.
    */
   async function createCloudBotEntry(
     companyUid: string,
-    draft: { name: string },
+    draft: { name: string; handle: string },
   ): Promise<EntryPointResult> {
     const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
     if (result.ok) navigateToEntryTarget(result.target, companyUid);
@@ -6745,6 +6748,10 @@
                       bot={selectedLocalBot}
                       sessions={adapter.sessions}
                       bots={adapter.bots ?? null}
+                      gate={{
+                        canStart: (bot) => canStartBot(botStartGate, bot.name),
+                        onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
+                      }}
                       ondone={refreshLocalBots}
                     />
                   {/if}

@@ -10,6 +10,8 @@
 
   interface Props {
     name: string;
+    /** Cloud only: the @handle it will be created under. */
+    handle?: string;
     home: BotHome;
     runtime: BotRuntime;
     /** "thinks with Claude Code" / "hosted by Indigo". */
@@ -26,6 +28,7 @@
 
   let {
     name,
+    handle = "",
     home,
     runtime,
     thinksWith,
@@ -48,6 +51,9 @@
       <span class="preview-name" data-testid="bot-preview-name">{shownName}</span>
       <BotKindChip kind={home} runtime={home === "local" ? runtime : null} variant="label" />
     </div>
+    {#if handle.trim()}
+      <span class="preview-handle" data-testid="bot-preview-handle">@{handle.trim()}</span>
+    {/if}
     {#if kindLine}
       <span class="preview-kind" data-testid="bot-preview-kind">{kindLine}</span>
     {/if}
@@ -71,6 +77,10 @@
     border-radius: 12px;
     background: var(--v4-control-faint, rgba(127, 127, 127, 0.06));
     text-align: center;
+  }
+  .preview-handle {
+    color: var(--t3);
+    font: 500 11px/1.2 var(--font-mono);
   }
   .preview.top {
     flex-direction: row;

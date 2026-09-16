@@ -73,6 +73,12 @@ function click(selector: string): void {
   el.click();
 }
 
+/** Type into a text input the way a person does. */
+function type(input: HTMLInputElement, value: string): void {
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 /** ⌘↵ on the flow container, the way the modal delivers it. */
 function cmdEnter(): void {
   q('[data-testid="chat-create-bot-step"]')!.dispatchEvent(
@@ -333,7 +339,7 @@ describe("CreateBotFlow", () => {
     expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("not signed in");
   });
 
-  it("Cloud ends at the home step and hands the picked company to the host", async () => {
+  it("Cloud names the bot before it is created and hands both to the host", async () => {
     const onCloudCreate = vi.fn(async () => undefined);
     const oncreate = vi.fn(async () => undefined);
     render({ oncreate, onCloudCreate, agentTargets: COMPANIES });
@@ -343,8 +349,6 @@ describe("CreateBotFlow", () => {
     await settle();
     click('[data-testid="chat-bot-where-cloud"]');
     await settle();
-    // No details step for a Cloud bot — the company channel collects those.
-    expect(q('[data-testid="create-bot-next"]')).toBeNull();
     const options = Array.from(
       host.querySelectorAll<HTMLButtonElement>('[data-testid="chat-create-agent-company"]'),
     );
@@ -353,15 +357,46 @@ describe("CreateBotFlow", () => {
 
     options[1]!.click();
     await settle();
-    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Continue in Acme");
+    // A Cloud bot has a details step too: the card in the company channel
+    // that used to ask for its name and handle is no longer shown to anyone,
+    // so this is the only place they are chosen.
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
+    expect(name.value).toMatch(/\S/);
+    // The suggestion is a prefill the person can see and replace.
+    type(name, "Polar Bear");
+    await settle();
+    expect(handle.value).toBe("polar-bear");
+    type(handle, "ice");
+    await settle();
+
+    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Create in Acme");
     click('[data-testid="chat-bot-create"]');
     await settle();
-    // The picked company AND the name the draft already carries: the host
-    // needs both to run the server's create sequence without a card.
-    expect(onCloudCreate).toHaveBeenCalledWith("cmp_acme", {
-      name: expect.stringMatching(/\S/),
-    });
+    // Exactly what the person typed — never an auto-suggestion they never saw.
+    expect(onCloudCreate).toHaveBeenCalledWith("cmp_acme", { name: "Polar Bear", handle: "ice" });
     expect(oncreate).not.toHaveBeenCalled();
+  });
+
+  it("Cloud will not create a bot with no name", async () => {
+    const onCloudCreate = vi.fn(async () => undefined);
+    render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    type(q<HTMLInputElement>('[data-testid="chat-bot-name"]')!, "");
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(true);
+    cmdEnter();
+    await settle();
+    expect(onCloudCreate).not.toHaveBeenCalled();
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Give your bot a name.");
   });
 
   it("hides Cloud when no company can host a bot", async () => {

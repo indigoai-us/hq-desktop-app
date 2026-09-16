@@ -124,6 +124,26 @@ describe("signInAgain", () => {
     expect(t.order).toEqual(["list", "stop:setup", "start:setup"]);
   });
 
+  it("restarts through the host's start gate, not around it", async () => {
+    const paused = bot({ name: "setup", runtimeSignIn: expired("claude") });
+    const blocked = bot({ name: "scout", agentUid: "agt_scout", runtimeSignIn: expired("claude") });
+    const t = deps(["connected"], [paused, blocked]);
+    const onstarted = vi.fn();
+
+    // The banner's restart is a bot start like any other: a bot whose start
+    // already failed definitively is skipped, and a success is reported so
+    // the host can drop the "cannot run here" notice it is holding.
+    const result = await signInAgain("claude", {
+      ...t.deps,
+      gate: { canStart: (row) => row.name !== "scout", onstarted },
+    });
+
+    expect(result).toEqual({ ok: true, restarted: ["setup"], restartFailed: [], skipped: ["scout"] });
+    expect(t.start).toHaveBeenCalledTimes(1);
+    expect(t.start).toHaveBeenCalledWith("setup");
+    expect(onstarted).toHaveBeenCalledWith(paused);
+  });
+
   it("never touches bots when the sign-in ends in an error", async () => {
     const t = deps(["waiting", "error"], [bot({ runtimeSignIn: expired("claude") })]);
     const result = await signInAgain("claude", t.deps);

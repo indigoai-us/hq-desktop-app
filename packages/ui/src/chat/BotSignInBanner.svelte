@@ -11,6 +11,7 @@
     expiredRuntimeOf,
     signInAgain,
     signInAgainCopy,
+    type RestartGate,
     type SignInAgainDeps,
   } from "./runtime-sign-in-again.js";
 
@@ -18,13 +19,19 @@
     bot: LocalBotRow;
     sessions: SignInAgainDeps["sessions"];
     bots?: SignInAgainDeps["bots"];
+    /**
+     * The host's start gate. The restart below is a bot start like any other:
+     * a bot whose start already failed definitively is not re-issued here
+     * either, and one that does start drops its "cannot run here" notice.
+     */
+    gate?: RestartGate | null;
     /** Re-read the bot list once the sign-in worked. */
     ondone?: () => void | Promise<void>;
     /** Poll interval; tests shorten it. */
     pollMs?: number;
   }
 
-  let { bot, sessions, bots = null, ondone, pollMs }: Props = $props();
+  let { bot, sessions, bots = null, gate = null, ondone, pollMs }: Props = $props();
 
   let phase = $state<"idle" | "opening" | "waiting" | "done" | "error">("idle");
   let errorText = $state("");
@@ -39,6 +46,7 @@
     const result = await signInAgain(expiredRuntimeOf(bot), {
       sessions,
       bots,
+      gate: gate ?? undefined,
       pollMs,
       onwaiting: () => {
         if (!gone) phase = "waiting";

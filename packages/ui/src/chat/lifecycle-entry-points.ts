@@ -12,6 +12,12 @@
  * bot inside a company channel). So the flow runs the same actions the card's
  * buttons ran, filling each turn from the New bot draft, and lands the person
  * in the bot's own channel. Nothing is drawn and nothing is focused on the way.
+ *
+ * Because nobody sees those cards, the driver owns what a person would have
+ * done with them: it carries the name and handle they chose in the New bot
+ * flow, it answers a stale refusal through the card's own "try again" instead
+ * of returning it forever, and it never submits into a sequence opened for a
+ * different bot.
  */
 
 import type { CardActionResult, ConversationApi } from "./chat-api.js";
@@ -20,7 +26,7 @@ import {
   parseLifecycleCard,
   type LifecycleCardModel,
 } from "./messaging/channelMessageModels.js";
-import { slugifyBotName } from "./create-bot/create-bot-model.js";
+import { botHandle } from "./create-bot/create-bot-model.js";
 import { SETUP_CHANNEL_ID } from "./setup-channel.js";
 
 /** #setup summary card + its action that posts a fresh create_company card. */
@@ -149,15 +155,36 @@ export const CLOUD_BOT_NEEDS_MORE_REASON =
 export const CLOUD_BOT_NO_NEXT_STEP_REASON =
   "The server didn't send the next step for the new bot. Try again in a moment.";
 
+/** Fallback when the server refused without saying why. */
+export const CLOUD_BOT_REFUSED_REASON = "The server refused the new bot.";
+
+/**
+ * Shown when the company channel still holds a half-finished sequence that
+ * belongs to a different bot. The driver will not submit this person's answers
+ * into someone else's draft, and the server offered no way to put it away.
+ */
+export function cloudBotStaleCardReason(recordedHandle: string | null): string {
+  return recordedHandle
+    ? `A half-finished setup for @${recordedHandle} is still open in that company's channel. Use that handle to finish it, or try again later.`
+    : "A half-finished bot setup is still open in that company's channel. Try again in a moment.";
+}
+
 /** How many card turns the sequence may take before we stop following it. */
 const CLOUD_BOT_MAX_TURNS = 6;
 /** How many read-backs we allow while waiting for the server to post a turn. */
 const CLOUD_BOT_POLL_ATTEMPTS = 8;
 const CLOUD_BOT_POLL_MS = 150;
 
+/** Card actions that mean "let me try that again", by id. */
+const RECOVERY_ACTION_IDS = ["retry", "try_again", "start_over", "again", "edit"];
+/** Card actions that mean "put this away", by id. */
+const DISMISS_ACTION_IDS = ["dismiss", "cancel", "close", "discard", "abandon", "delete", "remove"];
+
 export interface CloudBotDraft {
-  /** The name the New bot flow already collected; also seeds the handle. */
+  /** The name the person typed in the New bot flow. */
   name: string;
+  /** The @handle they saw there and could edit. */
+  handle: string;
 }
 
 export interface CloudBotEntryOptions {
@@ -169,7 +196,14 @@ export interface CloudBotEntryOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** Every lifecycle card currently on a channel page, newest page first. */
+/** How long a read-back may keep trying before the caller gives up. */
+interface PollBudget {
+  attempts: number;
+  ms: number;
+  sleep: (ms: number) => Promise<void>;
+}
+
+/** Every lifecycle card currently on a channel page, oldest first. */
 async function readLifecycleCards(
   api: CloudBotEntryApi,
   channelId: string,
@@ -183,6 +217,50 @@ async function readLifecycleCards(
   return cards;
 }
 
+/**
+ * The NEWEST card `match` accepts. A channel page is oldest-first, so scanning
+ * forward would hand a fresh turn's poll a stale card of the same shape.
+ */
+function newestCard(
+  cards: readonly LifecycleCardModel[],
+  match: (card: LifecycleCardModel) => boolean,
+): LifecycleCardModel | null {
+  for (let i = cards.length - 1; i >= 0; i -= 1) {
+    const card = cards[i]!;
+    if (match(card)) return card;
+  }
+  return null;
+}
+
+/**
+ * Read the channel back until `pick` finds a card, bounded. The first read is
+ * immediate; only the retries wait. Errors do not abort the wait — the last
+ * one is returned so a caller that found nothing can report it honestly.
+ */
+async function pollForCard(
+  api: CloudBotEntryApi,
+  channelId: string,
+  pick: (cards: LifecycleCardModel[]) => LifecycleCardModel | null,
+  poll: PollBudget,
+): Promise<{ card: LifecycleCardModel | null; cards: LifecycleCardModel[]; error: unknown }> {
+  let cards: LifecycleCardModel[] = [];
+  let error: unknown = null;
+  for (let attempt = 0; attempt < poll.attempts; attempt += 1) {
+    if (attempt > 0) await poll.sleep(poll.ms);
+    try {
+      cards = await readLifecycleCards(api, channelId);
+      error = null;
+    } catch (err) {
+      cards = [];
+      error = err;
+      continue;
+    }
+    const found = pick(cards);
+    if (found) return { card: found, cards, error: null };
+  }
+  return { card: null, cards, error };
+}
+
 /** The action a card's own primary button would have run. */
 function primaryActionOf(card: LifecycleCardModel): string | null {
   const primary = card.actions.find((action) => action.style === "primary" && !action.href);
@@ -190,26 +268,223 @@ function primaryActionOf(card: LifecycleCardModel): string | null {
   return (primary ?? fallback)?.id ?? null;
 }
 
+/** The card's own action of one of these kinds, if it offers one. Never a link. */
+function actionOf(card: LifecycleCardModel, ids: readonly string[]): string | null {
+  for (const action of card.actions) {
+    if (action.href) continue;
+    const key = action.id.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    if (ids.includes(key)) return action.id;
+  }
+  return null;
+}
+
+/**
+ * Put a card away so a later attempt cannot inherit it, and say whether that
+ * worked. A server that offers a dismiss/cancel action gets it run; one that
+ * does not leaves the card live, and the driver's own rules — never resume a
+ * sequence opened for a different bot, always answer a stale refusal through
+ * the card's own "try again" — keep it from deciding the next attempt.
+ */
+async function abandonCard(
+  api: CloudBotEntryApi,
+  channelId: string,
+  card: LifecycleCardModel,
+): Promise<boolean> {
+  const actionId = actionOf(card, DISMISS_ACTION_IDS);
+  if (!actionId) return false;
+  try {
+    await api.runCardAction({ channelId, cardId: card.cardId, actionId, values: {} });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The opening turn of a sequence: the one that asks for the bot's name. Every
+ * later turn asks for something whose shape the server chose (runtime, size),
+ * so the opening turn is the only one a New bot draft can fill from scratch.
+ */
+function isOpeningTurn(card: LifecycleCardModel): boolean {
+  return card.fields.some((field) => field.id === "name" && field.control !== "readonly");
+}
+
+/** True when an earlier create_agent card in this channel already asked for a name. */
+function resumesEarlierSequence(
+  cards: readonly LifecycleCardModel[],
+  card: LifecycleCardModel,
+): boolean {
+  const at = cards.indexOf(card);
+  const before = at < 0 ? cards : cards.slice(0, at);
+  return before.some((row) => row.cardKind === "create_agent" && isOpeningTurn(row));
+}
+
+/**
+ * The handle a live sequence was already opened under, read from the nearest
+ * opening turn in front of it: its status label ("@polar"), else its own
+ * handle field. null when the channel records neither.
+ */
+function recordedHandleFor(
+  cards: readonly LifecycleCardModel[],
+  card: LifecycleCardModel,
+): string | null {
+  const at = cards.indexOf(card);
+  for (let i = (at < 0 ? cards.length : at) - 1; i >= 0; i -= 1) {
+    const prev = cards[i]!;
+    if (prev.cardKind !== "create_agent" || !isOpeningTurn(prev)) continue;
+    const label = trimmed(prev.statusLabel);
+    if (label.startsWith("@")) return label.slice(1).toLowerCase();
+    const field = prev.fields.find((row) => row.id === "handle");
+    const value = trimmed(field?.value).replace(/^@/, "");
+    return value ? value.toLowerCase() : null;
+  }
+  return null;
+}
+
 /**
  * The values the card's form would have carried. Every field keeps whatever
  * the server pre-filled; the two the person actually chose in the New bot
- * flow — name and handle — come from the draft.
+ * flow — name and handle — come from the draft, exactly as they typed them.
  */
 function valuesForCard(
   card: LifecycleCardModel,
   draft: CloudBotDraft,
 ): Record<string, string> | null {
   const name = draft.name.trim();
+  const handle = botHandle(draft);
   const values: Record<string, string> = {};
   for (const field of card.fields) {
     if (field.control === "readonly") continue;
     let value = field.value.trim();
     if (field.id === "name" && name) value = name;
-    else if (field.id === "handle" && name) value = slugifyBotName(name) || name;
+    else if (field.id === "handle" && handle) value = handle;
     if (!value && field.required) return null;
     values[field.id] = value;
   }
   return values;
+}
+
+/** Either the card this attempt starts from, or the answer to give instead. */
+type OpenedSequence =
+  | { kind: "card"; channelId: string; card: LifecycleCardModel; cards: LifecycleCardModel[] }
+  | { kind: "done"; result: EntryPointResult };
+
+/** Run the Team tab's `add_agent` and read back the card it points at. */
+async function openCreateAgent(
+  api: CloudBotEntryApi,
+  runTabAction: NonNullable<CloudBotEntryApi["runCompanyTabAction"]>,
+  companyUid: string,
+  idempotencyKey: string | undefined,
+  poll: PollBudget,
+): Promise<OpenedSequence> {
+  const noNextStep: OpenedSequence = {
+    kind: "done",
+    result: { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false },
+  };
+  let opened: CardActionResult;
+  try {
+    opened = await runTabAction({
+      companyUid,
+      tab: "team",
+      cardId: TEAM_SPEND_CARD_ID,
+      actionId: ADD_AGENT_ACTION_ID,
+      values: {},
+      idempotencyKey,
+    });
+  } catch (err) {
+    return {
+      kind: "done",
+      result: { ok: false, reason: cardActionFailureMessage(err), blocked: isPermission(err) },
+    };
+  }
+  if (opened.state === "blocked") {
+    return {
+      kind: "done",
+      result: {
+        ok: false,
+        reason: trimmed(opened.reason) || "You don't have permission to add bots here",
+        blocked: true,
+      },
+    };
+  }
+  const channelId = trimmed(opened.channelId);
+  const cardId = trimmed(opened.cardId);
+  if (!channelId || !cardId || cardId === TEAM_SPEND_CARD_ID) return noNextStep;
+
+  // The opening card gets the same bounded read-back every later turn gets: a
+  // server that posts it asynchronously is a wait, not a failure.
+  const found = await pollForCard(
+    api,
+    channelId,
+    (cards) => newestCard(cards, (row) => row.cardId === cardId),
+    poll,
+  );
+  if (!found.card) {
+    if (found.error) {
+      return {
+        kind: "done",
+        result: {
+          ok: false,
+          reason: cardActionFailureMessage(found.error),
+          blocked: isPermission(found.error),
+        },
+      };
+    }
+    return noNextStep;
+  }
+  if (found.card.cardKind !== "create_agent") {
+    // A plan that cannot host a bot answers with the upgrade card instead.
+    // That card still renders, so this is a destination, not a failure.
+    return { kind: "done", result: { ok: true, target: { channelId, cardId, cardKind: null } } };
+  }
+  return { kind: "card", channelId, card: found.card, cards: found.cards };
+}
+
+/**
+ * The card this attempt may start from.
+ *
+ * `add_agent` resurfaces any live create_agent card in the channel, so an
+ * attempt that died mid-way hands the next one a turn-2/3 card whose recorded
+ * name belongs to the PREVIOUS draft — and the later turns have no name field
+ * to correct it with. Such a card is never submitted into: it is put away if
+ * the server offers a way (and the sequence opened again), and otherwise
+ * reported. A sequence already opened under THIS handle is resumed; finishing
+ * it is exactly what the person asked for.
+ */
+async function enterSequence(
+  api: CloudBotEntryApi,
+  runTabAction: NonNullable<CloudBotEntryApi["runCompanyTabAction"]>,
+  companyUid: string,
+  draft: CloudBotDraft,
+  idempotencyKey: string | undefined,
+  poll: PollBudget,
+): Promise<OpenedSequence> {
+  const first = await openCreateAgent(api, runTabAction, companyUid, idempotencyKey, poll);
+  if (first.kind === "done") return first;
+  if (isOpeningTurn(first.card) || !resumesEarlierSequence(first.cards, first.card)) return first;
+
+  const recorded = recordedHandleFor(first.cards, first.card);
+  if (recorded && recorded === botHandle(draft)) return first;
+
+  const stale: OpenedSequence = {
+    kind: "done",
+    result: { ok: false, reason: cloudBotStaleCardReason(recorded), blocked: false },
+  };
+  if (!(await abandonCard(api, first.channelId, first.card))) return stale;
+
+  // A fresh key: the same one would let the server replay the answer that
+  // pointed at the card just put away.
+  const second = await openCreateAgent(api, runTabAction, companyUid, undefined, poll);
+  if (second.kind === "done") return second;
+  if (isOpeningTurn(second.card)) return second;
+  return {
+    kind: "done",
+    result: {
+      ok: false,
+      reason: cloudBotStaleCardReason(recordedHandleFor(second.cards, second.card)),
+      blocked: false,
+    },
+  };
 }
 
 /**
@@ -218,7 +493,8 @@ function valuesForCard(
  * Runs the Team tab's `add_agent` action, then drives the `create_agent` card
  * sequence it opens — the same actions the card's buttons ran — until the
  * server answers with the minted agent channel. The card itself is never
- * rendered or focused: the New bot flow is the only surface the person sees.
+ * rendered or focused: the New bot flow is the only surface the person sees,
+ * and the name and handle it carries are the ones they typed there.
  *
  * A company on a plan that cannot host a bot gets the server's upgrade card
  * instead; that one still renders, so the caller is sent to it.
@@ -235,76 +511,59 @@ export async function runCreateCloudBotEntry(
   if (typeof runTabAction !== "function") {
     return { ok: false, reason: "Adding bots isn't available in this build", blocked: false };
   }
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const pollAttempts = options.pollAttempts ?? CLOUD_BOT_POLL_ATTEMPTS;
-  const pollMs = options.pollMs ?? CLOUD_BOT_POLL_MS;
+  const poll: PollBudget = {
+    attempts: Math.max(1, options.pollAttempts ?? CLOUD_BOT_POLL_ATTEMPTS),
+    ms: options.pollMs ?? CLOUD_BOT_POLL_MS,
+    sleep: options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))),
+  };
 
-  let opened: CardActionResult;
-  try {
-    opened = await runTabAction({
-      companyUid: uid,
-      tab: "team",
-      cardId: TEAM_SPEND_CARD_ID,
-      actionId: ADD_AGENT_ACTION_ID,
-      values: {},
-      idempotencyKey: options.idempotencyKey,
-    });
-  } catch (err) {
-    return { ok: false, reason: cardActionFailureMessage(err), blocked: isPermission(err) };
-  }
-  if (opened.state === "blocked") {
-    return {
-      ok: false,
-      reason: trimmed(opened.reason) || "You don't have permission to add bots here",
-      blocked: true,
-    };
-  }
-  const channelId = trimmed(opened.channelId);
-  if (!channelId) {
-    return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
-  }
-  let cardId = trimmed(opened.cardId);
-  if (!cardId || cardId === TEAM_SPEND_CARD_ID) {
-    return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
-  }
-
-  let cards: LifecycleCardModel[];
-  try {
-    cards = await readLifecycleCards(api, channelId);
-  } catch (err) {
-    return { ok: false, reason: cardActionFailureMessage(err), blocked: isPermission(err) };
-  }
-  const first = cards.find((card) => card.cardId === cardId);
-  if (first && first.cardKind !== "create_agent") {
-    // A plan that cannot host a bot answers with the upgrade card instead.
-    // That card still renders, so this is a destination, not a failure.
-    return { ok: true, target: { channelId, cardId, cardKind: null } };
-  }
+  const opened = await enterSequence(api, runTabAction, uid, draft, options.idempotencyKey, poll);
+  if (opened.kind === "done") return opened.result;
+  const channelId = opened.channelId;
+  let card: LifecycleCardModel | null = opened.card;
 
   const maxTurns = options.maxTurns ?? CLOUD_BOT_MAX_TURNS;
+  /** Cards this attempt already answered, so a poll never picks one again. */
   const submitted = new Set<string>();
-  let card = first ?? null;
+  /** Refusals this attempt already answered once; a second one is final. */
+  const recovered = new Set<string>();
   for (let turn = 0; turn < maxTurns; turn += 1) {
     if (!card) return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
+    let recovery: string | null = null;
     if (card.state === "blocked") {
-      return {
-        ok: false,
-        reason: trimmed(card.reason) || "The server refused the new bot.",
-        blocked: true,
-      };
+      // A refusal left over from an earlier attempt is not this attempt's
+      // answer: run the card's own "try again" with the values the person
+      // just chose, so a stale refusal can never be returned forever. Our own
+      // refusal — and one with nothing to recover through — is reported.
+      recovery =
+        submitted.has(card.cardId) || recovered.has(card.cardId)
+          ? null
+          : actionOf(card, RECOVERY_ACTION_IDS);
+      if (!recovery) {
+        await abandonCard(api, channelId, card);
+        return {
+          ok: false,
+          reason: trimmed(card.reason) || CLOUD_BOT_REFUSED_REASON,
+          blocked: true,
+        };
+      }
+      recovered.add(card.cardId);
     }
     if (!card.viewer.canAct) {
       return { ok: false, reason: "You don't have permission to add bots here", blocked: true };
     }
-    const actionId = primaryActionOf(card);
+    const actionId = recovery ?? primaryActionOf(card);
     const values = valuesForCard(card, draft);
     if (!actionId || !values) {
+      await abandonCard(api, channelId, card);
       return { ok: false, reason: CLOUD_BOT_NEEDS_MORE_REASON, blocked: false };
     }
+    const answered = card;
     let result: CardActionResult;
     try {
-      result = await api.runCardAction({ channelId, cardId: card.cardId, actionId, values });
+      result = await api.runCardAction({ channelId, cardId: answered.cardId, actionId, values });
     } catch (err) {
+      await abandonCard(api, channelId, answered);
       return { ok: false, reason: cardActionFailureMessage(err), blocked: isPermission(err) };
     }
     const agentChannelId = trimmed(result.agentChannelId);
@@ -313,34 +572,42 @@ export async function runCreateCloudBotEntry(
       // ever drawn, and the person lands in the conversation with their bot.
       return { ok: true, target: { channelId: agentChannelId, cardId: null, cardKind: null } };
     }
-    submitted.add(card.cardId);
+    submitted.add(answered.cardId);
     if (result.state === "blocked") {
-      const settled = await readLifecycleCards(api, channelId).catch(() => [] as LifecycleCardModel[]);
-      const refused = settled.find((row) => row.cardId === card!.cardId);
+      const settled = await readLifecycleCards(api, channelId).catch(
+        () => [] as LifecycleCardModel[],
+      );
+      const refused = newestCard(settled, (row) => row.cardId === answered.cardId);
+      // Nobody can see this card, so nobody can clear it: put it away here if
+      // the server offers a way, and leave the next attempt a clean start.
+      if (refused) await abandonCard(api, channelId, refused);
       return {
         ok: false,
-        reason: trimmed(refused?.reason) || "The server refused the new bot.",
+        reason: trimmed(refused?.reason) || CLOUD_BOT_REFUSED_REASON,
         blocked: true,
       };
     }
     // The server posts the next turn asynchronously; read the channel back
     // until it lands rather than guessing the next card's id.
-    card = null;
-    for (let attempt = 0; attempt < pollAttempts && !card; attempt += 1) {
-      await sleep(pollMs);
-      const next = await readLifecycleCards(api, channelId).catch(
-        () => [] as LifecycleCardModel[],
-      );
-      card =
-        next.find(
+    const next = await pollForCard(
+      api,
+      channelId,
+      (rows) =>
+        newestCard(
+          rows,
           (row) =>
             row.cardKind === "create_agent" &&
             row.state === "open" &&
             !submitted.has(row.cardId),
-        ) ?? null;
-    }
-    cardId = card?.cardId ?? cardId;
+        ),
+      poll,
+    );
+    card = next.card;
   }
+  // Out of turns: this sequence is longer than the build knows how to drive.
+  // Put the card still waiting away if the server offers a way, so the next
+  // attempt does not inherit a draft this one abandoned.
+  if (card) await abandonCard(api, channelId, card);
   return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
 }
 
