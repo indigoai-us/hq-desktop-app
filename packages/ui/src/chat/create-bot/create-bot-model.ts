@@ -6,8 +6,8 @@
  * components stay thin and the rules are unit-testable without a DOM.
  *
  * Every AI teammate is a bot. Both homes walk all three steps: the details
- * a Local bot needs (name, avatar, intro, advanced) and the two a Cloud bot
- * needs (name and @handle). The company channel's own "Create a bot" card is
+ * a Local bot needs (name, title, avatar, who it is for, advanced) and the two
+ * a Cloud bot needs (name and @handle). The company channel's "Create a bot" card is
  * retired, so this flow is the ONLY place a cloud bot is named — a suggested
  * name is a prefill the person can see and change, never a silent default.
  */
@@ -35,6 +35,12 @@ export interface CreateBotDraft {
   /** Local company bots: the company slugs it belongs to (at least one). */
   companySlugs: string[];
   name: string;
+  /**
+   * Optional job title ("Ad account analyst"). The bot CLI has no `--title`
+   * flag, so this never reaches `hq bot create`: the host PATCHes it onto the
+   * agent profile once the bot has a uid, the same way the avatar pick is.
+   */
+  title: string;
   /** Cloud only: the @handle. Empty means "follow the name". */
   handle: string;
   intro: string;
@@ -73,6 +79,8 @@ export const BOT_SCOPE_COPY: Record<BotScope, { title: string; sub: string }> = 
 };
 
 export const INTRO_MAX = 500;
+/** Agent-profile titles are a one-line label, not a description. */
+export const TITLE_MAX = 60;
 
 export const BOT_NAME_SUGGESTIONS: readonly string[] = [
   "assistant",
@@ -98,6 +106,7 @@ export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud"
     scope: "personal",
     companySlugs: [],
     name: suggestBotName(ctx.existingNames),
+    title: "",
     handle: "",
     intro: "",
     autoApprove: true,
@@ -192,20 +201,16 @@ export function suggestBotName(existing: readonly string[], pool: readonly strin
   return base;
 }
 
-/** Up to `count` free suggestions (never the current name). */
-export function suggestBotNames(
-  existing: readonly string[],
-  count = 4,
-  current = "",
-  pool: readonly string[] = BOT_NAME_SUGGESTIONS,
-): string[] {
-  const out: string[] = [];
-  for (const n of pool) {
-    if (out.length >= count) break;
-    if (taken(n, existing) || n === normalizeBotName(current)) continue;
-    out.push(n);
+// ── title ──────────────────────────────────────────────────────────────────
+
+/** Validation for the optional job title; null when it is fine. */
+export function titleIssue(title: string): string | null {
+  if (title.trim().length > TITLE_MAX) return `Keep the title under ${TITLE_MAX} characters.`;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(title)) {
+    return "The title can’t contain control characters.";
   }
-  return out;
+  return null;
 }
 
 // ── intro ──────────────────────────────────────────────────────────────────
@@ -372,7 +377,7 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
           const label = LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime;
           return `${label} is not signed in on this Mac.`;
         }
-        return scopeIssue(draft, ctx);
+        return null;
       }
       if (!ctx.canCloud) return "No company can host a bot right now.";
       if (!draft.companyUid || !ctx.companies.some((c) => c.companyUid === draft.companyUid)) {
@@ -381,7 +386,13 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
       return null;
     case "details":
       if (draft.home === "cloud") return cloudNameIssue(draft.name) ?? handleIssue(draft);
-      return nameIssue(draft.name, ctx.existingNames) ?? introIssue(draft.intro);
+      // "Who is it for?" is answered here now, so its rule is checked here.
+      return (
+        nameIssue(draft.name, ctx.existingNames) ??
+        titleIssue(draft.title) ??
+        introIssue(draft.intro) ??
+        scopeIssue(draft, ctx)
+      );
   }
 }
 
@@ -412,7 +423,11 @@ export function firstBlockingStep(draft: CreateBotDraft, ctx: CreateBotContext):
   return stepsFor(draft).find((step) => stepIssue(step, draft, ctx) !== null) ?? null;
 }
 
-/** The CLI input for a Local draft (Cloud drafts never reach the CLI). */
+/**
+ * The CLI input for a Local draft (Cloud drafts never reach the CLI).
+ * `title` is deliberately absent: `hq bot create` has no `--title` flag, so
+ * the host writes it to the agent profile after the bot exists.
+ */
 export function toCreateInput(draft: CreateBotDraft): LocalBotCreateInput {
   const model = draft.model.trim();
   const intro = draft.intro.trim();

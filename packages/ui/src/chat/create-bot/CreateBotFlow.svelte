@@ -8,8 +8,9 @@
    * Both homes walk all three steps. A Cloud draft's details step collects
    * the name and @handle the company channel's retired card used to ask for,
    * and hands them to `onCloudCreate` (today's company team action). Local
-   * drafts hand `oncreate` the CLI input plus the avatar pick, which the host
-   * saves once the bot exists. Cmd-Enter creates from any step once every
+   * drafts hand `oncreate` the CLI input plus the avatar pick and title,
+   * which the host saves onto the agent profile once the bot exists.
+   * Cmd-Enter creates from any step once every
    * walked step is valid — except on a Cloud draft, where it moves to the
    * next step until the details step is reached, so a company bot is never
    * made under a name nobody has seen.
@@ -46,8 +47,14 @@
     type CreateBotStep,
   } from "./create-bot-model.js";
 
+  /**
+   * What the host saves onto the bot's agent profile once the CLI has given
+   * it a uid. Neither field is a `hq bot create` flag.
+   */
   export interface CreateBotExtras {
     avatar?: AvatarSelection;
+    /** Job title for the agent profile ("Ad account analyst"). */
+    title?: string;
   }
 
   interface Props {
@@ -202,7 +209,11 @@
       }
       return;
     }
-    await oncreate?.(toCreateInput(draft), draft.avatar ? { avatar: draft.avatar } : {});
+    const title = draft.title.trim();
+    await oncreate?.(toCreateInput(draft), {
+      ...(draft.avatar ? { avatar: draft.avatar } : {}),
+      ...(title ? { title } : {}),
+    });
   }
 
   /** Primary action: Next until the last step, then Create. */
@@ -282,7 +293,7 @@
         home={draft.home}
         runtime={draft.runtime}
         thinksWith={thinksWithLine(draft, ctx)}
-        intro={draft.intro}
+        title={draft.title}
         avatarUrl={previewAvatar}
         kindLine={previewKindLine}
       />
@@ -298,7 +309,6 @@
           {canCloud}
           runtimeReady={botRuntimeReady}
           {companies}
-          {ownerCompanies}
           disabled={busy}
           onpatch={patch}
           {signInApi}
@@ -318,8 +328,10 @@
           {draft}
           existingNames={names}
           template={chosenTemplateCard}
+          {ownerCompanies}
           {avatarPacks}
           {loadAvatarPacks}
+          avatarSrc={pickedAvatarSrc}
           disabled={busy}
           onpatch={patch}
           onavatar={(_selection, src) => (pickedAvatarSrc = src)}
@@ -359,7 +371,7 @@
         home={draft.home}
         runtime={draft.runtime}
         thinksWith={thinksWithLine(draft, ctx)}
-        intro={draft.intro}
+        title={draft.title}
         avatarUrl={previewAvatar}
         kindLine={previewKindLine}
       />
