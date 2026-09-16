@@ -855,7 +855,7 @@ describe("the installer fixture build does only what the E2E consumes", () => {
   });
 });
 
-describe("the live job reaps its WebDriver stack before uploading", () => {
+describe("the live job reports its WebDriver stack before uploading", () => {
   // `Upload WebDriver diagnostics` in windows-check-live takes 62/67/69/81/91/95/109s
   // across seven runs. The byte-identical step in windows-installer-e2e -- same
   // action, same path expression, same `if:` -- takes 1-2s for a comparable
@@ -863,16 +863,16 @@ describe("the live job reaps its WebDriver stack before uploading", () => {
   // ~59-82s elapsing before upload-artifact's node process prints its first
   // line, so it is neither transfer nor action overhead.
   //
-  // The first hypothesis was this job's own orphans: `reapSharedDriver()` in
+  // The hypothesis is this job's own orphans: `reapSharedDriver()` in
   // live-driver.ts kills the tauri-driver process, and on Windows that does not
-  // reap the tree below it. The reaping step was added to test that and DID NOT
-  // CONFIRM IT -- the reap takes 0s and the upload came back at 67s, inside the
-  // range it already had.
+  // reap the tree below it. A first attempt shipped a reaper and proved nothing
+  // -- it killed silently, so its 0s runtime could not distinguish "killed five
+  // processes" from "found none".
   //
-  // These assertions therefore guard hygiene and the evidence, not a saving:
-  // the job must not hand the runner back with its test subjects running, and
-  // the diagnostics upload must stay unconditional. The slow upload is an open
-  // question, not a solved one.
+  // The step is observe-only for that reason, and because a change whose
+  // primary effect is terminating live work is supposed to ship that way. These
+  // assertions pin the observation and the evidence, NOT a saving. The slow
+  // upload is an open question.
 
   const PROCESS_NAMES = [
     "hq-sync-menubar",
@@ -881,21 +881,21 @@ describe("the live job reaps its WebDriver stack before uploading", () => {
     "tauri-driver",
   ];
 
-  it("stops every process in the live stack", () => {
+  it("enumerates every process in the live stack", () => {
     const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
 
-    expect(job).toContain("name: Stop the live WebDriver stack");
+    expect(job).toContain("name: Report the live WebDriver stack");
 
-    const step = job.slice(job.indexOf("name: Stop the live WebDriver stack"));
+    const step = job.slice(job.indexOf("name: Report the live WebDriver stack"));
 
     for (const name of PROCESS_NAMES) {
       expect(step).toContain(name);
     }
 
     // The spec's own snapshotWindowsProcesses diagnostic enumerates this exact
-    // set. If a name is added there, the reaper has to learn it too, or the
-    // orphan it describes is the one left holding the runner. The app binary
-    // is interpolated as `${app}` there rather than named, so it is checked
+    // set. If a name is added there, the report has to learn it too, or the
+    // orphan it describes is the one left unaccounted for. The app binary is
+    // interpolated as `${app}` there rather than named, so it is checked
     // separately.
     const probeStart = liveDriver.indexOf("function snapshotWindowsProcesses");
     expect(probeStart).toBeGreaterThan(-1);
@@ -909,27 +909,35 @@ describe("the live job reaps its WebDriver stack before uploading", () => {
     expect(probe).toContain("Name='${app}'");
   });
 
-  it("reaps before the upload it is there to speed up", () => {
+  it("observes without terminating anything", () => {
+    // Observe-only is the whole point: the population is unknown, and the first
+    // thing a change like this owes is a candidate list, not a kill. Arming it
+    // is a separate deliberate change with its own evidence. `Stop any stray
+    // app instance` earlier in the job is a different step with a different
+    // job -- it guards the single-instance constraint BETWEEN the two live
+    // specs -- so this assertion is scoped to the reporting step alone.
     const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
 
-    const reap = job.indexOf("name: Stop the live WebDriver stack");
-    const upload = job.indexOf("name: Upload WebDriver diagnostics");
+    const start = job.indexOf("name: Report the live WebDriver stack");
+    const end = job.indexOf("name: Upload WebDriver diagnostics");
 
-    expect(reap).toBeGreaterThan(-1);
-    expect(upload).toBeGreaterThan(-1);
-    expect(reap).toBeLessThan(upload);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
 
-    // Runs on failure too. A failed smoke test leaves MORE behind, not less,
-    // and that is the run whose diagnostics someone actually wants.
-    const step = job.slice(reap, upload);
+    const step = job.slice(start, end);
+
+    expect(step).not.toContain("Stop-Process");
+    expect(step).not.toContain("taskkill");
+    expect(step).not.toContain("Kill()");
     expect(step).toContain("if: always()");
   });
 
   it("keeps the diagnostics upload unconditional", () => {
-    // The saving here must not be taken out of the evidence. The captured
-    // msedgewebview2.exe command line is what proves the WebView2 automation
-    // switches landed, and a green run is exactly when that is worth keeping --
-    // so this stays always(), and the time comes out of the reaping instead.
+    // The captured msedgewebview2.exe command line is what proves the WebView2
+    // automation switches landed, and a green run is exactly when that evidence
+    // is worth keeping. Flipping this to failure() would buy back the same
+    // ~85s this describe block failed to find, which is precisely why it is
+    // pinned: an unproven saving must not be paid for with real evidence.
     const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
     const upload = job.slice(job.indexOf("name: Upload WebDriver diagnostics"));
 

@@ -651,6 +651,8 @@ jobs:
           HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
         run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/live-preauth.spec.ts
 
+      # OBSERVE-ONLY. This step reports processes; it terminates nothing.
+      #
       # `Upload WebDriver diagnostics` below takes 62/67/69/81/91/95/109s across
       # seven runs. The byte-identical step in `windows-installer-e2e` -- same
       # action, same path expression, same `if:` -- takes 1-2s for a comparable
@@ -658,34 +660,38 @@ jobs:
       # transfer nor action overhead: in the step log, ~59-82s elapse before
       # upload-artifact's node process emits its first line at all.
       #
-      # The first hypothesis was this job's own orphans. `reapSharedDriver()` in
+      # The hypothesis was this job's own orphans. `reapSharedDriver()` in
       # e2e/desktop-alt/live-driver.ts kills the `tauri-driver` process it
       # spawned, and on Windows that orphans rather than reaps the tree beneath
-      # it. This step was added to test that, and DID NOT CONFIRM IT: the reap
-      # itself takes 0s and the upload came back at 67s, inside the 62-109s
-      # range it already had. The mechanism is still unidentified.
+      # it -- `msedgedriver.exe`, the app, and the several `msedgewebview2.exe`
+      # render/GPU processes would then run on to the end of the job.
       #
-      # The step stays because it is correct regardless -- a job should not hand
-      # the runner back with its test subjects still running -- and it now
-      # reports what it found, so the next run settles whether there are any
-      # orphans at all rather than killing silently and proving nothing. Do not
-      # cite it as a wall-clock fix; it has not earned that.
+      # A first attempt shipped this as a reaper and DID NOT CONFIRM THAT: the
+      # step took 0s and the upload came back at 67s, inside the 62-109s range
+      # it already had. But it killed with `-ErrorAction SilentlyContinue`, so
+      # 0s could not distinguish "killed five processes" from "found none" --
+      # which is the entire question. It proved nothing in either direction.
+      #
+      # So it is observe-only now, which is also what a change whose primary
+      # effect is terminating live work is supposed to ship as. It enumerates
+      # the population and stops. Once the log says whether orphans exist and
+      # what they are, terminating them (if that is even warranted) is a
+      # separate, deliberate change -- not a silent side effect of this one.
       #
       # The four names are exactly the set the spec's own
       # `snapshotWindowsProcesses` diagnostic enumerates.
-      - name: Stop the live WebDriver stack
+      - name: Report the live WebDriver stack
         if: always()
         shell: pwsh
         run: |
           $live = Get-Process hq-sync-menubar, msedgewebview2, msedgedriver, tauri-driver `
             -ErrorAction SilentlyContinue
           if ($live) {
-            Write-Host "$($live.Count) process(es) still running after the live specs:"
+            Write-Host "$($live.Count) live-stack process(es) still running after the live specs:"
             $live | Select-Object Id, Name, StartTime |
               Format-Table -AutoSize | Out-String -Width 200 | Write-Host
-            $live | Stop-Process -Force -ErrorAction SilentlyContinue
           } else {
-            Write-Host "no live-stack processes were running; nothing to stop"
+            Write-Host "no live-stack processes were running"
           }
 
       # always(), not failure(): the captured msedgewebview2.exe command line is
