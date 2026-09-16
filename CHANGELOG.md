@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.276] — 2026-09-16
+
 - Bots are never taken off a computer they are running on. Opening HQ on a second Mac used to quietly bring every bot you own over to it, which stopped them on the first one — no click, and nothing said. HQ now leaves any bot that is still running elsewhere alone and only brings back the ones with nothing running them. You can still move one over whenever you want, from the banner, from Settings › Bots or from the bot's own conversation; those now say, in one line, "This bot is running on another computer. Starting it here stops it there." Bots after a reinstall or on a wiped Mac come back by themselves exactly as before.
 - Setup reports no longer count a finished setup as abandoned.
 - Your bots now come back by themselves. When HQ finds bots you own that aren't set up on this computer — after a reinstall, on a new Mac, or after an update wiped one — and a coding tool is signed in, it brings them back on its own, with no button to find and no click to make. One calm line says "Bringing back your bots…" while it happens and then names the ones that are back. If some can't come back, it says which and why, and the manual "Restore my bots" options are still there.
