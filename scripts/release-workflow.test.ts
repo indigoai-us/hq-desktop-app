@@ -927,17 +927,24 @@ describe("release workflow channel contract", () => {
     expect(JSON.parse(windowsConfig).bundle.windows.allowDowngrades).toBe(false);
   });
 
-  it("builds a prerelease MSI in the regular Windows installer gate", () => {
+  // This used to assert the PR gate ALSO bundled an MSI. It did, and nothing
+  // ever opened it: windows-installer-e2e downloads the NSIS setup.exe and
+  // windows-installer-e2e.ps1 installs and upgrades through NSIS alone. WiX
+  // candle+light cost 70s on the critical path of a required check to produce
+  // a file that was counted and discarded, so the gate is NSIS-only now and
+  // MSI packaging is asserted where it ships. The `installer E2E (x64 MSI +
+  // NSIS)` job NAME is left alone deliberately -- it is a required status
+  // check on `main`, and renaming it orphans the context.
+  it("builds the MSI on the release path, not in the PR gate", () => {
+    expect(workflow).toContain("Generate Windows MSI version overlay");
+    expect(workflow).toContain("node ../../scripts/windows-msi-version.mjs");
+    expect(workflow).toContain("--bundles msi nsis updater");
+    expect(workflow).toContain("--config $env:TAURI_MSI_VERSION_CONFIG");
+
     expect(windowsCheckWorkflow).toContain("installer E2E (x64 MSI + NSIS)");
-    expect(windowsCheckWorkflow).toContain("Generate Windows MSI version overlay");
-    expect(windowsCheckWorkflow).toContain(
-      "node ../../scripts/windows-msi-version.mjs",
-    );
-    expect(windowsCheckWorkflow).toContain("--bundles msi nsis");
-    expect(windowsCheckWorkflow).toContain("Verify prerelease MSI package");
-    expect(windowsCheckWorkflow).toContain(
-      "--config $env:TAURI_MSI_VERSION_CONFIG",
-    );
+    expect(windowsCheckWorkflow).not.toContain("--bundles msi");
+    expect(windowsCheckWorkflow).not.toContain("TAURI_MSI_VERSION_CONFIG");
+    expect(windowsCheckWorkflow).not.toContain("windows-msi-version.mjs");
   });
 
   // The relevance list used to be a `paths:` trigger filter on
@@ -1037,11 +1044,19 @@ describe("release workflow channel contract", () => {
     expect(syncCargoToml).toMatch(/\[profile\.release\][\s\S]*?strip = "symbols"/);
     expect(syncCargoToml).toMatch(/\[profile\.release\][\s\S]*?split-debuginfo = "packed"/);
 
-    expect(windowsCheckWorkflow).toContain("Verify installer debug file contract");
-    expect(windowsCheckWorkflow).toContain("hq-sync-menubar.exe");
-    expect(windowsCheckWorkflow).toContain("hq_sync_menubar.pdb");
-    expect(windowsCheckWorkflow).toContain("sentry-cli difutil check --json");
-    expect(windowsCheckWorkflow).toContain("Installer executable/PDB debug id");
+    // The exe/PDB debug-id contract is asserted on the binary that SHIPS. The
+    // PR gate used to check its own fixture copy too, which proved nothing
+    // about the released artifact -- nothing symbolicates a fixture that is
+    // installed, asserted on and uninstalled inside one job. That build now
+    // runs with `debug = false` (see the fixture profile) precisely so the
+    // MSVC link stops writing a PDB no one reads, so the duplicate check could
+    // not have stayed anyway.
+    expect(windows).toContain("Verify Windows debug file contract");
+    expect(windows).toContain("hq-sync-menubar.exe");
+    expect(windows).toContain("hq_sync_menubar.pdb");
+    expect(windows).toContain("sentry-cli difutil check --json");
+    expect(windows).toContain("Windows executable/PDB debug id");
+    expect(windowsCheckWorkflow).not.toContain("sentry-cli difutil check");
 
     expect(workflow).not.toContain("hq-debug-");
     expect(workflow).not.toContain("debug-artifacts-${{ matrix.target }}");

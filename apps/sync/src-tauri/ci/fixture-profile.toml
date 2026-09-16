@@ -15,6 +15,22 @@
 # The other three workspace crates and every dependency are already cheap or
 # already cached. So the override is aimed at exactly that crate.
 #
+# `opt-level` alone did not move that block. Re-measured on run 35060444631,
+# after the opt-level override had been in place for weeks: cargo took 8m21s,
+# of which 378s was still the same single silent stretch between the last
+# `Compiling` line and hq-sync-menubar's warning summary -- 6m18s against the
+# 6m15s the override was written to cut. Only four crates compile at all; every
+# dependency restores from cache. So the cost is not codegen at any opt-level,
+# it is the MSVC link, and on MSVC the link writes the PDB.
+#
+# `debug = false` is aimed at that. The profile this inherits from sets
+# `debug = "line-tables-only"` so the shipped binary has a PDB to symbolicate
+# against -- but the fixture binary is installed by windows-installer-e2e.ps1,
+# asserted on, and uninstalled in the same job. Nothing symbolicates it and
+# nothing keeps it. The exe/PDB debug-id contract that used to be checked here
+# is verified on the real release build in release.yml, against the binary that
+# actually ships.
+#
 # IMPORTANT -- the scope below is load-bearing, not conservatism.
 #
 # The CI step writes this file AFTER rust-cache has computed its key, so the
@@ -32,3 +48,4 @@
 
 [profile.release.package.hq-sync-menubar]
 opt-level = 1
+debug = false
