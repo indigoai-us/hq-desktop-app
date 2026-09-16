@@ -284,6 +284,37 @@ export function reconcileLocalBotTrace(
 }
 
 /**
+ * Bots that were on THIS Mac's previous listing and are not on the newest one.
+ *
+ * This is the wipe, the moment it happens: `hq bot list` reads each bot's own
+ * config, so a deleted `bot.json` (or a self-heal that pulled the startup
+ * agent) drops the row silently. On the VM that left a live composer in the
+ * bot's DM for 6 m 40 s, because the only thing that could have said otherwise
+ * — the account's own listing — was on a 120 s timer that had stopped. A
+ * disappearance is the cheapest possible trigger for asking again, and the
+ * local listing is read every 30 s whatever the remote cadence is doing.
+ *
+ * Returns uids, in previous-listing order. Empty on the first listing (there
+ * is no previous one), so mounting never fires a spurious refresh.
+ */
+export function localBotsDisappeared(
+  previous: readonly LocalBotRow[] | null | undefined,
+  next: readonly LocalBotRow[] | null | undefined,
+): string[] {
+  if (!previous || previous.length === 0) return [];
+  const still = new Set((next ?? []).map((bot) => bot.agentUid?.trim()).filter(Boolean));
+  const gone: string[] = [];
+  const seen = new Set<string>();
+  for (const bot of previous) {
+    const uid = bot.agentUid?.trim();
+    if (!uid || still.has(uid) || seen.has(uid)) continue;
+    seen.add(uid);
+    gone.push(uid);
+  }
+  return gone;
+}
+
+/**
  * Bots this computer has run that are NOT on its listing any more: the
  * person's own local bots with nothing here to run them. In trace order.
  */

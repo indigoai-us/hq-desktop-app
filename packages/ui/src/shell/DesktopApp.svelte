@@ -276,6 +276,7 @@
     canStartBot,
     classifyBotStartFailure,
     clearBotStartGate,
+    localBotsDisappeared,
     readLocalBotTrace,
     reconcileLocalBotTrace,
     recordBotStartFailure,
@@ -310,16 +311,22 @@
     botRestoreRowFailed,
     botRestoreRowLine,
     botRestoreSummary,
+    botFailureReason,
     botsNotHere,
+    botStaysInCloudLine,
     classifyRemoteBotFailure,
+    isNotRunnableHereReason,
     NO_REMOTE_BOT_LISTING,
     ownedBotNotHere,
     ownedBotsNotHere,
     remoteBotListingFailed,
     remoteBotListingNotice,
     remoteBotListingOk,
+    REMOTE_BOTS_CALL_TIMEOUT_MS,
     REMOTE_BOTS_POLL_MS,
+    REMOTE_BOTS_TIMEOUT_LOG,
     rememberBotRestoreDismissed,
+    withPollTimeout,
     type RemoteBotListing,
   } from "../chat/bot-restore.js";
   import {
@@ -1005,8 +1012,16 @@
     if (!api) return;
     const result = await api.list();
     if (!result.ok) return;
-    localBotRecords = result.value.bots ?? [];
+    const bots = result.value.bots ?? [];
+    // A BOT THAT DROPPED OFF THIS MAC'S LISTING IS THE WIPE, AS IT HAPPENS.
+    // The account's own listing is what turns that into the honest notice,
+    // and on the VM it was on a 120 s timer that had stopped — so the DM
+    // showed a live composer for 6 m 40 s. Asking again right here bounds
+    // that by one local poll (30 s) whatever the remote cadence is doing.
+    const vanished = localBotsDisappeared(localBotRecords, bots);
+    localBotRecords = bots;
     localBotTrace = rememberLocalBots(botMachineMemory, localBotTrace, localBotRecords);
+    if (vanished.length > 0) void refreshRemoteBots(true);
   }
   /**
    * BOTS COME BACK AFTER A REINSTALL.
@@ -1028,25 +1043,56 @@
    * above says why, instead of a button that cannot work.
    */
   const botRestoreUnavailable = $derived(remoteBotListing.failure !== null);
-  async function refreshRemoteBots(): Promise<void> {
+  /**
+   * One remote listing call in flight at a time — released in `finally`, and
+   * bounded, so it can never be pinned.
+   *
+   * The VM's Defect 8: three calls, then none for 16 m 38 s, while the 30 s
+   * local poller kept firing from the same `onMount`. The cadence below is a
+   * plain `setInterval` and always was, so nothing here re-arms a chain that
+   * could be lost; what this guard buys is that a slow or hung call can
+   * neither pile CLI invocations up behind it nor outlive one tick. A person
+   * asking (Check again, a finished adopt or restore) always gets a fresh
+   * call — `force` skips the guard, never the bound.
+   */
+  let remoteBotPollBusy = false;
+  async function refreshRemoteBots(force = false): Promise<void> {
     const listRemote = adapter.bots?.listRemote;
     if (!listRemote) return;
-    const result = await listRemote();
-    // A LISTING THAT FAILED IS NOT EVIDENCE ABOUT ANY BOT. An empty listing
-    // and "no answer" must never read the same, so a failure keeps the last
-    // good rows (marked stale) and only changes what the app can offer.
-    if (result.ok && Array.isArray(result.value?.bots)) {
-      remoteBotListing = remoteBotListingOk(result.value.bots);
-      localBotTrace = reconcileLocalBotTrace(botMachineMemory, localBotTrace, result.value.bots);
-      return;
+    if (remoteBotPollBusy && !force) return;
+    remoteBotPollBusy = true;
+    try {
+      const outcome = await withPollTimeout(() => listRemote(), REMOTE_BOTS_CALL_TIMEOUT_MS);
+      // A call that never answered is not evidence either: the last good rows
+      // stay exactly as they were, one line goes to the log, and the next
+      // tick asks again.
+      if (outcome.timedOut) {
+        console.warn(REMOTE_BOTS_TIMEOUT_LOG);
+        return;
+      }
+      const result = outcome.value;
+      // A LISTING THAT FAILED IS NOT EVIDENCE ABOUT ANY BOT. An empty listing
+      // and "no answer" must never read the same, so a failure keeps the last
+      // good rows (marked stale) and only changes what the app can offer.
+      if (result.ok && Array.isArray(result.value?.bots)) {
+        remoteBotListing = remoteBotListingOk(result.value.bots);
+        localBotTrace = reconcileLocalBotTrace(botMachineMemory, localBotTrace, result.value.bots);
+        return;
+      }
+      if (!result.ok && result.message) {
+        console.warn("[hq-desktop] remote bot list failed:", result.message);
+      }
+      remoteBotListing = remoteBotListingFailed(
+        remoteBotListing,
+        result.ok ? "malformed" : classifyRemoteBotFailure(result.reason, result.message),
+      );
+    } catch (err) {
+      // A host that throws instead of answering must not end the cadence.
+      console.warn("[hq-desktop] remote bot list failed:", err);
+      remoteBotListing = remoteBotListingFailed(remoteBotListing, "network");
+    } finally {
+      remoteBotPollBusy = false;
     }
-    if (!result.ok && result.message) {
-      console.warn("[hq-desktop] remote bot list failed:", result.message);
-    }
-    remoteBotListing = remoteBotListingFailed(
-      remoteBotListing,
-      result.ok ? "malformed" : classifyRemoteBotFailure(result.reason, result.message),
-    );
   }
   /**
    * A start that actually ran: the budget resets and the honest "cannot run
@@ -1171,7 +1217,7 @@
     try {
       // Both halves: this computer's bots, and the account's own listing that
       // decides whether the bot is here at all.
-      await Promise.all([refreshLocalBots(), refreshRemoteBots()]);
+      await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
       const bot = localBotRecords.find((row) => row.agentUid.trim() === uid);
       if (!bot) return;
       botStartGate = clearBotStartGate(botStartGate, bot.name);
@@ -1353,7 +1399,7 @@
       // A cloud-only setup bot is one the account owns, so the notice can
       // offer to bring it back here rather than only "Check again" — but only
       // once the account's own listing says so. Ask for it now.
-      void refreshRemoteBots();
+      void refreshRemoteBots(true);
     }
     const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
     handleSelect(
@@ -1676,14 +1722,20 @@
       // (or hq-pro's). They belong in the log; the notice gets a sentence.
       const raw = result.message ?? "";
       if (raw) console.warn("[hq-desktop] bot adopt failed:", raw);
-      const reason = plainBotFailure(raw, adoptFallbackNotice(name));
+      // A refusal the CLI named is not "please try again": a company bot's
+      // identity cannot run on a personal Mac, now or later, and the failure
+      // document that says so is exactly the machine text `plainBotFailure`
+      // is right to refuse to render.
+      const reason = isNotRunnableHereReason(botFailureReason(raw))
+        ? botStaysInCloudLine(name)
+        : plainBotFailure(raw, adoptFallbackNotice(name));
       if (uid) clearBotProgress(uid);
       botAdoptError = reason;
       return { ok: false, reason };
     }
     // It runs here now: the gate reopens and the honest notice goes with it.
     noteBotStarted(name, uid);
-    await Promise.all([refreshLocalBots(), refreshRemoteBots()]);
+    await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
     if (uid) setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
     return { ok: true, reason: null };
   }
@@ -1743,7 +1795,7 @@
     for (const row of result.value.bots ?? []) {
       if (row.action === "restored" || row.action === "repaired") noteBotStarted(row.name, row.agentUid);
     }
-    await Promise.all([refreshLocalBots(), refreshRemoteBots()]);
+    await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
   }
   /**
    * One place where a failed start becomes state: it counts against the bot's

@@ -10,6 +10,7 @@ import {
   classifyBotStartFailure,
   clearBotStartGate,
   isDefinitiveBotStartFailure,
+  localBotsDisappeared,
   localBotsTracedButGone,
   readLocalBotTrace,
   reconcileLocalBotTrace,
@@ -197,5 +198,23 @@ describe("the trace of bots this computer has run", () => {
     };
     expect(readLocalBotTrace(throwing)).toEqual({});
     expect(rememberLocalBots(throwing, {}, [row()])).toEqual({ agt_setup: "setup" });
+  });
+});
+
+describe("a bot dropping off this Mac's listing", () => {
+  const scout = row({ name: "scout", agentUid: "agt_scout" });
+  const setup = row();
+
+  it("names the bots the newest listing no longer has", () => {
+    expect(localBotsDisappeared([setup, scout], [scout])).toEqual(["agt_setup"]);
+    expect(localBotsDisappeared([setup, scout], [])).toEqual(["agt_setup", "agt_scout"]);
+  });
+
+  it("says nothing when the listing only grew, or on the very first one", () => {
+    expect(localBotsDisappeared([scout], [scout, setup])).toEqual([]);
+    expect(localBotsDisappeared([], [scout])).toEqual([]);
+    // Null previous is the first listing too: mounting must not fire a refresh.
+    expect(localBotsDisappeared(null, [scout])).toEqual([]);
+    expect(localBotsDisappeared([scout], null)).toEqual(["agt_scout"]);
   });
 });

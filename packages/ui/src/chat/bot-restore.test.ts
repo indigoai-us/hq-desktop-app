@@ -14,8 +14,16 @@ import {
   botRestoreRowFailed,
   botRestoreRowLine,
   botRestoreSummary,
+  botFailureReason,
+  botStoppedReasonFor,
+  botStoppedRemedy,
   botsNotHere,
+  BOT_RUNS_IN_CLOUD_NOT_HERE,
   classifyRemoteBotFailure,
+  isNotRunnableHereReason,
+  remoteBotNotRunnableReason,
+  remoteBotRunnableHere,
+  withPollTimeout,
   ownedBotNotHere,
   ownedBotsNotHere,
   rememberBotRestoreDismissed,
@@ -336,5 +344,136 @@ describe("what a restore says afterwards", () => {
     expect(botRestoreSummary(result({ restored: 2, failed: 1 }))).toBe(
       "2 of your bots are back; 1 could not be brought back.",
     );
+  });
+});
+
+// ── Round 4, Defect 7: a bot this Mac could never run ────────────────────────
+
+describe("a company bot is never offered as something to bring back", () => {
+  it("reads the CLI's runnable flag when it is there, and kind when it is not", () => {
+    expect(remoteBotRunnableHere(remote({ kind: "personal" }))).toBe(true);
+    expect(remoteBotRunnableHere(remote({ kind: "company" }))).toBe(false);
+    // The flag wins both ways, so the CLI stays the authority once it sends one.
+    expect(remoteBotRunnableHere(remote({ kind: "company", runnable: true }))).toBe(true);
+    expect(remoteBotRunnableHere(remote({ kind: "personal", runnable: false }))).toBe(false);
+  });
+
+  it("names the reason, falling back to company-bot on a listing without one", () => {
+    expect(remoteBotNotRunnableReason(remote({ kind: "personal" }))).toBeNull();
+    expect(remoteBotNotRunnableReason(remote({ kind: "company" }))).toBe("company-bot");
+    expect(
+      remoteBotNotRunnableReason(remote({ kind: "personal", runnable: false, reason: "not-runnable-here" })),
+    ).toBe("not-runnable-here");
+  });
+
+  it("keeps company bots out of the rows every restore surface counts", () => {
+    const rows = botsNotHere([
+      remote({ name: "test-bot", agentUid: "agt_test", here: false }),
+      remote({ name: "cobot", agentUid: "agt_cobot", kind: "company", here: false }),
+      remote({ name: "qa", agentUid: "agt_qa", runnable: false, reason: "company-bot", here: false }),
+    ]);
+    expect(rows.map((bot) => bot.name)).toEqual(["test-bot"]);
+  });
+
+  it("keeps a company bot out of the DM's 'cannot run here' set too", () => {
+    // It runs in HQ Cloud and answers from there, so it is a cloud teammate —
+    // never a local bot with an honest notice and a doomed adopt button.
+    const listing = remoteBotListingOk([
+      remote({ name: "cobot", agentUid: "agt_cobot", kind: "company", here: false }),
+    ]);
+    expect(ownedBotsNotHere(listing, {}, [])).toEqual([]);
+  });
+});
+
+describe("a refusal the CLI named is not 'please try again'", () => {
+  it("reads the reason out of the CLI's failure document", () => {
+    expect(
+      botFailureReason('{"ok":false,"reason":"not-runnable-here","message":"cobot runs in HQ Cloud"}'),
+    ).toBe("not-runnable-here");
+    // A stray banner line before the document does not hide it.
+    expect(botFailureReason('checking…\n{"ok":false,"reason":"company-bot"}')).toBe("company-bot");
+    expect(botFailureReason("Claude Code is not signed in.")).toBeNull();
+    expect(botFailureReason("{not json")).toBeNull();
+    expect(botFailureReason(null)).toBeNull();
+  });
+
+  it("tells a permanent refusal apart from a transient one", () => {
+    expect(isNotRunnableHereReason("not-runnable-here")).toBe(true);
+    expect(isNotRunnableHereReason("company-bot")).toBe(true);
+    expect(isNotRunnableHereReason("network")).toBe(false);
+    expect(isNotRunnableHereReason(null)).toBe(false);
+  });
+
+  it("says a refused bot stays in HQ Cloud, whichever way the CLI marked it", () => {
+    expect(botRestoreRowLine(row({ name: "cobot", action: "failed", reason: "not-runnable-here" }))).toBe(
+      "cobot runs in HQ Cloud, so there is nothing to bring back to this Mac.",
+    );
+    // An older CLI puts the same thing in its failure document.
+    expect(
+      botRestoreRowLine(row({ name: "cobot", action: "skipped", detail: '{"ok":false,"reason":"company-bot"}' })),
+    ).toBe("cobot runs in HQ Cloud, so there is nothing to bring back to this Mac.");
+    // And an ordinary skip is untouched.
+    expect(botRestoreRowLine(row({ name: "scout", action: "skipped" }))).toBe("scout was already set up here.");
+  });
+});
+
+describe("the one sentence under a stopped bot", () => {
+  it("never offers a sign-in that cannot help a bot this Mac can't run", () => {
+    // The VM read "Check that Claude Code is signed in, then start it again"
+    // on a bot whose runtime refuses it, while six siblings were online on
+    // that very sign-in.
+    const cobot = remote({ name: "cobot", agentUid: "agt_cobot", kind: "company", here: true });
+    const reason = botStoppedReasonFor(true, cobot);
+    expect(reason).toBe("not-runnable-here");
+    const sentence = botStoppedRemedy(reason, "Claude Code");
+    expect(sentence).toContain(BOT_RUNS_IN_CLOUD_NOT_HERE);
+    expect(sentence).not.toContain("signed in");
+  });
+
+  it("keeps the sign-in sentence for a bot whose runtime really needs one", () => {
+    const scout = remote({ agentUid: "agt_scout", kind: "personal", here: true });
+    expect(botStoppedReasonFor(true, scout)).toBe("runtime-sign-in");
+    expect(botStoppedRemedy("runtime-sign-in", "Claude Code")).toBe(
+      "The bot stopped after repeated errors. Check that Claude Code is signed in, then start it again.",
+    );
+  });
+
+  it("claims nothing when nothing here knows why", () => {
+    expect(botStoppedReasonFor(false, undefined)).toBe("unknown");
+    const sentence = botStoppedRemedy("unknown", "Claude Code");
+    expect(sentence).not.toContain("signed in");
+    expect(sentence).toContain("stopped after repeated errors");
+  });
+});
+
+// ── Round 4, Defect 8: a poll that never answers ─────────────────────────────
+
+describe("withPollTimeout", () => {
+  it("passes an answer straight through", async () => {
+    await expect(withPollTimeout(async () => "rows", 50)).resolves.toEqual({
+      timedOut: false,
+      value: "rows",
+    });
+  });
+
+  it("gives up on a call that never comes back, and never awaits it again", async () => {
+    const settlers: Array<(value: string) => void> = [];
+    const hung = new Promise<string>((resolve) => {
+      settlers.push(resolve);
+    });
+    const outcome = await withPollTimeout(() => hung, 10);
+    expect(outcome).toEqual({ timedOut: true, value: null });
+    // The abandoned call finishing changes nothing — the caller has moved on.
+    settlers[0]?.("too late");
+    await expect(hung).resolves.toBe("too late");
+  });
+
+  it("passes a rejection to the caller rather than swallowing it", async () => {
+    await expect(withPollTimeout(async () => Promise.reject(new Error("no")), 50)).rejects.toThrow("no");
+    await expect(
+      withPollTimeout(() => {
+        throw new Error("sync");
+      }, 50),
+    ).rejects.toThrow("sync");
   });
 });

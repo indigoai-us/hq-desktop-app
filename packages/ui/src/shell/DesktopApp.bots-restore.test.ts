@@ -30,8 +30,11 @@ import {
   BOT_RESTORE_CLOUD_UNREACHABLE,
   BOT_RESTORE_DISMISSED_KEY,
   BOT_RESTORE_NEEDS_NEWER_CLOUD,
+  REMOTE_BOTS_CALL_TIMEOUT_MS,
+  REMOTE_BOTS_POLL_MS,
 } from "../chat/bot-restore.js";
 import { LOCAL_BOT_TRACE_KEY } from "../chat/bot-runnability.js";
+import { LOCAL_BOTS_POLL_MS } from "../chat/local-bots.js";
 import type { ChatSidebarApi } from "../chat/chat-api";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 
@@ -651,5 +654,152 @@ describe("when HQ Cloud cannot list your bots", () => {
     // about anyone else's bot changes.
     expect(chipFor(FLEET_UID)?.getAttribute("aria-label")).toBe("Cloud");
     expect(chipFor(FLEET_UID)?.dataset.kind).toBe("cloud");
+  });
+});
+
+/**
+ * ROUND 4, DEFECT 8 — the remote listing stopped refreshing for a session.
+ *
+ * On the VM `hq bot list --remote` was asked for three times and then not
+ * again for 16 m 38 s, while the 30 s local poller kept firing from the same
+ * `onMount`. The consequence is what these tests pin: a bot that stops being
+ * runnable showed a live composer for 6 m 40 s, and the only way back was
+ * restarting the app.
+ *
+ * Two guarantees, and they are independent on purpose. The cadence itself can
+ * no longer be held up by one call — a hung or failing listing is abandoned
+ * and the next tick asks anyway. And the honest notice no longer depends on
+ * that cadence at all: a bot dropping off THIS Mac's listing asks for a fresh
+ * account listing straight away, which bounds the notice by one local poll.
+ */
+describe("the remote listing keeps asking", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function botContacts() {
+    return [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }];
+  }
+
+  /** Let mount, effects and any queued promises run under fake timers. */
+  async function flush(ms = 0): Promise<void> {
+    await vi.advanceTimersByTimeAsync(ms);
+    await settle();
+  }
+
+  /**
+   * `vi.waitFor` runs on real time, which a fake clock never reaches. This is
+   * the same idea on the fake one: keep draining microtasks (and any zero-delay
+   * timer the shell queues while it boots) until the condition holds.
+   */
+  async function until(what: string, check: () => boolean, tries = 80): Promise<void> {
+    for (let i = 0; i < tries; i += 1) {
+      if (check()) return;
+      // 10 ms a turn: enough for anything the shell queues while it boots,
+      // and 80 turns still land far short of the 30 s local poll.
+      await flush(10);
+    }
+    throw new Error(`fake-timer wait never saw: ${what}`);
+  }
+
+  it("carries on polling after a first call that never answers", async () => {
+    let calls = 0;
+    const listRemote = vi.fn(() => {
+      calls += 1;
+      // The first call is the one that never comes back.
+      if (calls === 1) return new Promise<never>(() => {});
+      return Promise.resolve(ok({ bots: [remoteBot()] }));
+    });
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: listRemote as never },
+        contacts: botContacts(),
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    await until("the bot's DM", () => q('[data-testid="conversation-composer"]') !== null);
+    expect(listRemote).toHaveBeenCalledTimes(1);
+
+    // The hung call is abandoned at the bound, and the cadence goes on. This
+    // is the whole defect: on the VM the third call was the last one for
+    // 16 m 38 s.
+    await flush(REMOTE_BOTS_CALL_TIMEOUT_MS);
+    await flush(REMOTE_BOTS_POLL_MS);
+    expect(listRemote.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // And the abandoned call never comes back to overwrite a newer answer.
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it("carries on polling after a listing that failed", async () => {
+    let calls = 0;
+    const listRemote = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { ok: false as const, reason: "error" as const, message: "HQ Cloud did not answer" };
+      }
+      return ok({ bots: [remoteBot()] });
+    });
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: listRemote as never },
+        contacts: botContacts(),
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    await until("the bot's DM", () => q('[data-testid="conversation-composer"]') !== null);
+    expect(listRemote).toHaveBeenCalledTimes(1);
+
+    await flush(REMOTE_BOTS_POLL_MS);
+    expect(listRemote.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("carries on polling after a host that throws instead of answering", async () => {
+    let calls = 0;
+    const listRemote = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("invoke blew up");
+      return ok({ bots: [remoteBot()] });
+    });
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: listRemote as never },
+        contacts: botContacts(),
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    await until("the bot's DM", () => q('[data-testid="conversation-composer"]') !== null);
+    await flush(REMOTE_BOTS_POLL_MS);
+    expect(listRemote.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("asks for a fresh account listing the moment a bot drops off this Mac", async () => {
+    let wiped = false;
+    const listRemote = vi.fn(async () => ok({ bots: [remoteBot({ here: !wiped })] }));
+    mountApp(
+      adapter({
+        bots: {
+          list: async () => ok({ bots: wiped ? [] : [localBot()] }),
+          listRemote: listRemote as never,
+        },
+        contacts: botContacts(),
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    await until("the bot's DM", () => q('[data-testid="conversation-composer"]') !== null);
+    const beforeWipe = listRemote.mock.calls.length;
+    expect(q('[data-testid="bot-not-runnable-notice"]'), "a working bot has no notice").toBeNull();
+
+    // The wipe: `bot.json` is gone, so the bot drops off `hq bot list`.
+    wiped = true;
+    // ONE local poll — nowhere near the 120 s remote cadence.
+    await flush(LOCAL_BOTS_POLL_MS);
+    expect(listRemote.mock.calls.length).toBeGreaterThan(beforeWipe);
+
+    // The 6 m 40 s live composer: the notice is there inside one local poll.
+    await until("the honest notice", () => q('[data-testid="bot-not-runnable-notice"]') !== null);
+    expect(q('[data-testid="bot-start-here"]')?.textContent).toContain("Start on this computer");
   });
 });

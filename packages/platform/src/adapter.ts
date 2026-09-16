@@ -1118,6 +1118,22 @@ export interface RemoteBotRow {
   lastHeartbeatAt: string | null;
   /** True when this bot is set up on THIS computer. */
   here: boolean;
+  /**
+   * True when THIS computer could run the bot at all.
+   *
+   * A company bot's identity lives in HQ Cloud and its runtime refuses to
+   * start as a personal local bot, so bringing it "back" to a Mac creates
+   * credentials, a state directory and a startup agent for something that can
+   * never run (round 4, Defect 7). Absent on a CLI that does not send it yet
+   * — `remoteBotRunnableHere` falls back to `kind` then.
+   */
+  runnable?: boolean;
+  /**
+   * Why `runnable` is false, as the CLI names it (`company-bot`, and
+   * `not-runnable-here` from a refused adopt/restore). Never rendered: it
+   * selects one of the app's own written sentences.
+   */
+  reason?: string;
   /** One-line description of the settings it would come back with. */
   settings: string;
 }
@@ -1137,6 +1153,12 @@ export interface BotRestoreRow {
     | "would-skip";
   /** The CLI's own words — logged and counted, never rendered verbatim. */
   detail: string;
+  /**
+   * Machine-readable reason for a row the CLI refused (`not-runnable-here`
+   * for a company bot). Absent on a CLI that does not send it yet; it selects
+   * one of the app's own written sentences, and is never rendered.
+   */
+  reason?: string;
 }
 
 /** `hq bot restore [--all] --json`. */

@@ -336,3 +336,191 @@ describe("bots that live on another computer", () => {
     expect(q('[data-testid="settings-bot-assistant"]')).toBeTruthy();
   });
 });
+
+/**
+ * ROUND 4 — Defect 7 and Observation B.
+ *
+ * The banner is one-shot, so after the first adopt the person's only remaining
+ * way back was per-bot, through each DM. Settings is the durable home for it:
+ * the "On another computer" section stands as long as the account owns a bot
+ * this Mac could run, with the same restore the banner offered.
+ *
+ * And it must offer it only for bots this Mac CAN run. `hq bot restore`
+ * brought a company bot back as a personal local bot, credentialed it, gave it
+ * a startup agent, counted it as restored — and its runtime refused it at
+ * every login, under a Settings card telling the person to check a sign-in
+ * that six sibling bots were already online on.
+ */
+describe("the durable restore home in Settings", () => {
+  it("keeps the section and its Restore my bots after a bot has been brought back", async () => {
+    // Two owned bots away; one comes back. The banner is gone by now — this
+    // section is the only entry point left, and it stays.
+    await mountPane(
+      fakeAdapter({
+        listRemote: vi.fn(async () =>
+          ok({
+            bots: [
+              remote({ name: "assistant", agentUid: "agt_here", here: true }),
+              remote(),
+              remote({ name: "setup", agentUid: "agt_setup" }),
+            ],
+          }),
+        ),
+      }),
+    );
+    await settle(14);
+
+    expect(q('[data-testid="settings-bots-elsewhere"]')).toBeTruthy();
+    expect(q('[data-testid="settings-bots-restore-all"]')?.textContent).toContain("Restore my bots");
+    expect(q('[data-testid="settings-remote-bot-scout"]')).toBeTruthy();
+    expect(q('[data-testid="settings-remote-bot-setup"]')).toBeTruthy();
+    // The per-bot action says exactly what the DM's does.
+    expect(q('[data-testid="settings-remote-bot-scout-start"]')?.textContent).toContain(
+      "Start on this computer",
+    );
+  });
+
+  it("never offers to bring a company bot back, and never counts it", async () => {
+    const adopt = vi.fn(async () => ok({ ok: true }));
+    await mountPane(
+      fakeAdapter({
+        adopt,
+        listRemote: vi.fn(async () =>
+          ok({
+            bots: [remote(), remote({ name: "cobot", agentUid: "agt_cobot", kind: "company" })],
+          }),
+        ),
+      }),
+    );
+    await settle(14);
+
+    expect(q('[data-testid="settings-remote-bot-scout"]')).toBeTruthy();
+    expect(q('[data-testid="settings-remote-bot-cobot"]'), "a company bot is not brought back").toBeNull();
+    expect(q('[data-testid="settings-remote-bot-cobot-start"]')).toBeNull();
+    expect(adopt).not.toHaveBeenCalled();
+  });
+
+  it("reads the CLI's runnable marker when it sends one", async () => {
+    await mountPane(
+      fakeAdapter({
+        listRemote: vi.fn(async () =>
+          ok({
+            bots: [
+              remote({ name: "cobot", agentUid: "agt_cobot", runnable: false, reason: "company-bot" }),
+              remote({ name: "scout", agentUid: "agt_scout", runnable: true }),
+            ],
+          }),
+        ),
+      }),
+    );
+    await settle(14);
+    expect(q('[data-testid="settings-remote-bot-scout"]')).toBeTruthy();
+    expect(q('[data-testid="settings-remote-bot-cobot"]')).toBeNull();
+  });
+
+  it("drops the section when the only bot away is one this Mac can never run", async () => {
+    await mountPane(
+      fakeAdapter({
+        listRemote: vi.fn(async () =>
+          ok({ bots: [remote({ name: "cobot", agentUid: "agt_cobot", kind: "company" })] }),
+        ),
+      }),
+    );
+    await settle(14);
+    expect(q('[data-testid="settings-bots-elsewhere"]')).toBeNull();
+  });
+
+  it("says a refused bring-back is permanent instead of 'please try again'", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adopt = vi.fn(async () => ({
+      ok: false as const,
+      reason: "error" as const,
+      message: '{"ok":false,"reason":"not-runnable-here","message":"cobot is a company bot"}',
+    }));
+    await mountPane(
+      fakeAdapter({ adopt, listRemote: vi.fn(async () => ok({ bots: [remote()] })) }),
+    );
+    await settle(14);
+
+    q<HTMLButtonElement>('[data-testid="settings-remote-bot-scout-start"]')!.click();
+    await settle(14);
+
+    const status = q('[data-testid="settings-bots-status"]');
+    expect(status?.textContent).toContain("runs in HQ Cloud");
+    expect(status?.textContent).not.toContain("Please try again");
+    expect(status?.textContent).not.toContain("not-runnable-here");
+  });
+});
+
+describe("the one sentence under a bot that stopped", () => {
+  const STOPPED: LocalBotRow = {
+    ...HERE,
+    name: "cobot",
+    agentUid: "agt_cobot",
+    state: "failed",
+    pid: null,
+    processAlive: false,
+    online: false,
+  };
+
+  it("does not blame a sign-in for a bot whose identity cannot run here", async () => {
+    // The VM's card: "Check that Claude Code is signed in, then start it
+    // again" — on a bot that could never run, while six siblings were online
+    // on that very sign-in.
+    await mountPane(
+      fakeAdapter({
+        list: vi.fn(async () => ok({ bots: [STOPPED] })),
+        listRemote: vi.fn(async () =>
+          ok({ bots: [remote({ name: "cobot", agentUid: "agt_cobot", kind: "company", here: true })] }),
+        ),
+      }),
+    );
+    await settle(14);
+
+    const sentence = q('[data-testid="settings-bot-cobot-stopped"]')?.textContent ?? "";
+    expect(sentence).toContain("This bot runs in HQ Cloud, not on this Mac.");
+    expect(sentence).not.toContain("signed in");
+  });
+
+  it("keeps the sign-in sentence for a bot whose runtime really needs one", async () => {
+    await mountPane(
+      fakeAdapter({
+        list: vi.fn(async () =>
+          ok({
+            bots: [
+              {
+                ...STOPPED,
+                name: "scout",
+                agentUid: "agt_scout",
+                runtimeSignIn: { state: "expired" as const, runtime: "claude" as const, since: new Date().toISOString() },
+              } as LocalBotRow,
+            ],
+          }),
+        ),
+        listRemote: vi.fn(async () =>
+          ok({ bots: [remote({ name: "scout", agentUid: "agt_scout", here: true })] }),
+        ),
+      }),
+    );
+    await settle(14);
+
+    expect(q('[data-testid="settings-bot-scout-stopped"]')?.textContent).toContain(
+      "Check that Claude Code is signed in",
+    );
+  });
+
+  it("claims nothing it cannot know when the account listing has not been read", async () => {
+    await mountPane(
+      fakeAdapter({
+        list: vi.fn(async () => ok({ bots: [STOPPED] })),
+        listRemote: undefined,
+      }),
+    );
+    await settle(14);
+
+    const sentence = q('[data-testid="settings-bot-cobot-stopped"]')?.textContent ?? "";
+    expect(sentence).toContain("stopped after repeated errors");
+    expect(sentence).not.toContain("signed in");
+    expect(sentence).not.toContain("HQ Cloud");
+  });
+});

@@ -30,14 +30,24 @@
   import {
     BOT_RESTORE_FAILED,
     BOT_RESTORE_FROM_SETTINGS,
+    BOT_START_HERE,
+    BOT_START_HERE_BUSY,
+    botFailureReason,
     botRestoreRowLine,
     botRestoreSummary,
     botsNotHere,
+    botStaysInCloudLine,
+    botStoppedRemedy,
+    botStoppedReasonFor,
     classifyRemoteBotFailure,
+    isNotRunnableHereReason,
     remoteBotListingNotice,
+    REMOTE_BOTS_CALL_TIMEOUT_MS,
+    REMOTE_BOTS_TIMEOUT_LOG,
+    withPollTimeout,
     type RemoteBotListFailure,
   } from "../chat/bot-restore.js";
-  import { botNeedsSignIn } from "../chat/runtime-sign-in-again.js";
+  import { botNeedsSignIn, expiredRuntimeOf } from "../chat/runtime-sign-in-again.js";
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import "../chat/tokens.css";
@@ -97,7 +107,36 @@
   let adoptBusy = $state<string | null>(null);
   let restoreBusy = $state(false);
   let restoreResult = $state<BotRestoreResult | null>(null);
+  /**
+   * The rows this pane may offer, and only those: `botsNotHere` drops any bot
+   * this Mac could never run (a company bot), because restoring one creates
+   * credentials, a state directory and a startup agent for something whose
+   * runtime refuses it at every login — round 4, Defect 7.
+   */
   const missingHere = $derived(botsNotHere(remoteBots));
+  /** The account's listing by identity, for the stopped-bot remedy below. */
+  const remoteByUid = $derived.by(() => {
+    const out = new Map<string, RemoteBotRow>();
+    for (const bot of remoteBots ?? []) {
+      const uid = bot.agentUid?.trim();
+      if (uid) out.set(uid, bot);
+    }
+    return out;
+  });
+  /**
+   * The one sentence under a stopped bot, keyed on what is actually wrong.
+   *
+   * `hq bot adopt` writes `kind=personal` locally whatever the cloud record
+   * says, so a company bot brought back here looks like an ordinary local bot
+   * that keeps failing. The account's own listing is the only thing that knows
+   * better, which is why the remedy is looked up by identity there.
+   */
+  function stoppedRemedy(bot: LocalBotRow): string {
+    return botStoppedRemedy(
+      botStoppedReasonFor(botNeedsSignIn(bot), remoteByUid.get(bot.agentUid?.trim() ?? "")),
+      runtimeLabel(expiredRuntimeOf(bot)),
+    );
+  }
 
   // ── Cloud group ─────────────────────────────────────────────────────────────
   let cloudBots = $state<CloudBotRow[]>([]);
@@ -237,7 +276,14 @@
   async function loadRemote(): Promise<void> {
     const listRemote = adapter?.bots?.listRemote;
     if (!listRemote) return;
-    const result = await listRemote();
+    // Bounded for the same reason the shell's poller is: a listing that never
+    // comes back must not silently become a pane that never asks again.
+    const outcome = await withPollTimeout(() => listRemote(), REMOTE_BOTS_CALL_TIMEOUT_MS);
+    if (outcome.timedOut) {
+      console.warn(REMOTE_BOTS_TIMEOUT_LOG);
+      return;
+    }
+    const result = outcome.value;
     if (result.ok && Array.isArray(result.value?.bots)) {
       remoteBots = result.value.bots;
       remoteFailure = null;
@@ -262,7 +308,10 @@
     if (!result.ok) {
       // The CLI's own words go to the log, never onto the pane.
       if (result.message) console.warn("[hq-desktop] bot adopt failed:", result.message);
-      line = `Could not bring ${name} back to this Mac. Please try again.`;
+      // A named refusal is permanent, so it must not read "please try again".
+      line = isNotRunnableHereReason(botFailureReason(result.message))
+        ? botStaysInCloudLine(name)
+        : `Could not bring ${name} back to this Mac. Please try again.`;
       lineIsError = true;
     } else {
       line = `${name} is back on this Mac.`;
@@ -426,8 +475,8 @@
                 <small class="muted" data-testid={`settings-bot-${bot.name}-kind`}>{localBotKindLabel(bot)}</small>
               {/if}
               {#if bot.state === "failed"}
-                <small class="muted">
-                  The bot stopped after repeated errors. Check that {runtimeLabel(bot.runtime)} is signed in, then start it again.
+                <small class="muted" data-testid={`settings-bot-${bot.name}-stopped`}>
+                  {stoppedRemedy(bot)}
                 </small>
               {/if}
             </div>
@@ -528,7 +577,7 @@
                     disabled={Boolean(adoptBusy) || restoreBusy}
                     onclick={() => void adopt(bot.name)}
                   >
-                    {adoptBusy === bot.name ? "Starting…" : "Start here"}
+                    {adoptBusy === bot.name ? BOT_START_HERE_BUSY : BOT_START_HERE}
                   </button>
                 </div>
               {/if}
