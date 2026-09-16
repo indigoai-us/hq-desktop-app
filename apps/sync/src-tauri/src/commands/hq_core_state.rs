@@ -1039,7 +1039,7 @@ fn queue_core_update_failure_report(
     details: CoreUpdateFailureDetails<'_>,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let source_hub = sentry::Hub::current();
+        let source_hub = sentry::Hub::main();
         if source_hub.client().is_none() {
             return;
         }
@@ -2309,7 +2309,10 @@ pub fn setup_core_state_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{atomic::AtomicUsize, Arc};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
 
     static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static CORE_UPDATE_SENTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -3183,6 +3186,161 @@ error: clone failed";
             events[0].extra["rescueStderrTail"],
             sentry::protocol::Value::String("fatal: could not clone Core source".to_string())
         );
+    }
+
+    fn sentry_user_tokens(id_token: Option<String>) -> crate::commands::cognito::CognitoTokens {
+        crate::commands::cognito::CognitoTokens {
+            access_token: "access-token".to_string(),
+            id_token,
+            refresh_token: "refresh-token".to_string(),
+            expires_at: i64::MAX,
+        }
+    }
+
+    fn sentry_user_id_token() -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "sub": "cognito-sub-ada",
+                "email": "ada@getindigo.ai",
+                "name": "Ada Lovelace",
+            }))
+            .expect("Sentry test claims serialize"),
+        );
+        format!("header.{payload}.signature")
+    }
+
+    fn core_update_sentry_test_details() -> CoreUpdateFailureDetails<'static> {
+        CoreUpdateFailureDetails {
+            rescue_stderr_tail: None,
+            rescue_failure_category: RescueFailureCategory::Permission,
+            npx_resolution: None,
+        }
+    }
+
+    fn queue_core_update_sentry_test_report() {
+        queue_core_update_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            "rescue_spawn",
+            core_update_sentry_test_details(),
+        );
+    }
+
+    fn captured_dispatched_core_update_events(
+        report: impl FnOnce(),
+    ) -> Vec<sentry::protocol::Event<'static>> {
+        let dispatched = Arc::new(AtomicBool::new(false));
+        let dispatched_in_before_send = Arc::clone(&dispatched);
+        sentry::test::with_captured_events_options(
+            || {
+                let main_hub = sentry::Hub::main();
+                // The test transport is installed on this test's temporary hub.
+                // Production initialization binds the client to the process hub,
+                // so mirror that setup before exercising cross-thread reporting.
+                main_hub.bind_client(sentry::Hub::current().client());
+                report();
+
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while !dispatched.load(Ordering::Acquire) && Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+                assert!(
+                    dispatched.load(Ordering::Acquire),
+                    "the dispatched Core update report must reach the Sentry transport"
+                );
+
+                main_hub.configure_scope(|scope| scope.set_user(None));
+                main_hub.bind_client(None);
+            },
+            sentry::ClientOptions {
+                before_send: Some(Arc::new(move |event| {
+                    dispatched_in_before_send.store(true, Ordering::Release);
+                    Some(event)
+                })),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn dispatched_core_update_report_carries_user_bound_on_an_auth_thread() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let tokens = sentry_user_tokens(Some(sentry_user_id_token()));
+        let events = captured_dispatched_core_update_events(|| {
+            std::thread::spawn(move || {
+                crate::commands::auth::set_sentry_user_from_tokens(&tokens);
+            })
+            .join()
+            .expect("auth thread does not panic");
+            queue_core_update_sentry_test_report();
+        });
+
+        assert_eq!(events.len(), 1);
+        let user = events[0]
+            .user
+            .as_ref()
+            .expect("Core update event carries the signed-in user");
+        assert_eq!(user.id.as_deref(), Some("cognito-sub-ada"));
+        assert_eq!(user.email.as_deref(), Some("ada@getindigo.ai"));
+        assert_eq!(user.username.as_deref(), Some("Ada Lovelace"));
+    }
+
+    #[test]
+    fn sign_out_clears_the_user_for_dispatched_core_update_reports() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let tokens = sentry_user_tokens(Some(sentry_user_id_token()));
+        let events = captured_dispatched_core_update_events(|| {
+            std::thread::spawn(move || {
+                crate::commands::auth::set_sentry_user_from_tokens(&tokens);
+            })
+            .join()
+            .expect("auth thread does not panic");
+            std::thread::spawn(crate::commands::auth::clear_sentry_user)
+                .join()
+                .expect("sign-out thread does not panic");
+            queue_core_update_sentry_test_report();
+        });
+
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0].user.is_none(),
+            "a report after sign-out must not identify the previous user"
+        );
+    }
+
+    #[test]
+    fn malformed_or_missing_id_token_still_clears_the_sentry_user() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+
+        for id_token in [None, Some("not-a-jwt".to_string())] {
+            reset_core_update_sentry_signatures_for_test();
+            let signed_in_tokens = sentry_user_tokens(Some(sentry_user_id_token()));
+            let malformed_tokens = sentry_user_tokens(id_token);
+            let events = captured_dispatched_core_update_events(|| {
+                std::thread::spawn(move || {
+                    crate::commands::auth::set_sentry_user_from_tokens(&signed_in_tokens);
+                })
+                .join()
+                .expect("auth thread does not panic");
+                std::thread::spawn(move || {
+                    crate::commands::auth::set_sentry_user_from_tokens(&malformed_tokens);
+                })
+                .join()
+                .expect("malformed-token auth thread does not panic");
+                queue_core_update_sentry_test_report();
+            });
+
+            assert_eq!(events.len(), 1);
+            assert!(
+                events[0].user.is_none(),
+                "missing or malformed id tokens must clear the Sentry user"
+            );
+        }
     }
 
     #[test]
