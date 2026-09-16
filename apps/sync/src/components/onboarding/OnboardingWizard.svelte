@@ -319,6 +319,9 @@
   let copyingAction = $state<CopyAction | null>(null);
   let copyFailure = $state<CopyAction | null>(null);
   let finishing = $state(false);
+  // Svelte clears rune-backed state during teardown, so keep the active
+  // handoff marker outside that state for onDestroy's abandonment check.
+  let finishInProgress = false;
   let finishError = $state(false);
 
   type StepTelemetryDetails = Omit<
@@ -362,7 +365,7 @@
   }
 
   function recordOnboardingAbandonment(): void {
-    if (consentOnly || onboardingCompleted || onboardingAbandoned) return;
+    if (consentOnly || finishing || finishInProgress || onboardingCompleted || onboardingAbandoned) return;
     onboardingAbandoned = true;
     recordStep(currentStep, 'abandoned');
   }
@@ -1586,8 +1589,9 @@
   }
 
   async function finishWithRecovery(): Promise<boolean> {
-    if (finishing) return false;
+    if (finishing || finishInProgress) return false;
     finishing = true;
+    finishInProgress = true;
     finishError = false;
     try {
       await onfinish?.();
@@ -1599,6 +1603,7 @@
       finishError = true;
       return false;
     } finally {
+      finishInProgress = false;
       finishing = false;
     }
   }
