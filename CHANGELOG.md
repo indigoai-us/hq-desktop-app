@@ -9,7 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Core update failure reports now include a redacted detail when HQ cannot start the rescue update or save its baseline, so support can diagnose the failure.
-- On Windows, HQ now checks its managed rsync before a Core update and installs it when needed. If that install fails, the update still uses its existing rsync check.
+- On Windows, Core updates now make sure the rsync path shim is present before starting a rescue. The optional check gives up after 45 seconds so a slow download does not keep an update marked "Updating".
 
 ## [0.10.271] — 2026-09-16
 

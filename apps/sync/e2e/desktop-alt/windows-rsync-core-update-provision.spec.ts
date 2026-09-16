@@ -18,13 +18,21 @@ describe('Windows Core-update rsync provisioning', () => {
     expect(installDeps).toContain('#[cfg(windows)]\npub(crate) async fn ensure_rsync_for_core_update_rescue()');
   });
 
-  it('uses the existing installer only when the current probe cannot run rsync', () => {
+  it('uses the existing installer when the rescue needs rsync or its path shim', () => {
     expect(installDeps).toContain('|| check_dep_impl("rsync", None).installed');
+    expect(installDeps).toContain('rsync_shim_is_present,');
     expect(installDeps).toContain(
-      '|| async { install_rsync_with_progress(|_| {}).await.map(|_| ()) },',
+      'install_rsync_with_progress(|message| {',
     );
-    expect(installDeps).toContain('Ok(()) if is_resolvable() => RsyncRescueProvisioning::Provisioned');
-    expect(installDeps).toContain('Err(reason) => RsyncRescueProvisioning::ProvisioningFailed(reason)');
+    expect(installDeps).toContain('provision_rsync_for_core_update_within_deadline,');
+    expect(installDeps).toContain('CORE_UPDATE_RSYNC_PROVISION_TIMEOUT,');
+    expect(installDeps).toContain(
+      'if is_resolvable() && has_shim() =>',
+    );
+    expect(installDeps).toContain('RsyncRescueProvisioning::ShimRefreshed');
+    expect(installDeps).toContain('RsyncRescueProvisioning::ProvisioningTimedOut');
+    expect(installDeps).toContain('const CORE_UPDATE_RSYNC_PROVISION_TIMEOUT: Duration = Duration::from_secs(45);');
+    expect(coreUpdate).toContain('rsync was resolvable but its path shim was refreshed before rescue');
     expect(coreUpdate).toContain('continuing with current rsync resolution');
   });
 });

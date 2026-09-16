@@ -5482,33 +5482,66 @@ const RSYNC_BUNDLE_URL: &str = "https://github.com/small-tech/portable-rsync-wit
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RsyncRescueProvisioning {
-    AlreadyResolvable,
+    AlreadyRescueReady,
+    ShimRefreshed,
     Provisioned,
+    ProvisioningTimedOut,
     ProvisioningFailed(String),
-    ProvisionedButUnresolvable,
+    ProvisionedButNotRescueReady,
+}
+
+/// The result of applying the Core-update-specific provisioning deadline.
+///
+/// Kept separate from the final rescue readiness outcome so the pure decision
+/// helper can receive a deterministic deadline in tests.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RsyncRescueProvisioningAttempt {
+    Completed(Result<(), String>),
+    TimedOut,
 }
 
 /// Ensure an optional rescue dependency without making its provisioning a new
-/// failure gate. A usable existing dependency avoids all installer work; a
-/// successful installer must also pass the same probe before it is trusted.
+/// failure gate. A usable existing dependency avoids all installer work only
+/// when HQ's path-translation shim is also present; a successful installer
+/// must leave both requirements ready before it is trusted.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) async fn ensure_rsync_for_core_update_rescue_with<P, F, Fut>(
+pub(crate) async fn ensure_rsync_for_core_update_rescue_with<P, S, F, Fut, B, BFut>(
     mut is_resolvable: P,
+    mut has_shim: S,
     provision: F,
+    provision_deadline: Duration,
+    provision_within_deadline: B,
 ) -> RsyncRescueProvisioning
 where
     P: FnMut() -> bool,
+    S: FnMut() -> bool,
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<(), String>>,
+    B: FnOnce(Fut, Duration) -> BFut,
+    BFut: Future<Output = RsyncRescueProvisioningAttempt>,
 {
-    if is_resolvable() {
-        return RsyncRescueProvisioning::AlreadyResolvable;
+    let initially_resolvable = is_resolvable();
+    let shim_was_missing = initially_resolvable && !has_shim();
+    if initially_resolvable && !shim_was_missing {
+        return RsyncRescueProvisioning::AlreadyRescueReady;
     }
 
-    match provision().await {
-        Ok(()) if is_resolvable() => RsyncRescueProvisioning::Provisioned,
-        Ok(()) => RsyncRescueProvisioning::ProvisionedButUnresolvable,
-        Err(reason) => RsyncRescueProvisioning::ProvisioningFailed(reason),
+    match provision_within_deadline(provision(), provision_deadline).await {
+        RsyncRescueProvisioningAttempt::Completed(Ok(())) if is_resolvable() && has_shim() => {
+            if shim_was_missing {
+                RsyncRescueProvisioning::ShimRefreshed
+            } else {
+                RsyncRescueProvisioning::Provisioned
+            }
+        }
+        RsyncRescueProvisioningAttempt::Completed(Ok(())) => {
+            RsyncRescueProvisioning::ProvisionedButNotRescueReady
+        }
+        RsyncRescueProvisioningAttempt::Completed(Err(reason)) => {
+            RsyncRescueProvisioning::ProvisioningFailed(reason)
+        }
+        RsyncRescueProvisioningAttempt::TimedOut => RsyncRescueProvisioning::ProvisioningTimedOut,
     }
 }
 
@@ -5537,18 +5570,23 @@ mod rsync_core_update_rescue_tests {
     }
 
     #[test]
-    fn already_resolvable_skips_provisioning() {
+    fn already_rescue_ready_skips_provisioning() {
         let provision_calls = Cell::new(0);
 
         let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || true,
             || true,
             || {
                 provision_calls.set(provision_calls.get() + 1);
                 async { Ok(()) }
             },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
         ));
 
-        assert_eq!(outcome, RsyncRescueProvisioning::AlreadyResolvable);
+        assert_eq!(outcome, RsyncRescueProvisioning::AlreadyRescueReady);
         assert_eq!(
             provision_calls.get(),
             0,
@@ -5565,7 +5603,12 @@ mod rsync_core_update_rescue_tests {
                 probe_calls.set(probe_calls.get() + 1);
                 probe_calls.get() == 2
             },
+            || true,
             || async { Ok(()) },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
         ));
 
         assert_eq!(outcome, RsyncRescueProvisioning::Provisioned);
@@ -5580,10 +5623,18 @@ mod rsync_core_update_rescue_tests {
     fn successful_provisioning_that_does_not_resolve_rsync_is_reported() {
         let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
             || false,
+            || true,
             || async { Ok(()) },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
         ));
 
-        assert_eq!(outcome, RsyncRescueProvisioning::ProvisionedButUnresolvable);
+        assert_eq!(
+            outcome,
+            RsyncRescueProvisioning::ProvisionedButNotRescueReady
+        );
     }
 
     #[test]
@@ -5592,7 +5643,12 @@ mod rsync_core_update_rescue_tests {
 
         let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
             || false,
+            || false,
             move || async move { Err(reason) },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
         ));
 
         assert_eq!(
@@ -5602,20 +5658,123 @@ mod rsync_core_update_rescue_tests {
             )
         );
     }
+
+    #[test]
+    fn resolvable_rsync_without_a_shim_refreshes_the_shim() {
+        let provision_calls = Cell::new(0);
+        let shim_present = Cell::new(false);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || true,
+            || shim_present.get(),
+            || {
+                provision_calls.set(provision_calls.get() + 1);
+                shim_present.set(true);
+                async { Ok(()) }
+            },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(
+            outcome,
+            RsyncRescueProvisioning::ShimRefreshed,
+            "a usable external rsync still needs HQ's path shim"
+        );
+        assert_eq!(
+            provision_calls.get(),
+            1,
+            "a missing shim must run the installer path that owns shim writes"
+        );
+    }
+
+    #[test]
+    fn provisioning_that_never_completes_before_the_deadline_times_out() {
+        let provision_calls = Cell::new(0);
+        let deadline_calls = Cell::new(0);
+        let deadline_seen = Cell::new(None);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || false,
+            || false,
+            || {
+                provision_calls.set(provision_calls.get() + 1);
+                async { std::future::pending::<Result<(), String>>().await }
+            },
+            Duration::ZERO,
+            |_, deadline| {
+                deadline_calls.set(deadline_calls.get() + 1);
+                deadline_seen.set(Some(deadline));
+                async { RsyncRescueProvisioningAttempt::TimedOut }
+            },
+        ));
+
+        assert_eq!(outcome, RsyncRescueProvisioning::ProvisioningTimedOut);
+        assert_eq!(provision_calls.get(), 1);
+        assert_eq!(
+            deadline_calls.get(),
+            1,
+            "the injected deadline must finish the preflight without waiting for setup retries"
+        );
+        assert_eq!(deadline_seen.get(), Some(Duration::ZERO));
+    }
 }
 
 /// Best-effort Windows preflight for the Core-update rescue.
 ///
 /// `check_dep_impl` is deliberately used both before and after provisioning:
 /// its successful `rsync --version` probe is the existing definition of a
-/// usable executable for HQ's extended child PATH.
+/// usable executable for HQ's extended child PATH. The paired shim translates
+/// Windows drive-letter arguments for cwRsync, so both are required for a
+/// rescue-ready executable.
 #[cfg(windows)]
 pub(crate) async fn ensure_rsync_for_core_update_rescue() -> RsyncRescueProvisioning {
     ensure_rsync_for_core_update_rescue_with(
         || check_dep_impl("rsync", None).installed,
-        || async { install_rsync_with_progress(|_| {}).await.map(|_| ()) },
+        rsync_shim_is_present,
+        || async {
+            install_rsync_with_progress(|message| {
+                crate::util::logfile::log(
+                    "hq-core-update",
+                    &format!("rsync provisioning: {message}"),
+                );
+            })
+            .await
+            .map(|_| ())
+        },
+        CORE_UPDATE_RSYNC_PROVISION_TIMEOUT,
+        provision_rsync_for_core_update_within_deadline,
     )
     .await
+}
+
+/// Bounds the optional Core-update preflight instead of inheriting setup's
+/// three 180-second download attempts. The pinned rsync archive is 4.68 MB,
+/// so 45 seconds allows roughly 0.83 Mbit/s plus checksum and extraction while
+/// keeping a stalled best-effort preflight from holding the update run guard.
+#[cfg(windows)]
+const CORE_UPDATE_RSYNC_PROVISION_TIMEOUT: Duration = Duration::from_secs(45);
+
+#[cfg(windows)]
+async fn provision_rsync_for_core_update_within_deadline<Fut>(
+    provision: Fut,
+    deadline: Duration,
+) -> RsyncRescueProvisioningAttempt
+where
+    Fut: Future<Output = Result<(), String>>,
+{
+    match tokio::time::timeout(deadline, provision).await {
+        Ok(result) => RsyncRescueProvisioningAttempt::Completed(result),
+        Err(_) => RsyncRescueProvisioningAttempt::TimedOut,
+    }
+}
+
+#[cfg(windows)]
+fn rsync_shim_is_present() -> bool {
+    let bin_dir = managed_npm_bin();
+    bin_dir.join("rsync.cmd").is_file() && bin_dir.join("rsync.ps1").is_file()
 }
 
 #[cfg(windows)]

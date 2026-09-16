@@ -579,13 +579,28 @@ fn core_update_rescue_command() -> (
 #[cfg(windows)]
 async fn ensure_managed_rsync_for_core_update_rescue() {
     match crate::commands::install_deps::ensure_rsync_for_core_update_rescue().await {
-        crate::commands::install_deps::RsyncRescueProvisioning::AlreadyResolvable => {
-            log("hq-core-update", "rsync already resolvable before rescue");
+        crate::commands::install_deps::RsyncRescueProvisioning::AlreadyRescueReady => {
+            log(
+                "hq-core-update",
+                "rsync and its path shim already ready before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ShimRefreshed => {
+            log(
+                "hq-core-update",
+                "rsync was resolvable but its path shim was refreshed before rescue",
+            );
         }
         crate::commands::install_deps::RsyncRescueProvisioning::Provisioned => {
             log(
                 "hq-core-update",
                 "managed rsync provisioned and resolvable before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningTimedOut => {
+            log(
+                "hq-core-update",
+                "managed rsync preflight timed out before rescue; continuing with current rsync resolution",
             );
         }
         crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningFailed(reason) => {
@@ -596,10 +611,10 @@ async fn ensure_managed_rsync_for_core_update_rescue() {
                 ),
             );
         }
-        crate::commands::install_deps::RsyncRescueProvisioning::ProvisionedButUnresolvable => {
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisionedButNotRescueReady => {
             log(
                 "hq-core-update",
-                "managed rsync installer completed but rsync remained unavailable before rescue; continuing with current rsync resolution",
+                "managed rsync installer completed but rsync or its path shim remained unavailable before rescue; continuing with current rsync resolution",
             );
         }
     }
