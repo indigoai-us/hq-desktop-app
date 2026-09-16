@@ -509,8 +509,8 @@ async fn install_hq_core_update_inner(
 
     let retry_requested =
         rescue_needs_managed_git_retry(initial_exit_code, &initial_rescue_stderr_tail);
-    let retry_command = (retry_requested && managed_git_healthy)
-        .then(|| core_update_rescue_command(true));
+    let retry_command =
+        (retry_requested && managed_git_healthy).then(|| core_update_rescue_command(true));
     let retry_managed_git_healthy = retry_command
         .as_ref()
         .is_some_and(|command| command.managed_git_healthy);
@@ -528,8 +528,8 @@ async fn install_hq_core_update_inner(
         &initial_rescue_stderr_tail,
         retry_managed_git_healthy,
         move || async move {
-            let CoreUpdateRescueCommand { command, .. } = retry_command
-                .expect("a managed Git retry command is prepared only when retrying");
+            let CoreUpdateRescueCommand { command, .. } =
+                retry_command.expect("a managed Git retry command is prepared only when retrying");
             let retry_stdout = std::fs::OpenOptions::new()
                 .append(true)
                 .open(&retry_log_path)
@@ -649,9 +649,7 @@ async fn install_hq_core_update_inner(
 /// recognized clone failure and a successful shim health check. A missing or
 /// unhealthy managed Git is removed from this rescue PATH so the user's next
 /// Git remains available.
-fn core_update_rescue_command(
-    managed_git_first: bool,
-) -> CoreUpdateRescueCommand {
+fn core_update_rescue_command(managed_git_first: bool) -> CoreUpdateRescueCommand {
     let (mut command, npx_resolution) = crate::commands::hq_core_staging::rescue_command();
     let mut managed_git_healthy = false;
 
