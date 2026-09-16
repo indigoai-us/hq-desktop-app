@@ -651,6 +651,39 @@ jobs:
           HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
         run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/live-preauth.spec.ts
 
+      # This step exists for wall-clock, not hygiene, and the number is large
+      # enough to be worth the explanation.
+      #
+      # `Upload WebDriver diagnostics` below took 62/69/81/91/95/109s across six
+      # green runs. The byte-identical step in `windows-installer-e2e` -- same
+      # action, same path expression, same `if:` -- takes 1-2s for a comparable
+      # 13 KB artifact, and the bridge job pushes 99 MB in 7s. So it was never
+      # transfer or action overhead. Reading the step log, ~82 of those 91s
+      # elapse before upload-artifact's node process emits its first line at
+      # all: the runner is contended, not the network.
+      #
+      # What contends it is this job's own leftovers. `reapSharedDriver()` in
+      # e2e/desktop-alt/live-driver.ts kills the `tauri-driver` process it
+      # spawned, and on Windows that orphans rather than reaps the tree beneath
+      # it -- `msedgedriver.exe`, the app, and the several `msedgewebview2.exe`
+      # render/GPU processes keep running to the end of the job. The four names
+      # below are exactly the set the spec's own `snapshotWindowsProcesses`
+      # diagnostic enumerates, for the same reason.
+      #
+      # `Stop any stray app instance` above does not cover this: it guards the
+      # single-instance constraint between the two live specs and only stops the
+      # app binary, and it runs BEFORE the smoke test that starts this stack.
+      #
+      # Deliberately not `continue-on-error` and deliberately not a failure
+      # condition either: Stop-Process on an empty pipeline is a no-op, so this
+      # is green whether or not anything was left running.
+      - name: Stop the live WebDriver stack
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process hq-sync-menubar, msedgewebview2, msedgedriver, tauri-driver `
+            -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
       # always(), not failure(): the captured msedgewebview2.exe command line is
       # the evidence that the WebView2 automation switches landed, and a green
       # run is exactly when that evidence is worth keeping.

@@ -37,6 +37,7 @@ let windowsCheckWorkflow = "";
 let releaseWorkflow = "";
 let fixtureProfile = "";
 let appManifest = "";
+let liveDriver = "";
 
 beforeAll(async () => {
   [
@@ -45,6 +46,7 @@ beforeAll(async () => {
     releaseWorkflow,
     fixtureProfile,
     appManifest,
+    liveDriver,
   ] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/ci.yml"), "utf8"),
     readFile(resolve(rootDir, ".github/workflows/windows-check.yml"), "utf8"),
@@ -54,6 +56,10 @@ beforeAll(async () => {
       "utf8",
     ),
     readFile(resolve(rootDir, "apps/sync/src-tauri/Cargo.toml"), "utf8"),
+    readFile(
+      resolve(rootDir, "apps/sync/e2e/desktop-alt/live-driver.ts"),
+      "utf8",
+    ),
   ]);
 });
 
@@ -846,5 +852,82 @@ describe("the installer fixture build does only what the E2E consumes", () => {
     ].map((m) => m[0]);
 
     expect(overridden).toEqual(["[profile.release.package.hq-sync-menubar]"]);
+  });
+});
+
+describe("the live job reaps its WebDriver stack before uploading", () => {
+  // `Upload WebDriver diagnostics` in windows-check-live took 62/69/81/91/95/109s
+  // across six green runs. The byte-identical step in windows-installer-e2e --
+  // same action, same path expression, same `if:` -- takes 1-2s for a comparable
+  // 13 KB artifact, and the bridge job pushes 99 MB in 7s. The step log shows
+  // ~82 of those 91s elapsing before upload-artifact's node process prints its
+  // first line, so it is runner contention, not transfer.
+  //
+  // The contention is this job's own orphans. `reapSharedDriver()` in
+  // live-driver.ts kills the tauri-driver process, and on Windows that does not
+  // reap the tree below it, so msedgedriver, the app, and the msedgewebview2
+  // render/GPU processes run on to the end of the job.
+
+  const PROCESS_NAMES = [
+    "hq-sync-menubar",
+    "msedgewebview2",
+    "msedgedriver",
+    "tauri-driver",
+  ];
+
+  it("stops every process in the live stack", () => {
+    const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
+
+    expect(job).toContain("name: Stop the live WebDriver stack");
+
+    const step = job.slice(job.indexOf("name: Stop the live WebDriver stack"));
+
+    for (const name of PROCESS_NAMES) {
+      expect(step).toContain(name);
+    }
+
+    // The spec's own snapshotWindowsProcesses diagnostic enumerates this exact
+    // set. If a name is added there, the reaper has to learn it too, or the
+    // orphan it describes is the one left holding the runner. The app binary
+    // is interpolated as `${app}` there rather than named, so it is checked
+    // separately.
+    const probeStart = liveDriver.indexOf("function snapshotWindowsProcesses");
+    expect(probeStart).toBeGreaterThan(-1);
+
+    const probe = liveDriver.slice(probeStart, probeStart + 900);
+
+    for (const name of PROCESS_NAMES.filter((n) => n !== "hq-sync-menubar")) {
+      expect(probe).toContain(`${name}.exe`);
+    }
+
+    expect(probe).toContain("Name='${app}'");
+  });
+
+  it("reaps before the upload it is there to speed up", () => {
+    const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
+
+    const reap = job.indexOf("name: Stop the live WebDriver stack");
+    const upload = job.indexOf("name: Upload WebDriver diagnostics");
+
+    expect(reap).toBeGreaterThan(-1);
+    expect(upload).toBeGreaterThan(-1);
+    expect(reap).toBeLessThan(upload);
+
+    // Runs on failure too. A failed smoke test leaves MORE behind, not less,
+    // and that is the run whose diagnostics someone actually wants.
+    const step = job.slice(reap, upload);
+    expect(step).toContain("if: always()");
+  });
+
+  it("keeps the diagnostics upload unconditional", () => {
+    // The saving here must not be taken out of the evidence. The captured
+    // msedgewebview2.exe command line is what proves the WebView2 automation
+    // switches landed, and a green run is exactly when that is worth keeping --
+    // so this stays always(), and the time comes out of the reaping instead.
+    const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
+    const upload = job.slice(job.indexOf("name: Upload WebDriver diagnostics"));
+
+    expect(upload).toContain("if: always()");
+    expect(upload).not.toContain("if: failure()");
   });
 });
