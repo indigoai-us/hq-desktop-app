@@ -8,9 +8,12 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core update failure reports now include the signed-in user, so support can see how many people an issue affects.
+
+## [0.10.274] — 2026-09-16
+
 - Signing in from the setup wizard through your browser no longer stops after a second and a half. The sign-in buttons still appear right away, and finishing in the browser now completes sign-in.
 - When setup fails, the report now includes the app version, the setup stage, and a clearer reason. This makes the issue easier to diagnose without asking you for logs.
-- Core update failure reports now include the signed-in user, so support can see how many people an issue affects.
 
 ## [0.10.272] — 2026-09-16
 
