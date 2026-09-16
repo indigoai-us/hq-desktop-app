@@ -79,7 +79,8 @@ describe('honest onboarding stage reporting', () => {
       'markSetupStepCompleted();\n      await journalInstallComplete();\n      setupCompletionMetrics',
     );
     expect(wizard).not.toContain('if (!result.needsAttention)');
-    expect(wizard).toContain('if (finishing) return false;');
+    expect(wizard).toContain('let finishInProgress = false;');
+    expect(wizard).toContain('if (finishing || finishInProgress) return false;');
     expect(wizard).toContain('disabled={finishing ||');
     expect(wizard).toMatch(/data-testid="onboarding-install-\{slot\.kind\}"\n\s+disabled=\{finishing\}/);
   });

@@ -469,6 +469,79 @@ describe('first-run browser session continuation', () => {
     resolveIdentity({ email: 'placeholder account' });
   });
 
+  it('records completion without abandonment when finishing unmounts the wizard', async () => {
+    const onfinish = vi.fn(async () => {
+      if (component === null) throw new Error('Expected the wizard to be mounted before finish.');
+      await unmount(component);
+      component = null;
+    });
+    mountWizard(onfinish, 4);
+    await flush();
+
+    primaryButton().click();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string } }).properties?.action === 'completed',
+      ),
+    );
+
+    const completed = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string; outcome?: string } }).properties?.action ===
+          'completed' &&
+        (args as { properties?: { outcome?: string } }).properties?.outcome === 'finished',
+    );
+    const abandoned = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
+    );
+
+    expect(onfinish).toHaveBeenCalledOnce();
+    expect(completed).toHaveLength(1);
+    expect(abandoned).toHaveLength(0);
+  });
+
+  it('records abandonment once when the wizard is destroyed before finishing', async () => {
+    mountWizard(vi.fn(), 0);
+    await flush();
+    if (component === null) throw new Error('Expected the wizard to be mounted before destruction.');
+    await unmount(component);
+    component = null;
+    await flush();
+
+    const abandoned = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
+    );
+    expect(abandoned).toHaveLength(1);
+  });
+
+  it('records abandonment when finishing fails before the wizard is destroyed', async () => {
+    const onfinish = vi.fn().mockRejectedValue(new Error('tray handoff unavailable'));
+    mountWizard(onfinish, 4);
+    await flush();
+
+    primaryButton().click();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="launcher-finish-error"]')));
+    if (component === null) throw new Error('Expected the wizard to remain mounted after a failed finish.');
+    await unmount(component);
+    component = null;
+    await flush();
+
+    const abandoned = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
+    );
+    expect(onfinish).toHaveBeenCalledOnce();
+    expect(abandoned).toHaveLength(1);
+  });
+
   it('records onboarding abandonment once when the window goes away', async () => {
     stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
