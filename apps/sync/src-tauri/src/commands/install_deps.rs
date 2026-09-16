@@ -6,7 +6,6 @@
 //! an optional system package-manager provider.
 
 use std::collections::{HashMap, HashSet};
-#[cfg(windows)]
 use std::future::Future;
 use std::io::{BufRead, BufReader};
 #[cfg(windows)]
@@ -5480,7 +5479,7 @@ const RSYNC_BUNDLE_URL: &str = "https://github.com/small-tech/portable-rsync-wit
 ///
 /// The rescue remains the authoritative gate: every variant lets its spawn
 /// proceed, while callers log the exact unavailable state for diagnosis.
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RsyncRescueProvisioning {
     AlreadyResolvable,
@@ -5492,7 +5491,7 @@ pub(crate) enum RsyncRescueProvisioning {
 /// Ensure an optional rescue dependency without making its provisioning a new
 /// failure gate. A usable existing dependency avoids all installer work; a
 /// successful installer must also pass the same probe before it is trusted.
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) async fn ensure_rsync_for_core_update_rescue_with<P, F, Fut>(
     mut is_resolvable: P,
     provision: F,
@@ -5510,6 +5509,98 @@ where
         Ok(()) if is_resolvable() => RsyncRescueProvisioning::Provisioned,
         Ok(()) => RsyncRescueProvisioning::ProvisionedButUnresolvable,
         Err(reason) => RsyncRescueProvisioning::ProvisioningFailed(reason),
+    }
+}
+
+#[cfg(test)]
+mod rsync_core_update_rescue_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct NoopWaker;
+
+    impl Wake for NoopWaker {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    fn block_on_ready<T>(future: impl Future<Output = T>) -> T {
+        let waker = Waker::from(Arc::new(NoopWaker));
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("rsync rescue test fixture must resolve immediately"),
+        }
+    }
+
+    #[test]
+    fn already_resolvable_skips_provisioning() {
+        let provision_calls = Cell::new(0);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || true,
+            || {
+                provision_calls.set(provision_calls.get() + 1);
+                async { Ok(()) }
+            },
+        ));
+
+        assert_eq!(outcome, RsyncRescueProvisioning::AlreadyResolvable);
+        assert_eq!(
+            provision_calls.get(),
+            0,
+            "a usable rsync must not download a bundle"
+        );
+    }
+
+    #[test]
+    fn successful_provisioning_requires_a_second_successful_probe() {
+        let probe_calls = Cell::new(0);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || {
+                probe_calls.set(probe_calls.get() + 1);
+                probe_calls.get() == 2
+            },
+            || async { Ok(()) },
+        ));
+
+        assert_eq!(outcome, RsyncRescueProvisioning::Provisioned);
+        assert_eq!(
+            probe_calls.get(),
+            2,
+            "provisioning must re-probe rsync before trusting it"
+        );
+    }
+
+    #[test]
+    fn successful_provisioning_that_does_not_resolve_rsync_is_reported() {
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || false,
+            || async { Ok(()) },
+        ));
+
+        assert_eq!(outcome, RsyncRescueProvisioning::ProvisionedButUnresolvable);
+    }
+
+    #[test]
+    fn provisioning_failure_preserves_the_reason() {
+        let reason = "portable rsync archive returned HTTP 503".to_string();
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || false,
+            move || async move { Err(reason) },
+        ));
+
+        assert_eq!(
+            outcome,
+            RsyncRescueProvisioning::ProvisioningFailed(
+                "portable rsync archive returned HTTP 503".to_string()
+            )
+        );
     }
 }
 
