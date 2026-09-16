@@ -1111,12 +1111,18 @@ pub fn ensure_managed_git_shim_in(home: &Path) -> Result<PathBuf, String> {
 ///
 /// Settings-provided directories retain their order, including a foreign Git
 /// that deliberately precedes HQ's managed directory. A healthy managed Git
-/// replaces its raw directory with the shim; an unhealthy one is removed with
-/// any stale shim, leaving the user's next Git selection intact. This remains
-/// scoped to rescue: the normal child PATH must retain strict Claude-settings
-/// parity for every other caller.
+/// replaces its raw directory with the shim; when `managed_git_first` is true,
+/// the shim is also placed before every settings-provided directory. An
+/// unhealthy managed Git is removed with any stale shim, leaving the user's
+/// next Git selection intact. This remains scoped to rescue: the normal child
+/// PATH must retain strict Claude-settings parity for every other caller.
 #[cfg(not(target_os = "windows"))]
-pub fn managed_git_rescue_path_for_home(base_path: &str, home: &Path, healthy: bool) -> String {
+pub fn managed_git_rescue_path_for_home(
+    base_path: &str,
+    home: &Path,
+    healthy: bool,
+    managed_git_first: bool,
+) -> String {
     let git_bin = managed_git_bin_in(home);
     let raw = git_bin.parent().expect("managed Git has a bin directory");
     let shim = managed_git_shim_dir_in(home);
@@ -1129,6 +1135,10 @@ pub fn managed_git_rescue_path_for_home(base_path: &str, home: &Path, healthy: b
             out.push(entry.to_string());
         }
     };
+
+    if healthy && managed_git_first {
+        push(&shim);
+    }
 
     for entry in base_path.split(PATH_SEP) {
         if entry == raw {
@@ -4303,12 +4313,15 @@ mod managed_git_shim_resolution_tests {
         write_executable(&foreign.join("git"), "#!/bin/sh\nprintf foreign\n");
 
         let raw_first = raw.to_string_lossy().into_owned();
-        let repaired = managed_git_rescue_path_for_home(&raw_first, home, true);
+        let repaired = managed_git_rescue_path_for_home(&raw_first, home, true, false);
         assert_eq!(selected_git(&repaired), "shim");
 
         let foreign_first = format!("{}:{}", foreign.display(), raw.display());
-        let repaired = managed_git_rescue_path_for_home(&foreign_first, home, true);
+        let repaired = managed_git_rescue_path_for_home(&foreign_first, home, true, false);
         assert_eq!(selected_git(&repaired), "foreign");
+
+        let forced = managed_git_rescue_path_for_home(&foreign_first, home, true, true);
+        assert_eq!(selected_git(&forced), "shim");
     }
 
     #[test]
@@ -4324,7 +4337,7 @@ mod managed_git_shim_resolution_tests {
         write_executable(&foreign.join("git"), "#!/bin/sh\nprintf foreign\n");
 
         let path = format!("{}:{}:{}", shim.display(), raw.display(), foreign.display());
-        let repaired = managed_git_rescue_path_for_home(&path, home, false);
+        let repaired = managed_git_rescue_path_for_home(&path, home, false, true);
         assert_eq!(selected_git(&repaired), "foreign");
         assert!(!repaired
             .split(':')

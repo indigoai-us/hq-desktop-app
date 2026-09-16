@@ -717,6 +717,9 @@ async fn run_replace_from_staging_observed(
                         run.npx_resolution,
                     ),
                 npx_resolution: Some(run.npx_resolution),
+                // Staging updates never run the production managed-Git retry.
+                managed_git_retry:
+                    crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded,
             },
         ),
         Err(error) => crate::commands::hq_core_state::emit_core_update_failed_event(
