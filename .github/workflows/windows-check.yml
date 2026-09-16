@@ -651,52 +651,34 @@ jobs:
           HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR: ${{ runner.temp }}\desktop-alt-driver-logs
         run: pnpm vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/live-preauth.spec.ts
 
-      # OBSERVE-ONLY. This step reports processes; it terminates nothing.
-      #
-      # `Upload WebDriver diagnostics` below takes 62/67/69/81/91/95/109s across
-      # seven runs. The byte-identical step in `windows-installer-e2e` -- same
-      # action, same path expression, same `if:` -- takes 1-2s for a comparable
-      # 13 KB artifact, and the bridge job pushes 99 MB in 7s. So it is neither
-      # transfer nor action overhead: in the step log, ~59-82s elapse before
-      # upload-artifact's node process emits its first line at all.
-      #
-      # The hypothesis was this job's own orphans. `reapSharedDriver()` in
-      # e2e/desktop-alt/live-driver.ts kills the `tauri-driver` process it
-      # spawned, and on Windows that orphans rather than reaps the tree beneath
-      # it -- `msedgedriver.exe`, the app, and the several `msedgewebview2.exe`
-      # render/GPU processes would then run on to the end of the job.
-      #
-      # A first attempt shipped this as a reaper and DID NOT CONFIRM THAT: the
-      # step took 0s and the upload came back at 67s, inside the 62-109s range
-      # it already had. But it killed with `-ErrorAction SilentlyContinue`, so
-      # 0s could not distinguish "killed five processes" from "found none" --
-      # which is the entire question. It proved nothing in either direction.
-      #
-      # So it is observe-only now, which is also what a change whose primary
-      # effect is terminating live work is supposed to ship as. It enumerates
-      # the population and stops. Once the log says whether orphans exist and
-      # what they are, terminating them (if that is even warranted) is a
-      # separate, deliberate change -- not a silent side effect of this one.
-      #
-      # The four names are exactly the set the spec's own
-      # `snapshotWindowsProcesses` diagnostic enumerates.
-      - name: Report the live WebDriver stack
-        if: always()
-        shell: pwsh
-        run: |
-          $live = Get-Process hq-sync-menubar, msedgewebview2, msedgedriver, tauri-driver `
-            -ErrorAction SilentlyContinue
-          if ($live) {
-            Write-Host "$($live.Count) live-stack process(es) still running after the live specs:"
-            $live | Select-Object Id, Name, StartTime |
-              Format-Table -AutoSize | Out-String -Width 200 | Write-Host
-          } else {
-            Write-Host "no live-stack processes were running"
-          }
-
       # always(), not failure(): the captured msedgewebview2.exe command line is
       # the evidence that the WebView2 automation switches landed, and a green
       # run is exactly when that evidence is worth keeping.
+      #
+      # This step is also the slowest thing in the job that is not a compile,
+      # and it has already survived one attempt to make it cheaper. Recording
+      # that here so the next person does not repeat it:
+      #
+      #   It takes 62/67/69/78/81/91/95/109s across eight runs, for a 15 KB
+      #   artifact. The byte-identical step in windows-installer-e2e -- same
+      #   action, same path expression, same `if:` -- takes 1-2s for a
+      #   comparable 13 KB artifact, and the bridge job pushes 99 MB in 7s. In
+      #   the step log ~59-82s elapse before upload-artifact's node process
+      #   emits its first line, so it is neither transfer nor action overhead.
+      #
+      #   The hypothesis was orphaned processes contending the runner:
+      #   `reapSharedDriver()` in e2e/desktop-alt/live-driver.ts kills the
+      #   tauri-driver process, and on Windows that does not reap the tree
+      #   beneath it. An observe-only step measured the actual population --
+      #   exactly ONE leaked `msedgewebview2`, started 8s earlier. No app
+      #   binary, no msedgedriver, no tauri-driver. Killing it gave 78s -> 67s,
+      #   both mid-range. One idle WebView2 process does not stall a runner for
+      #   a minute, and the timing says it does not.
+      #
+      #   So the cause is still unknown, and it is NOT stray processes. Do not
+      #   re-run that experiment. In particular do not "fix" this by flipping
+      #   to `if: failure()` -- that trades the evidence above for a saving on
+      #   green runs, and ci-cost-contract.test.ts fails if you try.
       - name: Upload WebDriver diagnostics
         if: always()
         uses: actions/upload-artifact@v4

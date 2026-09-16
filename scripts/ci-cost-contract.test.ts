@@ -855,93 +855,47 @@ describe("the installer fixture build does only what the E2E consumes", () => {
   });
 });
 
-describe("the live job reports its WebDriver stack before uploading", () => {
-  // `Upload WebDriver diagnostics` in windows-check-live takes 62/67/69/81/91/95/109s
-  // across seven runs. The byte-identical step in windows-installer-e2e -- same
-  // action, same path expression, same `if:` -- takes 1-2s for a comparable
-  // 13 KB artifact, and the bridge job pushes 99 MB in 7s. The step log shows
-  // ~59-82s elapsing before upload-artifact's node process prints its first
-  // line, so it is neither transfer nor action overhead.
+describe("the live job keeps its diagnostics upload unconditional", () => {
+  // `Upload WebDriver diagnostics` in windows-check-live takes
+  // 62/67/69/78/81/91/95/109s across eight runs, for a 15 KB artifact. The
+  // byte-identical step in windows-installer-e2e -- same action, same path
+  // expression, same `if:` -- takes 1-2s for a comparable 13 KB artifact, and
+  // the bridge job pushes 99 MB in 7s. In the step log ~59-82s elapse before
+  // upload-artifact's node process emits its first line, so it is neither
+  // transfer nor action overhead.
   //
-  // The hypothesis is this job's own orphans: `reapSharedDriver()` in
+  // That makes it a standing temptation to flip to `if: failure()`, which is
+  // what this assertion exists to stop. The captured msedgewebview2.exe command
+  // line is the evidence that the WebView2 automation switches landed, and a
+  // green run is exactly when that evidence is worth keeping.
+  //
+  // The obvious cause has been tested and ruled out. `reapSharedDriver()` in
   // live-driver.ts kills the tauri-driver process, and on Windows that does not
-  // reap the tree below it. A first attempt shipped a reaper and proved nothing
-  // -- it killed silently, so its 0s runtime could not distinguish "killed five
-  // processes" from "found none".
-  //
-  // The step is observe-only for that reason, and because a change whose
-  // primary effect is terminating live work is supposed to ship that way. These
-  // assertions pin the observation and the evidence, NOT a saving. The slow
-  // upload is an open question.
+  // reap the tree beneath it -- so orphans contending the runner was the
+  // hypothesis. An observe-only step measured the population: exactly ONE
+  // leaked msedgewebview2, started 8s earlier, with no app binary, no
+  // msedgedriver and no tauri-driver. Killing it gave 78s -> 67s, both
+  // mid-range. The cause is unknown and it is not stray processes.
 
-  const PROCESS_NAMES = [
-    "hq-sync-menubar",
-    "msedgewebview2",
-    "msedgedriver",
-    "tauri-driver",
-  ];
-
-  it("enumerates every process in the live stack", () => {
-    const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
-
-    expect(job).toContain("name: Report the live WebDriver stack");
-
-    const step = job.slice(job.indexOf("name: Report the live WebDriver stack"));
-
-    for (const name of PROCESS_NAMES) {
-      expect(step).toContain(name);
-    }
-
-    // The spec's own snapshotWindowsProcesses diagnostic enumerates this exact
-    // set. If a name is added there, the report has to learn it too, or the
-    // orphan it describes is the one left unaccounted for. The app binary is
-    // interpolated as `${app}` there rather than named, so it is checked
-    // separately.
-    const probeStart = liveDriver.indexOf("function snapshotWindowsProcesses");
-    expect(probeStart).toBeGreaterThan(-1);
-
-    const probe = liveDriver.slice(probeStart, probeStart + 900);
-
-    for (const name of PROCESS_NAMES.filter((n) => n !== "hq-sync-menubar")) {
-      expect(probe).toContain(`${name}.exe`);
-    }
-
-    expect(probe).toContain("Name='${app}'");
-  });
-
-  it("observes without terminating anything", () => {
-    // Observe-only is the whole point: the population is unknown, and the first
-    // thing a change like this owes is a candidate list, not a kill. Arming it
-    // is a separate deliberate change with its own evidence. `Stop any stray
-    // app instance` earlier in the job is a different step with a different
-    // job -- it guards the single-instance constraint BETWEEN the two live
-    // specs -- so this assertion is scoped to the reporting step alone.
-    const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
-
-    const start = job.indexOf("name: Report the live WebDriver stack");
-    const end = job.indexOf("name: Upload WebDriver diagnostics");
-
-    expect(start).toBeGreaterThan(-1);
-    expect(end).toBeGreaterThan(start);
-
-    const step = job.slice(start, end);
-
-    expect(step).not.toContain("Stop-Process");
-    expect(step).not.toContain("taskkill");
-    expect(step).not.toContain("Kill()");
-    expect(step).toContain("if: always()");
-  });
-
-  it("keeps the diagnostics upload unconditional", () => {
-    // The captured msedgewebview2.exe command line is what proves the WebView2
-    // automation switches landed, and a green run is exactly when that evidence
-    // is worth keeping. Flipping this to failure() would buy back the same
-    // ~85s this describe block failed to find, which is precisely why it is
-    // pinned: an unproven saving must not be paid for with real evidence.
+  it("uploads on success as well as failure", () => {
     const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
     const upload = job.slice(job.indexOf("name: Upload WebDriver diagnostics"));
 
     expect(upload).toContain("if: always()");
     expect(upload).not.toContain("if: failure()");
+  });
+
+  it("still uploads the driver log directory the live spec writes", () => {
+    // The saving is only tempting because the artifact is tiny. Narrowing the
+    // path to buy the same time back would be the same trade in a different
+    // shape, so pin what is collected too.
+    const job = jobConfig(windowsCheckWorkflow, "windows-check-live");
+    const upload = job.slice(job.indexOf("name: Upload WebDriver diagnostics"));
+
+    expect(upload).toContain("desktop-alt-driver-logs/**");
+
+    // The spec writes there because the job points it there; if that env var
+    // moves, the upload path is stale and silently collects nothing.
+    expect(job).toContain("HQ_SYNC_DESKTOP_ALT_DRIVER_LOG_DIR");
   });
 });
