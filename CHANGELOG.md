@@ -14,6 +14,7 @@ The release moves it under the version it ships in.
 - On Windows, an update no longer fails when another HQ window is finishing its setup. HQ waits for it to finish and only shows a problem if it takes too long.
 - When companies you belong to have not been pulled down to this computer yet, the main window now shows a banner offering to sync them, instead of only mentioning it in the menu-bar popover.
 - Starting a new message with someone no longer jumps straight into their DM. The people you pick collect in the dialog, so you can add more, name the group, and optionally write the first message before it is created. Messaging one person directly is still one click.
+- Files a teammate adds to a company folder now show up in your notifications, so you can see what arrived while you were away without opening the menu-bar popover or browsing the folder. They sit in the list with your messages and shares, and clicking one takes you to your files. They do not mark the bell as unread — they are there to find, not to interrupt.
 
 ## [0.10.276] — 2026-09-16
 
