@@ -21,9 +21,16 @@
     reason?: string | null;
     onretry?: () => void | Promise<void>;
     retrying?: boolean;
+    /**
+     * False once nothing more may be tried for this bot (a definitive start
+     * failure closed its gate). The button then renders disabled rather than
+     * offering a Retry that the host would silently drop; `reason` already
+     * carries the sentence that says what to do instead.
+     */
+    canRetry?: boolean;
   }
 
-  let { name, phase, reason = null, onretry, retrying = false }: Props = $props();
+  let { name, phase, reason = null, onretry, retrying = false, canRetry = true }: Props = $props();
 
   const STEPS = [
     { id: "creating", label: "Creating identity" },
@@ -95,7 +102,7 @@
           type="button"
           class="progress-retry"
           data-testid="bot-progress-retry"
-          disabled={retrying}
+          disabled={retrying || !canRetry}
           onclick={() => void onretry?.()}
         >
           {retrying ? "Retrying…" : "Retry"}

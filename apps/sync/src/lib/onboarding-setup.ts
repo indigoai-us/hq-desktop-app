@@ -170,7 +170,13 @@ export const STAGE_LABELS: Record<StageId, string> = {
   indexing: 'Registering for search',
 };
 
-export type StageStatus = 'pending' | 'running' | 'ok' | 'failed';
+/**
+ * `retrying` is the gap between a transient stage failure and its automatic
+ * next attempt. It is deliberately distinct from both `pending` (has not run)
+ * and `failed` (will not run again): the stage still owns the active band, so
+ * the ring and the band list do not move backward while it waits.
+ */
+export type StageStatus = 'pending' | 'running' | 'ok' | 'failed' | 'retrying';
 
 export interface StageState {
   id: StageId;
@@ -273,10 +279,40 @@ export function setupCompletionResult(
   };
 }
 
+/**
+ * A stage that will not run again. Only these may count toward the percent —
+ * a `failed` stage that is about to be retried is `retrying`, not `failed`, so
+ * it is never counted and then un-counted.
+ */
+export function isSettledStageStatus(status: StageStatus): boolean {
+  return status === 'ok' || status === 'failed';
+}
+
+/** A stage that owns the active band: running, or waiting on its auto-retry. */
+export function isActiveStageStatus(status: StageStatus): boolean {
+  return status === 'running' || status === 'retrying';
+}
+
+/**
+ * What a stage row shows for its status. Only `retrying` needs translating:
+ * it is an internal token for the gap between a transient failure and the
+ * next attempt, and the rest of setup calls that moment "Retrying…".
+ */
+export function stageStatusLabel(status: StageStatus): string {
+  return status === 'retrying' ? 'Retrying…' : status;
+}
+
+export function countSettledStages(stages: StageState[]): number {
+  return stages.filter((stage) => isSettledStageStatus(stage.status)).length;
+}
+
+/** The stage that owns the active band, or null when none is in flight. */
+export function activeStageId(stages: StageState[]): StageId | null {
+  return stages.find((stage) => isActiveStageStatus(stage.status))?.id ?? null;
+}
+
 export function allSettled(stages: StageState[]): boolean {
-  return stages.every(
-    (stage) => stage.status === 'ok' || stage.status === 'failed',
-  );
+  return stages.every((stage) => isSettledStageStatus(stage.status));
 }
 
 export interface SetupProgressInput {
@@ -328,6 +364,39 @@ export function friendlySetupBands(overallPercent: number): FriendlySetupBand[] 
       status: done ? 'done' : index === activeBand ? 'active' : 'pending',
     };
   });
+}
+
+// ─── Monotonic progress ──────────────────────────────────────────────
+//
+// `setupProgressPercent` is a pure function of the stage list, so anything
+// that lowers its inputs mid-run — a stage waiting on its retry, a stage list
+// rebuilt from a re-read manifest — drags the ring and the bands backward.
+// Progress that goes backward reads as "it broke and started over", so the
+// displayed value is a high-water mark: within one visit to the setup step it
+// only ever rises. Leaving the step and starting over resets it.
+
+export interface SetupProgressTracker {
+  /** The highest percent shown so far in this visit. */
+  percent: number;
+}
+
+export function createSetupProgressTracker(): SetupProgressTracker {
+  return { percent: 0 };
+}
+
+/** Start over — only for a genuine re-entry of the setup step. */
+export function resetSetupProgressTracker(tracker: SetupProgressTracker): void {
+  tracker.percent = 0;
+}
+
+/** Record `percent` and return the value to display: never below the last one. */
+export function trackSetupProgress(
+  tracker: SetupProgressTracker,
+  percent: number,
+): number {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  if (clamped > tracker.percent) tracker.percent = clamped;
+  return tracker.percent;
 }
 
 export function setStageStatus(
@@ -598,4 +667,205 @@ export function withTimeout<T>(
       },
     );
   });
+}
+
+// ─── Live sub-status under the active band ──────────────────────────────────
+//
+// A band covers 20% of the ring but several stages take minutes (initial cloud
+// sync in particular), so the band alone reads as frozen. The wizard shows one
+// honest sub-step line under the active band, rotated on a timer, plus a
+// "still working" elapsed cue once the stage has been running a while.
+//
+// Where the pipeline reports something real we prefer it: the template
+// download emits `content:progress` with a phase and a byte percentage.
+// `install:progress` only carries raw installer stdout, which is not
+// user-facing copy, so the deps stage rotates its written sub-steps instead.
+
+/** Honest, ordered sub-steps for each stage. Rotated while the stage runs. */
+export const STAGE_SUB_STEPS: Record<StageId, readonly string[]> = {
+  content: [
+    'Downloading the HQ template…',
+    'Unpacking files…',
+    'Checking everything arrived…',
+  ],
+  deps: [
+    'Checking what’s already installed…',
+    'Installing the tools HQ needs…',
+    'Wiring them into your shell…',
+  ],
+  'initial-sync': [
+    'Downloading worker definitions…',
+    'Installing workflows…',
+    'Syncing your personal vault…',
+    'Almost there…',
+  ],
+  'git-init': [
+    'Setting up version history…',
+    'Recording the first snapshot…',
+  ],
+  personalize: [
+    'Creating your personal workspace…',
+    'Applying your preferences…',
+  ],
+  indexing: [
+    'Reading through your files…',
+    'Building the search index…',
+    'Almost there…',
+  ],
+};
+
+/** How long each sub-step is shown before the next one. */
+export const SETUP_SUB_STATUS_ROTATE_MS = 6_000;
+/** After this long on one stage, add the "still working" elapsed cue. */
+export const SETUP_STILL_WORKING_AFTER_MS = 20_000;
+
+/**
+ * Readable fallback for a stage id with no written sub-steps — a newly added
+ * backend stage must never render a blank line (hq-wizard-step-label-coverage).
+ */
+export function humanizeStageId(id: string): string {
+  const words = id.trim().replace(/[-_]+/g, ' ').trim();
+  if (!words) return 'Working';
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Sub-steps for `id`, falling back to a humanized form of an unknown id. */
+export function stageSubSteps(id: StageId | string): readonly string[] {
+  const known = STAGE_SUB_STEPS[id as StageId];
+  if (known && known.length > 0) return known;
+  return [`${humanizeStageId(id)}…`];
+}
+
+/** `45s`, `2m 05s` — the elapsed cue shown once a stage has run a while. */
+export function formatSetupElapsed(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+export interface SetupRetryAttempt {
+  /** 1-based number of the attempt that is about to start. */
+  attempt: number;
+  /** Total attempts this stage gets, the first one included. */
+  of: number;
+}
+
+/**
+ * The attempt a stage is about to make, from the retry count
+ * {@link setupStageRecoveryAction} handed back. Attempt 1 was the original
+ * run, so the first auto-retry is attempt 2.
+ */
+export function setupRetryAttempt(
+  stageId: StageId,
+  nextRetryCount: number,
+): SetupRetryAttempt {
+  const of = stageAutoRetryLimit(stageId) + 1;
+  const attempt = Math.max(1, Math.floor(nextRetryCount)) + 1;
+  return { attempt: Math.min(of, attempt), of };
+}
+
+export function setupRetrySubStatusText(retry: SetupRetryAttempt): string {
+  return `Retrying — attempt ${retry.attempt} of ${retry.of}…`;
+}
+
+export interface SetupSubStatusInput {
+  /** The stage currently running; null when nothing is running. */
+  stageId: StageId | null;
+  /** How long that stage has been running. */
+  elapsedMs: number;
+  /** Real backend progress text for this stage, when the pipeline sent one. */
+  detail?: string | null;
+  /** Set while the stage waits for its automatic next attempt. */
+  retry?: SetupRetryAttempt | null;
+  rotateMs?: number;
+  stillWorkingAfterMs?: number;
+}
+
+export interface SetupSubStatus {
+  /** The line under the active band; null when no stage is running. */
+  text: string | null;
+  /** "Still working — 45s", or null before the threshold. */
+  elapsedLabel: string | null;
+}
+
+/**
+ * The sub-status shown under the active band. An auto-retry notice wins, then
+ * a real backend detail; with neither, the stage's written sub-steps rotate on
+ * `rotateMs` and hold on the last one, so the line always says something true
+ * rather than looping back to "starting" on a stage that has been running for
+ * minutes.
+ */
+export function setupSubStatus(input: SetupSubStatusInput): SetupSubStatus {
+  if (!input.stageId) return { text: null, elapsedLabel: null };
+  const elapsedMs = Math.max(0, input.elapsedMs);
+  const rotateMs = Math.max(1, input.rotateMs ?? SETUP_SUB_STATUS_ROTATE_MS);
+  const stillWorkingAfterMs =
+    input.stillWorkingAfterMs ?? SETUP_STILL_WORKING_AFTER_MS;
+
+  const detail = input.detail?.trim();
+  const steps = stageSubSteps(input.stageId);
+  const index = Math.min(steps.length - 1, Math.floor(elapsedMs / rotateMs));
+  // A stage waiting on its auto-retry says so: the rotating sub-steps and a
+  // stale backend detail would both claim work that is paused.
+  const retryText = input.retry ? setupRetrySubStatusText(input.retry) : null;
+
+  return {
+    text: retryText || detail || steps[index] || null,
+    elapsedLabel:
+      elapsedMs >= stillWorkingAfterMs
+        ? `Still working — ${formatSetupElapsed(elapsedMs)}`
+        : null,
+  };
+}
+
+/**
+ * User-facing line for a `content:progress` event, or null when the payload
+ * says nothing worth showing. Byte percentages are the one place the setup
+ * pipeline reports genuine progress.
+ */
+export function contentProgressSubStatus(payload: {
+  phase?: 'download' | 'extract' | 'complete' | string | null;
+  percent?: number | null;
+  stalled?: boolean | null;
+}): string | null {
+  if (payload.stalled) return 'The download stalled — retrying…';
+  if (payload.phase === 'download') {
+    const percent =
+      typeof payload.percent === 'number' && Number.isFinite(payload.percent)
+        ? Math.max(0, Math.min(100, Math.round(payload.percent)))
+        : null;
+    return percent === null
+      ? 'Downloading the HQ template…'
+      : `Downloading the HQ template — ${percent}%`;
+  }
+  if (payload.phase === 'extract') return 'Unpacking files…';
+  return null;
+}
+
+// ─── Percent creep inside a band ────────────────────────────────────────────
+//
+// The ring used to approach its per-stage ceiling on a fixed 14%-per-tick
+// curve, which saturates in about 25 seconds. On a stage that runs for minutes
+// the displayed number then never changed again. The creep now has two parts:
+// a quick rise so short stages still feel responsive, then a slow linear tail
+// that keeps the integer percent ticking up for the whole worst-case stage.
+
+/** The most of a stage's span the creep may claim before the stage finishes. */
+export const STAGE_CREEP_CEILING = 0.92;
+const STAGE_CREEP_FAST_CEILING = 0.45;
+const STAGE_CREEP_FAST_TAU_MS = 6_000;
+/** The tail reaches the ceiling at roughly the longest stage skip threshold. */
+const STAGE_CREEP_TAIL_MS = 180_000;
+
+/** Creep fraction (0…{@link STAGE_CREEP_CEILING}) for a stage running `elapsedMs`. */
+export function stageCreepAt(elapsedMs: number): number {
+  const elapsed = Math.max(0, elapsedMs);
+  const fast =
+    STAGE_CREEP_FAST_CEILING * (1 - Math.exp(-elapsed / STAGE_CREEP_FAST_TAU_MS));
+  const tail =
+    (STAGE_CREEP_CEILING - STAGE_CREEP_FAST_CEILING) *
+    Math.min(1, elapsed / STAGE_CREEP_TAIL_MS);
+  return Math.min(STAGE_CREEP_CEILING, fast + tail);
 }

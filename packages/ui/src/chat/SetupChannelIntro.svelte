@@ -56,7 +56,7 @@
   import SetupButton from "./SetupButton.svelte";
   import { SETUP_RUN_STEPS } from "./setup-run";
   import type { SetupAgent } from "./setup-agent.svelte";
-  import { SETUP_BOT_COPY, setupBotActionLabel, type SetupBotLauncher } from "./setup-bot";
+  import { SETUP_BOT_COPY, SETUP_BOT_GENERIC_FAILURE, setupBotActionLabel, type SetupBotLauncher } from "./setup-bot";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
 
@@ -253,7 +253,10 @@
       const result = await setupBot.start();
       if (!result.ok) botError = result.reason;
     } catch (err) {
-      botError = err instanceof Error ? err.message : String(err);
+      // Whatever threw, the person gets a sentence — never a stack, a status
+      // line or the API's own words. The raw text stays in the log.
+      console.warn("[hq-desktop] setup bot start failed:", err);
+      botError = SETUP_BOT_GENERIC_FAILURE;
     } finally {
       botBusy = false;
     }

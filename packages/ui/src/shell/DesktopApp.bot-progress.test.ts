@@ -189,4 +189,33 @@ describe("DesktopApp local bot progress card", () => {
     expect(start).toHaveBeenCalledWith("scout");
     expect(q('[data-testid="bot-progress-card"]')?.getAttribute("data-state")).toBe("installing");
   });
+
+  it("stops offering a Retry that cannot work, instead of one that does nothing", async () => {
+    await createBot();
+    rows = [botRow({ online: false, state: "failed", processAlive: false })];
+    await poll();
+    expect(q<HTMLButtonElement>('[data-testid="bot-progress-retry"]')?.disabled).toBe(false);
+
+    // A definitive failure closes this bot's gate. The button used to stay
+    // enabled and silently do nothing on every further click.
+    start.mockImplementation(async () => ({
+      ok: false as const,
+      reason: "unavailable" as const,
+      message: "the runtime refused to launch",
+    }));
+    click('[data-testid="bot-progress-retry"]');
+    await settle(20);
+
+    expect(start).toHaveBeenCalledTimes(1);
+    const retry = q<HTMLButtonElement>('[data-testid="bot-progress-retry"]');
+    expect(retry?.disabled).toBe(true);
+    // And the card says what to do instead of leaving a dead button unexplained.
+    expect(q('[data-testid="bot-progress-reason"]')?.textContent).toContain(
+      "Nothing more will be tried automatically",
+    );
+
+    retry!.click();
+    await settle(20);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
 });

@@ -105,6 +105,11 @@ export interface ThinkingEntry {
   afterMs?: number;
   /** Live status text the agent itself reported (`agent_status` wake). */
   detail?: string;
+  /** When this agent started working, preserved across in-place restarts.
+   * `startedAt` moves every time a new status arrives (it is the pin for the
+   * clear rule); the elapsed counter must keep counting the whole turn, so it
+   * reads this instead. */
+  since?: number;
 }
 
 const DEFAULT_SLOW_AFTER_MS = 150_000;
@@ -133,9 +138,12 @@ export function startThinking(
     ...(detail ? { detail } : {}),
   };
   const idx = entries.findIndex((e) => e.agentUid === agent.agentUid);
-  if (idx < 0) return [...entries, next];
+  if (idx < 0) return [...entries, { ...next, since: now }];
   const copy = entries.slice();
-  copy[idx] = next;
+  // A restart is the same stretch of work continuing (a fresh status, or a
+  // follow-up mention while the agent is still going), so the elapsed counter
+  // carries on from when it started rather than resetting to zero.
+  copy[idx] = { ...next, since: entries[idx]!.since ?? entries[idx]!.startedAt };
   return copy;
 }
 
@@ -364,18 +372,93 @@ export function applyAgentStatus(
   );
 }
 
-/** Status copy for a row. Unicode ellipsis (U+2026) matches the rest of
- * the messaging UI (`Sending…`, `Joining…`). */
-export function labelFor(entry: ThinkingEntry): string {
+// ---------------------------------------------------------------------------
+// What the row SAYS over time.
+//
+// The row used to read "X is thinking…", flip once to "X is taking longer than
+// usual…" at 150s, and then never change again — so a bot on a three-minute
+// turn looked stuck. When the agent reports its own status we show that (and
+// swap it each time a newer one arrives). With no status we walk a short set of
+// honest phrases and, past 15s, append how long it has been working, the way a
+// CLI agent does. None of this clears the row: teardown stays on a strictly
+// newer message from that agent (see `clearFromMessages`).
+
+/** Phrases walked, in order, while an agent works with no status of its own. */
+export const THINKING_PHRASES = [
+  'is thinking',
+  'is reading the context',
+  'is working on it',
+  'is still working',
+] as const;
+
+/** How long each phrase holds before the next one. */
+export const THINKING_PHRASE_ROTATE_MS = 8_000;
+/** Past this, the row also shows how long the agent has been working. */
+export const THINKING_ELAPSED_AFTER_MS = 15_000;
+
+/** `42s`, `2m 10s` — the elapsed counter appended to a long-running row. */
+export function formatThinkingElapsed(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+export interface ThinkingLine {
+  /** The sentence, with no trailing ellipsis — the row animates its own. */
+  label: string;
+  /** `working for 42s`, or null before {@link THINKING_ELAPSED_AFTER_MS}. */
+  elapsed: string | null;
+}
+
+export interface ThinkingLineOpts {
+  rotateMs?: number;
+  elapsedAfterMs?: number;
+}
+
+/**
+ * What the row shows at `now`. A status the agent reported wins outright; with
+ * none, the phrases walk on `rotateMs` and hold on the last one (they never
+ * loop back to "is thinking" on a turn that has been going for minutes), and a
+ * row `tick` has promoted to `'slow'` says so instead.
+ */
+export function thinkingLine(
+  entry: ThinkingEntry,
+  now: number,
+  opts?: ThinkingLineOpts,
+): ThinkingLine {
+  const rotateMs = Math.max(1, opts?.rotateMs ?? THINKING_PHRASE_ROTATE_MS);
+  const elapsedAfterMs = opts?.elapsedAfterMs ?? THINKING_ELAPSED_AFTER_MS;
+  const workingMs = Math.max(0, now - (entry.since ?? entry.startedAt));
+
   const detail = entry.detail?.trim() ?? '';
-  // "is thinking…" is the generic status local bots send; say it the usual way.
+  let label: string;
   if (detail && !/^is thinking/i.test(detail)) {
-    return /^is\s/i.test(detail) ? `${entry.agentName} ${detail}` : `${entry.agentName}: ${detail}`;
+    // The agent's own words. "is …" reads as a sentence after the name;
+    // anything else is a phrase and takes a colon.
+    label = /^is\s/i.test(detail)
+      ? `${entry.agentName} ${detail}`
+      : `${entry.agentName}: ${detail}`;
+  } else if (entry.phase === 'slow') {
+    // `tick` promotes a row that has been going for `slowAfterMs`. Saying so
+    // is more honest than another rotation of the same phrases.
+    label = `${entry.agentName} is taking longer than usual`;
+  } else {
+    const index = Math.min(
+      THINKING_PHRASES.length - 1,
+      Math.floor(workingMs / rotateMs),
+    );
+    label = `${entry.agentName} ${THINKING_PHRASES[index]}`;
   }
-  if (entry.phase === 'slow') {
-    return `${entry.agentName} is taking longer than usual…`;
-  }
-  return `${entry.agentName} is thinking…`;
+
+  return {
+    label: label.replace(/…+$/, ''),
+    elapsed:
+      workingMs >= elapsedAfterMs
+        ? `working for ${formatThinkingElapsed(workingMs)}`
+        : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -449,4 +532,24 @@ function dropOrSet(
 ): ThinkingByRow {
   const { [rowId]: _dropped, ...rest } = map;
   return entries.length > 0 ? { ...rest, [rowId]: entries } : rest;
+}
+
+/** `clearForAgents` applied to EVERY row: the agent is known not to be
+ * working anywhere (its start/turn failed definitively, which is the newer
+ * event that ends the row — never a timer). Rows left empty are removed.
+ * Returns a NEW map. */
+export function clearAgentEverywhere(
+  map: ThinkingByRow,
+  agentUid: string,
+): ThinkingByRow {
+  const uid = agentUid.trim();
+  if (!uid) return map;
+  const out: ThinkingByRow = {};
+  let changed = false;
+  for (const [rowId, entries] of Object.entries(map)) {
+    const next = clearForAgents(entries, [uid]);
+    if (next.length !== entries.length) changed = true;
+    if (next.length > 0) out[rowId] = next;
+  }
+  return changed ? out : map;
 }

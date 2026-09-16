@@ -71,7 +71,10 @@
   } from "../chat/setup-channel.js";
   import {
     findSetupBot,
+    findSetupBotContact,
     firstSignedInRuntime,
+    SETUP_BOT_ALREADY_ELSEWHERE,
+    SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_INTRO,
     SETUP_BOT_KICKOFF,
     SETUP_BOT_MODE,
@@ -79,13 +82,14 @@
     SETUP_BOT_NO_RUNTIME,
     SETUP_BOT_UNAVAILABLE,
     SETUP_BOT_WORKER,
+    singleFlightStart,
     type SetupBotLauncher,
     type SetupBotRef,
     type SetupBotStart,
   } from "../chat/setup-bot.js";
   import {
     findLifecycleCardElement,
-    runAddAgentEntry,
+    runCreateCloudBotEntry,
     runCreateCompanyEntry,
     type EntryPointResult,
     type EntryPointTarget,
@@ -152,6 +156,7 @@
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
   import BotSignInBanner from "../chat/BotSignInBanner.svelte";
+  import BotRestoreBanner from "../chat/BotRestoreBanner.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
   import { canEditAgentProfile } from "../avatars/can-edit.js";
   import { loadAvatarGallery } from "../avatars/gallery.js";
@@ -247,6 +252,7 @@
     type MentionTarget,
   } from "../chat/mentions.js";
   import {
+    clearAgentEverywhere,
     clearRowFromMessages,
     agentDisplayName,
     applyAgentStatus,
@@ -260,20 +266,101 @@
     type ThinkingEntry,
   } from "../chat/agent-thinking.js";
   import {
+    BOT_MESSAGE_NOT_ANSWERED,
+    BOT_MESSAGE_START_HERE,
+    BOT_NOT_RUNNABLE_HERE,
+    BOT_NOT_RUNNABLE_RECHECK,
+    BOT_START_NO_MORE_RETRIES,
+    botIsConfiguredHere,
+    botRunsHere,
+    botStartFallbackNotice,
+    canStartBot,
+    classifyBotStartFailure,
+    clearBotStartGate,
+    localBotsDisappeared,
+    readLocalBotTrace,
+    reconcileLocalBotTrace,
+    recordBotStartFailure,
+    rememberLocalBots,
+    type BotStartGate,
+    type LocalBotTrace,
+  } from "../chat/bot-runnability.js";
+  import {
+    isAlreadyExistsFailure,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
     localBotOfflineNotice,
     localBotPresence,
     type LocalBotEntryResult,
     locallyHostedBots,
+    plainBotFailure,
     promotedBotCompany,
   } from "../chat/local-bots.js";
+  import {
+    adoptFallbackNotice,
+    BOT_RESTORE_ALL,
+    BOT_RESTORE_ALL_BUSY,
+    BOT_RESTORE_DISMISS,
+    BOT_RESTORE_FAILED,
+    BOT_RESTORE_TITLE,
+    BOT_START_HERE,
+    BOT_START_HERE_BUSY,
+    BOT_START_HERE_EXPLAINER,
+    BOT_START_HERE_RETRY,
+    botRestorePromptBody,
+    botRestorePromptDismissed,
+    botRestoreRowFailed,
+    botRestoreRowLine,
+    botRestoreSummary,
+    botFailureReason,
+    BOT_LIVE_ELSEWHERE_NOTICE,
+    botsLiveElsewhereNotice,
+    botsNotHere,
+    botStaysInCloudLine,
+    classifyRemoteBotFailure,
+    isNotRunnableHereReason,
+    NO_REMOTE_BOT_LISTING,
+    ownedBotNotHere,
+    ownedBotsNotHere,
+    remoteBotListingFailed,
+    remoteBotListingNotice,
+    remoteBotListingOk,
+    REMOTE_BOTS_CALL_TIMEOUT_MS,
+    REMOTE_BOTS_POLL_MS,
+    REMOTE_BOTS_TIMEOUT_LOG,
+    rememberBotRestoreDismissed,
+    withPollTimeout,
+    type RemoteBotListing,
+  } from "../chat/bot-restore.js";
+  import {
+    AUTO_RESTORE_RUNNING,
+    AUTO_RESTORE_STARTING_THIS_BOT,
+    autoRestoreAllowed,
+    autoRestoreCandidates,
+    autoRestoreCoversAll,
+    autoRestoreDoneLine,
+    autoRestoreDue,
+    autoRestoreExhausted,
+    autoRestoreFailedLine,
+    autoRestoreHeldBack,
+    countAutoRestoreAttempt,
+    noteAutoRestoreAttempt,
+    type AutoRestoreAttempts,
+    type AutoRestoreLastAttempts,
+  } from "../chat/bot-auto-restore.js";
   import {
     botNeedsSignIn,
     restartBotsNeedingSignIn,
     runtimesNeedingSignIn,
   } from "../chat/runtime-sign-in-again.js";
-  import type { LocalBotCreateInput, LocalBotRow, LocalBotWorkerOption, SessionProviderId } from "@hq/platform";
+  import type {
+    BotRestoreResult,
+    LocalBotCreateInput,
+    LocalBotRow,
+    LocalBotWorkerOption,
+    RemoteBotRow,
+    SessionProviderId,
+  } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
@@ -886,17 +973,313 @@
   const localBots = $derived(locallyHostedBots(localBotRecords));
   let localBotBusy = $state<string | null>(null);
   let localBotActionError = $state<string | null>(null);
+  /**
+   * A BOT THAT CANNOT RUN HERE SAYS SO (desktop UX feedback, round 5).
+   *
+   * The account owns the bot, but this Mac has no local runtime for it — a
+   * reinstall, or a second computer, where `hq bot list` is empty while the
+   * cloud still has the agent. The owner's VM adopted exactly that bot, opened
+   * its DM, and the app then presented it as a normal thinking bot forever
+   * while every start answered "no such bot". Keyed by agent uid → the honest
+   * sentence its DM shows.
+   */
+  let unrunnableBotUids = $state<Record<string, string>>({});
+  /**
+   * Start budget per bot name. A definitive failure ("no such bot", not signed
+   * in, held) closes it after ONE attempt; a transient one (CLI timeout,
+   * unreachable) is bounded at `BOT_START_MAX_ATTEMPTS`. Nothing in the app
+   * re-issues a start once the gate is closed.
+   */
+  let botStartGate = $state<BotStartGate>({});
+  /**
+   * The failure event. Policy `transient-indicators-clear-on-newer-event-not-time-window`:
+   * a thinking row is never cleared by a timer — it is cleared by a NEWER
+   * event. A definitive start failure is that event, so it goes through here
+   * instead of a bot message, ending the row everywhere that bot was shown as
+   * working and leaving the honest state in its place.
+   */
+  function noteBotCannotRunHere(agentUid: string, reason: string = BOT_NOT_RUNNABLE_HERE): void {
+    const uid = (agentUid ?? "").trim();
+    if (!uid) return;
+    unrunnableBotUids = { ...unrunnableBotUids, [uid]: reason };
+    thinkingByRow = clearAgentEverywhere(thinkingByRow, uid);
+  }
+  /**
+   * Per-machine memory for the bot surfaces: the restore prompt's dismissal
+   * and the trace of bots this computer has run. Read once, never thrown from.
+   */
+  const botMachineMemory = (() => {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch {
+      return null;
+    }
+  })();
+  /**
+   * BOTS THIS COMPUTER HAS RUN (uid → name).
+   *
+   * `hq bot list` reads each bot's own config, so a wiped bot silently drops
+   * off it — which is how one of the owner's own bots came to be drawn as
+   * `Cloud` and to sit under a spinner for 2 m 39 s while the account listing
+   * was unavailable. A uid this app has seen on this Mac's listing, and no
+   * longer sees, is local evidence that needs no server: your bot, here, with
+   * nothing left to run it.
+   */
+  let localBotTrace = $state<LocalBotTrace>(readLocalBotTrace(botMachineMemory));
   async function refreshLocalBots(): Promise<void> {
     const api = adapter.bots;
     if (!api) return;
     const result = await api.list();
-    if (result.ok) localBotRecords = result.value.bots ?? [];
+    if (!result.ok) return;
+    const bots = result.value.bots ?? [];
+    // A BOT THAT DROPPED OFF THIS MAC'S LISTING IS THE WIPE, AS IT HAPPENS.
+    // The account's own listing is what turns that into the honest notice,
+    // and on the VM it was on a 120 s timer that had stopped — so the DM
+    // showed a live composer for 6 m 40 s. Asking again right here bounds
+    // that by one local poll (30 s) whatever the remote cadence is doing.
+    const vanished = localBotsDisappeared(localBotRecords, bots);
+    localBotRecords = bots;
+    localBotTrace = rememberLocalBots(botMachineMemory, localBotTrace, localBotRecords);
+    if (vanished.length > 0) void refreshRemoteBots(true);
+  }
+  /**
+   * BOTS COME BACK AFTER A REINSTALL.
+   *
+   * `hq bot list` above only knows THIS computer, which is why the app could
+   * not tell "no such bot" from "your bot, safe in HQ, with nothing here to
+   * run it" — the state that had test-bot's DM spinning for 41 s while its own
+   * setup said it could not run here. `hq bot list --remote` is the account's
+   * own view: every local bot the person owns, each flagged `here` or not.
+   * Null until the first listing lands (and on hosts without the command), so
+   * "not here" is never inferred from an answer that has not arrived.
+   */
+  let remoteBotListing = $state<RemoteBotListing>(NO_REMOTE_BOT_LISTING);
+  /** One plain sentence when the listing failed; null while it is fine. */
+  const remoteListingNotice = $derived(remoteBotListingNotice(remoteBotListing.failure));
+  /**
+   * This HQ Cloud has no listing route yet, so nothing can be brought back
+   * from it. The actions that depend on it are not offered — the sentence
+   * above says why, instead of a button that cannot work.
+   */
+  const botRestoreUnavailable = $derived(remoteBotListing.failure !== null);
+  /**
+   * One remote listing call in flight at a time — released in `finally`, and
+   * bounded, so it can never be pinned.
+   *
+   * The VM's Defect 8: three calls, then none for 16 m 38 s, while the 30 s
+   * local poller kept firing from the same `onMount`. The cadence below is a
+   * plain `setInterval` and always was, so nothing here re-arms a chain that
+   * could be lost; what this guard buys is that a slow or hung call can
+   * neither pile CLI invocations up behind it nor outlive one tick. A person
+   * asking (Check again, a finished adopt or restore) always gets a fresh
+   * call — `force` skips the guard, never the bound.
+   */
+  let remoteBotPollBusy = false;
+  async function refreshRemoteBots(force = false): Promise<void> {
+    const listRemote = adapter.bots?.listRemote;
+    if (!listRemote) return;
+    if (remoteBotPollBusy && !force) return;
+    remoteBotPollBusy = true;
+    try {
+      const outcome = await withPollTimeout(() => listRemote(), REMOTE_BOTS_CALL_TIMEOUT_MS);
+      // A call that never answered is not evidence either: the last good rows
+      // stay exactly as they were, one line goes to the log, and the next
+      // tick asks again.
+      if (outcome.timedOut) {
+        console.warn(REMOTE_BOTS_TIMEOUT_LOG);
+        return;
+      }
+      const result = outcome.value;
+      // A LISTING THAT FAILED IS NOT EVIDENCE ABOUT ANY BOT. An empty listing
+      // and "no answer" must never read the same, so a failure keeps the last
+      // good rows (marked stale) and only changes what the app can offer.
+      if (result.ok && Array.isArray(result.value?.bots)) {
+        remoteBotListing = remoteBotListingOk(result.value.bots);
+        localBotTrace = reconcileLocalBotTrace(botMachineMemory, localBotTrace, result.value.bots);
+        return;
+      }
+      if (!result.ok && result.message) {
+        console.warn("[hq-desktop] remote bot list failed:", result.message);
+      }
+      remoteBotListing = remoteBotListingFailed(
+        remoteBotListing,
+        result.ok ? "malformed" : classifyRemoteBotFailure(result.reason, result.message),
+      );
+    } catch (err) {
+      // A host that throws instead of answering must not end the cadence.
+      console.warn("[hq-desktop] remote bot list failed:", err);
+      remoteBotListing = remoteBotListingFailed(remoteBotListing, "network");
+    } finally {
+      remoteBotPollBusy = false;
+    }
+  }
+  /**
+   * A start that actually ran: the budget resets and the honest "cannot run
+   * here" notice goes with it. Every successful start in the shell — the
+   * progress card's Retry, the offline notice's Start, the bot's own profile
+   * panel, the sign-in-again restart — comes through here, so a bot that is
+   * now running never keeps a notice that says it is not.
+   */
+  function noteBotStarted(name: string, agentUid: string): void {
+    botStartGate = clearBotStartGate(botStartGate, name);
+    const uid = (agentUid ?? "").trim();
+    if (!uid || !unrunnableBotUids[uid]) return;
+    const { [uid]: _running, ...rest } = unrunnableBotUids;
+    unrunnableBotUids = rest;
+  }
+  /**
+   * The one place a bot start happens. The gate decides whether it may run at
+   * all, a success reopens the gate, and a failure is classified exactly once.
+   */
+  async function startBotByName(name: string, agentUid: string): Promise<{ ok: boolean; reason: string | null }> {
+    const api = adapter.bots;
+    if (!api) return { ok: false, reason: botStartFallbackNotice(name) };
+    if (!canStartBot(botStartGate, name)) {
+      return { ok: false, reason: `${botStartFallbackNotice(name)} ${BOT_START_NO_MORE_RETRIES}` };
+    }
+    const result = await api.start(name);
+    if (result.ok) {
+      noteBotStarted(name, agentUid);
+      return { ok: true, reason: null };
+    }
+    // The bots API shells out to the CLI, so `message` can be its own words.
+    // They belong in the log; the caller gets a written sentence.
+    const raw = result.message ?? "";
+    if (raw) console.warn("[hq-desktop] bot start failed:", raw);
+    return { ok: false, reason: applyBotStartFailure(name, agentUid, raw) };
+  }
+  /**
+   * A bot that turned up in this Mac's list can run here after all (the person
+   * created it, or its config arrived): drop the notice.
+   *
+   * A CLOSED GATE OUTRANKS THE LIST. `hq bot list` said the owner's bots were
+   * there while every start answered "no such bot"; a start that actually ran
+   * is better evidence than a listing, so a bot whose gate a definitive
+   * failure closed keeps its honest state until "Check again" reopens it.
+   */
+  $effect(() => {
+    const records = localBotRecords;
+    untrack(() => {
+      const cleared = Object.keys(unrunnableBotUids)
+        .map((uid) => records.find((row) => row.agentUid.trim() === uid))
+        .filter((bot): bot is LocalBotRow => Boolean(bot))
+        // A closed gate outranks a bare listing — but not a listing that
+        // shows the bot's process alive HERE. A live local pid is the one
+        // claim only this Mac can make, and it is exactly what was missing
+        // when every start answered "no such bot", so its arrival is the
+        // newer event the notice was waiting for and the gate reopens with
+        // it. A launch agent reported installed is not that evidence: the
+        // failure this guards against had one (see botIsConfiguredHere).
+        .filter((bot) => canStartBot(botStartGate, bot.name) || botIsConfiguredHere(bot));
+      if (cleared.length === 0) return;
+      const next = { ...unrunnableBotUids };
+      let gate = botStartGate;
+      for (const bot of cleared) {
+        delete next[bot.agentUid.trim()];
+        gate = clearBotStartGate(gate, bot.name);
+      }
+      unrunnableBotUids = next;
+      botStartGate = gate;
+    });
+  });
+  /**
+   * RUNNABILITY IS LOCAL EVIDENCE FIRST, enhanced by the account's listing.
+   *
+   * A DM with an owned local bot that is not set up here shows the honest
+   * notice from the first frame — no start is issued, and nothing spins. That
+   * has to hold when the account listing is missing, unreachable or refused,
+   * which is exactly the state the owner's VM was in: the listing answered 404
+   * and a wiped bot's DM went back to a normal composer and a 2 m 39 s
+   * spinner. So the listing only ADDS bots to this set; this computer's own
+   * trace carries it when the listing cannot. Cloud and fleet bots are in
+   * neither, so their behaviour is untouched.
+   */
+  const ownedBotsMissingHere = $derived(
+    ownedBotsNotHere(remoteBotListing, localBotTrace, localBotRecords),
+  );
+  /**
+   * The owned bots that are RUNNING on another computer right now.
+   *
+   * They are still offered — every manual surface can bring one here — but
+   * nothing takes them automatically, and every notice about one says what
+   * starting it here costs, because the machine credentials rotate and the
+   * other Mac's copy stops at its next token refresh.
+   */
+  const botsLiveElsewhere = $derived(autoRestoreHeldBack(remoteBotListing, localBotRecords));
+  const liveElsewhereUids = $derived(
+    new Set(botsLiveElsewhere.map((bot) => bot.agentUid.trim()).filter(Boolean)),
+  );
+  $effect(() => {
+    const owned = ownedBotsMissingHere;
+    const live = liveElsewhereUids;
+    untrack(() => {
+      for (const bot of owned) {
+        // A bot that is live elsewhere gets the sentence that names the
+        // consequence instead of the "open it on that computer" one, and it
+        // is re-read when the listing changes: a bot that goes offline over
+        // there must stop being described as running.
+        const reason = live.has(bot.agentUid) ? BOT_LIVE_ELSEWHERE_NOTICE : BOT_NOT_RUNNABLE_HERE;
+        const current = unrunnableBotUids[bot.agentUid];
+        if (current === reason) continue;
+        // Only the two listing-derived sentences are re-written here: a reason
+        // a failed START put there is newer evidence than the listing is.
+        if (current && current !== BOT_LIVE_ELSEWHERE_NOTICE && current !== BOT_NOT_RUNNABLE_HERE) {
+          continue;
+        }
+        noteBotCannotRunHere(bot.agentUid, reason);
+      }
+    });
+  });
+  /**
+   * The person's own local bots, including the ones nothing here can run, so
+   * no bot of theirs is ever drawn as `Cloud` because a listing failed.
+   */
+  const ownedLocalBotUids = $derived(ownedBotsMissingHere.map((bot) => bot.agentUid));
+  /** The open DM's bot, when the account owns it and this computer cannot run it. */
+  const selectedBotNotHere = $derived(
+    selectedRow?.kind === "dm" ? ownedBotNotHere(ownedBotsMissingHere, selectedRow.personUid) : null,
+  );
+  /** The open DM's bot cannot run here — the honest state, or null. */
+  const selectedBotCannotRun = $derived(
+    selectedRow?.kind === "dm" && selectedRow.personUid
+      ? (unrunnableBotUids[selectedRow.personUid.trim()] ?? null)
+      : null,
+  );
+  /**
+   * "Check again": re-read this Mac's bots once, on demand — the only thing
+   * the desktop can honestly offer for a bot that lives on another computer.
+   * A person asking counts as consent to try the bot once more, so this is
+   * also the one thing that reopens a closed start gate. Never a loop: one
+   * click, one listing.
+   */
+  let botRecheckBusy = $state(false);
+  async function recheckSelectedBot(): Promise<void> {
+    const uid = selectedRow?.kind === "dm" ? (selectedRow.personUid ?? "").trim() : "";
+    if (!uid || botRecheckBusy) return;
+    botRecheckBusy = true;
+    try {
+      // Both halves: this computer's bots, and the account's own listing that
+      // decides whether the bot is here at all.
+      await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
+      const bot = localBotRecords.find((row) => row.agentUid.trim() === uid);
+      if (!bot) return;
+      botStartGate = clearBotStartGate(botStartGate, bot.name);
+      const { [uid]: _runnableAgain, ...rest } = unrunnableBotUids;
+      unrunnableBotUids = rest;
+    } finally {
+      botRecheckBusy = false;
+    }
   }
   onMount(() => {
     if (!adapter.bots) return;
     void refreshLocalBots();
+    void refreshRemoteBots();
     const handle = window.setInterval(() => void refreshLocalBots(), LOCAL_BOTS_POLL_MS);
-    return () => clearInterval(handle);
+    const remoteHandle = window.setInterval(() => void refreshRemoteBots(), REMOTE_BOTS_POLL_MS);
+    return () => {
+      clearInterval(handle);
+      clearInterval(remoteHandle);
+    };
   });
   /** Which runtimes are signed in here (`{ claude: true, … }`); null until known. */
   let localBotRuntimeReady = $state<Record<string, boolean> | null>(null);
@@ -938,8 +1321,15 @@
     state: BotProgressState;
     reason: string | null;
     /** The draft that made it, so Retry can re-run the same create. */
-    input: LocalBotCreateInput;
+    input?: LocalBotCreateInput;
     extras: CreateBotExtras;
+    /**
+     * Set when this card is a bot being brought back (`hq bot adopt`), not one
+     * being created. Retry then re-runs the adopt: the account already owns
+     * this bot, and creating a second one is exactly what adopt exists to
+     * prevent.
+     */
+    adoptName?: string;
     startedAt: number;
     retrying: boolean;
   }
@@ -961,7 +1351,16 @@
     const api = adapter.bots;
     if (!api) return { ok: false, reason: "Bots are only available in the HQ desktop app." };
     const result = await api.create(input);
-    if (!result.ok) return { ok: false, reason: result.message || `Could not create ${input.name}.` };
+    if (!result.ok) {
+      // The bots API shells out to `hq bot create`, so `message` can be the
+      // CLI's relay of hq-pro's own words ("HQ API /v1/agents → 409: Entity
+      // with type=… already exists"). That belongs in the log, never on
+      // screen: the caller gets a written sentence plus the raw text to match
+      // known conditions against.
+      const raw = result.message ?? "";
+      if (raw) console.warn("[hq-desktop] bot create failed:", raw);
+      return { ok: false, reason: plainBotFailure(raw, `Could not create ${input.name}.`), raw };
+    }
     const value = (result.value ?? {}) as Record<string, unknown>;
     const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
     await refreshLocalBots();
@@ -1019,15 +1418,32 @@
   /** True while startSetupBot is creating the bot, so #welcome can say so. */
   let setupBotStarting = $state(false);
   let setupBotStartError = $state<string | null>(null);
-  const existingSetupBot = $derived(findSetupBot(localBots));
+  // Every hosting kind counts as "already here": a setup bot promoted to the
+  // cloud is filtered out of `localBots`, but it is still the person's bot and
+  // must be opened, never re-created.
+  const existingSetupBot = $derived(findSetupBot(localBotRecords));
   const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
   const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
     adapter.bots && SETUP_BOT_MODE
       ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, starting: setupBotStarting, error: setupBotStartError, start: startSetupBot }
       : null,
   );
-  /** Open a setup bot's DM; setup counts as run from that moment. */
+  /**
+   * Open a setup bot's DM; setup counts as run from that moment.
+   *
+   * ADOPT-TIME RUNNABILITY CHECK. Adopting a bot the account owns in the cloud
+   * opens its conversation — it does NOT give this Mac a way to run it. When
+   * no local config exists here, the DM says so from the first frame instead
+   * of presenting a normal bot that will never answer.
+   */
   function openSetupBotDm(bot: SetupBotRef): void {
+    if (!botRunsHere(localBotRecords, bot.agentUid)) {
+      noteBotCannotRunHere(bot.agentUid);
+      // A cloud-only setup bot is one the account owns, so the notice can
+      // offer to bring it back here rather than only "Check again" — but only
+      // once the account's own listing says so. Ask for it now.
+      void refreshRemoteBots(true);
+    }
     const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
     handleSelect(
       existing ?? {
@@ -1044,30 +1460,57 @@
     recordWelcomeSetupRun();
   }
   /**
-   * Create the setup bot (or open the one that already exists). Never creates
-   * a second one: the list is re-read first, because another window — or an
-   * earlier run on this Mac — may already have made it.
+   * Create the setup bot, or open the one that already exists — on this Mac
+   * OR in the cloud account. Never creates a second one: `singleFlightStart`
+   * hands a caller that arrives mid-start the running start's own result,
+   * because each surface only disables its own button (the owner's log caught
+   * two `hq bot create setup` calls 1.3 s apart).
    */
-  async function startSetupBot(): Promise<SetupBotStart> {
+  const setupBotStartGate = singleFlightStart(async (): Promise<SetupBotStart> => {
     setupBotStarting = true;
     setupBotStartError = null;
     try {
-      const result = await startSetupBotNow();
+      const result = await runSetupBotStart();
       if (!result.ok) setupBotStartError = result.reason;
       return result;
-    } catch {
-      setupBotStartError = "Could not start your setup bot. Please try again.";
-      return { ok: false, reason: setupBotStartError };
+    } catch (err) {
+      // A sentence, never a stack: the surfaces render this verbatim.
+      console.warn("[hq-desktop] setup bot start threw:", err);
+      setupBotStartError = SETUP_BOT_GENERIC_FAILURE;
+      return { ok: false, reason: SETUP_BOT_GENERIC_FAILURE };
     } finally {
       setupBotStarting = false;
     }
+  });
+  function startSetupBot(): Promise<SetupBotStart> {
+    return setupBotStartGate();
   }
-  async function startSetupBotNow(): Promise<SetupBotStart> {
+  /**
+   * The setup bot this account already owns, wherever it lives. `hq bot list`
+   * only knows this Mac, so after a reinstall — or on a second Mac — the local
+   * list is empty while the cloud account still owns the agent entity, and a
+   * create 409s. The DM roster is the desktop's one cloud-side view of the
+   * person's own bots, so it is asked before anything is created.
+   */
+  async function findExistingSetupBot(): Promise<SetupBotRef | null> {
+    const local = findSetupBot(localBotRecords);
+    if (local) return local;
+    try {
+      const contacts = await adapter.messaging?.listContacts?.();
+      if (contacts?.ok) return findSetupBotContact(contacts.value);
+    } catch (err) {
+      // A roster we cannot read only costs us the early adoption: a create
+      // that then 409s is adopted below.
+      console.warn("[hq-desktop] could not check the cloud roster for a setup bot:", err);
+    }
+    return null;
+  }
+  async function runSetupBotStart(): Promise<SetupBotStart> {
     // Any start (the automatic one or a click) settles the automatic start.
     setupBotAutoStarted = true;
     if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
     await refreshLocalBots();
-    const existing = findSetupBot(localBots);
+    const existing = await findExistingSetupBot();
     if (existing) {
       openSetupBotDm(existing);
       return { ok: true, existing: true };
@@ -1090,9 +1533,23 @@
       kickoff: SETUP_BOT_KICKOFF,
       // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
     });
-    if (!created.ok) return { ok: false, reason: created.reason };
-    recordWelcomeSetupRun();
-    return { ok: true, existing: false };
+    if (created.ok) {
+      recordWelcomeSetupRun();
+      return { ok: true, existing: false };
+    }
+    // "It already exists" is the opposite of a failure: the bot the person
+    // needs is there. Another window, another Mac, or this account's earlier
+    // install got in first — re-read both views and open it.
+    if (isAlreadyExistsFailure(created.raw ?? created.reason)) {
+      await refreshLocalBots();
+      const adopted = await findExistingSetupBot();
+      if (adopted) {
+        openSetupBotDm(adopted);
+        return { ok: true, existing: true };
+      }
+      return { ok: false, reason: SETUP_BOT_ALREADY_ELSEWHERE };
+    }
+    return { ok: false, reason: created.reason };
   }
   /**
    * First open on this Mac: the setup bot starts by itself, so the person is
@@ -1120,18 +1577,31 @@
     const entry = botProgressByUid[uid];
     const api = adapter.bots;
     if (!entry || !api || entry.retrying) return;
-    setBotProgress(uid, { retrying: true, reason: null });
     const bot = localBots.find((b) => b.agentUid === uid);
+    // Nothing is re-issued once the gate is closed; the card renders its
+    // Retry disabled in that state (`canRetry` below) so the click cannot
+    // happen at all rather than happening and doing nothing.
+    if (bot && !canStartBot(botStartGate, bot.name)) return;
+    setBotProgress(uid, { retrying: true, reason: null });
     if (bot) {
-      const result = await api.start(bot.name);
-      if (!result.ok) {
-        setBotProgress(uid, { retrying: false, state: "failed", reason: result.message || `Could not start ${bot.name}.` });
+      const started = await startBotByName(bot.name, bot.agentUid);
+      if (!started.ok) {
+        setBotProgress(uid, { retrying: false, state: "failed", reason: started.reason });
         return;
       }
       // Re-read presence FIRST: flipping to "installing" while the list still
       // says "failed" lets the presence effect below stamp it failed again.
       await refreshLocalBots();
       setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
+      return;
+    }
+    if (entry.adoptName) {
+      const brought = await startBotHere(entry.adoptName, uid);
+      if (!brought.ok) setBotProgress(uid, { retrying: false, state: "failed", reason: brought.reason });
+      return;
+    }
+    if (!entry.input) {
+      setBotProgress(uid, { retrying: false });
       return;
     }
     clearBotProgress(uid);
@@ -1173,6 +1643,13 @@
   const selectedBotProgress = $derived(
     selectedRow?.kind === "dm" && selectedRow.personUid ? (botProgressByUid[selectedRow.personUid] ?? null) : null,
   );
+  /**
+   * The open DM's card is a bot being brought back, not one being created. The
+   * bot is still "not here" while the adopt runs, so the progress card has to
+   * outrank the honest notice for exactly that window — otherwise pressing
+   * "Start on this computer" looks like it did nothing.
+   */
+  const selectedBotAdopting = $derived(Boolean(selectedBotProgress?.adoptName));
   const existingBotNames = $derived(localBots.map((b) => b.name));
   /** Inline runtime sign-in for the flow's Home step (browser login + status poll). */
   const botSignIn = $derived.by<RuntimeSignInApi | null>(() => {
@@ -1205,6 +1682,22 @@
    * the bot has paused, so the conversation says so above the composer and
    * offers the sign-in instead of looking silently stuck.
    */
+  /**
+   * THE NOTICE BELONGS AT THE BOTTOM, NOT THE TOP.
+   *
+   * The owner's screenshot: the "Start on this computer" card rendered above
+   * the oldest message, under a YESTERDAY divider — "this shouldn't be on the
+   * top because its easy to miss". He never saw it, typed into the composer,
+   * and read that his message was unanswered. So it renders as the LAST thing
+   * in the conversation, directly above the composer, where the person already
+   * is. Precedence is what the header expression had: the honest "cannot run
+   * here" notice outranks the progress card, and the plain offline notice only
+   * shows when neither is in play.
+   */
+  const botNoticeBelow = $derived(
+    Boolean(selectedBotCannotRun && !selectedBotAdopting) ||
+      Boolean(!selectedBotProgress && selectedLocalBot && selectedLocalBotOffline),
+  );
   const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
   /** Coding tools some local bot is paused on — evidence a "Connected" tool is dead. */
   const staleRuntimes = $derived(runtimesNeedingSignIn(localBots));
@@ -1228,19 +1721,363 @@
   }
   /** Restart the bots paused on a tool after it was signed in again elsewhere. */
   async function afterRuntimeSignedIn(runtime: string): Promise<void> {
-    await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], adapter.bots ?? null);
+    await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], adapter.bots ?? null, {
+      // Same gate as every other start: a bot whose start already failed
+      // definitively is not re-issued here either, and one that does start
+      // drops its "cannot run here" notice.
+      canStart: (bot) => canStartBot(botStartGate, bot.name),
+      onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
+    });
     await refreshLocalBots();
   }
   async function startSelectedLocalBot(): Promise<void> {
     const bot = selectedLocalBot;
-    const api = adapter.bots;
-    if (!bot || !api || localBotBusy) return;
+    if (!bot || !adapter.bots || localBotBusy) return;
+    // A definitive failure is never re-issued, and transient ones are bounded:
+    // the owner's VM retried the same doomed start ~48 times.
+    if (!canStartBot(botStartGate, bot.name)) return;
     localBotBusy = bot.name;
     localBotActionError = null;
-    const result = await api.start(bot.name);
-    if (!result.ok) localBotActionError = result.message || `Could not start ${bot.name}.`;
+    const started = await startBotByName(bot.name, bot.agentUid);
+    if (!started.ok) localBotActionError = started.reason;
     await refreshLocalBots();
     localBotBusy = null;
+  }
+  /** The bot's own profile panel starts it through the same gate. */
+  async function startBotFromProfile(bot: LocalBotRow): Promise<{ ok: boolean; reason: string | null }> {
+    return startBotByName(bot.name, bot.agentUid);
+  }
+  // ── Bringing bots back to this computer ────────────────────────────────────
+  /** The bot currently being brought back, so its button can say so. */
+  let botAdoptBusy = $state<string | null>(null);
+  /** The last adopt failure, as a sentence a person can act on. */
+  let botAdoptError = $state<string | null>(null);
+  /**
+   * "Start on this computer" — `hq bot adopt <name>`.
+   *
+   * The bot the account owns gets its machine credentials re-issued here, its
+   * saved settings, worker folder and startup agent rebuilt, and a start. It
+   * keeps its identity, its memory and this conversation; only the half a
+   * reinstall took away is put back. Progress rides the same card a new bot
+   * uses, and a success clears the gate so the DM becomes a normal bot.
+   */
+  async function startBotHere(name: string, agentUid: string): Promise<{ ok: boolean; reason: string | null }> {
+    const adopt = adapter.bots?.adopt;
+    const uid = (agentUid ?? "").trim();
+    if (!adopt) return { ok: false, reason: adoptFallbackNotice(name) };
+    if (botAdoptBusy) return { ok: false, reason: null };
+    botAdoptBusy = name;
+    botAdoptError = null;
+    if (uid) {
+      botProgressByUid = {
+        ...botProgressByUid,
+        [uid]: { name, state: "installing", reason: null, extras: {}, adoptName: name, startedAt: Date.now(), retrying: false },
+      };
+    }
+    const result = await adopt(name);
+    botAdoptBusy = null;
+    if (!result.ok) {
+      // The bots API shells out to the CLI, so `message` can be its own words
+      // (or hq-pro's). They belong in the log; the notice gets a sentence.
+      const raw = result.message ?? "";
+      if (raw) console.warn("[hq-desktop] bot adopt failed:", raw);
+      // A refusal the CLI named is not "please try again": a company bot's
+      // identity cannot run on a personal Mac, now or later, and the failure
+      // document that says so is exactly the machine text `plainBotFailure`
+      // is right to refuse to render.
+      const reason = isNotRunnableHereReason(botFailureReason(raw))
+        ? botStaysInCloudLine(name)
+        : plainBotFailure(raw, adoptFallbackNotice(name));
+      if (uid) clearBotProgress(uid);
+      botAdoptError = reason;
+      return { ok: false, reason };
+    }
+    // It runs here now: the gate reopens and the honest notice goes with it.
+    noteBotStarted(name, uid);
+    await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
+    if (uid) setBotProgress(uid, { retrying: false, state: "installing", startedAt: Date.now() });
+    return { ok: true, reason: null };
+  }
+  /** Start the open DM's bot here, from the "cannot run here" notice. */
+  async function startSelectedBotHere(): Promise<void> {
+    const bot = selectedBotNotHere;
+    if (!bot) return;
+    await startBotHere(bot.name, bot.agentUid);
+  }
+  /**
+   * RESTORE MY BOTS — the one prompt after a fresh install or a new Mac.
+   *
+   * Non-blocking, shown once, and remembered per machine so it never nags at
+   * launch. Settings › Bots is where a person asks for it again.
+   */
+  let botRestoreDismissed = $state(botRestorePromptDismissed(botMachineMemory));
+  let botRestoreBusy = $state(false);
+  let botRestoreResult = $state<BotRestoreResult | null>(null);
+  let botRestoreError = $state<string | null>(null);
+  /**
+   * What `hq bot restore --all` would actually bring back: bots the account's
+   * own listing named, minus any that this Mac's listing shows are here after
+   * all. Trace-only bots are deliberately not counted — restoring goes
+   * through HQ Cloud, so a listing the app could not read cannot be the basis
+   * for offering it.
+   */
+  const botsMissingHere = $derived(
+    botsNotHere(remoteBotListing.rows).filter((bot) => !botRunsHere(localBotRecords, bot.agentUid)),
+  );
+  // ── Bots come back BY THEMSELVES ──────────────────────────────────────────
+  //
+  // The owner, on a fresh install: "I don't understand, the whole point of our
+  // project was to automatically start up local bots when you installed the
+  // app." He opened the setup bot's DM, typed "hi", and read "Not answered yet
+  // — this bot isn't running on this computer", with the "Start on this
+  // computer" notice above the fold where he never saw it. The mechanism was
+  // fine: on the VM `hq bot restore --all --json` brought both bots online in
+  // about five seconds. The product was wrong to ask for the click at all.
+  //
+  // So the app asks for itself. Three trigger points, one effect: the first
+  // successful listing after sign-in on a fresh install, the moment a runtime
+  // becomes ready (Connect Claude in the wizard re-reads readiness through
+  // `onBotRuntimeSignedIn`), and any later listing that shows a runnable bot
+  // which is not here — so a bot wiped by an update or a crash comes back the
+  // same way a reinstall's does.
+  /** Automatic attempts this session, per bot. Never persisted. */
+  let autoRestoreAttempts = $state<AutoRestoreAttempts>({});
+  /**
+   * When each bot was last tried automatically — the back-off, per bot.
+   *
+   * Per bot rather than per listing, so what is charged and what is waited for
+   * can never drift apart: a send that brings ONE bot back charges that bot
+   * and waits for that bot, and the others are neither spent nor held.
+   */
+  let autoRestoreLastAt = $state<AutoRestoreLastAttempts>({});
+  /** Single-flight: one automatic restore at a time, ever. */
+  let autoRestoreBusy = $state(false);
+  /** The bots this automatic restore is bringing back, by uid. */
+  let autoRestoringUids = $state<string[]>([]);
+  /**
+   * The ONE line a person reads about this, cleared by the next newer event
+   * and never by a timer (policy
+   * `transient-indicators-clear-on-newer-event-not-time-window`).
+   */
+  let autoRestoreStatus = $state<string | null>(null);
+  /** Bots the app could bring back by itself right now. */
+  const autoRestorableBots = $derived(autoRestoreCandidates(remoteBotListing, localBotRecords));
+  /**
+   * A runtime is signed in here — the same readiness check Run Setup uses.
+   * Restoring a bot with no runtime to run it only produces a bot that cannot
+   * start, so the app waits for the sign-in rather than spending its budget.
+   */
+  const autoRestoreReady = $derived(
+    Boolean(adapter.bots?.restore) &&
+      !botRestoreUnavailable &&
+      Boolean(firstSignedInRuntime(localBotRuntimeReady)),
+  );
+  /** True while automatic restore owns these bots: the banner stands down. */
+  const autoRestoreHandling = $derived(
+    autoRestoreBusy ||
+      (autoRestoreReady &&
+        autoRestorableBots.length > 0 &&
+        !autoRestoreExhausted(autoRestoreAttempts, autoRestorableBots)),
+  );
+  /** The open DM's bot is one being brought back right now. */
+  const selectedBotAutoRestoring = $derived(
+    selectedRow?.kind === "dm" && selectedRow.personUid
+      ? autoRestoringUids.includes(selectedRow.personUid.trim())
+      : false,
+  );
+  $effect(() => {
+    const candidates = autoRestorableBots;
+    const ready = autoRestoreReady;
+    untrack(() => void autoRestoreIfNeeded(candidates, ready));
+  });
+  /**
+   * Decide, then act. Everything that would make this churn is a guard here:
+   * a listing that failed yields no candidates at all, a person-driven restore
+   * or adopt owns the CLI while it runs, one listing state is acted on once,
+   * and each bot has a budget of `AUTO_RESTORE_MAX_ATTEMPTS`.
+   */
+  async function autoRestoreIfNeeded(
+    candidates: readonly RemoteBotRow[],
+    ready: boolean,
+  ): Promise<void> {
+    if (!ready || candidates.length === 0) return;
+    // Never overlapping with a person-driven restore or adopt: two `hq bot`
+    // writes at once is exactly what `singleFlightStart` exists to prevent.
+    if (autoRestoreBusy || botRestoreBusy || botAdoptBusy) return;
+    // A bot never tried goes at once — one wiped by an update or a crash comes
+    // back the same way a reinstall's does. One tried already waits: a fresh
+    // install lands two listings inside a second (the poll, then the setup
+    // bot's DM asking for one), and spending the whole budget on the same
+    // evidence twice would leave a transient failure with nothing left.
+    const allowed = autoRestoreDue(
+      autoRestoreLastAt,
+      autoRestoreAllowed(autoRestoreAttempts, candidates),
+      Date.now(),
+    );
+    if (allowed.length === 0) return;
+    await runAutoRestore(allowed);
+  }
+  /**
+   * Bring these bots back, with no click — and ONLY these bots.
+   *
+   * `hq bot restore` takes no names: it brings back every bot the account owns
+   * that is not set up here. That is the right call whenever the app is asking
+   * for exactly that set — one process, one token, one pass — and the wrong
+   * one the moment it is not. A bot held back because it is running on another
+   * Mac, or one whose automatic budget is spent, would be taken by the bulk
+   * call anyway and charged to nobody, so those go one at a time through
+   * `hq bot adopt <name>` instead. What is restored and what is charged are
+   * the same set, always.
+   *
+   * A failure BACKS OFF rather than stopping: the per-bot budget is what ends
+   * it. When the budget is gone the manual notice is the honest surface again
+   * — which is why nothing here dismisses it permanently.
+   */
+  async function runAutoRestore(bots: readonly RemoteBotRow[]): Promise<void> {
+    const restore = adapter.bots?.restore;
+    const adoptOne = adapter.bots?.adopt;
+    if (autoRestoreBusy || bots.length === 0) return;
+    const bulk = Boolean(restore) && autoRestoreCoversAll(bots, botsMissingHere);
+    if (!bulk && !adoptOne) return;
+    autoRestoreBusy = true;
+    const startedAt = Date.now();
+    autoRestoreLastAt = noteAutoRestoreAttempt(autoRestoreLastAt, bots, startedAt);
+    autoRestoreAttempts = countAutoRestoreAttempt(autoRestoreAttempts, bots);
+    autoRestoringUids = bots.map((bot) => bot.agentUid.trim()).filter(Boolean);
+    const names = bots.map((bot) => bot.name);
+    autoRestoreStatus = AUTO_RESTORE_RUNNING;
+    try {
+      const back: string[] = [];
+      const stuck: string[] = [];
+      if (bulk) {
+        // No `--all`: that flag additionally re-issues credentials for the
+        // bots already set up here, which this run neither named nor charged.
+        const result = await restore!({ all: false });
+        if (!result.ok || !result.value) {
+          // The bots API shells out to the CLI, so `message` can be its own
+          // words. They belong in the log; the line gets a written sentence.
+          const raw = (result.ok ? "" : result.message) ?? "";
+          if (raw) console.warn("[hq-desktop] automatic bot restore failed:", raw);
+          autoRestoreStatus = autoRestoreFailedLine(names, remoteListingNotice);
+          return;
+        }
+        for (const row of result.value.bots ?? []) {
+          if (row.action === "restored" || row.action === "repaired") {
+            noteBotStarted(row.name, row.agentUid);
+            back.push(row.name);
+          } else if (botRestoreRowFailed(row)) {
+            stuck.push(row.name);
+          }
+        }
+      } else {
+        for (const bot of bots) {
+          const result = await adoptOne!(bot.name);
+          if (result.ok) {
+            noteBotStarted(bot.name, bot.agentUid);
+            back.push(bot.name);
+            continue;
+          }
+          const raw = result.message ?? "";
+          if (raw) console.warn("[hq-desktop] automatic bot adopt failed:", raw);
+          stuck.push(bot.name);
+        }
+      }
+      autoRestoreStatus =
+        back.length > 0
+          ? stuck.length > 0
+            ? `${autoRestoreDoneLine(back)} ${autoRestoreFailedLine(stuck, remoteListingNotice)}`
+            : autoRestoreDoneLine(back)
+          : stuck.length > 0
+            ? autoRestoreFailedLine(stuck, remoteListingNotice)
+            : null;
+      await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
+    } catch (err) {
+      // A host that throws must not leave the app claiming it is still working.
+      console.warn("[hq-desktop] automatic bot restore threw:", err);
+      autoRestoreStatus = autoRestoreFailedLine(names, remoteListingNotice);
+    } finally {
+      autoRestoreBusy = false;
+      autoRestoringUids = [];
+    }
+  }
+  /**
+   * A person wrote to a bot that is not running here: bring it back NOW rather
+   * than at the next poll.
+   *
+   * The message is not lost while that happens. `hq dm` puts a message for an
+   * `agt_*` recipient in the agent's OWN durable box inbox server-side
+   * (`GET /v1/notify/inbox`, acked explicitly once read), so it waits there,
+   * unread, until the bot starts and reads it — which is why the send goes
+   * through immediately instead of being held.
+   */
+  function autoRestoreForSend(agentUid: string): boolean {
+    const uid = (agentUid ?? "").trim();
+    if (!uid || !autoRestoreReady) return false;
+    // `autoRestorableBots` is the automatic set, so a bot that is RUNNING on
+    // another computer is not in it — writing to a bot must not take it off
+    // the Mac it is answering on. The conversation says so in one sentence and
+    // keeps the button, which is the person's to press.
+    const bot = autoRestorableBots.find((row) => row.agentUid.trim() === uid);
+    if (!bot) return false;
+    if (autoRestoreBusy || botRestoreBusy || botAdoptBusy) return autoRestoringUids.includes(uid);
+    if (autoRestoreAllowed(autoRestoreAttempts, [bot]).length === 0) return false;
+    // A person writing is a NEWER EVENT than the listing that was already
+    // acted on, so this one goes straight to the restore — no waiting for the
+    // next 120 s listing, which is the whole dead-DM moment.
+    void runAutoRestore([bot]);
+    return true;
+  }
+  const showBotRestorePrompt = $derived(
+    Boolean(adapter.bots?.restore) &&
+      !botRestoreUnavailable &&
+      !botRestoreDismissed &&
+      !botRestoreResult &&
+      // The banner is the FALLBACK now. While the app is bringing the same
+      // bots back by itself, a prompt asking for the click it no longer needs
+      // is the confusion this whole change removes.
+      !autoRestoreHandling &&
+      botsMissingHere.length > 0,
+  );
+  function dismissBotRestorePrompt(): void {
+    botRestoreDismissed = true;
+    rememberBotRestoreDismissed(botMachineMemory);
+  }
+  async function restoreMyBots(): Promise<void> {
+    const restore = adapter.bots?.restore;
+    if (!restore || botRestoreBusy) return;
+    botRestoreBusy = true;
+    botRestoreError = null;
+    const result = await restore({ all: true });
+    botRestoreBusy = false;
+    if (!result.ok || !result.value) {
+      const raw = (result.ok ? "" : result.message) ?? "";
+      if (raw) console.warn("[hq-desktop] bot restore failed:", raw);
+      botRestoreError = plainBotFailure(raw, BOT_RESTORE_FAILED);
+      return;
+    }
+    botRestoreResult = result.value;
+    // Asking counts as answering the prompt: it is not offered again by itself.
+    rememberBotRestoreDismissed(botMachineMemory);
+    for (const row of result.value.bots ?? []) {
+      if (row.action === "restored" || row.action === "repaired") noteBotStarted(row.name, row.agentUid);
+    }
+    await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
+  }
+  /**
+   * One place where a failed start becomes state: it counts against the bot's
+   * budget, a "no such bot" turns into the honest "cannot run here" (which
+   * also ends the thinking row), and the caller gets a written sentence —
+   * never the CLI's or the API's own words.
+   */
+  function applyBotStartFailure(name: string, agentUid: string, raw: string): string {
+    const kind = classifyBotStartFailure(raw);
+    botStartGate = recordBotStartFailure(botStartGate, name, kind);
+    if (kind === "missing") {
+      noteBotCannotRunHere(agentUid);
+      return BOT_NOT_RUNNABLE_HERE;
+    }
+    const sentence = plainBotFailure(raw, botStartFallbackNotice(name));
+    return canStartBot(botStartGate, name) ? sentence : `${sentence} ${BOT_START_NO_MORE_RETRIES}`;
   }
   let directorySettled = $state(false);
   let conversationBootTimedOut = $state(false);
@@ -1523,6 +2360,12 @@
   const welcomeIsBannerOnly = $derived(
     Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupBotLauncher && !setupAgent.active),
   );
+  /**
+   * Where the "bringing your bots back" line lives: at the bottom of the
+   * conversation when there is one, and in the shell's banner slot only when
+   * there is not (the welcome hero, mid-wizard). Never in both.
+   */
+  const autoRestoreStatusInline = $derived(Boolean(selectedRow) && !welcomeIsBannerOnly);
   const inSetupChannelWithAgent = $derived(
     Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupAgent.active),
   );
@@ -1956,6 +2799,22 @@
         ? { ...msg, replyCount: replyCountOverride[msg.eventId] }
         : msg,
     );
+  });
+  /**
+   * The person sent something to a bot that cannot run on this Mac and
+   * nothing has come back. The conversation says that plainly — the message
+   * must not sit under a spinner that will never end.
+   */
+  const botMessageUnanswered = $derived.by(() => {
+    const uid = selectedRow?.kind === "dm" ? (selectedRow.personUid ?? "").trim() : "";
+    if (!uid || !selectedBotCannotRun) return false;
+    const selfUid = self?.uid?.trim() ?? "";
+    for (let i = timeline.length - 1; i >= 0; i -= 1) {
+      const from = (timeline[i]?.fromPersonUid ?? "").trim();
+      if (from && from === uid) return false;
+      if (from && from === selfUid) return true;
+    }
+    return false;
   });
   // ── Project-channel work-mesh activity ───────────────────────────────────
   //
@@ -2999,6 +3858,10 @@
   const canRunEntryPoints = $derived(
     typeof adapter.messaging.runCardAction === "function",
   );
+  /** A cloud bot needs the team action to open its sequence and a card read-back. */
+  const canCreateCloudBots = $derived(
+    canRunEntryPoints && typeof adapter.messaging.runCompanyTabAction === "function",
+  );
 
   /**
    * Companies the roster already knows about, whatever their sync state. Any
@@ -3101,51 +3964,21 @@
     if (uid) changeTenantCompany(uid);
   }
 
-  /** Sidebar / header "New bot" (Cloud): Team tab action, then the company channel. */
-  async function addAgentEntry(companyUid: string): Promise<EntryPointResult> {
-    const result = await runAddAgentEntry(conversationApi, companyUid);
+  /**
+   * New bot → Cloud. Creating a company-hosted bot exists on the server only
+   * as the Team tab's `add_agent` action plus the `create_agent` card's own
+   * turns, so this runs exactly those — headlessly, under the name and handle
+   * the New bot flow just collected. The card is never rendered (it is a
+   * retired timeline kind) and never focused: the person stays in the New bot
+   * flow and lands in the new bot's channel when it is made.
+   */
+  async function createCloudBotEntry(
+    companyUid: string,
+    draft: { name: string; handle: string },
+  ): Promise<EntryPointResult> {
+    const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
     if (result.ok) navigateToEntryTarget(result.target, companyUid);
     return result;
-  }
-
-  /**
-   * Whether the viewer may act on the current company's Team tab. Read from
-   * the tab surface the server sends (its `viewer` is per company), fetched
-   * once per company so the header button is right on the Chat tab too.
-   */
-  let companyTeamCanAct = $state(false);
-  let companyTeamCanActUid: string | null = null;
-  let headerAddAgentBusy = $state(false);
-  let headerAddAgentError = $state<string | null>(null);
-
-  async function loadCompanyTeamCanAct(uid: string): Promise<void> {
-    if (companyTeamCanActUid === uid) return;
-    companyTeamCanActUid = uid;
-    companyTeamCanAct = false;
-    headerAddAgentError = null;
-    const getTab = conversationApi.getCompanyTab;
-    if (!getTab || !conversationApi.runCompanyTabAction) return;
-    try {
-      const parsed = parseCompanyTab(await getTab(uid, "team"));
-      if (companyTeamCanActUid === uid) {
-        companyTeamCanAct = parsed?.viewer.canAct === true;
-      }
-    } catch {
-      if (companyTeamCanActUid === uid) companyTeamCanAct = false;
-    }
-  }
-
-  async function addAgentFromHeader(): Promise<void> {
-    const uid = selectedRow?.companyUid?.trim() ?? "";
-    if (!uid || headerAddAgentBusy) return;
-    headerAddAgentBusy = true;
-    headerAddAgentError = null;
-    try {
-      const result = await addAgentEntry(uid);
-      if (!result.ok) headerAddAgentError = result.reason;
-    } finally {
-      headerAddAgentBusy = false;
-    }
   }
 
   const cardActionKeys: CardActionIdempotencyStore = new Map();
@@ -3205,9 +4038,6 @@
         companyAppearanceName = parsed.appearance.name.trim();
       }
       companyTabData = tabId === "chat" ? companyTabData : parsed;
-      if (tabId === "team" && parsed && companyTeamCanActUid === uid) {
-        companyTeamCanAct = parsed.viewer.canAct === true;
-      }
     } catch {
       if (tabId !== "chat") {
         companyTabData = {
@@ -3226,17 +4056,6 @@
     if (!isCompanyChannel) return;
     const tabId = companyTab;
     void loadCompanyTabSurface(tabId);
-  });
-
-  $effect(() => {
-    if (!isCompanyChannel) {
-      companyTeamCanActUid = null;
-      companyTeamCanAct = false;
-      headerAddAgentError = null;
-      return;
-    }
-    const uid = selectedRow?.companyUid?.trim() ?? "";
-    if (uid) void loadCompanyTeamCanAct(uid);
   });
 
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
@@ -4453,6 +5272,80 @@
   }
 
   /**
+   * An inbound DM wake carries ids only. When that pair's conversation is the
+   * OPEN one, fetch its new page and commit it — otherwise the reply sat
+   * unseen until some other catch-up ran (a healthy mesh only arms the
+   * timeline safety ticker when `shouldArmDirectorySafety` says it is
+   * degraded), while the wake had already torn down the agent's thinking row.
+   * The owner saw a bot's answer announced by a notification and then vanish.
+   */
+  async function applyDmWake(wake: {
+    fromPersonUid: string;
+    eventId?: string;
+    createdAt?: string;
+    direction?: "in" | "out";
+  }): Promise<void> {
+    if (wake.direction === "out") return;
+    const from = (wake.fromPersonUid ?? "").trim();
+    if (!from) return;
+    const row = selectedRow;
+    const peer = (row?.personUid ?? "").trim();
+    const isOpen =
+      !!row && row.kind === "dm" && (peer === from || row.id === `dm:${from}`);
+    // An inbound agent DM ends that agent's thinking row even when its
+    // conversation is not open (the open one clears from its page below, so
+    // its indicator never disappears before the reply is on screen).
+    if (!isOpen) {
+      if (isAgentUid(from)) {
+        clearThinkingFromIncoming(
+          [{ fromPersonUid: from, createdAt: wake.createdAt ?? null }],
+          `dm:${from}`,
+        );
+      }
+      return;
+    }
+    // In-place lifecycle-card updates reuse the same eventId, so an
+    // already-seen id re-reads without `since`; a genuinely new event that is
+    // no newer than what is already rendered is already on screen, and the
+    // wake alone may end the row.
+    const already = timelineHasEvent(liveTimeline, wake.eventId);
+    if (!already) {
+      const wakeAt = (wake.createdAt ?? "").trim();
+      if (
+        wakeAt &&
+        liveTimeline.some((message) => (message.createdAt ?? "") >= wakeAt)
+      ) {
+        if (isAgentUid(from)) {
+          clearThinkingFromIncoming(
+            [{ fromPersonUid: from, createdAt: wake.createdAt ?? null }],
+            row.id,
+          );
+        }
+        return;
+      }
+    }
+    let res: Awaited<ReturnType<typeof adapter.messaging.fetchDmThread>>;
+    try {
+      res = await adapter.messaging.fetchDmThread({
+        withPersonUid: peer || from,
+        limit: 20,
+        ...(already
+          ? {}
+          : { since: sinceForChannelWake(liveTimeline, wake.createdAt) }),
+      });
+    } catch {
+      // Never clear on a failed fetch — a later catch-up ends the row once it
+      // can actually show the reply.
+      return;
+    }
+    if (!res.ok) return;
+    if (selectedRow?.id !== row.id) return;
+    const incoming = messagesForDisplay(res.value);
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value));
+    clearThinkingFromIncoming(incoming, row.id);
+  }
+
+  /**
    * `backfill` fetches the inbox page WITHOUT the stored `since` cursor, so a
    * machine that already holds a cursor still re-reads recent DM history and
    * can stamp older-day rail rows. It deliberately does not advance the
@@ -4557,15 +5450,7 @@
         void applyChannelWake(wake);
       }),
       bus.on("dm:new-message", (wake) => {
-        // An inbound agent DM ends that agent's thinking row even when its
-        // conversation is not open (the open one clears from its page).
-        const from = (wake.fromPersonUid ?? "").trim();
-        if (wake.direction !== "out" && from && isAgentUid(from)) {
-          clearThinkingFromIncoming(
-            [{ fromPersonUid: from, createdAt: wake.createdAt ?? null }],
-            `dm:${from}`,
-          );
-        }
+        void applyDmWake(wake);
         void catchUpDmInbox();
       }),
       bus.on("mesh:catchup", () => {
@@ -4721,7 +5606,16 @@
         // channel, where only an explicit mention wakes an agent). Started
         // before the catch-up below so a page that already carries the reply
         // clears it immediately.
-        if (isAgentUid(row.personUid)) {
+        // A bot that cannot run here will not think about this message, so
+        // no indicator is started for it; the conversation says it is
+        // unanswered instead — unless the app can bring the bot back, in
+        // which case writing to it is what starts that, right now, instead of
+        // at the next 120 s listing. THE DEAD-DM MOMENT MUST BE IMPOSSIBLE
+        // WHILE AUTO-RESTORE IS POSSIBLE.
+        if (isAgentUid(row.personUid) && unrunnableBotUids[row.personUid.trim()]) {
+          autoRestoreForSend(row.personUid);
+        }
+        if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()]) {
           // Pin the row to "newer than the agent's last message" — a local
           // bot's previous reply is usually < 2 min old and would otherwise
           // clear the fresh row on the next catch-up (skew fallback).
@@ -5362,6 +6256,34 @@
     />
   {/if}
 
+  {#if autoRestoreStatus && !autoRestoreStatusInline}
+    <!-- Bots are coming back and there is no conversation pane to say so in
+         (the welcome hero, mid-wizard): one calm line in the shell's banner
+         slot instead, so the work is never silent. -->
+    <div class="bot-auto-restore-banner" data-testid="bot-auto-restore-status" role="status">
+      {autoRestoreStatus}
+    </div>
+  {/if}
+
+  {#if showBotRestorePrompt || botRestoreResult}
+    <!-- Bots come back after a reinstall: one non-blocking prompt, in the
+         shell's existing banner slot so it reaches the person wherever they
+         landed. Dismissal is remembered per machine; Settings › Bots offers
+         it again. -->
+    <BotRestoreBanner
+      count={botsMissingHere.length}
+      liveElsewhere={botsLiveElsewhere.length}
+      busy={botRestoreBusy}
+      result={botRestoreResult}
+      error={botRestoreError}
+      onrestore={() => void restoreMyBots()}
+      ondismiss={() => {
+        botRestoreResult = null;
+        dismissBotRestorePrompt();
+      }}
+    />
+  {/if}
+
   {#if embeddedNavigationError}
     <div
       class="embedded-navigation-error"
@@ -5474,7 +6396,7 @@
           onopenSettings={() => openSettings()}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
-          oncreateagent={canRunEntryPoints ? addAgentEntry : null}
+          oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
           botWorkers={localBotWorkers}
@@ -5483,6 +6405,7 @@
           onbotsignedin={onBotRuntimeSignedIn}
           loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
           {localBots}
+          {ownedLocalBotUids}
           onrows={(rows) => {
             railRows = rows;
             directorySettled = true;
@@ -5608,7 +6531,7 @@
                       </span>
                       <h2 data-testid="channel-name">{headerTitle}</h2>
                       <BotKindChip
-                        kind={botKindFor(selectedRow.personUid, localBots) ?? "cloud"}
+                        kind={botKindFor(selectedRow.personUid, localBots, ownedLocalBotUids) ?? "cloud"}
                         runtime={selectedLocalBot?.runtime ?? null}
                         size="md"
                       />
@@ -5719,28 +6642,6 @@
                   {/each}
                 </nav>
               {:else if isCompanyChannel}
-                {#if companyTeamCanAct}
-                  {#if headerAddAgentError}
-                    <span
-                      class="header-inline-error"
-                      role="alert"
-                      data-testid="company-add-agent-error"
-                    >
-                      {headerAddAgentError}
-                    </span>
-                  {/if}
-                  <button
-                    type="button"
-                    class="header-ghost-btn"
-                    data-testid="company-add-agent"
-                    aria-label={`Add a bot to ${companyHeroTitle}`}
-                    aria-busy={headerAddAgentBusy ? "true" : undefined}
-                    disabled={headerAddAgentBusy}
-                    onclick={() => void addAgentFromHeader()}
-                  >
-                    Add bot
-                  </button>
-                {/if}
                 <CompanyTabs
                   slug={selectedCompanySlug}
                   {onopenurl}
@@ -5966,12 +6867,14 @@
               avatarUrl={avatarByUid[agentChannelLocalBot.agentUid] ?? null}
               {adapter}
               onchanged={refreshLocalBots}
+              onstart={startBotFromProfile}
               onclose={() => void leaveCurrentDestination()}
             />
           {:else if isAgentChannel && agentSurface === "details" && agentChannelUid}
             <AgentDetailPanel
               agentUid={agentChannelUid}
               {localBots}
+              {ownedLocalBotUids}
               displayName={headerTitle}
               avatarUrl={avatarByUid[agentChannelUid] ?? null}
               companyUid={promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid}
@@ -6097,11 +7000,67 @@
                       bot={selectedLocalBot}
                       sessions={adapter.sessions}
                       bots={adapter.bots ?? null}
+                      gate={{
+                        canStart: (bot) => canStartBot(botStartGate, bot.name),
+                        onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
+                      }}
                       ondone={refreshLocalBots}
                     />
                   {/if}
                   <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
+                  {#if botMessageUnanswered}
+                    {#if selectedBotAutoRestoring}
+                      <!-- Writing to a bot that is not running here is what
+                           STARTS it now. The message is not lost meanwhile:
+                           it waits, unread, in the bot's own durable inbox
+                           until the bot reads it. -->
+                      <div class="bot-unanswered" data-testid="bot-message-starting" role="status">
+                        {AUTO_RESTORE_STARTING_THIS_BOT}
+                      </div>
+                    {:else}
+                      <!-- The app has stopped trying by itself, so this is the
+                           honest state — and it is never a dead end: the one
+                           action that helps is in the same line. -->
+                      <div class="bot-unanswered" data-testid="bot-message-unanswered" role="status">
+                        <span>{BOT_MESSAGE_NOT_ANSWERED}</span>
+                        {#if selectedBotNotHere && adapter.bots?.adopt && !botRestoreUnavailable}
+                          <button
+                            type="button"
+                            class="bot-unanswered-action"
+                            data-testid="bot-message-start-here"
+                            disabled={botAdoptBusy !== null}
+                            onclick={() => void startSelectedBotHere()}
+                          >
+                            {botAdoptBusy === selectedBotNotHere.name
+                              ? BOT_START_HERE_BUSY
+                              : BOT_MESSAGE_START_HERE}
+                          </button>
+                        {:else}
+                          <!-- Nothing on this Mac can run it, so "start it
+                               here" would be a promise the app cannot keep.
+                               Looking again is the one thing that can still
+                               change, and it stays in the same line. -->
+                          <button
+                            type="button"
+                            class="bot-unanswered-action"
+                            data-testid="bot-message-recheck"
+                            disabled={botRecheckBusy}
+                            onclick={() => void recheckSelectedBot()}
+                          >
+                            {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
+                          </button>
+                        {/if}
+                      </div>
+                    {/if}
+                  {/if}
                   <AgentTaskStrip tasks={mainPaneTasks} />
+                  {#if autoRestoreStatus && !selectedBotAutoRestoring}
+                    <!-- The one visible, calm line while bots come back. -->
+                    <div class="bot-auto-restore" data-testid="bot-auto-restore-status" role="status">
+                      {autoRestoreStatus}
+                    </div>
+                  {/if}
+                  {#if botNoticeBelow}{@render localBotNotice()}{/if}
                 {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
@@ -6139,24 +7098,92 @@
                       phase={selectedBotProgress.state}
                       reason={selectedBotProgress.reason}
                       retrying={selectedBotProgress.retrying}
+                      canRetry={canStartBot(botStartGate, selectedBotProgress.name)}
                       onretry={() => void retryBotProgress(uid)}
                     />
                   {/if}
                 {/snippet}
-                {#snippet localBotHeader()}
-                  {#if selectedLocalBot && selectedLocalBotOffline}
-                    <div class="local-bot-notice" data-testid="local-bot-offline-notice" role="status">
-                      <span class="local-bot-notice-text">{localBotOfflineNotice(selectedLocalBot)}</span>
-                      {#if !selectedLocalBot.processAlive && !selectedLocalBot.promotionHold}
+                {#snippet localBotNotice()}
+                  {#if selectedBotCannotRun}
+                    <!-- Adopted, but there is no runtime for it here. One
+                         honest sentence and the one action the desktop can
+                         actually perform: look again. -->
+                    <div class="local-bot-notice" data-testid="bot-not-runnable-notice" role="status">
+                      <span class="local-bot-notice-text">{selectedBotCannotRun}</span>
+                      {#if selectedBotNotHere && adapter.bots?.adopt && !botRestoreUnavailable}
+                        <!-- The account owns this bot, so there IS something
+                             the desktop can do: bring it back here. Its name,
+                             memory and this conversation come with it. -->
                         <button
                           type="button"
                           class="local-bot-notice-start"
-                          data-testid="local-bot-start"
-                          disabled={localBotBusy === selectedLocalBot.name}
-                          onclick={() => void startSelectedLocalBot()}
+                          data-testid="bot-start-here"
+                          disabled={botAdoptBusy !== null}
+                          onclick={() => void startSelectedBotHere()}
                         >
-                          {localBotBusy === selectedLocalBot.name ? "Starting…" : "Start"}
+                          {botAdoptBusy === selectedBotNotHere.name
+                            ? BOT_START_HERE_BUSY
+                            : botAdoptError
+                              ? BOT_START_HERE_RETRY
+                              : BOT_START_HERE}
                         </button>
+                        <span class="local-bot-notice-hint">{BOT_START_HERE_EXPLAINER}</span>
+                      {:else if remoteListingNotice}
+                        <!-- Bringing a bot back goes through HQ Cloud, and the
+                             app could not read it. Rather than a button that
+                             cannot work (or silence, which is what the owner's
+                             VM got), one plain sentence says why — and "Check
+                             again" below still re-reads this Mac's own bots,
+                             which is the half that can change without HQ. -->
+                        <span class="local-bot-notice-hint" data-testid="bot-restore-unavailable">
+                          {remoteListingNotice}
+                        </span>
+                      {/if}
+                      <button
+                        type="button"
+                        class="local-bot-notice-start"
+                        data-testid="bot-not-runnable-recheck"
+                        disabled={botRecheckBusy}
+                        onclick={() => void recheckSelectedBot()}
+                      >
+                        {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
+                      </button>
+                      {#if botAdoptError}
+                        <span class="local-bot-notice-error" role="alert" data-testid="bot-start-here-error">
+                          {botAdoptError}
+                        </span>
+                      {/if}
+                    </div>
+                  {:else if selectedLocalBot && selectedLocalBotOffline}
+                    <div class="local-bot-notice" data-testid="local-bot-offline-notice" role="status">
+                      <span class="local-bot-notice-text">{localBotOfflineNotice(selectedLocalBot)}</span>
+                      {#if !selectedLocalBot.processAlive && !selectedLocalBot.promotionHold}
+                        {#if canStartBot(botStartGate, selectedLocalBot.name)}
+                          <button
+                            type="button"
+                            class="local-bot-notice-start"
+                            data-testid="local-bot-start"
+                            disabled={localBotBusy === selectedLocalBot.name}
+                            onclick={() => void startSelectedLocalBot()}
+                          >
+                            {localBotBusy === selectedLocalBot.name ? "Starting…" : "Start"}
+                          </button>
+                        {:else}
+                          <!-- The gate is closed, so nothing is re-issued by
+                               itself. A person asking still counts as consent
+                               to look once more — the same one-listing recheck
+                               the "cannot run here" notice offers, so a blocked
+                               bot is never a dead end inside its own DM. -->
+                          <button
+                            type="button"
+                            class="local-bot-notice-start"
+                            data-testid="local-bot-recheck"
+                            disabled={botRecheckBusy}
+                            onclick={() => void recheckSelectedBot()}
+                          >
+                            {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
+                          </button>
+                        {/if}
                       {/if}
                       {#if localBotActionError}
                         <span class="local-bot-notice-error" role="alert">{localBotActionError}</span>
@@ -6214,11 +7241,9 @@
                     ? setupHeader
                     : isCompanyChannel
                       ? companyHeader
-                      : selectedBotProgress
+                      : selectedBotProgress && !(selectedBotCannotRun && !selectedBotAdopting)
                         ? botProgressHeader
-                        : selectedLocalBot && selectedLocalBotOffline
-                          ? localBotHeader
-                          : undefined}
+                        : undefined}
                   belowMessages={agentThinkingBelow}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
@@ -6254,6 +7279,7 @@
                       null}
                     {adapter}
                     onchanged={refreshLocalBots}
+                    onstart={startBotFromProfile}
                     onclose={closeAgentDetail}
                   />
                 </div>
@@ -6267,6 +7293,7 @@
                   <AgentDetailPanel
                     agentUid={openAgentMember.personUid}
                     {localBots}
+                    {ownedLocalBotUids}
                     displayName={openAgentMember.displayName}
                     avatarUrl={openAgentMember.avatarUrl ??
                       avatarByUid[openAgentMember.personUid] ??
@@ -6814,59 +7841,6 @@
     margin-left: auto;
   }
 
-  /* 28px ghost button: same control scale as the tab-row actions. */
-  .header-ghost-btn {
-    appearance: none;
-    -webkit-appearance: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    height: 28px;
-    min-height: 28px;
-    padding: 0 10px;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    background: var(--btn-bg);
-    color: var(--t1);
-    /* Longhands, not the `font:` shorthand: `inherit` is not a valid
-       font-family inside it, so the whole declaration was dropped and this
-       button rendered in the UA default (Arial 13.3px/400) beside 12px/500
-       Geist tabs. */
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    line-height: 1;
-    cursor: pointer;
-    white-space: nowrap;
-    transition:
-      border-color 0.12s ease,
-      background-color 0.12s ease;
-  }
-
-  .header-ghost-btn:hover {
-    border-color: var(--line2);
-  }
-
-  .header-ghost-btn:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-
-  .header-ghost-btn:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--t1));
-    outline-offset: 2px;
-  }
-
-  .header-inline-error {
-    color: var(--danger, #e5484d);
-    font-size: 12px;
-    max-width: 260px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .edit-profile-btn {
     appearance: none;
     -webkit-appearance: none;
@@ -7034,8 +8008,54 @@
     opacity: 0.5;
     cursor: default;
   }
+  .local-bot-notice-hint {
+    flex-basis: 100%;
+    color: var(--t2);
+    opacity: 0.85;
+  }
   .local-bot-notice-error {
     flex-basis: 100%;
     color: var(--danger, #d05f5f);
+  }
+  .bot-unanswered {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 16px 8px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  /* The way out lives IN the line, not in a card the person has to find. */
+  .bot-unanswered-action {
+    font: inherit;
+    font-weight: 600;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent, var(--t1));
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .bot-unanswered-action:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .bot-auto-restore {
+    margin: 4px 16px 8px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .bot-auto-restore-banner {
+    margin: 8px 16px;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line2);
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
   }
 </style>

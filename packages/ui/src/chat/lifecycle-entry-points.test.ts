@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CREATE_COMPANY_ROSTER_SYNCING_REASON,
   findLifecycleCardElement,
-  runAddAgentEntry,
   runCreateCompanyEntry,
 } from "./lifecycle-entry-points.js";
 import type { CardActionResult } from "./chat-api.js";
@@ -100,77 +99,6 @@ describe("runCreateCompanyEntry", () => {
       reason: "Only owners can create companies",
       blocked: true,
     });
-  });
-});
-
-describe("runAddAgentEntry", () => {
-  it("runs the Team tab spend-row action and lands on the returned card", async () => {
-    const runCompanyTabAction = vi.fn(async () =>
-      done({ cardId: "card_create_agent_1", channelId: "chn_ramen_bae", state: "open" }),
-    );
-    const result = await runAddAgentEntry(
-      { runCardAction: vi.fn(), runCompanyTabAction },
-      "cmp_ramen_bae",
-    );
-    expect(runCompanyTabAction).toHaveBeenCalledWith({
-      companyUid: "cmp_ramen_bae",
-      tab: "team",
-      cardId: "team:spend",
-      actionId: "add_agent",
-      values: {},
-      idempotencyKey: undefined,
-    });
-    expect(result).toEqual({
-      ok: true,
-      target: {
-        channelId: "chn_ramen_bae",
-        cardId: "card_create_agent_1",
-        cardKind: null,
-      },
-    });
-  });
-
-  it("reports a blocked permission result inline", async () => {
-    const runCompanyTabAction = vi.fn(async () =>
-      done({
-        cardId: "team:spend",
-        state: "blocked",
-        reason: "Only owners can add agents.",
-      }),
-    );
-    const result = await runAddAgentEntry(
-      { runCardAction: vi.fn(), runCompanyTabAction },
-      "cmp_ramen_bae",
-    );
-    expect(result).toEqual({
-      ok: false,
-      reason: "Only owners can add agents.",
-      blocked: true,
-    });
-  });
-
-  it("treats a thrown forbidden error as blocked and strips the code", async () => {
-    const runCompanyTabAction = vi.fn(async () => {
-      throw new Error("[forbidden] Only owners can change this");
-    });
-    const result = await runAddAgentEntry(
-      { runCardAction: vi.fn(), runCompanyTabAction },
-      "cmp_ramen_bae",
-    );
-    expect(result).toEqual({
-      ok: false,
-      reason: "Only owners can change this",
-      blocked: true,
-    });
-  });
-
-  it("refuses without a company or without the tab seam", async () => {
-    const api = { runCardAction: vi.fn(), runCompanyTabAction: vi.fn() };
-    expect((await runAddAgentEntry(api, "  ")).ok).toBe(false);
-    expect(
-      (await runAddAgentEntry({ runCardAction: vi.fn() }, "cmp_x")).ok,
-    ).toBe(false);
-    expect(api.runCompanyTabAction).not.toHaveBeenCalled();
   });
 });
 

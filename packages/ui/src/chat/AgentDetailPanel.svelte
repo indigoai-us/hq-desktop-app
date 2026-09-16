@@ -49,6 +49,8 @@
     onclose?: () => void;
     /** The user's local bots — tells the Cloud / Local chip which is which. */
     localBots?: ReadonlyArray<LocalBotRow> | null;
+    /** Their own local bots that nothing here can run: local, not `Cloud`. */
+    ownedLocalBotUids?: readonly string[] | null;
   }
 
   let {
@@ -68,6 +70,7 @@
     onsaveavatar,
     onclose,
     localBots = null,
+    ownedLocalBotUids = null,
   }: Props = $props();
 
   let header = $state<AgentDetailHeader>(
@@ -356,7 +359,7 @@
           BOT · {header.status}
         </p>
         <BotKindChip
-          kind={botKindFor(header.uid, localBots) ?? "cloud"}
+          kind={botKindFor(header.uid, localBots, ownedLocalBotUids) ?? "cloud"}
           runtime={localBots?.find((b) => b.agentUid === header.uid)?.runtime ?? null}
           size="md"
          variant="label" />

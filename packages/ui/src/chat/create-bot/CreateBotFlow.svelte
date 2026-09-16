@@ -5,23 +5,28 @@
    * pane). Owns the draft; the host owns the busy/error state because it
    * runs the create and navigates.
    *
-   * Cloud drafts end at the home step and hand off to `onCloudCreate`
-   * (today's company team action). Local drafts continue to details and
-   * hand `oncreate` the CLI input plus the avatar pick, which the host saves
-   * once the bot exists. Cmd-Enter creates from any step once every walked
-   * step is valid.
+   * Both homes walk all three steps. A Cloud draft's details step collects
+   * the name and @handle the company channel's retired card used to ask for,
+   * and hands them to `onCloudCreate` (today's company team action). Local
+   * drafts hand `oncreate` the CLI input plus the avatar pick, which the host
+   * saves once the bot exists. Cmd-Enter creates from any step once every
+   * walked step is valid — except on a Cloud draft, where it moves to the
+   * next step until the details step is reached, so a company bot is never
+   * made under a name nobody has seen.
    */
   import { untrack } from "svelte";
   import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
   import type { AvatarPack, AvatarSelection } from "../../avatars/types.js";
   import type { LocalBotEntryResult } from "../local-bots.js";
   import BotPreviewCard from "./BotPreviewCard.svelte";
+  import CloudDetailsStep from "./CloudDetailsStep.svelte";
   import DetailsStep from "./DetailsStep.svelte";
   import HomeStep from "./HomeStep.svelte";
   import KindStep from "./KindStep.svelte";
   import type { RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import {
     STEP_TITLES,
+    botHandle,
     canAdvance,
     canCreate,
     companyTemplates,
@@ -54,7 +59,7 @@
     /** The owner's companies (slugs) a Local company bot can belong to. */
     botCompanies?: ReadonlyArray<{ slug: string; label: string }> | null;
     /** Cloud: the host runs the company team action and navigates. */
-    onCloudCreate?: ((companyUid: string) => void | Promise<void>) | null;
+    onCloudCreate?: ((companyUid: string, draft: { name: string; handle: string }) => void | Promise<void>) | null;
     /** Local: the host creates through the CLI and opens the DM. */
     oncreate?: ((input: LocalBotCreateInput, extras: CreateBotExtras) => void | Promise<LocalBotEntryResult | void>) | null;
     /** Back from the first step (the host returns to its previous view). */
@@ -165,8 +170,6 @@
       const slug = templateCard(templates.find((t) => t.id === p.templateId) ?? { id: p.templateId, path: "" }).company;
       if (slug && ownerCompanies.some((c) => c.slug === slug)) draft = { ...draft, scope: "company", companySlugs: [slug] };
     }
-    // A Cloud draft has no details step: never strand the user there.
-    if (draft.home === "cloud" && step === "details") step = "home";
   }
 
   function goTo(next: CreateBotStep): void {
@@ -194,7 +197,9 @@
       return;
     }
     if (draft.home === "cloud") {
-      if (draft.companyUid) await onCloudCreate?.(draft.companyUid);
+      if (draft.companyUid) {
+        await onCloudCreate?.(draft.companyUid, { name: draft.name.trim(), handle: botHandle(draft) });
+      }
       return;
     }
     await oncreate?.(toCreateInput(draft), draft.avatar ? { avatar: draft.avatar } : {});
@@ -210,10 +215,18 @@
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       event.preventDefault();
       event.stopPropagation();
-      // `submit` is the gate: it creates only when every walked step is valid,
-      // and otherwise moves the user to the step that still needs them rather
-      // than swallowing the keystroke.
-      if (!busy) void submit();
+      if (busy) return;
+      // A cloud bot is named on the details step, and nothing is created
+      // until the person has seen that name — so from an earlier step the
+      // shortcut takes them there rather than creating under the suggestion.
+      if (draft.home === "cloud" && !isLast && advanceOk) {
+        advance();
+        return;
+      }
+      // Otherwise `submit` is the gate: it creates only when every walked
+      // step is valid, and otherwise moves the user to the step that still
+      // needs them rather than swallowing the keystroke.
+      void submit();
       return;
     }
     if (event.key === "Enter" && !isLast && advanceOk) {
@@ -230,11 +243,11 @@
     entryBusy === "bot"
       ? "Creating… (about half a minute)"
       : entryBusy === "agent"
-        ? "Opening…"
+        ? "Creating…"
         : !isLast
           ? "Next"
           : draft.home === "cloud"
-            ? `Continue in ${cloudCompany?.label ?? "the company"}`
+            ? `Create in ${cloudCompany?.label ?? "the company"}`
             : "Create bot",
   );
 </script>
@@ -265,6 +278,7 @@
       <BotPreviewCard
         placement="top"
         name={draft.name}
+        handle={draft.home === "cloud" ? botHandle(draft) : ""}
         home={draft.home}
         runtime={draft.runtime}
         thinksWith={thinksWithLine(draft, ctx)}
@@ -291,6 +305,13 @@
           onsignin={onsignin ?? undefined}
           onsignedin={onsignedin ?? undefined}
           {pollMs}
+        />
+      {:else if draft.home === "cloud"}
+        <CloudDetailsStep
+          {draft}
+          companyLabel={cloudCompany?.label ?? "your company"}
+          disabled={busy}
+          onpatch={patch}
         />
       {:else}
         <DetailsStep
@@ -334,6 +355,7 @@
       <BotPreviewCard
         placement="rail"
         name={draft.name}
+        handle={draft.home === "cloud" ? botHandle(draft) : ""}
         home={draft.home}
         runtime={draft.runtime}
         thinksWith={thinksWithLine(draft, ctx)}

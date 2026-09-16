@@ -1099,6 +1099,79 @@ export interface LocalBotRow {
   runtimeSignIn?: LocalBotRuntimeSignIn | null;
 }
 
+/**
+ * A local bot this ACCOUNT owns, as `hq bot list --remote --json` reports it.
+ *
+ * `hq bot list` only knows this computer. A reinstall, a wiped `~/.hq`, or a
+ * second Mac leaves the cloud half of a bot intact and the local half gone, so
+ * the local listing is empty while the person still owns the bot — which is
+ * how a bot's DM came to sit under a spinner for 41 s while its own setup said
+ * it could not run here. `here` is the flag that tells the two apart.
+ */
+export interface RemoteBotRow {
+  /** Local folder name (what `adopt`/`start` take). */
+  name: string;
+  agentUid: string;
+  /** `personal` | `company`, as the cloud record has it. */
+  kind: string;
+  online: boolean;
+  lastHeartbeatAt: string | null;
+  /** True when this bot is set up on THIS computer. */
+  here: boolean;
+  /**
+   * True when THIS computer could run the bot at all.
+   *
+   * A company bot's identity lives in HQ Cloud and its runtime refuses to
+   * start as a personal local bot, so bringing it "back" to a Mac creates
+   * credentials, a state directory and a startup agent for something that can
+   * never run (round 4, Defect 7). Absent on a CLI that does not send it yet
+   * — `remoteBotRunnableHere` falls back to `kind` then.
+   */
+  runnable?: boolean;
+  /**
+   * Why `runnable` is false, as the CLI names it (`company-bot`, and
+   * `not-runnable-here` from a refused adopt/restore). Never rendered: it
+   * selects one of the app's own written sentences.
+   */
+  reason?: string;
+  /** One-line description of the settings it would come back with. */
+  settings: string;
+}
+
+/** One bot's outcome in `hq bot restore --json`. */
+export interface BotRestoreRow {
+  name: string;
+  agentUid: string;
+  /** `restored` = brought back here; `repaired` = new credentials for one already here. */
+  action:
+    | "restored"
+    | "repaired"
+    | "skipped"
+    | "failed"
+    | "would-restore"
+    | "would-repair"
+    | "would-skip";
+  /** The CLI's own words — logged and counted, never rendered verbatim. */
+  detail: string;
+  /**
+   * Machine-readable reason for a row the CLI refused (`not-runnable-here`
+   * for a company bot). Absent on a CLI that does not send it yet; it selects
+   * one of the app's own written sentences, and is never rendered.
+   */
+  reason?: string;
+}
+
+/** `hq bot restore [--all] --json`. */
+export interface BotRestoreResult {
+  ok: boolean;
+  dryRun: boolean;
+  restored: number;
+  repaired: number;
+  skipped: number;
+  failed: number;
+  bots: BotRestoreRow[];
+}
+
 /** `hq bot create --kind`: personal bots act as the owner; company bots act as themselves. */
 export type LocalBotKind = "personal" | "company";
 
@@ -1166,6 +1239,24 @@ export interface LocalBotsApi {
    */
   configure?(name: string, settings: LocalBotSettingsInput): AdapterPromise<Json>;
   promote?(name: string, companyUid: string): AdapterPromise<Json>;
+  /**
+   * The local bots this ACCOUNT owns, each flagged `here` or not
+   * (`hq bot list --remote`). The one source of truth for "the person owns
+   * this bot and this computer cannot run it". Optional: older hosts and the
+   * web build have no such command, and callers fall back to the local list.
+   */
+  listRemote?(): AdapterPromise<{ bots: RemoteBotRow[] }>;
+  /**
+   * Bring ONE owned bot back to this computer and start it
+   * (`hq bot adopt <name>`): new machine credentials, its saved settings, its
+   * worker folder and startup agent. Optional for older hosts.
+   */
+  adopt?(name: string): AdapterPromise<Json>;
+  /**
+   * Bring back EVERY owned bot that is not set up here (`hq bot restore`);
+   * `all` additionally repairs the ones that are. Optional for older hosts.
+   */
+  restore?(options?: { all?: boolean }): AdapterPromise<BotRestoreResult>;
 }
 
 /** Input to `LocalBotsApi.configure`. */

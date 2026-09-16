@@ -53,6 +53,7 @@ function mountPanel(props: {
   onopenurl?: (url: string) => void;
   onclose?: () => void;
   onchanged?: () => void;
+  onstart?: (bot: LocalBotRow) => Promise<{ ok: boolean; reason: string | null }>;
 }) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -65,6 +66,7 @@ function mountPanel(props: {
       adapter: { bots: props.bots },
       onclose: props.onclose,
       onchanged: props.onchanged,
+      onstart: props.onstart ?? null,
     },
   });
 }
@@ -140,6 +142,34 @@ describe("LocalBotDetailPanel", () => {
     await vi.waitFor(() => expect(bots.stop).toHaveBeenCalledWith("assistant"));
     await vi.waitFor(() => expect(onchanged).toHaveBeenCalledTimes(1));
     expect(q('[data-testid="local-bot-detail-error"]')).toBeNull();
+  });
+
+  it("starts through the host so the start obeys the same gate as everywhere else", async () => {
+    // A start here used to call adapter.bots.start directly, which left the
+    // host's "cannot run here" state up for a bot that was now running.
+    const bots = botsApi();
+    const onstart = vi.fn(async () => ({ ok: true, reason: null }));
+    const onchanged = vi.fn();
+    mountPanel({ bot: bot({ processAlive: false, state: "stopped", online: false }), bots, onchanged, onstart });
+    await tick();
+    q<HTMLButtonElement>('[data-testid="local-bot-detail-start"]')!.click();
+    await vi.waitFor(() => expect(onstart).toHaveBeenCalledTimes(1));
+    expect(bots.start).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(onchanged).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows the host's written reason when the host refuses the start", async () => {
+    const bots = botsApi();
+    const onstart = vi.fn(async () => ({ ok: false, reason: "Could not start assistant on this computer." }));
+    mountPanel({ bot: bot({ processAlive: false, state: "stopped", online: false }), bots, onstart });
+    await tick();
+    q<HTMLButtonElement>('[data-testid="local-bot-detail-start"]')!.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="local-bot-detail-error"]')?.textContent).toContain(
+        "Could not start assistant",
+      ),
+    );
+    expect(bots.start).not.toHaveBeenCalled();
   });
 
   it("surfaces a failed action without closing", async () => {

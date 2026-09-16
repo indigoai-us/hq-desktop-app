@@ -18,6 +18,8 @@
 
 import type { LocalBotRow } from "@hq/platform";
 
+import { isAgentUid } from "./agent-thinking.js";
+
 /**
  * FALLBACK FLAG (one build only). `true` = Run Setup creates the setup bot.
  * Flip to `false` to put the old scripted `/setup` session back in charge
@@ -107,6 +109,22 @@ export const SETUP_BOT_NO_RUNTIME =
 /** The host has no bots group at all (web build). */
 export const SETUP_BOT_UNAVAILABLE = "The setup bot is only available in the HQ desktop app.";
 
+/**
+ * Last-resort wording. Every start failure is mapped to a written sentence
+ * before it reaches a person; nothing from the API or the CLI is ever shown
+ * (see `plainBotFailure`).
+ */
+export const SETUP_BOT_GENERIC_FAILURE = "Could not start your setup bot. Please try again.";
+
+/**
+ * The account already owns a setup bot (the create came back "already
+ * exists") but this Mac cannot find its conversation yet — the entity lives in
+ * the cloud from an earlier install or another computer and the DM roster has
+ * not caught up. Says what is true, and what to do, in the person's words.
+ */
+export const SETUP_BOT_ALREADY_ELSEWHERE =
+  "Your account already has a setup bot from another computer. It shows up in your messages once HQ catches up — open it there to carry on.";
+
 /** Runtimes the setup bot may run under, in the order it prefers them. */
 export const SETUP_BOT_RUNTIME_ORDER: ReadonlyArray<LocalBotRow["runtime"]> = ["claude", "codex", "grok"];
 
@@ -144,6 +162,50 @@ export function findSetupBot(bots: readonly LocalBotRow[] | null | undefined): S
   return bot && bot.agentUid.trim() ? { agentUid: bot.agentUid.trim(), name: bot.name } : null;
 }
 
+/** Tolerant reader for a contacts payload: `[…]` or `{ contacts: […] }`. */
+function contactRows(value: unknown): Record<string, unknown>[] {
+  const rows = Array.isArray(value)
+    ? value
+    : value && typeof value === "object" && Array.isArray((value as { contacts?: unknown }).contacts)
+      ? (value as { contacts: unknown[] }).contacts
+      : [];
+  return rows.filter((row): row is Record<string, unknown> => !!row && typeof row === "object");
+}
+
+function trimmedField(row: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+/**
+ * The account's setup bot as the CLOUD sees it, read off the DM roster
+ * (`GET /v1/notify/contacts`).
+ *
+ * `hq bot list` only knows THIS Mac. Wipe the local state and keep the same
+ * HQ account — a reinstall, or setting HQ up on a second Mac — and the local
+ * list is empty while the account still owns the agent entity, so a create
+ * comes back 409 "already exists". The roster is the one cloud-side view of a
+ * person's own bots the desktop already has; the hq CLI exposes no "list my
+ * remote bots" and no adopt call today.
+ *
+ * Matching is deliberately strict — an `agt_` uid whose display name is
+ * exactly the reserved `setup` name. Personal bots join no company, so a
+ * teammate's own setup bot is not on this roster and cannot be adopted here.
+ */
+export function findSetupBotContact(value: unknown): SetupBotRef | null {
+  for (const row of contactRows(value)) {
+    const uid = trimmedField(row, "personUid", "uid", "agentUid");
+    if (!uid || !isAgentUid(uid)) continue;
+    const name = trimmedField(row, "displayName", "name");
+    if (name.toLowerCase() !== SETUP_BOT_NAME) continue;
+    return { agentUid: uid, name };
+  }
+  return null;
+}
+
 /**
  * The runtime a new setup bot should think with: the first signed-in one, in
  * preference order. Null when the host has not answered yet or nothing is
@@ -155,6 +217,33 @@ export function firstSignedInRuntime(
 ): LocalBotRow["runtime"] | null {
   if (!ready) return null;
   return SETUP_BOT_RUNTIME_ORDER.find((runtime) => ready[runtime] === true) ?? null;
+}
+
+/**
+ * One start at a time.
+ *
+ * #welcome's automatic first-open start, its Run Setup button and Home's setup
+ * card all call the same `SetupBotLauncher.start()`, and each surface only
+ * disables its own button — so two of them can each issue their own
+ * `hq bot create setup`. The owner's VM log caught exactly that: two creates
+ * 1.3 s apart, the second answered 409 by the cloud.
+ *
+ * Wrapping the host's start in this gate makes a second caller await the
+ * first's result and receive it, instead of starting a second run. The gate
+ * opens again as soon as the run settles, so Retry still works.
+ */
+export function singleFlightStart(
+  start: () => Promise<SetupBotStart>,
+): () => Promise<SetupBotStart> {
+  let inFlight: Promise<SetupBotStart> | null = null;
+  return () => {
+    if (inFlight) return inFlight;
+    const run = start().finally(() => {
+      if (inFlight === run) inFlight = null;
+    });
+    inFlight = run;
+    return run;
+  };
 }
 
 /** Label for the one primary action on #welcome / the Home setup card. */

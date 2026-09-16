@@ -47,10 +47,19 @@
     type LaunchKind,
   } from '../../lib/onboarding-summary';
   import {
+    activeStageId,
     allSettled,
     buildInitialStages,
     buildStagesFromManifest,
+    countSettledStages,
+    createSetupProgressTracker,
     friendlySetupBands,
+    contentProgressSubStatus,
+    resetSetupProgressTracker,
+    setupRetryAttempt,
+    setupSubStatus,
+    stageCreepAt,
+    trackSetupProgress,
     createSetupRunId,
     normalizeFailedStageIds,
     reuseInFlightOperation,
@@ -66,6 +75,8 @@
     STAGE_ORDER,
     withTimeout,
     type InstallManifest,
+    type SetupRetryAttempt,
+    type SetupStageRecoveryAction,
     type StageId,
     type StageState,
   } from '../../lib/onboarding-setup';
@@ -248,6 +259,29 @@
   let setupCompleted = $state(false);
   let setupStarted = $state(false);
   let stageCreep = $state(0);
+  // How long the stage that is running right now has been running. Drives both
+  // the ring's creep and the sub-status line under the active band, so a long
+  // stage never reads as frozen.
+  let stageElapsedMs = $state(0);
+  /** Real backend progress text for the running stage, when one was reported. */
+  let stageDetail = $state<string | null>(null);
+  /** Set while the active stage waits for its automatic next attempt. */
+  let setupRetry = $state<{ stageId: StageId; attempt: SetupRetryAttempt } | null>(
+    null,
+  );
+  // One high-water mark per visit to the setup step. Shown progress is read
+  // through it so a retry or a rebuilt stage list can never walk it backward.
+  const setupProgressTracker = createSetupProgressTracker();
+  /**
+   * The run that currently owns the start guard, or 0 when none does.
+   *
+   * It holds the run id rather than a bare boolean so a restart can TAKE the
+   * guard from a run that is still unwinding. A cancelled run keeps awaiting
+   * its current stage for as long as that stage's timeout (minutes), and
+   * dropping the restart on the floor left the setup screen at 0% with
+   * nothing running and no way back.
+   */
+  let inFlightRunId = 0;
   let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
   let currentSetupRunId = '';
@@ -363,15 +397,10 @@
   const topHeight = $derived(
     currentStep >= TRUST_STEP_INDEX ? '240px' : currentStep === CONSENT_STEP_INDEX ? '130px' : '200px',
   );
-  const settledCount = $derived(
-    stages.filter((stage) => stage.status === 'ok' || stage.status === 'failed')
-      .length,
-  );
-  const currentStageId = $derived(
-    stages.find((stage) => stage.status === 'running')?.id ?? null,
-  );
+  const settledCount = $derived(countSettledStages(stages));
+  const currentStageId = $derived(activeStageId(stages));
   const setupDone = $derived(allSettled(stages));
-  const overallPercent = $derived(
+  const rawOverallPercent = $derived(
     setupProgressPercent({
       settledCount,
       totalStages: STAGE_ORDER.length,
@@ -380,10 +409,25 @@
       allDone: setupDone,
     }),
   );
+  // Everything user-facing reads the tracked value, never the raw one.
+  const overallPercent = $derived(
+    trackSetupProgress(setupProgressTracker, rawOverallPercent),
+  );
   const ringOffset = $derived(
     RING_CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, overallPercent)) / 100),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
+  const setupSubStatusModel = $derived(
+    setupSubStatus({
+      stageId: currentStageId,
+      elapsedMs: stageElapsedMs,
+      detail: stageDetail,
+      retry:
+        setupRetry && setupRetry.stageId === currentStageId
+          ? setupRetry.attempt
+          : null,
+    }),
+  );
   const userFacingInstallPath = $derived(
     installPath ? toUserFacingPath(installPath) : null,
   );
@@ -442,18 +486,26 @@
     return () => window.clearInterval(intervalId);
   });
 
+  // One ticker per active stage. It advances the ring's creep AND the elapsed
+  // clock the sub-status line reads, so the percent keeps moving and the copy
+  // under the active band keeps changing for as long as the stage runs. A
+  // stage stays active across its auto-retry, so the clock and the creep carry
+  // on rather than restarting from zero on every attempt.
   $effect(() => {
     const activeId = currentStageId;
     const done = setupDone;
-    let creep = 0;
-    stageCreep = creep;
+    stageCreep = 0;
+    stageElapsedMs = 0;
+    stageDetail = null;
 
     if (done || activeId === null) return;
 
+    const startedAt = Date.now();
     const interval = window.setInterval(() => {
-      creep += (0.92 - creep) * 0.14;
-      stageCreep = creep;
-    }, 1200);
+      const elapsed = Date.now() - startedAt;
+      stageElapsedMs = elapsed;
+      stageCreep = stageCreepAt(elapsed);
+    }, 1000);
 
     return () => {
       window.clearInterval(interval);
@@ -875,6 +927,10 @@
     currentRunId += 1;
     currentSetupRunId = createSetupRunId();
     setupCancelled = false;
+    setupRetry = null;
+    // Supersession: the previous run may have left a stage mid-retry. This
+    // run owns the list now, so nothing may still be waiting on that retry.
+    stages = resetRetryingStages(stages);
     activeInstallHandles.clear();
     activeContentHandles.clear();
     return currentRunId;
@@ -934,6 +990,12 @@
 
     if (handle && payload.phase === 'complete') {
       activeContentHandles.delete(handle);
+    }
+
+    // The template download is the one stage that reports genuine progress;
+    // show it verbatim instead of the written sub-steps while it runs.
+    if (currentStageId === 'content') {
+      stageDetail = contentProgressSubStatus(payload);
     }
   }
 
@@ -1054,7 +1116,12 @@
     }
   }
 
-  type StageRunOutcome = 'ok' | 'failed' | 'cancelled';
+  type StageRunResult =
+    | { outcome: 'ok' }
+    | { outcome: 'cancelled' }
+    | { outcome: 'failed'; recovery: SetupStageRecoveryAction };
+
+  const CANCELLED_STAGE_RUN: StageRunResult = { outcome: 'cancelled' };
 
   type NativeStageFailureDetail = {
     failedDependency?: unknown;
@@ -1088,8 +1155,8 @@
     id: StageId,
     runId: number,
     attemptCount: number,
-  ): Promise<StageRunOutcome> {
-    if (!isCurrentRun(runId)) return 'cancelled';
+  ): Promise<StageRunResult> {
+    if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
     const setupRunId = currentSetupRunId;
     const failureScope = {
       setupRunId,
@@ -1103,6 +1170,9 @@
       attemptCount,
       setupRunId,
     });
+    // The attempt is under way, so the retry notice gives way to the stage's
+    // own sub-steps.
+    if (setupRetry?.stageId === id) setupRetry = null;
     stages = setStageStatus(stages, id, 'running');
     await journalStageStart(id);
 
@@ -1119,7 +1189,7 @@
         outcome: 'cancelled',
         setupRunId,
       });
-      return 'cancelled';
+      return CANCELLED_STAGE_RUN;
     }
 
     if (result.kind === 'done') {
@@ -1131,14 +1201,27 @@
         durationMs: Date.now() - startedAt,
         setupRunId,
       });
-      return 'ok';
+      return { outcome: 'ok' };
     }
     if (result.kind === 'failed') {
       const message = errorMessage(result.err);
-      stages = setStageStatus(stages, id, 'failed', message);
+      // Decide recovery before the status lands: a stage that will try again
+      // must never pass through 'failed', which would count it as settled and
+      // then un-count it, jolting the ring forward and straight back.
+      const recovery = setupStageRecoveryAction({
+        stageId: id,
+        message,
+        retryCount: attemptCount - 1,
+      });
+      stages = setStageStatus(
+        stages,
+        id,
+        recovery.kind === 'retry' ? 'retrying' : 'failed',
+        message,
+      );
       await journalStageFailure(id, message);
       const failureDetails = await stageFailureTelemetryDetails(id, result.err, failureScope);
-      if (!isCurrentRun(runId)) return 'cancelled';
+      if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
       recordStep(SETUP_STEP_INDEX, 'failed', {
         component: id,
         failureStage: id,
@@ -1148,16 +1231,9 @@
         setupRunId,
         ...failureDetails,
       });
-      return 'failed';
+      return { outcome: 'failed', recovery };
     }
-    return 'cancelled';
-  }
-
-  function stageFailureMessage(id: StageId): string {
-    return (
-      stages.find((stage) => stage.id === id)?.error?.trim() ||
-      'Stage failed with no detail recorded.'
-    );
+    return CANCELLED_STAGE_RUN;
   }
 
   function waitForAutoRetry(ms: number): Promise<void> {
@@ -1174,19 +1250,19 @@
       if (!isCurrentRun(runId)) return;
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
-        const outcome = await runStage(id, runId, attemptCount);
-        if (outcome === 'cancelled') return;
-        if (outcome === 'ok') break;
+        const result = await runStage(id, runId, attemptCount);
+        if (result.outcome === 'cancelled') return;
+        if (result.outcome === 'ok') break;
 
-        const action = setupStageRecoveryAction({
-          stageId: id,
-          message: stageFailureMessage(id),
-          retryCount: retryCounts.get(id) ?? 0,
-        });
+        const action = result.recovery;
         if (action.kind !== 'retry') break;
 
         retryCounts.set(id, action.nextRetryCount);
-        stages = setStageStatus(stages, id, 'pending');
+        // The stage keeps its place in the bands while it waits — it is still
+        // 'retrying', not 'pending' — and only the sub-status changes. A
+        // backend detail from the attempt that just failed is stale.
+        setupRetry = { stageId: id, attempt: setupRetryAttempt(id, action.nextRetryCount) };
+        stageDetail = null;
         await waitForAutoRetry(action.delayMs);
       }
     }
@@ -1372,21 +1448,40 @@
   }
 
   async function startSetupRun() {
-    const runId = beginSetupRun();
-    if (installPath) effectiveInstallPath = installPath;
-    await listenForProgress(runId);
-    let startStage: StageId = STAGE_ORDER[0];
-    try {
-      const manifest = await invoke<InstallManifest>('read_install_manifest');
-      effectiveInstallPath = manifest.installPath || effectiveInstallPath;
-      if (manifest.installPath) installPath = manifest.installPath;
-      startStage = resumeStartStageFromManifest(manifest);
-      stages = buildStagesFromManifest(manifest, startStage);
-    } catch {
-      // Missing/corrupt manifests fall back to a fresh run.
+    // A second entry must not rebuild the stage list underneath a LIVE run —
+    // the rebuilt list would drop finished stages and restart the bands. But
+    // a restart has to win: leaving the setup step cancels the run without
+    // waiting for its current stage, so coming back finds the guard still
+    // held by a run that is no longer current. That run is superseded here
+    // instead of being allowed to swallow the restart.
+    if (inFlightRunId !== 0) {
+      if (inFlightRunId === currentRunId && !setupCancelled) return;
+      cancelSetupRun();
     }
-    if (!isCurrentRun(runId)) return;
-    await runSetup(runId, startStage);
+    const runId = beginSetupRun();
+    inFlightRunId = runId;
+    try {
+      if (installPath) effectiveInstallPath = installPath;
+      await listenForProgress(runId);
+      let startStage: StageId = STAGE_ORDER[0];
+      try {
+        const manifest = await invoke<InstallManifest>('read_install_manifest');
+        if (!isCurrentRun(runId)) return;
+        effectiveInstallPath = manifest.installPath || effectiveInstallPath;
+        if (manifest.installPath) installPath = manifest.installPath;
+        startStage = resumeStartStageFromManifest(manifest);
+        stages = buildStagesFromManifest(manifest, startStage);
+      } catch {
+        // Missing/corrupt manifests fall back to a fresh run.
+      }
+      if (!isCurrentRun(runId)) return;
+      await runSetup(runId, startStage);
+    } finally {
+      // Only the run that still owns the guard may release it: a superseded
+      // run finishing late must not clear a newer run's claim. Every exit —
+      // cancel, error, completion, supersession — passes through here.
+      if (inFlightRunId === runId) inFlightRunId = 0;
+    }
   }
 
   function cancelSetupRun() {
@@ -1395,7 +1490,21 @@
     unlistenInstallProgress = null;
     unlistenContentProgress?.();
     unlistenContentProgress = null;
+    // A stage that failed and is waiting on its auto-retry never settles once
+    // its run stops being current, so `allSettled` would stay false forever
+    // and the completion gate would never fire. Put it back to 'pending': the
+    // next run owns it again.
+    stages = resetRetryingStages(stages);
+    setupRetry = null;
     void cancelForegroundWork(currentRunId);
+  }
+
+  /** Any stage left waiting on a retry goes back to 'pending'. */
+  function resetRetryingStages(list: StageState[]): StageState[] {
+    if (!list.some((stage) => stage.status === 'retrying')) return list;
+    return list.map((stage) =>
+      stage.status === 'retrying' ? { ...stage, status: 'pending' as const } : stage,
+    );
   }
 
   async function probeAiTools() {
@@ -1901,6 +2010,9 @@
       cancelSetupRun();
       setupStarted = false;
       stages = buildInitialStages();
+      // The only genuine start-over: the next visit earns its percent again.
+      resetSetupProgressTracker(setupProgressTracker);
+      setupRetry = null;
     }
     if (previous === READY_STEP_INDEX && next !== READY_STEP_INDEX) {
       stopClaudeWatch();
@@ -2207,7 +2319,11 @@
           <h2 class="h" id="onboarding-title-setup">Getting your HQ ready</h2>
           <div class="list" aria-label="Setup checklist">
             {#each setupBands as band}
-              <div class:muted={band.status === 'pending'} class="li">
+              <div
+                class:muted={band.status === 'pending'}
+                class="li"
+                data-band-status={band.status}
+              >
                 {#if band.status === 'active'}
                   <span class="st spin" aria-hidden="true"></span>
                 {:else if band.status === 'done'}
@@ -2217,6 +2333,26 @@
                 {/if}
                 <span class="lt">{band.label}</span>
               </div>
+              {#if band.status === 'active' && setupSubStatusModel.text}
+                <div
+                  class="li-sub"
+                  role="status"
+                  aria-live="polite"
+                  data-testid="onboarding-setup-substatus"
+                >
+                  <!-- Keyed so each new sub-step replays the fade-in and the
+                       line visibly changes rather than swapping in place. -->
+                  {#key setupSubStatusModel.text}
+                    <span class="sub-text">{setupSubStatusModel.text}</span>
+                  {/key}
+                  {#if setupSubStatusModel.elapsedLabel}
+                    <span
+                      class="sub-elapsed"
+                      data-testid="onboarding-setup-elapsed"
+                    >{setupSubStatusModel.elapsedLabel}</span>
+                  {/if}
+                </div>
+              {/if}
             {/each}
           </div>
           <!-- The setup screen intentionally shows ONLY the friendly checklist (matching
@@ -2930,6 +3066,14 @@
   .dotpend { width:14px; height:14px; border-radius:50%; border:1.4px solid var(--check-border); flex-shrink:0; }
   .spin { width:13px; height:13px; border:1.6px solid var(--check-border); border-top-color:var(--c-text); border-radius:50%; animation:sp .8s linear infinite; flex-shrink:0; }
   @keyframes sp { to{transform:rotate(360deg)} }
+  /* Live sub-status under the active band — indented to sit under its label. */
+  .li-sub { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin:-1px 0 2px 24px; color:var(--c-muted); font-size:12px; line-height:16px; }
+  .li-sub .sub-text { animation:subin .28s ease-out; }
+  .li-sub .sub-elapsed { font-variant-numeric:tabular-nums; opacity:.75; }
+  @keyframes subin { from{opacity:0; transform:translateY(2px)} to{opacity:1; transform:none} }
+  @media (prefers-reduced-motion: reduce) {
+    .li-sub .sub-text { animation:none; }
+  }
 
   .logo svg { width:120px; height:auto; display:block; color:#fff; }
   .finder-item { display:flex; flex-direction:column; align-items:center; gap:2px; }

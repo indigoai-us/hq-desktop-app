@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import type { LocalBotWorkerOption } from "@hq/platform";
 import {
+  botHandle,
   canAdvance,
   canCreate,
+  cloudNameIssue,
   companyTemplates,
   firstBlockingStep,
   firstReadyRuntime,
   firstSentence,
   groupTemplates,
+  handleIssue,
   initialDraft,
   introIssue,
   nameIssue,
@@ -168,14 +171,17 @@ describe("templates", () => {
 });
 
 describe("steps", () => {
-  it("a Cloud draft ends at home; a Local draft continues to details", () => {
-    expect(stepsFor({ home: "cloud" })).toEqual(["kind", "home"]);
+  it("both homes walk kind → home → details", () => {
+    // A Cloud bot is named HERE: the company channel's card that used to ask
+    // for its name and handle is no longer shown to anyone.
+    expect(stepsFor({ home: "cloud" })).toEqual(["kind", "home", "details"]);
     expect(stepsFor({ home: "local" })).toEqual(["kind", "home", "details"]);
     expect(nextStep("kind", { home: "local" })).toBe("home");
-    expect(nextStep("home", { home: "cloud" })).toBeNull();
+    expect(nextStep("home", { home: "cloud" })).toBe("details");
+    expect(nextStep("details", { home: "cloud" })).toBeNull();
     expect(nextStep("home", { home: "local" })).toBe("details");
     expect(prevStep("kind", { home: "local" })).toBeNull();
-    expect(prevStep("details", { home: "local" })).toBe("home");
+    expect(prevStep("details", { home: "cloud" })).toBe("home");
   });
 
   it("kind needs a template pick when From a template is chosen", () => {
@@ -193,8 +199,9 @@ describe("steps", () => {
     expect(stepIssue("home", draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBeNull();
     expect(stepIssue("home", draft({ home: "cloud", companyUid: "cmp_nope" }), c)).toBe("Pick a company.");
     expect(stepIssue("home", draft({ home: "cloud" }), ctx({ canCloud: false }))).toContain("No company");
-    // The last step never "advances".
-    expect(canAdvance("home", draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBe(false);
+    // The last step never "advances"; home is no longer the last one.
+    expect(canAdvance("home", draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBe(true);
+    expect(canAdvance("details", draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBe(false);
     expect(canAdvance("home", draft({ home: "local" }), c)).toBe(true);
   });
 
@@ -213,6 +220,28 @@ describe("steps", () => {
     expect(stepIssue("home", draft({ home: "cloud", companyUid: "cmp_acme", scope: "company" }), c)).toBeNull();
   });
 
+  it("cloud details validates the name and the @handle it will be created under", () => {
+    const c = ctx({ existingNames: ["scout"] });
+    const cloud = (over: Partial<CreateBotDraft>) => draft({ home: "cloud", companyUid: "cmp_acme", ...over }, c);
+    expect(stepIssue("details", cloud({ name: "" }), c)).toBe("Give your bot a name.");
+    expect(stepIssue("details", cloud({ name: "Polar Bear" }), c)).toBeNull();
+    expect(stepIssue("details", cloud({ name: "Polar", handle: "Not A Handle" }), c)).toBeNull();
+    expect(stepIssue("details", cloud({ name: "Polar", handle: "!!!" }), c)).toContain("Give your bot a handle");
+    // A cloud bot's name is a label, not the @handle: it is not held to the
+    // handle's character rules, and a local bot's name never blocks it.
+    expect(stepIssue("details", cloud({ name: "scout" }), c)).toBeNull();
+    expect(stepIssue("details", cloud({ name: "x".repeat(61) }), c)).toContain("under 60");
+  });
+
+  it("the @handle follows the name until the person edits it", () => {
+    expect(botHandle({ name: "Polar Bear", handle: "" })).toBe("polar-bear");
+    expect(botHandle({ name: "Polar", handle: "@ice-bear" })).toBe("ice-bear");
+    expect(botHandle({ name: "Polar", handle: "  " })).toBe("polar");
+    expect(cloudNameIssue("  ")).toBe("Give your bot a name.");
+    expect(handleIssue({ name: "Polar", handle: "" })).toBeNull();
+    expect(handleIssue({ name: "", handle: "" })).toContain("Give your bot a handle");
+  });
+
   it("details validates name then intro", () => {
     const c = ctx({ existingNames: ["scout"] });
     expect(stepIssue("details", draft({ name: "scout" }), c)).toBe("You already have a bot named scout.");
@@ -229,8 +258,10 @@ describe("steps", () => {
     expect(firstBlockingStep(draft({ kind: "template" }), c)).toBe("kind");
     expect(canCreate(draft({ name: "" }), c)).toBe(false);
     expect(firstBlockingStep(draft({ name: "" }), c)).toBe("details");
-    // Cloud ignores the details fields entirely.
-    expect(canCreate(draft({ home: "cloud", name: "", companyUid: "cmp_indigo" }), c)).toBe(true);
+    // A cloud bot is never created under a name nobody chose.
+    expect(canCreate(draft({ home: "cloud", name: "", companyUid: "cmp_indigo" }), c)).toBe(false);
+    expect(firstBlockingStep(draft({ home: "cloud", name: "", companyUid: "cmp_indigo" }), c)).toBe("details");
+    expect(canCreate(draft({ home: "cloud", name: "Polar", companyUid: "cmp_indigo" }), c)).toBe(true);
     expect(firstBlockingStep(draft(), c)).toBeNull();
   });
 });

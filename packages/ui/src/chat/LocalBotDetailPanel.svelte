@@ -41,9 +41,16 @@
     onclose?: () => void;
     /** Fired after a successful Start/Stop/Remove so the host refreshes localBots. */
     onchanged?: () => void | Promise<void>;
+    /**
+     * Start this bot through the HOST, so the start obeys the same gate as
+     * every other one and a success clears the "cannot run here" state the
+     * host is holding. Unset (tests, hosts without the seam) → the panel
+     * calls `adapter.bots.start` itself, as before.
+     */
+    onstart?: ((bot: LocalBotRow) => Promise<{ ok: boolean; reason: string | null }>) | null;
   }
 
-  let { bot, adapter, avatarUrl = null, companies = [], onopenurl, onclose, onchanged }: Props = $props();
+  let { bot, adapter, avatarUrl = null, companies = [], onopenurl, onclose, onchanged, onstart = null }: Props = $props();
 
   let busy = $state<"start" | "stop" | "remove" | null>(null);
   let actionError = $state<string | null>(null);
@@ -169,6 +176,15 @@
     busy = verb;
     actionError = null;
     try {
+      if (verb === "start" && onstart) {
+        const started = await onstart(bot);
+        if (!started.ok) {
+          actionError = started.reason ?? `Could not start ${bot.name}.`;
+          return;
+        }
+        await onchanged?.();
+        return;
+      }
       const result = await api[verb](bot.name);
       if (!result.ok) {
         actionError = result.message || `Could not ${verb} ${bot.name}.`;

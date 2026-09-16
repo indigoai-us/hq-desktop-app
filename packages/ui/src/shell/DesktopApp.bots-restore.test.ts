@@ -1,0 +1,818 @@
+// @vitest-environment happy-dom
+
+/**
+ * BOTS COME BACK AFTER A REINSTALL.
+ *
+ * The owner's words: "i want bots to work after reinstall", and "shouldn't all
+ * bots be restarted, or an option on the bot DM, if it's not started for any
+ * reason?". What they actually saw was test-bot's DM spinning for 41 s while
+ * the bot's own setup pane said it could not run here — because `hq bot list`
+ * only knows this computer and the app had no way to see the bot the account
+ * still owned in the cloud.
+ *
+ * `hq bot list --remote` closes that. These tests pin the four things it buys:
+ *   - a DM with an owned bot that is NOT here says so at once, and a cloud
+ *     teammate is untouched;
+ *   - "Start on this computer" runs `hq bot adopt <name>` and the DM becomes a
+ *     normal bot;
+ *   - an adopt that fails says one written sentence and offers Retry;
+ *   - the "restore my bots" prompt is offered once and then remembered.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mount, tick, unmount } from "svelte";
+import { ok, type LocalBotRow, type PlatformAdapter, type RemoteBotRow } from "@hq/platform";
+
+import DesktopApp from "./DesktopApp.svelte";
+import { createFixtureChatSidebarApi } from "./fixtures.js";
+import { createEmptyNotificationsApi } from "./mesh-overlay.js";
+import {
+  BOT_RESTORE_CLOUD_SIGN_IN,
+  BOT_RESTORE_CLOUD_UNREACHABLE,
+  BOT_RESTORE_DISMISSED_KEY,
+  BOT_RESTORE_NEEDS_NEWER_CLOUD,
+  REMOTE_BOTS_CALL_TIMEOUT_MS,
+  REMOTE_BOTS_POLL_MS,
+} from "../chat/bot-restore.js";
+import { LOCAL_BOT_TRACE_KEY } from "../chat/bot-runnability.js";
+import { LOCAL_BOTS_POLL_MS } from "../chat/local-bots.js";
+import type { ChatSidebarApi } from "../chat/chat-api";
+import type { ConversationRow } from "../chat/sidebar-model.js";
+
+/** The owner's bot: owned in HQ, and nothing on this Mac can run it. */
+const TEST_BOT_UID = "agt_test_bot";
+/** A company bot that runs in the cloud — never on the local-bot listing. */
+const FLEET_UID = "agt_fleet_izzy";
+
+function remoteBot(over: Partial<RemoteBotRow> = {}): RemoteBotRow {
+  return {
+    name: "test-bot",
+    agentUid: TEST_BOT_UID,
+    kind: "personal",
+    online: false,
+    lastHeartbeatAt: null,
+    here: false,
+    settings: "claude, synced memory",
+    ...over,
+  };
+}
+
+function localBot(over: Partial<LocalBotRow> = {}): LocalBotRow {
+  return {
+    name: "test-bot",
+    agentUid: TEST_BOT_UID,
+    ownerUid: "prs_me",
+    runtime: "claude",
+    state: "running",
+    pid: 4242,
+    processAlive: true,
+    online: true,
+    lastHeartbeatAt: new Date().toISOString(),
+    daemonInstalled: true,
+    daemonLoaded: true,
+    dir: "/tmp/.hq/bots/test-bot",
+    ...over,
+  } as LocalBotRow;
+}
+
+interface Options {
+  bots?: Partial<NonNullable<PlatformAdapter["bots"]>>;
+  contacts?: Array<Record<string, unknown>>;
+  /**
+   * Whether a runtime is signed in here.
+   *
+   * The prompt below is the FALLBACK now: when a runtime IS signed in the app
+   * brings the bots back by itself and never asks (see
+   * `DesktopApp.bots-auto-restore.test.ts`). A fresh Mac before "Connect
+   * Claude" is exactly the state in which a person is offered the click, so
+   * that is the state these prompt tests run in.
+   */
+  runtimeReady?: boolean;
+}
+
+function adapter({ bots = {}, contacts = [], runtimeReady = true }: Options = {}): PlatformAdapter {
+  return {
+    kind: "web",
+    isAvailable: () => false,
+    capabilities: {},
+    messaging: {
+      listContacts: async () => ok({ contacts }),
+      listChannelMembers: async () => ok({ members: [] }),
+      fetchChannel: async () => ok({ messages: [] }),
+      fetchDmThread: async () => ok({ messages: [] }),
+      sendDm: async () => ok({ eventId: "evt_self_1", createdAt: new Date().toISOString() }),
+      sendChannelMessage: async () => ok({ eventId: "evt_self_1", createdAt: new Date().toISOString() }),
+      fetchReactions: async () => ok({ reactions: [] }),
+    },
+    notifications: { fetchDmInbox: async () => ok({}) },
+    settings: {
+      getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }),
+    },
+    shell: { detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }) },
+    sessions: {
+      preflight: async () =>
+        ok({
+          claudeAvailable: true,
+          claudeLoggedIn: runtimeReady,
+          codexAvailable: false,
+          codexLoggedIn: false,
+          grokAvailable: false,
+          grokLoggedIn: false,
+        }),
+    },
+    bots: {
+      list: async () => ok({ bots: [] }),
+      create: async () => ok({ ok: true }),
+      start: async () => ok({}),
+      stop: async () => ok({}),
+      remove: async () => ok({}),
+      workers: async () => ok({ workers: [] }),
+      listRemote: async () => ok({ bots: [] }),
+      adopt: async () => ok({ ok: true }),
+      restore: async () =>
+        ok({ ok: true, dryRun: false, restored: 0, repaired: 0, skipped: 0, failed: 0, bots: [] }),
+      ...bots,
+    },
+  } as unknown as PlatformAdapter;
+}
+
+function dmRow(uid: string, title: string): ConversationRow {
+  return { id: `dm:${uid}`, kind: "dm", title, personUid: uid } as ConversationRow;
+}
+
+let host: HTMLDivElement;
+let component: ReturnType<typeof mount> | null = null;
+
+beforeEach(() => {
+  window.localStorage.clear();
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+});
+
+afterEach(async () => {
+  if (component) await unmount(component);
+  component = null;
+  host?.remove();
+  vi.restoreAllMocks();
+});
+
+function q<T extends Element = HTMLElement>(sel: string): T | null {
+  return host.querySelector<T>(sel);
+}
+
+async function settle(times = 12): Promise<void> {
+  for (let i = 0; i < times; i += 1) {
+    await tick();
+    await Promise.resolve();
+  }
+}
+
+function mountApp(
+  platform: PlatformAdapter,
+  initialRow?: ConversationRow,
+  sidebarApi: ChatSidebarApi = createFixtureChatSidebarApi(),
+): void {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  component = mount(DesktopApp, {
+    target: host,
+    props: {
+      adapter: platform,
+      sidebarApi,
+      notificationsApi: createEmptyNotificationsApi(),
+      self: { uid: "prs_me", displayName: "Corey", email: "me@example.com" },
+      coreFixtures: false,
+      ...(initialRow ? { initialRow } : {}),
+    },
+  });
+}
+
+/** Type into the real composer and Enter-send, as a person does. */
+async function sendPlainMessage(): Promise<void> {
+  const composer = q<HTMLTextAreaElement>('[data-testid="conversation-composer"]');
+  expect(composer, "live composer renders").toBeTruthy();
+  composer!.value = "yo";
+  composer!.dispatchEvent(new Event("input", { bubbles: true }));
+  composer!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await settle(14);
+}
+
+describe("the account's own listing decides what can run here", () => {
+  it("shows the honest notice for an owned bot that is not on this computer — no spinner", async () => {
+    const start = vi.fn(async () => ok({}));
+    mountApp(
+      adapter({
+        // This Mac has nothing; the account owns test-bot.
+        bots: { list: async () => ok({ bots: [] }), listRemote: async () => ok({ bots: [remoteBot()] }), start },
+        contacts: [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }],
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+
+    const notice = await vi.waitFor(() => {
+      const el = q('[data-testid="bot-not-runnable-notice"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(notice.textContent).toContain("another computer");
+    // The gap this closes: a way out, not only "Check again".
+    expect(q('[data-testid="bot-start-here"]')?.textContent).toContain("Start on this computer");
+
+    // The 41-second spinner: writing to it must not start one.
+    await sendPlainMessage();
+    expect(q('[data-testid="agent-thinking-row"]'), "nothing is working on this").toBeNull();
+    expect(q('[data-testid="bot-message-unanswered"]')?.textContent).toContain("isn't running");
+    expect(start, "no doomed start is issued").not.toHaveBeenCalled();
+  });
+
+  it("leaves a cloud teammate alone — it is not a local bot and never was on that listing", async () => {
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: async () => ok({ bots: [remoteBot()] }) },
+        contacts: [{ personUid: FLEET_UID, displayName: "izzy", companyUid: "cmp_indigo" }],
+      }),
+      dmRow(FLEET_UID, "izzy"),
+    );
+    await settle(20);
+
+    expect(q('[data-testid="bot-not-runnable-notice"]'), "a cloud bot is not called unrunnable").toBeNull();
+    await sendPlainMessage();
+    expect(q('[data-testid="agent-thinking-row"]'), "a cloud teammate still thinks").toBeTruthy();
+  });
+});
+
+describe("Start on this computer", () => {
+  it("brings the bot back by name and the DM becomes a normal bot", async () => {
+    const adopt = vi.fn(async () => ok({ ok: true, name: "test-bot", agentUid: TEST_BOT_UID }));
+    let here = false;
+    mountApp(
+      adapter({
+        bots: {
+          adopt,
+          list: async () => ok({ bots: here ? [localBot()] : [] }),
+          listRemote: async () => ok({ bots: [remoteBot({ here })] }),
+        },
+        contacts: [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }],
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+
+    const button = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="bot-start-here"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+
+    // The CLI succeeds and the bot is here from the next listing on.
+    adopt.mockImplementation(async () => {
+      here = true;
+      return ok({ ok: true, name: "test-bot", agentUid: TEST_BOT_UID });
+    });
+    button.click();
+    await settle(24);
+
+    // `hq bot adopt <name>` — the local folder name, not the uid.
+    expect(adopt).toHaveBeenCalledWith("test-bot");
+    await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeNull());
+    // And it is a normal bot again: a message it is sent is worked on.
+    await sendPlainMessage();
+    expect(q('[data-testid="bot-message-unanswered"]')).toBeNull();
+  });
+
+  it("says one plain sentence and offers Retry when the bring-back fails", async () => {
+    const adopt = vi.fn(async () => ({
+      ok: false as const,
+      reason: "unavailable" as const,
+      // Exactly the kind of text that must never reach a person.
+      message: 'HQ API /v1/agents/agt_test_bot/credentials → 403: {"code":"NOT_OWNER"}',
+    }));
+    mountApp(
+      adapter({
+        bots: {
+          adopt: adopt as never,
+          list: async () => ok({ bots: [] }),
+          listRemote: async () => ok({ bots: [remoteBot()] }),
+        },
+        contacts: [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }],
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+
+    const button = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="bot-start-here"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    button.click();
+    await settle(20);
+
+    const error = await vi.waitFor(() => {
+      const el = q('[data-testid="bot-start-here-error"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(error.textContent).toContain("Could not bring test-bot back to this computer");
+    expect(error.textContent).not.toContain("403");
+    expect(error.textContent).not.toContain("/v1/");
+    // One more go is offered, on the same button.
+    expect(q('[data-testid="bot-start-here"]')?.textContent?.trim()).toBe("Retry");
+    q<HTMLButtonElement>('[data-testid="bot-start-here"]')!.click();
+    await settle(20);
+    expect(adopt).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Restore my bots", () => {
+  it("asks once after a fresh install, restores them all, and is not asked again", async () => {
+    const restore = vi.fn(async () =>
+      ok({
+        ok: true,
+        dryRun: false,
+        restored: 2,
+        repaired: 0,
+        skipped: 0,
+        failed: 0,
+        bots: [
+          { name: "test-bot", agentUid: TEST_BOT_UID, action: "restored" as const, detail: "claude" },
+          { name: "iris", agentUid: "agt_iris", action: "restored" as const, detail: "claude" },
+        ],
+      }),
+    );
+    mountApp(
+      adapter({
+        runtimeReady: false,
+        bots: {
+          restore,
+          list: async () => ok({ bots: [] }),
+          listRemote: async () =>
+            ok({ bots: [remoteBot(), remoteBot({ name: "iris", agentUid: "agt_iris" })] }),
+        },
+      }),
+    );
+
+    const prompt = await vi.waitFor(() => {
+      const el = q('[data-testid="bot-restore-banner"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(prompt.textContent).toContain("2 of your bots aren't");
+
+    q<HTMLButtonElement>('[data-testid="bot-restore-all"]')!.click();
+    await settle(24);
+
+    expect(restore).toHaveBeenCalledWith({ all: true });
+    expect(q('[data-testid="bot-restore-summary"]')?.textContent).toBe("2 bots are back on this computer.");
+    expect(q('[data-testid="bot-restore-row-iris"]')?.textContent).toContain("is back on this computer");
+    // Asking counts as answering: this machine is not prompted again.
+    expect(window.localStorage.getItem(BOT_RESTORE_DISMISSED_KEY)).toBe("1");
+  });
+
+  it("stays dismissed on the next launch, so it never nags", async () => {
+    const restore = vi.fn(async () =>
+      ok({ ok: true, dryRun: false, restored: 0, repaired: 0, skipped: 0, failed: 0, bots: [] }),
+    );
+    // First launch: offered, and turned down.
+    mountApp(
+      adapter({
+        runtimeReady: false,
+        bots: { restore, list: async () => ok({ bots: [] }), listRemote: async () => ok({ bots: [remoteBot()] }) },
+      }),
+    );
+    await vi.waitFor(() => expect(q('[data-testid="bot-restore-banner"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="bot-restore-dismiss"]')!.click();
+    await settle();
+    expect(q('[data-testid="bot-restore-banner"]')).toBeNull();
+
+    // Next launch, same machine, same missing bot.
+    await unmount(component!);
+    component = null;
+    host.remove();
+    mountApp(
+      adapter({
+        runtimeReady: false,
+        bots: { restore, list: async () => ok({ bots: [] }), listRemote: async () => ok({ bots: [remoteBot()] }) },
+      }),
+    );
+    await settle(24);
+    expect(q('[data-testid="bot-restore-banner"]'), "asked once, not every launch").toBeNull();
+    expect(restore).not.toHaveBeenCalled();
+  });
+
+  it("is never offered when every bot the account owns is already here", async () => {
+    mountApp(
+      adapter({
+        bots: {
+          list: async () => ok({ bots: [localBot()] }),
+          listRemote: async () => ok({ bots: [remoteBot({ here: true })] }),
+        },
+      }),
+    );
+    await settle(24);
+    expect(q('[data-testid="bot-restore-banner"]')).toBeNull();
+  });
+});
+
+/**
+ * THE LISTING IS AN ENHANCEMENT, NEVER A GATE.
+ *
+ * The owner's VM ran the whole feature against the production HQ Cloud, which
+ * does not have the listing route yet: `hq bot list --remote` answered
+ * `HQ API /v1/agents/mine → 404: Not found` every time. Because the app read
+ * runnability from that one call, everything the previous round had fixed came
+ * back — four of the owner's own local bots were drawn as `Cloud`, a wiped
+ * bot's DM showed a normal composer with NO notice, and one message spun for
+ * 2 m 39 s (report rows T2.1, T2.4, T5.2).
+ *
+ * These pin the rule that makes the failure harmless: runnability comes from
+ * local evidence first, and a listing that failed can only change what the app
+ * OFFERS — never what it claims.
+ */
+describe("when HQ Cloud cannot list your bots", () => {
+  /** Exactly what the VM's CLI wrote: a route this server does not have. */
+  const CLOUD_UNSUPPORTED = {
+    ok: false as const,
+    reason: "error" as const,
+    message: "HQ API /v1/agents/mine → 404: Not found",
+  };
+  /** The CLI's own JSON contract, once the CLI lane lands. */
+  const CLOUD_UNSUPPORTED_JSON = {
+    ok: false as const,
+    reason: "error" as const,
+    message: JSON.stringify({
+      ok: false,
+      reason: "server-unsupported",
+      message: "This HQ Cloud cannot list the bots you own yet.",
+      bots: [],
+    }),
+  };
+  /**
+   * VERBATIM from the VM (round 2, defect 4): what the real CLI writes on a
+   * failing `hq bot list --remote --json`. The document goes to stdout and the
+   * same sentence to stderr — the desktop read the sentence, could not
+   * classify it, and drew "couldn't be reached" with a "Check again" button
+   * for a route that will never be there.
+   */
+  const CLI_SERVER_UNSUPPORTED_MESSAGE =
+    "Your HQ Cloud cannot list the bots you own yet, so there is nothing to bring back from here. Update HQ Cloud, or try again later.";
+  const CLI_SERVER_UNSUPPORTED = {
+    ok: false as const,
+    reason: "error" as const,
+    message: JSON.stringify({
+      ok: false,
+      reason: "server-unsupported",
+      message: CLI_SERVER_UNSUPPORTED_MESSAGE,
+      bots: [],
+    }),
+  };
+  /** The same contract, for a cloud that simply did not answer. */
+  const CLI_NETWORK = {
+    ok: false as const,
+    reason: "error" as const,
+    message: JSON.stringify({
+      ok: false,
+      reason: "network",
+      message: "HQ Cloud could not be reached just now.",
+      bots: [],
+    }),
+  };
+  const CLOUD_OFFLINE = {
+    ok: false as const,
+    reason: "error" as const,
+    message: "hq bot list --remote did not finish within 60s",
+  };
+  const CLOUD_REFUSED = {
+    ok: false as const,
+    reason: "error" as const,
+    message: "HQ API /v1/agents/mine → 401: Unauthorized",
+  };
+
+  /** This Mac ran test-bot; then its config was wiped (the VM's Step E). */
+  function rememberItRanHere(): void {
+    window.localStorage.setItem(LOCAL_BOT_TRACE_KEY, JSON.stringify({ [TEST_BOT_UID]: "test-bot" }));
+  }
+
+  function wipedBotAdapter(listRemote: () => Promise<never> | Promise<unknown>): PlatformAdapter {
+    return adapter({
+      bots: {
+        list: async () => ok({ bots: [] }),
+        listRemote: listRemote as never,
+      },
+      contacts: [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }],
+    });
+  }
+
+  async function openWipedBotDm(
+    listRemote: () => Promise<unknown>,
+    start = vi.fn(async () => ok({})),
+  ): Promise<HTMLElement> {
+    rememberItRanHere();
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: listRemote as never, start },
+        contacts: [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }],
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    return await vi.waitFor(() => {
+      const el = q('[data-testid="bot-not-runnable-notice"]');
+      expect(el, "the honest notice survives a listing that failed").toBeTruthy();
+      return el!;
+    });
+  }
+
+  it("keeps the honest notice and the silence on send when the route is missing (T5.2)", async () => {
+    const start = vi.fn(async () => ok({}));
+    const notice = await openWipedBotDm(async () => CLOUD_UNSUPPORTED, start);
+    expect(notice.textContent).toContain("another computer");
+
+    // The 2 m 39 s spinner: writing to this bot must not start one.
+    await sendPlainMessage();
+    expect(q('[data-testid="agent-thinking-row"]'), "nothing is working on this").toBeNull();
+    expect(q('[data-testid="bot-message-unanswered"]')?.textContent).toContain("isn't running");
+    expect(start, "no doomed start is issued").not.toHaveBeenCalled();
+
+    // Bringing it back goes through HQ Cloud, which has no such route: the
+    // button is not offered, and one plain sentence says why instead.
+    expect(q('[data-testid="bot-start-here"]')).toBeNull();
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    // "Check again" stays: this Mac's own bots can change without HQ Cloud.
+    expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeTruthy();
+    // And nothing raw reaches the screen.
+    const shown = notice.textContent ?? "";
+    expect(shown).not.toContain("404");
+    expect(shown).not.toContain("/v1/");
+    expect(shown).not.toContain("hq bot");
+    // Nothing can be restored, so the prompt is not offered either.
+    expect(q('[data-testid="bot-restore-banner"]')).toBeNull();
+  });
+
+  it("reads the CLI's own failure contract the same way as its raw text", async () => {
+    await openWipedBotDm(async () => CLOUD_UNSUPPORTED_JSON);
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    expect(q('[data-testid="bot-start-here"]')).toBeNull();
+  });
+
+  it("reads the real CLI's failure document, not the sentence beside it (defect 4)", async () => {
+    await openWipedBotDm(async () => CLI_SERVER_UNSUPPORTED);
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    // The wrong sentence the VM saw, and the CLI's own words, are both absent.
+    const shown = document.body.textContent ?? "";
+    expect(shown).not.toContain(BOT_RESTORE_CLOUD_UNREACHABLE);
+    expect(shown).not.toContain("Update HQ Cloud");
+    expect(q('[data-testid="bot-start-here"]')).toBeNull();
+  });
+
+  it("reads the CLI's sentence the same way when only stderr reaches the app", async () => {
+    // A CLI that wrote no document (or a host that could not parse one): all
+    // the app has is the plain sentence, which names no status code.
+    await openWipedBotDm(async () => ({
+      ok: false as const,
+      reason: "error" as const,
+      message: CLI_SERVER_UNSUPPORTED_MESSAGE,
+    }));
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_NEEDS_NEWER_CLOUD,
+    );
+    expect(q('[data-testid="bot-start-here"]')).toBeNull();
+  });
+
+  it("still says it could not be reached when the CLI's document says network", async () => {
+    await openWipedBotDm(async () => CLI_NETWORK);
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_CLOUD_UNREACHABLE,
+    );
+    expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeTruthy();
+  });
+
+  it("says it could not be reached, and offers Check again, on a network failure", async () => {
+    const start = vi.fn(async () => ok({}));
+    await openWipedBotDm(async () => CLOUD_OFFLINE, start);
+    await sendPlainMessage();
+    expect(q('[data-testid="agent-thinking-row"]')).toBeNull();
+    expect(start).not.toHaveBeenCalled();
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_CLOUD_UNREACHABLE,
+    );
+    expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeTruthy();
+  });
+
+  it("asks the person to sign in again when the listing is refused", async () => {
+    await openWipedBotDm(async () => CLOUD_REFUSED);
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_CLOUD_SIGN_IN,
+    );
+    expect(q('[data-testid="bot-not-runnable-recheck"]')).toBeTruthy();
+  });
+
+  it("treats an answer it cannot read as no answer, never as a bot that is missing", async () => {
+    // A host that answers `ok` with nothing at all (the null payload that once
+    // crashed the refresh). The notice still comes from local evidence.
+    await openWipedBotDm(async () => ok(null as never));
+    expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
+      BOT_RESTORE_CLOUD_UNREACHABLE,
+    );
+  });
+
+  it("offers the way out again as soon as the listing works", async () => {
+    // Same wiped bot, a server that HAS the route: nothing about the honest
+    // notice changes, and "Start on this computer" is back.
+    rememberItRanHere();
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: async () => ok({ bots: [remoteBot()] }) },
+        contacts: [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }],
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    await vi.waitFor(() => expect(q('[data-testid="bot-start-here"]')).toBeTruthy());
+    expect(q('[data-testid="bot-restore-unavailable"]')).toBeNull();
+  });
+
+  it("never draws one of the person's own bots as Cloud because the listing failed", async () => {
+    // The VM's Observation: `setup Cloud`, `cobot Cloud`, `test-bot Cloud` and
+    // a wiped `qa-20260916a Cloud` — every one of them the owner's local bot.
+    rememberItRanHere();
+    const iso = new Date().toISOString();
+    const sidebarApi: ChatSidebarApi = {
+      ...createFixtureChatSidebarApi(),
+      fetchChannelDirectory: async () => ({
+        contractVersion: 2,
+        snapshot: true,
+        cursor: "cur_1",
+        cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        rows: [],
+      }),
+      listContacts: async () => ({
+        contacts: [
+          { personUid: TEST_BOT_UID, displayName: "test-bot", lastActivityAt: iso, lastDmAt: iso },
+          { personUid: FLEET_UID, displayName: "izzy", lastActivityAt: iso, lastDmAt: iso },
+        ],
+      }),
+    } as ChatSidebarApi;
+    mountApp(wipedBotAdapter(async () => CLOUD_UNSUPPORTED), undefined, sidebarApi);
+
+    const chipFor = (uid: string) =>
+      q(`[data-conversation-id="dm:${uid}"] [data-testid="bot-kind-chip"]`);
+    await vi.waitFor(() => {
+      expect(chipFor(TEST_BOT_UID)).toBeTruthy();
+      expect(chipFor(FLEET_UID)).toBeTruthy();
+    });
+    expect(chipFor(TEST_BOT_UID)?.getAttribute("aria-label")).toBe("Local");
+    expect(chipFor(TEST_BOT_UID)?.dataset.kind).toBe("local");
+    // A bot this computer has no trace of is still a cloud teammate: nothing
+    // about anyone else's bot changes.
+    expect(chipFor(FLEET_UID)?.getAttribute("aria-label")).toBe("Cloud");
+    expect(chipFor(FLEET_UID)?.dataset.kind).toBe("cloud");
+  });
+});
+
+/**
+ * ROUND 4, DEFECT 8 — the remote listing stopped refreshing for a session.
+ *
+ * On the VM `hq bot list --remote` was asked for three times and then not
+ * again for 16 m 38 s, while the 30 s local poller kept firing from the same
+ * `onMount`. The consequence is what these tests pin: a bot that stops being
+ * runnable showed a live composer for 6 m 40 s, and the only way back was
+ * restarting the app.
+ *
+ * Two guarantees, and they are independent on purpose. The cadence itself can
+ * no longer be held up by one call — a hung or failing listing is abandoned
+ * and the next tick asks anyway. And the honest notice no longer depends on
+ * that cadence at all: a bot dropping off THIS Mac's listing asks for a fresh
+ * account listing straight away, which bounds the notice by one local poll.
+ */
+describe("the remote listing keeps asking", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function botContacts() {
+    return [{ personUid: TEST_BOT_UID, displayName: "test-bot", companyUid: null }];
+  }
+
+  /** Let mount, effects and any queued promises run under fake timers. */
+  async function flush(ms = 0): Promise<void> {
+    await vi.advanceTimersByTimeAsync(ms);
+    await settle();
+  }
+
+  /**
+   * `vi.waitFor` runs on real time, which a fake clock never reaches. This is
+   * the same idea on the fake one: keep draining microtasks (and any zero-delay
+   * timer the shell queues while it boots) until the condition holds.
+   */
+  async function until(what: string, check: () => boolean, tries = 80): Promise<void> {
+    for (let i = 0; i < tries; i += 1) {
+      if (check()) return;
+      // 10 ms a turn: enough for anything the shell queues while it boots,
+      // and 80 turns still land far short of the 30 s local poll.
+      await flush(10);
+    }
+    throw new Error(`fake-timer wait never saw: ${what}`);
+  }
+
+  it("carries on polling after a first call that never answers", async () => {
+    let calls = 0;
+    const listRemote = vi.fn(() => {
+      calls += 1;
+      // The first call is the one that never comes back.
+      if (calls === 1) return new Promise<never>(() => {});
+      return Promise.resolve(ok({ bots: [remoteBot()] }));
+    });
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: listRemote as never },
+        contacts: botContacts(),
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    await until("the bot's DM", () => q('[data-testid="conversation-composer"]') !== null);
+    expect(listRemote).toHaveBeenCalledTimes(1);
+
+    // The hung call is abandoned at the bound, and the cadence goes on. This
+    // is the whole defect: on the VM the third call was the last one for
+    // 16 m 38 s.
+    await flush(REMOTE_BOTS_CALL_TIMEOUT_MS);
+    await flush(REMOTE_BOTS_POLL_MS);
+    expect(listRemote.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // And the abandoned call never comes back to overwrite a newer answer.
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it("carries on polling after a listing that failed", async () => {
+    let calls = 0;
+    const listRemote = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { ok: false as const, reason: "error" as const, message: "HQ Cloud did not answer" };
+      }
+      return ok({ bots: [remoteBot()] });
+    });
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: listRemote as never },
+        contacts: botContacts(),
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    await until("the bot's DM", () => q('[data-testid="conversation-composer"]') !== null);
+    expect(listRemote).toHaveBeenCalledTimes(1);
+
+    await flush(REMOTE_BOTS_POLL_MS);
+    expect(listRemote.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("carries on polling after a host that throws instead of answering", async () => {
+    let calls = 0;
+    const listRemote = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("invoke blew up");
+      return ok({ bots: [remoteBot()] });
+    });
+    mountApp(
+      adapter({
+        bots: { list: async () => ok({ bots: [] }), listRemote: listRemote as never },
+        contacts: botContacts(),
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    await until("the bot's DM", () => q('[data-testid="conversation-composer"]') !== null);
+    await flush(REMOTE_BOTS_POLL_MS);
+    expect(listRemote.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("asks for a fresh account listing the moment a bot drops off this Mac", async () => {
+    let wiped = false;
+    const listRemote = vi.fn(async () => ok({ bots: [remoteBot({ here: !wiped })] }));
+    mountApp(
+      adapter({
+        bots: {
+          list: async () => ok({ bots: wiped ? [] : [localBot()] }),
+          listRemote: listRemote as never,
+        },
+        contacts: botContacts(),
+      }),
+      dmRow(TEST_BOT_UID, "test-bot"),
+    );
+    await until("the bot's DM", () => q('[data-testid="conversation-composer"]') !== null);
+    const beforeWipe = listRemote.mock.calls.length;
+    expect(q('[data-testid="bot-not-runnable-notice"]'), "a working bot has no notice").toBeNull();
+
+    // The wipe: `bot.json` is gone, so the bot drops off `hq bot list`.
+    wiped = true;
+    // ONE local poll — nowhere near the 120 s remote cadence.
+    await flush(LOCAL_BOTS_POLL_MS);
+    expect(listRemote.mock.calls.length).toBeGreaterThan(beforeWipe);
+
+    // The 6 m 40 s live composer: the notice is there inside one local poll.
+    await until("the honest notice", () => q('[data-testid="bot-not-runnable-notice"]') !== null);
+    expect(q('[data-testid="bot-start-here"]')?.textContent).toContain("Start on this computer");
+  });
+});

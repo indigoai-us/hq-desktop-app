@@ -1114,6 +1114,11 @@ export function createSyncPlatformAdapter(
       remove: (name) => call('local_bots_remove', { name }),
       configure: (name, settings) => call('local_bots_configure', localBotSettingsArgs(name, settings)),
     promote: (name, companyUid) => call("local_bots_promote", { name, companyUid }),
+      // Bots come back after a reinstall: the cloud knows every local bot this
+      // account owns, and `here` says which of them this computer can run.
+      listRemote: () => call('local_bots_list_remote'),
+      adopt: (name) => call('local_bots_adopt', { name }),
+      restore: (options) => call('local_bots_restore', { all: options?.all === true }),
     },
 
     settings: {

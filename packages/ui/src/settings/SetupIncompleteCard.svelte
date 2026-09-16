@@ -29,7 +29,7 @@
     SETUP_PROMPT,
     type AiTools,
   } from "./setup-launch";
-  import { SETUP_BOT_COPY, type SetupBotLauncher } from "../chat/setup-bot";
+  import { SETUP_BOT_COPY, SETUP_BOT_GENERIC_FAILURE, type SetupBotLauncher } from "../chat/setup-bot";
 
   interface Props {
     /** Platform seam slices (see @hq/platform PlatformAdapter). */
@@ -66,7 +66,9 @@
       const result = await setupBot.start();
       if (!result.ok) botError = result.reason;
     } catch (err) {
-      botError = err instanceof Error ? err.message : String(err);
+      // A sentence, never a stack or the API's own words (see setup-bot.ts).
+      console.warn("[hq-desktop] setup bot start failed:", err);
+      botError = SETUP_BOT_GENERIC_FAILURE;
     } finally {
       botBusy = false;
     }
@@ -198,11 +200,15 @@
         <button
           type="button"
           class="setup-btn primary"
-          disabled={botBusy}
+          disabled={botBusy || Boolean(setupBot?.starting)}
           onclick={() => void runSetupBot()}
           data-testid="setup-open-bot"
         >
-          {botBusy ? SETUP_BOT_COPY.starting : setupBot!.existing ? SETUP_BOT_COPY.open : SETUP_BOT_COPY.create}
+          {botBusy || setupBot?.starting
+            ? SETUP_BOT_COPY.starting
+            : setupBot!.existing
+              ? SETUP_BOT_COPY.open
+              : SETUP_BOT_COPY.create}
         </button>
       {/if}
       <button

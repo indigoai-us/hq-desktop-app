@@ -5,9 +5,11 @@
  * need to decide "can I advance / can I create" lives here so the Svelte
  * components stay thin and the rules are unit-testable without a DOM.
  *
- * Every AI teammate is a bot. Cloud bots are company-hosted and their details
- * are collected by the server card flow, so a Cloud draft ends at the home
- * step; a Local draft continues to details (name, avatar, intro, advanced).
+ * Every AI teammate is a bot. Both homes walk all three steps: the details
+ * a Local bot needs (name, avatar, intro, advanced) and the two a Cloud bot
+ * needs (name and @handle). The company channel's own "Create a bot" card is
+ * retired, so this flow is the ONLY place a cloud bot is named — a suggested
+ * name is a prefill the person can see and change, never a silent default.
  */
 
 import type { LocalBotCreateInput, LocalBotKind, LocalBotWorkerOption } from "@hq/platform";
@@ -33,6 +35,8 @@ export interface CreateBotDraft {
   /** Local company bots: the company slugs it belongs to (at least one). */
   companySlugs: string[];
   name: string;
+  /** Cloud only: the @handle. Empty means "follow the name". */
+  handle: string;
   intro: string;
   avatar?: AvatarSelection;
   autoApprove: boolean;
@@ -94,6 +98,7 @@ export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud"
     scope: "personal",
     companySlugs: [],
     name: suggestBotName(ctx.existingNames),
+    handle: "",
     intro: "",
     autoApprove: true,
     model: "",
@@ -144,6 +149,34 @@ export function nameIssue(name: string, existing: readonly string[]): string | n
     return "Lowercase letters, digits, and single hyphens — for example “scout-2”.";
   }
   if (taken(n, existing)) return `You already have a bot named ${n}.`;
+  return null;
+}
+
+/** The @handle a cloud bot gets: the person's own, else one made from the name. */
+export function botHandle(draft: Pick<CreateBotDraft, "name" | "handle">): string {
+  const chosen = draft.handle.trim().replace(/^@/, "");
+  return slugifyBotName(chosen || draft.name);
+}
+
+/**
+ * Validation for a Cloud bot's display name. A cloud bot's name is a label the
+ * company sees ("Polar"), not the @handle, so it is not held to the handle's
+ * character rules — `handleIssue` covers those.
+ */
+export function cloudNameIssue(name: string): string | null {
+  const n = name.trim();
+  if (!n) return "Give your bot a name.";
+  if (n.length > 60) return "Keep the name under 60 characters.";
+  return null;
+}
+
+/** Validation for the @handle a Cloud bot is created under; null when fine. */
+export function handleIssue(draft: Pick<CreateBotDraft, "name" | "handle">): string | null {
+  const handle = botHandle(draft);
+  if (!handle) return "Give your bot a handle — letters and digits.";
+  if (!isValidLocalBotName(handle)) {
+    return "Lowercase letters, digits, and single hyphens — for example “scout-2”.";
+  }
   return null;
 }
 
@@ -305,9 +338,13 @@ export function templateBringsLine(card: TemplateCard | null): string {
 
 // ── steps ──────────────────────────────────────────────────────────────────
 
-/** The steps this draft walks: Cloud stops at home, Local continues to details. */
-export function stepsFor(draft: Pick<CreateBotDraft, "home">): CreateBotStep[] {
-  return draft.home === "cloud" ? ["kind", "home"] : ["kind", "home", "details"];
+/**
+ * The steps this draft walks. Both homes walk all three: a cloud bot's name
+ * and @handle are chosen here, in front of the person, because the company
+ * channel's card that used to ask for them is no longer shown.
+ */
+export function stepsFor(_draft: Pick<CreateBotDraft, "home">): CreateBotStep[] {
+  return ["kind", "home", "details"];
 }
 
 export function nextStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">): CreateBotStep | null {
@@ -343,6 +380,7 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
       }
       return null;
     case "details":
+      if (draft.home === "cloud") return cloudNameIssue(draft.name) ?? handleIssue(draft);
       return nameIssue(draft.name, ctx.existingNames) ?? introIssue(draft.intro);
   }
 }

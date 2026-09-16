@@ -4,6 +4,7 @@ import type { LocalBotRow } from "@hq/platform";
 import {
   botNeedsSignIn,
   botsNeedingSignIn,
+  restartBotsNeedingSignIn,
   runtimesNeedingSignIn,
   signInAgain,
   signInAgainCopy,
@@ -83,6 +84,28 @@ describe("runtime sign-in helpers", () => {
   });
 });
 
+describe("restartBotsNeedingSignIn", () => {
+  it("obeys the host's start gate and reports the bot it started", async () => {
+    const paused = bot({ name: "setup", runtimeSignIn: expired("claude") });
+    const blocked = bot({ name: "scout", agentUid: "agt_scout", runtimeSignIn: expired("claude") });
+    const t = deps([], [paused, blocked]);
+    const onstarted = vi.fn();
+
+    // A bot whose start already failed definitively is not re-issued here
+    // either; one that does start hands the host the row so it can clear the
+    // "cannot run here" state it is holding for it.
+    const result = await restartBotsNeedingSignIn("claude", t.deps.bots, {
+      canStart: (row) => row.name !== "scout",
+      onstarted,
+    });
+
+    expect(result).toEqual({ restarted: ["setup"], restartFailed: [], skipped: ["scout"] });
+    expect(t.start).toHaveBeenCalledTimes(1);
+    expect(t.start).toHaveBeenCalledWith("setup");
+    expect(onstarted).toHaveBeenCalledWith(paused);
+  });
+});
+
 describe("signInAgain", () => {
   it("forces the vendor sign-in, waits for connected, then restarts only the affected bots", async () => {
     const rows = [
@@ -97,8 +120,28 @@ describe("signInAgain", () => {
     expect(t.loginStart).toHaveBeenCalledWith("claude", { force: true });
     expect(t.loginStatus).toHaveBeenCalledTimes(2);
     expect(onwaiting).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ ok: true, restarted: ["setup"], restartFailed: [] });
+    expect(result).toEqual({ ok: true, restarted: ["setup"], restartFailed: [], skipped: [] });
     expect(t.order).toEqual(["list", "stop:setup", "start:setup"]);
+  });
+
+  it("restarts through the host's start gate, not around it", async () => {
+    const paused = bot({ name: "setup", runtimeSignIn: expired("claude") });
+    const blocked = bot({ name: "scout", agentUid: "agt_scout", runtimeSignIn: expired("claude") });
+    const t = deps(["connected"], [paused, blocked]);
+    const onstarted = vi.fn();
+
+    // The banner's restart is a bot start like any other: a bot whose start
+    // already failed definitively is skipped, and a success is reported so
+    // the host can drop the "cannot run here" notice it is holding.
+    const result = await signInAgain("claude", {
+      ...t.deps,
+      gate: { canStart: (row) => row.name !== "scout", onstarted },
+    });
+
+    expect(result).toEqual({ ok: true, restarted: ["setup"], restartFailed: [], skipped: ["scout"] });
+    expect(t.start).toHaveBeenCalledTimes(1);
+    expect(t.start).toHaveBeenCalledWith("setup");
+    expect(onstarted).toHaveBeenCalledWith(paused);
   });
 
   it("never touches bots when the sign-in ends in an error", async () => {

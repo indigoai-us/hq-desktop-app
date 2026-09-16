@@ -38,6 +38,7 @@
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import {
     parseMessageAttachments,
+    isHiddenTimelineMessage,
     systemModelForMessage,
     type FileAttachmentModel,
     type LifecycleCardActionEvent,
@@ -378,6 +379,10 @@
     for (const msg of [...windowed.rows, ...localSends]) {
       const id = (msg.eventId ?? "").trim();
       if (!id || seen.has(id)) continue;
+      // Retired lifecycle cards (the "Create a bot" form) leave the timeline
+      // entirely — rendering nothing for them would still paint an empty
+      // bubble with an avatar and a timestamp.
+      if (isHiddenTimelineMessage(msg)) continue;
       seen.add(id);
       out.push(msg);
     }

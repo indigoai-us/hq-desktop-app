@@ -43,7 +43,18 @@ export const STAGE_LABELS: Record<StageId, string> = {
   mesh: "Installing daemon",
 };
 
-export type StageStatus = "pending" | "running" | "ok" | "failed";
+/**
+ * `retrying` is the gap between a transient stage failure and its automatic
+ * next attempt. It is deliberately distinct from both `pending` (has not run)
+ * and `failed` (will not run again): the stage still owns the active band, so
+ * the ring and the band list do not move backward while it waits.
+ */
+export type StageStatus =
+  | "pending"
+  | "running"
+  | "ok"
+  | "failed"
+  | "retrying";
 
 export interface StageState {
   id: StageId;
@@ -153,10 +164,31 @@ export function setupCompletionResult(
   };
 }
 
+/**
+ * A stage that will not run again. Only these may count toward the percent —
+ * a `failed` stage that is about to be retried is `retrying`, not `failed`, so
+ * it is never counted and then un-counted.
+ */
+export function isSettledStageStatus(status: StageStatus): boolean {
+  return status === "ok" || status === "failed";
+}
+
+/** A stage that owns the active band: running, or waiting on its auto-retry. */
+export function isActiveStageStatus(status: StageStatus): boolean {
+  return status === "running" || status === "retrying";
+}
+
+export function countSettledStages(stages: StageState[]): number {
+  return stages.filter((stage) => isSettledStageStatus(stage.status)).length;
+}
+
+/** The stage that owns the active band, or null when none is in flight. */
+export function activeStageId(stages: StageState[]): StageId | null {
+  return stages.find((stage) => isActiveStageStatus(stage.status))?.id ?? null;
+}
+
 export function allSettled(stages: StageState[]): boolean {
-  return stages.every(
-    (stage) => stage.status === "ok" || stage.status === "failed",
-  );
+  return stages.every((stage) => isSettledStageStatus(stage.status));
 }
 
 export interface SetupProgressInput {
@@ -211,6 +243,39 @@ export function friendlySetupBands(
       status: done ? "done" : index === activeBand ? "active" : "pending",
     };
   });
+}
+
+// ─── Monotonic progress ──────────────────────────────────────────────
+//
+// `setupProgressPercent` is a pure function of the stage list, so anything
+// that lowers its inputs mid-run — a stage waiting on its retry, a stage list
+// rebuilt from a re-read manifest — drags the ring and the bands backward.
+// Progress that goes backward reads as "it broke and started over", so the
+// displayed value is a high-water mark: within one visit to the setup step it
+// only ever rises. Leaving the step and starting over resets it.
+
+export interface SetupProgressTracker {
+  /** The highest percent shown so far in this visit. */
+  percent: number;
+}
+
+export function createSetupProgressTracker(): SetupProgressTracker {
+  return { percent: 0 };
+}
+
+/** Start over — only for a genuine re-entry of the setup step. */
+export function resetSetupProgressTracker(tracker: SetupProgressTracker): void {
+  tracker.percent = 0;
+}
+
+/** Record `percent` and return the value to display: never below the last one. */
+export function trackSetupProgress(
+  tracker: SetupProgressTracker,
+  percent: number,
+): number {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  if (clamped > tracker.percent) tracker.percent = clamped;
+  return tracker.percent;
 }
 
 export function setStageStatus(
@@ -447,6 +512,31 @@ export function setupStageRecoveryAction(
   }
 
   return { kind: "fail", message };
+}
+
+export interface SetupRetryAttempt {
+  /** 1-based number of the attempt that is about to start. */
+  attempt: number;
+  /** Total attempts this stage gets, the first one included. */
+  of: number;
+}
+
+/**
+ * The attempt a stage is about to make, from the retry count
+ * {@link setupStageRecoveryAction} handed back. Attempt 1 was the original
+ * run, so the first auto-retry is attempt 2.
+ */
+export function setupRetryAttempt(
+  stageId: StageId,
+  nextRetryCount: number,
+): SetupRetryAttempt {
+  const of = stageAutoRetryLimit(stageId) + 1;
+  const attempt = Math.max(1, Math.floor(nextRetryCount)) + 1;
+  return { attempt: Math.min(of, attempt), of };
+}
+
+export function setupRetrySubStatusText(retry: SetupRetryAttempt): string {
+  return `Retrying — attempt ${retry.attempt} of ${retry.of}…`;
 }
 
 export class StageTimeoutError extends Error {

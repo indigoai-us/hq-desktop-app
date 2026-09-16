@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   type MentionCandidate,
   type ThinkingEntry,
@@ -10,7 +10,9 @@ import {
   clearForAgents,
   clearFromMessages,
   newestMessageAtFrom,
-  labelFor,
+  thinkingLine,
+  formatThinkingElapsed,
+  THINKING_PHRASES,
   startThinkingIn,
   tickAll,
   clearRowFromMessages,
@@ -20,7 +22,6 @@ import {
   applyAgentStatus,
   parseAgentStatusWake,
   clearFromMessages as clearRows,
-  labelFor as label,
 } from './agent-thinking.js';
 
 function member(personUid: string, displayName: string): MentionCandidate {
@@ -112,6 +113,7 @@ describe('startThinking', () => {
         agentName: 'Izzy (Fleet)',
         startedAt: 1000,
         phase: 'thinking',
+        since: 1000,
       },
     ]);
     expect(next).not.toBe(original);
@@ -132,9 +134,21 @@ describe('startThinking', () => {
         agentName: 'Izzy (Fleet)',
         startedAt: 9_000,
         phase: 'thinking',
+        // The restart re-pins the clear rule but not the elapsed counter: the
+        // agent has been working since the row first went up.
+        since: 1,
       },
       other,
     ]);
+  });
+
+  it('keeps the original since across repeated restarts', () => {
+    let rows = startThinking([], agent, 1_000);
+    rows = startThinking(rows, agent, 5_000, { detail: 'is reading the repo' });
+    rows = startThinking(rows, agent, 12_000, { detail: 'is writing tests' });
+
+    expect(rows[0]!.since).toBe(1_000);
+    expect(rows[0]!.startedAt).toBe(12_000);
   });
 });
 
@@ -181,14 +195,25 @@ describe('clearForAgents', () => {
   });
 });
 
-describe('labelFor', () => {
-  it('renders both phases', () => {
-    expect(
-      labelFor(entry({ agentUid: 'agt_izzy', agentName: 'Izzy', phase: 'thinking' })),
-    ).toBe('Izzy is thinking…');
-    expect(
-      labelFor(entry({ agentUid: 'agt_izzy', agentName: 'Izzy', phase: 'slow' })),
-    ).toBe('Izzy is taking longer than usual…');
+describe('thinkingLine and the slow phase', () => {
+  it('says so once tick has promoted the row to slow', () => {
+    const row = entry({ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: 0, since: 0 });
+    expect(thinkingLine(row, 1_000).label).toBe('Izzy is thinking');
+    const slow = tick([row], 150_000)[0]!;
+    expect(slow.phase).toBe('slow');
+    expect(thinkingLine(slow, 150_000).label).toBe('Izzy is taking longer than usual');
+  });
+
+  it("still prefers the agent's own words over the slow copy", () => {
+    const slow = entry({
+      agentUid: 'agt_izzy',
+      agentName: 'Izzy',
+      startedAt: 0,
+      since: 0,
+      phase: 'slow',
+      detail: 'is running the tests',
+    });
+    expect(thinkingLine(slow, 150_000).label).toBe('Izzy is running the tests');
   });
 });
 
@@ -286,7 +311,7 @@ describe('per-row map (thinking survives navigation)', () => {
     const one = startThinkingIn(empty, A, izzy, 1000, { afterMs: 500 });
     expect(empty).toEqual({});
     expect(one).toEqual({
-      [A]: [{ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: 1000, phase: 'thinking', afterMs: 500 }],
+      [A]: [{ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: 1000, phase: 'thinking', afterMs: 500, since: 1000 }],
     });
     const two = startThinkingIn(one, B, izzy, 2000);
     expect(one[B]).toBeUndefined();
@@ -404,10 +429,10 @@ describe("agent status keeps the row up while the agent works", () => {
   });
 
   it("shows the agent's own status text, and the usual copy for a plain thinking status", () => {
-    expect(label(applyAgentStatus([], wake(0), "connor", [], 1)[0]!)).toBe("connor is thinking\u2026");
-    expect(label(applyAgentStatus([], wake(0, "still working (1m20s)"), "connor", [], 1)[0]!)).toBe(
-      "connor: still working (1m20s)",
-    );
+    const plain = applyAgentStatus([], wake(0), "connor", [], 1)[0]!;
+    expect(thinkingLine(plain, plain.startedAt).label).toBe("connor is thinking");
+    const reported = applyAgentStatus([], wake(0, "still working (1m20s)"), "connor", [], 1)[0]!;
+    expect(thinkingLine(reported, reported.startedAt).label).toBe("connor: still working (1m20s)");
   });
 
   it("parses only well-formed agent_status payloads", () => {
@@ -417,5 +442,100 @@ describe("agent status keeps the row up while the agent works", () => {
     expect(
       parseAgentStatusWake(JSON.stringify({ type: "agent_status", channelId: "chn_1", agentUid: "agt_c", status: "x", threadRoot: "evt_r", ts: t(0) })),
     ).toMatchObject({ threadRoot: "evt_r" });
+  });
+});
+
+
+describe('thinkingLine — the row visibly changes while the agent works', () => {
+  const START = 1_000_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Sample the line once a second, the way the row's own clock does. */
+  function samples(row: ThinkingEntry, seconds: number) {
+    const seen: ReturnType<typeof thinkingLine>[] = [];
+    const timer = setInterval(() => seen.push(thinkingLine(row, Date.now())), 1_000);
+    vi.advanceTimersByTime(seconds * 1_000);
+    clearInterval(timer);
+    return seen;
+  }
+
+  it('walks the phrases instead of sitting on "is thinking"', () => {
+    const row = entry({ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: START });
+    const labels = samples(row, 40).map((line) => line.label);
+
+    expect(labels[0]).toBe('Izzy is thinking');
+    expect(new Set(labels).size).toBe(THINKING_PHRASES.length);
+    expect(labels.at(-1)).toBe('Izzy is still working');
+  });
+
+  it('holds on the last phrase rather than looping back to the first', () => {
+    const row = entry({ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: START });
+    const labels = samples(row, 300).map((line) => line.label);
+
+    expect(labels.at(-1)).toBe('Izzy is still working');
+    expect(labels.slice(60)).not.toContain('Izzy is thinking');
+  });
+
+  it('counts the elapsed time up, only after 15s', () => {
+    const row = entry({ agentUid: 'agt_izzy', agentName: 'Izzy', startedAt: START });
+    const lines = samples(row, 130);
+
+    expect(lines[13]?.elapsed).toBeNull();
+    expect(lines[14]?.elapsed).toBe('working for 15s');
+    expect(lines[41]?.elapsed).toBe('working for 42s');
+    expect(lines.at(-1)?.elapsed).toBe('working for 2m 10s');
+  });
+
+  it('shows the agent’s own status the moment one arrives, and the next one after that', () => {
+    let rows = startThinking([], { agentUid: 'agt_izzy', agentName: 'Izzy' }, START);
+    expect(thinkingLine(rows[0]!, START + 1_000).label).toBe('Izzy is thinking');
+
+    rows = startThinking(rows, { agentUid: 'agt_izzy', agentName: 'Izzy' }, START + 4_000, {
+      detail: 'is reading the repo',
+    });
+    expect(thinkingLine(rows[0]!, START + 4_000).label).toBe('Izzy is reading the repo');
+
+    rows = startThinking(rows, { agentUid: 'agt_izzy', agentName: 'Izzy' }, START + 30_000, {
+      detail: 'running the tests',
+    });
+    const line = thinkingLine(rows[0]!, START + 30_000);
+    expect(line.label).toBe('Izzy: running the tests');
+    // A new status re-pins the clear rule but must not restart the counter.
+    expect(line.elapsed).toBe('working for 30s');
+  });
+
+  it('treats the generic "is thinking" status as no status at all', () => {
+    const row = entry({
+      agentUid: 'agt_izzy',
+      agentName: 'Izzy',
+      startedAt: START,
+      detail: 'is thinking',
+    });
+    expect(thinkingLine(row, START + 17_000).label).toBe('Izzy is working on it');
+  });
+
+  it('never leaves a trailing ellipsis for the row to double up on', () => {
+    const row = entry({
+      agentUid: 'agt_izzy',
+      agentName: 'Izzy',
+      startedAt: START,
+      detail: 'is packaging the build…',
+    });
+    expect(thinkingLine(row, START).label).toBe('Izzy is packaging the build');
+  });
+
+  it('formats the counter in seconds, then minutes', () => {
+    expect(formatThinkingElapsed(0)).toBe('0s');
+    expect(formatThinkingElapsed(42_400)).toBe('42s');
+    expect(formatThinkingElapsed(65_000)).toBe('1m 05s');
+    expect(formatThinkingElapsed(-10)).toBe('0s');
   });
 });

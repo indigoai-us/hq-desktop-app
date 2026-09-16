@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  activeStageId,
   allSettled,
   buildInitialStages,
   buildStagesFromManifest,
+  countSettledStages,
+  createSetupProgressTracker,
   failedRequiredStages,
+  resetSetupProgressTracker,
+  setupRetryAttempt,
+  setupRetrySubStatusText,
+  trackSetupProgress,
   friendlySetupBands,
   isContentRetryEligible,
   isHardStageTimeoutMessage,
@@ -28,6 +35,7 @@ import {
   DEFAULT_STAGE_SKIP_THRESHOLD_MS,
   DEFAULT_STAGE_TIMEOUT_MS,
   withTimeout,
+  type StageId,
   type StageState,
 } from "./onboarding-setup";
 
@@ -504,5 +512,126 @@ describe("stage command invocations", () => {
     expect(stageCommandInvocations("deps", { installPath: null })).toEqual([
       { command: "install_deps", required: true },
     ]);
+  });
+});
+
+describe("setup progress never moves backward", () => {
+  const BAND_RANK: Record<string, number> = { pending: 0, active: 1, done: 2 };
+
+  /** The displayed-progress pipeline the setup surfaces read, in order. */
+  function createVisit(order: StageId[] = STAGE_ORDER) {
+    const tracker = createSetupProgressTracker();
+    let stages = buildInitialStages(order);
+    const percents: number[] = [];
+    const bandRanks: number[][] = [];
+
+    function sample(stageCreep = 0): number {
+      const percent = trackSetupProgress(
+        tracker,
+        setupProgressPercent({
+          settledCount: countSettledStages(stages),
+          totalStages: order.length,
+          hasRunningStage: activeStageId(stages) !== null,
+          stageCreep,
+          allDone: allSettled(stages),
+        }),
+      );
+      percents.push(percent);
+      bandRanks.push(
+        friendlySetupBands(percent).map((band) => BAND_RANK[band.status]!),
+      );
+      return percent;
+    }
+
+    return {
+      get stages() {
+        return stages;
+      },
+      set(id: StageId, status: StageState["status"], error: string | null = null) {
+        stages = setStageStatus(stages, id, status, error);
+      },
+      rebuild() {
+        stages = buildInitialStages(order);
+      },
+      restart() {
+        resetSetupProgressTracker(tracker);
+      },
+      sample,
+      expectMonotonic() {
+        for (let i = 1; i < percents.length; i += 1) {
+          expect(percents[i]).toBeGreaterThanOrEqual(percents[i - 1]!);
+        }
+        for (let i = 1; i < bandRanks.length; i += 1) {
+          const previous = bandRanks[i - 1]!;
+          for (const [band, rank] of bandRanks[i]!.entries()) {
+            expect(rank).toBeGreaterThanOrEqual(previous[band]!);
+          }
+        }
+      },
+      percents,
+    };
+  }
+
+  it("keeps a retrying stage active and unsettled instead of pending", () => {
+    const visit = createVisit();
+    visit.set("content", "ok");
+    visit.set("deps", "running");
+    const running = visit.sample(0.9);
+
+    visit.set("deps", "retrying", "network timeout while fetching the registry");
+    expect(countSettledStages(visit.stages)).toBe(1);
+    expect(activeStageId(visit.stages)).toBe("deps");
+    expect(allSettled(visit.stages)).toBe(false);
+    expect(failedRequiredStages(visit.stages)).toEqual([]);
+    expect(visit.sample(0.9)).toBe(running);
+    visit.expectMonotonic();
+  });
+
+  it("holds the displayed percent when the stage list is rebuilt mid-visit", () => {
+    const visit = createVisit();
+    visit.set("content", "ok");
+    visit.set("deps", "ok");
+    visit.set("initial-sync", "running");
+    const beforeRebuild = visit.sample(0.8);
+    expect(beforeRebuild).toBeGreaterThan(25);
+
+    visit.rebuild();
+    expect(visit.sample()).toBe(beforeRebuild);
+    visit.expectMonotonic();
+  });
+
+  it("starts over only when the visit does", () => {
+    const visit = createVisit();
+    visit.set("content", "ok");
+    visit.set("deps", "running");
+    expect(visit.sample(0.5)).toBeGreaterThan(10);
+
+    visit.restart();
+    visit.rebuild();
+    expect(visit.sample()).toBe(0);
+  });
+
+  it("still counts a stage that will not be retried as settled", () => {
+    const stages = setStageStatus(
+      buildInitialStages(),
+      "git-init",
+      "failed",
+      "Stage failed with no detail recorded.",
+    );
+
+    expect(countSettledStages(stages)).toBe(1);
+    expect(activeStageId(stages)).toBeNull();
+    expect(failedRequiredStages(stages).map((stage) => stage.id)).toEqual([
+      "git-init",
+    ]);
+  });
+
+  it("numbers a retry attempt against the stage's own budget", () => {
+    expect(setupRetryAttempt("content", 1)).toEqual({ attempt: 2, of: 3 });
+    expect(setupRetryAttempt("content", 2)).toEqual({ attempt: 3, of: 3 });
+    expect(setupRetryAttempt("deps", 9)).toEqual({ attempt: 2, of: 2 });
+    expect(setupRetrySubStatusText(setupRetryAttempt("content", 1))).toBe(
+      "Retrying — attempt 2 of 3…",
+    );
   });
 });
