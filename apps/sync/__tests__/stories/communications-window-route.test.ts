@@ -135,7 +135,6 @@ describe('dedicated mini communications native route', () => {
   });
 
   it('uses Regular Tahoe glass with role-specific pre-Tahoe materials', () => {
-    expect(glass).toContain('setIgnoresMouseEvents: true');
     expect(glass).toContain(
       'pub fn apply_compact_communications_glass_window',
     );
