@@ -521,6 +521,11 @@ jobs:
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-macos-universal
+          # Reader. This workflow runs only on tags, and a cache saved by one
+          # tag cannot be restored by another. Saving it only consumes budget
+          # and evicts main-scoped entries other lanes restore; cache-warm.yml
+          # on main is the designated writer for this key.
+          save-if: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -958,6 +963,11 @@ jobs:
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-${{ matrix.target }}
+          # Reader. This workflow runs only on tags, and a cache saved by one
+          # tag cannot be restored by another. Saving it only consumes budget
+          # and evicts main-scoped entries other lanes restore; cache-warm.yml
+          # on main is the designated writer for this key.
+          save-if: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
