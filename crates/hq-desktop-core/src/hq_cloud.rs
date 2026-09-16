@@ -624,15 +624,16 @@
 /// cache key and delivers the new runner.
 ///
 /// `~6.16.45` -> `~6.16.47`: floors the runner at the releases that fix two
-/// Windows rescue failures. 6.16.46 tolerates Node's Windows realpath failure
-/// at a drive root: after the native and JavaScript walkers fail, it accepts a
-/// normalized absolute path when `stat` confirms it is a directory instead of
-/// failing `--hq-root` with `EISDIR`. 6.16.47 finds the `rsync.cmd` shim HQ
-/// installs (including `PATHEXT` candidates) and launches it through `cmd.exe`
-/// for both the preflight and overlay, so a valid portable rsync no longer
-/// fails before a safety snapshot is allocated. These are runner bug fixes
-/// rather than a new desktop-visible capability contract, so they deliberately
-/// add no `*_MIN_HQ_CLOUD` floor constant.
+/// Windows rescue failures. 6.16.46 (hq-cloud#561) tolerates Node's Windows
+/// realpath failure at a drive root: after the native and JavaScript walkers
+/// fail, it accepts a normalized absolute path when `stat` confirms it is a
+/// directory instead of failing `--hq-root` with `EISDIR`. 6.16.47
+/// (hq-cloud#563) finds the `rsync.cmd` shim HQ installs (including `PATHEXT`
+/// candidates) and launches it through `cmd.exe` for both the preflight and
+/// overlay, so a valid portable rsync no longer fails before a safety snapshot
+/// is allocated. These are runner bug fixes rather than a new desktop-visible
+/// capability contract, so they deliberately add no `*_MIN_HQ_CLOUD` floor
+/// constant.
 ///
 /// A desktop holding a cached 6.16.45 satisfies `~6.16.45` forever and would
 /// retain the older runner; changing this requested spec is what moves npm's
