@@ -35,6 +35,7 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let ciWorkflow = "";
 let windowsCheckWorkflow = "";
 let releaseWorkflow = "";
+let cacheWarmWorkflow = "";
 let fixtureProfile = "";
 let appManifest = "";
 
@@ -43,12 +44,14 @@ beforeAll(async () => {
     ciWorkflow,
     windowsCheckWorkflow,
     releaseWorkflow,
+    cacheWarmWorkflow,
     fixtureProfile,
     appManifest,
   ] = await Promise.all([
     readFile(resolve(rootDir, ".github/workflows/ci.yml"), "utf8"),
     readFile(resolve(rootDir, ".github/workflows/windows-check.yml"), "utf8"),
     readFile(resolve(rootDir, ".github/workflows/release.yml"), "utf8"),
+    readFile(resolve(rootDir, ".github/workflows/cache-warm.yml"), "utf8"),
     readFile(
       resolve(rootDir, "apps/sync/src-tauri/ci/fixture-profile.toml"),
       "utf8",
@@ -93,22 +96,27 @@ function jobConfig(workflow: string, name: string): string {
 }
 
 /**
- * One `- name:`d step out of a job body, ending at the next step.
+ * One named or action step out of a job body, ending at the next step.
  *
  * `job.slice(job.indexOf(name))` is not this: it returns the whole remainder of
- * the job, so an assertion about a step's `if:` stays green when that step loses
- * its condition and any LATER step happens to carry the one being looked for.
+ * the job, so an assertion about a step's configuration stays green when that
+ * step loses it and any later step happens to carry it instead.
  */
-function stepConfig(workflow: string, job: string, step: string): string {
+function stepConfig(
+  workflow: string,
+  job: string,
+  step: string,
+  field: "name" | "uses" = "name",
+): string {
   const body = jobConfig(workflow, job);
-  const start = body.indexOf(`- name: ${step}`);
+  const start = body.indexOf(`- ${field}: ${step}`);
 
   if (start < 0) {
-    throw new Error(`job ${job} is missing the "${step}" step`);
+    throw new Error(`job ${job} is missing the ${field} step "${step}"`);
   }
 
   const rest = body.slice(start + 1);
-  const next = rest.indexOf("- name: ");
+  const next = rest.indexOf("\n      - ");
 
   return next < 0 ? body.slice(start) : body.slice(start, start + 1 + next);
 }
@@ -363,6 +371,40 @@ describe("windows jobs cache Rust artifacts with rust-cache", () => {
     expect(bridge).not.toContain("save-if:");
     expect(target).toContain("save-if: false");
   });
+});
+
+describe("release tag builds never write a Rust cache", () => {
+  const releaseCaches = [
+    { job: "macos", warmer: "release-macos" },
+    { job: "windows", warmer: "release-windows" },
+  ] as const;
+
+  const sharedKey = (step: string) =>
+    /^ {10}shared-key:\s*(.+)$/m.exec(step)?.[1];
+
+  for (const { job, warmer } of releaseCaches) {
+    it(`${job} restores the main-branch warmer's key without saving a tag-scoped copy`, () => {
+      // A release run is tag-only. A cache saved under one tag is not readable
+      // from another tag, so release.yml only restores; cache-warm.yml on main
+      // owns the matching writes that every release can read.
+      const releaseCache = stepConfig(
+        releaseWorkflow,
+        job,
+        "Swatinem/rust-cache@v2",
+        "uses",
+      );
+      const warmerCache = stepConfig(
+        cacheWarmWorkflow,
+        warmer,
+        "Swatinem/rust-cache@v2",
+        "uses",
+      );
+
+      expect(releaseCache).toContain("save-if: false");
+      expect(sharedKey(releaseCache)).toBeDefined();
+      expect(sharedKey(warmerCache)).toBe(sharedKey(releaseCache));
+    });
+  }
 });
 
 describe("the windows check splits its suite across three jobs", () => {
