@@ -969,6 +969,185 @@ pub(crate) fn system_program_roots() -> Vec<PathBuf> {
 #[cfg(not(target_os = "windows"))]
 pub const MANAGED_TOOLCHAIN_BIN_SUBDIRS: &[&str] = &["npm-global/bin", "node/bin", "git-shim"];
 
+/// Return the managed portable Git executable path for `home`.
+#[cfg(not(target_os = "windows"))]
+pub fn managed_git_bin_in(home: &Path) -> PathBuf {
+    managed_toolchain_dir(home)
+        .join("git")
+        .join("bin")
+        .join("git")
+}
+
+/// Return the directory containing the managed portable Git wrapper for `home`.
+#[cfg(not(target_os = "windows"))]
+pub fn managed_git_shim_dir_in(home: &Path) -> PathBuf {
+    managed_toolchain_dir(home).join("git-shim")
+}
+
+/// Render the portable Git wrapper installed next to the managed toolchain.
+#[cfg(not(target_os = "windows"))]
+fn managed_git_shim_script() -> String {
+    "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n".to_string()
+}
+
+/// Verify that the managed portable Git is safe to select ahead of a user's Git.
+///
+/// A previous interrupted extraction can leave an existing `bin/git` that is
+/// empty or non-executable. The probe is deliberately bounded so a damaged
+/// binary cannot hold an update forever.
+#[cfg(not(target_os = "windows"))]
+fn managed_git_health(git_bin: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    let metadata = std::fs::symlink_metadata(git_bin)
+        .map_err(|error| format!("managed Git is missing at {}: {error}", git_bin.display()))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!(
+            "managed Git is not a regular file at {}",
+            git_bin.display()
+        ));
+    }
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Err(format!(
+            "managed Git is not executable at {}",
+            git_bin.display()
+        ));
+    }
+    if metadata.len() == 0 {
+        return Err(format!("managed Git is empty at {}", git_bin.display()));
+    }
+
+    let mut child = Command::new(git_bin)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "managed Git could not start at {}: {error}",
+                git_bin.display()
+            )
+        })?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "managed Git --version failed at {} with {status}",
+                    git_bin.display()
+                ));
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "managed Git --version timed out at {}",
+                    git_bin.display()
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "managed Git probe failed at {}: {error}",
+                    git_bin.display()
+                ))
+            }
+        }
+    }
+}
+
+/// Ensure that a healthy managed portable Git has its environment-setting shim.
+///
+/// The shim is only authoritative after the binary passes both filesystem and
+/// bounded `--version` checks. If a previously generated shim points at a now
+/// broken binary, remove that exact generated file so a rescue falls back to
+/// the Git the user already selected.
+#[cfg(not(target_os = "windows"))]
+pub fn ensure_managed_git_shim_in(home: &Path) -> Result<PathBuf, String> {
+    let git_bin = managed_git_bin_in(home);
+    let shim_dir = managed_git_shim_dir_in(home);
+    let shim = shim_dir.join("git");
+    let script = managed_git_shim_script();
+    if let Err(reason) = managed_git_health(&git_bin) {
+        if std::fs::read_to_string(&shim).ok().as_deref() == Some(script.as_str()) {
+            std::fs::remove_file(&shim).map_err(|error| {
+                format!(
+                    "{reason}; also failed to remove stale managed Git shim {}: {error}",
+                    shim.display()
+                )
+            })?;
+        }
+        return Err(reason);
+    }
+    if std::fs::read_to_string(&shim).ok().as_deref() == Some(script.as_str()) {
+        return Ok(shim);
+    }
+    std::fs::create_dir_all(&shim_dir).map_err(|error| {
+        format!(
+            "create managed Git shim directory {}: {error}",
+            shim_dir.display()
+        )
+    })?;
+    std::fs::write(&shim, script)
+        .map_err(|error| format!("write managed Git shim {}: {error}", shim.display()))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).map_err(
+            |error| {
+                format!(
+                    "make managed Git shim executable {}: {error}",
+                    shim.display()
+                )
+            },
+        )?;
+    }
+    Ok(shim)
+}
+
+/// Rewrite only HQ's managed Git entries for a Core rescue.
+///
+/// Settings-provided directories retain their order, including a foreign Git
+/// that deliberately precedes HQ's managed directory. A healthy managed Git
+/// replaces its raw directory with the shim; an unhealthy one is removed with
+/// any stale shim, leaving the user's next Git selection intact. This remains
+/// scoped to rescue: the normal child PATH must retain strict Claude-settings
+/// parity for every other caller.
+#[cfg(not(target_os = "windows"))]
+pub fn managed_git_rescue_path_for_home(base_path: &str, home: &Path, healthy: bool) -> String {
+    let git_bin = managed_git_bin_in(home);
+    let raw = git_bin.parent().expect("managed Git has a bin directory");
+    let shim = managed_git_shim_dir_in(home);
+    let raw = raw.to_string_lossy();
+    let shim = shim.to_string_lossy();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut push = |entry: &str| {
+        if !entry.is_empty() && seen.insert(entry.to_string()) {
+            out.push(entry.to_string());
+        }
+    };
+
+    for entry in base_path.split(PATH_SEP) {
+        if entry == raw {
+            if healthy {
+                push(&shim);
+            }
+            continue;
+        }
+        if entry == shim {
+            if healthy {
+                push(&shim);
+            }
+            continue;
+        }
+        push(entry);
+    }
+    out.join(&PATH_SEP.to_string())
+}
+
 #[cfg(not(target_os = "windows"))]
 fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
     if let Some(home) = home {
@@ -4085,13 +4264,121 @@ mod tests {
 mod managed_git_shim_resolution_tests {
     use super::*;
 
+    fn write_executable(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn selected_git(path: &str) -> String {
+        let output = Command::new("/bin/sh")
+            .args(["-c", "git"])
+            .env_clear()
+            .env("PATH", path)
+            .output()
+            .expect("run fake git");
+        assert!(output.status.success(), "fake git failed: {output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn rescue_path_uses_shim_for_settings_managed_git_but_keeps_foreign_git_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let toolchain = managed_toolchain_dir(home);
+        let raw = toolchain.join("git/bin");
+        let shim = toolchain.join("git-shim");
+        let foreign = home.join("homebrew/bin");
+        write_executable(&raw.join("git"), "#!/bin/sh\nprintf raw\n");
+        write_executable(&shim.join("git"), "#!/bin/sh\nprintf shim\n");
+        write_executable(&foreign.join("git"), "#!/bin/sh\nprintf foreign\n");
+
+        let raw_first = raw.to_string_lossy().into_owned();
+        let repaired = managed_git_rescue_path_for_home(&raw_first, home, true);
+        assert_eq!(selected_git(&repaired), "shim");
+
+        let foreign_first = format!("{}:{}", foreign.display(), raw.display());
+        let repaired = managed_git_rescue_path_for_home(&foreign_first, home, true);
+        assert_eq!(selected_git(&repaired), "foreign");
+    }
+
+    #[test]
+    fn rescue_path_drops_unhealthy_managed_git_without_displacing_foreign_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let toolchain = managed_toolchain_dir(home);
+        let raw = toolchain.join("git/bin");
+        let shim = toolchain.join("git-shim");
+        let foreign = home.join("homebrew/bin");
+        write_executable(&raw.join("git"), "#!/bin/sh\nprintf raw\n");
+        write_executable(&shim.join("git"), "#!/bin/sh\nprintf stale-shim\n");
+        write_executable(&foreign.join("git"), "#!/bin/sh\nprintf foreign\n");
+
+        let path = format!("{}:{}:{}", shim.display(), raw.display(), foreign.display());
+        let repaired = managed_git_rescue_path_for_home(&path, home, false);
+        assert_eq!(selected_git(&repaired), "foreign");
+        assert!(!repaired
+            .split(':')
+            .any(|entry| entry == raw.to_string_lossy()));
+        assert!(!repaired
+            .split(':')
+            .any(|entry| entry == shim.to_string_lossy()));
+    }
+
+    #[test]
+    fn managed_git_shim_requires_an_executable_nonempty_binary_that_answers_version() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let git = managed_git_bin_in(home);
+        let shim = managed_git_shim_dir_in(home).join("git");
+        std::fs::create_dir_all(git.parent().expect("git parent")).unwrap();
+
+        std::fs::write(&git, "#!/bin/sh\nprintf git-version\n").unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = ensure_managed_git_shim_in(home).unwrap_err();
+        assert!(
+            error.contains("not executable"),
+            "unexpected error: {error}"
+        );
+        assert!(!shim.exists(), "a non-executable Git must not gain a shim");
+
+        std::fs::write(&git, b"").unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = ensure_managed_git_shim_in(home).unwrap_err();
+        assert!(error.contains("is empty"), "unexpected error: {error}");
+        assert!(!shim.exists(), "an empty Git must not gain a shim");
+
+        write_executable(&git, "#!/bin/sh\nprintf 'git version fixture'\n");
+        let first = ensure_managed_git_shim_in(home).expect("healthy Git gains a shim");
+        assert_eq!(first, shim);
+        assert!(std::fs::read_to_string(&shim)
+            .unwrap()
+            .contains("GIT_EXEC_PATH"));
+        assert_eq!(ensure_managed_git_shim_in(home), Ok(shim));
+
+        std::fs::write(&git, b"").unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(ensure_managed_git_shim_in(home).is_err());
+        assert!(
+            !managed_git_shim_dir_in(home).join("git").exists(),
+            "a stale generated shim must not keep a broken managed Git authoritative"
+        );
+    }
+
     #[test]
     fn resolve_bin_prefers_managed_git_shim_and_finds_local_bin_tools() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let shim = managed_toolchain_dir(home).join("git-shim");
         std::fs::create_dir_all(&shim).unwrap();
-        std::fs::write(shim.join("git"), "#!/bin/sh\n").unwrap();
+        write_executable(
+            &shim.join("git"),
+            "#!/bin/sh\nprintf 'git version fixture'\n",
+        );
         let local = home.join(".local").join("bin");
         std::fs::create_dir_all(&local).unwrap();
         std::fs::write(local.join("jq"), "").unwrap();

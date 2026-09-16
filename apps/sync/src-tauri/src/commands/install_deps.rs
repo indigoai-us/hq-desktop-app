@@ -1849,41 +1849,19 @@ pub fn shell_path_block() -> String {
     )
 }
 
-/// The portable (dugite) git has no compiled-in prefix and bundles no CA
-/// file: invoked bare from a user's shell it prints `templates not found` and
-/// `'remote-https' is not a git command`, so every https clone fails. The
-/// engine's own calls set `managed_git_env()`; users' shells need the same.
-/// Rather than exporting GIT_EXEC_PATH globally (which would break any other
-/// git the user later installs), install a tiny shim that sets the env and
-/// execs the real binary, and put the SHIM dir on PATH. Idempotent; returns
-/// the shim path when written. Exposed for testing.
+/// Ensure the portable Git wrapper for an explicit home directory.
+///
+/// The health gate lives in `hq-desktop-core::paths` with the rescue PATH
+/// selection it protects, so both the installer and core updates reject the
+/// same partial managed-Git install.
 #[cfg(not(windows))]
-pub fn ensure_managed_git_shim_in(home: &std::path::Path) -> Option<PathBuf> {
-    let git_dir = managed_git_dir_in(home);
-    if !git_dir.join("bin").join("git").exists() {
-        return None;
-    }
-    let shim_dir = managed_git_shim_dir_in(home);
-    let shim = shim_dir.join("git");
-    let script = format!(
-        "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n"
-    );
-    if std::fs::read_to_string(&shim).ok().as_deref() == Some(script.as_str()) {
-        return Some(shim);
-    }
-    std::fs::create_dir_all(&shim_dir).ok()?;
-    std::fs::write(&shim, script).ok()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755));
-    }
-    Some(shim)
+pub fn ensure_managed_git_shim_in(home: &std::path::Path) -> Result<PathBuf, String> {
+    hq_desktop_core::paths::ensure_managed_git_shim_in(home)
 }
 
 #[cfg(not(windows))]
 pub fn managed_git_shim_dir_in(home: &std::path::Path) -> PathBuf {
-    managed_toolchain_dir_in(home).join("git-shim")
+    hq_desktop_core::paths::managed_git_shim_dir_in(home)
 }
 
 /// Profile files the PATH block must land in for this shell.
@@ -1916,8 +1894,11 @@ pub fn shell_profile_paths_in(home: &std::path::Path) -> Vec<PathBuf> {
 #[cfg(not(windows))]
 pub(crate) fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
     match ensure_managed_git_shim_in(home) {
-        Some(p) => emit_preflight_line(app, &format!("[path] portable git shim at {}", p.display())),
-        None => emit_preflight_line(app, "[path] portable git not present; no shim written"),
+        Ok(p) => emit_preflight_line(app, &format!("[path] portable git shim at {}", p.display())),
+        Err(reason) => emit_preflight_line(
+            app,
+            &format!("[path] portable git shim unavailable: {reason}"),
+        ),
     }
     let block = shell_path_block();
     for profile_path in shell_profile_paths_in(home) {
@@ -9168,17 +9149,26 @@ mod git_shim_tests {
     fn shim_written_only_when_portable_git_exists_and_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
-        assert!(ensure_managed_git_shim_in(home).is_none());
+        assert!(ensure_managed_git_shim_in(home).is_err());
         let bin = managed_git_dir_in(home).join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("git"), "").unwrap();
+        let git = bin.join("git");
+        std::fs::write(&git, "#!/bin/sh\nprintf 'git version fixture'\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
         let shim = ensure_managed_git_shim_in(home).expect("shim");
         let body = std::fs::read_to_string(&shim).unwrap();
         assert!(body.starts_with("#!/bin/sh"));
-        assert!(body.contains("GIT_EXEC_PATH") && body.contains("GIT_TEMPLATE_DIR") && body.contains("exec "));
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&shim).unwrap().permissions().mode() & 0o111, 0o111);
-        assert_eq!(ensure_managed_git_shim_in(home), Some(shim));
+        assert!(
+            body.contains("GIT_EXEC_PATH")
+                && body.contains("GIT_TEMPLATE_DIR")
+                && body.contains("exec ")
+        );
+        assert_eq!(
+            std::fs::metadata(&shim).unwrap().permissions().mode() & 0o111,
+            0o111
+        );
+        assert_eq!(ensure_managed_git_shim_in(home), Ok(shim));
     }
 
     #[test]
