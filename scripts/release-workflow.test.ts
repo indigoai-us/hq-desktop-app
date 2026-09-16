@@ -1047,10 +1047,10 @@ describe("release workflow channel contract", () => {
     // The exe/PDB debug-id contract is asserted on the binary that SHIPS. The
     // PR gate used to check its own fixture copy too, which proved nothing
     // about the released artifact -- nothing symbolicates a fixture that is
-    // installed, asserted on and uninstalled inside one job. That build now
-    // runs with `debug = false` (see the fixture profile) precisely so the
-    // MSVC link stops writing a PDB no one reads, so the duplicate check could
-    // not have stayed anyway.
+    // installed, asserted on and uninstalled inside one job, and checking it
+    // also cost a global sentry-cli install on the critical path of a required
+    // check. This stands on its own: it is not contingent on how the fixture
+    // is compiled.
     expect(windows).toContain("Verify Windows debug file contract");
     expect(windows).toContain("hq-sync-menubar.exe");
     expect(windows).toContain("hq_sync_menubar.pdb");

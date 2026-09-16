@@ -811,22 +811,32 @@ describe("the installer fixture build does only what the E2E consumes", () => {
     expect(releaseWorkflow).toContain("Required release PDB is missing");
   });
 
-  it("builds the fixture binary without debug info", () => {
-    // `opt-level` alone did not move the cost it was written for. Measured on
-    // run 35060444631, weeks after that override landed: 378s of the build was
-    // still one silent stretch between the last `Compiling` line and
-    // hq-sync-menubar's warning summary, against the 6m15s recorded when the
-    // override was written. Only four crates compile; every dependency restores
-    // from cache. So the block is the MSVC link, and on MSVC the link writes
-    // the PDB -- which this fixture has no reader for.
-    expect(fixtureProfile).toContain("debug = false");
+  it("keeps the fixture override scoped to one crate, and records what failed", () => {
+    // Two overrides have now been aimed at the 446s codegen/link block in this
+    // crate. `opt-level = 1` moved it ~0 (8m21s cargo, run 35060444631) and
+    // `debug = false` moved it 28s / 6% (7m54s cargo, run 35067622738), which
+    // disproved the "it is the PDB write" hypothesis; it was reverted rather
+    // than kept on a premise that did not hold. Both results are written up in
+    // the file itself so a third attempt starts from the measurements.
+    // Read the KEYS, not the file text: the write-up above deliberately names
+    // `debug = false` in prose, and a raw `not.toContain` would fail on the
+    // explanation of why the setting is absent. Same reason jobConfig() strips
+    // comments before negative assertions elsewhere in this file.
+    const settings = fixtureProfile
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#") && !line.startsWith("["));
+
+    expect(settings).toEqual(["opt-level = 1"]);
+    expect(fixtureProfile).toContain("NEITHER DID `debug = false`");
 
     // Still exactly one override section, and still the workspace member
-    // rust-cache never stores. The assertion below this one enforces that too;
-    // both have to hold for the write-after-keying order to stay sound.
+    // rust-cache never stores -- the invariant that makes writing this file
+    // after rust-cache has keyed sound in the first place.
     const overridden = [
       ...fixtureProfile.matchAll(/^\[profile\.[^\]]*\]/gm),
     ].map((m) => m[0]);
+
     expect(overridden).toEqual(["[profile.release.package.hq-sync-menubar]"]);
   });
 });
