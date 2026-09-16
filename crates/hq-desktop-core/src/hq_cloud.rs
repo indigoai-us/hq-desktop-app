@@ -623,22 +623,31 @@
 /// retain the older runner; changing this requested spec is what moves npm's
 /// cache key and delivers the new runner.
 ///
-/// `~6.16.45` -> `~6.16.47`: floors the runner at the releases that fix two
-/// Windows rescue failures. 6.16.46 (hq-cloud#561) tolerates Node's Windows
-/// realpath failure at a drive root: after the native and JavaScript walkers
-/// fail, it accepts a normalized absolute path when `stat` confirms it is a
-/// directory instead of failing `--hq-root` with `EISDIR`. 6.16.47
-/// (hq-cloud#563) finds the `rsync.cmd` shim HQ installs (including `PATHEXT`
-/// candidates) and launches it through `cmd.exe` for both the preflight and
-/// overlay, so a valid portable rsync no longer fails before a safety snapshot
-/// is allocated. These are runner bug fixes rather than a new desktop-visible
+/// `~6.16.45` -> `~6.16.50`: floors the runner at the releases that fix the
+/// Windows rescue failures and recover a wedged Mac rescue. 6.16.46
+/// (hq-cloud#561) tolerates Node's Windows realpath failure at a drive root:
+/// after the native and JavaScript walkers fail, it accepts a normalized
+/// absolute path when `stat` confirms it is a directory instead of failing
+/// `--hq-root` with `EISDIR`. 6.16.47 (hq-cloud#563) finds the `rsync.cmd` shim
+/// HQ installs (including `PATHEXT` candidates) and launches it through
+/// `cmd.exe` for both the preflight and overlay, so a valid portable rsync no
+/// longer fails before a safety snapshot is allocated.
+///
+/// 6.16.48 adds host-key machine credentials for external agents. 6.16.49
+/// checks that every rescue rename or delete is writable before allocating a
+/// safety snapshot, so an unwritable release tree cannot trip the snapshot
+/// circuit breaker; if it is already tripped, rescue records a recovery hint.
+/// 6.16.50 adds verified snapshot recovery: it removes a snapshot only after a
+/// later successful rescue proves it obsolete, otherwise restores and verifies
+/// the saved tree before allowing one retry. These are runner bug fixes and
+/// runner-internal credential behavior rather than a new desktop-visible
 /// capability contract, so they deliberately add no `*_MIN_HQ_CLOUD` floor
 /// constant.
 ///
-/// A desktop holding a cached 6.16.45 satisfies `~6.16.45` forever and would
+/// A desktop holding a cached 6.16.47 satisfies `~6.16.47` forever and would
 /// retain the older runner; changing this requested spec is what moves npm's
 /// cache key and delivers these fixes.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.47";
+pub const HQ_CLOUD_VERSION: &str = "~6.16.50";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -766,7 +775,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.47");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.50");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
