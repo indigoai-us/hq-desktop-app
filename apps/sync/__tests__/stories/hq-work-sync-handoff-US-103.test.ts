@@ -727,7 +727,10 @@ describe('US-103 embedded desktop window', () => {
       expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
     });
 
-    it('opens a picked existing DM exactly once and closes the create modal', async () => {
+    it('picking a person stages them instead of opening the DM', async () => {
+      // Picking the first name used to open that DM and close the modal, so a
+      // second person could never be added. The people now collect in the
+      // dialog; "Message … directly" is the one-to-one path.
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
@@ -739,6 +742,34 @@ describe('US-103 embedded desktop window', () => {
       ).find((node) => node.textContent?.includes('Bob'));
       expect(bob?.textContent).toContain('bob@example.test');
       bob?.click();
+      await flush();
+
+      expect(calls.filter((call) => call.cmd === 'mark_dm_thread_read')).toEqual([]);
+      expect(calls.filter((call) => call.cmd === 'send_dm')).toEqual([]);
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).not.toBeNull();
+      const chips = Array.from(
+        document.querySelectorAll('[data-testid="chat-channel-chip"]'),
+      ).map((node) => node.textContent ?? '');
+      expect(chips.join(' ')).toContain('Bob');
+    });
+
+    it('opens a picked existing DM exactly once from the direct action', async () => {
+      const calls: MessagingCall[] = [];
+      mountMessagingSidebar(messagingInvoke(calls));
+      await flush();
+      await openCreateModal();
+      setInput('chat-create-query', 'Bob');
+      await settleQuery();
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>('[data-testid="chat-create-result"]'),
+      )
+        .find((node) => node.textContent?.includes('Bob'))
+        ?.click();
+      await flush();
+
+      document
+        .querySelector<HTMLButtonElement>('[data-testid="chat-channel-message-directly"]')
+        ?.click();
       await flush();
 
       expect(calls.filter((call) => call.cmd === 'mark_dm_thread_read')).toEqual([
@@ -767,11 +798,16 @@ describe('US-103 embedded desktop window', () => {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       await flush();
 
+      // The point of this test is staleness, not navigation: Enter must act on
+      // the VISIBLE result. A person now stages rather than opening, so the
+      // proof is that Bob is who got staged and the stale channel was untouched.
       const after = calls.slice(before);
       expect(after.filter((call) => call.cmd === 'mark_channel_read')).toEqual([]);
-      expect(after.filter((call) => call.cmd === 'mark_dm_thread_read')).toEqual([
-        { cmd: 'mark_dm_thread_read', args: { withPersonUid: 'prs_bob' } },
-      ]);
+      const chips = Array.from(
+        document.querySelectorAll('[data-testid="chat-channel-chip"]'),
+      ).map((node) => node.textContent ?? '');
+      expect(chips.join(' ')).toContain('Bob');
+      expect(chips.join(' ')).not.toContain('existing');
     });
 
     it('refuses to dismiss while a create is in flight, then opens the channel once it lands', async () => {
