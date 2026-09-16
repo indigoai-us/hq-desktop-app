@@ -362,6 +362,67 @@ fn configure_args(name: &str, model: Option<&str>, effort: Option<&str>) -> Resu
     Ok(args)
 }
 
+// ── bots come back after a reinstall ─────────────────────────────────────────
+//
+// `hq bot list` only knows THIS computer. A reinstall, a wiped `~/.hq`, or a
+// second Mac leaves the account owning the bot in the cloud while nothing here
+// can run it — the state that had a bot's DM spinning while its setup said it
+// could not run here. These three argv shapes are the app's side of the CLI's
+// answer: read what the account owns, bring one back, bring them all back.
+//
+// Every one is built by a pure function so the exact flags stay unit-tested:
+// `run_hq_bot` only ever runs argv this module constructed, never caller text.
+
+/// argv for `hq bot list --remote` — the local bots this account owns,
+/// wherever they live, each with a `here` flag for this computer.
+fn list_remote_args() -> Vec<String> {
+    vec!["list".to_string(), "--remote".to_string()]
+}
+
+/// argv for `hq bot adopt <name>` — new machine credentials, the bot's saved
+/// settings, its worker folder and startup agent, and a start.
+fn adopt_args(name: &str) -> Result<Vec<String>, String> {
+    Ok(vec!["adopt".to_string(), validate_name(name)?])
+}
+
+/// argv for `hq bot restore [--all]` — every owned bot missing here. `--all`
+/// additionally re-issues credentials for the ones already set up here.
+fn restore_args(all: bool) -> Vec<String> {
+    let mut args = vec!["restore".to_string()];
+    if all {
+        args.push("--all".to_string());
+    }
+    args
+}
+
+/// `hq bot list --remote --json` → `{ bots: [{ name, agentUid, kind, online,
+/// lastHeartbeatAt, here, settings }] }`.
+#[tauri::command]
+pub async fn local_bots_list_remote() -> Result<Value, String> {
+    let args = list_remote_args();
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_hq_bot(&argv, Duration::from_secs(60)).await
+}
+
+/// `hq bot adopt <name> --json`: bring one bot the caller owns back to this
+/// computer and start it.
+#[tauri::command]
+pub async fn local_bots_adopt(name: String) -> Result<Value, String> {
+    let args = adopt_args(&name)?;
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_hq_bot(&argv, Duration::from_secs(180)).await
+}
+
+/// `hq bot restore [--all] --json`: bring back every owned bot that is not set
+/// up here. Each bot is credentialed, scaffolded and started in turn, so this
+/// is the longest-running bot command the app issues.
+#[tauri::command]
+pub async fn local_bots_restore(all: Option<bool>) -> Result<Value, String> {
+    let args = restore_args(all == Some(true));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_hq_bot(&argv, Duration::from_secs(600)).await
+}
+
 /// Change the model and thinking level a bot uses (from its next message).
 #[tauri::command]
 pub async fn local_bots_configure(name: String, model: Option<String>, effort: Option<String>) -> Result<Value, String> {
@@ -511,6 +572,24 @@ mod tests {
         assert!(create_args("scout", "claude", None, None, None, None, Some("go\u{1b}[31m"), None, None, None).is_err());
         // A kickoff may be longer than an intro.
         assert!(validate_kickoff(&"k".repeat(INTRO_MAX_CHARS + 1)).is_ok());
+    }
+
+    #[test]
+    fn restore_argv_shapes_are_exactly_the_cli_flags() {
+        assert_eq!(list_remote_args(), vec!["list", "--remote"]);
+        assert_eq!(restore_args(false), vec!["restore"]);
+        assert_eq!(restore_args(true), vec!["restore", "--all"]);
+        assert_eq!(adopt_args("scout").unwrap(), vec!["adopt", "scout"]);
+        assert_eq!(adopt_args(" setup ").unwrap(), vec!["adopt", "setup"]);
+    }
+
+    #[test]
+    fn adopt_rejects_anything_that_is_not_a_bot_name() {
+        // A name is the only caller-supplied argv here, so it carries the same
+        // slug rule as create: no flags, no paths, no uppercase.
+        for bad in ["--all", "../etc", "Scout", "a--b", "", "scout name"] {
+            assert!(adopt_args(bad).is_err(), "adopt_args({bad:?}) should be refused");
+        }
     }
 
     #[test]
