@@ -3579,22 +3579,34 @@ error: clone failed";
 
     #[test]
     fn baseline_persistence_failure_is_recorded_in_the_local_diagnostic_log() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_baseline_warning_signatures_for_test();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("hq-sync.log");
         let _log_guard = hq_desktop_core::logfile::LogOverrideGuard::new(path.clone());
         let detail =
             "core update applied but baseline persistence failed: commits/main HTTP 403 Forbidden";
 
-        record_core_update_baseline_persistence_failure(
-            "manual",
-            Channel::Release,
-            "hq-core-update",
-            detail,
+        let events = captured_dispatched_core_update_events(
+            &["Desktop Core update applied but baseline persistence failed"],
+            || {
+                record_core_update_baseline_persistence_failure(
+                    "manual",
+                    Channel::Release,
+                    "hq-core-update",
+                    detail,
+                );
+            },
         );
 
         let contents = std::fs::read_to_string(path).unwrap();
         assert!(contents.contains("[hq-core-update]"));
         assert!(contents.contains(detail));
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].message.as_deref(),
+            Some("Desktop Core update applied but baseline persistence failed")
+        );
     }
 
     fn sentry_user_tokens(id_token: Option<String>) -> crate::commands::cognito::CognitoTokens {
@@ -3638,27 +3650,45 @@ error: clone failed";
         );
     }
 
+    fn is_core_update_sentry_event(event: &sentry::protocol::Event<'static>) -> bool {
+        matches!(
+            event.message.as_deref(),
+            Some(
+                "Desktop Core update failed"
+                    | "Desktop Core update applied but baseline persistence failed"
+            )
+        )
+    }
+
     fn captured_dispatched_core_update_events(
+        expected_messages: &[&'static str],
         report: impl FnOnce(),
     ) -> Vec<sentry::protocol::Event<'static>> {
-        let dispatched = Arc::new(AtomicBool::new(false));
+        let expected_messages = expected_messages.to_vec();
+        let expected_count = expected_messages.len();
+        let dispatched = Arc::new(AtomicUsize::new(0));
         let dispatched_in_before_send = Arc::clone(&dispatched);
-        sentry::test::with_captured_events_options(
+        let events = sentry::test::with_captured_events_options(
             || {
                 let main_hub = sentry::Hub::main();
                 // The test transport is installed on this test's temporary hub.
                 // Production initialization binds the client to the process hub,
                 // so mirror that setup before exercising cross-thread reporting.
+                // Wait only for the report this test asked for: another Core
+                // report can be in flight from a neighbouring test.
                 main_hub.bind_client(sentry::Hub::current().client());
                 report();
 
                 let deadline = Instant::now() + Duration::from_secs(1);
-                while !dispatched.load(Ordering::Acquire) && Instant::now() < deadline {
+                while dispatched.load(Ordering::Acquire) < expected_count
+                    && Instant::now() < deadline
+                {
                     std::thread::yield_now();
                 }
-                assert!(
+                assert_eq!(
                     dispatched.load(Ordering::Acquire),
-                    "the dispatched Core update report must reach the Sentry transport"
+                    expected_count,
+                    "each requested Core update report must reach the Sentry transport"
                 );
 
                 main_hub.configure_scope(|scope| scope.set_user(None));
@@ -3666,12 +3696,22 @@ error: clone failed";
             },
             sentry::ClientOptions {
                 before_send: Some(Arc::new(move |event| {
-                    dispatched_in_before_send.store(true, Ordering::Release);
+                    if expected_messages
+                        .iter()
+                        .any(|expected| *expected == event.message.as_deref().unwrap_or_default())
+                    {
+                        dispatched_in_before_send.fetch_add(1, Ordering::AcqRel);
+                    }
                     Some(event)
                 })),
                 ..Default::default()
             },
-        )
+        );
+
+        events
+            .into_iter()
+            .filter(is_core_update_sentry_event)
+            .collect()
     }
 
     #[test]
@@ -3679,14 +3719,15 @@ error: clone failed";
         let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
         reset_core_update_sentry_signatures_for_test();
         let tokens = sentry_user_tokens(Some(sentry_user_id_token()));
-        let events = captured_dispatched_core_update_events(|| {
-            std::thread::spawn(move || {
-                crate::commands::auth::set_sentry_user_from_tokens(&tokens);
-            })
-            .join()
-            .expect("auth thread does not panic");
-            queue_core_update_sentry_test_report();
-        });
+        let events =
+            captured_dispatched_core_update_events(&["Desktop Core update failed"], || {
+                std::thread::spawn(move || {
+                    crate::commands::auth::set_sentry_user_from_tokens(&tokens);
+                })
+                .join()
+                .expect("auth thread does not panic");
+                queue_core_update_sentry_test_report();
+            });
 
         assert_eq!(events.len(), 1);
         let user = events[0]
@@ -3702,23 +3743,48 @@ error: clone failed";
     fn sign_out_clears_the_user_for_dispatched_core_update_reports() {
         let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
         reset_core_update_sentry_signatures_for_test();
+        reset_core_update_baseline_warning_signatures_for_test();
         let tokens = sentry_user_tokens(Some(sentry_user_id_token()));
-        let events = captured_dispatched_core_update_events(|| {
-            std::thread::spawn(move || {
-                crate::commands::auth::set_sentry_user_from_tokens(&tokens);
-            })
-            .join()
-            .expect("auth thread does not panic");
-            std::thread::spawn(crate::commands::auth::clear_sentry_user)
+        let events = captured_dispatched_core_update_events(
+            &[
+                "Desktop Core update failed",
+                "Desktop Core update applied but baseline persistence failed",
+            ],
+            || {
+                std::thread::spawn(move || {
+                    crate::commands::auth::set_sentry_user_from_tokens(&tokens);
+                })
                 .join()
-                .expect("sign-out thread does not panic");
-            queue_core_update_sentry_test_report();
-        });
+                .expect("auth thread does not panic");
+                std::thread::spawn(crate::commands::auth::clear_sentry_user)
+                    .join()
+                    .expect("sign-out thread does not panic");
+                queue_core_update_sentry_test_report();
+                queue_core_update_baseline_persistence_warning(
+                    "automatic",
+                    Channel::Release,
+                    "core update applied but baseline persistence failed: commits/main HTTP 403 Forbidden",
+                );
+            },
+        );
 
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert!(
-            events[0].user.is_none(),
-            "a report after sign-out must not identify the previous user"
+            events
+                .iter()
+                .any(|event| event.message.as_deref() == Some("Desktop Core update failed")),
+            "the ordinary Core update failure report is dispatched after sign-out"
+        );
+        assert!(
+            events.iter().any(|event| {
+                event.message.as_deref()
+                    == Some("Desktop Core update applied but baseline persistence failed")
+            }),
+            "the baseline-persistence warning is dispatched after sign-out"
+        );
+        assert!(
+            events.iter().all(|event| event.user.is_none()),
+            "Core update reports after sign-out must not identify the previous user"
         );
     }
 
@@ -3730,19 +3796,20 @@ error: clone failed";
             reset_core_update_sentry_signatures_for_test();
             let signed_in_tokens = sentry_user_tokens(Some(sentry_user_id_token()));
             let malformed_tokens = sentry_user_tokens(id_token);
-            let events = captured_dispatched_core_update_events(|| {
-                std::thread::spawn(move || {
-                    crate::commands::auth::set_sentry_user_from_tokens(&signed_in_tokens);
-                })
-                .join()
-                .expect("auth thread does not panic");
-                std::thread::spawn(move || {
-                    crate::commands::auth::set_sentry_user_from_tokens(&malformed_tokens);
-                })
-                .join()
-                .expect("malformed-token auth thread does not panic");
-                queue_core_update_sentry_test_report();
-            });
+            let events =
+                captured_dispatched_core_update_events(&["Desktop Core update failed"], || {
+                    std::thread::spawn(move || {
+                        crate::commands::auth::set_sentry_user_from_tokens(&signed_in_tokens);
+                    })
+                    .join()
+                    .expect("auth thread does not panic");
+                    std::thread::spawn(move || {
+                        crate::commands::auth::set_sentry_user_from_tokens(&malformed_tokens);
+                    })
+                    .join()
+                    .expect("malformed-token auth thread does not panic");
+                    queue_core_update_sentry_test_report();
+                });
 
             assert_eq!(events.len(), 1);
             assert!(
