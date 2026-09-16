@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * Live preview of the bot being created: avatar (or generated mark), name,
-   * Cloud/Local chip, "thinks with …", and the intro line. Right rail on wide
+   * its title, the Cloud/Local chip and "thinks with …". Right rail on wide
    * windows, top on narrow — the host decides with `placement`.
    */
   import BotKindChip from "../BotKindChip.svelte";
@@ -16,7 +16,8 @@
     runtime: BotRuntime;
     /** "thinks with Claude Code" / "hosted by Indigo". */
     thinksWith: string;
-    intro?: string;
+    /** Optional job title, shown under the name. */
+    title?: string;
     /** Chosen avatar (a pack tile). */
     avatarUrl?: string | null;
     /** Seed for the generated mark while no avatar is chosen. */
@@ -32,7 +33,7 @@
     home,
     runtime,
     thinksWith,
-    intro = "",
+    title = "",
     avatarUrl = null,
     markSeed = "",
     kindLine = "",
@@ -54,15 +55,13 @@
     {#if handle.trim()}
       <span class="preview-handle" data-testid="bot-preview-handle">@{handle.trim()}</span>
     {/if}
+    {#if title.trim()}
+      <span class="preview-title" data-testid="bot-preview-title">{title.trim()}</span>
+    {/if}
     {#if kindLine}
       <span class="preview-kind" data-testid="bot-preview-kind">{kindLine}</span>
     {/if}
     <span class="preview-thinks" data-testid="bot-preview-thinks">{thinksWith}</span>
-    {#if intro.trim()}
-      <p class="preview-intro" data-testid="bot-preview-intro">“{intro.trim()}”</p>
-    {:else}
-      <p class="preview-intro muted">{home === "cloud" ? "Says hello once it's set up." : "Says hello when it comes online."}</p>
-    {/if}
   </div>
 </aside>
 
@@ -132,6 +131,11 @@
     font-weight: 600;
     overflow-wrap: anywhere;
   }
+  .preview-title {
+    color: var(--t2);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
   .preview-kind {
     color: var(--t2);
     font-size: 12px;
@@ -139,20 +143,5 @@
   .preview-thinks {
     color: var(--t3);
     font-size: 12px;
-  }
-  .preview-intro {
-    margin: 4px 0 0;
-    color: var(--t2);
-    font-size: 12px;
-    line-height: 1.45;
-    overflow-wrap: anywhere;
-    display: -webkit-box;
-    -webkit-line-clamp: 4;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .preview-intro.muted {
-    color: var(--t3);
-    font-style: italic;
   }
 </style>
