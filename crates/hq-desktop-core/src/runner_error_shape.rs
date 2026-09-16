@@ -194,7 +194,25 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// diagnostics, unsupported-snapshot-format message, and denied session-log
 /// delete handling add no named runner-error identity, so the vocabulary remains
 /// unchanged and only this source-version marker moves with the verified pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.45";
+///
+/// The `~6.16.45` -> `~6.16.47` bump was re-derived from both hq-cloud trees.
+/// The Windows realpath fallback and Windows rsync-shim launcher change rescue
+/// behavior, not runner-error identities: the complete `this.name` and
+/// `readonly name` identity sets have no diff, `HQ_CLOUD_IDENTITIES` remains
+/// 52 with the same event-surface exclusions, and
+/// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). No new vocabulary arm is needed, but the source-version
+/// marker moves with the verified runner pin.
+///
+/// The `~6.16.47` -> `~6.16.50` bump was re-derived from both hq-cloud trees.
+/// The external-agent credential flow, content-lineage work, rescue writability
+/// preflight, and verified snapshot recovery add no named runner-error identity:
+/// the complete `this.name` and `readonly name` identity sets have no diff,
+/// `HQ_CLOUD_IDENTITIES` remains 52 with the same event-surface exclusions, and
+/// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). No new vocabulary arm is needed, but the source-version
+/// marker moves with the verified runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.50";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
