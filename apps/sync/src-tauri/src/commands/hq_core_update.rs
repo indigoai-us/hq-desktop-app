@@ -430,7 +430,7 @@ async fn install_hq_core_update_inner() -> Result<
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so this prod Update can't race prewarm/sync into a corrupt
     // `_npx` tree (especially likely right after an HQ_CLOUD_VERSION bump).
-    let (mut cmd, npx_resolution) = crate::commands::hq_core_staging::rescue_command();
+    let (mut cmd, npx_resolution) = core_update_rescue_command();
     crate::commands::hq_core_staging::materialize_rescue_cache()
         .await
         .map_err(|error| {
@@ -528,6 +528,28 @@ async fn install_hq_core_update_inner() -> Result<
     })
 }
 
+/// Build the core-update rescue command after preparing the managed Git shim.
+///
+/// `child_path()` selects this shim ahead of `/usr/bin/git`. Preparing it here
+/// keeps a core update on the managed Git when the installer provisioned Git
+/// before it had a chance to write the shim. A missing Git or unwritable shim
+/// remains non-fatal so the update retains its existing fallback behavior.
+fn core_update_rescue_command() -> (
+    tokio::process::Command,
+    crate::commands::hq_core_state::CoreUpdateNpxResolution,
+) {
+    #[cfg(not(windows))]
+    match crate::commands::install_deps::ensure_managed_git_shim() {
+        Some(_) => log("hq-core-update", "managed Git shim ready for rescue"),
+        None => log(
+            "hq-core-update",
+            "managed Git shim unavailable before rescue; continuing with existing Git resolution",
+        ),
+    }
+
+    crate::commands::hq_core_staging::rescue_command()
+}
+
 #[cfg(test)]
 mod tests {
     #[tokio::test(flavor = "current_thread")]
@@ -565,6 +587,8 @@ mod tests {
 
     use super::*;
     use crate::commands::hq_core_staging::build_rescue_args;
+    #[cfg(not(windows))]
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -644,5 +668,39 @@ mod tests {
     fn prod_source_agrees_with_release_feed() {
         assert_eq!(PROD_HQ_CORE_REPO, "indigoai-us/hq-core");
         assert!(RELEASES_URL.contains(PROD_HQ_CORE_REPO));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn core_update_rescue_command_creates_shim_only_for_managed_git() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+
+        let managed_home = tempfile::tempdir().unwrap();
+        let git = managed_home
+            .path()
+            .join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
+        std::fs::create_dir_all(git.parent().unwrap()).unwrap();
+        std::fs::write(&git, "").unwrap();
+        {
+            let _home = scoped_home(managed_home.path());
+            let _ = core_update_rescue_command();
+        }
+        assert!(
+            crate::commands::install_deps::managed_git_shim_dir_in(managed_home.path())
+                .join("git")
+                .is_file(),
+            "preparing the rescue command must install the managed Git shim before spawning"
+        );
+
+        let no_git_home = tempfile::tempdir().unwrap();
+        {
+            let _home = scoped_home(no_git_home.path());
+            let _ = core_update_rescue_command();
+        }
+        assert!(crate::commands::install_deps::managed_git_env_in(no_git_home.path()).is_empty());
+        assert!(
+            !crate::commands::install_deps::managed_git_shim_dir_in(no_git_home.path()).exists(),
+            "a machine without managed Git must not gain a shim directory"
+        );
     }
 }

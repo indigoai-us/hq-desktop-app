@@ -1881,6 +1881,12 @@ pub fn ensure_managed_git_shim_in(home: &std::path::Path) -> Option<PathBuf> {
     Some(shim)
 }
 
+/// Production wrapper over `ensure_managed_git_shim_in`, resolving the real home dir.
+#[cfg(not(windows))]
+pub fn ensure_managed_git_shim() -> Option<PathBuf> {
+    dirs::home_dir().and_then(|home| ensure_managed_git_shim_in(&home))
+}
+
 #[cfg(not(windows))]
 pub fn managed_git_shim_dir_in(home: &std::path::Path) -> PathBuf {
     managed_toolchain_dir_in(home).join("git-shim")
