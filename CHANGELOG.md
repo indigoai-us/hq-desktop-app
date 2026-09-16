@@ -12,6 +12,8 @@ The release moves it under the version it ships in.
 
 - Core update failure reports now include a redacted detail when HQ cannot start the rescue update or save its baseline, so support can diagnose the failure.
 - On Windows, Core updates now make sure the rsync path shim is present before starting a rescue. The optional check gives up after 45 seconds so a slow download does not keep an update marked "Updating".
+- Signing in from the setup wizard through your browser no longer stops after a second and a half. The sign-in buttons still appear right away, and finishing in the browser now completes sign-in.
+- When setup fails, the report now includes the app version, the setup stage, and a clearer reason. This makes the issue easier to diagnose without asking you for logs.
 
 ## [0.10.271] — 2026-09-16
 

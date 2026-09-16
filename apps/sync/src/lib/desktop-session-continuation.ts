@@ -371,13 +371,22 @@ export type ContinuationState =
 /** Map a native error to one of the closed error kinds. Never free text. */
 export function classifyContinuationError(error: unknown): ContinuationErrorKind {
   const message = error instanceof Error ? error.message : String(error ?? '');
-  let code: string | undefined;
+  let code = message;
   try {
     const parsed: unknown = JSON.parse(message);
     if (isRecord(parsed) && typeof parsed.code === 'string') code = parsed.code;
   } catch {
-    code = undefined;
+    // Tauri returns several custody failures as their closed code string.
   }
+  if (code === 'CONTINUATION_NO_ATTEMPT' || code === 'CONTINUATION_ATTEMPT_OVER') {
+    return 'expired';
+  }
+  if (code === 'CONTINUATION_STATE_MISMATCH') return 'state_mismatch';
+  if (code === 'CONTINUATION_TOKEN_MISMATCH' || code === 'CONTINUATION_NOT_VERIFIED') {
+    return 'invalid_token';
+  }
+  if (code === 'CONTINUATION_NOTHING_HELD') return 'cancelled';
+  if (code === 'CONTINUATION_OFFLINE') return 'offline';
   if (code === 'OAUTH_PORT_IN_USE') return 'port_in_use';
   if (code === 'OAUTH_PROVIDER_ERROR') return 'provider_denied';
   // Order is precedence, and it is load-bearing. "failed to persist tokens"

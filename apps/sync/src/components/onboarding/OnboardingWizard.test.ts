@@ -12,6 +12,9 @@ const tauri = vi.hoisted(() => ({
   invoke: vi.fn(),
   open: vi.fn(),
 }));
+const app = vi.hoisted(() => ({
+  getVersion: vi.fn(),
+}));
 
 const httpFetch = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -24,6 +27,7 @@ const httpFetch = vi.hoisted(() =>
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
+vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 
@@ -222,6 +226,8 @@ beforeEach(() => {
   );
   tauri.invoke.mockReset();
   tauri.open.mockReset();
+  app.getVersion.mockReset();
+  app.getVersion.mockResolvedValue('0.10.271');
   tauri.open.mockResolvedValue(undefined);
   httpFetch.mockReset();
   httpFetch.mockResolvedValue({
@@ -386,7 +392,7 @@ describe('first-run browser session continuation', () => {
     expect(tauri.invoke).not.toHaveBeenCalledWith('desktop_continuation_start');
   });
 
-  it('falls through after 1.5 seconds and ignores a continuation result that arrives later', async () => {
+  it('reveals providers after 1.5 seconds but completes a continuation that returns later', async () => {
     let resolveIdentity!: (value: unknown) => void;
     const identity = new Promise<unknown>((resolve) => {
       resolveIdentity = resolve;
@@ -403,31 +409,25 @@ describe('first-run browser session continuation', () => {
     await flushUntil(() => providerButtons().length === 2);
 
     expectPreBranchProviderScreen();
-    expect(tauri.invoke).toHaveBeenCalledWith('desktop_continuation_cancel', {
-      attemptId: 'continuation-attempt',
-    });
+    expect(tauri.invoke).not.toHaveBeenCalledWith('desktop_continuation_cancel', expect.anything());
 
     resolveIdentity({ email: 'placeholder account' });
-    await flush();
-    await flush();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_confirm'),
+    );
+    await advancePastSignIn();
 
-    expectPreBranchProviderScreen();
-    expect(tauri.invoke).not.toHaveBeenCalledWith('desktop_continuation_confirm', expect.anything());
     expect(
       host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on'),
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it('starts provider OAuth immediately while timeout cancellation is in flight', async () => {
+  it('cancels the live continuation when a provider is chosen after reveal', async () => {
     let resolveIdentity!: (value: unknown) => void;
     const identity = new Promise<unknown>((resolve) => {
       resolveIdentity = resolve;
     });
-    let releaseCancel!: () => void;
-    const cancellation = new Promise<void>((resolve) => {
-      releaseCancel = resolve;
-    });
-    stubContinuationInvoke({ identity: () => identity, cancel: () => cancellation });
+    stubContinuationInvoke({ identity: () => identity });
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
 
     await flushUntil(() =>
@@ -440,11 +440,122 @@ describe('first-run browser session continuation', () => {
     flushSync();
 
     expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', { provider: 'Google' });
+    expect(tauri.invoke).toHaveBeenCalledWith('desktop_continuation_cancel', {
+      attemptId: 'continuation-attempt',
+    });
     expect(providerButtons()[0]?.disabled).toBe(true);
     expect(host.textContent).toContain('A browser window opened for Google sign-in.');
 
-    releaseCancel();
     resolveIdentity({ email: 'placeholder account' });
+  });
+
+  it('cancels a live continuation when the wizard unmounts', async () => {
+    let resolveIdentity!: (value: unknown) => void;
+    const identity = new Promise<unknown>((resolve) => {
+      resolveIdentity = resolve;
+    });
+    stubContinuationInvoke({ identity: () => identity });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_await_identity'),
+    );
+    await unmount(component);
+    component = null;
+
+    expect(tauri.invoke).toHaveBeenCalledWith('desktop_continuation_cancel', {
+      attemptId: 'continuation-attempt',
+    });
+    resolveIdentity({ email: 'placeholder account' });
+  });
+
+  it('records onboarding abandonment once when the window goes away', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => providerButtons().length === 2);
+
+    window.dispatchEvent(new PageTransitionEvent('pagehide'));
+    window.dispatchEvent(new PageTransitionEvent('pagehide'));
+    await flush();
+
+    const abandoned = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { action?: string } }).properties?.action === 'abandoned',
+    );
+    expect(abandoned).toHaveLength(1);
+    expect((abandoned[0]?.[1] as { properties: { step: string } }).properties.step).toBe(
+      'welcome-signin',
+    );
+  });
+
+  it('adds app version and normalized setup failure fields when native detail is absent', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/placeholder/HQ';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          throw new Error('dependency installation failed');
+        case 'take_onboarding_failure_detail':
+          return undefined;
+        case 'emit_desktop_operational_telemetry':
+          return undefined;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string } }).properties
+            ?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage === 'deps',
+      ),
+    );
+    const failure = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { failureStage?: string } }).properties?.failureStage === 'deps',
+    )?.[1] as { properties: Record<string, unknown> };
+    expect(failure.properties).toMatchObject({
+      appVersion: '0.10.271',
+      errorCategory: 'unknown',
+      failureStage: 'deps',
+      failedDependency: 'unknown',
+    });
+  });
+
+  it('records an OAuth failure with the continuation error kind', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => providerButtons().length === 2);
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'start_oauth_login') throw new Error('CONTINUATION_OFFLINE');
+      if (command === 'emit_desktop_operational_telemetry') return undefined;
+      if (command === 'resolve_hq_path') return '/Users/placeholder/HQ';
+      if (command === 'detect_ai_tools') return NO_AI_TOOLS;
+      return undefined;
+    });
+
+    providerButtons()[0]?.click();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { outcome?: string } }).properties?.outcome === 'oauth_failed',
+      ),
+    );
+    const failure = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as { properties?: { outcome?: string } }).properties?.outcome === 'oauth_failed',
+    )?.[1] as { properties: Record<string, unknown> };
+    expect(failure.properties.errorKind).toBe('offline');
   });
 
   it('keeps the welcome-signin step event in control and continuation arms', async () => {
