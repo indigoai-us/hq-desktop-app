@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Setup reports no longer count a finished setup as abandoned.
+
 ## [0.10.275] — 2026-09-16
 
 - Core update failure reports now include the signed-in user, so support can see how many people an issue affects.
