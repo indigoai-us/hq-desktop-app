@@ -398,6 +398,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     fetchSharedWithMe: (opts) => this.call("fetch_shared_with_me", { opts }),
     ackSharedWithMe: (eventIds) =>
       this.call("ack_shared_with_me", { eventIds }),
+    // There is no dedicated file-history command; `fetch_notification_history`
+    // already wraps GET /v1/notify/file-history and returns it as `.files`
+    // alongside the DM and share history. Reshape to the `{ files }` envelope
+    // the composer reads, so both Tauri adapters agree on one wire shape.
+    fetchFileHistory: async (opts) => {
+      const r = await this.call<{ files?: unknown }>(
+        "fetch_notification_history",
+        { limit: (opts as { limit?: number } | undefined)?.limit },
+      );
+      if (!r.ok) return r;
+      return { ...r, value: { files: r.value?.files ?? [] } } as typeof r;
+    },
   };
 
   // Dead-surface cleanup: no Rust meetings commands are registered. Desktop

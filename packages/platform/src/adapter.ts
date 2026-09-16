@@ -723,6 +723,15 @@ export interface NotificationsApi {
   /** v1 share inbox (GET /v1/files/shared-with-me). */
   fetchSharedWithMe(opts?: Json): AdapterPromise<Json>;
   ackSharedWithMe(eventIds: string[]): AdapterPromise<void>;
+  /**
+   * Cross-session new-file activity (GET /v1/notify/file-history) — files a
+   * teammate added to a company folder, as reported by the sync runner.
+   *
+   * Optional: these rows have no NOTIF-store counterpart and no ack endpoint,
+   * so a host that cannot serve them simply omits the method and the feed
+   * composes without them. Callers must treat it as possibly-absent.
+   */
+  fetchFileHistory?(opts?: Json): AdapterPromise<Json>;
 }
 
 /** `POST /v1/google/connect` — Google OAuth consent URL for a new account. */
