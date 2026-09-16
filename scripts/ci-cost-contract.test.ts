@@ -811,24 +811,32 @@ describe("the installer fixture build does only what the E2E consumes", () => {
     expect(releaseWorkflow).toContain("Required release PDB is missing");
   });
 
-  it("keeps the fixture override scoped to one crate, and records what failed", () => {
-    // Two overrides have now been aimed at the 446s codegen/link block in this
-    // crate. `opt-level = 1` moved it ~0 (8m21s cargo, run 35060444631) and
-    // `debug = false` moved it 28s / 6% (7m54s cargo, run 35067622738), which
-    // disproved the "it is the PDB write" hypothesis; it was reverted rather
-    // than kept on a premise that did not hold. Both results are written up in
-    // the file itself so a third attempt starts from the measurements.
-    // Read the KEYS, not the file text: the write-up above deliberately names
-    // `debug = false` in prose, and a raw `not.toContain` would fail on the
-    // explanation of why the setting is absent. Same reason jobConfig() strips
-    // comments before negative assertions elsewhere in this file.
+  it("pins the fixture override at the only opt-level that moves it", () => {
+    // Three measurements of the same codegen/link block in the bridge build:
+    //
+    //   opt-level 3 (default)  ~375s   cargo 8m37s   run 33651446024
+    //   opt-level 1            418s    cargo 7m54s   run 35067622738   job 729s
+    //   opt-level 0             92s    cargo 2m09s   runs 35073514411 / 35075102250
+    //                                                job 268s / 385s
+    //
+    // The job baseline is 762/764/769/773/788/802s over six runs, so 1 never
+    // left it and 0 lands far outside it. For this crate opt-level 1 costs what
+    // 3 costs; only 0 skips enough of LLVM to matter. Raising this number back
+    // to 1 silently restores ~7 minutes to a required check, which is why it is
+    // pinned rather than left to judgement.
+    //
+    // Read the KEYS, not the file text: the write-up above and in the TOML both
+    // name other opt-levels in prose, and a raw toContain would match those.
     const settings = fixtureProfile
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith("#") && !line.startsWith("["));
 
-    expect(settings).toEqual(["opt-level = 1"]);
-    expect(fixtureProfile).toContain("NEITHER DID `debug = false`");
+    expect(settings).toEqual(["opt-level = 0"]);
+
+    // `debug = false` was tried on the theory that the block was the MSVC link
+    // writing the PDB. It moved 28s / 6% and was reverted. Keep it out.
+    expect(settings).not.toContain("debug = false");
 
     // Still exactly one override section, and still the workspace member
     // rust-cache never stores -- the invariant that makes writing this file
