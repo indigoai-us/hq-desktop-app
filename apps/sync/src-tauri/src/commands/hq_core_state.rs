@@ -4166,8 +4166,10 @@ error: clone failed";
     fn dispatched_core_update_report_names_a_failed_managed_git_retry() {
         let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
         reset_core_update_sentry_signatures_for_test();
-        let events =
-            captured_dispatched_core_update_events(queue_core_update_sentry_retry_test_report);
+        let events = captured_dispatched_core_update_events(
+            &["Desktop Core update failed"],
+            queue_core_update_sentry_retry_test_report,
+        );
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].tags["managedGitRetryOutcome"], "failed");
