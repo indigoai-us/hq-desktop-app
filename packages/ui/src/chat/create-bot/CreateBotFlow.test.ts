@@ -380,6 +380,48 @@ describe("CreateBotFlow", () => {
     expect(oncreate).not.toHaveBeenCalled();
   });
 
+  it("\u2318\u21b5 on a Cloud draft moves to the details step instead of creating", async () => {
+    const onCloudCreate = vi.fn(async () => undefined);
+    render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES });
+    await settle();
+
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+
+    // A company bot is named on the details step, so the shortcut takes the
+    // person there rather than creating one called "assistant" they never saw.
+    cmdEnter();
+    await settle();
+    expect(onCloudCreate).not.toHaveBeenCalled();
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
+
+    // Same from the kind step: forward one step at a time, never past details.
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    cmdEnter();
+    await settle();
+    expect(onCloudCreate).not.toHaveBeenCalled();
+    expect(q('[data-testid="create-bot-home-step"]')).toBeTruthy();
+
+    // From the details step it creates — with the name now on screen.
+    cmdEnter();
+    await settle();
+    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    type(name, "Polar Bear");
+    await settle();
+    cmdEnter();
+    await settle();
+    expect(onCloudCreate).toHaveBeenCalledWith("cmp_indigo", {
+      name: "Polar Bear",
+      handle: "polar-bear",
+    });
+  });
+
   it("Cloud will not create a bot with no name", async () => {
     const onCloudCreate = vi.fn(async () => undefined);
     render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES });
