@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Story, StoryLiveRunView } from "./projects-model.js";
-  import { relativeActivity } from "../sessions/sessions.js";
+  import { relativeActivity } from "../common/relative-activity.js";
   import LabelChip from "../common/LabelChip.svelte";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
 

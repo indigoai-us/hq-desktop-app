@@ -28,6 +28,21 @@ The release moves it under the version it ships in.
 - A bot that is set up on another computer now says so instead of thinking forever. If your account owns a bot that this Mac has no copy of — after a reinstall, or on a second computer — its conversation says it can't run here yet and offers "Check again", rather than showing it as busy and quietly leaving your message unanswered. Anything you send it is marked as unanswered instead of sitting under a spinner.
 - HQ now stops trying to start a bot that cannot start. A failure that will never resolve is tried once and then reported; a failure that might be temporary is retried a few times and then stops. Before, the same doomed start could be repeated indefinitely with nothing shown to you.
 - Setup failures are now written in plain language. A message like `HQ API /v1/agents → 409: Entity with type="agent" and slug="setup-…" already exists` is never shown; the technical detail stays in the logs. The Connect step also says when a coding tool could not be installed, rather than blaming the sign-in.
+- Running an agent session inside HQ has been removed, including the Session button in the message composer. Start your work from the Launch menu instead — it opens your HQ folder in Claude Code, Codex, or Grok, where the agents already run. Chat, projects, and the work mesh are unchanged, and the mesh still shows sessions your teammates start elsewhere.
+- Message history no longer re-asks the server about people it cannot reach. A contact whose account was deleted or moved out of the workspace used to be looked up again every time HQ started.
+
+## [0.10.269] — 2026-09-16
+
+- Clicking Session on the welcome page, or in a company that has no project yet, now starts a Claude session instead of doing nothing.
+- On a Mac, clicks on the welcome page reach the buttons instead of falling through the glass background.
+
+## [0.10.268] — 2026-09-16
+
+- HQ now updates its command line right away at launch when it is older than 5.115.4, instead of waiting for the next scheduled check. The new bot kinds need that version; an older one showed "unknown option '--kind'" when creating a company bot.
+
+## [0.10.267] — 2026-09-15
+
+- Core update diagnostics now identify a missing rsync installation instead of treating the rescue failure as unknown.
 
 ## [0.10.266] — 2026-09-15
 

@@ -190,8 +190,6 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
-    onstartlivesession?: ComponentProps<typeof DesktopApp>["onstartlivesession"];
-    channelSessionBody?: ComponentProps<typeof DesktopApp>["channelSessionBody"];
     /**
      * Backoff between failed company-roster fetches (tests shorten it). The
      * default is bounded; a roster that keeps failing stops retrying.
@@ -231,8 +229,6 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
-    onstartlivesession,
-    channelSessionBody,
     rosterRetryDelaysMs,
   }: WorkShellProps = $props();
 
@@ -858,8 +854,6 @@
       {rowExtrasLoading}
       {rowExtrasError}
       {rowExtras}
-      {onstartlivesession}
-      {channelSessionBody}
     />
   {/key}
   {#if externalLinkError}

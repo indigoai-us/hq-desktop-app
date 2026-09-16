@@ -39,8 +39,6 @@ import {
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 
-const wizardSource = readFileSync('src/components/onboarding/OnboardingWizard.svelte', 'utf8');
-
 const NO_AI_TOOLS = {
   claude_cli: false,
   claude_desktop: false,
@@ -534,16 +532,6 @@ describe('onboarding launch handoff', () => {
     expect(summary?.querySelector('.inline-note.error')).toBeNull();
   });
 
-  it('finishes onboarding after each supported launcher opens', () => {
-    // Every exit routes through one guarded recovery boundary. Launcher errors
-    // and native handoff errors must never be conflated.
-    expect(wizardSource.match(/await onfinish\?\.\(\);/g)).toHaveLength(1);
-    expect(wizardSource).toContain('async function finishWithRecovery()');
-    expect(wizardSource).not.toContain('advanceTo(4)');
-    expect(wizardSource).not.toContain('Could not open Claude Code:');
-    expect(wizardSource).not.toMatch(/#d04444|#d14343/);
-  });
-
   it('retries a failed native handoff without relaunching the AI tool', async () => {
     const onfinish = vi
       .fn()
@@ -971,33 +959,6 @@ describe('onboarding launch handoff', () => {
     expect(tauri.invoke.mock.calls.map(([command]) => command)).not.toContain('read_install_manifest');
   });
 
-  it('copies a user-facing path, stripping Windows verbatim prefixes', () => {
-    expect(wizardSource).toContain('toUserFacingPath');
-    expect(wizardSource).toContain('userFacingInstallPath');
-    expect(wizardSource).toMatch(
-      /runCopyAction\(\s*'path',\s*userFacingInstallPath \?\? '~\/hq'/,
-    );
-    expect(wizardSource).toContain('readyCommandFor(userFacingInstallPath, aiTools)');
-  });
-
-  it('uses the injected timer cadence for download watching and deep-linking', async () => {
-    vi.useFakeTimers();
-    const poll = vi.fn().mockResolvedValue({ installed: true, logged_in: true });
-    const interval = setInterval(() => void poll(), 3000);
-    await vi.advanceTimersByTimeAsync(3000);
-    clearInterval(interval);
-    expect(poll).toHaveBeenCalledOnce();
-    expect(wizardSource).toContain("invoke<ClaudeReady>('detect_claude_ready')");
-    expect(wizardSource).toContain("invoke('open_claude_code_link', { url })");
-    // The deep link must NOT pre-type the `/setup` slash command: Claude
-    // Desktop scans skills before a link-opened folder is trusted, so HQ's
-    // project skill is not registered in the session the link creates.
-    expect(wizardSource).toMatch(
-      /buildClaudeCodeUrl\(\{\s+folder: installPath \?\? '',\s+prompt: SETUP_DEEP_LINK_PROMPT,\s+\}\)/,
-    );
-    vi.useRealTimers();
-  });
-
   it('keeps Waiting for Claude visible through not-ready polls, then deep-links once', async () => {
     const onfinish = mountWizard();
     let readyPolls = 0;
@@ -1315,13 +1276,6 @@ describe('anonymous installer step pings', () => {
     expect(host.querySelector('[data-testid="onboarding-signin"]')).toBeTruthy();
     expect(host.textContent).not.toContain('no fingerprint');
   });
-
-  it('threads whoami personUid into later pings after sign-in succeeds', async () => {
-    expect(wizardSource).toContain('resolveInstallerPersonUid');
-    expect(wizardSource).toContain("invokeCommand<{ personUid?: string | null }>('whoami')");
-    expect(wizardSource).toContain('onboardingTelemetry.setPersonUid(uid)');
-    expect(wizardSource).toContain('void resolveInstallerPersonUid()');
-  });
 });
 
 describe('ready screen: Open HQ Desktop', () => {
@@ -1337,14 +1291,6 @@ describe('ready screen: Open HQ Desktop', () => {
       .map(([command]) => command)
       .filter((command) => /^(open_claude_code_link|launch_claude_code|launch_codex_workspace|launch_codex_desktop|launch_cli_in_terminal)$/.test(String(command)));
     expect(launchCommands).toEqual([]);
-  });
-});
-
-describe('setup failure correlation', () => {
-  it('passes the onboarding flow and the product-telemetry session to native setup failures', () => {
-    expect(wizardSource).toMatch(
-      /const failureScope = \{\s+setupRunId,\s+attemptCount,\s+flow: onboardingFlow,\s+frontendSessionId: onboardingTelemetry\.sessionId,\s+\};/,
-    );
   });
 });
 

@@ -243,7 +243,9 @@ pub fn parse_callback(request: &str) -> Result<CallbackRequest, CallbackRejectio
         *slot = Some(urldecode(raw));
     }
 
-    let state = state.filter(|s| !s.is_empty()).ok_or(CallbackRejection::MissingState)?;
+    let state = state
+        .filter(|s| !s.is_empty())
+        .ok_or(CallbackRejection::MissingState)?;
     let code = code.filter(|c| !c.is_empty());
     let error = error.filter(|e| !e.is_empty());
 
@@ -296,6 +298,42 @@ pub fn urldecode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // `cognito_client_id` / `cognito_domain_prefix` read process env. Tests that
+    // mutate those keys must not race the URL-construction tests (Linux CI
+    // failed `authorize_url_contains_required_params` when the override test
+    // left `HQ_COGNITO_CLIENT_ID=staging-client` visible mid-run).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ScopedEnv(&'static str, Option<std::ffi::OsString>);
+
+    impl ScopedEnv {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let prev = std::env::var_os(key);
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+            Self(key, prev)
+        }
+    }
+
+    impl Drop for ScopedEnv {
+        fn drop(&mut self) {
+            match self.1.take() {
+                Some(v) => std::env::set_var(self.0, v),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+
+    fn with_default_cognito_env<R>(f: impl FnOnce() -> R) -> R {
+        let _guard = ENV_LOCK.lock().expect("cognito env lock");
+        let _id = ScopedEnv::set("HQ_COGNITO_CLIENT_ID", None);
+        let _domain = ScopedEnv::set("HQ_COGNITO_DOMAIN", None);
+        f()
+    }
 
     fn callback(request: &str) -> Result<CallbackRequest, CallbackRejection> {
         parse_callback(request)
@@ -464,7 +502,8 @@ mod tests {
 
     #[test]
     fn client_id_env_override_wins_when_non_empty() {
-        std::env::set_var("HQ_COGNITO_CLIENT_ID", " staging-client ");
+        let _guard = ENV_LOCK.lock().expect("cognito env lock");
+        let _restore = ScopedEnv::set("HQ_COGNITO_CLIENT_ID", Some(" staging-client "));
         assert_eq!(cognito_client_id(), "staging-client");
         std::env::set_var("HQ_COGNITO_CLIENT_ID", "");
         assert_eq!(cognito_client_id(), COGNITO_CLIENT_ID);
@@ -473,27 +512,29 @@ mod tests {
     }
 
     #[test]
-fn authorize_url_contains_required_params() {
+    fn authorize_url_contains_required_params() {
         // We can't call the async command directly in a sync test, so test
         // the URL construction logic inline.
-        let state = "test-state-123";
-        let verifier = generate_code_verifier();
-        let challenge = compute_code_challenge(&verifier);
+        with_default_cognito_env(|| {
+            let state = "test-state-123";
+            let verifier = generate_code_verifier();
+            let challenge = compute_code_challenge(&verifier);
 
-        let url = build_authorize_url(state, &challenge, "Google");
+            let url = build_authorize_url(state, &challenge, "Google");
 
-        assert!(url.starts_with(&format!("{}?", cognito_authorize_url())));
-        assert!(url.contains("response_type=code"));
-        assert!(url.contains("client_id=7acei2c8v870enheptb1j5foln"));
-        assert!(
-            url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Fcallback")
-                || url.contains("redirect_uri=http://localhost:53682/callback")
-        );
-        assert!(url.contains("scope=openid+email+profile"));
-        assert!(url.contains("identity_provider=Google"));
-        assert!(url.contains(&format!("state={state}")));
-        assert!(url.contains(&format!("code_challenge={challenge}")));
-        assert!(url.contains("code_challenge_method=S256"));
+            assert!(url.starts_with(&format!("{}?", cognito_authorize_url())));
+            assert!(url.contains("response_type=code"));
+            assert!(url.contains(&format!("client_id={COGNITO_CLIENT_ID}")));
+            assert!(
+                url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Fcallback")
+                    || url.contains("redirect_uri=http://localhost:53682/callback")
+            );
+            assert!(url.contains("scope=openid+email+profile"));
+            assert!(url.contains("identity_provider=Google"));
+            assert!(url.contains(&format!("state={state}")));
+            assert!(url.contains(&format!("code_challenge={challenge}")));
+            assert!(url.contains("code_challenge_method=S256"));
+        });
     }
 
     #[test]
@@ -511,22 +552,26 @@ fn authorize_url_contains_required_params() {
         // Naming a provider forces that provider's own login screen, which is
         // exactly what continuation is trying to avoid. Omitting it is what
         // lets Cognito reuse a session the browser may already hold.
-        let url = build_authorize_url_from(&AuthorizeRequest {
-            state: "s",
-            challenge: "c",
-            identity_provider: None,
-            nonce: Some("n"),
+        with_default_cognito_env(|| {
+            let url = build_authorize_url_from(&AuthorizeRequest {
+                state: "s",
+                challenge: "c",
+                identity_provider: None,
+                nonce: Some("n"),
+            });
+            assert!(!url.contains("identity_provider"));
+            assert!(url.contains("&nonce=n"));
+            assert!(url.contains("code_challenge_method=S256"));
         });
-        assert!(!url.contains("identity_provider"));
-        assert!(url.contains("&nonce=n"));
-        assert!(url.contains("code_challenge_method=S256"));
     }
 
     #[test]
     fn manual_authorize_url_is_unchanged_and_carries_no_nonce() {
-        let url = build_authorize_url("s", "c", "Google");
-        assert!(url.contains("identity_provider=Google"));
-        assert!(!url.contains("nonce="));
+        with_default_cognito_env(|| {
+            let url = build_authorize_url("s", "c", "Google");
+            assert!(url.contains("identity_provider=Google"));
+            assert!(!url.contains("nonce="));
+        });
     }
 
     #[test]
@@ -540,9 +585,11 @@ fn authorize_url_contains_required_params() {
 
     #[test]
     fn authorize_url_supports_microsoft_provider() {
-        let url = build_authorize_url("state-123", "challenge-123", "MicrosoftPersonal");
-        assert!(url.contains("identity_provider=MicrosoftPersonal"));
-        assert!(url.contains("state=state-123"));
-        assert!(url.contains("code_challenge=challenge-123"));
+        with_default_cognito_env(|| {
+            let url = build_authorize_url("state-123", "challenge-123", "MicrosoftPersonal");
+            assert!(url.contains("identity_provider=MicrosoftPersonal"));
+            assert!(url.contains("state=state-123"));
+            assert!(url.contains("code_challenge=challenge-123"));
+        });
     }
 }

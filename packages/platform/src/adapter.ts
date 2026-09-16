@@ -1022,12 +1022,11 @@ export interface PackagesApi {
   updatePacks(names: string[]): AdapterPromise<Json>;
 }
 
-/** Desktop-only group (capability: canSpawnSessions). */
+/** Desktop-only group: install + sign in to the local agent CLIs. */
 export type SessionProviderId = "claude" | "codex" | "grok";
 
 export interface SessionsApi {
-  listAgentSessions(): AdapterPromise<Json[]>;
-  /** Desktop in-app sessions: CLI installed + signed-in flags. */
+  /** CLI installed + signed-in flags, for Settings → AI tools and Bots. */
   preflight?(): AdapterPromise<Json>;
   slashCommands?(tool: SessionProviderId): AdapterPromise<Json>;
   installProvider?(tool: SessionProviderId): AdapterPromise<string>;

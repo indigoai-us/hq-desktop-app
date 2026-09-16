@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-use hq_desktop_core::sessions::claude::resolve_claude_projects_dirs;
-use hq_desktop_core::sessions::codex::{enumerate_rollout_files, RolloutFile};
+use hq_desktop_core::agent_usage_scan::{
+    enumerate_rollout_files, resolve_claude_projects_dirs, RolloutFile,
+};
 
 use crate::commands::sync::resolve_vault_api_url;
 use crate::commands::vault_client::{
@@ -850,6 +851,7 @@ const FAILED_DEPENDENCY_VALUES: &[&str] = &[
 ];
 
 const ERROR_CATEGORY_VALUES: &[&str] = &[
+    "missing-dependency",
     "auth",
     "network",
     "dns",
@@ -2420,6 +2422,21 @@ mod codex_telemetry_tests {
         assert_eq!(event.properties["exitCode"], 5);
         assert_eq!(event.properties["errorCategory"], "dns");
         assert!(event.properties.get("rescueStderrTail").is_none());
+    }
+
+    #[test]
+    fn core_update_failure_preserves_missing_dependency_category() {
+        let event = build_desktop_telemetry_event(
+            "core_update_failed".to_string(),
+            Some(json!({
+                "errorCategory": "missing-dependency",
+            })),
+            None,
+            None,
+            "consent",
+        );
+
+        assert_eq!(event.properties["errorCategory"], "missing-dependency");
     }
 
     #[test]

@@ -49,12 +49,8 @@
     type Project,
     type Story,
   } from "./projects-model.js";
-  import { relativeActivity } from "../sessions/sessions.js";
-  import {
-    configureSessionsApi,
-    sessionsStore,
-    startSessionsStore,
-  } from "../sessions/sessions-store.svelte.js";
+  import { relativeActivity } from "../common/relative-activity.js";
+  import type { PortfolioSessionRef } from "../chat/portfolio-session.js";
   import ProjectDetailView from "./ProjectDetailView.svelte";
   import ProjectRow from "./ProjectRow.svelte";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
@@ -76,7 +72,6 @@
   // Wire the module-level project/session seams to this platform adapter.
   $effect.pre(() => {
     configureProjectsApi(adapter.projects);
-    configureSessionsApi(adapter.sessions);
   });
 
   let objectives = $state<Objective[]>([]);
@@ -199,7 +194,6 @@
   }
 
   onMount(() => {
-    startSessionsStore();
     const tick = setInterval(() => {
       now = Date.now();
     }, 15_000);
@@ -213,7 +207,7 @@
       .sort(compareProjectsByRecency),
   );
 
-  const sessions = $derived(sessionsStore.sessions);
+  const sessions: PortfolioSessionRef[] = [];
 
   function leadLabel(project: Project): string | null {
     const person = responsiblePerson(project.provenance, "project");

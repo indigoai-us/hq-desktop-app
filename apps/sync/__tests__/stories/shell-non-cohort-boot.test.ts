@@ -31,7 +31,6 @@ vi.mock('@tauri-apps/api/app', () => ({
 
 import { flushSync, mount, unmount } from 'svelte';
 import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
-import { resolveLaunchShell } from '../../src/lib/desktop-shell';
 import type { SyncInvokeFn } from '@hq/platform';
 
 const MICHEL = {
@@ -265,20 +264,5 @@ describe('desktop workspace boot for non-cohort identities', () => {
       expect(host.querySelector('[data-testid="setup-channel-intro"]')).toBeTruthy();
     });
     expect(host.querySelector('[data-testid="channel-skeleton"]')).toBeNull();
-  });
-
-  it('an upgraded install carrying hqWorkHandoff:false still loads the desktop workspace', async () => {
-    expect(
-      resolveLaunchShell({
-        email: MICHEL.email,
-        companyUid: 'cmp_acme',
-        hqWorkHandoff: false,
-      }),
-    ).toBe('desktop-alt');
-    await mountShell({ getSettings: { hqWorkHandoff: false, stagingChannel: true } });
-    expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
-    await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="setup-channel-intro"]')).toBeTruthy();
-    });
   });
 });

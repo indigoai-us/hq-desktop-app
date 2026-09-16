@@ -1384,44 +1384,4 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
   });
 
-  it('restores channel → session → source through open/history without start or send', async () => {
-    await mountShell();
-    warmRoute('hqwork://open?channel=chn_engineering');
-    await flush();
-    warmRoute('sessions:ses_b');
-    await flush(64);
-    expect(host.querySelector('[data-testid="sessions-page"]')).toBeTruthy();
-    expect(host.querySelector('[data-testid="session-transcript"]')?.textContent).toContain(
-      'Session B transcript',
-    );
-
-    warmRoute('sessions:history?id=ses_c&tool=claude&company=indigo');
-    await flush(64);
-    expect(host.querySelector('[data-testid="session-transcript"]')?.textContent).toContain(
-      'Source C transcript',
-    );
-
-    const startBefore = tauriCommands.filter((command) => command === 'agent_session_start').length;
-    const sendBefore = tauriCommands.filter((command) => command === 'agent_session_send').length;
-    (host.querySelector('[data-testid="titlebar-back"]') as HTMLButtonElement).click();
-    await flush(64);
-    expect(host.querySelector('[data-testid="session-transcript"]')?.textContent).toContain(
-      'Session B transcript',
-    );
-    (host.querySelector('[data-testid="titlebar-back"]') as HTMLButtonElement).click();
-    await flush(64);
-    (host.querySelector('[data-testid="titlebar-forward"]') as HTMLButtonElement).click();
-    await flush(64);
-    expect(host.querySelector('[data-testid="session-transcript"]')?.textContent).toContain(
-      'Session B transcript',
-    );
-    expect(tauriCommands.filter((command) => command === 'agent_session_start')).toHaveLength(
-      startBefore,
-    );
-    expect(tauriCommands.filter((command) => command === 'agent_session_send')).toHaveLength(
-      sendBefore,
-    );
-    expect(startBefore).toBe(0);
-    expect(sendBefore).toBe(0);
-  });
 });

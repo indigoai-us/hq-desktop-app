@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
 describe('LaunchAgent bundle-rename heal (source contracts)', () => {
-  const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
   const autostart = readRepoFile('src-tauri/src/commands/autostart.rs');
   const main = readRepoFile('src-tauri/src/main.rs');
   const updater = readRepoFile('src-tauri/src/updater.rs');
@@ -30,10 +29,20 @@ describe('LaunchAgent bundle-rename heal (source contracts)', () => {
     );
   });
 
-  it('surfaces a one-time non-blocking note when the agent was healed', () => {
-    expect(desktopApp).toContain("invoke<string | null>('take_launch_agent_repoint_notice')");
-    expect(desktopApp).toContain('flashToast(note, \'neutral\')');
-    expect(desktopApp).toContain('data-testid={actionToast.text === \'HQ updated its launch settings; the old copy was retired\'');
+  /**
+   * KNOWN GAP, pre-existing and NOT introduced by the Sessions removal: the
+   * healed-agent note is produced but never shown. The only consumer of
+   * `take_launch_agent_repoint_notice` was the desktop-alt DesktopApp.svelte
+   * tree, which had been unreachable for some time and went with the removal;
+   * nothing in the @hq/ui shell drains it. The command stays registered, so
+   * the note is minted and discarded.
+   *
+   * The backend half is asserted below so the message and its command cannot
+   * drift while that is fixed. The frontend assertions are not re-pointed at
+   * a surface that does not exist — that would be a test asserting nothing.
+   * Tracked alongside #830 (same cause: coverage anchored to the dead shell).
+   */
+  it('mints a one-time non-blocking note when the agent was healed', () => {
     expect(autostart).toContain('take_launch_agent_repoint_notice');
     expect(autostart).toContain(
       '"HQ updated its launch settings; the old copy was retired"',

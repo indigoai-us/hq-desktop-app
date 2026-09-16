@@ -5,7 +5,6 @@
   // legacy activity with details expands a muted key/value block.
   import { formatLastActivity } from "../channel-status-model";
   import type { WorkSessionCardModel } from "./channelMessageModels";
-  import { isDesktopLiveSessionId } from "./session-thread";
   import {
     isOpaqueActorId,
     taskStatusLabel,
@@ -129,11 +128,22 @@
   );
 
   const cardVerb = $derived(cardFinished ? "finished a session" : "started a session");
+
+  /**
+   * A mesh spawn id (`ws_spawn_<company>|<project>|<US-001>`) names queued work,
+   * not a running session, so it is never openable. This guard used to live in
+   * the in-app Sessions module; it is kept here because the rule is about the
+   * mesh wire shape, not about running a session locally.
+   */
+  const openableSessionId = (id: string | null | undefined): boolean => {
+    const raw = (id ?? "").trim();
+    return Boolean(raw) && !raw.includes("|") && !raw.startsWith("ws_spawn_");
+  };
 </script>
 
 {#if card}
   {@const canOpen = Boolean(
-    card.sessionId && onopensession && isDesktopLiveSessionId(card.sessionId),
+    card.sessionId && onopensession && openableSessionId(card.sessionId),
   )}
   <div
     class="work-mesh-block"
