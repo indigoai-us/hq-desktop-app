@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Message history no longer re-asks the server about people it cannot reach. A contact whose account was deleted or moved out of the workspace used to be looked up again every time HQ started.
 - Clicking Session on the welcome page, or in a company that has no project yet, now starts a Claude session instead of doing nothing.
 - On a Mac, clicks on the welcome page reach the buttons instead of falling through the glass background.
 
