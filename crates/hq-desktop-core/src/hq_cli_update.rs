@@ -2027,6 +2027,25 @@ pub struct UserPrefixAim {
     pub npm: String,
 }
 
+/// Keep a managed-toolchain retry aimed at the executable copy when that copy's
+/// Node ABI is known to match HQ's managed Node. The retry still uses HQ's npm,
+/// but identical ABIs mean the package it writes is safe for the user's selected
+/// runtime. An unknown or different ABI must stay out of the user's prefix: a
+/// native dependency built for HQ's runtime could otherwise break their CLI.
+///
+/// `executed_user_aim` is only produced after package ownership, a user-owned
+/// prefix, and a co-located npm have already been proven by the caller. This
+/// helper deliberately cannot invent a target from a raw path.
+pub fn managed_retry_user_prefix_aim(
+    executed_user_aim: Option<&UserPrefixAim>,
+    executed_node_abi: Option<u32>,
+    managed_node_abi: u32,
+) -> Option<UserPrefixAim> {
+    (executed_node_abi == Some(managed_node_abi))
+        .then(|| executed_user_aim.cloned())
+        .flatten()
+}
+
 /// Pure core of the ordinary-update selector: choose to aim at the executed
 /// copy's own user-owned prefix (running that prefix's co-located npm) exactly
 /// when all three hold — a derivable hq prefix, that prefix is user-owned
@@ -5402,10 +5421,7 @@ fn install_failure_signature_with_environment(
     // stderr is deliberately excluded (returns `None` from the profile), so it keeps
     // the byte-identical `none:unknown:none` envelope and its pinned test.
     if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
-        return format!(
-            "unattributed:{}:{}",
-            profile.origin, profile.dominant_shape
-        );
+        return format!("unattributed:{}:{}", profile.origin, profile.dominant_shape);
     }
     install_failure_signature(kind, detail, prefix)
 }
@@ -6086,7 +6102,10 @@ pub fn report_install_failure_with_environment(
     // (the six-key provenance suffix is unchanged for every other event).
     let unattributed_diag_suffix = match &unattributed_profile {
         Some(profile) => {
-            format!(" stderr_origin={} stderr_shapes={}", profile.origin, profile.shapes_tag)
+            format!(
+                " stderr_origin={} stderr_shapes={}",
+                profile.origin, profile.shapes_tag
+            )
         }
         None => String::new(),
     };
@@ -8368,37 +8387,35 @@ mod tests {
     fn the_managed_shadow_pnpm_and_bun_arms_are_unchanged_by_the_new_aim() {
         // A resolution shortfall (pnpm) with a NotYetAimed aim is still exactly a
         // non-blocking shortfall — the foreign gate never runs for it.
-        let shortfall = decide_post_install(
-            &PostInstallContext {
-                executor: InstallExecutor::Pnpm,
-                before_bin: "/Users/me/Library/pnpm/hq",
-                after_bin: "/Users/me/Library/pnpm/hq",
-                before_version: Some("5.90.0"),
-                after_version: Some("5.90.0"),
-                latest: "5.103.27",
-                npm_prefix_passed: None,
-                delivered_version: None,
-                installer_bin: "/Users/me/Library/pnpm/pnpm",
-                already_blocked: false,
-                nonblocking_episode_keys: &[],
-                managed_roots: &[],
-                managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
-                executed_copy_aim: ExecutedCopyAim::NotYetAimed,
-                hq_bin_lane: paths::ResolutionSource::UserPrefix,
-                delivered_prefix_shim: DeliveredPrefixShim::Absent,
-                settings_path: SettingsPathTelemetry::default(),
-                pnpm: Some(PnpmRunDiagnostics {
-                    home_source: PnpmHomeSource::FlatPnpmDir,
-                    home_env_present: true,
-                    path_has_shim_dir: true,
-                    global_bin_dir_matches_shim_dir: Some(true),
-                    store_family: PnpmStoreFamily::V11,
-                    authoritative_query_ok: true,
-                    exit_status: "0".to_string(),
-                    output_len: 64,
-                }),
-            },
-        );
+        let shortfall = decide_post_install(&PostInstallContext {
+            executor: InstallExecutor::Pnpm,
+            before_bin: "/Users/me/Library/pnpm/hq",
+            after_bin: "/Users/me/Library/pnpm/hq",
+            before_version: Some("5.90.0"),
+            after_version: Some("5.90.0"),
+            latest: "5.103.27",
+            npm_prefix_passed: None,
+            delivered_version: None,
+            installer_bin: "/Users/me/Library/pnpm/pnpm",
+            already_blocked: false,
+            nonblocking_episode_keys: &[],
+            managed_roots: &[],
+            managed_shadow_repair: ManagedShadowRepairOutcome::NotAttempted,
+            executed_copy_aim: ExecutedCopyAim::NotYetAimed,
+            hq_bin_lane: paths::ResolutionSource::UserPrefix,
+            delivered_prefix_shim: DeliveredPrefixShim::Absent,
+            settings_path: SettingsPathTelemetry::default(),
+            pnpm: Some(PnpmRunDiagnostics {
+                home_source: PnpmHomeSource::FlatPnpmDir,
+                home_env_present: true,
+                path_has_shim_dir: true,
+                global_bin_dir_matches_shim_dir: Some(true),
+                store_family: PnpmStoreFamily::V11,
+                authoritative_query_ok: true,
+                exit_status: "0".to_string(),
+                output_len: 64,
+            }),
+        });
         assert_eq!(
             shortfall.non_convergence_kind,
             Some(NonConvergenceKind::ResolutionShortfall)
@@ -8431,6 +8448,49 @@ mod tests {
         assert_eq!(user_prefix_aim_decision(Some(prefix), true, None), None);
         // No derivable hq prefix -> no user aim.
         assert_eq!(user_prefix_aim_decision(None, true, Some(npm)), None);
+    }
+
+    #[test]
+    fn managed_retry_keeps_a_matching_nvm_cli_targeted_in_place() {
+        let managed_prefix = "/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global";
+        let nvm_prefix = "/Users/me/.nvm/versions/node/v22.14.0";
+        let nvm_aim = UserPrefixAim {
+            prefix: nvm_prefix.to_string(),
+            npm: format!("{nvm_prefix}/bin/npm"),
+        };
+
+        // The live A/B shape: HQ's managed prefix exists, but the `hq` the
+        // user runs belongs to nvm. When both use ABI 127, the fallback can use
+        // its managed npm without changing the destination, so the resolved nvm
+        // copy is the one that receives the update.
+        assert_eq!(
+            managed_retry_user_prefix_aim(Some(&nvm_aim), Some(127), 127),
+            Some(nvm_aim.clone())
+        );
+        assert_ne!(nvm_aim.prefix, managed_prefix);
+        assert_eq!(
+            install_argv(Some(&nvm_aim.prefix), Some("5.2.0")),
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "--prefix".to_string(),
+                nvm_prefix.to_string(),
+                "@indigoai-us/hq-cli@5.2.0".to_string(),
+            ],
+            "the matching-ABI retry must pass the nvm prefix to npm"
+        );
+
+        // A different or unknown ABI cannot safely receive packages built by
+        // HQ's managed npm, so it must not select the user prefix.
+        assert_eq!(
+            managed_retry_user_prefix_aim(Some(&nvm_aim), Some(115), 127),
+            None
+        );
+        assert_eq!(
+            managed_retry_user_prefix_aim(Some(&nvm_aim), None, 127),
+            None
+        );
+        assert_eq!(managed_retry_user_prefix_aim(None, Some(127), 127), None);
     }
 
     #[test]
@@ -8563,8 +8623,16 @@ mod tests {
         use NonConvergenceKind::*;
         // Non-foreign kinds always "may block" — they never route through this,
         // and no settings-PATH repair value changes that.
-        for kind in [NpmTargeted, ResolutionShortfall, InstallerUnaimed, ManagedShadowed] {
-            for repair in [SettingsPathRepair::NotAttempted, SettingsPathRepair::Rewritten] {
+        for kind in [
+            NpmTargeted,
+            ResolutionShortfall,
+            InstallerUnaimed,
+            ManagedShadowed,
+        ] {
+            for repair in [
+                SettingsPathRepair::NotAttempted,
+                SettingsPathRepair::Rewritten,
+            ] {
                 assert!(foreign_verdict_may_block(
                     kind,
                     ExecutedCopyAim::NotYetAimed,
@@ -8761,8 +8829,10 @@ mod tests {
         // A rewritten repair: still classified ForeignManaged, but NO durable
         // marker (the next resolution reads the rewritten PATH and converges).
         // It stays observable once per episode, not silent.
-        let rewritten =
-            decide_post_install(&settings_path_foreign_ctx(SettingsPathRepair::Rewritten, &roots));
+        let rewritten = decide_post_install(&settings_path_foreign_ctx(
+            SettingsPathRepair::Rewritten,
+            &roots,
+        ));
         assert_eq!(
             rewritten.non_convergence_kind,
             Some(NonConvergenceKind::ForeignManaged)
@@ -8808,8 +8878,10 @@ mod tests {
         )];
         // Pre-repair (NotAttempted): the exact durable marker that wedges the
         // machine forever, one per hq-cli publish.
-        let base =
-            decide_post_install(&settings_path_foreign_ctx(SettingsPathRepair::NotAttempted, &roots));
+        let base = decide_post_install(&settings_path_foreign_ctx(
+            SettingsPathRepair::NotAttempted,
+            &roots,
+        ));
         assert_eq!(base.record_non_convergent.as_deref(), Some("5.103.34"));
         assert_eq!(
             base.non_convergence_kind,
@@ -8842,7 +8914,10 @@ mod tests {
         ));
         assert_eq!(outcome.record_non_convergent, None);
         assert!(outcome.clear_non_convergent);
-        assert!(outcome.capture.is_none(), "a converged run captures nothing");
+        assert!(
+            outcome.capture.is_none(),
+            "a converged run captures nothing"
+        );
     }
 
     /// Regression (PR #512 review): a real hq-cli whose pnpm store sits beside a
@@ -13053,7 +13128,12 @@ mod tests {
             interpreter_dir.to_str().unwrap(),
         );
 
-        assert_eq!(result.local.as_deref(), Some("5.88.1"), "{:?}", result.probes);
+        assert_eq!(
+            result.local.as_deref(),
+            Some("5.88.1"),
+            "{:?}",
+            result.probes
+        );
         assert_eq!(result.probes.hq_version, VersionProbeOutcome::Succeeded);
         assert!(!should_report_unreadable_version(&result));
     }
@@ -13122,7 +13202,10 @@ mod tests {
             result.probes.binary_anchor_shape,
             BinaryAnchorShape::NpmPrefix
         );
-        assert_eq!(result.probes.resolved_program_kind, ResolvedProgramKind::Exe);
+        assert_eq!(
+            result.probes.resolved_program_kind,
+            ResolvedProgramKind::Exe
+        );
         assert!(!should_report_unreadable_version(&result));
         assert!(cli_install_needed(None, "5.103.30", result.hq_installed));
     }
@@ -14421,7 +14504,9 @@ mod tests {
         assert!(is_transient_probe_io_error(&Error::from(
             ErrorKind::OutOfMemory
         )));
-        assert!(!is_transient_probe_io_error(&Error::from(ErrorKind::NotFound)));
+        assert!(!is_transient_probe_io_error(&Error::from(
+            ErrorKind::NotFound
+        )));
         assert!(!is_transient_probe_io_error(&Error::from(
             ErrorKind::PermissionDenied
         )));
@@ -14475,7 +14560,10 @@ mod tests {
             HqBacking::NotProbed,
             "an indeterminate read never names an unbacked sub-case"
         );
-        assert!(result.hq_installed, "a CLI we cannot prove absent is installed");
+        assert!(
+            result.hq_installed,
+            "a CLI we cannot prove absent is installed"
+        );
         assert!(
             should_report_unreadable_version(&result),
             "silencing a CLI we cannot prove is absent is prohibited"
@@ -15117,7 +15205,10 @@ mod tests {
             latest,
             &managed_env,
         );
-        assert_eq!(managed.as_deref(), Some("5.101.7|unsupported-node|6|managed"));
+        assert_eq!(
+            managed.as_deref(),
+            Some("5.101.7|unsupported-node|6|managed")
+        );
         // The env-blind shape (no probed Node) is a plain `Unexpected` failure. Before
         // HQ-DESKTOP-56 its empty `none:unknown:none` signature minted no key; now this
         // NON-EMPTY markerless stderr is attributed, so it earns a bounded key
@@ -15175,7 +15266,10 @@ mod tests {
         // The signature carries only closed tokens: no count, no length, and no raw
         // path byte can enter the group.
         for token in ["C:\\", "Users", "ProgramData"] {
-            assert!(!signature.contains(token), "signature leaked {token}: {signature}");
+            assert!(
+                !signature.contains(token),
+                "signature leaked {token}: {signature}"
+            );
         }
         assert!(
             signature.bytes().all(|b| !b.is_ascii_digit()),
@@ -15183,14 +15277,24 @@ mod tests {
         );
         // It pages once per published CLI version on that discriminating signature.
         let key = install_failure_episode_key_with_environment(
-            Some(1), stderr, None, false, "5.103.23", &env,
+            Some(1),
+            stderr,
+            None,
+            false,
+            "5.103.23",
+            &env,
         )
         .expect("a non-empty markerless failure now mints a bounded episode key");
         assert_eq!(key, "5.103.23|unattributed|non-npm|path_like");
         assert!(install_failure_episode_blocked(&[key.clone()], &key));
         // A newly published CLI version pages a first occurrence again.
         let bumped = install_failure_episode_key_with_environment(
-            Some(1), stderr, None, false, "5.103.24", &env,
+            Some(1),
+            stderr,
+            None,
+            false,
+            "5.103.24",
+            &env,
         )
         .expect("bumped version mints a distinct key");
         assert!(!install_failure_episode_blocked(&[key], &bumped));
@@ -16236,7 +16340,12 @@ mod tests {
         );
         assert_eq!(
             install_failure_episode_key_with_environment(
-                Some(1), "", None, false, "5.103.23", &env
+                Some(1),
+                "",
+                None,
+                false,
+                "5.103.23",
+                &env
             ),
             None
         );

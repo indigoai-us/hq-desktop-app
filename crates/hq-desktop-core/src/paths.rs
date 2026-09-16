@@ -2052,9 +2052,8 @@ fn managed_git_env_for_resolved_bin_in(home: &Path, resolved_git: &Path) -> Vec<
     // symlink that merely appears to live below the toolchain but targets a
     // foreign installation; falling back to the original path retains a
     // deterministic answer when a path disappears between resolution and use.
-    let canonical_or_original = |path: &Path| {
-        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-    };
+    let canonical_or_original =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let toolchain = canonical_or_original(&toolchain);
     let resolved_git = canonical_or_original(resolved_git);
     let managed_git = canonical_or_original(&managed_git);
@@ -2100,18 +2099,27 @@ fn managed_git_env_for_resolved_bin_in(home: &Path, resolved_git: &Path) -> Vec<
 /// dir, or the shim's own parent — so a `#!/usr/bin/env node` shebang resolves
 /// on a recovery retry even when the base child PATH could not find `node`.
 ///
-/// Pure and order-preserving (mirrors [`crate::hq_cli_update::pnpm_child_path`]):
-/// the hint goes first so it wins the interpreter lookup, and a hint already on
-/// the PATH is left untouched rather than duplicated.
+/// Pure and stable apart from the requested precedence change (mirrors
+/// [`crate::hq_cli_update::pnpm_child_path`]): the hint goes first so it wins
+/// the interpreter lookup. If it already appears later on PATH, move that one
+/// entry to the front rather than leaving an earlier, incompatible interpreter
+/// in control.
 pub fn path_with_interpreter_hint(base_path: &str, hint_dir: &Path) -> String {
     let hint = hint_dir.to_string_lossy();
-    if hint.is_empty() || base_path.split(PATH_SEP).any(|segment| segment == hint) {
+    if hint.is_empty() {
         return base_path.to_string();
     }
-    if base_path.is_empty() {
+    let without_hint: Vec<&str> = base_path
+        .split(PATH_SEP)
+        .filter(|segment| *segment != hint)
+        .collect();
+    if without_hint.is_empty() {
         return hint.into_owned();
     }
-    format!("{hint}{PATH_SEP}{base_path}")
+    format!(
+        "{hint}{PATH_SEP}{}",
+        without_hint.join(&PATH_SEP.to_string())
+    )
 }
 
 /// Returns the path to ~/.hq/config.json.
@@ -3649,8 +3657,8 @@ mod tests {
         let settings = tmp.path().join("settings");
         std::fs::create_dir_all(&settings).unwrap();
         std::fs::write(settings.join("hq"), b"not executable\n").unwrap(); // no exec bit
-        // Test selection only within the fixture; system search expansion is
-        // covered separately and must not probe the host-installed HQ CLI.
+                                                                           // Test selection only within the fixture; system search expansion is
+                                                                           // covered separately and must not probe the host-installed HQ CLI.
         let dirs = vec![settings.clone()];
         let candidates = ["hq".to_string()];
         let reject = |p: &Path| hq_lookup_rejects_candidate("hq", p);
@@ -3842,10 +3850,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         let foreign = tmp.path().join("foreign").join("git");
-        let managed = home
-            .join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
-        let shim = home
-            .join("Library/Application Support/Indigo HQ/toolchain/git-shim/git");
+        let managed = home.join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
+        let shim = home.join("Library/Application Support/Indigo HQ/toolchain/git-shim/git");
         let settings = home.join("HQ/.claude/settings.local.json");
         write_unix_exec(&foreign);
         write_unix_exec(&managed);
@@ -3853,7 +3859,10 @@ mod tests {
         std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
         std::fs::write(
             settings,
-            format!(r#"{{"env":{{"PATH":"{}"}}}}"#, foreign.parent().unwrap().display()),
+            format!(
+                r#"{{"env":{{"PATH":"{}"}}}}"#,
+                foreign.parent().unwrap().display()
+            ),
         )
         .unwrap();
         let _home = crate::test_support::ScopedEnv::set("HOME", home.as_os_str());
@@ -3894,7 +3903,10 @@ mod tests {
             )
         );
         if Path::new("/etc/ssl/cert.pem").exists() {
-            assert_eq!(env.get("GIT_SSL_CAINFO").map(String::as_str), Some("/etc/ssl/cert.pem"));
+            assert_eq!(
+                env.get("GIT_SSL_CAINFO").map(String::as_str),
+                Some("/etc/ssl/cert.pem")
+            );
         } else {
             assert!(!env.contains_key("GIT_SSL_CAINFO"));
         }
@@ -4149,15 +4161,138 @@ mod tests {
             path_with_interpreter_hint("/usr/bin:/bin", hint),
             "/opt/managed/node/bin:/usr/bin:/bin"
         );
-        // Already present → unchanged (no duplicate, order preserved).
+        // Already present later → moved to the front without a duplicate, so
+        // the requested interpreter actually wins.
         assert_eq!(
             path_with_interpreter_hint("/usr/bin:/opt/managed/node/bin", hint),
-            "/usr/bin:/opt/managed/node/bin"
+            "/opt/managed/node/bin:/usr/bin"
         );
         // An empty hint is a no-op.
         assert_eq!(
             path_with_interpreter_hint("/usr/bin", Path::new("")),
             "/usr/bin"
+        );
+    }
+
+    /// The updater may intentionally target an `hq` installed under an nvm
+    /// prefix even though HQ's managed toolchain also appears on the child PATH.
+    /// Both npm shims use `#!/usr/bin/env node`, so the nvm bin directory has to
+    /// win — merely finding it somewhere later in PATH runs the managed retry
+    /// with HQ's Node instead. That can leave the managed prefix as the effective
+    /// install destination while the nvm `hq` remains old.
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn nvm_cli_retry_updates_the_resolved_copy_with_its_own_node() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        fn write_executable(path: &Path, body: &str) {
+            std::fs::create_dir_all(path.parent().expect("executable parent")).unwrap();
+            std::fs::write(path, body).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let managed_prefix =
+            home.join("Library/Application Support/Indigo HQ/toolchain/npm-global");
+        let managed_node_bin =
+            home.join("Library/Application Support/Indigo HQ/toolchain/node/bin");
+        let nvm_prefix = home.join(".nvm/versions/node/v22.14.0");
+        let nvm_bin = nvm_prefix.join("bin");
+        let hq = nvm_bin.join("hq");
+        let npm = nvm_bin.join("npm");
+        let managed_npm = managed_node_bin.join("npm");
+        let selected_runtime = temp.path().join("selected-runtime");
+        let nvm_package = nvm_prefix.join("lib/node_modules/@indigoai-us/hq-cli");
+        let nvm_manifest = nvm_package.join("package.json");
+        let managed_manifest =
+            managed_prefix.join("lib/node_modules/@indigoai-us/hq-cli/package.json");
+
+        // `hq` resolves from the user's nvm prefix, while HQ's managed prefix
+        // remains available in the same child environment.
+        write_executable(&nvm_package.join("bin/hq.js"), "#!/bin/sh\n");
+        std::fs::write(
+            &nvm_manifest,
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.1.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(managed_manifest.parent().expect("managed manifest parent"))
+            .unwrap();
+        std::fs::create_dir_all(&nvm_bin).unwrap();
+        symlink(nvm_package.join("bin/hq.js"), &hq).unwrap();
+        write_executable(&npm, "#!/usr/bin/env node\n");
+        write_executable(&managed_npm, "#!/usr/bin/env node\n");
+        write_executable(
+            &managed_node_bin.join("node"),
+            "#!/bin/sh\nprintf managed > \"$HQ_CLI_UPDATE_TEST_RUNTIME\"\nprintf '%s' '{\"name\":\"@indigoai-us/hq-cli\",\"version\":\"5.2.0\"}' > \"$HQ_CLI_UPDATE_TEST_MANAGED_MANIFEST\"\n",
+        );
+        write_executable(
+            &nvm_bin.join("node"),
+            r#"#!/bin/sh
+target=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--prefix" ]; then
+    target=$2
+    shift 2
+  else
+    shift
+  fi
+done
+test "$target" = "$HQ_CLI_UPDATE_TEST_NVM_PREFIX"
+printf nvm > "$HQ_CLI_UPDATE_TEST_RUNTIME"
+printf '%s' '{"name":"@indigoai-us/hq-cli","version":"5.2.0"}' > "$HQ_CLI_UPDATE_TEST_NVM_MANIFEST"
+"#,
+        );
+
+        assert_eq!(
+            crate::hq_cli_update::npm_prefix_from_hq_bin(&hq.to_string_lossy()),
+            Some(nvm_prefix.to_string_lossy().to_string()),
+            "the install target must be derived from the hq the user actually resolves"
+        );
+        assert_ne!(
+            nvm_prefix, managed_prefix,
+            "the nvm target and HQ's managed npm prefix are distinct copies"
+        );
+        // This mirrors child_path(): HQ's managed Node is first, while nvm's
+        // bin is already present later. The install path must move nvm's bin to
+        // the front instead of treating that later appearance as sufficient.
+        let child_path = format!(
+            "{}{}{}{}{}",
+            managed_node_bin.display(),
+            PATH_SEP,
+            nvm_bin.display(),
+            PATH_SEP,
+            "/usr/bin"
+        );
+        let install_path = path_with_interpreter_hint(&child_path, &nvm_bin);
+        let status = Command::new(&managed_npm)
+            .arg("install")
+            .arg("-g")
+            .arg("--prefix")
+            .arg(&nvm_prefix)
+            .arg("@indigoai-us/hq-cli@5.2.0")
+            .env_clear()
+            .env("PATH", install_path)
+            .env("HQ_CLI_UPDATE_TEST_RUNTIME", &selected_runtime)
+            .env("HQ_CLI_UPDATE_TEST_NVM_PREFIX", &nvm_prefix)
+            .env("HQ_CLI_UPDATE_TEST_NVM_MANIFEST", &nvm_manifest)
+            .env("HQ_CLI_UPDATE_TEST_MANAGED_MANIFEST", &managed_manifest)
+            .status()
+            .expect("run the managed npm shim against the selected nvm prefix");
+        assert!(status.success(), "managed npm shim failed: {status:?}");
+        assert_eq!(
+            std::fs::read_to_string(selected_runtime).unwrap(),
+            "nvm",
+            "the managed retry must execute with the selected nvm Node, not HQ's managed Node"
+        );
+        assert_eq!(
+            crate::hq_cli_update::version_from_hq_binary(&hq),
+            Some("5.2.0".to_string()),
+            "after installation, the hq that resolves in the nvm prefix must have the new version"
+        );
+        assert!(
+            !managed_manifest.exists(),
+            "the managed prefix must not receive a second copy while the nvm hq remains old"
         );
     }
 
