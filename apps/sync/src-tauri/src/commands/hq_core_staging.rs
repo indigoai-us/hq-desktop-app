@@ -713,6 +713,7 @@ async fn run_replace_from_staging_observed(
                 rescue_stderr_tail: None,
                 rescue_failure_category: crate::commands::hq_core_state::classify_core_update_error(
                     error.kind(),
+                    error.message(),
                     error.npx_resolution(),
                 ),
                 npx_resolution: error.npx_resolution(),
