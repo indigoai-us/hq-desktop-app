@@ -15,6 +15,29 @@
 # The other three workspace crates and every dependency are already cheap or
 # already cached. So the override is aimed at exactly that crate.
 #
+# `opt-level` alone did not move that block, and NEITHER DID `debug = false`.
+# Both were tried; both are recorded here so the next person does not spend the
+# measurement again.
+#
+# Re-measured on run 35060444631, after the opt-level override had been in place
+# for weeks: cargo took 8m21s, of which the stretch between the last `Compiling`
+# line and hq-sync-menubar's warning summary was 446s. Only four crates compile
+# at all; every dependency restores from cache. The hypothesis was that the
+# block is the MSVC link writing the PDB, so run 35067622738 tried
+# `debug = false` on this same package. Result: 418s, and cargo total 7m54s.
+# 28 seconds, 6%. The hypothesis is wrong -- that block is not PDB emission, and
+# `debug = false` was reverted rather than kept for 28s on a disproven premise.
+#
+# What is still unexplained, and is the actual open question: TWO independent
+# profile overrides aimed at this one crate have each moved it by roughly
+# nothing. Before writing a third, confirm the override reaches the build at all
+# -- cargo accepts a `[profile.*.package.*]` key that matches nothing without a
+# warning, and this file is copied to `.cargo/config.toml` after rust-cache has
+# already keyed, which is a narrow enough path to be worth proving rather than
+# assuming. If it does apply, then the cost is ordinary codegen and link of a
+# very large binary, and the lever is the linker (rust-lld) or the amount of
+# code, not a profile knob.
+#
 # IMPORTANT -- the scope below is load-bearing, not conservatism.
 #
 # The CI step writes this file AFTER rust-cache has computed its key, so the

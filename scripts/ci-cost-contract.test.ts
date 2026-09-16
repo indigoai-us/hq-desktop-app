@@ -601,9 +601,37 @@ describe("only macOS-specific work runs on a macOS runner", () => {
 
     expect(macos).toContain("working-directory: apps/sync/src-tauri");
     expect(macos).toContain("cargo test --locked");
-    expect(macos).toContain(
+
+    // The full-suite run above is what covers the real-child regressions. A
+    // second step filtered to cross_generation_escalation_tests used to sit
+    // beside it; on run 35060749760 it cost 86s (1m22s of cargo rebuild) and
+    // ran ONE test the 1239-test pool had already run 90 seconds earlier --
+    // "1 passed; 1238 filtered out". `jobConfig` strips comments, so the
+    // explanation of why it is gone does not fail its own assertion.
+    expect(jobConfig(ciWorkflow, "rust-macos")).not.toContain(
       "cargo test --locked commands::process::cross_generation_escalation_tests",
     );
+
+    // The cli-install lock E2E step is NOT the same case and must stay: its
+    // module is entirely #[ignore]d, so `--include-ignored` is the only run
+    // those two cases get anywhere ("running 2 tests; 1237 filtered out").
+    expect(macos).toContain(
+      "cargo test --locked commands::install_deps::cli_install_lock_e2e_tests",
+    );
+    expect(macos).toContain("--include-ignored");
+  });
+
+  it("keeps non-blocking clippy off the pull-request critical path", () => {
+    // `continue-on-error` means it could never fail the required check, so at
+    // PR time it gated nothing while compiling the app crate a third time, in
+    // a third profile, on a 10x runner (38s / 47s measured). Push-only keeps
+    // the signal on main. If the `continue-on-error:` ever goes away, this
+    // `if:` has to go with it or the promoted gate would not run on PRs.
+    const macos = jobConfig(ciWorkflow, "rust-macos");
+    const clippy = macos.slice(macos.indexOf("name: cargo clippy"));
+
+    expect(clippy).toContain("if: ${{ github.event_name == 'push' }}");
+    expect(clippy).toContain("continue-on-error: true");
   });
 
   it("runs rustfmt on Linux rather than on the macOS runner", () => {
@@ -656,5 +684,159 @@ describe("the shell boot matrix is a cheap required PR gate", () => {
     expect(job).toContain(
       "pnpm exec vitest run --config e2e/desktop-alt/vitest.config.ts e2e/desktop-alt/shell-boot-persona-matrix.spec.ts",
     );
+  });
+});
+
+describe("the frontend gate splits across four parallel jobs", () => {
+  // It was one job running twenty-odd independent steps back to back: 10m03s,
+  // 7m58s and 5m47s on runs 35050123787 / 35057647412 / 35060749760. Nothing
+  // in it consumed anything else in it, so the serialisation was incidental.
+  const workers = [
+    "frontend-contracts",
+    "frontend-sync",
+    "frontend-browser",
+    "frontend-work",
+  ];
+
+  it("runs the four jobs in parallel", () => {
+    for (const job of workers) {
+      const body = jobConfig(ciWorkflow, job);
+
+      // No `needs:` at all -- any dependency between them rebuilds the serial
+      // critical path this split exists to remove.
+      expect(body).not.toContain("needs:");
+      expect(body).toContain("runs-on: ubuntu-latest");
+      expect(body).toContain(
+        "if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}",
+      );
+    }
+  });
+
+  it("keeps the required status check reporting under its old name", () => {
+    // "Frontend (typecheck + lint + coverage)" is in the required_status_checks
+    // of the active `main` ruleset. It used to name the job that did the work;
+    // it now names the job that reports the verdict. Either way the context has
+    // to keep reporting or every PR sits unmergeable on a check that no longer
+    // exists -- the same trap documented on the rust-macos job name.
+    expect(ciWorkflow).toContain("name: Frontend (typecheck + lint + coverage)");
+    expect(jobConfig(ciWorkflow, "frontend")).toContain(
+      "needs: [frontend-contracts, frontend-sync, frontend-browser, frontend-work]",
+    );
+  });
+
+  it("fails that check when any of the four did not succeed", () => {
+    // GitHub reports a SKIPPED required check as satisfied, and a job skipped
+    // because its `needs` failed looks identical to one skipped by the draft
+    // guard. `always()` starts the aggregator anyway so its guard step can turn
+    // that into a real red. Same reasoning as windows-installer-e2e.
+    const gate = jobConfig(ciWorkflow, "frontend");
+
+    expect(gate).toContain("if: ${{ always() &&");
+    expect(gate).toContain("github.event.pull_request.draft == false");
+
+    for (const job of workers) {
+      // `!= 'success'`, not `== 'failure'`: cancelled and timed out are red too.
+      expect(gate).toContain(`needs.${job}.result != 'success'`);
+    }
+
+    // The guard has to be the first step, before anything that could pass for
+    // its own reasons.
+    const steps = gate.slice(gate.indexOf("\n    steps:"));
+    expect(steps.indexOf("Fail when a frontend job did not succeed")).toBeLessThan(
+      steps.indexOf("run: |"),
+    );
+  });
+
+  it("keeps every check the single job used to run", () => {
+    // The split must move work, never drop it. A step that silently stops
+    // running is the failure mode this whole file exists to catch -- see the
+    // workspace-packages job comment in ci.yml for the last time it happened.
+    const split = workers.map((job) => jobConfig(ciWorkflow, job)).join("\n");
+
+    for (const step of [
+      "run: pnpm test:scripts",
+      "node --test .github/scripts/release-changelog-bullets.test.mjs",
+      "run: pnpm version:check",
+      "pnpm --filter @hq/ui typecheck",
+      "pnpm --filter @hq/ui test",
+      "pnpm exec playwright install --with-deps chromium webkit",
+      "run: pnpm test:e2e:browser",
+      "run: pnpm coverage",
+      "run: rm -rf apps/work/.svelte-kit/output apps/work/build",
+    ]) {
+      expect(split).toContain(step);
+    }
+
+    // apps/sync and apps/work each need typecheck + lint + build, and they live
+    // in different jobs now, so count the working-directory pairings instead.
+    for (const app of ["apps/sync", "apps/work"]) {
+      const owner = workers
+        .map((job) => jobConfig(ciWorkflow, job))
+        .find((body) => body.includes(`working-directory: ${app}`));
+
+      expect(owner).toBeDefined();
+    }
+  });
+});
+
+describe("the installer fixture build does only what the E2E consumes", () => {
+  it("bundles NSIS and not MSI", () => {
+    // windows-installer-e2e downloads `windows-installer-bridge` (the NSIS
+    // setup.exe) and windows-installer-e2e.ps1 installs and upgrades through
+    // NSIS alone -- no step in that job ever opens an MSI. Bundling one cost
+    // 70s of WiX candle+light on the critical path of a required check, to
+    // produce a file that was counted and discarded. release.yml still bundles
+    // `msi nsis updater`, so MSI packaging is exercised on the shipped build.
+    const bridge = jobConfig(windowsCheckWorkflow, "build-bridge-installers");
+    const target = jobConfig(windowsCheckWorkflow, "build-target-updater");
+
+    for (const body of [bridge, target]) {
+      expect(body).toContain("--bundles nsis");
+      expect(body).not.toContain("--bundles msi");
+      expect(body).not.toContain("TAURI_MSI_VERSION_CONFIG");
+    }
+
+    expect(releaseWorkflow).toContain("--bundles msi nsis updater");
+  });
+
+  it("leaves the exe/PDB debug-id contract to the build that ships", () => {
+    // The fixture binary is installed, asserted on and uninstalled inside one
+    // job; nothing symbolicates it and nothing keeps it. Checking its debug id
+    // proved nothing about the released artifact -- release.yml checks that one
+    // directly, which is the copy Sentry actually resolves against.
+    expect(jobConfig(windowsCheckWorkflow, "build-bridge-installers")).not.toContain(
+      "sentry-cli difutil check",
+    );
+    expect(releaseWorkflow).toContain("sentry-cli difutil check");
+    expect(releaseWorkflow).toContain("Required release PDB is missing");
+  });
+
+  it("keeps the fixture override scoped to one crate, and records what failed", () => {
+    // Two overrides have now been aimed at the 446s codegen/link block in this
+    // crate. `opt-level = 1` moved it ~0 (8m21s cargo, run 35060444631) and
+    // `debug = false` moved it 28s / 6% (7m54s cargo, run 35067622738), which
+    // disproved the "it is the PDB write" hypothesis; it was reverted rather
+    // than kept on a premise that did not hold. Both results are written up in
+    // the file itself so a third attempt starts from the measurements.
+    // Read the KEYS, not the file text: the write-up above deliberately names
+    // `debug = false` in prose, and a raw `not.toContain` would fail on the
+    // explanation of why the setting is absent. Same reason jobConfig() strips
+    // comments before negative assertions elsewhere in this file.
+    const settings = fixtureProfile
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#") && !line.startsWith("["));
+
+    expect(settings).toEqual(["opt-level = 1"]);
+    expect(fixtureProfile).toContain("NEITHER DID `debug = false`");
+
+    // Still exactly one override section, and still the workspace member
+    // rust-cache never stores -- the invariant that makes writing this file
+    // after rust-cache has keyed sound in the first place.
+    const overridden = [
+      ...fixtureProfile.matchAll(/^\[profile\.[^\]]*\]/gm),
+    ].map((m) => m[0]);
+
+    expect(overridden).toEqual(["[profile.release.package.hq-sync-menubar]"]);
   });
 });

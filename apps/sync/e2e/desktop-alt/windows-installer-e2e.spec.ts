@@ -42,15 +42,47 @@ const versionGate = readFileSync(
 const main = readFileSync(appUrl('src-tauri/src/main.rs'), 'utf8');
 
 describe('Windows production installer E2E', () => {
-  it('builds MSI and NSIS packages with the release and MSI version overlays', () => {
+  // This used to assert the gate bundled `msi nsis` and then counted the MSI.
+  // Nothing downstream ever opened it: the E2E job downloads the NSIS
+  // setup.exe, and windows-installer-e2e.ps1 installs, upgrades and uninstalls
+  // through NSIS alone -- grep this file for `msi` and every remaining hit is
+  // about the release build. WiX candle+light cost 70s on the critical path of
+  // a required check to produce a file that was discarded, so the gate is
+  // NSIS-only and the MSI is asserted where it ships.
+  //
+  // The `installer E2E (x64 MSI + NSIS)` job name is deliberately unchanged:
+  // it is a required status check on `main`, and renaming it orphans the
+  // context and leaves every PR unmergeable.
+  it('builds the NSIS package the E2E installs, with the release and CI overlays', () => {
     expect(workflow).toContain('windows-installer-e2e:');
     expect(workflow).toContain('installer E2E (x64 MSI + NSIS)');
-    expect(workflow).toContain('--bundles msi nsis');
+    expect(workflow).toContain('--bundles nsis');
+    expect(workflow).not.toContain('--bundles msi');
     expect(workflow).toContain('--config src-tauri/tauri.windows.release.conf.json');
     expect(workflow).toContain('--config src-tauri/tauri.windows.ci.conf.json');
-    expect(workflow).toContain('--config $env:TAURI_MSI_VERSION_CONFIG');
-    expect(workflow).toContain('Verify prerelease MSI package');
     expect(ciOverlay.bundle?.createUpdaterArtifacts).toBe(false);
+
+    // The harness CAN install an MSI -- it branches on the installer's
+    // extension and shells out to msiexec -- but this workflow never hands it
+    // one. Both build jobs upload only `bundle/nsis/*_x64-setup.exe`, and both
+    // install steps resolve `*_x64-setup.exe`, so the msiexec branch is
+    // unreachable from here. That is the reason bundling an MSI bought
+    // nothing, and it is what has to stay true for this change to be sound --
+    // so assert the wiring rather than the harness's capabilities.
+    expect(installerHarness).toMatch(/msiexec/i);
+    expect(workflow).toContain('path: apps/sync/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/');
+    expect(workflow).not.toContain('release/bundle/msi/');
+    for (const match of workflow.matchAll(/-Filter "\*([^"]*)"/g)) {
+      expect(match[1]).toContain('x64-setup.exe');
+    }
+  });
+
+  it('builds and verifies the MSI on the release path instead', () => {
+    expect(releaseWorkflow).toContain('--bundles msi nsis updater');
+    expect(releaseWorkflow).toContain('--config $env:TAURI_MSI_VERSION_CONFIG');
+    expect(releaseWorkflow).toContain('Generate Windows MSI version overlay');
+    expect(workflow).not.toContain('TAURI_MSI_VERSION_CONFIG');
+    expect(workflow).not.toContain('Verify prerelease MSI package');
   });
 
   it('packs the CI installers with a fast compressor and ships the slow one', () => {

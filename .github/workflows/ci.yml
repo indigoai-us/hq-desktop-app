@@ -64,11 +64,37 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  frontend:
+  # The frontend gate used to be ONE job running twenty-odd steps back to back
+  # on a single runner. Measured across runs 35050123787 / 35057647412 /
+  # 35060749760 it took 10m03s, 7m58s and 5m47s -- the widest job in this file
+  # and, once the Windows installer chain came down, the thing that would set
+  # how long a PR waits.
+  #
+  # None of those steps consumed another's output. apps/sync, apps/work and the
+  # repo-level contract tests are independent, and the browser suite starts its
+  # own vite preview server (see playwright.config.ts `webServer`) rather than
+  # reading the `pnpm build` output that happened to precede it. They were
+  # serial only because they shared a runner.
+  #
+  # They now run as four parallel jobs, grouped by what each one has to install
+  # and start rather than by what it is called:
+  #
+  #   frontend-contracts  repo-level contract tests + @hq/ui
+  #   frontend-sync       apps/sync typecheck, lint, build, vitest + coverage
+  #   frontend-browser    apps/sync Playwright (Chromium + WebKit)
+  #   frontend-work       apps/work typecheck, lint, tests, both build targets
+  #
+  # The extra cost is three more runner prologues; pnpm install restores from
+  # the setup-node cache in under five seconds on each, so that trade is a
+  # wall-clock win. `Frontend (typecheck + lint + coverage)` below is the
+  # aggregator that keeps the required status check reporting -- same pattern as
+  # `cargo check (x86_64-pc-windows-msvc)` in windows-check.yml.
+
+  frontend-contracts:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    name: Frontend (typecheck + lint + coverage)
+    name: Frontend contracts (workflows + @hq/ui)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       # pnpm version is read from the root package.json "packageManager" field;
@@ -89,6 +115,22 @@ jobs:
         run: |
           pnpm --filter @hq/ui typecheck
           pnpm --filter @hq/ui test
+
+  frontend-sync:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Frontend sync app (typecheck + lint + coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm version is read from the root package.json "packageManager" field;
+      # passing an explicit version here is rejected as a conflict.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
       - name: Typecheck (svelte-check)
         working-directory: apps/sync
         run: pnpm typecheck
@@ -101,15 +143,65 @@ jobs:
           SENTRY_AUTH_TOKEN: ""
           VITE_SENTRY_DSN: ""
         run: pnpm build
-      - name: Install layout regression browsers
-        working-directory: apps/sync
-        run: pnpm exec playwright install --with-deps chromium webkit
-      - name: Desktop scroll containment (Chromium + WebKit)
-        working-directory: apps/sync
-        run: pnpm test:e2e:browser
       - name: Vitest + coverage
         working-directory: apps/sync
         run: pnpm coverage
+      - name: Coverage summary
+        if: always()
+        working-directory: apps/sync
+        run: |
+          {
+            echo "## Coverage"
+            if [ -f coverage/coverage-summary.json ]; then
+              node -e "const c=require('./coverage/coverage-summary.json').total; for (const k of ['lines','statements','functions','branches']) console.log('- '+k+': '+c[k].pct+'%')"
+            else
+              echo "_(no coverage/coverage-summary.json produced)_"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Split out because of what it installs, not because of what it tests:
+  # `playwright install --with-deps chromium webkit` cost 59s on run
+  # 35060749760 to support a suite that ran in 19s. On its own runner that
+  # download overlaps the other three jobs instead of blocking them.
+  frontend-browser:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Frontend browser suite (Chromium + WebKit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm version is read from the root package.json "packageManager" field;
+      # passing an explicit version here is rejected as a conflict.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      - name: Install layout regression browsers
+        working-directory: apps/sync
+        run: pnpm exec playwright install --with-deps chromium webkit
+      # No `pnpm build` first: playwright.config.ts starts its own vite preview
+      # server, so this suite never reads the dist the old serial job produced.
+      - name: Desktop scroll containment (Chromium + WebKit)
+        working-directory: apps/sync
+        run: pnpm test:e2e:browser
+
+  frontend-work:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Frontend work app (typecheck + lint + builds)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm version is read from the root package.json "packageManager" field;
+      # passing an explicit version here is rejected as a conflict.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
       - name: Work app typecheck (svelte-check)
         working-directory: apps/work
         run: pnpm typecheck
@@ -130,18 +222,39 @@ jobs:
       - name: Work app build (web, adapter-vercel)
         working-directory: apps/work
         run: pnpm build
-      - name: Coverage summary
-        if: always()
-        working-directory: apps/sync
+
+  # NAME IS LOAD-BEARING: "Frontend (typecheck + lint + coverage)" is a required
+  # status check in the active `main` ruleset. It named a job that did the work;
+  # it now names the job that reports the verdict. Renaming it, or dropping it
+  # in favour of the four job names above, makes that context never report and
+  # every PR sits unmergeable waiting on a check that no longer exists. Add the
+  # new contexts to the ruleset FIRST if you ever want to retire this job.
+  #
+  # `always()` is load-bearing for the same reason it is in windows-check.yml:
+  # GitHub reports a required check that was SKIPPED as satisfied, and a job
+  # skipped because its `needs` failed is indistinguishable from one skipped by
+  # a draft-PR guard. `always()` starts this job regardless so the guard step
+  # can turn an upstream failure into a real red. The draft term is kept in the
+  # same `if:` so a draft PR still skips the whole gate exactly as before.
+  frontend:
+    needs: [frontend-contracts, frontend-sync, frontend-browser, frontend-work]
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    name: Frontend (typecheck + lint + coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # First step on purpose: this is what converts "a frontend job failed"
+      # from a green required check into a red one. `!= 'success'` and not
+      # `== 'failure'` so cancelled, timed out and skipped all count as red.
+      - name: Fail when a frontend job did not succeed
+        if: ${{ needs.frontend-contracts.result != 'success' || needs.frontend-sync.result != 'success' || needs.frontend-browser.result != 'success' || needs.frontend-work.result != 'success' }}
         run: |
-          {
-            echo "## Coverage"
-            if [ -f coverage/coverage-summary.json ]; then
-              node -e "const c=require('./coverage/coverage-summary.json').total; for (const k of ['lines','statements','functions','branches']) console.log('- '+k+': '+c[k].pct+'%')"
-            else
-              echo "_(no coverage/coverage-summary.json produced)_"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "contracts: ${{ needs.frontend-contracts.result }}"
+          echo "sync:      ${{ needs.frontend-sync.result }}"
+          echo "browser:   ${{ needs.frontend-browser.result }}"
+          echo "work:      ${{ needs.frontend-work.result }}"
+          echo "A frontend job did not succeed; failing the required check rather than reporting it satisfied." >&2
+          exit 1
 
   workspace-packages:
     name: Workspace packages (vitest)
@@ -222,13 +335,22 @@ jobs:
         timeout-minutes: 20
         working-directory: apps/sync/src-tauri
         run: cargo test --locked
-      # Real-child SIGKILL escalation across a handle replacement. Its ordering
-      # is established through the escalation's own observable outcome under a
-      # hard deadline, not by sleeping, so it gets a named bounded step.
-      - name: Cross-generation escalation regressions (real children)
-        timeout-minutes: 10
-        working-directory: apps/sync/src-tauri
-        run: cargo test --locked commands::process::cross_generation_escalation_tests -- --nocapture
+      # There is deliberately NO separate step re-running
+      # `commands::process::cross_generation_escalation_tests` here. Measured on
+      # run 35060749760 that step cost 86s on a 10x runner: 1m22s of it was cargo
+      # rebuilding the test binary, and it then ran ONE test --
+      # stale_escalation_cannot_reach_a_replacement_generation -- in 2.55s. The
+      # `cargo test --locked` step above had already run that same test 90
+      # seconds earlier, inside its 1239-test pool ("1 passed; 1238 filtered
+      # out" is the whole step). It bought no coverage on this runner.
+      #
+      # The rest of that module is cfg(windows) and #[ignore]d, and its doc
+      # comment says those cases "run only in their own isolated windows-check
+      # step via --include-ignored". They do not: windows-check.yml passes
+      # --include-ignored for watcher_fault_e2e_tests and
+      # toolchain_swap_e2e_tests, and never for this module. That gap is real
+      # and is NOT closed here -- turning on three never-executed real-process
+      # Windows E2E cases belongs in its own change that can land them green.
       # Real-process artifact E2E for the bounded cli-install lock wait
       # (HQ-DESKTOP-6J): a genuine second OS process holds the real cli-update
       # lock under a temp HQ_LOCK_DIR; each case loops >= 20 sequential iterations
@@ -249,7 +371,17 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo check --locked
       # ── Non-blocking style gates (flip to required after the cleanup pass) ──
+      # `push` only. This is `continue-on-error`, so at PR time it gated
+      # nothing: it could not fail the check, and nobody reads a green job's
+      # annotations. What it did do was compile the whole app crate a third
+      # time, in a third profile, on a 10x runner -- 38s on run 35060749760,
+      # 47s on run 35050123787, all of it on the critical path of a REQUIRED
+      # status check. Running it on main keeps the signal and the warning
+      # count trend while taking it off every PR. Delete this `if:` at the
+      # same time as the `continue-on-error:` when the cleanup pass promotes
+      # clippy to a real gate.
       - name: cargo clippy (non-blocking)
+        if: ${{ github.event_name == 'push' }}
         continue-on-error: true
         working-directory: apps/sync/src-tauri
         run: cargo clippy --all-targets -- -D warnings
