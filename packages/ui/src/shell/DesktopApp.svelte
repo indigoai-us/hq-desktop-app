@@ -232,7 +232,6 @@
     rosterStatusForRow,
     type LiveChannelTabs,
   } from "./live-channel-tabs.js";
-  import { liveSessionStartTarget } from "./live-session-start.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import LinkContextMenu from "../common/LinkContextMenu.svelte";
   import {
