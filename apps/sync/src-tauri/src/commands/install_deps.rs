@@ -6,6 +6,7 @@
 //! an optional system package-manager provider.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::io::{BufRead, BufReader};
 #[cfg(windows)]
 use std::mem::size_of;
@@ -1671,56 +1672,20 @@ fn managed_git_bin_in(home: &std::path::Path) -> PathBuf {
     managed_git_dir_in(home).join("bin")
 }
 
-/// Environment a relocatable (dugite) git needs so it can find its sub-commands
-/// (libexec/git-core, e.g. git-remote-https), its templates, and a CA bundle.
-/// dugite's git has no compiled-in prefix and bundles no CA file, so without
-/// these `git clone https://…` fails first with "remote-https is not a git
-/// command" and then with a certificate-verify error. Returns empty when the
-/// managed git isn't installed (so a real system git keeps its own config).
+/// Compatibility wrapper for the shared managed-Git environment helper.
+///
+/// The core helper checks the Git selected by the child PATH, rather than only
+/// whether HQ's portable Git exists, before returning its configuration.
 /// Exposed for unit tests.
 #[cfg(not(windows))]
 pub fn managed_git_env_in(home: &std::path::Path) -> Vec<(String, String)> {
-    let git_dir = managed_git_dir_in(home);
-    if !git_dir.join("bin").join("git").exists() {
-        return Vec::new();
-    }
-    let mut env = vec![
-        (
-            "GIT_EXEC_PATH".to_string(),
-            git_dir
-                .join("libexec")
-                .join("git-core")
-                .to_string_lossy()
-                .into_owned(),
-        ),
-        (
-            "GIT_TEMPLATE_DIR".to_string(),
-            git_dir
-                .join("share")
-                .join("git-core")
-                .join("templates")
-                .to_string_lossy()
-                .into_owned(),
-        ),
-    ];
-    // dugite's git uses OpenSSL and bundles no CA; macOS ships a trusted bundle
-    // at /etc/ssl/cert.pem. Only set it when present.
-    let system_ca = std::path::Path::new("/etc/ssl/cert.pem");
-    if system_ca.exists() {
-        env.push((
-            "GIT_SSL_CAINFO".to_string(),
-            system_ca.to_string_lossy().into_owned(),
-        ));
-    }
-    env
+    hq_desktop_core::paths::managed_git_env_in(home)
 }
 
-/// Production wrapper over `managed_git_env_in`, resolving the real home dir.
+/// Production wrapper over the core helper, retained for existing call sites.
 #[cfg(not(windows))]
 pub fn managed_git_env() -> Vec<(String, String)> {
-    dirs::home_dir()
-        .map(|h| managed_git_env_in(&h))
-        .unwrap_or_default()
+    hq_desktop_core::paths::managed_git_env()
 }
 
 /// User-local tool paths owned by HQ Installer. Exposed for unit tests.
@@ -1885,41 +1850,19 @@ pub fn shell_path_block() -> String {
     )
 }
 
-/// The portable (dugite) git has no compiled-in prefix and bundles no CA
-/// file: invoked bare from a user's shell it prints `templates not found` and
-/// `'remote-https' is not a git command`, so every https clone fails. The
-/// engine's own calls set `managed_git_env()`; users' shells need the same.
-/// Rather than exporting GIT_EXEC_PATH globally (which would break any other
-/// git the user later installs), install a tiny shim that sets the env and
-/// execs the real binary, and put the SHIM dir on PATH. Idempotent; returns
-/// the shim path when written. Exposed for testing.
+/// Ensure the portable Git wrapper for an explicit home directory.
+///
+/// The health gate lives in `hq-desktop-core::paths` with the rescue PATH
+/// selection it protects, so both the installer and core updates reject the
+/// same partial managed-Git install.
 #[cfg(not(windows))]
-pub fn ensure_managed_git_shim_in(home: &std::path::Path) -> Option<PathBuf> {
-    let git_dir = managed_git_dir_in(home);
-    if !git_dir.join("bin").join("git").exists() {
-        return None;
-    }
-    let shim_dir = managed_git_shim_dir_in(home);
-    let shim = shim_dir.join("git");
-    let script = format!(
-        "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n"
-    );
-    if std::fs::read_to_string(&shim).ok().as_deref() == Some(script.as_str()) {
-        return Some(shim);
-    }
-    std::fs::create_dir_all(&shim_dir).ok()?;
-    std::fs::write(&shim, script).ok()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755));
-    }
-    Some(shim)
+pub fn ensure_managed_git_shim_in(home: &std::path::Path) -> Result<PathBuf, String> {
+    hq_desktop_core::paths::ensure_managed_git_shim_in(home)
 }
 
 #[cfg(not(windows))]
 pub fn managed_git_shim_dir_in(home: &std::path::Path) -> PathBuf {
-    managed_toolchain_dir_in(home).join("git-shim")
+    hq_desktop_core::paths::managed_git_shim_dir_in(home)
 }
 
 /// Profile files the PATH block must land in for this shell.
@@ -1952,8 +1895,11 @@ pub fn shell_profile_paths_in(home: &std::path::Path) -> Vec<PathBuf> {
 #[cfg(not(windows))]
 pub(crate) fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
     match ensure_managed_git_shim_in(home) {
-        Some(p) => emit_preflight_line(app, &format!("[path] portable git shim at {}", p.display())),
-        None => emit_preflight_line(app, "[path] portable git not present; no shim written"),
+        Ok(p) => emit_preflight_line(app, &format!("[path] portable git shim at {}", p.display())),
+        Err(reason) => emit_preflight_line(
+            app,
+            &format!("[path] portable git shim unavailable: {reason}"),
+        ),
     }
     let block = shell_path_block();
     for profile_path in shell_profile_paths_in(home) {
@@ -5529,19 +5475,326 @@ fn qmd_resolves_in_prefix(prefix: &Path) -> bool {
 #[cfg(windows)]
 const RSYNC_BUNDLE_URL: &str = "https://github.com/small-tech/portable-rsync-with-ssh-for-windows/archive/0fc67b2e08ac0b1740982bcec16b3f2eb26151fa.zip";
 
+/// Result of the best-effort rsync preflight that precedes a Core rescue.
+///
+/// The rescue remains the authoritative gate: every variant lets its spawn
+/// proceed, while callers log the exact unavailable state for diagnosis.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RsyncRescueProvisioning {
+    AlreadyRescueReady,
+    ShimRefreshed,
+    Provisioned,
+    ProvisioningTimedOut,
+    ProvisioningFailed(String),
+    ProvisionedButNotRescueReady,
+}
+
+/// The result of applying the Core-update-specific provisioning deadline.
+///
+/// Kept separate from the final rescue readiness outcome so the pure decision
+/// helper can receive a deterministic deadline in tests.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RsyncRescueProvisioningAttempt {
+    Completed(Result<(), String>),
+    TimedOut,
+}
+
+/// Ensure an optional rescue dependency without making its provisioning a new
+/// failure gate. A usable existing dependency avoids all installer work only
+/// when HQ's path-translation shim is also present; a successful installer
+/// must leave both requirements ready before it is trusted.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) async fn ensure_rsync_for_core_update_rescue_with<P, S, F, Fut, B, BFut>(
+    mut is_resolvable: P,
+    mut has_shim: S,
+    provision: F,
+    provision_deadline: Duration,
+    provision_within_deadline: B,
+) -> RsyncRescueProvisioning
+where
+    P: FnMut() -> bool,
+    S: FnMut() -> bool,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+    B: FnOnce(Fut, Duration) -> BFut,
+    BFut: Future<Output = RsyncRescueProvisioningAttempt>,
+{
+    let initially_resolvable = is_resolvable();
+    let shim_was_missing = initially_resolvable && !has_shim();
+    if initially_resolvable && !shim_was_missing {
+        return RsyncRescueProvisioning::AlreadyRescueReady;
+    }
+
+    match provision_within_deadline(provision(), provision_deadline).await {
+        RsyncRescueProvisioningAttempt::Completed(Ok(())) if is_resolvable() && has_shim() => {
+            if shim_was_missing {
+                RsyncRescueProvisioning::ShimRefreshed
+            } else {
+                RsyncRescueProvisioning::Provisioned
+            }
+        }
+        RsyncRescueProvisioningAttempt::Completed(Ok(())) => {
+            RsyncRescueProvisioning::ProvisionedButNotRescueReady
+        }
+        RsyncRescueProvisioningAttempt::Completed(Err(reason)) => {
+            RsyncRescueProvisioning::ProvisioningFailed(reason)
+        }
+        RsyncRescueProvisioningAttempt::TimedOut => RsyncRescueProvisioning::ProvisioningTimedOut,
+    }
+}
+
+#[cfg(test)]
+mod rsync_core_update_rescue_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct NoopWaker;
+
+    impl Wake for NoopWaker {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    fn block_on_ready<T>(future: impl Future<Output = T>) -> T {
+        let waker = Waker::from(Arc::new(NoopWaker));
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("rsync rescue test fixture must resolve immediately"),
+        }
+    }
+
+    #[test]
+    fn already_rescue_ready_skips_provisioning() {
+        let provision_calls = Cell::new(0);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || true,
+            || true,
+            || {
+                provision_calls.set(provision_calls.get() + 1);
+                async { Ok(()) }
+            },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(outcome, RsyncRescueProvisioning::AlreadyRescueReady);
+        assert_eq!(
+            provision_calls.get(),
+            0,
+            "a usable rsync must not download a bundle"
+        );
+    }
+
+    #[test]
+    fn successful_provisioning_requires_a_second_successful_probe() {
+        let probe_calls = Cell::new(0);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || {
+                probe_calls.set(probe_calls.get() + 1);
+                probe_calls.get() == 2
+            },
+            || true,
+            || async { Ok(()) },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(outcome, RsyncRescueProvisioning::Provisioned);
+        assert_eq!(
+            probe_calls.get(),
+            2,
+            "provisioning must re-probe rsync before trusting it"
+        );
+    }
+
+    #[test]
+    fn successful_provisioning_that_does_not_resolve_rsync_is_reported() {
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || false,
+            || true,
+            || async { Ok(()) },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(
+            outcome,
+            RsyncRescueProvisioning::ProvisionedButNotRescueReady
+        );
+    }
+
+    #[test]
+    fn provisioning_failure_preserves_the_reason() {
+        let reason = "portable rsync archive returned HTTP 503".to_string();
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || false,
+            || false,
+            move || async move { Err(reason) },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(
+            outcome,
+            RsyncRescueProvisioning::ProvisioningFailed(
+                "portable rsync archive returned HTTP 503".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn resolvable_rsync_without_a_shim_refreshes_the_shim() {
+        let provision_calls = Cell::new(0);
+        let shim_present = Cell::new(false);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || true,
+            || shim_present.get(),
+            || {
+                provision_calls.set(provision_calls.get() + 1);
+                shim_present.set(true);
+                async { Ok(()) }
+            },
+            Duration::ZERO,
+            |provision, _deadline| async move {
+                RsyncRescueProvisioningAttempt::Completed(provision.await)
+            },
+        ));
+
+        assert_eq!(
+            outcome,
+            RsyncRescueProvisioning::ShimRefreshed,
+            "a usable external rsync still needs HQ's path shim"
+        );
+        assert_eq!(
+            provision_calls.get(),
+            1,
+            "a missing shim must run the installer path that owns shim writes"
+        );
+    }
+
+    #[test]
+    fn provisioning_that_never_completes_before_the_deadline_times_out() {
+        let provision_calls = Cell::new(0);
+        let deadline_calls = Cell::new(0);
+        let deadline_seen = Cell::new(None);
+
+        let outcome = block_on_ready(ensure_rsync_for_core_update_rescue_with(
+            || false,
+            || false,
+            || {
+                provision_calls.set(provision_calls.get() + 1);
+                async { std::future::pending::<Result<(), String>>().await }
+            },
+            Duration::ZERO,
+            |_, deadline| {
+                deadline_calls.set(deadline_calls.get() + 1);
+                deadline_seen.set(Some(deadline));
+                async { RsyncRescueProvisioningAttempt::TimedOut }
+            },
+        ));
+
+        assert_eq!(outcome, RsyncRescueProvisioning::ProvisioningTimedOut);
+        assert_eq!(provision_calls.get(), 1);
+        assert_eq!(
+            deadline_calls.get(),
+            1,
+            "the injected deadline must finish the preflight without waiting for setup retries"
+        );
+        assert_eq!(deadline_seen.get(), Some(Duration::ZERO));
+    }
+}
+
+/// Best-effort Windows preflight for the Core-update rescue.
+///
+/// `check_dep_impl` is deliberately used both before and after provisioning:
+/// its successful `rsync --version` probe is the existing definition of a
+/// usable executable for HQ's extended child PATH. The paired shim translates
+/// Windows drive-letter arguments for cwRsync, so both are required for a
+/// rescue-ready executable.
+#[cfg(windows)]
+pub(crate) async fn ensure_rsync_for_core_update_rescue() -> RsyncRescueProvisioning {
+    ensure_rsync_for_core_update_rescue_with(
+        || check_dep_impl("rsync", None).installed,
+        rsync_shim_is_present,
+        || async {
+            install_rsync_with_progress(|message| {
+                crate::util::logfile::log(
+                    "hq-core-update",
+                    &format!("rsync provisioning: {message}"),
+                );
+            })
+            .await
+            .map(|_| ())
+        },
+        CORE_UPDATE_RSYNC_PROVISION_TIMEOUT,
+        provision_rsync_for_core_update_within_deadline,
+    )
+    .await
+}
+
+/// Bounds the optional Core-update preflight instead of inheriting setup's
+/// three 180-second download attempts. The pinned rsync archive is 4.68 MB,
+/// so 45 seconds allows roughly 0.83 Mbit/s plus checksum and extraction while
+/// keeping a stalled best-effort preflight from holding the update run guard.
+#[cfg(windows)]
+const CORE_UPDATE_RSYNC_PROVISION_TIMEOUT: Duration = Duration::from_secs(45);
+
+#[cfg(windows)]
+async fn provision_rsync_for_core_update_within_deadline<Fut>(
+    provision: Fut,
+    deadline: Duration,
+) -> RsyncRescueProvisioningAttempt
+where
+    Fut: Future<Output = Result<(), String>>,
+{
+    match tokio::time::timeout(deadline, provision).await {
+        Ok(result) => RsyncRescueProvisioningAttempt::Completed(result),
+        Err(_) => RsyncRescueProvisioningAttempt::TimedOut,
+    }
+}
+
+#[cfg(windows)]
+fn rsync_shim_is_present() -> bool {
+    let bin_dir = managed_npm_bin();
+    bin_dir.join("rsync.cmd").is_file() && bin_dir.join("rsync.ps1").is_file()
+}
+
 #[cfg(windows)]
 #[tauri::command]
 pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
+    install_rsync_with_progress(|message| emit_progress(&app, message)).await
+}
+
+#[cfg(windows)]
+async fn install_rsync_with_progress(mut progress: impl FnMut(&str)) -> Result<String, String> {
     let managed_rsync = managed_toolchain_dir().join("bin").join("rsync.exe");
     let probe = check_dep_impl("rsync", None);
     if probe.installed && !managed_rsync.exists() {
-        emit_progress(&app, "rsync already installed");
+        progress("rsync already installed");
         write_rsync_shim()?;
         return Ok("rsync already present; path shim refreshed".to_string());
     }
 
     let url = std::env::var("HQ_RSYNC_URL").unwrap_or_else(|_| RSYNC_BUNDLE_URL.to_string());
-    emit_progress(&app, &format!("Downloading portable rsync from {url}"));
+    progress(&format!("Downloading portable rsync from {url}"));
 
     let bin_dir = managed_toolchain_dir().join("bin");
     std::fs::create_dir_all(&bin_dir).map_err(|e| format!("Failed to mkdir {bin_dir:?}: {e}"))?;
@@ -5553,7 +5806,7 @@ pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
             .map_err(|e| format!("rsync download task join failed: {e}"))??;
     verify_sha256_bytes("rsync bundle", &bytes, RSYNC_BUNDLE_SHA256)?;
 
-    emit_progress(&app, "Extracting rsync bundle...");
+    progress("Extracting rsync bundle...");
     let staged_bin = managed_toolchain_dir().join(format!(".rsync-bin-{}", Uuid::new_v4()));
     if let Err(e) = extract_rsync_zip_to_bin(&bytes, &staged_bin) {
         let _ = std::fs::remove_dir_all(&staged_bin);
@@ -7597,6 +7850,7 @@ mod managed_node_url_tests {
 #[cfg(all(test, unix))]
 mod install_deps_tests {
     use super::*;
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -7640,16 +7894,21 @@ mod install_deps_tests {
     #[test]
     fn test_managed_git_env_empty_when_not_installed() {
         let home = tempfile::TempDir::new().unwrap();
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let _home = scoped_home(home.path());
         assert!(managed_git_env_in(home.path()).is_empty());
     }
 
     #[test]
     fn test_managed_git_env_set_when_installed() {
         let home = tempfile::TempDir::new().unwrap();
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
         let git_bin_dir = home
             .path()
             .join("Library/Application Support/Indigo HQ/toolchain/git/bin");
         make_fake_bin_at(&git_bin_dir, "git");
+        ensure_managed_git_shim_in(home.path()).expect("managed git shim");
+        let _home = scoped_home(home.path());
 
         let env: std::collections::HashMap<String, String> =
             managed_git_env_in(home.path()).into_iter().collect();
@@ -9198,17 +9457,26 @@ mod git_shim_tests {
     fn shim_written_only_when_portable_git_exists_and_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
-        assert!(ensure_managed_git_shim_in(home).is_none());
+        assert!(ensure_managed_git_shim_in(home).is_err());
         let bin = managed_git_dir_in(home).join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("git"), "").unwrap();
+        let git = bin.join("git");
+        std::fs::write(&git, "#!/bin/sh\nprintf 'git version fixture'\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
         let shim = ensure_managed_git_shim_in(home).expect("shim");
         let body = std::fs::read_to_string(&shim).unwrap();
         assert!(body.starts_with("#!/bin/sh"));
-        assert!(body.contains("GIT_EXEC_PATH") && body.contains("GIT_TEMPLATE_DIR") && body.contains("exec "));
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&shim).unwrap().permissions().mode() & 0o111, 0o111);
-        assert_eq!(ensure_managed_git_shim_in(home), Some(shim));
+        assert!(
+            body.contains("GIT_EXEC_PATH")
+                && body.contains("GIT_TEMPLATE_DIR")
+                && body.contains("exec ")
+        );
+        assert_eq!(
+            std::fs::metadata(&shim).unwrap().permissions().mode() & 0o111,
+            0o111
+        );
+        assert_eq!(ensure_managed_git_shim_in(home), Ok(shim));
     }
 
     #[test]

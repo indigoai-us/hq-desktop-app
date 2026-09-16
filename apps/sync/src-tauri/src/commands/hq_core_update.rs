@@ -300,14 +300,7 @@ async fn install_hq_core_update_observed(
             started.elapsed(),
             None,
             error.kind().label(),
-            crate::commands::hq_core_state::CoreUpdateFailureDetails {
-                rescue_stderr_tail: None,
-                rescue_failure_category: crate::commands::hq_core_state::classify_core_update_error(
-                    error.kind(),
-                    error.npx_resolution(),
-                ),
-                npx_resolution: error.npx_resolution(),
-            },
+            crate::commands::hq_core_state::core_update_failure_details(error),
         ),
     }
     outcome
@@ -429,7 +422,10 @@ async fn install_hq_core_update_inner() -> Result<
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so this prod Update can't race prewarm/sync into a corrupt
     // `_npx` tree (especially likely right after an HQ_CLOUD_VERSION bump).
-    let (mut cmd, npx_resolution) = crate::commands::hq_core_staging::rescue_command();
+    #[cfg(windows)]
+    ensure_managed_rsync_for_core_update_rescue().await;
+
+    let (mut cmd, npx_resolution) = core_update_rescue_command();
     crate::commands::hq_core_staging::materialize_rescue_cache()
         .await
         .map_err(|error| {
@@ -527,6 +523,103 @@ async fn install_hq_core_update_inner() -> Result<
     })
 }
 
+/// Build the core-update rescue command after preparing the managed Git shim.
+///
+/// The rescue PATH alone is adjusted: a raw managed Git from generated Claude
+/// settings is replaced with its shim, but a foreign Git the user put first is
+/// left first. A missing or unhealthy managed Git is removed from this rescue
+/// PATH so the user's next Git remains available.
+fn core_update_rescue_command() -> (
+    tokio::process::Command,
+    crate::commands::hq_core_state::CoreUpdateNpxResolution,
+) {
+    let (mut cmd, resolution) = crate::commands::hq_core_staging::rescue_command();
+
+    #[cfg(not(windows))]
+    if let Some(home) = dirs::home_dir() {
+        let healthy = match crate::commands::install_deps::ensure_managed_git_shim_in(&home) {
+            Ok(shim) => {
+                log(
+                    "hq-core-update",
+                    &format!("managed Git shim ready for rescue at {}", shim.display()),
+                );
+                true
+            }
+            Err(reason) => {
+                log(
+                    "hq-core-update",
+                    &format!(
+                        "managed Git shim unavailable before rescue ({reason}); using the user's Git"
+                    ),
+                );
+                false
+            }
+        };
+        let rescue_path = hq_desktop_core::paths::managed_git_rescue_path_for_home(
+            &hq_desktop_core::paths::child_path(),
+            &home,
+            healthy,
+        );
+        cmd.env("PATH", rescue_path);
+    } else {
+        log(
+            "hq-core-update",
+            "managed Git shim skipped before rescue: home directory unavailable",
+        );
+    }
+
+    (cmd, resolution)
+}
+
+/// Best-effort managed-rsync preflight for the Windows Core-update rescue.
+///
+/// The rescue's own rsync preflight remains authoritative. Provisioning is
+/// intentionally non-fatal so a transient network, checksum, or filesystem
+/// failure cannot turn an otherwise runnable rescue into an earlier failure.
+#[cfg(windows)]
+async fn ensure_managed_rsync_for_core_update_rescue() {
+    match crate::commands::install_deps::ensure_rsync_for_core_update_rescue().await {
+        crate::commands::install_deps::RsyncRescueProvisioning::AlreadyRescueReady => {
+            log(
+                "hq-core-update",
+                "rsync and its path shim already ready before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ShimRefreshed => {
+            log(
+                "hq-core-update",
+                "rsync was resolvable but its path shim was refreshed before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::Provisioned => {
+            log(
+                "hq-core-update",
+                "managed rsync provisioned and resolvable before rescue",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningTimedOut => {
+            log(
+                "hq-core-update",
+                "managed rsync preflight timed out before rescue; continuing with current rsync resolution",
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisioningFailed(reason) => {
+            log(
+                "hq-core-update",
+                &format!(
+                    "managed rsync unavailable before rescue ({reason}); continuing with current rsync resolution"
+                ),
+            );
+        }
+        crate::commands::install_deps::RsyncRescueProvisioning::ProvisionedButNotRescueReady => {
+            log(
+                "hq-core-update",
+                "managed rsync installer completed but rsync or its path shim remained unavailable before rescue; continuing with current rsync resolution",
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[tokio::test(flavor = "current_thread")]
@@ -564,6 +657,8 @@ mod tests {
 
     use super::*;
     use crate::commands::hq_core_staging::build_rescue_args;
+    #[cfg(not(windows))]
+    use crate::util::test_support::{scoped_home, write_usable_managed_git, ENV_MUTEX};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -643,5 +738,103 @@ mod tests {
     fn prod_source_agrees_with_release_feed() {
         assert_eq!(PROD_HQ_CORE_REPO, "indigoai-us/hq-core");
         assert!(RELEASES_URL.contains(PROD_HQ_CORE_REPO));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn core_update_rescue_command_creates_shim_only_for_managed_git() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+
+        let managed_home = tempfile::tempdir().unwrap();
+        write_usable_managed_git(managed_home.path());
+        {
+            let _home = scoped_home(managed_home.path());
+            let _ = core_update_rescue_command();
+        }
+        assert!(
+            crate::commands::install_deps::managed_git_shim_dir_in(managed_home.path())
+                .join("git")
+                .is_file(),
+            "preparing the rescue command must install the managed Git shim before spawning"
+        );
+
+        let no_git_home = tempfile::tempdir().unwrap();
+        {
+            let _home = scoped_home(no_git_home.path());
+            let _ = core_update_rescue_command();
+        }
+        assert!(crate::commands::install_deps::managed_git_env_in(no_git_home.path()).is_empty());
+        assert!(
+            !crate::commands::install_deps::managed_git_shim_dir_in(no_git_home.path()).exists(),
+            "a machine without managed Git must not gain a shim directory"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn core_update_rescue_command_uses_users_git_when_managed_git_is_not_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let managed_git = write_usable_managed_git(home.path());
+        std::fs::set_permissions(&managed_git, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let users_git = home.path().join("user-bin/git");
+        std::fs::create_dir_all(users_git.parent().expect("user Git parent")).unwrap();
+        std::fs::write(&users_git, "#!/bin/sh\nprintf 'git version user-fixture'\n").unwrap();
+        std::fs::set_permissions(&users_git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let settings = home.path().join("HQ/.claude/settings.local.json");
+        std::fs::create_dir_all(settings.parent().expect("settings parent")).unwrap();
+        std::fs::write(
+            settings,
+            format!(
+                r#"{{"env":{{"PATH":"{}"}}}}"#,
+                users_git.parent().expect("user Git directory").display()
+            ),
+        )
+        .unwrap();
+
+        let _home = scoped_home(home.path());
+        let (command, _) = core_update_rescue_command();
+        let path = command
+            .as_std()
+            .get_envs()
+            .find_map(|(name, value)| {
+                (name == "PATH").then(|| value.map(|value| value.to_os_string()))
+            })
+            .flatten()
+            .expect("rescue PATH");
+
+        let env_names: Vec<_> = command
+            .as_std()
+            .get_envs()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !crate::commands::install_deps::managed_git_shim_dir_in(home.path())
+                .join("git")
+                .exists(),
+            "a non-executable managed Git must not gain a shim"
+        );
+        assert!(
+            !env_names.iter().any(|name| name == "GIT_EXEC_PATH"),
+            "a user's Git must not inherit the managed exec path: {env_names:?}"
+        );
+        assert!(
+            !env_names.iter().any(|name| name == "GIT_TEMPLATE_DIR"),
+            "a user's Git must not inherit the managed templates: {env_names:?}"
+        );
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "git --version"])
+            .env_clear()
+            .env("PATH", path)
+            .output()
+            .expect("run rescue-path Git");
+        assert!(output.status.success(), "user Git failed: {output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "git version user-fixture"
+        );
     }
 }

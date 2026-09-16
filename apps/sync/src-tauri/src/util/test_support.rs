@@ -39,6 +39,18 @@ pub(crate) fn scoped_home(path: &Path) -> ScopedHome {
     ScopedHome { previous }
 }
 
+/// Write a healthy managed Git fixture at the same path used by the installer.
+#[cfg(not(windows))]
+pub(crate) fn write_usable_managed_git(home: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let git = home.join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
+    std::fs::create_dir_all(git.parent().expect("managed Git parent")).unwrap();
+    std::fs::write(&git, "#!/bin/sh\nprintf 'git version fixture'\n").unwrap();
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git
+}
+
 pub(crate) fn with_state_dir<F: FnOnce(&Path)>(f: F) {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = TempDir::new().unwrap();

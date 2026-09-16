@@ -86,13 +86,46 @@ describe('the Unix hq resolver sweeps one cross-lane list with a backed preferen
   const paths = readRepoFile('../../crates/hq-desktop-core/src/paths.rs');
   const cli = readRepoFile('../../crates/hq-desktop-core/src/hq_cli_update.rs');
 
+  function unixHqResolverBranch(): string {
+    const resolverStart = paths.indexOf(
+      'pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {',
+    );
+    expect(resolverStart, 'resolve_bin_with_kind must remain the resolver boundary').toBeGreaterThanOrEqual(
+      0,
+    );
+
+    const unixArmStart = paths.indexOf('    #[cfg(not(target_os = "windows"))]\n    {', resolverStart);
+    expect(unixArmStart, 'the Unix resolver arm must remain discoverable').toBeGreaterThan(
+      resolverStart,
+    );
+
+    const hqBranchStart = paths.indexOf('        if name == "hq" {', unixArmStart);
+    expect(hqBranchStart, 'the Unix hq branch must remain discoverable').toBeGreaterThan(
+      unixArmStart,
+    );
+
+    const hqBranchEnd = paths.indexOf(
+      '        } else if let Some(path) = resolve_bin_in_dirs(home_dir().as_deref(), name) {',
+      hqBranchStart,
+    );
+    expect(hqBranchEnd, 'the Unix hq branch must retain its non-hq boundary').toBeGreaterThan(
+      hqBranchStart,
+    );
+
+    return paths.slice(hqBranchStart, hqBranchEnd);
+  }
+
   it('sweeps the Unix hq lanes as ONE cross-lane list, not a settings-only loop', () => {
     expect(paths).toContain('select_hq_program_in_dirs(');
     expect(paths).toContain('&unix_hq_search_dirs(home_dir().as_deref()),');
-    // The per-candidate settings-only loop that returned on any hit must be gone:
-    // its distinctive `is_executable_file(&candidate)` call on a single joined
-    // path is replaced by `&is_executable_file` passed to the selector.
-    expect(paths).not.toContain('is_executable_file(&candidate)');
+    // Scope this ban to the Unix `hq` branch: `paths.rs` legitimately uses the
+    // executable-file predicate for other resolvers. Each extraction boundary is
+    // asserted above, so a renamed or moved resolver cannot yield an empty slice
+    // that makes this guard pass. This exact settings-only loop was the pre-fix
+    // defect: it returned before the cross-lane backed-candidate selector ran.
+    expect(unixHqResolverBranch()).not.toContain(
+      'for dir in settings_path_dirs() {\n                let candidate = dir.join(name);',
+    );
   });
 
   it('builds the Unix search dirs as one ordered, fixture-injectable list', () => {

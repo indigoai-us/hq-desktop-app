@@ -219,6 +219,10 @@ impl CoreUpdateError {
     pub(crate) const fn npx_resolution(&self) -> Option<CoreUpdateNpxResolution> {
         self.npx_resolution
     }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 /// Path-free, closed diagnostic for the `npx` executable used to launch the
@@ -365,6 +369,60 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
         category: RescueFailureCategory::Network,
         needle: "connection reset",
     },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "is not a git command",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "remote helper 'https' aborted session",
+    },
+];
+
+// These are OS-error renderings emitted before the rescue process can start or
+// while its update baseline is being persisted. They intentionally do not
+// participate in rescue-exit classification, whose ordering is already shipped.
+const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "no such file or directory",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "program not found",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "cannot find the file",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "enoent",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "access is denied",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "eacces",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Permission,
+        needle: "this account cannot write to it",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "installation is not executable",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::MissingDependency,
+        needle: "node.js was not found",
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::Network,
+        needle: "check your network and npm setup",
+    },
 ];
 
 fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
@@ -374,6 +432,14 @@ fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
         .find(|pattern| stderr.contains(pattern.needle))
         .map(|pattern| pattern.category)
         .unwrap_or(RescueFailureCategory::Unknown)
+}
+
+fn classify_spawn_error(detail: &str) -> Option<RescueFailureCategory> {
+    let detail = detail.to_ascii_lowercase();
+    SPAWN_ERROR_PATTERNS
+        .iter()
+        .find(|pattern| detail.contains(pattern.needle))
+        .map(|pattern| pattern.category)
 }
 
 pub(crate) fn classify_rescue_exit_failure(
@@ -388,6 +454,7 @@ pub(crate) fn classify_rescue_exit_failure(
 
 pub(crate) fn classify_core_update_error(
     error_kind: CoreUpdateErrorKind,
+    detail: &str,
     npx_resolution: Option<CoreUpdateNpxResolution>,
 ) -> RescueFailureCategory {
     if npx_resolution.is_some_and(|resolution| !resolution.resolved) {
@@ -396,10 +463,11 @@ pub(crate) fn classify_core_update_error(
 
     match error_kind {
         CoreUpdateErrorKind::Network => RescueFailureCategory::Network,
+        CoreUpdateErrorKind::RescueSpawn | CoreUpdateErrorKind::BaselinePersistence => {
+            classify_spawn_error(detail).unwrap_or_else(|| classify_rescue_stderr_failure(detail))
+        }
         CoreUpdateErrorKind::AlreadyInProgress
         | CoreUpdateErrorKind::InvalidCoreRoot
-        | CoreUpdateErrorKind::RescueSpawn
-        | CoreUpdateErrorKind::BaselinePersistence
         | CoreUpdateErrorKind::ChannelConfiguration
         | CoreUpdateErrorKind::Internal => RescueFailureCategory::Unknown,
     }
@@ -412,6 +480,24 @@ pub(crate) struct CoreUpdateFailureDetails<'a> {
     pub(crate) rescue_stderr_tail: Option<&'a str>,
     pub(crate) rescue_failure_category: RescueFailureCategory,
     pub(crate) npx_resolution: Option<CoreUpdateNpxResolution>,
+}
+
+pub(crate) fn core_update_failure_details(error: &CoreUpdateError) -> CoreUpdateFailureDetails<'_> {
+    let detail = error.message();
+    let rescue_stderr_tail = match error.kind() {
+        CoreUpdateErrorKind::RescueSpawn | CoreUpdateErrorKind::BaselinePersistence => Some(detail),
+        _ => None,
+    };
+
+    CoreUpdateFailureDetails {
+        rescue_stderr_tail,
+        rescue_failure_category: classify_core_update_error(
+            error.kind(),
+            detail,
+            error.npx_resolution(),
+        ),
+        npx_resolution: error.npx_resolution(),
+    }
 }
 
 impl std::fmt::Display for CoreUpdateError {
@@ -847,6 +933,8 @@ fn core_update_sentry_exit_code(exit_code: Option<i32>) -> &'static str {
         Some(3) => "3",
         Some(4) => "4",
         Some(5) => "5",
+        Some(126) => "126",
+        Some(127) => "127",
         Some(-1) => "signal_or_unknown",
         Some(_) => "other",
         None => "not_available",
@@ -863,7 +951,7 @@ fn claim_core_update_sentry_signature(signature: CoreUpdateSentryFailureSignatur
 
 fn send_core_update_failure_report(report: CoreUpdateSentryFailureReport) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let fingerprint = [report.error_kind, report.error_category.label()];
+        let fingerprint = core_update_sentry_fingerprint(report.error_kind, report.error_category);
         sentry::with_scope(
             |sentry_scope| {
                 sentry_scope.set_fingerprint(Some(&fingerprint));
@@ -906,6 +994,33 @@ fn send_core_update_failure_report(report: CoreUpdateSentryFailureReport) {
     }));
 }
 
+fn core_update_sentry_fingerprint(
+    error_kind: &'static str,
+    error_category: RescueFailureCategory,
+) -> [&'static str; 2] {
+    [error_kind, error_category.label()]
+}
+
+fn core_update_sentry_failure_report(
+    source: &'static str,
+    channel: Channel,
+    exit_code: Option<i32>,
+    error_kind: &'static str,
+    details: CoreUpdateFailureDetails<'_>,
+) -> CoreUpdateSentryFailureReport {
+    CoreUpdateSentryFailureReport {
+        source,
+        channel,
+        exit_code,
+        error_kind: core_update_sentry_error_kind(error_kind),
+        error_category: details.rescue_failure_category,
+        rescue_stderr_tail: details
+            .rescue_stderr_tail
+            .map(hq_telemetry::redact_core_update_diagnostic_tail),
+        npx_resolution: details.npx_resolution,
+    }
+}
+
 fn report_core_update_failure_once(report: CoreUpdateSentryFailureReport) {
     let signature = CoreUpdateSentryFailureSignature {
         error_kind: report.error_kind,
@@ -924,21 +1039,12 @@ fn queue_core_update_failure_report(
     details: CoreUpdateFailureDetails<'_>,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let source_hub = sentry::Hub::current();
+        let source_hub = sentry::Hub::main();
         if source_hub.client().is_none() {
             return;
         }
-        let report = CoreUpdateSentryFailureReport {
-            source,
-            channel,
-            exit_code,
-            error_kind: core_update_sentry_error_kind(error_kind),
-            error_category: details.rescue_failure_category,
-            rescue_stderr_tail: details
-                .rescue_stderr_tail
-                .map(hq_telemetry::redact_core_update_diagnostic_tail),
-            npx_resolution: details.npx_resolution,
-        };
+        let report =
+            core_update_sentry_failure_report(source, channel, exit_code, error_kind, details);
         let hub = std::sync::Arc::new(sentry::Hub::new_from_top(source_hub));
         hq_telemetry::dispatch_sentry_report(move || {
             sentry::Hub::run(hub, || report_core_update_failure_once(report));
@@ -2203,7 +2309,10 @@ pub fn setup_core_state_checker(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{atomic::AtomicUsize, Arc};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
 
     static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static CORE_UPDATE_SENTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -2600,6 +2709,35 @@ mod tests {
     }
 
     #[test]
+    fn rescue_broken_git_https_transport_is_a_missing_dependency() {
+        let stderr = "warning: templates not found in ...\n\
+git: 'remote-https' is not a git command. See 'git --help'.\n\
+fatal: remote helper 'https' aborted session\n\
+error: clone failed";
+
+        assert_eq!(
+            classify_rescue_stderr_failure(stderr),
+            RescueFailureCategory::MissingDependency
+        );
+    }
+
+    #[test]
+    fn rescue_broken_git_https_transport_keeps_auth_precedence() {
+        assert_eq!(
+            classify_rescue_stderr_failure("is not a git command; authentication failed"),
+            RescueFailureCategory::Auth
+        );
+    }
+
+    #[test]
+    fn rescue_generic_clone_failure_remains_unknown() {
+        assert_eq!(
+            classify_rescue_stderr_failure("error: clone failed"),
+            RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
     fn every_rescue_stderr_pattern_classifies_to_its_table_category() {
         for pattern in RESCUE_STDERR_PATTERNS {
             assert_eq!(
@@ -2613,14 +2751,66 @@ mod tests {
     }
 
     #[test]
-    fn typed_core_update_conditions_take_precedence_over_stderr_matching() {
+    fn rescue_exit_failure_retains_origin_main_categories_and_precedence() {
+        let npx_resolution = CoreUpdateNpxResolution {
+            resolved: true,
+            source: "managed_toolchain",
+        };
+        let origin_main_cases = [
+            (
+                "rsync preflight failed",
+                RescueFailureCategory::MissingDependency,
+            ),
+            ("authentication failed", RescueFailureCategory::Auth),
+            ("could not resolve host", RescueFailureCategory::Dns),
+            ("ssl certificate problem", RescueFailureCategory::Tls),
+            ("no space left on device", RescueFailureCategory::DiskFull),
+            ("operation not permitted", RescueFailureCategory::Permission),
+            ("repository not found", RescueFailureCategory::NotFound),
+            ("operation timed out", RescueFailureCategory::Timeout),
+            ("connection refused", RescueFailureCategory::Network),
+        ];
+
+        for (stderr, expected) in origin_main_cases {
+            assert_eq!(
+                classify_rescue_exit_failure(stderr, npx_resolution),
+                expected,
+                "rescue exit must retain origin/main classification for {stderr:?}"
+            );
+        }
+
+        for (stderr, expected) in [
+            (
+                "authentication failed: no such file or directory",
+                RescueFailureCategory::Auth,
+            ),
+            (
+                "connection refused: no such file or directory",
+                RescueFailureCategory::Network,
+            ),
+        ] {
+            assert_eq!(
+                classify_rescue_exit_failure(stderr, npx_resolution),
+                expected,
+                "spawn-shaped detail must not change rescue-exit precedence"
+            );
+        }
+    }
+
+    #[test]
+    fn core_update_error_classification_uses_typed_conditions_before_detail() {
         assert_eq!(
-            classify_core_update_error(CoreUpdateErrorKind::Network, None),
+            classify_core_update_error(
+                CoreUpdateErrorKind::Network,
+                "failed to connect while resolving the update",
+                None,
+            ),
             RescueFailureCategory::Network
         );
         assert_eq!(
             classify_core_update_error(
                 CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: ENOENT: No such file or directory",
                 Some(CoreUpdateNpxResolution {
                     resolved: false,
                     source: "not_resolved",
@@ -2628,6 +2818,172 @@ mod tests {
             ),
             RescueFailureCategory::NpxResolveFailed
         );
+
+        for error_kind in [
+            CoreUpdateErrorKind::AlreadyInProgress,
+            CoreUpdateErrorKind::InvalidCoreRoot,
+            CoreUpdateErrorKind::ChannelConfiguration,
+            CoreUpdateErrorKind::Internal,
+        ] {
+            assert_eq!(
+                classify_core_update_error(error_kind, "connection refused", None),
+                RescueFailureCategory::Unknown,
+                "{error_kind:?} must keep its existing typed classification"
+            );
+        }
+    }
+
+    #[test]
+    fn rescue_spawn_and_baseline_errors_classify_their_details() {
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: ENOENT: No such file or directory (os error 2)",
+                None,
+            ),
+            RescueFailureCategory::MissingDependency
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: Access is denied (os error 5)",
+                None,
+            ),
+            RescueFailureCategory::Permission
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "authentication failed: no such file or directory",
+                None,
+            ),
+            RescueFailureCategory::MissingDependency,
+            "spawn-shaped details must take precedence only on the spawn path"
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: unexpected operating-system failure",
+                None,
+            ),
+            RescueFailureCategory::Unknown,
+            "an unrecognized spawn failure must not become a catch-all category"
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "update process quiescence is already in progress",
+                None,
+            ),
+            RescueFailureCategory::Unknown,
+            "the existing category vocabulary has no lock-conflict label"
+        );
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::BaselinePersistence,
+                "core update applied but baseline persistence failed: connection refused",
+                None,
+            ),
+            RescueFailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn rescue_spawn_classifies_normalized_npx_materialization_failures() {
+        let cases = [
+            (
+                "HQ Sync cannot update its npm cache because this account cannot write to it. Fix the npm cache permissions, then try Sync again.",
+                RescueFailureCategory::Permission,
+            ),
+            (
+                "HQ Sync cannot run the sync engine because the Node/npm installation is not executable. Reinstall Node 20 or newer, then reopen HQ Sync.",
+                RescueFailureCategory::MissingDependency,
+            ),
+            (
+                "HQ Sync cannot start the sync engine because Node.js was not found. Install Node 20 or newer, then reopen HQ Sync.",
+                RescueFailureCategory::MissingDependency,
+            ),
+            (
+                "HQ Sync could not prepare its npm cache (npx exited with code 1). Check your network and npm setup, then try Sync again.",
+                RescueFailureCategory::Network,
+            ),
+        ];
+
+        for (message, expected) in cases {
+            assert_eq!(
+                classify_core_update_error(CoreUpdateErrorKind::RescueSpawn, message, None),
+                expected,
+                "normalized npx materialization message must classify as {expected:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_npx_materialization_remains_unknown() {
+        assert_eq!(
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "HQ Sync could not prepare its npm cache because npx was interrupted. Try Sync again.",
+                None,
+            ),
+            RescueFailureCategory::Unknown,
+            "an interrupted npx process has no sufficiently specific failure category"
+        );
+    }
+
+    #[test]
+    fn rescue_exit_keeps_auth_precedence_over_spawn_needles() {
+        assert_eq!(
+            classify_rescue_exit_failure(
+                "authentication failed: no such file or directory",
+                CoreUpdateNpxResolution {
+                    resolved: true,
+                    source: "managed_toolchain",
+                },
+            ),
+            RescueFailureCategory::Auth,
+            "rescue-exit classification must not use spawn-pattern precedence"
+        );
+    }
+
+    #[test]
+    fn unresolved_npx_precedes_detail_classification_for_spawn_and_baseline_errors() {
+        let unresolved_npx = Some(CoreUpdateNpxResolution {
+            resolved: false,
+            source: "not_resolved",
+        });
+
+        for error_kind in [
+            CoreUpdateErrorKind::RescueSpawn,
+            CoreUpdateErrorKind::BaselinePersistence,
+        ] {
+            assert_eq!(
+                classify_core_update_error(
+                    error_kind,
+                    "spawn rescue script: No such file or directory",
+                    unresolved_npx,
+                ),
+                RescueFailureCategory::NpxResolveFailed
+            );
+        }
+    }
+
+    #[test]
+    fn rescue_stderr_needles_remain_case_insensitive() {
+        assert_eq!(
+            classify_rescue_stderr_failure("fatal: COULD NOT RESOLVE HOST: github.com"),
+            RescueFailureCategory::Dns
+        );
+    }
+
+    #[test]
+    fn sentry_exit_code_names_dependency_spawn_failures() {
+        assert_eq!(core_update_sentry_exit_code(Some(127)), "127");
+        assert_eq!(core_update_sentry_exit_code(Some(126)), "126");
+        assert_eq!(core_update_sentry_exit_code(Some(3)), "3");
+        assert_eq!(core_update_sentry_exit_code(Some(-1)), "signal_or_unknown");
+        assert_eq!(core_update_sentry_exit_code(None), "not_available");
+        assert_eq!(core_update_sentry_exit_code(Some(42)), "other");
     }
 
     #[test]
@@ -2641,6 +2997,137 @@ mod tests {
                 "{label:?} violates hq-pro SAFE_MARKETING_LABEL_RE"
             );
         }
+    }
+
+    fn report_for_core_update_error(error: &CoreUpdateError) -> CoreUpdateSentryFailureReport {
+        core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            error.kind().label(),
+            core_update_failure_details(error),
+        )
+    }
+
+    #[test]
+    fn rescue_spawn_report_keeps_a_bounded_redacted_detail() {
+        let error = CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "npx failed: Access is denied for /Users/alice/.npm; token npm_abcdefghijklmnop",
+        );
+
+        let report = report_for_core_update_error(&error);
+        let tail = report
+            .rescue_stderr_tail
+            .expect("RescueSpawn reports retain a redacted diagnostic tail");
+
+        assert!(tail.contains("Access is denied"));
+        assert!(!tail.contains("/Users/alice"));
+        assert!(!tail.contains("npm_abcdefghijklmnop"));
+        assert!(tail.len() <= hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn baseline_persistence_report_keeps_a_bounded_redacted_detail() {
+        let error = CoreUpdateError::new(
+            CoreUpdateErrorKind::BaselinePersistence,
+            "baseline persistence failed: connection refused at /home/alice/.hq; token ghp_abcdefghijklmnop",
+        );
+
+        let report = report_for_core_update_error(&error);
+        let tail = report
+            .rescue_stderr_tail
+            .expect("BaselinePersistence reports retain a redacted diagnostic tail");
+
+        assert!(tail.contains("connection refused"));
+        assert!(!tail.contains("/home/alice"));
+        assert!(!tail.contains("ghp_abcdefghijklmnop"));
+        assert!(tail.len() <= hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn core_update_error_report_keeps_origin_main_dimensions() {
+        let cases = [
+            (
+                CoreUpdateErrorKind::RescueSpawn,
+                "spawn rescue script: Access is denied (os error 5)",
+                RescueFailureCategory::Permission,
+                "rescue_spawn",
+                "not_available",
+            ),
+            (
+                CoreUpdateErrorKind::BaselinePersistence,
+                "baseline persistence failed: connection refused",
+                RescueFailureCategory::Network,
+                "baseline_persistence",
+                "not_available",
+            ),
+            (
+                CoreUpdateErrorKind::Network,
+                "unrelated network wording",
+                RescueFailureCategory::Network,
+                "network",
+                "not_available",
+            ),
+            (
+                CoreUpdateErrorKind::Internal,
+                "connection refused",
+                RescueFailureCategory::Unknown,
+                "internal",
+                "not_available",
+            ),
+        ];
+
+        for (kind, detail, category, error_kind, exit_code) in cases {
+            let error = CoreUpdateError::new(kind, detail);
+            let report = report_for_core_update_error(&error);
+
+            assert_eq!(report.error_category, category);
+            assert_eq!(report.error_kind, error_kind);
+            assert_eq!(core_update_sentry_exit_code(report.exit_code), exit_code);
+        }
+    }
+
+    #[test]
+    fn rescue_exit_report_keeps_its_existing_redacted_tail() {
+        let stderr =
+            "fatal: unable to access https://github.com/indigoai-us/hq-core at /Users/alice/.npm";
+        let details = CoreUpdateFailureDetails {
+            rescue_stderr_tail: Some(stderr),
+            rescue_failure_category: RescueFailureCategory::Unknown,
+            npx_resolution: None,
+        };
+
+        let report = core_update_sentry_failure_report(
+            "automatic",
+            Channel::Release,
+            Some(5),
+            "rescue_exit",
+            details,
+        );
+
+        assert_eq!(
+            report.rescue_stderr_tail,
+            Some(hq_telemetry::redact_core_update_diagnostic_tail(stderr))
+        );
+    }
+
+    #[test]
+    fn spawn_failure_fingerprint_excludes_the_detail() {
+        let first = report_for_core_update_error(&CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "npx failed: Access is denied while opening its cache",
+        ));
+        let second = report_for_core_update_error(&CoreUpdateError::new(
+            CoreUpdateErrorKind::RescueSpawn,
+            "npx failed: Access is denied while launching its shim",
+        ));
+
+        assert_eq!(first.error_category, second.error_category);
+        assert_eq!(
+            core_update_sentry_fingerprint(first.error_kind, first.error_category),
+            core_update_sentry_fingerprint(second.error_kind, second.error_category)
+        );
     }
 
     #[test]
@@ -2699,6 +3186,161 @@ mod tests {
             events[0].extra["rescueStderrTail"],
             sentry::protocol::Value::String("fatal: could not clone Core source".to_string())
         );
+    }
+
+    fn sentry_user_tokens(id_token: Option<String>) -> crate::commands::cognito::CognitoTokens {
+        crate::commands::cognito::CognitoTokens {
+            access_token: "access-token".to_string(),
+            id_token,
+            refresh_token: "refresh-token".to_string(),
+            expires_at: i64::MAX,
+        }
+    }
+
+    fn sentry_user_id_token() -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "sub": "cognito-sub-ada",
+                "email": "ada@getindigo.ai",
+                "name": "Ada Lovelace",
+            }))
+            .expect("Sentry test claims serialize"),
+        );
+        format!("header.{payload}.signature")
+    }
+
+    fn core_update_sentry_test_details() -> CoreUpdateFailureDetails<'static> {
+        CoreUpdateFailureDetails {
+            rescue_stderr_tail: None,
+            rescue_failure_category: RescueFailureCategory::Permission,
+            npx_resolution: None,
+        }
+    }
+
+    fn queue_core_update_sentry_test_report() {
+        queue_core_update_failure_report(
+            "automatic",
+            Channel::Release,
+            None,
+            "rescue_spawn",
+            core_update_sentry_test_details(),
+        );
+    }
+
+    fn captured_dispatched_core_update_events(
+        report: impl FnOnce(),
+    ) -> Vec<sentry::protocol::Event<'static>> {
+        let dispatched = Arc::new(AtomicBool::new(false));
+        let dispatched_in_before_send = Arc::clone(&dispatched);
+        sentry::test::with_captured_events_options(
+            || {
+                let main_hub = sentry::Hub::main();
+                // The test transport is installed on this test's temporary hub.
+                // Production initialization binds the client to the process hub,
+                // so mirror that setup before exercising cross-thread reporting.
+                main_hub.bind_client(sentry::Hub::current().client());
+                report();
+
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while !dispatched.load(Ordering::Acquire) && Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+                assert!(
+                    dispatched.load(Ordering::Acquire),
+                    "the dispatched Core update report must reach the Sentry transport"
+                );
+
+                main_hub.configure_scope(|scope| scope.set_user(None));
+                main_hub.bind_client(None);
+            },
+            sentry::ClientOptions {
+                before_send: Some(Arc::new(move |event| {
+                    dispatched_in_before_send.store(true, Ordering::Release);
+                    Some(event)
+                })),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn dispatched_core_update_report_carries_user_bound_on_an_auth_thread() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let tokens = sentry_user_tokens(Some(sentry_user_id_token()));
+        let events = captured_dispatched_core_update_events(|| {
+            std::thread::spawn(move || {
+                crate::commands::auth::set_sentry_user_from_tokens(&tokens);
+            })
+            .join()
+            .expect("auth thread does not panic");
+            queue_core_update_sentry_test_report();
+        });
+
+        assert_eq!(events.len(), 1);
+        let user = events[0]
+            .user
+            .as_ref()
+            .expect("Core update event carries the signed-in user");
+        assert_eq!(user.id.as_deref(), Some("cognito-sub-ada"));
+        assert_eq!(user.email.as_deref(), Some("ada@getindigo.ai"));
+        assert_eq!(user.username.as_deref(), Some("Ada Lovelace"));
+    }
+
+    #[test]
+    fn sign_out_clears_the_user_for_dispatched_core_update_reports() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let tokens = sentry_user_tokens(Some(sentry_user_id_token()));
+        let events = captured_dispatched_core_update_events(|| {
+            std::thread::spawn(move || {
+                crate::commands::auth::set_sentry_user_from_tokens(&tokens);
+            })
+            .join()
+            .expect("auth thread does not panic");
+            std::thread::spawn(crate::commands::auth::clear_sentry_user)
+                .join()
+                .expect("sign-out thread does not panic");
+            queue_core_update_sentry_test_report();
+        });
+
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0].user.is_none(),
+            "a report after sign-out must not identify the previous user"
+        );
+    }
+
+    #[test]
+    fn malformed_or_missing_id_token_still_clears_the_sentry_user() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+
+        for id_token in [None, Some("not-a-jwt".to_string())] {
+            reset_core_update_sentry_signatures_for_test();
+            let signed_in_tokens = sentry_user_tokens(Some(sentry_user_id_token()));
+            let malformed_tokens = sentry_user_tokens(id_token);
+            let events = captured_dispatched_core_update_events(|| {
+                std::thread::spawn(move || {
+                    crate::commands::auth::set_sentry_user_from_tokens(&signed_in_tokens);
+                })
+                .join()
+                .expect("auth thread does not panic");
+                std::thread::spawn(move || {
+                    crate::commands::auth::set_sentry_user_from_tokens(&malformed_tokens);
+                })
+                .join()
+                .expect("malformed-token auth thread does not panic");
+                queue_core_update_sentry_test_report();
+            });
+
+            assert_eq!(events.len(), 1);
+            assert!(
+                events[0].user.is_none(),
+                "missing or malformed id tokens must clear the Sentry user"
+            );
+        }
     }
 
     #[test]

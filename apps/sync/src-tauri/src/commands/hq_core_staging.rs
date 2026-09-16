@@ -533,6 +533,8 @@ pub(crate) fn rescue_command() -> (
         // node/npx install dirs so npx can resolve `node`. Mirrors the
         // runner spawn in `commands::sync`.
         .env("PATH", paths::child_path());
+    #[cfg(not(windows))]
+    cmd.envs(crate::commands::install_deps::managed_git_env());
     (cmd, npx_resolution)
 }
 
@@ -709,14 +711,7 @@ async fn run_replace_from_staging_observed(
             started.elapsed(),
             None,
             error.kind().label(),
-            crate::commands::hq_core_state::CoreUpdateFailureDetails {
-                rescue_stderr_tail: None,
-                rescue_failure_category: crate::commands::hq_core_state::classify_core_update_error(
-                    error.kind(),
-                    error.npx_resolution(),
-                ),
-                npx_resolution: error.npx_resolution(),
-            },
+            crate::commands::hq_core_state::core_update_failure_details(error),
         ),
     }
     outcome
@@ -914,6 +909,8 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
+    use crate::util::test_support::{scoped_home, write_usable_managed_git, ENV_MUTEX};
 
     #[test]
     fn non_spawnable_windows_npx_shim_is_not_reported_as_resolved() {
@@ -928,6 +925,74 @@ mod tests {
 
             assert!(!npx_telemetry_resolution(&npx).resolved, "{kind:?}");
         }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn rescue_command_sets_managed_git_environment_when_installed() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        write_usable_managed_git(home.path());
+        crate::commands::install_deps::ensure_managed_git_shim_in(home.path())
+            .expect("managed git shim");
+        let _home = scoped_home(home.path());
+
+        let (command, _) = rescue_command();
+        let env: std::collections::HashMap<_, _> = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect();
+
+        assert_eq!(
+            env.get("GIT_EXEC_PATH").map(String::as_str),
+            Some(
+                home.path()
+                    .join("Library/Application Support/Indigo HQ/toolchain/git/libexec/git-core")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            env.get("GIT_TEMPLATE_DIR").map(String::as_str),
+            Some(
+                home.path()
+                    .join("Library/Application Support/Indigo HQ/toolchain/git/share/git-core/templates")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn rescue_command_leaves_git_environment_unset_without_managed_git() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let _home = scoped_home(home.path());
+
+        let (command, _) = rescue_command();
+        let env_names: Vec<_> = command
+            .as_std()
+            .get_envs()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            !env_names.iter().any(|name| name == "GIT_EXEC_PATH"),
+            "a system git must keep its own exec-path configuration: {env_names:?}"
+        );
+        assert!(
+            !env_names.iter().any(|name| name == "GIT_TEMPLATE_DIR"),
+            "a system git must keep its own template configuration: {env_names:?}"
+        );
     }
 
     #[test]

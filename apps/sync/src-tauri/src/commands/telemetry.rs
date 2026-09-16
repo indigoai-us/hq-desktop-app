@@ -834,6 +834,7 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "attemptCount",
     "failedDependency",
     "errorCategory",
+    "failureStage",
     "setupRunId",
     "npxResolved",
     "npxResolution",
@@ -866,6 +867,9 @@ const ERROR_CATEGORY_VALUES: &[&str] = &[
     "exit-nonzero",
     "unsupported-platform",
     "disk",
+    "concurrent-install",
+    "cancelled",
+    "cancel-cleanup-failed",
     "unknown",
 ];
 
@@ -963,6 +967,9 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                 )),
                 ("errorCategory", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, ERROR_CATEGORY_VALUES),
+                )),
+                ("failureStage", Value::String(value)) => Some(Value::String(
+                    normalize_closed_label(&value, ONBOARDING_STAGE_IDS),
                 )),
                 ("npxResolution", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, NPX_RESOLUTION_VALUES),
@@ -2495,6 +2502,7 @@ mod codex_telemetry_tests {
                 "attemptCount",
                 "failedDependency",
                 "errorCategory",
+                "failureStage",
                 "setupRunId",
                 "npxResolved",
                 "npxResolution",
@@ -2579,6 +2587,7 @@ mod codex_telemetry_tests {
         let sanitized = sanitize_desktop_properties(Some(json!({
             "failedDependency": "C:\\\\Users\\\\alice\\\\hq",
             "errorCategory": "import failed for alice@host.example under /Users/alice/hq",
+            "failureStage": "/Users/alice/hq",
             "failedStages": ["deps", "/Users/alice/hq"],
             "detectedSourceSet": "C:\\\\Users\\\\alice\\\\AppData",
             "path": "/Users/alice/hq",
@@ -2590,6 +2599,7 @@ mod codex_telemetry_tests {
 
         assert_eq!(sanitized["failedDependency"], "unknown");
         assert_eq!(sanitized["errorCategory"], "unknown");
+        assert_eq!(sanitized["failureStage"], "unknown");
         assert_eq!(sanitized["failedStages"], json!(["deps"]));
         assert_eq!(sanitized["detectedSourceSet"], "unknown");
         for forbidden in [
@@ -2617,6 +2627,7 @@ mod codex_telemetry_tests {
                 "not-a-stage",
                 "/Users/alice/HQ",
             ],
+            "failureStage": "deps",
             "error": "permission denied at /Users/alice/HQ",
             "logPath": "/Users/alice/HQ/logs/setup.log",
         })));
@@ -2625,6 +2636,7 @@ mod codex_telemetry_tests {
             json!(["content", "deps", "indexing"])
         );
         assert!(sanitized["failedStages"].as_array().unwrap().len() <= MAX_FAILED_STAGES);
+        assert_eq!(sanitized["failureStage"], "deps");
         assert!(sanitized.get("error").is_none());
         assert!(sanitized.get("logPath").is_none());
         assert!(!sanitized.to_string().contains("alice"));

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { getVersion } from '@tauri-apps/api/app';
   import { safeUnlisten } from '../../lib/listener-registry';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onDestroy, onMount, tick } from 'svelte';
@@ -25,6 +26,7 @@
   } from '../../lib/desktop-continuation-tauri';
   import {
     beginContinuation,
+    classifyContinuationError,
     confirmContinuation,
     flushReceipts,
     launchReceipt,
@@ -164,10 +166,9 @@
   const FADE_OUT_MS = 320;
   const CLAUDE_WATCH_MAX_CONSECUTIVE_FAILURES = 3;
   const CLAUDE_DESKTOP_READY_FALLBACK_MS = 30_000;
-  // The native HTTP client allows a request to run for 15 seconds. Holding a
-  // first-run screen that long would make setup feel stuck, so browser-session
-  // continuation gets a short, silent head start and then yields to the
-  // unchanged provider buttons.
+  // Provider buttons remain available after this short head start. The native
+  // continuation attempt keeps running until it completes, expires, or a
+  // person explicitly takes over with a provider.
   const AUTOMATIC_CONTINUATION_TIMEOUT_MS = 1_500;
   const DEFAULT_STEP: number = WIZARD_STEPS[0].index;
 
@@ -238,8 +239,14 @@
   let continuationPrepared = false;
   let manualSignInStarted = false;
   let automaticContinuationRun = 0;
-  let automaticContinuationActive = false;
+  let automaticContinuationAttemptActive = false;
+  let automaticContinuationRevealTimer: number | null = null;
   let signInActionsReady = $state(false);
+  let onboardingAppVersion =
+    typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : 'unknown';
+  let onboardingAppVersionResolution: Promise<void> | null = null;
+  let onboardingAbandoned = false;
+  let onboardingCompleted = false;
 
   let installPath = $state<string | null>(null);
   let resolvedPath = $state<string | null>(null);
@@ -316,7 +323,7 @@
 
   type StepTelemetryDetails = Omit<
     RecordOnboardingStep['properties'],
-    'step' | 'action' | 'flow'
+    'step' | 'action' | 'flow' | 'appVersion'
   >;
 
   function stepIdFor(step: number) {
@@ -335,9 +342,29 @@
         step: stepIdFor(step),
         action,
         ...details,
+        appVersion: onboardingAppVersion,
         flow: flow ?? onboardingFlow,
       },
     });
+  }
+
+  function resolveOnboardingAppVersion(): Promise<void> {
+    if (onboardingAppVersionResolution) return onboardingAppVersionResolution;
+    onboardingAppVersionResolution = getVersion()
+      .then((version) => {
+        const normalized = version.trim();
+        if (normalized) onboardingAppVersion = normalized;
+      })
+      .catch((error) => {
+        console.warn('[onboarding] could not resolve app version for telemetry:', error);
+      });
+    return onboardingAppVersionResolution;
+  }
+
+  function recordOnboardingAbandonment(): void {
+    if (consentOnly || onboardingCompleted || onboardingAbandoned) return;
+    onboardingAbandoned = true;
+    recordStep(currentStep, 'abandoned');
   }
 
   /**
@@ -486,6 +513,8 @@
     mounted = true;
     detectorMounted = true;
     directoryCancelled = false;
+    void resolveOnboardingAppVersion();
+    window.addEventListener('pagehide', recordOnboardingAbandonment);
 
     if (!consentOnly) {
       // Every visible panel has an entry event. A resumed, non-initial panel
@@ -525,11 +554,14 @@
       mounted = false;
       detectorMounted = false;
       directoryCancelled = true;
+      window.removeEventListener('pagehide', recordOnboardingAbandonment);
       media.removeEventListener('change', updateMotion);
     };
   });
 
   onDestroy(() => {
+    recordOnboardingAbandonment();
+    stopAutomaticContinuationAttempt();
     mounted = false;
     currentSignInCall += 1;
     clearTransitionTimers();
@@ -608,7 +640,7 @@
     // settle while this click is being handled; it must not then arm a second
     // listener over the provider flow the person deliberately chose.
     manualSignInStarted = true;
-    automaticContinuationActive = false;
+    stopAutomaticContinuationAttempt();
 
     // Preparation observes this claim and leaves continuation unarmed. Manual
     // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
@@ -660,6 +692,7 @@
       recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
         provider: telemetryProvider,
         outcome: 'oauth_failed',
+        errorKind: classifyContinuationError(err),
       });
     } finally {
       if (isCurrentSignInCall(call)) {
@@ -670,25 +703,20 @@
 
   async function prepareContinuation(): Promise<void> {
     const run = ++automaticContinuationRun;
-    automaticContinuationActive = true;
-    const timeout = window.setTimeout(() => {
+    automaticContinuationAttemptActive = true;
+    automaticContinuationRevealTimer = window.setTimeout(() => {
       if (!isAutomaticContinuationCurrent(run)) return;
-      automaticContinuationActive = false;
       signInActionsReady = true;
-
-      // Do not leave a native attempt holding its listener after the visible
-      // first-run flow has fallen back. `beginContinuation` records the single
-      // cancelled result when its pending identity wait returns.
-      const attemptId = 'attemptId' in continuation ? continuation.attemptId : undefined;
-      if (attemptId && continuationDepsRef) {
-        void continuationDepsRef.bridge.cancel({ attemptId }).catch(() => undefined);
-      }
+      automaticContinuationRevealTimer = null;
     }, AUTOMATIC_CONTINUATION_TIMEOUT_MS);
 
     const finishWithProviderButtons = () => {
       if (run !== automaticContinuationRun || currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
-      automaticContinuationActive = false;
-      window.clearTimeout(timeout);
+      automaticContinuationAttemptActive = false;
+      if (automaticContinuationRevealTimer !== null) {
+        window.clearTimeout(automaticContinuationRevealTimer);
+        automaticContinuationRevealTimer = null;
+      }
       signInActionsReady = true;
     };
 
@@ -753,16 +781,33 @@
       return;
     }
 
-    automaticContinuationActive = false;
-    window.clearTimeout(timeout);
+    automaticContinuationAttemptActive = false;
+    if (automaticContinuationRevealTimer !== null) {
+      window.clearTimeout(automaticContinuationRevealTimer);
+      automaticContinuationRevealTimer = null;
+    }
     await completeAuthenticatedSignIn(currentSignInCall);
+  }
+
+  function stopAutomaticContinuationAttempt(): void {
+    automaticContinuationAttemptActive = false;
+    if (automaticContinuationRevealTimer !== null) {
+      window.clearTimeout(automaticContinuationRevealTimer);
+      automaticContinuationRevealTimer = null;
+    }
+    const attemptId = 'attemptId' in continuation ? continuation.attemptId : undefined;
+    if (attemptId && continuationDepsRef) {
+      void continuationDepsRef.bridge.cancel({ attemptId }).catch((error) => {
+        console.warn('[onboarding] could not cancel browser continuation attempt:', error);
+      });
+    }
   }
 
   function isAutomaticContinuationCurrent(run: number): boolean {
     return (
       mounted &&
       run === automaticContinuationRun &&
-      automaticContinuationActive &&
+      automaticContinuationAttemptActive &&
       !manualSignInStarted &&
       currentStep === WELCOME_SIGNIN_STEP_INDEX
     );
@@ -1176,6 +1221,7 @@
       if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
       recordStep(SETUP_STEP_INDEX, 'failed', {
         component: id,
+        failureStage: id,
         attemptCount,
         durationMs: Date.now() - startedAt,
         outcome: 'stage_command_failed',
@@ -1545,6 +1591,7 @@
     finishError = false;
     try {
       await onfinish?.();
+      onboardingCompleted = true;
       recordStep(currentStep, 'completed', { outcome: 'finished' });
       return true;
     } catch (err) {
@@ -1942,6 +1989,9 @@
     if (next === currentStep) return;
     const previous = currentStep;
     if (exitAction) recordStep(previous, exitAction, exitDetails);
+    if (previous === WELCOME_SIGNIN_STEP_INDEX && next !== WELCOME_SIGNIN_STEP_INDEX) {
+      stopAutomaticContinuationAttempt();
+    }
     // ConnectorImportStep owns its entry so it can record detection outcomes
     // without a duplicate generic entry event.
     if (next !== CONNECTOR_IMPORT_STEP_INDEX) recordStep(next, 'entered');

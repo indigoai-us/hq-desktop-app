@@ -33,7 +33,8 @@ export type OnboardingAction =
   | 'skipped'
   | 'failed'
   | 'resumed'
-  | 'back';
+  | 'back'
+  | 'abandoned';
 
 export type OnboardingFlow = 'first_install' | 'first_launch' | 'resume';
 export type OnboardingPlatform = 'macos' | 'windows' | 'linux';
@@ -45,6 +46,7 @@ export interface OnboardingStepProperties {
   flow?: OnboardingFlow;
   outcome?: string;
   provider?: 'google' | 'microsoft';
+  appVersion?: string;
   surface: 'desktop_installer';
   platform: OnboardingPlatform;
   durationMs?: number;
@@ -56,6 +58,8 @@ export interface OnboardingStepProperties {
   failedStages?: StageId[];
   failedDependency?: FailedDependency;
   errorCategory?: ErrorCategory;
+  failureStage?: StageId;
+  errorKind?: import('./desktop-session-continuation').ContinuationErrorKind;
   setupRunId?: string;
 }
 
@@ -66,7 +70,9 @@ export interface OnboardingStepEvent {
 }
 
 export interface RecordOnboardingStep {
-  properties: Omit<OnboardingStepProperties, 'surface' | 'platform'>;
+  properties: Omit<OnboardingStepProperties, 'surface' | 'platform' | 'appVersion'> & {
+    appVersion?: string;
+  };
   occurredAt?: string;
 }
 
@@ -146,6 +152,7 @@ export function createOnboardingStepTelemetry(
       occurredAt: occurredAt ?? now().toISOString(),
       properties: {
         ...properties,
+        appVersion: properties.appVersion?.trim() || 'unknown',
         surface: 'desktop_installer',
         platform: currentPlatform(),
       },
@@ -234,10 +241,13 @@ export function desktopPropertiesForOnboardingStep(
     'flow',
     'outcome',
     'provider',
+    'appVersion',
     'durationMs',
     'attemptCount',
     'detectedToolCount',
     'failedStageCount',
+    'failureStage',
+    'errorKind',
   ] as const) {
     const value = event.properties[key];
     if (value !== undefined) properties[key] = value;

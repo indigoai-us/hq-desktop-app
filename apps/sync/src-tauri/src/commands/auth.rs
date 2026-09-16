@@ -117,15 +117,15 @@ pub(crate) fn publish_auth_session(
     current.0
 }
 
-/// Update Sentry's scoped user context to the Cognito identity carried in
-/// `tokens`. Best-effort: a malformed/missing id_token just clears the user
+/// Update Sentry's process-wide user context to the Cognito identity carried
+/// in `tokens`. Best-effort: a malformed/missing id_token just clears the user
 /// rather than failing — Sentry stays useful even when claims parsing breaks.
-fn set_sentry_user_from_tokens(tokens: &CognitoTokens) {
+pub(crate) fn set_sentry_user_from_tokens(tokens: &CognitoTokens) {
     let claims = tokens
         .id_token
         .as_deref()
         .and_then(|tok| cognito::decode_id_token_claims(tok).ok());
-    sentry::configure_scope(|scope| match claims {
+    sentry::Hub::main().configure_scope(|scope| match claims {
         Some(c) => scope.set_user(Some(sentry::User {
             id: c.sub.clone(),
             email: c.email.clone(),
@@ -136,8 +136,8 @@ fn set_sentry_user_from_tokens(tokens: &CognitoTokens) {
     });
 }
 
-fn clear_sentry_user() {
-    sentry::configure_scope(|scope| scope.set_user(None));
+pub(crate) fn clear_sentry_user() {
+    sentry::Hub::main().configure_scope(|scope| scope.set_user(None));
 }
 
 pub(crate) fn notification_identity_from_tokens(tokens: &CognitoTokens) -> String {

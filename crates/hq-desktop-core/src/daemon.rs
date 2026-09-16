@@ -145,6 +145,12 @@ pub fn build_watch_runner_args_for_target(
     // GUI-launched Tauri apps inherit a minimal launchd PATH and otherwise
     // can't find node/npx. See paths::child_path.
     env.insert("PATH".to_string(), paths::child_path());
+    #[cfg(not(windows))]
+    for (name, value) in paths::managed_git_env() {
+        // Preserve an explicit entry if a caller adds one before this shared
+        // builder grows another environment source.
+        env.entry(name).or_insert(value);
+    }
     // Mirror Sync Now: paused companies (workspaceSyncEnabled=false) must not
     // keep uploading/downloading under Auto-sync / watch.
     let disabled = crate::workspaces::disabled_workspace_sync_slugs();
@@ -1607,6 +1613,17 @@ pub fn should_force_clear_stalled_start(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "windows"))]
+    fn write_unix_exec(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "#!/bin/sh\n").unwrap();
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
 
     // ── Daemon supervisor decision ───────────────────────────────────────
 
@@ -3524,6 +3541,113 @@ mod tests {
             env.get("HQ_SYNC_SKIP_PERSONAL").map(String::as_str),
             Some("1")
         );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn watch_runner_sets_managed_git_env_and_preserves_existing_env() {
+        use crate::test_support::{ScopedEnv, ENV_MUTEX};
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let git_dir = home.join("Library/Application Support/Indigo HQ/toolchain/git");
+        write_unix_exec(&git_dir.join("bin/git"));
+        write_unix_exec(
+            &home.join("Library/Application Support/Indigo HQ/toolchain/git-shim/git"),
+        );
+        std::fs::create_dir_all(home.join(".hq")).unwrap();
+        std::fs::write(
+            home.join(".hq/menubar.json"),
+            r#"{"workspaceSyncEnabled":{"acme":false},"syncBandwidthPercent":37}"#,
+        )
+        .unwrap();
+        let _home = ScopedEnv::set("HOME", home.as_os_str());
+        let target = crate::runner_target::RunnerSpawnTarget::npx_with_assumed_cache_root();
+
+        let args = build_watch_runner_args_for_target("/tmp/HQ", &target, None);
+        let env = args.env.expect("watch runner env");
+
+        assert_eq!(
+            env.get("GIT_EXEC_PATH").map(String::as_str),
+            Some(git_dir.join("libexec/git-core").to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            env.get("GIT_TEMPLATE_DIR").map(String::as_str),
+            Some(
+                git_dir
+                    .join("share/git-core/templates")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        if Path::new("/etc/ssl/cert.pem").exists() {
+            assert_eq!(env.get("GIT_SSL_CAINFO").map(String::as_str), Some("/etc/ssl/cert.pem"));
+        } else {
+            assert!(!env.contains_key("GIT_SSL_CAINFO"));
+        }
+        assert_eq!(env.get("HQ_ROOT").map(String::as_str), Some("/tmp/HQ"));
+        assert_eq!(env.get("PATH").map(String::as_str), Some(paths::child_path().as_str()));
+        assert_eq!(env.get("HQ_SYNC_SKIP_COMPANIES").map(String::as_str), Some("acme"));
+        assert_eq!(
+            env.get(crate::bandwidth::RUNNER_ENV).map(String::as_str),
+            Some("37")
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn watch_runner_omits_managed_git_env_when_child_selects_foreign_git() {
+        use crate::test_support::{ScopedEnv, ENV_MUTEX};
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let git_dir = home.join("Library/Application Support/Indigo HQ/toolchain/git");
+        let foreign = tmp.path().join("foreign").join("git");
+        write_unix_exec(&git_dir.join("bin/git"));
+        write_unix_exec(
+            &home.join("Library/Application Support/Indigo HQ/toolchain/git-shim/git"),
+        );
+        write_unix_exec(&foreign);
+        let settings = home.join("HQ/.claude/settings.local.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            settings,
+            format!(r#"{{"env":{{"PATH":"{}"}}}}"#, foreign.parent().unwrap().display()),
+        )
+        .unwrap();
+        let _home = ScopedEnv::set("HOME", home.as_os_str());
+        let target = crate::runner_target::RunnerSpawnTarget::npx_with_assumed_cache_root();
+
+        assert_eq!(paths::resolve_bin("git"), foreign.to_string_lossy());
+        let env = build_watch_runner_args_for_target("/tmp/HQ", &target, None)
+            .env
+            .expect("watch runner env");
+        for key in ["GIT_EXEC_PATH", "GIT_TEMPLATE_DIR", "GIT_SSL_CAINFO"] {
+            assert!(
+                !env.contains_key(key),
+                "a foreign git must not inherit HQ's {key}: {env:?}"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn watch_runner_omits_managed_git_env_when_managed_git_is_absent() {
+        use crate::test_support::{ScopedEnv, ENV_MUTEX};
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::TempDir::new().unwrap();
+        let _home = ScopedEnv::set("HOME", home.path().as_os_str());
+        let target = crate::runner_target::RunnerSpawnTarget::npx_with_assumed_cache_root();
+        let env = build_watch_runner_args_for_target("/tmp/HQ", &target, None)
+            .env
+            .expect("watch runner env");
+
+        assert!(!env.contains_key("GIT_EXEC_PATH"));
+        assert!(!env.contains_key("GIT_TEMPLATE_DIR"));
+        assert!(!env.contains_key("GIT_SSL_CAINFO"));
     }
 
     // ── event-push capability (U16) ────────────────────────────────────────

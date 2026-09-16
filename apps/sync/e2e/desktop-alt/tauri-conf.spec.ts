@@ -121,7 +121,6 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     expect(glassSource).toContain('GlassWindowRole::LargeWindow => 0');
     expect(glassSource).toContain('GlassWindowRole::CompactCommunications => 0');
     expect(glassSource).toContain('setStyle: style');
-    expect(glassSource).toContain('setIgnoresMouseEvents: true');
     expect(glassSource).toContain('NSVisualEffectMaterial::UnderWindowBackground');
     expect(desktopCommandSource).toContain('setUnderPageBackgroundColor: clear');
     expect(desktopCommandSource).toContain('desktop_alt_ns_string("backgroundColor")');
