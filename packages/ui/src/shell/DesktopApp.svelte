@@ -266,6 +266,7 @@
     type MentionTarget,
   } from "../chat/mentions.js";
   import {
+    clearAgentEverywhere,
     clearRowFromMessages,
     agentDisplayName,
     applyAgentStatus,
@@ -278,6 +279,19 @@
     type ThinkingByRow,
     type ThinkingEntry,
   } from "../chat/agent-thinking.js";
+  import {
+    BOT_MESSAGE_NOT_ANSWERED,
+    BOT_NOT_RUNNABLE_HERE,
+    BOT_NOT_RUNNABLE_RECHECK,
+    BOT_START_NO_MORE_RETRIES,
+    botRunsHere,
+    botStartFallbackNotice,
+    canStartBot,
+    classifyBotStartFailure,
+    clearBotStartGate,
+    recordBotStartFailure,
+    type BotStartGate,
+  } from "../chat/bot-runnability.js";
   import {
     isAlreadyExistsFailure,
     LOCAL_BOTS_POLL_MS,
@@ -926,11 +940,93 @@
   const localBots = $derived(locallyHostedBots(localBotRecords));
   let localBotBusy = $state<string | null>(null);
   let localBotActionError = $state<string | null>(null);
+  /**
+   * A BOT THAT CANNOT RUN HERE SAYS SO (desktop UX feedback, round 5).
+   *
+   * The account owns the bot, but this Mac has no local runtime for it — a
+   * reinstall, or a second computer, where `hq bot list` is empty while the
+   * cloud still has the agent. The owner's VM adopted exactly that bot, opened
+   * its DM, and the app then presented it as a normal thinking bot forever
+   * while every start answered "no such bot". Keyed by agent uid → the honest
+   * sentence its DM shows.
+   */
+  let unrunnableBotUids = $state<Record<string, string>>({});
+  /**
+   * Start budget per bot name. A definitive failure ("no such bot", not signed
+   * in, held) closes it after ONE attempt; a transient one (CLI timeout,
+   * unreachable) is bounded at `BOT_START_MAX_ATTEMPTS`. Nothing in the app
+   * re-issues a start once the gate is closed.
+   */
+  let botStartGate = $state<BotStartGate>({});
+  /**
+   * The failure event. Policy `transient-indicators-clear-on-newer-event-not-time-window`:
+   * a thinking row is never cleared by a timer — it is cleared by a NEWER
+   * event. A definitive start failure is that event, so it goes through here
+   * instead of a bot message, ending the row everywhere that bot was shown as
+   * working and leaving the honest state in its place.
+   */
+  function noteBotCannotRunHere(agentUid: string, reason: string = BOT_NOT_RUNNABLE_HERE): void {
+    const uid = (agentUid ?? "").trim();
+    if (!uid) return;
+    unrunnableBotUids = { ...unrunnableBotUids, [uid]: reason };
+    thinkingByRow = clearAgentEverywhere(thinkingByRow, uid);
+  }
   async function refreshLocalBots(): Promise<void> {
     const api = adapter.bots;
     if (!api) return;
     const result = await api.list();
     if (result.ok) localBotRecords = result.value.bots ?? [];
+  }
+  /**
+   * A bot that turned up in this Mac's list can run here after all (the person
+   * created it, or its config arrived): drop the notice.
+   *
+   * A CLOSED GATE OUTRANKS THE LIST. `hq bot list` said the owner's bots were
+   * there while every start answered "no such bot"; a start that actually ran
+   * is better evidence than a listing, so a bot whose gate a definitive
+   * failure closed keeps its honest state until "Check again" reopens it.
+   */
+  $effect(() => {
+    const records = localBotRecords;
+    untrack(() => {
+      const uids = Object.keys(unrunnableBotUids).filter((uid) => {
+        const bot = records.find((row) => row.agentUid.trim() === uid);
+        return Boolean(bot) && canStartBot(botStartGate, bot!.name);
+      });
+      if (uids.length === 0) return;
+      const next = { ...unrunnableBotUids };
+      for (const uid of uids) delete next[uid];
+      unrunnableBotUids = next;
+    });
+  });
+  /** The open DM's bot cannot run here — the honest state, or null. */
+  const selectedBotCannotRun = $derived(
+    selectedRow?.kind === "dm" && selectedRow.personUid
+      ? (unrunnableBotUids[selectedRow.personUid.trim()] ?? null)
+      : null,
+  );
+  /**
+   * "Check again": re-read this Mac's bots once, on demand — the only thing
+   * the desktop can honestly offer for a bot that lives on another computer.
+   * A person asking counts as consent to try the bot once more, so this is
+   * also the one thing that reopens a closed start gate. Never a loop: one
+   * click, one listing.
+   */
+  let botRecheckBusy = $state(false);
+  async function recheckSelectedBot(): Promise<void> {
+    const uid = selectedRow?.kind === "dm" ? (selectedRow.personUid ?? "").trim() : "";
+    if (!uid || botRecheckBusy) return;
+    botRecheckBusy = true;
+    try {
+      await refreshLocalBots();
+      const bot = localBotRecords.find((row) => row.agentUid.trim() === uid);
+      if (!bot) return;
+      botStartGate = clearBotStartGate(botStartGate, bot.name);
+      const { [uid]: _runnableAgain, ...rest } = unrunnableBotUids;
+      unrunnableBotUids = rest;
+    } finally {
+      botRecheckBusy = false;
+    }
   }
   onMount(() => {
     if (!adapter.bots) return;
@@ -1078,8 +1174,16 @@
       ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, starting: setupBotStarting, error: setupBotStartError, start: startSetupBot }
       : null,
   );
-  /** Open a setup bot's DM; setup counts as run from that moment. */
+  /**
+   * Open a setup bot's DM; setup counts as run from that moment.
+   *
+   * ADOPT-TIME RUNNABILITY CHECK. Adopting a bot the account owns in the cloud
+   * opens its conversation — it does NOT give this Mac a way to run it. When
+   * no local config exists here, the DM says so from the first frame instead
+   * of presenting a normal bot that will never answer.
+   */
   function openSetupBotDm(bot: SetupBotRef): void {
+    if (!botRunsHere(localBotRecords, bot.agentUid)) noteBotCannotRunHere(bot.agentUid);
     const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
     handleSelect(
       existing ?? {
@@ -1213,17 +1317,23 @@
     const entry = botProgressByUid[uid];
     const api = adapter.bots;
     if (!entry || !api || entry.retrying) return;
-    setBotProgress(uid, { retrying: true, reason: null });
     const bot = localBots.find((b) => b.agentUid === uid);
+    // Nothing is re-issued once the gate is closed; the card keeps the reason
+    // it already carries instead of blanking it for a retry that cannot run.
+    if (bot && !canStartBot(botStartGate, bot.name)) return;
+    setBotProgress(uid, { retrying: true, reason: null });
     if (bot) {
       const result = await api.start(bot.name);
       if (!result.ok) {
         // Same rule as createBotEntry: the card carries a sentence, the log
-        // carries the CLI's own words.
-        if (result.message) console.warn("[hq-desktop] bot start failed:", result.message);
-        setBotProgress(uid, { retrying: false, state: "failed", reason: plainBotFailure(result.message, `Could not start ${bot.name}.`) });
+        // carries the CLI's own words. A definitive failure also closes the
+        // gate, so the card stops offering a Retry that cannot work.
+        const raw = result.message ?? "";
+        if (raw) console.warn("[hq-desktop] bot start failed:", raw);
+        setBotProgress(uid, { retrying: false, state: "failed", reason: applyBotStartFailure(bot.name, bot.agentUid, raw) });
         return;
       }
+      botStartGate = clearBotStartGate(botStartGate, bot.name);
       // Re-read presence FIRST: flipping to "installing" while the list still
       // says "failed" lets the presence effect below stamp it failed again.
       await refreshLocalBots();
@@ -1331,15 +1441,37 @@
     const bot = selectedLocalBot;
     const api = adapter.bots;
     if (!bot || !api || localBotBusy) return;
+    // A definitive failure is never re-issued, and transient ones are bounded:
+    // the owner's VM retried the same doomed start ~48 times.
+    if (!canStartBot(botStartGate, bot.name)) return;
     localBotBusy = bot.name;
     localBotActionError = null;
     const result = await api.start(bot.name);
-    if (!result.ok) {
-      if (result.message) console.warn("[hq-desktop] bot action failed:", result.message);
-      localBotActionError = plainBotFailure(result.message, `Could not start ${bot.name}.`);
+    if (result.ok) {
+      botStartGate = clearBotStartGate(botStartGate, bot.name);
+    } else {
+      const raw = result.message ?? "";
+      if (raw) console.warn("[hq-desktop] bot action failed:", raw);
+      localBotActionError = applyBotStartFailure(bot.name, bot.agentUid, raw);
     }
     await refreshLocalBots();
     localBotBusy = null;
+  }
+  /**
+   * One place where a failed start becomes state: it counts against the bot's
+   * budget, a "no such bot" turns into the honest "cannot run here" (which
+   * also ends the thinking row), and the caller gets a written sentence —
+   * never the CLI's or the API's own words.
+   */
+  function applyBotStartFailure(name: string, agentUid: string, raw: string): string {
+    const kind = classifyBotStartFailure(raw);
+    botStartGate = recordBotStartFailure(botStartGate, name, kind);
+    if (kind === "missing") {
+      noteBotCannotRunHere(agentUid);
+      return BOT_NOT_RUNNABLE_HERE;
+    }
+    const sentence = plainBotFailure(raw, botStartFallbackNotice(name));
+    return canStartBot(botStartGate, name) ? sentence : `${sentence} ${BOT_START_NO_MORE_RETRIES}`;
   }
   let directorySettled = $state(false);
   let conversationBootTimedOut = $state(false);
@@ -2073,6 +2205,22 @@
         ? { ...msg, replyCount: replyCountOverride[msg.eventId] }
         : msg,
     );
+  });
+  /**
+   * The person sent something to a bot that cannot run on this Mac and
+   * nothing has come back. The conversation says that plainly — the message
+   * must not sit under a spinner that will never end.
+   */
+  const botMessageUnanswered = $derived.by(() => {
+    const uid = selectedRow?.kind === "dm" ? (selectedRow.personUid ?? "").trim() : "";
+    if (!uid || !selectedBotCannotRun) return false;
+    const selfUid = self?.uid?.trim() ?? "";
+    for (let i = timeline.length - 1; i >= 0; i -= 1) {
+      const from = (timeline[i]?.fromPersonUid ?? "").trim();
+      if (from && from === uid) return false;
+      if (from && from === selfUid) return true;
+    }
+    return false;
   });
   // ── Project-channel work-mesh activity ───────────────────────────────────
   //
@@ -5148,7 +5296,10 @@
         // channel, where only an explicit mention wakes an agent). Started
         // before the catch-up below so a page that already carries the reply
         // clears it immediately.
-        if (isAgentUid(row.personUid)) {
+        // A bot that cannot run here will not think about this message, so
+        // no indicator is started for it; the conversation says it is
+        // unanswered instead.
+        if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()]) {
           // Pin the row to "newer than the agent's last message" — a local
           // bot's previous reply is usually < 2 min old and would otherwise
           // clear the fresh row on the next catch-up (skew fallback).
@@ -6537,6 +6688,14 @@
                     />
                   {/if}
                   <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
+                  {#if botMessageUnanswered}
+                    <!-- The person's message is sitting with a bot that cannot
+                         run here: say that, rather than leave it under a
+                         spinner that will never end. -->
+                    <div class="bot-unanswered" data-testid="bot-message-unanswered" role="status">
+                      {BOT_MESSAGE_NOT_ANSWERED}
+                    </div>
+                  {/if}
                   <AgentTaskStrip tasks={mainPaneTasks} />
                 {/snippet}
                 {#snippet setupHeader()}
@@ -6580,10 +6739,26 @@
                   {/if}
                 {/snippet}
                 {#snippet localBotHeader()}
-                  {#if selectedLocalBot && selectedLocalBotOffline}
+                  {#if selectedBotCannotRun}
+                    <!-- Adopted, but there is no runtime for it here. One
+                         honest sentence and the one action the desktop can
+                         actually perform: look again. -->
+                    <div class="local-bot-notice" data-testid="bot-not-runnable-notice" role="status">
+                      <span class="local-bot-notice-text">{selectedBotCannotRun}</span>
+                      <button
+                        type="button"
+                        class="local-bot-notice-start"
+                        data-testid="bot-not-runnable-recheck"
+                        disabled={botRecheckBusy}
+                        onclick={() => void recheckSelectedBot()}
+                      >
+                        {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
+                      </button>
+                    </div>
+                  {:else if selectedLocalBot && selectedLocalBotOffline}
                     <div class="local-bot-notice" data-testid="local-bot-offline-notice" role="status">
                       <span class="local-bot-notice-text">{localBotOfflineNotice(selectedLocalBot)}</span>
-                      {#if !selectedLocalBot.processAlive && !selectedLocalBot.promotionHold}
+                      {#if !selectedLocalBot.processAlive && !selectedLocalBot.promotionHold && canStartBot(botStartGate, selectedLocalBot.name)}
                         <button
                           type="button"
                           class="local-bot-notice-start"
@@ -6655,11 +6830,13 @@
                     ? setupHeader
                     : isCompanyChannel
                       ? companyHeader
-                      : selectedBotProgress
-                        ? botProgressHeader
-                        : selectedLocalBot && selectedLocalBotOffline
-                          ? localBotHeader
-                          : undefined}
+                      : selectedBotCannotRun
+                        ? localBotHeader
+                        : selectedBotProgress
+                          ? botProgressHeader
+                          : selectedLocalBot && selectedLocalBotOffline
+                            ? localBotHeader
+                            : undefined}
                   belowMessages={agentThinkingBelow}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
@@ -7472,5 +7649,11 @@
   .local-bot-notice-error {
     flex-basis: 100%;
     color: var(--danger, #d05f5f);
+  }
+  .bot-unanswered {
+    margin: 4px 16px 8px;
+    color: var(--t2);
+    font-size: 12px;
+    line-height: 1.4;
   }
 </style>

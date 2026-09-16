@@ -543,3 +543,23 @@ function dropOrSet(
   const { [rowId]: _dropped, ...rest } = map;
   return entries.length > 0 ? { ...rest, [rowId]: entries } : rest;
 }
+
+/** `clearForAgents` applied to EVERY row: the agent is known not to be
+ * working anywhere (its start/turn failed definitively, which is the newer
+ * event that ends the row — never a timer). Rows left empty are removed.
+ * Returns a NEW map. */
+export function clearAgentEverywhere(
+  map: ThinkingByRow,
+  agentUid: string,
+): ThinkingByRow {
+  const uid = agentUid.trim();
+  if (!uid) return map;
+  const out: ThinkingByRow = {};
+  let changed = false;
+  for (const [rowId, entries] of Object.entries(map)) {
+    const next = clearForAgents(entries, [uid]);
+    if (next.length !== entries.length) changed = true;
+    if (next.length > 0) out[rowId] = next;
+  }
+  return changed ? out : map;
+}

@@ -102,6 +102,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyCardFocus: "none",
   navigateToEntryTarget: "push",
   applyCardActionFailure: "none",
+  // A failed bot start becomes state (honest notice + start gate), never a
+  // navigation.
+  applyBotStartFailure: "none",
   handleCardAction: "push",
   openReply: "push",
   openSessionFromCard: "none",
