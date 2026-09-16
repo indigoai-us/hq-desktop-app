@@ -1671,56 +1671,20 @@ fn managed_git_bin_in(home: &std::path::Path) -> PathBuf {
     managed_git_dir_in(home).join("bin")
 }
 
-/// Environment a relocatable (dugite) git needs so it can find its sub-commands
-/// (libexec/git-core, e.g. git-remote-https), its templates, and a CA bundle.
-/// dugite's git has no compiled-in prefix and bundles no CA file, so without
-/// these `git clone https://…` fails first with "remote-https is not a git
-/// command" and then with a certificate-verify error. Returns empty when the
-/// managed git isn't installed (so a real system git keeps its own config).
+/// Compatibility wrapper for the shared managed-Git environment helper.
+///
+/// The core helper checks the Git selected by the child PATH, rather than only
+/// whether HQ's portable Git exists, before returning its configuration.
 /// Exposed for unit tests.
 #[cfg(not(windows))]
 pub fn managed_git_env_in(home: &std::path::Path) -> Vec<(String, String)> {
-    let git_dir = managed_git_dir_in(home);
-    if !git_dir.join("bin").join("git").exists() {
-        return Vec::new();
-    }
-    let mut env = vec![
-        (
-            "GIT_EXEC_PATH".to_string(),
-            git_dir
-                .join("libexec")
-                .join("git-core")
-                .to_string_lossy()
-                .into_owned(),
-        ),
-        (
-            "GIT_TEMPLATE_DIR".to_string(),
-            git_dir
-                .join("share")
-                .join("git-core")
-                .join("templates")
-                .to_string_lossy()
-                .into_owned(),
-        ),
-    ];
-    // dugite's git uses OpenSSL and bundles no CA; macOS ships a trusted bundle
-    // at /etc/ssl/cert.pem. Only set it when present.
-    let system_ca = std::path::Path::new("/etc/ssl/cert.pem");
-    if system_ca.exists() {
-        env.push((
-            "GIT_SSL_CAINFO".to_string(),
-            system_ca.to_string_lossy().into_owned(),
-        ));
-    }
-    env
+    hq_desktop_core::paths::managed_git_env_in(home)
 }
 
-/// Production wrapper over `managed_git_env_in`, resolving the real home dir.
+/// Production wrapper over the core helper, retained for existing call sites.
 #[cfg(not(windows))]
 pub fn managed_git_env() -> Vec<(String, String)> {
-    dirs::home_dir()
-        .map(|h| managed_git_env_in(&h))
-        .unwrap_or_default()
+    hq_desktop_core::paths::managed_git_env()
 }
 
 /// User-local tool paths owned by HQ Installer. Exposed for unit tests.
@@ -7597,6 +7561,7 @@ mod managed_node_url_tests {
 #[cfg(all(test, unix))]
 mod install_deps_tests {
     use super::*;
+    use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -7640,16 +7605,21 @@ mod install_deps_tests {
     #[test]
     fn test_managed_git_env_empty_when_not_installed() {
         let home = tempfile::TempDir::new().unwrap();
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let _home = scoped_home(home.path());
         assert!(managed_git_env_in(home.path()).is_empty());
     }
 
     #[test]
     fn test_managed_git_env_set_when_installed() {
         let home = tempfile::TempDir::new().unwrap();
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
         let git_bin_dir = home
             .path()
             .join("Library/Application Support/Indigo HQ/toolchain/git/bin");
         make_fake_bin_at(&git_bin_dir, "git");
+        ensure_managed_git_shim_in(home.path()).expect("managed git shim");
+        let _home = scoped_home(home.path());
 
         let env: std::collections::HashMap<String, String> =
             managed_git_env_in(home.path()).into_iter().collect();

@@ -646,6 +646,21 @@ pub fn resolve_bin(name: &str) -> String {
     resolve_bin_with_kind(name).path
 }
 
+/// Resolve `name` exactly as a child with [`child_path`] would resolve it.
+///
+/// The desktop app supplies that PATH explicitly to the runner. A git-specific
+/// lookup must therefore consult it before the older deterministic resolver:
+/// a Claude-settings directory or `~/.local/bin` can intentionally select a
+/// foreign Git ahead of HQ's managed shim. Only executable regular files count,
+/// matching Unix shell PATH lookup semantics.
+#[cfg(not(target_os = "windows"))]
+fn resolve_bin_on_child_path(name: &str) -> Option<String> {
+    std::env::split_paths(&child_path()).find_map(|dir| {
+        let candidate = dir.join(name);
+        is_executable_file(&candidate).then(|| candidate.to_string_lossy().into_owned())
+    })
+}
+
 /// [`resolve_bin`] plus the classification of what it landed on.
 ///
 /// Callers that only need a program to spawn keep using `resolve_bin`. Callers
@@ -708,6 +723,20 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
 
     #[cfg(not(target_os = "windows"))]
     {
+        // Child sync processes receive `child_path()`, whose settings-path
+        // directories can intentionally select a foreign Git ahead of HQ's
+        // managed shim. Resolve Git through that exact PATH so callers making
+        // Git-ownership decisions do not confuse an installed managed copy
+        // with the one the child will execute.
+        if name == "git" {
+            if let Some(path) = resolve_bin_on_child_path(name) {
+                return ResolvedProgram {
+                    path,
+                    kind: ResolvedProgramKind::Exe,
+                };
+            }
+        }
+
         // For `hq`, ONE cross-lane sweep with the tiered backed-candidate
         // preference — the same cfg-independent selector the Windows arm uses.
         // Directory precedence is unchanged (the Claude Code settings PATH first
@@ -1806,6 +1835,84 @@ pub fn child_path() -> String {
 
         parts.join(&PATH_SEP.to_string())
     }
+}
+
+/// Return the Git environment that HQ's portable Git needs, but only when the
+/// Git selected by the child PATH is HQ's own portable binary or its wrapper.
+///
+/// The portable Git has no compiled-in prefix or CA bundle. Giving its
+/// `GIT_EXEC_PATH`, templates, or CA path to a Homebrew or system Git is both
+/// unnecessary and unsafe, so ownership is determined from the resolved child
+/// executable rather than from mere installation of the managed toolchain.
+#[cfg(not(target_os = "windows"))]
+pub fn managed_git_env() -> Vec<(String, String)> {
+    home_dir()
+        .map(|home| managed_git_env_in(&home))
+        .unwrap_or_default()
+}
+
+/// Fixture-friendly form of [`managed_git_env`]. `home` must be the same home
+/// used by [`resolve_bin`] so the managed-toolchain layout and child PATH have
+/// one owner.
+#[cfg(not(target_os = "windows"))]
+pub fn managed_git_env_in(home: &Path) -> Vec<(String, String)> {
+    let resolved = resolve_bin("git");
+    managed_git_env_for_resolved_bin_in(home, Path::new(&resolved))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn managed_git_env_for_resolved_bin_in(home: &Path, resolved_git: &Path) -> Vec<(String, String)> {
+    let toolchain = managed_toolchain_dir(home);
+    let git_dir = toolchain.join("git");
+    let managed_git = git_dir.join("bin").join("git");
+    if !managed_git.is_file() {
+        return Vec::new();
+    }
+
+    // Canonicalize every existing path before comparing it. This rejects a
+    // symlink that merely appears to live below the toolchain but targets a
+    // foreign installation; falling back to the original path retains a
+    // deterministic answer when a path disappears between resolution and use.
+    let canonical_or_original = |path: &Path| {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    };
+    let toolchain = canonical_or_original(&toolchain);
+    let resolved_git = canonical_or_original(resolved_git);
+    let managed_git = canonical_or_original(&managed_git);
+    let managed_shim = canonical_or_original(&toolchain.join("git-shim").join("git"));
+    let is_managed_git = path_is_within(&resolved_git, &toolchain)
+        && (resolved_git == managed_git || resolved_git == managed_shim);
+    if !is_managed_git {
+        return Vec::new();
+    }
+
+    let mut env = vec![
+        (
+            "GIT_EXEC_PATH".to_string(),
+            git_dir
+                .join("libexec")
+                .join("git-core")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            "GIT_TEMPLATE_DIR".to_string(),
+            git_dir
+                .join("share")
+                .join("git-core")
+                .join("templates")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    ];
+    let system_ca = Path::new("/etc/ssl/cert.pem");
+    if system_ca.exists() {
+        env.push((
+            "GIT_SSL_CAINFO".to_string(),
+            system_ca.to_string_lossy().into_owned(),
+        ));
+    }
+    env
 }
 
 /// Prepend an interpreter-hint directory to a child PATH unless it is already
@@ -3545,6 +3652,77 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn resolve_bin_for_git_honors_child_path_settings_precedence() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let foreign = tmp.path().join("foreign").join("git");
+        let managed = home
+            .join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
+        let shim = home
+            .join("Library/Application Support/Indigo HQ/toolchain/git-shim/git");
+        let settings = home.join("HQ/.claude/settings.local.json");
+        write_unix_exec(&foreign);
+        write_unix_exec(&managed);
+        write_unix_exec(&shim);
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            settings,
+            format!(r#"{{"env":{{"PATH":"{}"}}}}"#, foreign.parent().unwrap().display()),
+        )
+        .unwrap();
+        let _home = crate::test_support::ScopedEnv::set("HOME", home.as_os_str());
+
+        assert_eq!(
+            resolve_bin("git"),
+            foreign.to_string_lossy(),
+            "git resolution must follow the PATH passed to the child, not merely find HQ's shim"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn managed_git_env_requires_the_resolved_managed_binary() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let git_dir = home.join("Library/Application Support/Indigo HQ/toolchain/git");
+        let managed_git = git_dir.join("bin/git");
+        let foreign_git = tmp.path().join("foreign/git");
+        write_unix_exec(&managed_git);
+        write_unix_exec(&foreign_git);
+
+        let env: std::collections::HashMap<_, _> =
+            managed_git_env_for_resolved_bin_in(&home, &managed_git)
+                .into_iter()
+                .collect();
+        assert_eq!(
+            env.get("GIT_EXEC_PATH").map(String::as_str),
+            Some(git_dir.join("libexec/git-core").to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            env.get("GIT_TEMPLATE_DIR").map(String::as_str),
+            Some(
+                git_dir
+                    .join("share/git-core/templates")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        if Path::new("/etc/ssl/cert.pem").exists() {
+            assert_eq!(env.get("GIT_SSL_CAINFO").map(String::as_str), Some("/etc/ssl/cert.pem"));
+        } else {
+            assert!(!env.contains_key("GIT_SSL_CAINFO"));
+        }
+        assert!(
+            managed_git_env_for_resolved_bin_in(&home, &foreign_git).is_empty(),
+            "a foreign Git must never receive HQ's portable-Git environment"
+        );
     }
 
     #[cfg(not(target_os = "windows"))]

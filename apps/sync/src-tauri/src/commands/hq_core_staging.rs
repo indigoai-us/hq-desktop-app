@@ -945,6 +945,8 @@ mod tests {
             .join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
         std::fs::create_dir_all(git.parent().unwrap()).unwrap();
         std::fs::write(&git, "").unwrap();
+        crate::commands::install_deps::ensure_managed_git_shim_in(home.path())
+            .expect("managed git shim");
         let _home = scoped_home(home.path());
 
         let (command, _) = rescue_command();
