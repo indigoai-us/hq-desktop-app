@@ -21,8 +21,8 @@ import {
   scopeLine,
   stepIssue,
   stepsFor,
+  titleIssue,
   suggestBotName,
-  suggestBotNames,
   templateBringsLine,
   templateCard,
   thinksWithLine,
@@ -113,9 +113,25 @@ describe("names", () => {
     expect(suggestBotName([])).toBe("assistant");
     expect(suggestBotName(["assistant", "scout"])).toBe("buddy");
     expect(suggestBotName(["a"], ["a"])).toBe("a-2");
-    expect(suggestBotNames(["assistant"], 3, "buddy")).toEqual(["scout", "atlas", "quill"]);
   });
 
+});
+
+describe("title", () => {
+  it("is optional, caps at 60 characters, and rejects control characters", () => {
+    expect(titleIssue("")).toBeNull();
+    expect(titleIssue("Ad account analyst")).toBeNull();
+    expect(titleIssue("  x  ")).toBeNull();
+    expect(titleIssue("x".repeat(60))).toBeNull();
+    expect(titleIssue("x".repeat(61))).toContain("60");
+    expect(titleIssue("ad\u001banalyst")).toContain("control characters");
+  });
+
+  it("never reaches the CLI input — `hq bot create` has no --title flag", () => {
+    const input = toCreateInput(draft({ title: "Ad account analyst" }));
+    expect(input).not.toHaveProperty("title");
+    expect(input).toEqual({ name: "assistant", runtime: "claude", autoApprove: true });
+  });
 });
 
 describe("intro", () => {
@@ -205,19 +221,21 @@ describe("steps", () => {
     expect(canAdvance("home", draft({ home: "local" }), c)).toBe(true);
   });
 
-  it("home needs at least one of the owner's companies for a company bot (bot-kinds)", () => {
+  it("details needs at least one of the owner's companies for a company bot (bot-kinds)", () => {
     const c = ctx();
-    expect(stepIssue("home", draft({ scope: "personal" }), c)).toBeNull();
-    expect(stepIssue("home", draft({ scope: "company" }), c)).toBe("Pick at least one company.");
-    expect(stepIssue("home", draft({ scope: "company", companySlugs: ["nope"] }), c)).toBe("Pick at least one company.");
-    expect(stepIssue("home", draft({ scope: "company", companySlugs: ["indigo"] }), c)).toBeNull();
-    expect(stepIssue("home", draft({ scope: "company", companySlugs: ["indigo", "acme"] }), c)).toBeNull();
+    // "Who is it for?" moved off the home step, so home no longer blocks on it.
+    expect(stepIssue("home", draft({ scope: "company" }), c)).toBeNull();
+    expect(stepIssue("details", draft({ scope: "personal" }), c)).toBeNull();
+    expect(stepIssue("details", draft({ scope: "company" }), c)).toBe("Pick at least one company.");
+    expect(stepIssue("details", draft({ scope: "company", companySlugs: ["nope"] }), c)).toBe("Pick at least one company.");
+    expect(stepIssue("details", draft({ scope: "company", companySlugs: ["indigo"] }), c)).toBeNull();
+    expect(stepIssue("details", draft({ scope: "company", companySlugs: ["indigo", "acme"] }), c)).toBeNull();
     // Not in any company yet: the answer is personal, not a dead end.
     expect(scopeIssue({ scope: "company", companySlugs: [] }, { ownerCompanies: [] })).toContain("personal");
     expect(canCreate(draft({ scope: "company" }), c)).toBe(false);
-    expect(firstBlockingStep(draft({ scope: "company" }), c)).toBe("home");
+    expect(firstBlockingStep(draft({ scope: "company" }), c)).toBe("details");
     // Cloud drafts never ask.
-    expect(stepIssue("home", draft({ home: "cloud", companyUid: "cmp_acme", scope: "company" }), c)).toBeNull();
+    expect(stepIssue("details", draft({ home: "cloud", companyUid: "cmp_acme", name: "Polar", scope: "company" }), c)).toBeNull();
   });
 
   it("cloud details validates the name and the @handle it will be created under", () => {
@@ -242,11 +260,14 @@ describe("steps", () => {
     expect(handleIssue({ name: "", handle: "" })).toContain("Give your bot a handle");
   });
 
-  it("details validates name then intro", () => {
+  it("details validates name, then title, then who it is for", () => {
     const c = ctx({ existingNames: ["scout"] });
     expect(stepIssue("details", draft({ name: "scout" }), c)).toBe("You already have a bot named scout.");
+    expect(stepIssue("details", draft({ name: "buddy", title: "x".repeat(61) }), c)).toContain("60");
     expect(stepIssue("details", draft({ name: "buddy", intro: "x".repeat(501) }), c)).toContain("500");
-    expect(stepIssue("details", draft({ name: "buddy", intro: "hello" }), c)).toBeNull();
+    expect(stepIssue("details", draft({ name: "buddy", title: "Ad account analyst" }), c)).toBeNull();
+    // The name is reported before the company choice.
+    expect(stepIssue("details", draft({ name: "scout", scope: "company" }), c)).toBe("You already have a bot named scout.");
   });
 
   it("canCreate needs every walked step valid, from any step", () => {

@@ -3,6 +3,7 @@
    * Grid picker of avatar packs. Ghost layout: search, pack headings, a
    * 4-column swatch grid, keyboard movement, Save.
    */
+  import { untrack } from "svelte";
   import { resolvePackItemSrc } from "./parse-pack.js";
   import { paintableAvatarSrc } from "./csp-image-src.js";
   import {
@@ -30,6 +31,12 @@
      * resolved tile src alongside the selection for previews.
      */
     onchange?: (selection: AvatarSelection, src: string | null) => void;
+    /**
+     * The pick the host already holds. Read once, when the picker opens, so a
+     * picker reopened (or remounted on a step change) shows the avatar the
+     * person chose rather than snapping back to the generated mark.
+     */
+    selected?: AvatarSelection | null;
     /** Hide the Save button (the host owns the commit). */
     hideSave?: boolean;
   }
@@ -43,6 +50,7 @@
     error = null,
     onsave,
     onchange,
+    selected = null,
     hideSave = false,
   }: Props = $props();
 
@@ -50,7 +58,8 @@
   let remotePacks = $state<AvatarPack[] | null>(null);
   let loadError = $state<string | null>(null);
   let loadingRemote = $state(false);
-  let selection = $state<AvatarSelection>({ kind: "generated" });
+  // Seeded once from `selected`; the picker owns it from there on.
+  let selection = $state<AvatarSelection>(untrack(() => selected) ?? { kind: "generated" });
   let cursor = $state(0);
   let broken = $state(new Set<string>());
 
@@ -216,7 +225,7 @@
               {@const src = resolvePackItemSrc(group.pack, item)}
               {@const tileSrc = paintableAvatarSrc(src)}
               {@const key = `${group.pack.id}:${item.id}`}
-              {@const selected =
+              {@const isSelected =
                 selection.kind === "item" &&
                 selection.packId === group.pack.id &&
                 selection.itemId === item.id}
@@ -225,10 +234,10 @@
               <button
                 type="button"
                 class="sw"
-                class:on={selected}
+                class:on={isSelected}
                 class:focus={focused}
                 role="option"
-                aria-selected={selected}
+                aria-selected={isSelected}
                 aria-label={item.name}
                 data-testid="avatar-pack-item"
                 data-pack={group.pack.id}

@@ -445,12 +445,10 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     await settle();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
     expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("already have a bot named scout");
-    // A suggestion chip fills a free name.
-    const chip = q<HTMLButtonElement>('[data-testid="chat-bot-name-suggestion"]')!;
-    expect(chip.textContent?.trim()).toBe("assistant");
-    chip.click();
+    // A free name clears the block.
+    name.value = "assistant";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(name.value).toBe("assistant");
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
     expect(oncreatebot).not.toHaveBeenCalled();
   });

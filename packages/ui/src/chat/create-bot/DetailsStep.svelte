@@ -1,21 +1,28 @@
 <script lang="ts">
   /**
-   * Step C — Details for a Local bot: name (live validation + suggestion
-   * chips), avatar (pack picker when the host supplies packs, else the
-   * generated mark), an optional intro that becomes the bot's first message,
-   * and a collapsed Advanced section (permissions, model, memory).
+   * Step C — Details for a Local bot: name, an optional job title, the avatar
+   * (pack picker when the host supplies packs, else the generated mark), who
+   * the bot is for, and a collapsed Advanced section (permissions, model,
+   * memory).
+   *
+   * The avatar pick is NOT held here. This component is torn down and rebuilt
+   * every time the person walks off the step and back, so anything kept in
+   * local state would be lost while the draft still held the pick — which is
+   * exactly how a chosen avatar used to snap back to the generated mark. The
+   * flow owns `avatarSrc`, the draft owns `avatar`, and both are passed in.
    */
   import AvatarPackPicker from "../../avatars/AvatarPackPicker.svelte";
   import type { AvatarPack, AvatarSelection } from "../../avatars/types.js";
   import IdentityMark from "../messaging/IdentityMark.svelte";
   import {
-    INTRO_MAX,
-    introIssue,
+    BOT_SCOPE_COPY,
+    TITLE_MAX,
     nameIssue,
     normalizeBotName,
-    suggestBotNames,
     templateBringsLine,
+    titleIssue,
     type BotMemory,
+    type BotScope,
     type CreateBotDraft,
     type TemplateCard,
   } from "./create-bot-model.js";
@@ -26,8 +33,12 @@
     existingNames: readonly string[];
     /** The chosen template (kind = template) for the "what this brings" line. */
     template?: TemplateCard | null;
+    /** The owner's companies a company bot can belong to. */
+    ownerCompanies?: ReadonlyArray<{ slug: string; label: string }>;
     avatarPacks?: AvatarPack[] | null;
     loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
+    /** Resolved src of the avatar already picked in this flow, if any. */
+    avatarSrc?: string | null;
     disabled?: boolean;
     autofocus?: boolean;
     onpatch: (patch: Partial<CreateBotDraft>) => void;
@@ -38,29 +49,53 @@
     draft,
     existingNames,
     template = null,
+    ownerCompanies = [],
     avatarPacks = null,
     loadAvatarPacks = null,
+    avatarSrc = null,
     disabled = false,
     autofocus = true,
     onpatch,
     onavatar,
   }: Props = $props();
 
+  const SCOPES: readonly BotScope[] = ["personal", "company"];
+
   const nameError = $derived(nameIssue(draft.name, existingNames));
   const nameTouched = $derived(draft.name.trim().length > 0);
-  const suggestions = $derived(suggestBotNames(existingNames, 4, draft.name));
-  const introError = $derived(introIssue(draft.intro));
+  const titleError = $derived(titleIssue(draft.title));
   const brings = $derived(templateBringsLine(template));
   const hasPicker = $derived(Boolean(avatarPacks || loadAvatarPacks));
 
   let avatarOpen = $state(false);
-  let avatarSrc = $state<string | null>(null);
-  const previewAvatar = $derived(avatarSrc ?? null);
+  const previewAvatar = $derived(avatarSrc);
 
   function onAvatarChange(selection: AvatarSelection, src: string | null): void {
-    avatarSrc = selection.kind === "generated" ? null : src;
-    onpatch({ avatar: selection.kind === "generated" ? undefined : selection });
-    onavatar?.(selection.kind === "generated" ? undefined : selection, avatarSrc);
+    const generated = selection.kind === "generated";
+    onpatch({ avatar: generated ? undefined : selection });
+    onavatar?.(generated ? undefined : selection, generated ? null : src);
+  }
+
+  function pickScope(scope: BotScope): void {
+    if (disabled) return;
+    onpatch({ scope });
+  }
+
+  function toggleCompany(slug: string): void {
+    if (disabled) return;
+    const has = draft.companySlugs.includes(slug);
+    onpatch({
+      scope: "company",
+      companySlugs: has ? draft.companySlugs.filter((s) => s !== slug) : [...draft.companySlugs, slug],
+    });
+  }
+
+  function onScopeKey(event: KeyboardEvent): void {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const next: BotScope = draft.scope === "personal" ? "company" : "personal";
+    pickScope(next);
+    (event.currentTarget as HTMLElement).querySelector<HTMLButtonElement>(`[data-scope="${next}"]`)?.focus();
   }
 
   function focusOnMount(node: HTMLInputElement): void {
@@ -92,15 +127,27 @@
     <p class="cb-help" class:error={nameTouched && nameError} class:ok={!nameError} id="create-bot-name-help" data-testid="chat-bot-name-help">
       {nameError ?? `${normalizeBotName(draft.name)} is available — it's the bot's @handle everywhere.`}
     </p>
-    {#if suggestions.length > 0}
-      <div class="cb-pills" data-testid="chat-bot-name-suggestions" aria-label="Name ideas">
-        {#each suggestions as suggestion (suggestion)}
-          <button type="button" class="cb-pill" data-testid="chat-bot-name-suggestion" disabled={disabled} onclick={() => onpatch({ name: suggestion })}>
-            {suggestion}
-          </button>
-        {/each}
-      </div>
-    {/if}
+  </div>
+
+  <div class="cb-field">
+    <label class="cb-label" for="create-bot-title">Title</label>
+    <input
+      id="create-bot-title"
+      class="cb-input"
+      type="text"
+      autocomplete="off"
+      data-testid="chat-bot-title"
+      placeholder="Ad account analyst"
+      maxlength={TITLE_MAX + 20}
+      aria-describedby="create-bot-title-help"
+      aria-invalid={titleError ? "true" : undefined}
+      value={draft.title}
+      disabled={disabled}
+      oninput={(event) => onpatch({ title: (event.currentTarget as HTMLInputElement).value })}
+    />
+    <p class="cb-help" class:error={titleError} id="create-bot-title-help" data-testid="chat-bot-title-help">
+      {titleError ?? "Optional. What it does, shown under its name."}
+    </p>
   </div>
 
   <div class="cb-field">
@@ -132,6 +179,8 @@
           agentUid={`agt_preview_${normalizeBotName(draft.name) || "bot"}`}
           packs={avatarPacks}
           loadPacks={loadAvatarPacks ?? undefined}
+          selected={draft.avatar ?? null}
+          currentSrc={previewAvatar}
           hideSave
           onchange={onAvatarChange}
         />
@@ -140,26 +189,49 @@
   </div>
 
   <div class="cb-field">
-    <div class="intro-head">
-      <label class="cb-label" for="create-bot-intro">Intro</label>
-      <span class="cb-count" class:over={draft.intro.length > INTRO_MAX} data-testid="chat-bot-intro-count">{draft.intro.length}/{INTRO_MAX}</span>
+    <span class="cb-label" id="create-bot-scope-label">Who is it for?</span>
+    <div class="cb-cards scope-cards" role="radiogroup" aria-labelledby="create-bot-scope-label" data-testid="chat-bot-scope" tabindex="-1" onkeydown={onScopeKey}>
+      {#each SCOPES as scope (scope)}
+        <button
+          type="button"
+          class="cb-card scope-card"
+          role="radio"
+          aria-checked={draft.scope === scope}
+          data-testid={`chat-bot-scope-${scope}`}
+          data-scope={scope}
+          disabled={disabled}
+          tabindex={draft.scope === scope ? 0 : -1}
+          onclick={() => pickScope(scope)}
+        >
+          <span class="cb-card-row"><span class="cb-card-title">{BOT_SCOPE_COPY[scope].title}</span></span>
+          <span class="cb-card-sub">{BOT_SCOPE_COPY[scope].sub}</span>
+        </button>
+      {/each}
     </div>
-    <textarea
-      id="create-bot-intro"
-      class="cb-textarea"
-      data-testid="chat-bot-intro"
-      placeholder="One line the bot says first — “Hi, I'm Scout. I keep an eye on the ad accounts.”"
-      rows="2"
-      maxlength={INTRO_MAX + 50}
-      aria-invalid={introError ? "true" : undefined}
-      aria-describedby="create-bot-intro-help"
-      value={draft.intro}
-      disabled={disabled}
-      oninput={(event) => onpatch({ intro: (event.currentTarget as HTMLTextAreaElement).value })}
-    ></textarea>
-    <p class="cb-help" class:error={introError} id="create-bot-intro-help">
-      {introError ?? "Optional. Becomes the bot's first message in its DM."}
-    </p>
+    {#if draft.scope === "company"}
+      {#if ownerCompanies.length === 0}
+        <p class="cb-help" data-testid="chat-bot-scope-help">You are not in a company yet. Make it personal for now; a personal bot can create a company for you.</p>
+      {:else}
+        <div class="cb-pills" role="group" aria-label="Companies" data-testid="chat-bot-scope-companies">
+          {#each ownerCompanies as company (company.slug)}
+            {@const on = draft.companySlugs.includes(company.slug)}
+            <button
+              type="button"
+              class="cb-pill"
+              role="checkbox"
+              aria-checked={on}
+              data-testid={`chat-bot-scope-company-${company.slug}`}
+              disabled={disabled}
+              onclick={() => toggleCompany(company.slug)}
+            >
+              <span class="cb-pill-dot" class:ready={on} aria-hidden="true"></span>
+              {company.label}
+            </button>
+          {/each}
+        </div>
+        <p class="cb-help" data-testid="chat-bot-scope-help">Pick one or more. Others can @mention it in those companies' rooms.</p>
+      {/if}
+    {/if}
   </div>
 
   {#if brings}
@@ -257,11 +329,6 @@
     padding: 8px;
     border: 1px solid var(--v4-hairline);
     border-radius: 10px;
-  }
-  .intro-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
   }
   .brings {
     padding: 8px 10px;
