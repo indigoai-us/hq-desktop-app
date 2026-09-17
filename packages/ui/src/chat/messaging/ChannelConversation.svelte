@@ -2163,7 +2163,7 @@
     max-width: 42ch;
     overflow: hidden;
     color: var(--t1);
-    font-size: 14px;
+    font-size: 13px;
     /* 600 is the heaviest Geist face the shell ships; asking for 700 only
        rounds down (or synthesizes a smeared bold on fallback fonts). */
     font-weight: 600;
@@ -2265,11 +2265,11 @@
     max-width: 100%;
     margin: 0;
     font-family: var(--font-ui);
-    /* Reading size for the timeline (two steps over the 13px UI base); the
+    /* Reading size for the timeline (one step over the 13px UI base); the
        author line sits one step under it so weight, not size, carries the
-       hierarchy. 1.65 leading: this is long-form reading, not a form field. */
-    font-size: 15px;
-    line-height: 1.65;
+       hierarchy. 1.7 leading: this is long-form reading, not a form field. */
+    font-size: 14px;
+    line-height: 1.7;
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;
