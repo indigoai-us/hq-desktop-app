@@ -3436,7 +3436,7 @@
     background: transparent;
     color: var(--t2);
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
     line-height: 20px;
     font-weight: 400;
     text-align: left;
@@ -3546,7 +3546,7 @@
   .chat-row {
     contain: content;
     content-visibility: auto;
-    contain-intrinsic-size: auto 32px;
+    contain-intrinsic-size: auto 34px;
     position: relative;
     display: flex;
     align-items: center;
@@ -3556,17 +3556,18 @@
     width: auto;
     min-width: 0;
     min-height: 0;
-    padding: 6px 8px;
+    padding: 7px 8px;
     border: none;
     border-radius: 8px;
     background: transparent;
     color: var(--t2);
     font: inherit;
-    /* Same step as the timeline body (14px) so the rail and the conversation
-       share one reading size. */
-    font-size: 14px;
+    /* One step under the timeline body so the rail reads as navigation, not
+       content. Line height is fixed in px so row height is set by padding
+       alone (7px + 17px + 7px = 31px). */
+    font-size: 13px;
     font-weight: 400;
-    line-height: 1.2;
+    line-height: 17px;
     text-align: left;
     cursor: pointer;
   }
@@ -3625,7 +3626,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--t3);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 400;
   }
 
@@ -3756,10 +3757,13 @@
     margin-left: auto;
     padding: 0 5px;
     border-radius: 999px;
-    background: var(--ice-ink);
-    color: var(--badge-fg);
-    font-size: 10px;
+    /* A count, not an alert: muted text on the row's own background. The
+       filled pill read louder than the unread title it sits next to. */
+    background: transparent;
+    color: var(--t3);
+    font-size: 11px;
     font-weight: 500;
+    font-variant-numeric: tabular-nums;
     line-height: 1;
   }
 

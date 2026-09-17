@@ -1992,8 +1992,8 @@
        hover-chrome fade cannot invalidate layout outside the thread. */
     contain: layout paint;
     /* 16px bottom so the last message's reaction bar doesn't kiss the
-       composer frame. */
-    padding: 8px 16px 16px;
+       composer frame. Sides follow --conv-inset (set on .chat-stage). */
+    padding: 8px var(--conv-inset, 16px) 16px;
     /* Float the 4px thumb 8px off the window edge, the way every other
        scroller in the design does — the sidebar already did this and the
        timeline did not, so the two rails disagreed down the same window. */
@@ -2061,7 +2061,7 @@
   .dm-load-earlier {
     display: block;
     width: calc(100% - 24px);
-    margin: 8px 12px 4px;
+    margin: 8px var(--conv-inset, 12px) 4px;
     padding: 6px 10px;
     border: 0;
     border-radius: 8px;
@@ -2163,7 +2163,7 @@
     max-width: 42ch;
     overflow: hidden;
     color: var(--t1);
-    font-size: 13px;
+    font-size: 14px;
     /* 600 is the heaviest Geist face the shell ships; asking for 700 only
        rounds down (or synthesizes a smeared bold on fallback fonts). */
     font-weight: 600;
@@ -2191,9 +2191,12 @@
     border-radius: 4px;
   }
 
+  /* Sits beside the author like the thread pane ("Jacob Posel 3:48 PM"), not
+     flush right: the hover toolbar is pinned to the row's top-right corner,
+     and a right-aligned stamp lived exactly under it. */
   .dm-msg-header-time {
     flex: 0 0 auto;
-    margin-left: auto;
+    margin-left: 2px;
     color: var(--t3);
     font-family: var(--font-mono);
     font-size: 10px;
@@ -2265,9 +2268,11 @@
     max-width: 100%;
     margin: 0;
     font-family: var(--font-ui);
-    /* Match the composer and shell body; authors and metadata carry hierarchy. */
-    font-size: 13px;
-    line-height: 1.5;
+    /* Reading size for the timeline (two steps over the 13px UI base); the
+       author line sits one step under it so weight, not size, carries the
+       hierarchy. 1.7 leading: this is long-form reading, not a form field. */
+    font-size: 15px;
+    line-height: 1.7;
     color: var(--t1, var(--message-markdown-text));
     white-space: normal;
     overflow-wrap: anywhere;
@@ -2676,7 +2681,7 @@
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
-    margin: 0 16px 20px;
+    margin: 0 var(--conv-inset, 16px) 20px;
     /* Concept `.composer`: 10px radius, 12px of air above the caret. */
     padding: 12px 8px 8px 14px;
     background: var(--raised, var(--pop-hover));
