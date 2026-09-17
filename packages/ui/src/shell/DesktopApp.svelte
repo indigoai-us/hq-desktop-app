@@ -227,11 +227,9 @@
   } from "svelte";
   import {
     applyColorTheme,
-    applyReducedTransparency,
     applyUiSize,
     applyWindowOpacity,
     hasAppearanceHost,
-    readReducedTransparency,
     readStoredTheme,
   } from "../settings/shell-settings-model.js";
   import { readSettingsPrefs } from "../settings/settings-prefs.js";
@@ -6529,7 +6527,6 @@
     // Re-apply on boot, not just on toggle: the attribute lives on <html> and
     // does not survive a reload, so without this the glass returns on every
     // restart and the setting looks like it silently forgot itself.
-    applyReducedTransparency(readReducedTransparency());
     const prefs = readSettingsPrefs(tenantStorage);
     applyUiSize(prefs.uiSize);
     // With the desktop appearance host installed, its persisted preference is

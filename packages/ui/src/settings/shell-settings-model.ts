@@ -20,7 +20,6 @@ import {
 import type { SettingsUiSize } from "./settings-prefs.js";
 
 export const THEME_STORAGE_KEY = "hq-work-color-theme";
-const REDUCED_TRANSPARENCY_STORAGE_KEY = "hq.appearance.reduceTransparency";
 
 export const APPEARANCE_THEMES: ReadonlyArray<{
   id: ColorTheme;
@@ -262,52 +261,6 @@ export function readHostWindowOpacity(
   const transparency = Number(raw);
   if (!Number.isFinite(transparency)) return null;
   return clampSliderOpacity(100 - transparency);
-}
-
-/**
- * Turn the frosted-glass material off (or back on) without the OS-level
- * accessibility setting.
- *
- * Blur is the one lever that meaningfully changes scrolling smoothness on the
- * desktop app, and it is compositor work rather than main-thread work — so it
- * cannot be measured from a Chromium-based harness, which composites it on the
- * GPU almost for free. The desktop app runs on the system WebKit view instead,
- * where the same markup can feel markedly worse on the same machine. Handing
- * the lever to the person who can see the result beats guessing a blur radius
- * on their behalf.
- *
- * Mirrors `applyColorTheme`: attribute on <html>, absent rather than "false"
- * when off, so the CSS only ever matches an explicit opt-in.
- */
-export function applyReducedTransparency(
-  reduced: boolean,
-  root: HTMLElement | null = globalThis.document?.documentElement ?? null,
-  storage:
-    Pick<Storage, "setItem"> | null | undefined = globalThis.localStorage,
-): boolean {
-  const next = reduced === true;
-  if (root) {
-    if (next) root.setAttribute("data-reduce-transparency", "true");
-    else root.removeAttribute("data-reduce-transparency");
-  }
-  try {
-    storage?.setItem(REDUCED_TRANSPARENCY_STORAGE_KEY, next ? "true" : "false");
-  } catch {
-    /* private mode */
-  }
-  return next;
-}
-
-/** Read the stored preference. Defaults to off — the glass is the design. */
-export function readReducedTransparency(
-  storage:
-    Pick<Storage, "getItem"> | null | undefined = globalThis.localStorage,
-): boolean {
-  try {
-    return storage?.getItem(REDUCED_TRANSPARENCY_STORAGE_KEY) === "true";
-  } catch {
-    return false;
-  }
 }
 
 /**
