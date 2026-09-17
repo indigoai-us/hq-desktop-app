@@ -147,12 +147,7 @@ pub(crate) fn notification_identity_from_tokens(tokens: &CognitoTokens) -> Strin
     ]
     .into_iter()
     .flatten()
-    .find_map(|token| {
-        cognito::decode_id_token_claims(token)
-            .ok()
-            .and_then(|claims| claims.sub)
-    })
-    .filter(|sub| !sub.trim().is_empty())
+    .find_map(notification_identity_from_bearer_token)
     .unwrap_or_else(|| {
         // Fail partition-safe when a malformed legacy token lacks claims:
         // never collapse multiple accounts into one "unknown" cursor key.
@@ -168,6 +163,17 @@ pub(crate) fn notification_identity_from_tokens(tokens: &CognitoTokens) -> Strin
             cognito::access_token_fingerprint(stable_credential)
         )
     })
+}
+
+/// Extract the account partition from the exact bearer token about to cross a
+/// network boundary. Unlike [`notification_identity_from_tokens`], this has no
+/// credential fingerprint fallback: an undecodable bearer must never authorize
+/// a queued receipt for an account we cannot prove it belongs to.
+pub(crate) fn notification_identity_from_bearer_token(token: &str) -> Option<String> {
+    cognito::decode_id_token_claims(token)
+        .ok()
+        .and_then(|claims| claims.sub)
+        .filter(|sub| !sub.trim().is_empty())
 }
 
 /// Auth state plus the non-secret claims the embedded shell needs to render
@@ -500,6 +506,15 @@ mod tests {
         );
 
         assert_eq!(notification_identity_from_tokens(&tokens), "id-subject");
+    }
+
+    #[test]
+    fn bearer_identity_never_falls_back_for_an_undecodable_token() {
+        assert_eq!(
+            notification_identity_from_bearer_token(&jwt_with_sub("access-subject")),
+            Some("access-subject".to_string()),
+        );
+        assert_eq!(notification_identity_from_bearer_token("not-a-jwt"), None);
     }
 
     #[test]

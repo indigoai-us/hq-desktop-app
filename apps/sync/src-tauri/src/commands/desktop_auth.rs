@@ -608,24 +608,28 @@ enum AuthenticatedReceiptDelivery {
     HeldForAuthorizedAccount,
 }
 
-async fn current_authenticated_account_id() -> Result<Option<String>, String> {
-    cognito::get_tokens()
-        .await
-        .map(|tokens| tokens.map(|tokens| super::auth::notification_identity_from_tokens(&tokens)))
+fn receipt_matches_bearer_account(receipt: &AuthenticatedDesktopReceipt, jwt: &str) -> bool {
+    let token_account_id = super::auth::notification_identity_from_bearer_token(jwt);
+    may_deliver_for_account(
+        receipt.authorized_account_id.as_deref(),
+        token_account_id.as_deref(),
+    )
 }
 
 async fn post_authenticated_desktop_receipt(
     receipt: &AuthenticatedDesktopReceipt,
-    active_account_id: Option<&str>,
 ) -> Result<AuthenticatedReceiptDelivery, String> {
-    if !may_deliver_for_account(receipt.authorized_account_id.as_deref(), active_account_id) {
-        return Ok(AuthenticatedReceiptDelivery::HeldForAuthorizedAccount);
-    }
     let url = match receipt.endpoint {
         AuthenticatedReceiptEndpoint::SessionActivated => endpoints().session_activated_url(),
         AuthenticatedReceiptEndpoint::WorkspaceSelected => endpoints().workspace_selected_url(),
     };
     let jwt = super::sync::resolve_jwt().await?;
+    // The account must be resolved from this exact access token, after any
+    // refresh. Reading an account before resolving the token lets an account
+    // switch between those operations authenticate person A's receipt as B.
+    if !receipt_matches_bearer_account(receipt, &jwt) {
+        return Ok(AuthenticatedReceiptDelivery::HeldForAuthorizedAccount);
+    }
     let response = build_client()
         .post(url)
         .bearer_auth(jwt)
@@ -662,7 +666,6 @@ async fn flush_authenticated_desktop_receipts() -> Result<(), String> {
         return Ok(());
     }
 
-    let active_account_id = current_authenticated_account_id().await?;
     let mut terminal = Vec::new();
     let mut retries = Vec::new();
     let now = now_ms();
@@ -670,7 +673,7 @@ async fn flush_authenticated_desktop_receipts() -> Result<(), String> {
         if receipt.next_attempt_at_ms > now {
             continue;
         }
-        match post_authenticated_desktop_receipt(&receipt, active_account_id.as_deref()).await {
+        match post_authenticated_desktop_receipt(&receipt).await {
             Ok(
                 AuthenticatedReceiptDelivery::Delivered | AuthenticatedReceiptDelivery::Rejected,
             ) => terminal.push(receipt),
@@ -734,6 +737,15 @@ fn desktop_receipt_base(app: &AppHandle) -> Option<serde_json::Value> {
     }))
 }
 
+/// The installation id can read the first-run state from disk. Do that work on
+/// the blocking pool after the user-facing command has already returned.
+async fn desktop_receipt_base_in_background(app: AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || desktop_receipt_base(&app))
+        .await
+        .map_err(|error| format!("desktop receipt preparation task failed: {error}"))?
+        .ok_or_else(|| "desktop installation id is unavailable".to_string())
+}
+
 /// Record the successful native sign-in edge. This has no company attribution:
 /// a login can complete before a workspace is selected, and pretending one was
 /// selected would corrupt the person-to-company join.
@@ -743,28 +755,33 @@ pub(crate) fn record_desktop_login_completed(
     flow: &str,
     variant: &str,
 ) {
-    let result = (|| -> Result<(), String> {
-        let mut body = desktop_receipt_base(app)
-            .ok_or_else(|| "desktop installation id is unavailable".to_string())?;
-        let object = body
-            .as_object_mut()
-            .ok_or_else(|| "desktop telemetry body was not an object".to_string())?;
-        object.insert("flow".to_string(), serde_json::json!(flow));
-        object.insert("variant".to_string(), serde_json::json!(variant));
-        object.insert("provider".to_string(), serde_json::json!("cognito"));
-        schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
-            endpoint: AuthenticatedReceiptEndpoint::SessionActivated,
-            body,
-            authorized_account_id: Some(authorized_account_id.to_string()),
-            attempts: 0,
-            next_attempt_at_ms: 0,
-        });
-        Ok(())
-    })();
-    if let Err(error) = result {
-        eprintln!("[desktop-onboarding] login_completed receipt queue failed: {error}");
-        return;
-    }
+    let app = app.clone();
+    let authorized_account_id = authorized_account_id.to_string();
+    let flow = flow.to_string();
+    let variant = variant.to_string();
+    tauri::async_runtime::spawn(async move {
+        let result = async {
+            let mut body = desktop_receipt_base_in_background(app).await?;
+            let object = body
+                .as_object_mut()
+                .ok_or_else(|| "desktop telemetry body was not an object".to_string())?;
+            object.insert("flow".to_string(), serde_json::json!(flow));
+            object.insert("variant".to_string(), serde_json::json!(variant));
+            object.insert("provider".to_string(), serde_json::json!("cognito"));
+            schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
+                endpoint: AuthenticatedReceiptEndpoint::SessionActivated,
+                body,
+                authorized_account_id: Some(authorized_account_id),
+                attempts: 0,
+                next_attempt_at_ms: 0,
+            });
+            Ok::<(), String>(())
+        }
+        .await;
+        if let Err(error) = result {
+            eprintln!("[desktop-onboarding] login_completed receipt queue failed: {error}");
+        }
+    });
 }
 
 /// Record the company the person explicitly connected from the desktop shell.
@@ -772,42 +789,46 @@ pub(crate) fn record_desktop_login_completed(
 /// the client never gets to assert either identity. A selection can occur long
 /// after sign-in, so it intentionally carries no auth cohort fields rather
 /// than guessing that it belongs to the manual-control arm.
-pub(crate) async fn record_desktop_workspace_selected(app: &AppHandle, company_uid: String) {
-    let authorized_account_id = match current_authenticated_account_id().await {
-        Ok(Some(account_id)) => account_id,
-        Ok(None) => {
-            eprintln!("[desktop-onboarding] workspace_selected receipt not queued without an authenticated account");
-            return;
+pub(crate) fn record_desktop_workspace_selected(app: &AppHandle, company_uid: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Account lookup belongs behind the background boundary as well: its token
+        // cache can require filesystem I/O during credential turnover.
+        let authorized_account_id = match cognito::get_tokens().await {
+            Ok(Some(tokens)) => super::auth::notification_identity_from_tokens(&tokens),
+            Ok(None) => {
+                eprintln!("[desktop-onboarding] workspace_selected receipt not queued without an authenticated account");
+                return;
+            }
+            Err(error) => {
+                eprintln!("[desktop-onboarding] workspace_selected account lookup failed: {error}");
+                return;
+            }
+        };
+        let result = async {
+            let mut body = desktop_receipt_base_in_background(app).await?;
+            let object = body
+                .as_object_mut()
+                .ok_or_else(|| "desktop telemetry body was not an object".to_string())?;
+            object.insert("workspaceKind".to_string(), serde_json::json!("company"));
+            object.insert("companyUid".to_string(), serde_json::json!(company_uid));
+            // This exact pair is validated by hq-pro's workspace receipt contract.
+            object.insert("flow".to_string(), serde_json::json!("workspace_selection"));
+            object.insert("variant".to_string(), serde_json::json!("native"));
+            schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
+                endpoint: AuthenticatedReceiptEndpoint::WorkspaceSelected,
+                body,
+                authorized_account_id: Some(authorized_account_id),
+                attempts: 0,
+                next_attempt_at_ms: 0,
+            });
+            Ok::<(), String>(())
         }
-        Err(error) => {
-            eprintln!("[desktop-onboarding] workspace_selected account lookup failed: {error}");
-            return;
+        .await;
+        if let Err(error) = result {
+            eprintln!("[desktop-onboarding] workspace_selected receipt queue failed: {error}");
         }
-    };
-    let result = (|| -> Result<(), String> {
-        let mut body = desktop_receipt_base(app)
-            .ok_or_else(|| "desktop installation id is unavailable".to_string())?;
-        let object = body
-            .as_object_mut()
-            .ok_or_else(|| "desktop telemetry body was not an object".to_string())?;
-        object.insert("workspaceKind".to_string(), serde_json::json!("company"));
-        object.insert("companyUid".to_string(), serde_json::json!(company_uid));
-        // This exact pair is validated by hq-pro's workspace receipt contract.
-        object.insert("flow".to_string(), serde_json::json!("workspace_selection"));
-        object.insert("variant".to_string(), serde_json::json!("native"));
-        schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
-            endpoint: AuthenticatedReceiptEndpoint::WorkspaceSelected,
-            body,
-            authorized_account_id: Some(authorized_account_id.clone()),
-            attempts: 0,
-            next_attempt_at_ms: 0,
-        });
-        Ok(())
-    })();
-    if let Err(error) = result {
-        eprintln!("[desktop-onboarding] workspace_selected receipt queue failed: {error}");
-        return;
-    }
+    });
 }
 
 // ── Anonymous HTTP, performed natively ─────────────────────────────────
@@ -939,6 +960,14 @@ async fn verify_with_backend(tokens: &CognitoTokens) -> Result<VerifiedIdentity,
 #[cfg(test)]
 mod authenticated_receipt_tests {
     use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    fn bearer_with_sub(subject: &str) -> String {
+        let claims = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({ "sub": subject })).expect("claims serialize"),
+        );
+        format!("header.{claims}.signature")
+    }
 
     fn receipt(
         endpoint: AuthenticatedReceiptEndpoint,
@@ -1015,6 +1044,56 @@ mod authenticated_receipt_tests {
             legacy.authorized_account_id.as_deref(),
             Some("person-b"),
         ));
+    }
+
+    #[test]
+    fn delivery_is_bound_to_the_bearer_token_not_a_prior_account_lookup() {
+        let receipt = receipt(
+            AuthenticatedReceiptEndpoint::WorkspaceSelected,
+            "evt_workspace",
+            "2026-09-17T10:01:00.000Z",
+        );
+
+        assert!(receipt_matches_bearer_account(
+            &receipt,
+            &bearer_with_sub("person-a")
+        ));
+        assert!(
+            !receipt_matches_bearer_account(&receipt, &bearer_with_sub("person-b")),
+            "a mid-flush account switch must hold person A's receipt"
+        );
+        assert!(!receipt_matches_bearer_account(&receipt, "not-a-jwt"));
+    }
+
+    #[test]
+    fn receipt_commands_defer_token_and_install_io_before_returning() {
+        let source = include_str!("desktop_auth.rs");
+        let workspace = source
+            .split("pub(crate) fn record_desktop_workspace_selected")
+            .nth(1)
+            .expect("workspace receipt command")
+            .split("// ── Anonymous HTTP")
+            .next()
+            .expect("workspace receipt end");
+        let before_background = workspace
+            .split("tauri::async_runtime::spawn")
+            .next()
+            .expect("workspace receipt spawn");
+        assert!(!before_background.contains("cognito::get_tokens"));
+        assert!(!before_background.contains("desktop_receipt_base"));
+
+        let login = source
+            .split("pub(crate) fn record_desktop_login_completed")
+            .nth(1)
+            .expect("login receipt command")
+            .split("/// Record the company")
+            .next()
+            .expect("login receipt end");
+        let before_background = login
+            .split("tauri::async_runtime::spawn")
+            .next()
+            .expect("login receipt spawn");
+        assert!(!before_background.contains("desktop_receipt_base"));
     }
 
     #[test]
