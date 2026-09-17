@@ -239,9 +239,18 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     const workspaceReceipt = rustFunction(desktopAuth, 'record_desktop_workspace_selected');
     expect(workspaceReceipt).toContain('"workspace_selection"');
     expect(workspaceReceipt).toContain('"native"');
-    expect(workspaceReceipt).toContain('current_authenticated_account_id');
+    expect(workspaceReceipt).toContain('tauri::async_runtime::spawn(async move {');
+    expect(workspaceReceipt).toContain('cognito::get_tokens().await');
+    expect(workspaceReceipt).toContain('notification_identity_from_tokens(&tokens)');
+    expect(workspaceReceipt).not.toContain('current_authenticated_account_id');
+    expect(workspaceReceipt.indexOf('cognito::get_tokens().await')).toBeGreaterThan(
+      workspaceReceipt.indexOf('tauri::async_runtime::spawn(async move {'),
+    );
     expect(connect).toMatch(
-      /record_desktop_workspace_selected\(&app,\s*company_uid\)\s*\.await/,
+      /record_desktop_workspace_selected\(&app,\s*company_uid\);/,
+    );
+    expect(connect).not.toMatch(
+      /record_desktop_workspace_selected\([^)]*\)\s*\.await/,
     );
   });
 
