@@ -1601,7 +1601,31 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release upload "$TAG" release/* -R "$REPOSITORY"
+          # One asset at a time, with retries. A single `gh release upload`
+          # over the whole set aborts the step on the first 400 from
+          # uploads.github.com, which happens mid-transfer on the ~60-90 MB
+          # installers (three releases in a row on 2026-09-17: v0.10.283 and
+          # both v0.10.284 attempts). The broken transfer leaves a `starter`
+          # asset with that name on the draft, so a plain retry of the same
+          # name is refused too. `--clobber` replaces any such leftover, and
+          # the per-asset loop means one bad transfer costs one retry, not a
+          # full rebuild. The exact-asset-set verification below is unchanged
+          # and still gates publication.
+          for asset in release/*; do
+            uploaded="false"
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "$TAG" "$asset" -R "$REPOSITORY" --clobber; then
+                uploaded="true"
+                break
+              fi
+              echo "::warning::Upload of $(basename "$asset") failed (attempt ${attempt}/5); retrying."
+              sleep $((attempt * 10))
+            done
+            if [ "$uploaded" != "true" ]; then
+              echo "::error::Upload of $(basename "$asset") failed after 5 attempts."
+              exit 1
+            fi
+          done
 
       - name: Verify exact draft release asset set
         if: ${{ steps.release-plan.outputs.action == 'create-draft' || steps.release-plan.outputs.action == 'reset-draft' }}
