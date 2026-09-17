@@ -581,6 +581,30 @@ pub fn expires_at_iso(tokens: &CognitoTokens) -> String {
     format_unix_ms_as_iso(tokens.expires_at.max(0))
 }
 
+/// Classify the principal `tokens` authenticate, returning `None` for a human.
+///
+/// `~/.hq/cognito-tokens.json` is shared with the `hq` CLI and with machine
+/// identities: anything running as this user can replace its contents, and the
+/// desktop app re-reads it whenever the mtime changes. So the app cannot treat
+/// "there are tokens on disk" as "a person signed in here" — it has to look at
+/// who the tokens actually belong to, on every read.
+///
+/// Both tokens are inspected because the custom attributes are projected onto
+/// the id_token; the access token is the fallback for a generation that
+/// predates it. A token that will not decode at all yields `None` (human) —
+/// that is the existing behaviour for malformed tokens everywhere else in this
+/// module, and the server still rejects them independently.
+pub fn non_human_principal_from_tokens(tokens: &CognitoTokens) -> Option<NonHumanPrincipal> {
+    [
+        tokens.id_token.as_deref(),
+        Some(tokens.access_token.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|token| decode_id_token_claims(token).ok())
+    .find_map(|claims| claims.non_human_principal())
+}
+
 /// Get a non-expired token generation, refreshing + persisting if needed.
 ///
 /// Centralises the "read tokens → check expiry → refresh + persist"
@@ -670,6 +694,102 @@ pub struct IdTokenClaims {
     /// than as permission.
     #[serde(default)]
     pub nonce: Option<String>,
+    /// Cognito custom attribute marking a non-human principal. People never
+    /// carry it, so its presence is the authoritative "this is not a person"
+    /// signal. Fleet agents set `agent`; outposts set `outpost`.
+    #[serde(default, rename = "custom:entityType")]
+    pub entity_type: Option<String>,
+    /// The `agt_…` / `otp_…` uid the principal is bound to. Only present
+    /// alongside `entity_type`.
+    #[serde(default, rename = "custom:entityUid")]
+    pub entity_uid: Option<String>,
+}
+
+/// Why a decoded principal was classified as non-human. Carried into the
+/// signed-out reason so support can tell an agent token apart from an
+/// outpost token without asking for the raw claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonHumanPrincipal {
+    /// `custom:entityType=agent`, an `agt_`/`agt-` uid, or an agent-shaped
+    /// `@agents.<domain>` address.
+    Agent,
+    /// `custom:entityType=outpost`, or an `otp_`/`otp-` uid.
+    Outpost,
+}
+
+impl NonHumanPrincipal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Outpost => "outpost",
+        }
+    }
+}
+
+/// True when `value` begins with `prefix` followed by `_` or `-`.
+///
+/// Both separators are load-bearing. Canonical uids minted server-side use
+/// the underscore form (`agt_01M2…`), but the Cognito *username* derived from
+/// them uses a dash (`agt-01m2…@agents.getindigo.ai`) because `@` addresses
+/// cannot carry an underscore in that position. A guard that checks only one
+/// form misses half the real tokens.
+fn has_entity_prefix(value: &str, prefix: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    lower.starts_with(&format!("{prefix}_")) || lower.starts_with(&format!("{prefix}-"))
+}
+
+impl IdTokenClaims {
+    /// Classify the principal these claims describe, returning `None` for a
+    /// human.
+    ///
+    /// Deliberately over-inclusive: three independent signals are checked and
+    /// any one of them is disqualifying. A human account can never satisfy
+    /// them (people carry no `custom:entityType`, hold `prs_` entities, and
+    /// cannot register an `@agents.` address — that domain is minted only by
+    /// server-side agent provisioning), so a false positive here is not
+    /// reachable, while a false *negative* signs a machine in as a person.
+    pub fn non_human_principal(&self) -> Option<NonHumanPrincipal> {
+        if let Some(entity_type) = self.entity_type.as_deref() {
+            match entity_type.trim().to_ascii_lowercase().as_str() {
+                "agent" => return Some(NonHumanPrincipal::Agent),
+                "outpost" => return Some(NonHumanPrincipal::Outpost),
+                // An unrecognized entityType is still, definitionally, not a
+                // person: only non-humans carry the attribute at all. Treat a
+                // future value as an agent rather than waving it through.
+                other if !other.is_empty() => return Some(NonHumanPrincipal::Agent),
+                _ => {}
+            }
+        }
+
+        if let Some(uid) = self.entity_uid.as_deref() {
+            if has_entity_prefix(uid, "agt") {
+                return Some(NonHumanPrincipal::Agent);
+            }
+            if has_entity_prefix(uid, "otp") {
+                return Some(NonHumanPrincipal::Outpost);
+            }
+        }
+
+        // Last line of defence: the email shape. Covers a token minted before
+        // the custom attributes were set, and the `conn-…@agents.` external
+        // connection identities, which carry no entityUid at all.
+        if let Some(email) = self.email.as_deref() {
+            let lower = email.trim().to_ascii_lowercase();
+            if let Some((local, domain)) = lower.split_once('@') {
+                if domain == "agents.getindigo.ai" || domain.starts_with("agents.") {
+                    return Some(NonHumanPrincipal::Agent);
+                }
+                if has_entity_prefix(local, "agt") || has_entity_prefix(local, "conn") {
+                    return Some(NonHumanPrincipal::Agent);
+                }
+                if has_entity_prefix(local, "otp") {
+                    return Some(NonHumanPrincipal::Outpost);
+                }
+            }
+        }
+
+        None
+    }
 }
 
 impl IdTokenClaims {
@@ -849,6 +969,158 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
     use tempfile;
+
+    fn claims_jwt(payload: serde_json::Value) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let encoded =
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("claims serialize"));
+        format!("header.{encoded}.signature")
+    }
+
+    fn tokens_with_id_claims(payload: serde_json::Value) -> CognitoTokens {
+        CognitoTokens {
+            access_token: claims_jwt(serde_json::json!({ "sub": "access-sub" })),
+            id_token: Some(claims_jwt(payload)),
+            refresh_token: "refresh".to_string(),
+            expires_at: i64::MAX,
+        }
+    }
+
+    #[test]
+    fn person_claims_are_not_classified_as_non_human() {
+        let claims = IdTokenClaims {
+            sub: Some("cognito-sub".into()),
+            email: Some("ben@yoprettyboy.com".into()),
+            name: Some("Ben".into()),
+            ..Default::default()
+        };
+        assert_eq!(claims.non_human_principal(), None);
+    }
+
+    #[test]
+    fn entity_type_attribute_classifies_agents_and_outposts() {
+        let agent = IdTokenClaims {
+            entity_type: Some("agent".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            agent.non_human_principal(),
+            Some(NonHumanPrincipal::Agent)
+        );
+
+        let outpost = IdTokenClaims {
+            entity_type: Some("OUTPOST".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            outpost.non_human_principal(),
+            Some(NonHumanPrincipal::Outpost)
+        );
+    }
+
+    /// Only non-humans carry `custom:entityType` at all, so an entityType we
+    /// have never seen must still fail closed rather than sign in as a person.
+    #[test]
+    fn unrecognized_entity_type_fails_closed() {
+        let claims = IdTokenClaims {
+            entity_type: Some("some-future-machine-kind".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            claims.non_human_principal(),
+            Some(NonHumanPrincipal::Agent)
+        );
+    }
+
+    /// Canonical uids use `agt_`; the derived Cognito username uses `agt-`.
+    /// Both must be caught — this is the exact pair that produced the incident.
+    #[test]
+    fn both_underscore_and_dash_uid_forms_are_caught() {
+        for uid in ["agt_01M2JYGTFSSYG85057NWVSKTH6", "agt-01m2jygtfssyg85057nwvskth6"] {
+            let claims = IdTokenClaims {
+                entity_uid: Some(uid.into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                claims.non_human_principal(),
+                Some(NonHumanPrincipal::Agent),
+                "uid {uid} should classify as an agent"
+            );
+        }
+    }
+
+    /// Regression for the reported incident: a token carrying only the agent
+    /// email shape, with no custom attributes projected, must still be refused.
+    #[test]
+    fn agent_email_domain_is_caught_without_custom_attributes() {
+        let claims = IdTokenClaims {
+            sub: Some("cognito-sub".into()),
+            email: Some("agt-01m2jygtfssyg85057nwvskth6@agents.getindigo.ai".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            claims.non_human_principal(),
+            Some(NonHumanPrincipal::Agent)
+        );
+    }
+
+    #[test]
+    fn external_connection_identities_are_caught() {
+        let claims = IdTokenClaims {
+            email: Some("conn-7f3a@agents.getindigo.ai".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            claims.non_human_principal(),
+            Some(NonHumanPrincipal::Agent)
+        );
+    }
+
+    /// A human whose address merely *contains* an agent-ish substring is still
+    /// a human. The guard keys on prefixes and the domain, not on substrings.
+    #[test]
+    fn human_addresses_resembling_agent_names_are_allowed() {
+        for email in [
+            "agatha@getindigo.ai",
+            "management@getindigo.ai",
+            "ben@agentsofchange.com",
+            "otto@getindigo.ai",
+        ] {
+            let claims = IdTokenClaims {
+                email: Some(email.into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                claims.non_human_principal(),
+                None,
+                "{email} should be treated as a person"
+            );
+        }
+    }
+
+    #[test]
+    fn token_level_classification_reads_the_id_token() {
+        let tokens = tokens_with_id_claims(serde_json::json!({
+            "sub": "cognito-sub",
+            "email": "agt-01m2jygtfssyg85057nwvskth6@agents.getindigo.ai",
+            "custom:entityType": "agent",
+            "custom:entityUid": "agt_01M2JYGTFSSYG85057NWVSKTH6",
+        }));
+        assert_eq!(
+            non_human_principal_from_tokens(&tokens),
+            Some(NonHumanPrincipal::Agent)
+        );
+    }
+
+    #[test]
+    fn token_level_classification_passes_a_person_through() {
+        let tokens = tokens_with_id_claims(serde_json::json!({
+            "sub": "cognito-sub",
+            "email": "ben@yoprettyboy.com",
+            "name": "Ben",
+        }));
+        assert_eq!(non_human_principal_from_tokens(&tokens), None);
+    }
 
     fn token_generation(name: &str) -> CognitoTokens {
         CognitoTokens {
