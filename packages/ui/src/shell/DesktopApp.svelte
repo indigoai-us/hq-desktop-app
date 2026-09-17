@@ -503,7 +503,11 @@
     mergePaletteRows,
     paletteConversationItems,
   } from "./palette-rows.js";
-  import { joinableMemberships, type Workspace } from "../chat/workspaces.js";
+  import {
+    joinableMemberships,
+    type Workspace,
+    type WorkspacesResult,
+  } from "../chat/workspaces.js";
   import {
     buildCompanyDisplayMap,
     buildCompanyIconMap,
@@ -2370,6 +2374,58 @@
   let lastReplyRowId = $state<string | null>(null);
   let unreadCount = $state(initialUnreadCount);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
+  /**
+   * PL-02 — sync trouble the Core popover reports, read from the SAME
+   * `list_syncable_workspaces` envelope the menubar used. The command never
+   * rejects on a cloud outage; it resolves `{ cloudReachable: false, error }`,
+   * and `manifestError` is set when companies/manifest.yaml could not be read.
+   * Defaults are healthy so a host that cannot sync shows no notices at all.
+   */
+  let cloudReachable = $state(true);
+  let cloudError = $state<string | null>(null);
+  let manifestError = $state<string | null>(null);
+  let syncWorkspaces = $state<Record<string, unknown>[]>([]);
+  let hqFolderPath = $state<string | null>(null);
+
+  async function readWorkspaceHealth(): Promise<void> {
+    if (!adapter.isAvailable("canSync")) return;
+    // `canSync` is a capability flag, not a guarantee that this particular
+    // host implements the workspaces listing. Missing method = no notices,
+    // not a crash in the shell's mount effect.
+    if (typeof adapter.sync?.listSyncableWorkspaces !== "function") return;
+    let res;
+    try {
+      res = await adapter.sync.listSyncableWorkspaces();
+    } catch (err) {
+      console.error("listSyncableWorkspaces (core notices) threw:", err);
+      return;
+    }
+    if (!res.ok) {
+      // `unavailable` is a host without the command, not an outage — saying
+      // "Cloud unreachable" there would be a lie.
+      if (res.reason !== "unavailable") {
+        console.error("listSyncableWorkspaces (core notices) failed:", res.message);
+      }
+      return;
+    }
+    const envelope = (res.value ?? {}) as unknown as Partial<WorkspacesResult>;
+    cloudReachable = envelope.cloudReachable !== false;
+    cloudError =
+      typeof envelope.error === "string" && envelope.error.trim()
+        ? envelope.error.trim()
+        : null;
+    manifestError =
+      typeof envelope.manifestError === "string" && envelope.manifestError.trim()
+        ? envelope.manifestError.trim()
+        : null;
+    syncWorkspaces = Array.isArray(envelope.workspaces)
+      ? (envelope.workspaces as unknown as Record<string, unknown>[])
+      : [];
+    hqFolderPath =
+      typeof envelope.hqFolderPath === "string" && envelope.hqFolderPath.trim()
+        ? envelope.hqFolderPath.trim()
+        : hqFolderPath;
+  }
   let meshConnectionState = $state<string>("idle");
   let tenantCompanyId = $state<string | null>(null);
   const tenantStorage = $derived(
@@ -6599,6 +6655,7 @@
     overlayQuery.addEventListener("change", syncOverlay);
 
     let syncTimer: number | undefined;
+    let healthTimer: number | undefined;
     if (adapter.isAvailable("canSync")) {
       void readLiveSyncStatus(adapter).then((next) => {
         liveSync = next;
@@ -6608,6 +6665,12 @@
           liveSync = next;
         });
       }, 30_000);
+      // Workspace health hits the cloud, so it runs on a slower beat than the
+      // local journal read above.
+      void readWorkspaceHealth();
+      healthTimer = window.setInterval(() => {
+        void readWorkspaceHealth();
+      }, 120_000);
     }
     // Warm the pack cache at launch so Core open is a cache read, not `hq`.
     if (adapter.isAvailable("canManagePackages")) {
@@ -6735,6 +6798,7 @@
       if (focusCardTimer !== undefined) clearTimeout(focusCardTimer);
       overlayQuery.removeEventListener("change", syncOverlay);
       if (syncTimer !== undefined) window.clearInterval(syncTimer);
+      if (healthTimer !== undefined) window.clearInterval(healthTimer);
       window.removeEventListener("keydown", onKey);
       unregisterShortcuts();
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);
@@ -6778,6 +6842,11 @@
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
+    {manifestError}
+    {cloudReachable}
+    {cloudError}
+    workspaces={syncWorkspaces}
+    hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
     {syncStatus}
