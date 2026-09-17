@@ -3,6 +3,42 @@
 use std::sync::Mutex;
 use tauri::Manager;
 
+// --- HQ-DESKTOP-6C: best-effort stdio diagnostics -------------------------
+//
+// Shadow the std print macros with hq-desktop-core's best-effort variants so
+// every `eprintln!`/`eprint!`/`println!`/`print!` in this binary writes
+// diagnostics without panicking when fd 1/2 is closed or a broken pipe. std's
+// `print_to` panics on any write error but `EBADF`; on a tokio worker thread
+// that unwinds the task and silently kills it (two such panics nine minutes
+// apart in one process were HQ-DESKTOP-6C).
+//
+// ORDER IS LOAD-BEARING: a `macro_rules!` shadow is textually scoped, so it only
+// covers modules declared *after* it. These definitions MUST stay above the
+// first `mod` below (starting with `mod meet_native;`), or the modules above
+// them silently revert to the panicking std macros.
+// `scripts/process-stdio-contract.test.ts` fails if this order changes or a
+// shadow is removed. `#[cfg(not(test))]` keeps libtest output capture unchanged.
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! eprintln {
+    ($($arg:tt)*) => { ::hq_desktop_core::best_effort_eprintln!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! eprint {
+    ($($arg:tt)*) => { ::hq_desktop_core::best_effort_eprint!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! println {
+    ($($arg:tt)*) => { ::hq_desktop_core::best_effort_println!($($arg)*) };
+}
+#[cfg(not(test))]
+#[allow(unused_macros)]
+macro_rules! print {
+    ($($arg:tt)*) => { ::hq_desktop_core::best_effort_print!($($arg)*) };
+}
+
 #[cfg(feature = "meet-native-webdriver")]
 mod meet_native;
 

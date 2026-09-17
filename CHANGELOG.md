@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- HQ no longer quietly stops part of what it is doing when the terminal or tool that started it goes away. If you launched HQ from a terminal or a script that was capturing its output and then closed that program, the next background task that tried to print a status line could crash on its own, so whatever you had asked for never finished. Printing a status line can no longer do that. The log at `~/.hq/logs/hq-sync.log` still records these details.
+
 ## [0.10.280] — 2026-09-17
 
 - You can now reach every notification, not just the most recent 50. A "Load older notifications" button appears at the end of the list whenever there are more, and the ones already on screen stay put when you load more. Before this, if you had a few hundred notifications, most of them were simply unreachable in the app.
