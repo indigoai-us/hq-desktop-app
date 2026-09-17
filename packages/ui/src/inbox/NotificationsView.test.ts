@@ -119,3 +119,110 @@ it('dismissing does not also open the conversation', async () => {
     expect(onopen).not.toHaveBeenCalled();
   } finally {await unmount(component); host.remove();}
 });
+
+const dmRow = (over: Record<string, unknown> = {}) => ({
+  id:'dm1', type:'dm', actorName:'Ada', actorPersonUid:'per_ada', body:'ping',
+  targetRef:'/messages/per_ada', status:'unread', createdAt:'2026-09-06T03:36:00Z', ...over,
+});
+
+function mountFeed(api: Record<string, unknown>, props: Record<string, unknown> = {}) {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const component = mount(NotificationsView, {target: host, props: {api: {
+    fetchNotifications: async () => ({notifications: [dmRow()], unreadCount: 1, nextCursor: null}),
+    ackNotification: async () => {}, readAllNotifications: async () => {}, runNotificationAction: async () => ({}),
+    ...api,
+  }, ...props}});
+  return {host, component};
+}
+
+it('replies to a DM without leaving the list', async () => {
+  const sendDm = vi.fn(async () => {});
+  const {host, component} = mountFeed({sendDm});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('ping'));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="notifications-reply-input"]')).toBeTruthy());
+
+    const input = host.querySelector<HTMLInputElement>('[data-testid="notifications-reply-input"]')!;
+    input.value = 'on it'; input.dispatchEvent(new Event('input'));
+    await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply-send"]')!.disabled).toBe(false));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply-send"]')!.click();
+
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledWith({toPersonUid:'per_ada', body:'on it'}));
+    // Box closes on success so the row does not look like it still has a draft.
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="notifications-reply-box"]')).toBeNull());
+  } finally {await unmount(component); host.remove();}
+});
+
+it('keeps the typed message on screen when sending fails', async () => {
+  const sendDm = vi.fn(async () => { throw new Error('offline'); });
+  const {host, component} = mountFeed({sendDm});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('ping'));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="notifications-reply-input"]')).toBeTruthy());
+    const input = host.querySelector<HTMLInputElement>('[data-testid="notifications-reply-input"]')!;
+    input.value = 'important'; input.dispatchEvent(new Event('input'));
+    await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply-send"]')!.disabled).toBe(false));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply-send"]')!.click();
+
+    await vi.waitFor(() => expect(host.textContent).toContain("Couldn't send"));
+    // Silently eating a typed message is worse than an error.
+    expect(host.querySelector<HTMLInputElement>('[data-testid="notifications-reply-input"]')!.value).toBe('important');
+  } finally {await unmount(component); host.remove();}
+});
+
+it('sends an emoji as an ordinary reply, not a reaction', async () => {
+  // There is no per-event DM reaction; the popover sent the emoji as a reply
+  // body and so does this. Implying a reaction the backend cannot store would
+  // be a lie in the UI.
+  const sendDm = vi.fn(async () => {});
+  const {host, component} = mountFeed({sendDm});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('ping'));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="notifications-reply-emoji"]')).toBeTruthy());
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply-emoji"]')!.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledWith({toPersonUid:'per_ada', body:'👍'}));
+  } finally {await unmount(component); host.remove();}
+});
+
+it('offers no reply control when the host cannot send a DM', async () => {
+  // Better no affordance than one that fails on submit.
+  const {host, component} = mountFeed({});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('ping'));
+    expect(host.querySelector('[data-testid="notifications-reply"]')).toBeNull();
+  } finally {await unmount(component); host.remove();}
+});
+
+it('offers no reply control on a row that is not an answerable DM', async () => {
+  const sendDm = vi.fn(async () => {});
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const component = mount(NotificationsView, {target: host, props: {api: {
+    fetchNotifications: async () => ({notifications: [
+      {id:'f1', type:'file_shared', actorName:'Ada', body:'a file', targetRef:'/files', status:'read', createdAt:'2026-09-06T03:36:00Z'},
+    ], unreadCount: 0, nextCursor: null}),
+    ackNotification: async () => {}, readAllNotifications: async () => {}, runNotificationAction: async () => ({}), sendDm,
+  }}});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('a file'));
+    expect(host.querySelector('[data-testid="notifications-reply"]')).toBeNull();
+  } finally {await unmount(component); host.remove();}
+});
+
+it('opening a reply does not also open the conversation', async () => {
+  const sendDm = vi.fn(async () => {});
+  const onopen = vi.fn();
+  const {host, component} = mountFeed({sendDm}, {onopen});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('ping'));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="notifications-reply-box"]')).toBeTruthy());
+    expect(onopen).not.toHaveBeenCalled();
+    // Typing Enter in the box must not activate the row either.
+    const input = host.querySelector<HTMLInputElement>('[data-testid="notifications-reply-input"]')!;
+    input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true}));
+    expect(onopen).not.toHaveBeenCalled();
+  } finally {await unmount(component); host.remove();}
+});

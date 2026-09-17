@@ -733,6 +733,22 @@ export function replyRootFromTargetRef(ref: string | null): string | null {
   }
 }
 
+/**
+ * Who a quick reply from this row would go to, or null when the row is not a
+ * DM this reader can answer in place.
+ *
+ * Reuses `notificationDestination` rather than re-deriving the person uid, so
+ * the reply box can never address someone other than whoever opening the row
+ * would have opened a conversation with.
+ */
+export function quickReplyTarget(
+  item: NotificationItem,
+): { personUid: string; name: string } | null {
+  const destination = notificationDestination(item);
+  if (destination.kind !== "dm") return null;
+  return { personUid: destination.personUid, name: destination.title };
+}
+
 export function notificationDestination(
   item: NotificationItem,
 ): NotificationDestination {

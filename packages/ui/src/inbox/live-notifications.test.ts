@@ -248,6 +248,25 @@ describe("live-notifications", () => {
   });
 
   describe("createLiveNotificationsApi", () => {
+    it("exposes quick reply through the messaging slice and rejects on failure", async () => {
+      // Without this passthrough the reply box exists in tests and never in
+      // the app: NotificationsView only offers it when `api.sendDm` is set.
+      // Only the messaging slice is exercised here; the factory reads the
+      // other slices lazily, inside the methods this test does not call.
+      const sendDm = vi.fn(async () => ok({}));
+      const adapter = {
+        notifications: {},
+        messaging: { sendDm },
+      } as unknown as PlatformAdapter;
+      const api = createLiveNotificationsApi(adapter);
+      expect(api.sendDm).toBeTypeOf("function");
+      await api.sendDm!({ toPersonUid: "per_ada", body: "on it" });
+      expect(sendDm).toHaveBeenCalledWith("per_ada", "on it");
+
+      sendDm.mockResolvedValueOnce(failure("upstream", "offline") as never);
+      await expect(api.sendDm!({ toPersonUid: "per_ada", body: "x" })).rejects.toThrow();
+    });
+
     function fakeAdapter(opts?: {
       store?: unknown;
       inbox?: unknown;
