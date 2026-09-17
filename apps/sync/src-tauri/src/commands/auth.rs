@@ -46,6 +46,27 @@ fn auth_session_envelope_cell() -> &'static Mutex<Option<AuthSessionEnvelope>> {
     AUTH_SESSION_ENVELOPE.get_or_init(|| Mutex::new(None))
 }
 
+/// Returns the non-secret identity snapshot for an operation that must retain
+/// its original authorizer after work is handed to a background task. This is
+/// memory-only: command paths must not reread credential files just to prepare
+/// telemetry.
+pub(crate) fn active_auth_session_snapshot() -> Option<AuthSessionEnvelope> {
+    let guard = auth_session_envelope_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.as_ref().and_then(|session| {
+        (session.status == AuthSessionStatus::Active)
+            .then_some(session)
+            .filter(|session| {
+                session
+                    .account_id
+                    .as_deref()
+                    .is_some_and(|account_id| !account_id.trim().is_empty())
+            })
+            .cloned()
+    })
+}
+
 fn bounded_reason(reason: Option<&str>) -> Option<String> {
     reason
         .map(str::trim)

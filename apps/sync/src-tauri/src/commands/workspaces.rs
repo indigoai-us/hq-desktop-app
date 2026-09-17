@@ -1082,6 +1082,12 @@ where
 /// Node when the provision fails purely because the machine has none.
 #[tauri::command]
 pub async fn connect_workspace_to_cloud(app: tauri::AppHandle, slug: String) -> Result<(), String> {
+    // Capture the account at the start of this user action. Receipt construction
+    // runs later on a background worker, after the shell could have changed
+    // accounts; reading the then-current credentials would misattribute this
+    // workspace selection.
+    let workspace_receipt_authorizer =
+        crate::commands::desktop_auth::workspace_receipt_authorization();
     log("workspaces", &format!("connect: slug='{slug}' start"));
     if slug.is_empty() {
         let err = "slug is required".to_string();
@@ -1177,7 +1183,11 @@ pub async fn connect_workspace_to_cloud(app: tauri::AppHandle, slug: String) -> 
             // user-visible result. The server verifies this membership before
             // retaining the person/company join.
             let company_uid = result.cloud_uid.clone();
-            crate::commands::desktop_auth::record_desktop_workspace_selected(&app, company_uid);
+            crate::commands::desktop_auth::record_desktop_workspace_selected(
+                &app,
+                company_uid,
+                workspace_receipt_authorizer.clone(),
+            );
             Ok(())
         }
         Err(e) => {
@@ -1185,7 +1195,11 @@ pub async fn connect_workspace_to_cloud(app: tauri::AppHandle, slug: String) -> 
                 // The CLI reached entity + manifest + config success before
                 // the initial upload failed. Keep the UI's sync error, while
                 // retaining the completed workspace-selection join.
-                crate::commands::desktop_auth::record_desktop_workspace_selected(&app, company_uid);
+                crate::commands::desktop_auth::record_desktop_workspace_selected(
+                    &app,
+                    company_uid,
+                    workspace_receipt_authorizer,
+                );
             }
             let msg = format!("hq CLI failed for '{slug}': {e}");
             log("workspaces", &msg);

@@ -88,6 +88,31 @@ static AUTHENTICATED_RECEIPT_QUEUE_IO: Mutex<()> = Mutex::new(());
 static AUTHENTICATED_RECEIPT_CUSTODY: Mutex<Vec<AuthenticatedDesktopReceipt>> =
     Mutex::new(Vec::new());
 
+/// Non-secret identity captured at the user action, before receipt preparation
+/// moves onto a background task. It intentionally retains neither a bearer nor
+/// a credential-file path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceReceiptAuthorization {
+    account_id: String,
+}
+
+/// Capture the account that authorized a workspace operation from the live
+/// in-memory auth envelope. The caller invokes this before provisioning starts;
+/// a later sign-in must not rebind the completed operation's receipt.
+pub(crate) fn workspace_receipt_authorization() -> Option<WorkspaceReceiptAuthorization> {
+    workspace_receipt_authorization_from_session(super::auth::active_auth_session_snapshot())
+}
+
+fn workspace_receipt_authorization_from_session(
+    session: Option<super::auth::AuthSessionEnvelope>,
+) -> Option<WorkspaceReceiptAuthorization> {
+    session.and_then(|session| {
+        session
+            .account_id
+            .map(|account_id| WorkspaceReceiptAuthorization { account_id })
+    })
+}
+
 fn with_custody<T>(f: impl FnOnce(&mut ContinuationCustody) -> T) -> T {
     let mut guard = CUSTODY
         .lock()
@@ -616,6 +641,19 @@ fn receipt_matches_bearer_account(receipt: &AuthenticatedDesktopReceipt, jwt: &s
     )
 }
 
+fn workspace_selected_receipt_for_authorizer(
+    body: serde_json::Value,
+    authorizer: WorkspaceReceiptAuthorization,
+) -> AuthenticatedDesktopReceipt {
+    AuthenticatedDesktopReceipt {
+        endpoint: AuthenticatedReceiptEndpoint::WorkspaceSelected,
+        body,
+        authorized_account_id: Some(authorizer.account_id),
+        attempts: 0,
+        next_attempt_at_ms: 0,
+    }
+}
+
 async fn post_authenticated_desktop_receipt(
     receipt: &AuthenticatedDesktopReceipt,
 ) -> Result<AuthenticatedReceiptDelivery, String> {
@@ -789,22 +827,17 @@ pub(crate) fn record_desktop_login_completed(
 /// the client never gets to assert either identity. A selection can occur long
 /// after sign-in, so it intentionally carries no auth cohort fields rather
 /// than guessing that it belongs to the manual-control arm.
-pub(crate) fn record_desktop_workspace_selected(app: &AppHandle, company_uid: String) {
+pub(crate) fn record_desktop_workspace_selected(
+    app: &AppHandle,
+    company_uid: String,
+    authorizer: Option<WorkspaceReceiptAuthorization>,
+) {
+    let Some(authorizer) = authorizer else {
+        eprintln!("[desktop-onboarding] workspace_selected receipt not queued without an authorizing account snapshot");
+        return;
+    };
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        // Account lookup belongs behind the background boundary as well: its token
-        // cache can require filesystem I/O during credential turnover.
-        let authorized_account_id = match cognito::get_tokens().await {
-            Ok(Some(tokens)) => super::auth::notification_identity_from_tokens(&tokens),
-            Ok(None) => {
-                eprintln!("[desktop-onboarding] workspace_selected receipt not queued without an authenticated account");
-                return;
-            }
-            Err(error) => {
-                eprintln!("[desktop-onboarding] workspace_selected account lookup failed: {error}");
-                return;
-            }
-        };
         let result = async {
             let mut body = desktop_receipt_base_in_background(app).await?;
             let object = body
@@ -815,13 +848,9 @@ pub(crate) fn record_desktop_workspace_selected(app: &AppHandle, company_uid: St
             // This exact pair is validated by hq-pro's workspace receipt contract.
             object.insert("flow".to_string(), serde_json::json!("workspace_selection"));
             object.insert("variant".to_string(), serde_json::json!("native"));
-            schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
-                endpoint: AuthenticatedReceiptEndpoint::WorkspaceSelected,
-                body,
-                authorized_account_id: Some(authorized_account_id),
-                attempts: 0,
-                next_attempt_at_ms: 0,
-            });
+            schedule_authenticated_desktop_receipt(workspace_selected_receipt_for_authorizer(
+                body, authorizer,
+            ));
             Ok::<(), String>(())
         }
         .await;
@@ -960,6 +989,7 @@ async fn verify_with_backend(tokens: &CognitoTokens) -> Result<VerifiedIdentity,
 #[cfg(test)]
 mod authenticated_receipt_tests {
     use super::*;
+    use crate::commands::auth::{AuthSessionEnvelope, AuthSessionStatus};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
     fn bearer_with_sub(subject: &str) -> String {
@@ -1063,6 +1093,38 @@ mod authenticated_receipt_tests {
             "a mid-flush account switch must hold person A's receipt"
         );
         assert!(!receipt_matches_bearer_account(&receipt, "not-a-jwt"));
+    }
+
+    #[test]
+    fn paused_workspace_receipt_keeps_the_workspace_authorizer_after_an_account_switch() {
+        let captured = workspace_receipt_authorization_from_session(Some(AuthSessionEnvelope {
+            account_id: Some("person-a".to_string()),
+            generation: 7,
+            status: AuthSessionStatus::Active,
+            reason: None,
+        }))
+        .expect("workspace operation captured account A before background work");
+
+        let current_session = AuthSessionEnvelope {
+            account_id: Some("person-b".to_string()),
+            generation: 8,
+            status: AuthSessionStatus::Active,
+            reason: None,
+        };
+
+        // The background task has not constructed its receipt yet when the
+        // shell changes to person B. It must still bind the completed workspace
+        // operation to A, then the existing exact-bearer gate holds it for A.
+        let receipt = workspace_selected_receipt_for_authorizer(
+            serde_json::json!({ "eventId": "evt_workspace" }),
+            captured,
+        );
+        assert_eq!(receipt.authorized_account_id.as_deref(), Some("person-a"));
+        assert_eq!(current_session.account_id.as_deref(), Some("person-b"));
+        assert!(
+            !receipt_matches_bearer_account(&receipt, &bearer_with_sub("person-b")),
+            "a switched account must hold the paused receipt rather than rebinding it"
+        );
     }
 
     #[test]
