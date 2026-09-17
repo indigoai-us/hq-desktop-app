@@ -143,14 +143,14 @@ const SENTRY_IDENTITY: hq_telemetry::SentryIdentity<'static> = hq_telemetry::Sen
 fn register_global_shortcuts(app: &tauri::AppHandle) {
     use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
-    for (label, code) in [("Opt+Shift+H", Code::KeyH), ("Opt+Shift+O", Code::KeyO)] {
-        let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), code);
-        if let Err(error) = app.global_shortcut().register(shortcut) {
-            util::logfile::log(
-                "ui",
-                &format!("global shortcut {label} register FAILED: {error}"),
-            );
-        }
+    // Opt+Shift+O only: the Opt+Shift+H popover toggle is retired.
+    let label = "Opt+Shift+O";
+    let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyO);
+    if let Err(error) = app.global_shortcut().register(shortcut) {
+        util::logfile::log(
+            "ui",
+            &format!("global shortcut {label} register FAILED: {error}"),
+        );
     }
 }
 
@@ -373,11 +373,10 @@ fn main() {
 
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
-    // Opt+Shift+H — global hotkey to summon the popover from anywhere.
-    // Opt+Shift+O — global hotkey to reveal the larger desktop window.
-    // Defined up front so the plugin builder and the setup-time `register`
-    // calls agree on the exact key combos.
-    let show_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyH);
+    // Opt+Shift+O — global hotkey to reveal the desktop window. Defined up
+    // front so the plugin builder and the setup-time `register` calls agree on
+    // the exact key combo. The Opt+Shift+H popover toggle is retired: the
+    // popover is no longer a surface the user summons.
     let desktop_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyO);
 
     // The `main` popover is created from `tauri.conf.json`, so its WebView2
@@ -470,21 +469,7 @@ fn main() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {
-                        // Toggle the popover: hides it if already up, else shows
-                        // it (and hides the desktop window — one at a time).
-                        // Window ops (incl. the is_visible toggle query) must run
-                        // on the main thread, so marshal off the shortcut callback.
-                        let app_main = app.clone();
-                        let _ = app.run_on_main_thread(move || {
-                            hq_telemetry::record_native_panic_seam(
-                                hq_telemetry::NativePanicSeam::GlobalShortcutTogglePopover,
-                            );
-                            tray::toggle_popover_window(&app_main);
-                        });
-                    } else if shortcut == &desktop_shortcut
-                        && event.state() == ShortcutState::Pressed
-                    {
+                    if shortcut == &desktop_shortcut && event.state() == ShortcutState::Pressed {
                         // Toggle the desktop window: hide if visible, else open
                         // it (hiding the popover first — one HQ window at a time).
                         // Marshal to the main thread for the same reason.

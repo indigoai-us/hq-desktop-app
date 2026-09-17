@@ -76,13 +76,17 @@ describe('OAuth return focus (macOS + Windows)', () => {
     );
   });
 
-  it('tray toggle raises a visible but unfocused window instead of hiding it', () => {
+  it('showing the onboarding card raises it rather than leaving it buried', () => {
+    // PL-05 retired `toggle_popover_window` (the Opt+Shift+H toggle); the
+    // surviving show path must still raise `main` after browser OAuth, where
+    // the window is visible but buried behind the browser.
     const tray = readRepo('src-tauri/src/tray.rs');
-    const idx = tray.indexOf('pub fn toggle_popover_window');
+    expect(tray).not.toContain('pub fn toggle_popover_window');
+    const idx = tray.indexOf('pub fn show_popover_window');
     expect(idx).toBeGreaterThan(-1);
-    const body = tray.slice(idx, idx + 900);
-    expect(body).toContain('is_focused');
+    const body = tray.slice(idx, idx + 4200);
     expect(body).toContain('bring_webview_to_front');
+    expect(body).toContain('suppress_blur_hide_briefly');
   });
 
   it('SignInPrompt and OnboardingWizard invoke bring_main_window_to_front', () => {

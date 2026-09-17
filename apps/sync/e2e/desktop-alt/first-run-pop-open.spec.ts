@@ -10,6 +10,8 @@ describe('first-run routes through onboarding before completion', () => {
   // US-005: single settings surface (desktop SettingsPage; classic popover Settings gone).
   const settingsPage = readRepoFile('../../packages/ui/src/settings/SettingsPage.svelte');
   const settingsRust = readRepoFile('src-tauri/src/commands/settings.rs');
+  const firstRunRust = readRepoFile('src-tauri/src/commands/first_run.rs');
+  const tray = readRepoFile('src-tauri/src/tray.rs');
 
   it('has no onboarding components left in the tree', () => {
     expect(() => readRepoFile('src/components/FirstRunWelcome.svelte')).toThrow();
@@ -28,6 +30,29 @@ describe('first-run routes through onboarding before completion', () => {
     expect(app).not.toContain("invoke<boolean>('is_first_run')");
     expect(app).not.toContain("invoke('mark_first_run_complete')");
     expect(onboarding).toContain("invoke('mark_first_run_complete')");
+  });
+
+  it('finishing onboarding hands off to the desktop window, not the popover', () => {
+    // PL-05: the wizard still calls the same command, but it now hides `main`
+    // (back to hidden controller) and opens the desktop workspace.
+    expect(onboarding).toContain("invoke('show_main_window_at_tray')");
+    // Open the desktop window first, dismiss the card only once it opened —
+    // a failed open must not leave the user with no window at all.
+    expect(firstRunRust).toMatch(
+      /pub async fn show_main_window_at_tray[\s\S]*?open_desktop_alt_window_inner\(app\.clone\(\), None\)\.await\?;[\s\S]*?crate::tray::hide_popover_window\(&app\);/,
+    );
+    expect(firstRunRust).not.toContain('crate::tray::show_popover_window(&app)');
+    // The renderer no longer opens the desktop window itself and then hides
+    // the card behind its back.
+    expect(onboarding).not.toContain("invoke('open_desktop_alt_window')");
+  });
+
+  it('hiding the onboarding card records the dismissal', () => {
+    // Otherwise the launch-time onboarding pin keeps suppressing click-away
+    // for the rest of the process after the handoff.
+    expect(tray).toMatch(
+      /pub fn hide_popover_window[\s\S]*?note_popover_dismissed\(\)[\s\S]*?get_webview_window\("main"\)/,
+    );
   });
 
   it('sync-on-launch defaults ON in the Settings surface', () => {

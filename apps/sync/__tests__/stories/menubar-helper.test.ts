@@ -157,31 +157,34 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(helper).toContain('set_tray_message_badge_is_a_noop_off_macos');
   });
 
-  it('popover toggle shows on-screen, suppresses auto-hide, and is single-window', () => {
+  it('the onboarding card shows on-screen, suppresses auto-hide, and is single-window', () => {
     const tray = read('src-tauri/src/tray.rs');
-    // The popover is repositioned on-screen (the off-screen tao rect dragged it
-    // off the right edge) and the spurious auto-hide is suppressed.
+    // `main` is repositioned on-screen (the off-screen tao rect dragged it
+    // off the right edge) and the spurious auto-hide is suppressed. PL-05: the
+    // only remaining caller is the onboarding / sign-in branch.
     expect(tray).toContain('pub fn show_popover_window');
     expect(tray).toContain('suppress_blur_hide_briefly');
     expect(tray).toContain('set_position');
-    // Toggle: hide if already visible, else show.
-    expect(tray).toContain('pub fn toggle_popover_window');
-    expect(tray).toMatch(/is_visible\(\)\.unwrap_or\(false\)[\s\S]*?\.hide\(\)/);
-    // Single-window: showing the popover hides the desktop window.
+    // The user-summoned toggle is retired (decision D3).
+    expect(tray).not.toContain('pub fn toggle_popover_window');
+    // Single-window: showing `main` hides the desktop window.
     expect(tray).toContain('pub fn hide_desktop_alt');
     expect(tray).toContain('get_webview_window("desktop-alt")');
   });
 
-  it('the two global shortcuts toggle their window (single-window enforced)', () => {
+  it('the desktop global shortcut toggles its window; the popover shortcut is retired', () => {
     const main = read('src-tauri/src/main.rs');
-    // Both shortcuts marshal their window ops onto the main thread (the
-    // is_visible toggle query deadlocks AppKit off-main) and toggle.
+    // The shortcut marshals its window ops onto the main thread (the
+    // is_visible toggle query deadlocks AppKit off-main) and toggles.
     expect(main).toContain('run_on_main_thread');
-    expect(main).toContain('tray::toggle_popover_window(&app_main)');
     // Opt+Shift+O toggles the desktop window (hide if visible, else open).
     expect(main).toContain('tray::hide_desktop_alt(&app_main)');
     expect(main).toMatch(/desktop_visible[\s\S]*?open_desktop_alt_window_inner/);
-    // Opening the desktop hides the popover (single-window) at the canonical path.
+    // PL-05 / D3: Opt+Shift+H is neither registered nor handled any more.
+    expect(main).not.toContain('toggle_popover_window');
+    expect(main).not.toContain('Code::KeyH');
+    expect(main).not.toContain('show_shortcut');
+    // Opening the desktop hides `main` (single-window) at the canonical path.
     const desktop = read('src-tauri/src/commands/desktop_alt.rs');
     expect(desktop).toMatch(/get_webview_window\("main"\)[\s\S]*?\.hide\(\)/);
   });

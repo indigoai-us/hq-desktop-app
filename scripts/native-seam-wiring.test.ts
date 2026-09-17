@@ -83,18 +83,11 @@ interface BoundaryContract {
 
 const boundaryContracts: BoundaryContract[] = [
   {
-    label: "popover shortcut seam",
-    file: "main",
-    hook: "NativePanicSeam::GlobalShortcutTogglePopover",
-    startMarker:
-      "if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {",
-    endMarker: "} else if shortcut == &desktop_shortcut",
-  },
-  {
     label: "desktop shortcut seam",
     file: "main",
     hook: "NativePanicSeam::GlobalShortcutToggleDesktop",
-    startMarker: "} else if shortcut == &desktop_shortcut",
+    startMarker:
+      "if shortcut == &desktop_shortcut && event.state() == ShortcutState::Pressed {",
     endMarker: "                .build(),",
   },
   {
@@ -516,7 +509,6 @@ describe("native panic seam wiring", () => {
         [
           main,
           [
-            "GlobalShortcutTogglePopover",
             "GlobalShortcutToggleDesktop",
             "WindowCloseRequestedHide",
             "WindowThemeChanged",
@@ -539,10 +531,20 @@ describe("native panic seam wiring", () => {
       ["util/window_focus.rs", [windowFocus, ["WindowForceForeground"]]],
     ]);
 
+    // Retired seams keep their variant and wire code so an older build's
+    // residual report still decodes, but they have no production recorder.
+    const retiredVariants = ["GlobalShortcutTogglePopover"];
     const expectedVariants = [...expectedByFile.values()]
       .flatMap(([, variants]) => variants)
+      .concat(retiredVariants)
       .sort();
     expect(nativePanicSeamVariants().sort()).toEqual(expectedVariants);
+
+    for (const variant of retiredVariants) {
+      for (const [, [source]] of expectedByFile) {
+        expect(source).not.toContain(`NativePanicSeam::${variant}`);
+      }
+    }
 
     for (const [file, [source, variants]] of expectedByFile) {
       for (const variant of variants) {

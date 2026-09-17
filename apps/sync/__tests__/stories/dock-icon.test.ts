@@ -149,13 +149,14 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       const src = readRepo('src-tauri/src/tray.rs');
       expect(src).toMatch(/pub fn show_desktop_window/);
       // The show-only helper must not carry toggle_desktop_window's hide branch.
-      const body = src.slice(src.indexOf('pub fn show_desktop_window'));
+      // Its body is the shared route-aware opener (PL-05).
+      const body = src.slice(src.indexOf('pub fn show_desktop_window_at'));
       expect(body.slice(0, body.indexOf('\n}\n'))).not.toMatch(/\.hide\(\)/);
     });
 
     it('logs desktop opening failure without replacing it with the popover', () => {
       const src = readRepo('src-tauri/src/tray.rs');
-      const body = src.slice(src.indexOf('pub fn show_desktop_window'));
+      const body = src.slice(src.indexOf('pub fn show_desktop_window_at'));
       const show = body.slice(0, body.indexOf('\n}\n'));
       expect(show).not.toMatch(/show_popover_window/);
       expect(show).toContain('desktop activation failed: {e}');
