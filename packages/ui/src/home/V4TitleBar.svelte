@@ -30,6 +30,11 @@
    * Extra props (syncState, watchedCount, …) remain accepted so DesktopApp can
    * keep a single wiring surface; they are no longer rendered as V1 chrome.
    */
+  import {
+    syncStatusLabel,
+    type SyncStatusState,
+  } from "./sync-status.js";
+
   interface Props {
     /** Platform seam, forwarded to the Core popover. */
     adapter: PlatformAdapter;
@@ -64,6 +69,14 @@
     primaryAction?: { label: string; onselect: () => void };
     /** Unread count drives monochrome bell dot only (no red pill). */
     unreadCount?: number;
+    /**
+     * Live sync state, reduced from the runner's events by the shell. Null on
+     * platforms with no event bridge, where the chip stays hidden rather than
+     * claiming a state it cannot observe.
+     */
+    syncStatus?: SyncStatusState | null;
+    /** Opens wherever sync trouble is resolved. Chip is inert without it. */
+    onopenSync?: () => void;
     cloudPaused?: boolean;
     conflicts?: HomeConflict[];
     /**
@@ -124,6 +137,8 @@
     onopenNotifications,
     primaryAction,
     unreadCount = 0,
+    syncStatus = null,
+    onopenSync,
     cloudPaused = false,
     conflicts = [],
     coreUseFixtures = false,
@@ -244,6 +259,10 @@
   });
 
   /** Bell monochrome dot only — no red pill / count (D-04). */
+  const syncLabel = $derived(
+    syncStatus ? syncStatusLabel(syncStatus) : null,
+  );
+
   const hasUnread = $derived(
     Number.isFinite(unreadCount) && Math.floor(unreadCount) > 0,
   );
@@ -801,6 +820,32 @@
         </button>
       {/snippet}
     </Tooltip>
+    {#if syncLabel?.text}
+      <Tooltip label={syncLabel.detail}>
+        {#snippet trigger(describedBy: string)}
+          <button
+            type="button"
+            class="v4-sync-chip"
+            class:attention={syncLabel.tone === "attention"}
+            data-testid="titlebar-sync-status"
+            data-tone={syncLabel.tone}
+            aria-label={syncLabel.detail}
+            aria-describedby={describedBy || undefined}
+            aria-live="polite"
+            disabled={!onopenSync}
+            onclick={() => {
+              coreOpen = false;
+              onopenSync?.();
+            }}
+          >
+            {#if syncLabel.tone === "busy"}
+              <span class="v4-sync-spinner" aria-hidden="true"></span>
+            {/if}
+            <span class="v4-sync-text">{syncLabel.text}</span>
+          </button>
+        {/snippet}
+      </Tooltip>
+    {/if}
     <Tooltip label={hasUnread ? "Notifications (unread)" : "Notifications"}>
       {#snippet trigger(describedBy: string)}
         <button
@@ -1172,6 +1217,69 @@
   .v4-icon {
     width: 15px;
     height: 15px;
+  }
+
+  .v4-sync-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    padding: 0 8px;
+    margin-right: 2px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    /* No backdrop-filter: this sits on always-on chrome over the native glass,
+       and a second blur here is a per-frame repaint of the whole title bar.
+       Enforced by the always-on-chrome guard in the perf budget contract. */
+  }
+
+  .v4-sync-chip:disabled {
+    cursor: default;
+  }
+
+  .v4-sync-chip:hover:not(:disabled) {
+    color: var(--t1);
+  }
+
+  .v4-sync-chip.attention {
+    color: var(--t1);
+    border-color: var(--t2);
+  }
+
+  .v4-sync-text {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .v4-sync-spinner {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    border-top-color: transparent;
+    /* transform-only, so it composites instead of repainting the title bar. */
+    animation: v4-sync-spin 700ms linear infinite;
+  }
+
+  @keyframes v4-sync-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .v4-sync-spinner {
+      animation: none;
+      /* Still reads as "in progress" without motion. */
+      border-top-color: currentColor;
+      opacity: 0.5;
+    }
   }
 
   .v4-notif-btn {
