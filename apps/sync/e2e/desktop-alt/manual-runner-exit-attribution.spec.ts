@@ -34,6 +34,7 @@ import { readRepoFile } from './harness';
 const syncSource = readRepoFile('src-tauri/src/commands/sync.rs');
 const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
 const coreSource = readRepoFile('../../crates/hq-desktop-core/src/sync_outcome.rs');
+const hqCloudSource = readRepoFile('../../crates/hq-desktop-core/src/hq_cloud.rs');
 const shapeSource = readRepoFile('../../crates/hq-desktop-core/src/runner_error_shape.rs');
 const telemetrySource = readRepoFile('../../crates/hq-telemetry/src/lib.rs');
 const watcherFaultSource = readRepoFile('../../crates/hq-desktop-core/src/watcher_fault.rs');
@@ -52,6 +53,20 @@ function sliceBetween(source: string, startAnchor: string, endAnchor: string, la
     throw new Error(`${label}: end anchor not found after start: ${endAnchor}`);
   }
   return source.slice(start, end + endAnchor.length);
+}
+
+/**
+ * Read a single public string constant from the Rust source. A missing or
+ * reshaped declaration must fail the source contract instead of quietly
+ * comparing empty values.
+ */
+function readRustStringConstant(source: string, constantName: string): string {
+  const declaration = new RegExp(`pub const ${constantName}: &str = "([^"]+)";`);
+  const match = source.match(declaration);
+  if (!match) {
+    throw new Error(`Rust string constant ${constantName} not found`);
+  }
+  return match[1];
 }
 
 // Sentry's default-scrubber denylist. No breadcrumb token may contain any of
@@ -204,10 +219,10 @@ describe('manual runner-exit attribution — shared classifier source', () => {
       '"SyncManifestContractError" => RunnerErrorCause::SyncManifestContract',
     );
 
-    // (4) The pin now matches the runner floor, AND the guard fires at COMPILE
-    // time (a const assertion, not only a #[test]) so a pin bump on ANY branch —
-    // including one cut before the guard existed, the PR #533 defect — fails the
-    // build instead of silently merging a mismatch.
+    // (4) The vocabulary source marker stays in lockstep with the runner pin,
+    // and the guard fires at COMPILE time (a const assertion, not only a
+    // #[test]) so a pin bump on ANY branch, including one cut before the guard
+    // existed, fails the build instead of silently merging a mismatch.
     // ~6.16.24 (unrouted-key overflow, hq-cloud#499), ~6.16.25 (the root-`bin/`
     // personal-vault exclusion, hq-cloud#501), ~6.16.26 (the area-collision
     // heal, hq-cloud#502), ~6.16.33 (the journal fingerprint baseline,
@@ -216,7 +231,12 @@ describe('manual runner-exit attribution — shared classifier source', () => {
     // internal named error, but it is caught before runner-event serialization,
     // so the desktop vocabulary is unchanged and only the source-version marker
     // moves with the pin.
-    expect(shapeSource).toContain('CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.50"');
+    const runnerPin = readRustStringConstant(hqCloudSource, 'HQ_CLOUD_VERSION');
+    const causeVocabularySourceVersion = readRustStringConstant(
+      shapeSource,
+      'CAUSE_VOCABULARY_SOURCE_VERSION',
+    );
+    expect(causeVocabularySourceVersion).toBe(runnerPin);
     expect(shapeSource).toMatch(/const _: \(\) = assert!\(\s*const_str_eq\(/);
 
     // (5) The new filesystem errno CLASSES (sync_outcome), added as new variants so
