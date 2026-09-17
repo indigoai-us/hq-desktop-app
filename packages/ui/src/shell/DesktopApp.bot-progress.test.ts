@@ -14,6 +14,7 @@ import { ok, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
+import { setJitterRandomForTests } from "@hq/platform";
 import { LOCAL_BOTS_POLL_MS } from "../chat/local-bots.js";
 import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 
@@ -86,6 +87,9 @@ beforeEach(() => {
   // Setup already ran on this "Mac": the setup bot must not start by itself here.
   window.localStorage?.setItem?.(WELCOME_SETUP_RUN_KEY, "1");
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  // Pin the poll jitter to the nominal interval so `poll()` below can advance
+  // the fake clock by exactly one period.
+  setJitterRandomForTests(() => 0.5);
 });
 
 afterEach(async () => {
@@ -94,6 +98,7 @@ afterEach(async () => {
   host?.remove();
   document.querySelectorAll('[data-testid="chat-create-modal"]').forEach((n) => n.remove());
   vi.useRealTimers();
+  setJitterRandomForTests();
   window.localStorage?.clear?.();
 });
 
@@ -114,7 +119,10 @@ function click(sel: string): void {
   el.click();
 }
 
-/** One poll cycle: the host re-reads adapter.bots.list. */
+/**
+ * One poll cycle: the host re-reads adapter.bots.list. Background polls are
+ * jittered, so the draw is pinned to the nominal interval below.
+ */
 async function poll(): Promise<void> {
   await vi.advanceTimersByTimeAsync(LOCAL_BOTS_POLL_MS);
   await settle();

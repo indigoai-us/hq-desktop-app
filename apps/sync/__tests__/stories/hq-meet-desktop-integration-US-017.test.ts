@@ -133,7 +133,9 @@ function bench(
       }
       // Every other hq-pro round trip refuses politely: this story needs no
       // live signaling exchange, and a refusal keeps it free of network shape.
-      return { status: 503, body: "{}" };
+      // 404, not 503: an unstubbed route, not a throttle the request policy
+      // would retry.
+      return { status: 404, body: "{}" };
     }
     return null;
   };

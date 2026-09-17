@@ -27,6 +27,7 @@
    * claims to affect the native host is read from and written through it.
    */
   import { onMount } from "svelte";
+  import { startJitteredPoll } from "@hq/platform";
   import type { PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
@@ -971,8 +972,10 @@
     // section is actually visible, and stop the moment it isn't.
     if (section !== "sync" || !canSync) return;
     void refreshLiveSync();
-    const handle = setInterval(() => void refreshLiveSync(), LIVE_SYNC_POLL_MS);
-    return () => clearInterval(handle);
+    return startJitteredPoll({
+      intervalMs: LIVE_SYNC_POLL_MS,
+      tick: () => refreshLiveSync(),
+    });
   });
 
   onMount(() => {

@@ -88,6 +88,7 @@ pub mod projects_local;
 pub mod recall_sdk;
 pub mod recordings_ledger;
 pub mod release_channel;
+pub mod request_policy;
 pub mod run_cli_provision;
 pub mod runner_diagnostic_report;
 pub mod runner_error_shape;

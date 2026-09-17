@@ -19,7 +19,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
+import {
+  ok,
+  setJitterRandomForTests,
+  type LocalBotRow,
+  type PlatformAdapter,
+} from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
@@ -115,12 +120,16 @@ let component: ReturnType<typeof mount> | null = null;
 beforeEach(() => {
   window.localStorage.clear();
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  // Background polls are jittered; pin the draw to the nominal interval so
+  // these tests can advance the fake clock by exactly one period.
+  setJitterRandomForTests(() => 0.5);
 });
 
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
+  setJitterRandomForTests();
   vi.restoreAllMocks();
 });
 

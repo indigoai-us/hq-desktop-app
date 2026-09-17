@@ -23,7 +23,7 @@
    * stays platform-pure: every backend touch flows through the injected
    * adapter + api seams and the ChatWakeBus.
    */
-  import { failure, type PlatformAdapter } from "@hq/platform";
+  import { failure, startJitteredPoll, type PlatformAdapter } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
@@ -1661,11 +1661,19 @@
     if (!adapter.bots) return;
     void refreshLocalBots();
     void refreshRemoteBots();
-    const handle = window.setInterval(() => void refreshLocalBots(), LOCAL_BOTS_POLL_MS);
-    const remoteHandle = window.setInterval(() => void refreshRemoteBots(), REMOTE_BOTS_POLL_MS);
+    // Jittered (R2): a fixed period put every client's bot refresh on the
+    // same beat, and a throttled pass now pushes its successor out.
+    const stopLocal = startJitteredPoll({
+      intervalMs: LOCAL_BOTS_POLL_MS,
+      tick: () => refreshLocalBots(),
+    });
+    const stopRemote = startJitteredPoll({
+      intervalMs: REMOTE_BOTS_POLL_MS,
+      tick: () => refreshRemoteBots(),
+    });
     return () => {
-      clearInterval(handle);
-      clearInterval(remoteHandle);
+      stopLocal();
+      stopRemote();
     };
   });
   /** Which runtimes are signed in here (`{ claude: true, … }`); null until known. */
@@ -6086,8 +6094,7 @@
       if (selectedRow?.id !== id) return;
       void catchUpTimeline(row);
     };
-    const handle = setInterval(tick, TIMELINE_SAFETY_INTERVAL_MS);
-    return () => clearInterval(handle);
+    return startJitteredPoll({ intervalMs: TIMELINE_SAFETY_INTERVAL_MS, tick });
   });
 
   function attachmentCompanyUid(row: ConversationRow | null): string | null {
@@ -6818,23 +6825,26 @@
     syncOverlay();
     overlayQuery.addEventListener("change", syncOverlay);
 
-    let syncTimer: number | undefined;
-    let healthTimer: number | undefined;
+    let stopSyncPoll: (() => void) | undefined;
+    let stopHealthPoll: (() => void) | undefined;
     if (adapter.isAvailable("canSync")) {
       void readLiveSyncStatus(adapter).then((next) => {
         liveSync = next;
       });
-      syncTimer = window.setInterval(() => {
-        void readLiveSyncStatus(adapter).then((next) => {
-          liveSync = next;
-        });
-      }, 30_000);
+      stopSyncPoll = startJitteredPoll({
+        intervalMs: 30_000,
+        tick: () =>
+          readLiveSyncStatus(adapter).then((next) => {
+            liveSync = next;
+          }),
+      });
       // Workspace health hits the cloud, so it runs on a slower beat than the
       // local journal read above.
       void readWorkspaceHealth();
-      healthTimer = window.setInterval(() => {
-        void readWorkspaceHealth();
-      }, 120_000);
+      stopHealthPoll = startJitteredPoll({
+        intervalMs: 120_000,
+        tick: () => readWorkspaceHealth(),
+      });
     }
     // Warm the pack cache at launch so Core open is a cache read, not `hq`.
     if (adapter.isAvailable("canManagePackages")) {
@@ -6961,8 +6971,8 @@
       detachEmbeddedNavigation?.();
       if (focusCardTimer !== undefined) clearTimeout(focusCardTimer);
       overlayQuery.removeEventListener("change", syncOverlay);
-      if (syncTimer !== undefined) window.clearInterval(syncTimer);
-      if (healthTimer !== undefined) window.clearInterval(healthTimer);
+      stopSyncPoll?.();
+      stopHealthPoll?.();
       window.removeEventListener("keydown", onKey);
       unregisterShortcuts();
       window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettingsEvent);

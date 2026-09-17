@@ -24,6 +24,7 @@
     PlatformAdapter,
     RemoteBotRow,
   } from "@hq/platform";
+  import { startJitteredPoll } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import BotKindChip from "../chat/BotKindChip.svelte";
   import { LOCAL_BOT_RUNTIMES, localBotCompanies, localBotKindLabel } from "../chat/local-bots.js";
@@ -90,7 +91,7 @@
   let createError = $state<string | null>(null);
   let workers = $state<LocalBotWorkerOption[] | null>(null);
   let confirmRemove = $state<string | null>(null);
-  let timer: ReturnType<typeof setInterval> | undefined;
+  let stopPoll: (() => void) | undefined;
 
   // ── Bots this account owns that are not set up on this Mac ─────────────────
   // `hq bot list` only knows this computer, so a reinstall (or a second Mac)
@@ -425,13 +426,14 @@
     void loadRemote();
     void loadPreflight();
     void loadCloud();
-    timer = setInterval(() => {
-      void load(true);
-      void loadRemote();
-      void loadCloud(true);
-    }, POLL_MS);
+    stopPoll = startJitteredPoll({
+      intervalMs: POLL_MS,
+      tick: async () => {
+        await Promise.all([load(true), loadRemote(), loadCloud(true)]);
+      },
+    });
   });
-  onDestroy(() => clearInterval(timer));
+  onDestroy(() => stopPoll?.());
 </script>
 
 <section class="settings-section bots-pane" data-testid="settings-bots">

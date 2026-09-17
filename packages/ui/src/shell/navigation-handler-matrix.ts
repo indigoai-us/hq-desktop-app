@@ -875,7 +875,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "sync-status-poll",
     file: SHARED_SHELL_FILE,
-    needle: "syncTimer = window.setInterval(() => {",
+    needle: "stopSyncPoll = startJitteredPoll({",
     destinationKind: "none",
     history: "none",
     host: "shared-shell",
