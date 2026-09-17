@@ -7273,8 +7273,26 @@ mod tests {
 
     // ── git-backed integration tests ─────────────────────────────────────
 
+    /// Run git against `dir` with the developer's (or runner's) git
+    /// configuration fully out of the way.
+    ///
+    /// `git` reads the system and global config files for EVERY invocation, so
+    /// a machine-level `core.hooksPath` (a secret scanner, a commit-signing
+    /// wrapper, any pre-commit hook) runs inside these fixtures too. That is
+    /// what made these tests fail only under load: the inherited hook is a
+    /// network client, and when several git-backed tests commit at once it
+    /// rate-limits or fails auth, `git commit` exits non-zero, and the fixture
+    /// blows up in `seed_repo` far away from anything the test is about.
+    ///
+    /// Pointing both config layers at /dev/null makes the fixture hermetic for
+    /// real, which is what the comment in `init_repo` already claimed.
     fn git(dir: &Path, args: &[&str]) -> Output {
         Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -7282,21 +7300,83 @@ mod tests {
             .expect("git available in test env")
     }
 
+    /// Assert a fixture git command succeeded, and show its stderr when it did
+    /// not — `assert!(… .status.success())` alone hid the hook's own error
+    /// message, which is why this cost a full investigation to name.
+    fn git_ok(dir: &Path, args: &[&str]) -> Output {
+        let out = git(dir, args);
+        assert!(
+            out.status.success(),
+            "git {args:?} failed in {dir:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    }
+
     fn init_repo(dir: &Path) {
-        assert!(git(dir, &["init", "-q", "-b", "main"]).status.success());
+        // An empty template dir keeps an inherited `init.templateDir` from
+        // seeding hooks into the fixture at init time.
+        git_ok(dir, &["init", "-q", "-b", "main", "--template="]);
+        // Belt and braces next to the /dev/null config layers in `git`: even a
+        // repo-local hooksPath cannot point anywhere real.
+        git_ok(dir, &["config", "core.hooksPath", "/dev/null"]);
         // Test env may have no global git identity; pin one locally so
         // `git commit` doesn't bail with "Please tell me who you are".
-        assert!(git(dir, &["config", "user.email", "test@example.com"])
-            .status
-            .success());
-        assert!(git(dir, &["config", "user.name", "hq-sync-test"])
-            .status
-            .success());
+        git_ok(dir, &["config", "user.email", "test@example.com"]);
+        git_ok(dir, &["config", "user.name", "hq-sync-test"]);
         // Disable any inherited commit hooks/templates — keep the test
         // environment hermetic regardless of the dev's global ~/.gitconfig.
-        assert!(git(dir, &["config", "commit.gpgsign", "false"])
-            .status
-            .success());
+        git_ok(dir, &["config", "commit.gpgsign", "false"]);
+    }
+
+    /// Regression: a hostile machine-level git config must not reach these
+    /// fixtures.
+    ///
+    /// This is the flake seen on CI run 35241483905 and reproduced locally: the
+    /// dev machine's global config sets `core.hooksPath` to a secret-scanning
+    /// pre-commit hook. Running one git-backed test is fine; running several at
+    /// once makes that hook fail (rate limit / auth), `git commit` exits
+    /// non-zero, and `seed_repo` trips an assertion that says nothing about the
+    /// real cause. The test stands in a global config whose pre-commit hook
+    /// always fails. Before the fix the seed commit runs it and the test fails;
+    /// with the /dev/null config layers the fixture never sees it.
+    #[test]
+    fn a_hostile_global_git_config_cannot_reach_the_fixtures() {
+        let _serial = serial();
+
+        let home = TempDir::new().unwrap();
+        let hooks = home.path().join("hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let pre_commit = hooks.join("pre-commit");
+        fs::write(&pre_commit, "#!/bin/sh\necho 'scanner unavailable' >&2\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&pre_commit, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let global = home.path().join("gitconfig");
+        fs::write(
+            &global,
+            format!("[core]\n\thooksPath = {}\n", hooks.display()),
+        )
+        .unwrap();
+
+        let previous = std::env::var_os("GIT_CONFIG_GLOBAL");
+        std::env::set_var("GIT_CONFIG_GLOBAL", &global);
+
+        let repo = TempDir::new().unwrap();
+        seed_repo(repo.path(), 3);
+        let commits = rev_count(repo.path());
+
+        match previous {
+            Some(value) => std::env::set_var("GIT_CONFIG_GLOBAL", value),
+            None => std::env::remove_var("GIT_CONFIG_GLOBAL"),
+        }
+
+        assert_eq!(
+            commits, 1,
+            "the seed commit must land despite a hostile global core.hooksPath"
+        );
     }
 
     fn rev_count(dir: &Path) -> usize {
@@ -7320,8 +7400,8 @@ mod tests {
         for i in 0..count {
             fs::write(dir.join(format!("file-{i:04}.md")), format!("content {i}")).unwrap();
         }
-        assert!(git(dir, &["add", "-A"]).status.success());
-        assert!(git(dir, &["commit", "-q", "-m", "seed"]).status.success());
+        git_ok(dir, &["add", "-A"]);
+        git_ok(dir, &["commit", "-q", "-m", "seed"]);
     }
 
     fn delete_files(dir: &Path, range: std::ops::Range<usize>) {
