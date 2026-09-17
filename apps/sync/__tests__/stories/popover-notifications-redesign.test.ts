@@ -62,7 +62,11 @@ describe('notifications-first popover (feed-folded system notices)', () => {
     expect(normalize(app)).toContain(
       "updateInstallError = 'Couldn’t install the update. Try again.'",
     );
-    expect(normalize(app)).toContain('{updateInstallError}');
+    // PL-06: App.svelte renders nothing for a signed-in person, so the state
+    // is no longer handed to a popover mount; Popover.svelte still reads it as
+    // a prop until PL-07 deletes the component.
+    expect(normalize(app)).not.toContain('{updateInstallError}');
+    expect(p).toContain('updateInstallError');
   });
 
   it('restores a flat Messages entry with the aggregate DM, request, and channel count', () => {
@@ -83,7 +87,10 @@ describe('notifications-first popover (feed-folded system notices)', () => {
     expect(a).toContain("invoke<ChannelsUnreadResponse | null>('list_channels')");
     expect(a).toContain("'channel:unread-changed'");
     expect(a).toContain("'channel:updated'");
-    expect(a).toContain('{messagesUnreadCount}');
+    // PL-06: no popover mount left to receive it; the count still feeds the
+    // macOS menu-bar badge from the controller.
+    expect(a).not.toContain('{messagesUnreadCount}');
+    expect(a).toContain('authenticated ? messagesUnreadCount : 0');
 
     expect(popover).toMatch(
       /\.mbp-messages-entry\s*\{[\s\S]*?border-radius:\s*0;[\s\S]*?background:\s*transparent;/,
