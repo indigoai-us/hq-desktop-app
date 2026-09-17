@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The message column in the main window now keeps a wider minimum width on a laptop screen and stays centred with growing side margins on a wide screen, instead of always giving up a fixed share of the width to margins. Nothing changes when a thread or profile pane is open.
 - The Core panel in the main window (the "Core" button in the title bar) now tells you how sync is doing: whether everything is synced, a sync is running, or sync is paused, plus when the last sync finished and a live line while files are moving. The Core dot in the title bar turns amber when something needs you and reads as busy while a sync runs.
 - The Core panel now also shows the sync problems that used to appear only in the menu-bar popover: files that changed in two places, a sync that started but needs a hand to finish, a companies list HQ could not read, and "cloud unreachable, showing local folders". Each one comes with the same Copy prompt (and, where it applies, Open in Claude Code) buttons you had before.
 - When your HQ session expires, the main HQ window now says so. A notice appears at the top of the window with a Sign in button that takes you straight to signing in again. Until now sync just quietly paused, and only the menu-bar popover mentioned it.
