@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- If an HQ Core update fails, recovery now keeps its safety copy usable on
+  Windows, Macs, and cloud-backed folders. HQ can restore linked files and the
+  rest of the saved update tree before you try again.
+
 ## [0.10.279] — 2026-09-17
 
 - In "New bot", the option you have picked now looks picked. The Local or Cloud card you chose, the Personal or Company choice, and the runtime and memory options now carry a clear outline and a highlighted background, with the options you did not pick faded. On the default themes the chosen card used to look exactly like the others.
