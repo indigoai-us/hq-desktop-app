@@ -44,6 +44,12 @@ export interface EntryPointTarget {
   cardId: string | null;
   /** Fallback when the server did not name a card (seeded create_company). */
   cardKind: string | null;
+  /**
+   * The bot the cloud-bot sequence just minted, when the server named it.
+   * The host needs it to write the parts of the New bot draft the sequence
+   * never asked for — today the job title — onto the agent profile.
+   */
+  agentUid?: string;
 }
 
 export type EntryPointResult =
@@ -186,6 +192,14 @@ export interface CloudBotDraft {
   name: string;
   /** The @handle they saw there and could edit. */
   handle: string;
+  /**
+   * The optional job title they typed there. No turn of the `create_agent`
+   * sequence asks for one — it collects name, handle, runtime and size — so
+   * this is not sent to any card. It travels with the draft so the caller can
+   * write it onto the agent profile once the sequence hands back a uid, which
+   * is the same PATCH the Local path uses.
+   */
+  title?: string;
 }
 
 export interface CloudBotEntryOptions {
@@ -514,7 +528,10 @@ async function enterSequence(
  * sequence it opens — the same actions the card's buttons ran — until the
  * server answers with the minted agent channel. The card itself is never
  * rendered or focused: the New bot flow is the only surface the person sees,
- * and the name and handle it carries are the ones they typed there.
+ * and the name and handle it carries are the ones they typed there. The
+ * draft's title has no field on any turn, so it is not sent here; the answer
+ * carries the new bot's uid instead, and the caller writes the title onto its
+ * agent profile.
  *
  * A company on a plan that cannot host a bot gets the server's upgrade card
  * instead; that one still renders, so the caller is sent to it.
@@ -602,7 +619,18 @@ export async function runCreateCloudBotEntry(
     if (agentChannelId) {
       // The bot exists and has its own channel. Nothing to focus: no card was
       // ever drawn, and the person lands in the conversation with their bot.
-      return { ok: true, target: { channelId: agentChannelId, cardId: null, cardKind: null } };
+      // Its uid rides along when the server named one, so the caller can
+      // finish the profile (the title this sequence had no field for).
+      const agentUid = trimmed(result.agentUid);
+      return {
+        ok: true,
+        target: {
+          channelId: agentChannelId,
+          cardId: null,
+          cardKind: null,
+          ...(agentUid ? { agentUid } : {}),
+        },
+      };
     }
     submitted.add(answered.cardId);
     if (result.state === "blocked") {

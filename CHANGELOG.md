@@ -11,13 +11,20 @@ The release moves it under the version it ships in.
 - Keyboard shortcuts now work across the whole app, and pressing Cmd+/ shows the full list without leaving what you were typing. Cmd+1 through Cmd+4 jump between Notifications, Meetings, Marketplace and Library; Cmd+N starts a new chat; Cmd+F searches messages; Cmd+Shift+[ and Cmd+Shift+] step through your conversations in the order the sidebar shows them. Pressing g then a opens Atlas.
 - A message you send shows up instantly and stays put. It used to be possible for your own message to appear twice for a moment when the server sent it back, or for the wrong copy to disappear if you sent the same thing twice.
 - Long conversations paint faster. HQ was rebuilding the date and time on every visible row every time the list changed.
-- Scrolling long lists is smoother. Your notifications and your conversation list no longer make the app re-check every row you can't see, which is what made them feel sticky on long lists.
-- New Appearance setting: Reduce transparency. It swaps the frosted panels for solid ones. The frosted look is the single biggest thing slowing scrolling down on a Mac, so if scrolling still feels heavy, turn this on and see — it takes effect immediately and you can turn it straight back off.
-- Fixed: if loading older messages failed and you stayed at the top of a conversation, HQ would quietly keep retrying and the Retry button would disappear. Now a failure waits for you to click Retry.
+- Cloud bots can be given a Title when you create them, the same as bots that run on your Mac. The New bot Details step for a company-hosted bot now has a Title field under the name, it shows under the name in the preview, and it is saved onto the bot once the company finishes setting it up.
+
+## [0.10.279] — 2026-09-17
+
 - In "New bot", the option you have picked now looks picked. The Local or Cloud card you chose, the Personal or Company choice, and the runtime and memory options now carry a clear outline and a highlighted background, with the options you did not pick faded. On the default themes the chosen card used to look exactly like the others.
 - Choosing who a new bot is for now happens on the same step as its name. "Who is it for?" has moved off the Local/Cloud step and onto the Details step, next to the name it affects. If you pick Company without belonging to one, the Details step says so there, where you can fix it.
 - The New bot Details step now asks for a Title, and no longer suggests names or asks for an intro. The name field still starts with a suggestion you can type over, but the row of suggested-name buttons and the "Intro" box are gone. The Title you write shows under the bot's name in the preview and stays on the bot.
 - An avatar you pick for a new bot now stays picked. Editing the name, closing the picker, or stepping back and forward again used to drop your choice back to the generated mark without saying anything, and the bot was created with that mark instead of the avatar you chose.
+
+## [0.10.278] — 2026-09-17
+
+- Scrolling long lists is smoother. Your notifications and your conversation list no longer make the app re-check every row you can't see, which is what made them feel sticky on long lists.
+- New Appearance setting: Reduce transparency. It swaps the frosted panels for solid ones. The frosted look is the single biggest thing slowing scrolling down on a Mac, so if scrolling still feels heavy, turn this on and see — it takes effect immediately and you can turn it straight back off.
+- Fixed: if loading older messages failed and you stayed at the top of a conversation, HQ would quietly keep retrying and the Retry button would disappear. Now a failure waits for you to click Retry.
 - An HQ Core update no longer looks failed when the update finishes but HQ cannot save its tracking record. HQ still records the problem for support and tries again at the next update check.
 - On Windows, updates no longer crash while finding your HQ folder or say a required part of HQ is missing when it is already there.
 - On Macs, Core update can now recover safely after two interrupted updates leave unverified safety snapshots behind. It checks the restored files before retrying and keeps them if it cannot prove they are safe.
