@@ -24,8 +24,10 @@ export type MenuPortalParams = {
 
 /**
  * Portal a node up to the app shell so the centered overlays escape the
- * sidebar's containing block (`.chat-sidebar` sets backdrop-filter +
- * overflow:hidden, which would otherwise trap `position: fixed`). The
+ * sidebar's containing block (`.chat-sidebar` sets overflow:hidden and
+ * `.chat-scroll` uses `contain: layout paint`, which would otherwise trap or
+ * clip `position: fixed` overlays; the rail no longer stacks its own
+ * backdrop-filter on the window glass, but the escape is still needed). The
  * `.desktop-shell` root has no transform/filter (so `fixed` resolves to the
  * viewport) and carries the `.chat-shell` design tokens (--t1/--hover/…), so
  * the portaled overlay keeps its colors. Scoped styles still apply — Svelte

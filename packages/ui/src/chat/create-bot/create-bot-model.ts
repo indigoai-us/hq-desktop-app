@@ -6,10 +6,11 @@
  * components stay thin and the rules are unit-testable without a DOM.
  *
  * Every AI teammate is a bot. Both homes walk all three steps: the details
- * a Local bot needs (name, title, avatar, who it is for, advanced) and the two
- * a Cloud bot needs (name and @handle). The company channel's "Create a bot" card is
- * retired, so this flow is the ONLY place a cloud bot is named — a suggested
- * name is a prefill the person can see and change, never a silent default.
+ * a Local bot needs (name, title, avatar, who it is for, advanced) and the
+ * three a Cloud bot needs (name, @handle and title). The company channel's
+ * "Create a bot" card is retired, so this flow is the ONLY place a cloud bot
+ * is named — a suggested name is a prefill the person can see and change,
+ * never a silent default.
  */
 
 import type { LocalBotCreateInput, LocalBotKind, LocalBotWorkerOption } from "@hq/platform";
@@ -36,9 +37,11 @@ export interface CreateBotDraft {
   companySlugs: string[];
   name: string;
   /**
-   * Optional job title ("Ad account analyst"). The bot CLI has no `--title`
-   * flag, so this never reaches `hq bot create`: the host PATCHes it onto the
-   * agent profile once the bot has a uid, the same way the avatar pick is.
+   * Optional job title ("Ad account analyst"). Neither create path takes one:
+   * the bot CLI has no `--title` flag, and the cloud `create_agent` card
+   * sequence asks only for name, handle, runtime and size. So for both homes
+   * the host PATCHes it onto the agent profile once the bot has a uid, the
+   * same way the avatar pick is.
    */
   title: string;
   /** Cloud only: the @handle. Empty means "follow the name". */
@@ -385,7 +388,9 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
       }
       return null;
     case "details":
-      if (draft.home === "cloud") return cloudNameIssue(draft.name) ?? handleIssue(draft);
+      if (draft.home === "cloud") {
+        return cloudNameIssue(draft.name) ?? handleIssue(draft) ?? titleIssue(draft.title);
+      }
       // "Who is it for?" is answered here now, so its rule is checked here.
       return (
         nameIssue(draft.name, ctx.existingNames) ??

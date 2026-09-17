@@ -124,7 +124,23 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     expect(glassSource).toContain('NSVisualEffectMaterial::UnderWindowBackground');
     expect(desktopCommandSource).toContain('setUnderPageBackgroundColor: clear');
     expect(desktopCommandSource).toContain('desktop_alt_ns_string("backgroundColor")');
-    expect(glassSource).toContain('Some(NSVisualEffectState::Active)');
+    // The property under contract is that the pre-Tahoe fallback still applies a
+    // native vibrancy material with an EXPLICIT state -- never `None`, which
+    // would let AppKit pick the material state for us.
+    //
+    // The state itself intentionally moved from `Active` to
+    // `FollowsWindowActiveState` (perf/ui-smoothness): `Active` forces a
+    // background window to keep re-sampling its backdrop every frame, which is a
+    // real, continuous GPU cost for windows the user is not looking at.
+    // Re-pinning `Active` here would silently reintroduce that cost, so this
+    // asserts the new state and forbids the old one for these window paths.
+    expect(glassSource).toContain('Some(NSVisualEffectState::FollowsWindowActiveState)');
+    expect(glassSource).not.toContain('NSVisualEffectState::Active');
+    // Scope note: this negative assertion covers glass.rs only (the large-window
+    // and compact-communications paths). The popover's own vibrancy in
+    // `hq_platform::window_effects::apply_popover_vibrancy` legitimately still
+    // uses `Active` -- it is a transient, foreground-only surface -- and lives in
+    // a different file, so it is deliberately not constrained here.
   });
 
   it('reveals the cold macOS window only after its first native glass paint', () => {

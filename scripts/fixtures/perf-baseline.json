@@ -1,0 +1,218 @@
+{
+  "recordedAt": "2026-09-08T18:30:37.148Z",
+  "reps": 5,
+  "idleSeconds": 30,
+  "frameBudgetMs": 16.666666666666668,
+  "machine": {
+    "platform": "darwin 25.4.0",
+    "arch": "arm64",
+    "cpuModel": "Apple M5 Max",
+    "cpuCount": 18,
+    "totalMemGb": 128,
+    "loadAvg1m": 6.68,
+    "powerSource": "ac",
+    "node": "v26.0.0",
+    "chromium": "151.0.7922.34"
+  },
+  "metrics": {
+    "coldLoad.firstContentfulPaintMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 154,
+      "p95": 156,
+      "min": 140,
+      "max": 156,
+      "stdev": 7.571877794400365,
+      "samples": [
+        156,
+        156,
+        152,
+        140
+      ]
+    },
+    "coldLoad.largestContentfulPaintMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 158,
+      "p95": 164,
+      "min": 140,
+      "max": 164,
+      "stdev": 10.519822558706334,
+      "samples": [
+        160,
+        164,
+        156,
+        140
+      ]
+    },
+    "coldLoad.shellReadyMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 146.25,
+      "p95": 150.09999999962747,
+      "min": 127.69999999925494,
+      "max": 150.09999999962747,
+      "stdev": 10.23307545852765,
+      "samples": [
+        148.40000000037253,
+        150.09999999962747,
+        144.09999999962747,
+        127.69999999925494
+      ]
+    },
+    "scroll.messages.avgMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 8.377163130338937,
+      "p95": 8.424867724867724,
+      "min": 8.373684210526315,
+      "max": 8.424867724867724,
+      "stdev": 0.02449686795815224,
+      "samples": [
+        8.424867724867724,
+        8.378010471204188,
+        8.376315789473686,
+        8.373684210526315
+      ]
+    },
+    "scroll.messages.worstMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 16.749999999999773,
+      "p95": 25.100000000000364,
+      "min": 16.59999999999991,
+      "max": 25.100000000000364,
+      "stdev": 4.2007935758221855,
+      "samples": [
+        25.100000000000364,
+        16.59999999999991,
+        16.699999999999818,
+        16.799999999999727
+      ]
+    },
+    "scroll.messages.droppedPct": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0.5263157894736842,
+      "p95": 0.5291005291005291,
+      "min": 0,
+      "max": 0.5291005291005291,
+      "stdev": 0.26362528646146177,
+      "samples": [
+        0.5291005291005291,
+        0,
+        0.5263157894736842,
+        0.5263157894736842
+      ]
+    },
+    "interaction.switchConversation": {
+      "n": 4,
+      "discarded": 1,
+      "median": 43.59999999962747,
+      "p95": 49.19999999925494,
+      "min": 38.80000000074506,
+      "max": 49.19999999925494,
+      "stdev": 4.271611717092306,
+      "samples": [
+        49.19999999925494,
+        43.09999999962747,
+        44.09999999962747,
+        38.80000000074506
+      ]
+    },
+    "interaction.commandPalette": {
+      "n": 4,
+      "discarded": 1,
+      "median": 13.200000000186265,
+      "p95": 18.699999999254942,
+      "min": 10.099999999627471,
+      "max": 18.699999999254942,
+      "stdev": 3.8686776377149426,
+      "samples": [
+        11.400000000372529,
+        10.099999999627471,
+        15,
+        18.699999999254942
+      ]
+    },
+    "interaction.composerKeystroke": {
+      "n": 4,
+      "discarded": 1,
+      "median": 15.513636363585565,
+      "p95": 15.763636363839561,
+      "min": 15.47272727265954,
+      "max": 15.763636363839561,
+      "stdev": 0.13573085518946132,
+      "samples": [
+        15.47272727265954,
+        15.481818181716584,
+        15.545454545454545,
+        15.763636363839561
+      ]
+    },
+    "idle.busyMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0,
+      "p95": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0,
+      "samples": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "idle.busyPct": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0,
+      "p95": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0,
+      "samples": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "idle.renderBatchesPerMinute": {
+      "n": 4,
+      "discarded": 1,
+      "median": 1.9998833402773566,
+      "p95": 1.9999400017999212,
+      "min": 1.9998000199980004,
+      "max": 1.9999400017999212,
+      "stdev": 0.00005924680218605797,
+      "samples": [
+        1.999866675554963,
+        1.9998000199980004,
+        1.9999400017999212,
+        1.9999000049997502
+      ]
+    },
+    "bundle.jsBytes": {
+      "n": 1,
+      "discarded": 0,
+      "median": 2486977,
+      "p95": 2486977,
+      "min": 2486977,
+      "max": 2486977,
+      "stdev": 0,
+      "samples": [
+        2486977
+      ]
+    }
+  },
+  "skipped": {
+    "scroll.sidebar.avgMs": "[data-testid=\"chat-conversation-list\"] has no overflow",
+    "scroll.sidebar.worstMs": "[data-testid=\"chat-conversation-list\"] has no overflow",
+    "scroll.sidebar.droppedPct": "[data-testid=\"chat-conversation-list\"] has no overflow"
+  },
+  "baselineRecordedAt": null,
+  "note": "Regenerate with `pnpm perf -- --update-baseline`. These numbers are only comparable on the machine and power state recorded in `machine` — see docs/performance-diagnostics.md."
+}

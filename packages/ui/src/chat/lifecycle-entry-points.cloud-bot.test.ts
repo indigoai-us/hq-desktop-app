@@ -165,12 +165,41 @@ describe("runCreateCloudBotEntry", () => {
     // Later turns keep whatever the server pre-filled.
     expect(runCardAction).toHaveBeenNthCalledWith(2, expect.objectContaining({ values: { runtime: "codex" } }));
     expect(runCardAction).toHaveBeenNthCalledWith(3, expect.objectContaining({ actionId: "create", values: { size: "basic" } }));
-    // Nothing is focused: no card was ever drawn.
+    // Nothing is focused: no card was ever drawn. The new bot's uid rides
+    // back with the target: no turn asked for the draft's title, so the
+    // caller writes it onto that agent's profile.
     expect(result).toEqual({
       ok: true,
-      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null },
+      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null, agentUid: "agt_polar" },
     });
   });
+
+  it("never sends the title to a card — no turn of the sequence has a field for it", async () => {
+    const { api, runCardAction } = server();
+
+    const result = await runCreateCloudBotEntry(
+      api,
+      "cmp_acme",
+      { ...DRAFT, title: "Ad account analyst" },
+      fast,
+    );
+
+    for (const call of runCardAction.mock.calls) {
+      expect(call[0]!.values).not.toHaveProperty("title");
+    }
+    expect(runCardAction).toHaveBeenNthCalledWith(1, {
+      channelId: CHANNEL,
+      cardId: "card_create_agent_1",
+      actionId: "next",
+      values: { name: "Polar", handle: "ice-bear" },
+    });
+    // The uid the caller needs to save that title instead.
+    expect(result).toEqual({
+      ok: true,
+      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null, agentUid: "agt_polar" },
+    });
+  });
+
 
   it("reports the server's own refusal without running a turn", async () => {
     const runCompanyTabAction = vi.fn(async () => ({
@@ -394,7 +423,7 @@ describe("runCreateCloudBotEntry — the card nobody can see", () => {
     );
     expect(retried).toEqual({
       ok: true,
-      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null },
+      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null, agentUid: "agt_polar" },
     });
     expect(server.created).toEqual({ name: "Polar", handle: "polar" });
     expect(server.runCardAction).toHaveBeenCalledWith(
@@ -468,7 +497,7 @@ describe("runCreateCloudBotEntry — the card nobody can see", () => {
     );
     expect(finished).toEqual({
       ok: true,
-      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null },
+      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null, agentUid: "agt_polar" },
     });
     expect(server.created).toEqual({ name: "Polar", handle: "polar" });
   });
@@ -496,6 +525,8 @@ describe("runCreateCloudBotEntry — the card nobody can see", () => {
     });
     const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
 
+    // No uid in the answer, so none is passed on: the caller has nothing to
+    // write a profile onto, rather than a uid it made up.
     expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, fast)).toEqual({
       ok: true,
       target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null },

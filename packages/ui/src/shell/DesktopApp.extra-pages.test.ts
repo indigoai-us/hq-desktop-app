@@ -83,10 +83,26 @@ async function mountShell(
   await tick();
 }
 
-/** ⌘K — the shell's own palette toggle, so the test uses the real path. */
+/**
+ * Mod+K — the shell's own palette toggle, so the test uses the real path.
+ *
+ * The shortcut registry resolves "Mod" per platform (⌘ on macOS, Ctrl
+ * elsewhere) rather than accepting either modifier the way the shell's former
+ * ad-hoc `onKey` did, so press whichever one this environment's `Mod` actually
+ * is. See keyboard-shortcuts.test.ts, which uses the same helper.
+ */
+function isMacHere(): boolean {
+  return /Mac OS X|Macintosh/i.test(navigator.userAgent);
+}
+
 async function openPalette(): Promise<void> {
   window.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }),
+    new KeyboardEvent("keydown", {
+      key: "k",
+      metaKey: isMacHere(),
+      ctrlKey: !isMacHere(),
+      bubbles: true,
+    }),
   );
   await tick();
 }

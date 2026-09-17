@@ -412,6 +412,15 @@ export interface NotificationsApi {
     actionKind: string;
     actionRef: string | null;
   }): Promise<unknown>;
+  /**
+   * Send a DM straight from a notification row (the desktop `send_dm`
+   * command). OPTIONAL: a host that cannot send a DM simply does not offer
+   * the reply box, rather than offering one that fails on submit.
+   *
+   * Must reject on failure. The row owns the draft and keeps the text visible
+   * for a retry, so resolving on a failed send would silently eat the message.
+   */
+  sendDm?(args: { toPersonUid: string; body: string }): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

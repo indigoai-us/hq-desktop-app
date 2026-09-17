@@ -17,3 +17,212 @@ it('explains a legacy DM with no destination instead of silently acknowledging i
     expect(onopen).not.toHaveBeenCalled();
   } finally {await unmount(component); host.remove();}
 });
+
+it('loads older notifications on demand and stops offering when the cursor runs out', async () => {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const pages = [
+    {notifications: [{id:'n1',type:'dm',actorName:'Ada',body:'first page',targetRef:'/messages',status:'read',createdAt:'2026-09-06T03:36:00Z'}], nextCursor: 'cur-1'},
+    {notifications: [{id:'n2',type:'dm',actorName:'Ada',body:'older page',targetRef:'/messages',status:'read',createdAt:'2026-09-05T03:36:00Z'}], nextCursor: null},
+  ];
+  const fetchNotifications = vi.fn(async (opts: {cursor?: string | null}) => (opts?.cursor ? pages[1] : pages[0]));
+  const component = mount(NotificationsView, {target: host, props: {api: {
+    fetchNotifications, ackNotification: async () => {}, readAllNotifications: async () => {}, runNotificationAction: async () => ({}),
+  }}});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('first page'));
+    const more = host.querySelector<HTMLButtonElement>('[data-testid="notifications-load-more"]');
+    expect(more, 'a cursor in the response must offer a way to reach older rows').toBeTruthy();
+
+    more!.click();
+    await vi.waitFor(() => expect(host.textContent).toContain('older page'));
+    // The first page must still be on screen — this appends, it does not replace.
+    expect(host.textContent).toContain('first page');
+    // Cursor exhausted, so the control retires rather than fetching nothing.
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="notifications-load-more"]')).toBeNull(),
+    );
+  } finally {await unmount(component); host.remove();}
+});
+
+it('does not offer to load more when the first page is the whole feed', async () => {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const component = mount(NotificationsView, {target: host, props: {api: {
+    fetchNotifications: async () => ({notifications: [{id:'only',type:'dm',actorName:'Ada',body:'just this',targetRef:'/messages',status:'read',createdAt:'2026-09-06T03:36:00Z'}], nextCursor: null}),
+    ackNotification: async () => {}, readAllNotifications: async () => {}, runNotificationAction: async () => ({}),
+  }}});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('just this'));
+    expect(host.querySelector('[data-testid="notifications-load-more"]')).toBeNull();
+  } finally {await unmount(component); host.remove();}
+});
+
+it('keeps the rows on screen when a page fails, and offers a retry', async () => {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const fetchNotifications = vi.fn(async (opts: {cursor?: string | null}) => {
+    if (opts?.cursor) throw new Error('upstream down');
+    return {notifications: [{id:'n1',type:'dm',actorName:'Ada',body:'still here',targetRef:'/messages',status:'read',createdAt:'2026-09-06T03:36:00Z'}], nextCursor: 'cur-1'};
+  });
+  const component = mount(NotificationsView, {target: host, props: {api: {
+    fetchNotifications, ackNotification: async () => {}, readAllNotifications: async () => {}, runNotificationAction: async () => ({}),
+  }}});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('still here'));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-load-more"]')!.click();
+    await vi.waitFor(() => expect(host.textContent).toContain("Couldn't load older notifications"));
+    // A failed page must not blank the list the reader was reading.
+    expect(host.textContent).toContain('still here');
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="notifications-load-more"]')!.textContent).toContain('Try again');
+  } finally {await unmount(component); host.remove();}
+});
+
+it('dismisses a row without marking it read', async () => {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const ackNotification = vi.fn(async () => {});
+  const readAllNotifications = vi.fn(async () => {});
+  const component = mount(NotificationsView, {target: host, props: {api: {
+    fetchNotifications: async () => ({notifications: [
+      {id:'keep',type:'dm',actorName:'Ada',body:'keep me',targetRef:'/messages',status:'unread',createdAt:'2026-09-06T03:36:00Z'},
+      {id:'go',type:'dm',actorName:'Bob',body:'dismiss me',targetRef:'/messages',status:'unread',createdAt:'2026-09-06T03:35:00Z'},
+    ], unreadCount: 2, nextCursor: null}),
+    ackNotification, readAllNotifications, runNotificationAction: async () => ({}),
+  }}});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('dismiss me'));
+    const rows = [...host.querySelectorAll<HTMLElement>('[data-testid="notifications-row"]')];
+    const target = rows.find((r) => r.dataset.notificationId === 'go')!;
+    target.querySelector<HTMLButtonElement>('[data-testid="notifications-dismiss"]')!.click();
+
+    await vi.waitFor(() => expect(host.textContent).not.toContain('dismiss me'));
+    expect(host.textContent).toContain('keep me');
+    // Dismiss is "not now", not "I read this": no ack goes to the server and
+    // the unread total is untouched, so the bell still counts it.
+    expect(ackNotification).not.toHaveBeenCalled();
+    expect(readAllNotifications).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('2 unread');
+  } finally {await unmount(component); host.remove();}
+});
+
+it('dismissing does not also open the conversation', async () => {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const onopen = vi.fn();
+  const component = mount(NotificationsView, {target: host, props: {onopen, api: {
+    fetchNotifications: async () => ({notifications: [
+      {id:'go',type:'dm',actorName:'Bob',body:'dismiss me',targetRef:'/messages',status:'unread',createdAt:'2026-09-06T03:35:00Z'},
+    ], unreadCount: 1, nextCursor: null}),
+    ackNotification: async () => {}, readAllNotifications: async () => {}, runNotificationAction: async () => ({}),
+  }}});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('dismiss me'));
+    // The whole row is a button; the dismiss control sits inside it.
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-dismiss"]')!.click();
+    await vi.waitFor(() => expect(host.textContent).not.toContain('dismiss me'));
+    expect(onopen).not.toHaveBeenCalled();
+  } finally {await unmount(component); host.remove();}
+});
+
+const dmRow = (over: Record<string, unknown> = {}) => ({
+  id:'dm1', type:'dm', actorName:'Ada', actorPersonUid:'per_ada', body:'ping',
+  targetRef:'/messages/per_ada', status:'unread', createdAt:'2026-09-06T03:36:00Z', ...over,
+});
+
+function mountFeed(api: Record<string, unknown>, props: Record<string, unknown> = {}) {
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const component = mount(NotificationsView, {target: host, props: {api: {
+    fetchNotifications: async () => ({notifications: [dmRow()], unreadCount: 1, nextCursor: null}),
+    ackNotification: async () => {}, readAllNotifications: async () => {}, runNotificationAction: async () => ({}),
+    ...api,
+  }, ...props}});
+  return {host, component};
+}
+
+it('replies to a DM without leaving the list', async () => {
+  const sendDm = vi.fn(async () => {});
+  const {host, component} = mountFeed({sendDm});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('ping'));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="notifications-reply-input"]')).toBeTruthy());
+
+    const input = host.querySelector<HTMLInputElement>('[data-testid="notifications-reply-input"]')!;
+    input.value = 'on it'; input.dispatchEvent(new Event('input'));
+    await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply-send"]')!.disabled).toBe(false));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply-send"]')!.click();
+
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledWith({toPersonUid:'per_ada', body:'on it'}));
+    // Box closes on success so the row does not look like it still has a draft.
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="notifications-reply-box"]')).toBeNull());
+  } finally {await unmount(component); host.remove();}
+});
+
+it('keeps the typed message on screen when sending fails', async () => {
+  const sendDm = vi.fn(async () => { throw new Error('offline'); });
+  const {host, component} = mountFeed({sendDm});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('ping'));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="notifications-reply-input"]')).toBeTruthy());
+    const input = host.querySelector<HTMLInputElement>('[data-testid="notifications-reply-input"]')!;
+    input.value = 'important'; input.dispatchEvent(new Event('input'));
+    await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply-send"]')!.disabled).toBe(false));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply-send"]')!.click();
+
+    await vi.waitFor(() => expect(host.textContent).toContain("Couldn't send"));
+    // Silently eating a typed message is worse than an error.
+    expect(host.querySelector<HTMLInputElement>('[data-testid="notifications-reply-input"]')!.value).toBe('important');
+  } finally {await unmount(component); host.remove();}
+});
+
+it('sends an emoji as an ordinary reply, not a reaction', async () => {
+  // There is no per-event DM reaction; the popover sent the emoji as a reply
+  // body and so does this. Implying a reaction the backend cannot store would
+  // be a lie in the UI.
+  const sendDm = vi.fn(async () => {});
+  const {host, component} = mountFeed({sendDm});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('ping'));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="notifications-reply-emoji"]')).toBeTruthy());
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply-emoji"]')!.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledWith({toPersonUid:'per_ada', body:'👍'}));
+  } finally {await unmount(component); host.remove();}
+});
+
+it('offers no reply control when the host cannot send a DM', async () => {
+  // Better no affordance than one that fails on submit.
+  const {host, component} = mountFeed({});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('ping'));
+    expect(host.querySelector('[data-testid="notifications-reply"]')).toBeNull();
+  } finally {await unmount(component); host.remove();}
+});
+
+it('offers no reply control on a row that is not an answerable DM', async () => {
+  const sendDm = vi.fn(async () => {});
+  const host = document.createElement('div'); document.body.appendChild(host);
+  const component = mount(NotificationsView, {target: host, props: {api: {
+    fetchNotifications: async () => ({notifications: [
+      {id:'f1', type:'file_shared', actorName:'Ada', body:'a file', targetRef:'/files', status:'read', createdAt:'2026-09-06T03:36:00Z'},
+    ], unreadCount: 0, nextCursor: null}),
+    ackNotification: async () => {}, readAllNotifications: async () => {}, runNotificationAction: async () => ({}), sendDm,
+  }}});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('a file'));
+    expect(host.querySelector('[data-testid="notifications-reply"]')).toBeNull();
+  } finally {await unmount(component); host.remove();}
+});
+
+it('opening a reply does not also open the conversation', async () => {
+  const sendDm = vi.fn(async () => {});
+  const onopen = vi.fn();
+  const {host, component} = mountFeed({sendDm}, {onopen});
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain('ping'));
+    host.querySelector<HTMLButtonElement>('[data-testid="notifications-reply"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="notifications-reply-box"]')).toBeTruthy());
+    expect(onopen).not.toHaveBeenCalled();
+    // Typing Enter in the box must not activate the row either.
+    const input = host.querySelector<HTMLInputElement>('[data-testid="notifications-reply-input"]')!;
+    input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true}));
+    expect(onopen).not.toHaveBeenCalled();
+  } finally {await unmount(component); host.remove();}
+});

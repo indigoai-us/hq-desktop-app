@@ -26,6 +26,7 @@
     subscribeRosterRefreshEvents,
     toSelfIdentity,
     workspacesFromMembershipRows,
+    common,
     type ConversationRow,
     type EmbeddedNavigationTarget,
     type SelfIdentity,
@@ -575,6 +576,15 @@
       if (!cancelled && lifecycle === 'ready') void rosterRefresher.refresh();
     });
 
+    // Native View-menu accelerators (⌘⇧]/⌘⇧[/⌘N/⌘/) are consumed by AppKit
+    // before the webview sees the keydown; the menu handler emits the binding
+    // id and we run it through the same registry the keyboard path uses.
+    const unlistenShortcutPromise = listen<{ id?: unknown }>('shortcut:invoke', (event) => {
+      if (cancelled) return;
+      const id = event.payload?.id;
+      if (typeof id === 'string' && id) common.runShortcut(id);
+    }).catch(() => () => {});
+
     const updateEvents = [
       'update:available',
       'update:cleared',
@@ -677,6 +687,7 @@
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenShortcutPromise.then((unlisten) => safeUnlisten(unlisten)());
       for (const unlistenPromise of unlistenUpdatePromises) {
         void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       }

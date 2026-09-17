@@ -6,6 +6,11 @@
  * All host-affecting settings live in native menubar.json via SettingsApi.
  */
 
+import {
+  MAX_SLIDER_WINDOW_OPACITY,
+  MIN_SLIDER_WINDOW_OPACITY,
+} from "./appearance-seam.js";
+
 export type SettingsUiSize = "compact" | "default" | "large";
 
 export interface ShellSettingsPrefs {
@@ -41,7 +46,12 @@ function parseOpacity(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return DEFAULT_SETTINGS_PREFS.windowOpacity;
   }
-  return Math.min(100, Math.max(50, Math.round(value)));
+  // Floor must admit the shipped default (transparency 65 → opacity 35); a 50
+  // floor made the default unrepresentable and jumped the window on first drag.
+  return Math.min(
+    MAX_SLIDER_WINDOW_OPACITY,
+    Math.max(MIN_SLIDER_WINDOW_OPACITY, Math.round(value)),
+  );
 }
 
 export function parseSettingsPrefs(raw: unknown): ShellSettingsPrefs {

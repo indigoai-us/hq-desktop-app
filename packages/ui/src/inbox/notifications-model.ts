@@ -527,6 +527,40 @@ export function reduceFeedLoaded(
 }
 
 /**
+ * Append the next page onto the feed.
+ *
+ * Distinct from `reduceFeedLoaded`, which REPLACES the list — that is correct
+ * for a fresh load or a filter flip, and wrong for pagination, where the point
+ * is to keep what is already on screen.
+ *
+ * Dedupes by id, keeping the row already in state. The server paginates by
+ * cursor over a list that is still receiving new rows at the top, so a row can
+ * legitimately appear in two consecutive pages; without this, marking one read
+ * would leave its twin behind looking unread. Keeping the existing copy also
+ * preserves any optimistic ack the reader has already performed on it.
+ *
+ * `unreadCount` comes from the payload and is NOT summed: it is a whole-feed
+ * total from the server, not a per-page count.
+ */
+export function reduceFeedAppended(
+  state: NotificationsFeedState,
+  payload: {
+    items: NotificationItem[];
+    unreadCount: number;
+    nextCursor: string | null;
+  },
+): NotificationsFeedState {
+  const seen = new Set(state.items.map((item) => item.id));
+  const appended = payload.items.filter((item) => !seen.has(item.id));
+  return {
+    ...state,
+    items: appended.length === 0 ? state.items : [...state.items, ...appended],
+    unreadCount: payload.unreadCount,
+    nextCursor: payload.nextCursor,
+  };
+}
+
+/**
  * Optimistic single-row ack. Marks the row read and decrements unreadCount
  * when it was unread. Idempotent for already-read rows.
  */
@@ -595,9 +629,18 @@ export function reduceFilter(
 }
 
 /** Visible items for the current filter, day-grouped. */
+const EMPTY_DISMISSED: ReadonlySet<string> = new Set<string>();
+
 export function buildNotificationsView(
   state: NotificationsFeedState,
   now: number = Date.now(),
+  /**
+   * Session-local dismissals, by row id. Filtered here rather than removed from
+   * `state.items` so a dismissal never looks like an ack: the row leaves the
+   * list, but `unreadCount` is untouched and the bell keeps counting it.
+   * Dismissing is "not now", not "I read this".
+   */
+  dismissed: ReadonlySet<string> = EMPTY_DISMISSED,
 ): {
   groups: NotificationsDayGroup[];
   headerTitle: string;
@@ -605,7 +648,11 @@ export function buildNotificationsView(
   badgeText: string | null;
   visibleCount: number;
 } {
-  const visible = filterNotifications(state.items, state.filter);
+  const kept =
+    dismissed.size === 0
+      ? state.items
+      : state.items.filter((item) => !dismissed.has(item.id));
+  const visible = filterNotifications(kept, state.filter);
   return {
     groups: groupNotificationsByDay(visible, now),
     headerTitle: "Notifications",
@@ -684,6 +731,22 @@ export function replyRootFromTargetRef(ref: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Who a quick reply from this row would go to, or null when the row is not a
+ * DM this reader can answer in place.
+ *
+ * Reuses `notificationDestination` rather than re-deriving the person uid, so
+ * the reply box can never address someone other than whoever opening the row
+ * would have opened a conversation with.
+ */
+export function quickReplyTarget(
+  item: NotificationItem,
+): { personUid: string; name: string } | null {
+  const destination = notificationDestination(item);
+  if (destination.kind !== "dm") return null;
+  return { personUid: destination.personUid, name: destination.title };
 }
 
 export function notificationDestination(

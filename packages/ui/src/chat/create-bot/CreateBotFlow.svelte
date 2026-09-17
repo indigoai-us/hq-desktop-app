@@ -7,13 +7,14 @@
    *
    * Both homes walk all three steps. A Cloud draft's details step collects
    * the name and @handle the company channel's retired card used to ask for,
-   * and hands them to `onCloudCreate` (today's company team action). Local
-   * drafts hand `oncreate` the CLI input plus the avatar pick and title,
-   * which the host saves onto the agent profile once the bot exists.
-   * Cmd-Enter creates from any step once every
-   * walked step is valid — except on a Cloud draft, where it moves to the
-   * next step until the details step is reached, so a company bot is never
-   * made under a name nobody has seen.
+   * plus a title, and hands them to `onCloudCreate` (today's company team
+   * action). Local drafts hand `oncreate` the CLI input plus the avatar pick
+   * and title. Neither create path takes a title, so for both homes the host
+   * saves it onto the agent profile once the bot exists.
+   *
+   * Cmd-Enter creates from any step once every walked step is valid — except
+   * on a Cloud draft, where it moves to the next step until the details step
+   * is reached, so a company bot is never made under a name nobody has seen.
    */
   import { untrack } from "svelte";
   import type { LocalBotCreateInput, LocalBotWorkerOption } from "@hq/platform";
@@ -65,8 +66,14 @@
     agentTargets?: ReadonlyArray<{ companyUid: string; label: string; iconUrl?: string | null }> | null;
     /** The owner's companies (slugs) a Local company bot can belong to. */
     botCompanies?: ReadonlyArray<{ slug: string; label: string }> | null;
-    /** Cloud: the host runs the company team action and navigates. */
-    onCloudCreate?: ((companyUid: string, draft: { name: string; handle: string }) => void | Promise<void>) | null;
+    /**
+     * Cloud: the host runs the company team action and navigates. `title` is
+     * present only when the person typed one — it is not part of the server's
+     * card sequence, so the host PATCHes it onto the agent profile after.
+     */
+    onCloudCreate?:
+      | ((companyUid: string, draft: { name: string; handle: string; title?: string }) => void | Promise<void>)
+      | null;
     /** Local: the host creates through the CLI and opens the DM. */
     oncreate?: ((input: LocalBotCreateInput, extras: CreateBotExtras) => void | Promise<LocalBotEntryResult | void>) | null;
     /** Back from the first step (the host returns to its previous view). */
@@ -203,13 +210,17 @@
       if (blocking) goTo(blocking);
       return;
     }
+    const title = draft.title.trim();
     if (draft.home === "cloud") {
       if (draft.companyUid) {
-        await onCloudCreate?.(draft.companyUid, { name: draft.name.trim(), handle: botHandle(draft) });
+        await onCloudCreate?.(draft.companyUid, {
+          name: draft.name.trim(),
+          handle: botHandle(draft),
+          ...(title ? { title } : {}),
+        });
       }
       return;
     }
-    const title = draft.title.trim();
     await oncreate?.(toCreateInput(draft), {
       ...(draft.avatar ? { avatar: draft.avatar } : {}),
       ...(title ? { title } : {}),
