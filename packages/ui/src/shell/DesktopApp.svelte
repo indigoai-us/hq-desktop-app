@@ -6360,7 +6360,19 @@
   }
 
   function closeSettings(): void {
-    void leaveCurrentDestination();
+    // Settings subsections each push a history entry, so a plain history
+    // back would walk Profile → Appearance → … one tab at a time. The Back
+    // button means "close Settings": return to whatever the user was looking
+    // at before Settings opened, or Messages when Settings was the first stop.
+    const { entries, index } = navigationHistory.snapshot();
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const destination = entries[i]?.destination;
+      if (destination && destination.kind !== "settings") {
+        void navigate(destination);
+        return;
+      }
+    }
+    void navigate({ kind: "messages" });
   }
 
   /** Apply a host route after DesktopApp's event listeners have mounted. */
