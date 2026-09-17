@@ -189,15 +189,22 @@ pub fn set_main_window_vibrancy(app: AppHandle, enabled: bool) {
     }
 }
 
-/// Reposition the main window to the menu-bar popover anchor and show it. Used on
-/// the onboarding→popover handoff so the popover appears next to the tray rather
-/// than staying centered where the installer was. Uses `show_popover_window`,
-/// which anchors under the native menu-bar helper icon on macOS (the menu-bar
-/// item is a separate helper process, so there is no Tauri tray to read a rect
-/// from) with a top-right fallback.
+/// Hand first-run off to the desktop workspace: open the desktop window, then
+/// hide the installer card in `main`.
+///
+/// The command keeps its historical name (the onboarding renderer invokes
+/// `show_main_window_at_tray` when the wizard finishes). Onboarding is done at
+/// that point, so `main` goes back to being the hidden controller and the user
+/// lands in the desktop window.
+///
+/// The order matters: the card is only dismissed once the desktop window has
+/// actually opened. If opening fails, the error is returned with the card
+/// still on screen rather than leaving the user with no window at all.
 #[tauri::command]
-pub fn show_main_window_at_tray(app: AppHandle) {
-    crate::tray::show_popover_window(&app);
+pub async fn show_main_window_at_tray(app: AppHandle) -> Result<(), String> {
+    crate::commands::desktop_alt::open_desktop_alt_window_inner(app.clone(), None).await?;
+    crate::tray::hide_popover_window(&app);
+    Ok(())
 }
 
 /// Mark the one-time auto-sync notice as shown for an updating user. Also sets

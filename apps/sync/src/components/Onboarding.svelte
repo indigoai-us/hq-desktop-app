@@ -119,12 +119,13 @@
       await invoke('mark_first_run_complete');
     }
     // Hand off from the centered installer card to the desktop workspace.
+    // `show_main_window_at_tray` opens the desktop window and only then
+    // dismisses this card, so a failed open leaves the card on screen.
     if (typeof invoke === 'function') {
       try {
-        await invoke('open_desktop_alt_window');
+        await invoke('show_main_window_at_tray');
       } catch {
         await restorePopoverSize();
-        await invoke('show_main_window_at_tray').catch(() => {});
       }
     }
     await onfinish?.();

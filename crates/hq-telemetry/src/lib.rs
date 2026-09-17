@@ -139,6 +139,9 @@ static NATIVE_PANIC_PHASE: AtomicU8 = AtomicU8::new(NativePanicPhase::Running as
 pub enum NativePanicSeam {
     TrayLeftClick = 1,
     TrayBlurHide = 2,
+    /// Retired (PL-05): the Opt+Shift+H popover toggle no longer exists, so
+    /// nothing records this seam any more. The variant and its code stay so a
+    /// residual crash report written by an older build still decodes.
     GlobalShortcutTogglePopover = 3,
     GlobalShortcutToggleDesktop = 4,
     WindowCloseRequestedHide = 5,

@@ -256,11 +256,11 @@ pub fn recheck_primary_instance() -> bool {
     true
 }
 
-/// Legacy installer post-install launch. In the unified app, show the running
-/// menubar surface.
+/// Legacy installer post-install launch. In the unified app, open the desktop
+/// workspace — the surface a freshly installed user should land on.
 #[tauri::command]
 pub async fn launch_menubar_app(app: AppHandle) -> Result<(), String> {
-    crate::tray::show_window_at_tray(&app);
+    crate::tray::show_desktop_window(&app);
     Ok(())
 }
 

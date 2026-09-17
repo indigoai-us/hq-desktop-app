@@ -4,7 +4,7 @@
 //! Left-click opens the desktop workspace (setup still uses the installer card
 //! on `main` until HQ is installed).
 //! Right-click shows a context menu with "Sync Now",
-//! "Open desktop view", and "Quit". Opt+Shift+H still toggles the status popover.
+//! "Open desktop view", and "Quit". Opt+Shift+O toggles the desktop window.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -802,34 +802,6 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
     let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
 }
 
-/// Show + focus the main window, positioned under the tray icon.
-///
-/// Used by the global keyboard shortcut so the popover can be summoned
-/// from anywhere without clicking the tray icon. If the tray rect isn't
-/// available yet (race during startup) we still show the window — it
-/// will appear at its last position rather than under the icon.
-pub fn show_window_at_tray(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    // One HQ window at a time: summoning the popover hides the desktop view.
-    hide_desktop_alt(app);
-    #[cfg(target_os = "windows")]
-    {
-        position_above_tray_fallback(&window);
-        set_dwm_small_corner(&window);
-        let _ = window.set_always_on_top(true);
-    }
-    #[cfg(not(target_os = "windows"))]
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        if let Ok(Some(rect)) = tray.rect() {
-            position_below_tray(&window, rect);
-        }
-    }
-    crate::util::window_focus::bring_webview_to_front(&window);
-    let _ = window.emit("popover:opened", ());
-}
-
 /// Show + focus the main window centered on screen for first-run onboarding.
 ///
 /// Must not leave the window sticky-topmost — OAuth opens a normal browser
@@ -845,8 +817,8 @@ pub fn show_window_centered(app: &AppHandle) {
 
 // `show_main_window` (the Svelte-invokable wrapper) lives in
 // commands/banner.rs now — the meeting-detect notification's "open" action
-// hits the same handler as the update banner's body-click, and both just
-// call `show_window_at_tray` here. One name, one handler.
+// hits the same handler as the update banner's body-click, and both open the
+// desktop workspace. One name, one handler.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Popover ↔ desktop window management (toggle + single-window-at-a-time)
@@ -858,7 +830,6 @@ pub fn show_window_centered(app: &AppHandle) {
 // WindowRouter activation policy:
 //   Tray left-click / taskbar second-process / Dock → desktop workspace
 //   Setup still owns `main` (installer card) until HQ is installed
-//   Opt+Shift+H → toggle compact status popover
 // Press again with the target open and it hides (toggle sources only).
 
 /// Hide the desktop window if it's open — enforces "only one HQ window at a
@@ -911,12 +882,42 @@ pub fn toggle_desktop_window(app: &AppHandle) {
 /// this is safe to call whether or not the window has been built yet, including
 /// during onboarding. Opening failures are logged without switching surfaces.
 pub fn show_desktop_window(app: &AppHandle) {
+    show_desktop_window_at(app, None);
+}
+
+/// Show + focus the desktop workspace on a specific surface.
+///
+/// `route` is the same string [`crate::commands::desktop_alt::open_desktop_alt_window`]
+/// takes: an already-open window gets a live `desktop:navigate`, a fresh build
+/// queues the route for the frontend to consume on mount. Used by the Rust
+/// callers that used to summon the popover at a particular surface (the
+/// notification history, the Settings command).
+pub fn show_desktop_window_at(app: &AppHandle, route: Option<&str>) {
     let app_clone = app.clone();
+    let route = route.map(str::to_string);
     tauri::async_runtime::spawn(async move {
         if let Err(e) =
-            crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone, None).await
+            crate::commands::desktop_alt::open_desktop_alt_window_inner(app_clone, route.as_deref())
+                .await
         {
             crate::util::logfile::log("tray", &format!("desktop activation failed: {e}"));
+        }
+    });
+}
+
+/// Hide the `main` window and record the dismissal.
+///
+/// The onboarding → desktop handoff hands the user off to the desktop window,
+/// so the installer card must go away and the launch-time onboarding pin must
+/// stop suppressing click-away for the rest of the process.
+pub fn hide_popover_window(app: &AppHandle) {
+    note_popover_dismissed();
+    // Window ops must run on the main thread — this is called from an async
+    // command body, which runs on a tokio worker.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.hide();
         }
     });
 }
@@ -1044,30 +1045,6 @@ fn set_dwm_small_corner(window: &tauri::WebviewWindow) {
     if let Ok(hwnd) = window.hwnd() {
         hq_platform::window_effects::set_small_corner(hwnd.0 as isize);
     }
-}
-
-/// Toggle the popover: hide it if it's already visible *and focused*,
-/// otherwise show / raise it (which also hides the desktop window).
-///
-/// Used by tray left-click (US-004) and the Opt+Shift+H shortcut. After
-/// browser OAuth the installer often stays visible but buried behind the
-/// browser; a tray/menu-bar click must raise that window instead of
-/// toggle-hiding it (macOS + Windows).
-pub fn toggle_popover_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) {
-            let focused = window.is_focused().unwrap_or(false);
-            if !focused {
-                crate::util::window_focus::bring_webview_to_front(&window);
-                let _ = window.emit("popover:opened", ());
-                return;
-            }
-            note_popover_dismissed();
-            let _ = window.hide();
-            return;
-        }
-    }
-    show_popover_window(app);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
