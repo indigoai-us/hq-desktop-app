@@ -655,10 +655,22 @@
 /// capability contract, so they deliberately add no `*_MIN_HQ_CLOUD` floor
 /// constant.
 ///
-/// A desktop holding a cached 6.16.50 satisfies `~6.16.50` forever and would
+/// 6.16.52 lets a safety snapshot skip a file it cannot copy while protecting
+/// that file from the update. It emits `HQ_RESCUE_SKIPPED_KIND` for each skipped
+/// file and bounds retention of incomplete snapshots.
+///
+/// 6.16.53 stops one company skill from wedging a whole company's sync: a
+/// renamed or copied skill folder now reserves its identity for the new path
+/// before it uploads, a landed 409 is recovered instead of aborting the leg,
+/// every other per-skill registration failure is contained to that skill,
+/// and registration errors name the file and service code (the UndrDog
+/// 2026-09-11 outage: five days of `complete{aborted:true}` on every pass).
+/// Runner bug fixes, not a new desktop-visible capability, so no floor.
+///
+/// A desktop holding a cached 6.16.52 satisfies `~6.16.52` forever and would
 /// retain the older runner; changing this requested spec is what moves npm's
 /// cache key and delivers these fixes.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.51";
+pub const HQ_CLOUD_VERSION: &str = "~6.16.53";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -786,7 +798,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.51");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.53");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
