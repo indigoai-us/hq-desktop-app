@@ -3617,6 +3617,48 @@ pub fn reset_non_convergent_marker_unpersisted_capture_for_tests() {
     MARKER_UNPERSISTED_CAPTURED.store(false, Ordering::Release);
 }
 
+// Same process-lifetime bound as the non-convergent marker above: an unwritable
+// menubar.json recurs at the background check cadence, so cap the compensating
+// diagnostic at once per app process.
+static SERVING_LAG_MARKER_UNPERSISTED_CAPTURED: AtomicBool = AtomicBool::new(false);
+
+/// Report that a deferred npmjs tarball serving-lag marker (HQ-DESKTOP-6D) could
+/// not be written to menubar.json. Without the marker every later check reads no
+/// prior deferral and treats the SAME still-failing tarball 404 as first-seen
+/// again, so a permanent (registry-side) 404 would be deferred forever and the
+/// anti-masking escalation would never fire. This makes that degraded state
+/// observable instead of silent. Closed payload only — never a filesystem path or
+/// raw I/O error — at Warning, at most once per app process.
+pub fn report_registry_serving_lag_marker_unpersisted() {
+    if SERVING_LAG_MARKER_UNPERSISTED_CAPTURED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "serving-lag-marker-unpersisted");
+            scope.set_tag("marker_store", "menubar-json");
+            scope.set_tag("marker_error_class", "persistence");
+            scope.set_fingerprint(Some(&["hq-cli-update", "serving-lag-marker-unpersisted"]));
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] could not persist npmjs serving-lag deferral marker",
+                sentry::Level::Warning,
+            );
+        },
+    );
+}
+
+/// Test support for the process-lifetime capture bound above.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn reset_serving_lag_marker_unpersisted_capture_for_tests() {
+    SERVING_LAG_MARKER_UNPERSISTED_CAPTURED.store(false, Ordering::Release);
+}
+
 /// Reduce a resolved executable to a closed, path-free source category for
 /// telemetry. On Unix, an absolute path outside the deterministic directories
 /// can only have come from the login-shell fallback; Windows `where.exe`
@@ -6560,32 +6602,69 @@ pub fn install_failure_episode_record(
 /// permanent 404 survives to page.
 pub const REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES: u64 = 30;
 
-/// The closed key prefix shared by a deferred serving-lag marker and the
-/// recurrence probe, so the two can never drift. Unlike the reportable-episode
-/// keys, a serving lag is registry-side and toolchain-independent, so the marker
-/// carries NO `|managed` suffix — a managed-toolchain retry and a user-path check
-/// observe the SAME registry lag.
-fn registry_serving_lag_deferred_key_prefix(latest: &str) -> String {
-    format!("{latest}|deferred|E404:npmjs:tarball|")
+/// The npm package whose tarball npm's 404 line named, as a bounded identifier for
+/// the serving-lag marker (HQ-DESKTOP-6D). Parsed from the tarball URL's
+/// `/<pkg>/-/<file>.tgz` path — everything before `/-/`, with the percent-encoded
+/// scope separator normalized — and accepted only when it is a valid npm package
+/// name ([`is_safe_npm_package_name`]); anything else collapses to `unknown`. This
+/// gives the deferred marker and the recurrence probe a STABLE per-package identity,
+/// so a later first-seen lag for a DIFFERENT closure dependency under the same pin is
+/// not mistaken for the original one persisting. Consumed only for the LOCAL marker
+/// key; never reaches Sentry.
+fn npmjs_404_tarball_package(detail: &str) -> String {
+    let unknown = || "unknown".to_string();
+    let Some(url) = npm_404_get_url(detail) else {
+        return unknown();
+    };
+    let lower = url.to_ascii_lowercase();
+    let Some(after_scheme) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return unknown();
+    };
+    let Some(slash) = after_scheme.find('/') else {
+        return unknown();
+    };
+    let path = after_scheme[slash..].split(['?', '#']).next().unwrap_or("");
+    let Some((pkg_part, _)) = path.split_once("/-/") else {
+        return unknown();
+    };
+    let pkg = pkg_part.trim_matches('/').replace("%2f", "/");
+    if is_safe_npm_package_name(&pkg) {
+        pkg
+    } else {
+        unknown()
+    }
+}
+
+/// The closed key prefix shared by a deferred serving-lag marker and the recurrence
+/// probe, so the two can never drift. Includes the failed package identity (see
+/// [`npmjs_404_tarball_package`]) so distinct closure dependencies get distinct
+/// markers. Unlike the reportable-episode keys, a serving lag is registry-side and
+/// toolchain-independent, so the marker carries NO `|managed` suffix — a managed
+/// retry and a user-path check observe the SAME registry lag.
+fn registry_serving_lag_deferred_key_prefix(latest: &str, pkg: &str) -> String {
+    format!("{latest}|deferred|E404:npmjs:tarball:{pkg}|")
 }
 
 /// The persisted marker recording that a FIRST-seen npmjs tarball serving lag for
-/// `latest` was deferred (not captured) at `now_unix_minutes`. Its integer suffix
-/// is the first-seen timestamp [`registry_serving_lag_recurred`] measures the gap
-/// against. Closed by construction — literal components plus one bounded integer —
-/// so it is safe to persist and log, and it is bounded and pruned per `latest` by
-/// [`install_failure_episode_record`] like every other episode key.
-pub fn registry_serving_lag_deferred_key(latest: &str, now_unix_minutes: u64) -> String {
+/// `pkg` under `latest` was deferred (not captured) at `now_unix_minutes`. Its
+/// integer suffix is the first-seen timestamp [`registry_serving_lag_recurred`]
+/// measures the gap against. Closed by construction — literal components, a
+/// validated package name, and one bounded integer — so it is safe to persist and
+/// log, and it is bounded and pruned per `latest` by [`install_failure_episode_record`].
+pub fn registry_serving_lag_deferred_key(latest: &str, pkg: &str, now_unix_minutes: u64) -> String {
     format!(
         "{}{now_unix_minutes}",
-        registry_serving_lag_deferred_key_prefix(latest)
+        registry_serving_lag_deferred_key_prefix(latest, pkg)
     )
 }
 
-/// Whether a deferred serving-lag marker for `latest` in `reported_keys` is at
-/// least [`REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES`] old — i.e. the lag has NOT
-/// cleared across the gap and the next pinned failure for this same version must
-/// escalate to the loud `E404:npmjs:tarball` group instead of being masked forever.
+/// Whether a deferred serving-lag marker for `pkg` under `latest` in `reported_keys`
+/// is at least [`REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES`] old — i.e. that
+/// package's lag has NOT cleared across the gap and the next pinned failure for it
+/// must escalate to the loud `E404:npmjs:tarball` group instead of being masked.
 ///
 /// Fail-quiet: a marker whose integer suffix is missing, unparseable, or in the
 /// FUTURE relative to `now_unix_minutes` (clock skew, or a marker written on a
@@ -6594,9 +6673,10 @@ pub fn registry_serving_lag_deferred_key(latest: &str, now_unix_minutes: u64) ->
 pub fn registry_serving_lag_recurred(
     reported_keys: &[String],
     latest: &str,
+    pkg: &str,
     now_unix_minutes: u64,
 ) -> bool {
-    let prefix = registry_serving_lag_deferred_key_prefix(latest);
+    let prefix = registry_serving_lag_deferred_key_prefix(latest, pkg);
     reported_keys.iter().any(|key| {
         let Some(suffix) = key.strip_prefix(&prefix) else {
             return false;
@@ -6608,6 +6688,25 @@ pub fn registry_serving_lag_recurred(
             .checked_sub(deferred_at)
             .is_some_and(|age| age >= REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES)
     })
+}
+
+/// [`registry_serving_lag_recurred`] for the package named by THIS failure's
+/// `detail` — the form the app failure sites call, so package extraction stays in
+/// core. A non-tarball or unparseable `detail` yields the `unknown` package, whose
+/// marker only ever exists for a prior genuinely-unparseable lag, so the guard
+/// degrades to per-version at worst and never escalates across unrelated packages.
+pub fn registry_serving_lag_recurred_for_detail(
+    reported_keys: &[String],
+    latest: &str,
+    detail: &str,
+    now_unix_minutes: u64,
+) -> bool {
+    registry_serving_lag_recurred(
+        reported_keys,
+        latest,
+        &npmjs_404_tarball_package(detail),
+        now_unix_minutes,
+    )
 }
 
 /// The current wall-clock time in whole minutes since the Unix epoch, or 0 if the
@@ -6709,18 +6808,24 @@ pub fn report_install_failure_episode_at(
     // this arm is skipped (its `!registry_serving_lag_recurred` guard), so the
     // escalated event flows through the normal Reported/SuppressedRepeat path.
     if is_npmjs_tarball_serving_lag(detail, env) && !env.registry_serving_lag_recurred {
-        // Preserve the FIRST-seen timestamp: if a deferred marker for this same
-        // `latest` is already present, do not re-mint it (re-minting would push the
-        // recurrence deadline out on every ~6-hourly check and never escalate).
-        // Nothing is captured on this path either way.
-        let deferred_prefix = registry_serving_lag_deferred_key_prefix(latest);
-        if reported_keys
-            .iter()
-            .any(|key| key.starts_with(&deferred_prefix))
-        {
+        let pkg = npmjs_404_tarball_package(detail);
+        let deferred_prefix = registry_serving_lag_deferred_key_prefix(latest, &pkg);
+        // Preserve the FIRST-seen timestamp only when an existing marker for THIS
+        // package is present AND valid (parseable, not in the future). A corrupt or
+        // future-dated marker (clock skew) is NOT preserved — it is replaced with a
+        // fresh one — so the anti-masking escalation cannot be suppressed forever
+        // (this matches registry_serving_lag_recurred's parsing). Re-minting a VALID
+        // marker on every check is otherwise avoided, since that would push the
+        // recurrence deadline out and never escalate. Nothing is captured here.
+        let has_valid_marker = reported_keys.iter().any(|key| {
+            key.strip_prefix(&deferred_prefix)
+                .and_then(|suffix| suffix.parse::<u64>().ok())
+                .is_some_and(|deferred_at| deferred_at <= now_unix_minutes)
+        });
+        if has_valid_marker {
             return InstallFailureEpisode::NotReportable;
         }
-        let deferred_key = registry_serving_lag_deferred_key(latest, now_unix_minutes);
+        let deferred_key = registry_serving_lag_deferred_key(latest, &pkg, now_unix_minutes);
         return InstallFailureEpisode::DeferredTransient {
             persist_keys: install_failure_episode_record(reported_keys, &deferred_key, latest),
         };
@@ -16005,7 +16110,11 @@ mod tests {
                 "@indigoai-us/hq-cloud@6.16.35",
             );
             for source in [NpmToolchainSource::Managed, NpmToolchainSource::UserPath] {
-                for stderr in [own.as_str(), types_node.as_str(), hq_cloud.as_str()] {
+                for (stderr, pkg) in [
+                    (own.as_str(), "@indigoai-us/hq-cli"),
+                    (types_node.as_str(), "@types/node"),
+                    (hq_cloud.as_str(), "@indigoai-us/hq-cloud"),
+                ] {
                     let env = InstallEnvironment {
                         toolchain_source: source,
                         ..pinned_env("5.114.0")
@@ -16047,9 +16156,9 @@ mod tests {
                             1000,
                         ),
                         InstallFailureEpisode::DeferredTransient {
-                            persist_keys: vec![
-                                "5.114.0|deferred|E404:npmjs:tarball|1000".to_string()
-                            ],
+                            persist_keys: vec![format!(
+                                "5.114.0|deferred|E404:npmjs:tarball:{pkg}|1000"
+                            )],
                         },
                         "{prefix} / {source:?}: {stderr}"
                     );
@@ -16175,26 +16284,41 @@ mod tests {
 
     #[test]
     fn registry_serving_lag_deferred_key_and_recurrence_gap() {
-        // The deferred marker is closed: literals plus one bounded integer, no
-        // `|managed` suffix (a serving lag is registry-side and toolchain-independent).
-        let key = registry_serving_lag_deferred_key("5.114.0", 1000);
-        assert_eq!(key, "5.114.0|deferred|E404:npmjs:tarball|1000");
+        const PKG: &str = "@indigoai-us/hq-cli";
+        // The deferred marker is closed: literals, the validated package name, and one
+        // bounded integer, with no `|managed` suffix (a serving lag is registry-side
+        // and toolchain-independent).
+        let key = registry_serving_lag_deferred_key("5.114.0", PKG, 1000);
+        assert_eq!(
+            key,
+            "5.114.0|deferred|E404:npmjs:tarball:@indigoai-us/hq-cli|1000"
+        );
         let keys = std::slice::from_ref(&key);
         // 5 min old -> not yet recurred (below the 30-min gap); the gap and beyond ->
         // recurred.
-        assert!(!registry_serving_lag_recurred(keys, "5.114.0", 1005));
-        assert!(registry_serving_lag_recurred(keys, "5.114.0", 1030));
-        assert!(registry_serving_lag_recurred(keys, "5.114.0", 5000));
-        // A marker for a DIFFERENT latest, a malformed suffix, a FUTURE timestamp
-        // (clock skew), and no marker at all all read as "not recurred" (fail-quiet).
-        assert!(!registry_serving_lag_recurred(keys, "5.114.1", 5000));
-        let malformed = vec!["5.114.0|deferred|E404:npmjs:tarball|not-a-number".to_string()];
-        assert!(!registry_serving_lag_recurred(&malformed, "5.114.0", 5000));
-        assert!(!registry_serving_lag_recurred(keys, "5.114.0", 500));
-        assert!(!registry_serving_lag_recurred(&[], "5.114.0", 5000));
-        // An existing deferred marker is NOT re-minted: the reporter returns
-        // NotReportable (preserving the first-seen timestamp) when a marker for this
-        // latest is already present and the lag has not yet recurred.
+        assert!(!registry_serving_lag_recurred(keys, "5.114.0", PKG, 1005));
+        assert!(registry_serving_lag_recurred(keys, "5.114.0", PKG, 1030));
+        assert!(registry_serving_lag_recurred(keys, "5.114.0", PKG, 5000));
+        // A DIFFERENT package under the same pin does not match — a later first-seen
+        // lag for another closure dependency is not mistaken for this one persisting.
+        assert!(!registry_serving_lag_recurred(
+            keys,
+            "5.114.0",
+            "@types/node",
+            5000
+        ));
+        // A DIFFERENT latest, a malformed suffix, a FUTURE timestamp (clock skew), and
+        // no marker at all all read as "not recurred" (fail-quiet).
+        assert!(!registry_serving_lag_recurred(keys, "5.114.1", PKG, 5000));
+        let malformed =
+            vec!["5.114.0|deferred|E404:npmjs:tarball:@indigoai-us/hq-cli|nan".to_string()];
+        assert!(!registry_serving_lag_recurred(
+            &malformed, "5.114.0", PKG, 5000
+        ));
+        assert!(!registry_serving_lag_recurred(keys, "5.114.0", PKG, 500));
+        assert!(!registry_serving_lag_recurred(&[], "5.114.0", PKG, 5000));
+        // A VALID existing marker for this package is NOT re-minted: the reporter
+        // returns NotReportable, preserving the first-seen timestamp.
         let stderr = npmjs_tarball_e404_stderr("npm error", "5.114.0");
         assert_eq!(
             report_install_failure_episode_at(
@@ -16208,6 +16332,28 @@ mod tests {
                 1005,
             ),
             InstallFailureEpisode::NotReportable
+        );
+        // But a FUTURE-dated marker (clock skew) is NOT preserved forever: the
+        // reporter replaces it by minting a fresh valid marker, so the anti-masking
+        // escalation cannot be suppressed indefinitely.
+        let future = vec![registry_serving_lag_deferred_key("5.114.0", PKG, 9000)];
+        assert_eq!(
+            report_install_failure_episode_at(
+                Some(1),
+                &stderr,
+                None,
+                false,
+                &pinned_env("5.114.0"),
+                "5.114.0",
+                &future,
+                1005,
+            ),
+            InstallFailureEpisode::DeferredTransient {
+                persist_keys: vec![
+                    "5.114.0|deferred|E404:npmjs:tarball:@indigoai-us/hq-cli|9000".to_string(),
+                    "5.114.0|deferred|E404:npmjs:tarball:@indigoai-us/hq-cli|1005".to_string(),
+                ],
+            }
         );
     }
 

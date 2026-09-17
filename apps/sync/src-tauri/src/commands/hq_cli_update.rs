@@ -103,24 +103,24 @@ pub use hq_desktop_core::hq_cli_update::{
     npm_lifecycle_cause, npm_prefix_from_hq_bin, partial_install_scope_from_npm_path,
     path_contains_dir, pnpm_child_path, pnpm_global_env, pnpm_global_ls_hq_cli_version,
     pnpm_install_argv, pnpm_store_family, read_installed_version, redact_home, redact_home_in,
-    registry_serving_lag_recurred, repair_managed_shadow, report_install_failure,
+    registry_serving_lag_recurred_for_detail, repair_managed_shadow, report_install_failure,
     report_install_failure_episode, report_install_failure_with_environment,
     report_install_failure_with_final_attempt, report_non_convergent_install,
     report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
-    report_unreadable_version, resolved_hq_version, should_auto_install,
-    should_report_unreadable_version, suppress_for_dismissal, unattributed_install_stderr_origin,
-    unix_minutes_now, user_prefix_aim_decision, version_from_hq_binary, version_if_hq_cli,
-    AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, HqCliUpdateInfo, InstallEnvironment,
-    InstallExecutor, InstallFailureEpisode, InstallFailureKind, InterpreterRecovery,
-    LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
-    ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
-    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
-    NpmLatest, NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics,
-    PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects, PostInstallOutcome,
-    RequestedSpecKind, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
-    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, PINNED_MARKER_CONTRACT,
-    STDERR_ORIGIN_NON_NPM,
+    report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
+    should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
+    unattributed_install_stderr_origin, unix_minutes_now, user_prefix_aim_decision,
+    version_from_hq_binary, version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim,
+    ExecutedCopyAim, HqCliUpdateInfo, InstallEnvironment, InstallExecutor, InstallFailureEpisode,
+    InstallFailureKind, InterpreterRecovery, LaunchCliCheck, LocalVersionProbeDiagnostics,
+    LocalVersionProbeResult, ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart,
+    ManagedShadowRepairAction, ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind,
+    NonConvergentReport, NpmLatest, NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource,
+    PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext, PostInstallCoreEffects,
+    PostInstallOutcome, RequestedSpecKind, SettingsPathTelemetry, UserPrefixAim,
+    VersionProbeOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
+    NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    PINNED_MARKER_CONTRACT, STDERR_ORIGIN_NON_NPM,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -1966,8 +1966,12 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // to the loud E404:npmjs:tarball group instead of being masked forever. The
         // same markers are reused for the episode report below, so the read is once.
         let reported_episode_keys = install_failure_episode_markers();
-        install_env.registry_serving_lag_recurred =
-            registry_serving_lag_recurred(&reported_episode_keys, &latest, unix_minutes_now());
+        install_env.registry_serving_lag_recurred = registry_serving_lag_recurred_for_detail(
+            &reported_episode_keys,
+            &latest,
+            &raw_stderr,
+            unix_minutes_now(),
+        );
         let failing_node_abi = install_env
             .node_abi
             .as_deref()
@@ -2777,11 +2781,16 @@ fn persist_reported_episode(outcome: InstallFailureEpisode) {
             // HQ-DESKTOP-6D: a first-seen npmjs tarball serving lag. Persist the
             // timestamped deferred marker so a later check at least the recurrence
             // gap apart can escalate a stuck 404, then log locally (nothing paged).
+            // If the marker CANNOT be persisted (unwritable menubar.json), the
+            // anti-masking guard is defeated — every later check would read no marker
+            // and defer the same permanent 404 forever — so surface a bounded,
+            // once-per-process Sentry signal instead of leaving it silent.
             if let Err(e) = record_install_failure_episode_markers(&persist_keys) {
                 log(
                     "hq-cli-update",
                     &format!("could not persist install-failure episode markers: {e}"),
                 );
+                report_registry_serving_lag_marker_unpersisted();
             }
             log(
                 "hq-cli-update",
@@ -3380,8 +3389,12 @@ async fn managed_toolchain_retry(
     // tarball serving lag defers silently; an unchanged deferred marker at least the
     // recurrence gap old escalates it to the existing loud E404:npmjs:tarball group.
     let reported_episode_keys = install_failure_episode_markers();
-    install_env.registry_serving_lag_recurred =
-        registry_serving_lag_recurred(&reported_episode_keys, latest, unix_minutes_now());
+    install_env.registry_serving_lag_recurred = registry_serving_lag_recurred_for_detail(
+        &reported_episode_keys,
+        latest,
+        &raw_detail,
+        unix_minutes_now(),
+    );
     persist_reported_episode(report_install_failure_episode(
         retry_run.output.status.code(),
         &raw_detail,

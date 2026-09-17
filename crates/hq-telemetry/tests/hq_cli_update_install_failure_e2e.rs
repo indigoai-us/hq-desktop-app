@@ -2426,7 +2426,9 @@ fn an_npmjs_tarball_404_for_the_pinned_target_version_emits_no_event() {
                 1000,
             ),
             InstallFailureEpisode::DeferredTransient {
-                persist_keys: vec!["5.109.6|deferred|E404:npmjs:tarball|1000".to_string()],
+                persist_keys: vec![
+                    "5.109.6|deferred|E404:npmjs:tarball:@indigoai-us/hq-cli|1000".to_string(),
+                ],
             },
         );
     });
@@ -2574,7 +2576,9 @@ fn a_dependency_tarball_404_during_a_pinned_install_emits_no_event_and_defers() 
                     1000,
                 ),
                 InstallFailureEpisode::DeferredTransient {
-                    persist_keys: vec!["5.114.0|deferred|E404:npmjs:tarball|1000".to_string()],
+                    persist_keys: vec![
+                        "5.114.0|deferred|E404:npmjs:tarball:@types/node|1000".to_string(),
+                    ],
                 },
                 "{source:?}"
             );
