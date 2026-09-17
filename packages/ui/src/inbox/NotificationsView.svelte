@@ -20,6 +20,7 @@
     parseNotificationsResponse,
     reduceAck,
     reduceActionUsed,
+    reduceFeedAppended,
     reduceFeedLoaded,
     reduceFilter,
     reduceReadAll,
@@ -81,6 +82,8 @@
 
   let lastReportedUnread = $state<number | null>(null);
   let feedReady = $state(false);
+  let loadingMore = $state(false);
+  let loadMoreError = $state<string | null>(null);
 
   // Re-fetch when All | Unread toggles, or when a mesh wake bumps wakeSeq —
   // never when items/unreadCount update.
@@ -105,6 +108,9 @@
     loading = true;
     listError = null;
     listKind = "ok";
+    // A fresh top-of-list load supersedes any failed page.
+    loadMoreError = null;
+    loadingMore = false;
     try {
       const raw = await api.fetchNotifications({
         limit: 50,
@@ -140,6 +146,47 @@
         loading = false;
         feedReady = true;
       }
+    }
+  }
+
+  /**
+   * Fetch the next page and append it.
+   *
+   * Deliberately NOT folded into `loadFeed`: that one owns the whole-list
+   * replace, shares `loadGeneration` with the filter effect, and flips the
+   * page-level `loading` flag. Reusing it here would blank the list the reader
+   * is looking at, and a filter change landing mid-page would replace the
+   * appended rows anyway. This keeps its own in-flight flag and its own error,
+   * so a failed page leaves the rows already on screen untouched.
+   *
+   * Guards on `loadingMore` as well as the cursor: the button is disabled while
+   * a page is in flight, but a double-activation (Enter plus click, or a fast
+   * double tap) can still arrive before Svelte re-renders the disabled state,
+   * and two concurrent fetches on the same cursor would append the same page
+   * twice. `reduceFeedAppended` dedupes, so this is belt and braces.
+   */
+  async function loadMore(): Promise<void> {
+    const cursor = feedState.nextCursor;
+    if (!cursor || loadingMore) return;
+    const generation = loadGeneration;
+    loadingMore = true;
+    loadMoreError = null;
+    try {
+      const raw = await api.fetchNotifications({
+        limit: 50,
+        cursor,
+        unreadOnly: feedState.filter === "unread",
+      });
+      // A filter flip (or a refresh) while this page was in flight means these
+      // rows belong to a list that no longer exists. Drop them.
+      if (generation !== loadGeneration) return;
+      feedState = reduceFeedAppended(feedState, parseNotificationsResponse(raw));
+    } catch (err) {
+      if (generation !== loadGeneration) return;
+      console.error("notifications-view: load more failed", err);
+      loadMoreError = "Couldn't load older notifications. Try again.";
+    } finally {
+      if (generation === loadGeneration) loadingMore = false;
     }
   }
 
@@ -490,11 +537,67 @@
           </ul>
         </section>
       {/each}
+      {#if feedState.nextCursor}
+        <div class="notif-more">
+          {#if loadMoreError}
+            <p class="notif-more-error" role="alert">{loadMoreError}</p>
+          {/if}
+          <button
+            type="button"
+            class="notif-more-btn"
+            data-testid="notifications-load-more"
+            disabled={loadingMore}
+            aria-busy={loadingMore}
+            onclick={() => void loadMore()}
+          >
+            {loadingMore
+              ? "Loading…"
+              : loadMoreError
+                ? "Try again"
+                : "Load older notifications"}
+          </button>
+        </div>
+      {/if}
     {/if}
   </div>
 </section>
 
 <style>
+  .notif-more {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 0 20px;
+  }
+
+  .notif-more-error {
+    margin: 0;
+    font-size: 12px;
+    color: var(--t2);
+  }
+
+  .notif-more-btn {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+
+  .notif-more-btn:hover:not(:disabled) {
+    background: var(--v4-inset);
+  }
+
+  .notif-more-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
   .notif-unavailable {
     margin: 12px 20px;
     padding: 12px;

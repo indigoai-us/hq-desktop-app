@@ -527,6 +527,40 @@ export function reduceFeedLoaded(
 }
 
 /**
+ * Append the next page onto the feed.
+ *
+ * Distinct from `reduceFeedLoaded`, which REPLACES the list — that is correct
+ * for a fresh load or a filter flip, and wrong for pagination, where the point
+ * is to keep what is already on screen.
+ *
+ * Dedupes by id, keeping the row already in state. The server paginates by
+ * cursor over a list that is still receiving new rows at the top, so a row can
+ * legitimately appear in two consecutive pages; without this, marking one read
+ * would leave its twin behind looking unread. Keeping the existing copy also
+ * preserves any optimistic ack the reader has already performed on it.
+ *
+ * `unreadCount` comes from the payload and is NOT summed: it is a whole-feed
+ * total from the server, not a per-page count.
+ */
+export function reduceFeedAppended(
+  state: NotificationsFeedState,
+  payload: {
+    items: NotificationItem[];
+    unreadCount: number;
+    nextCursor: string | null;
+  },
+): NotificationsFeedState {
+  const seen = new Set(state.items.map((item) => item.id));
+  const appended = payload.items.filter((item) => !seen.has(item.id));
+  return {
+    ...state,
+    items: appended.length === 0 ? state.items : [...state.items, ...appended],
+    unreadCount: payload.unreadCount,
+    nextCursor: payload.nextCursor,
+  };
+}
+
+/**
  * Optimistic single-row ack. Marks the row read and decrements unreadCount
  * when it was unread. Idempotent for already-read rows.
  */
