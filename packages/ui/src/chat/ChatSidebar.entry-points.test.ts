@@ -174,6 +174,30 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
 
+  it("passes the Title typed on the Cloud details step through to the host", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    mountSidebar({ companies: [INDIGO], oncreateagent });
+    await settle();
+    await openModal();
+    await toHomeStep();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    name.value = "Polar";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    const title = q<HTMLInputElement>('[data-testid="chat-bot-title"]')!;
+    title.value = "Ad account analyst";
+    title.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle(10);
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo", {
+      name: "Polar",
+      handle: "polar",
+      title: "Ad account analyst",
+    });
+  });
+
   it("offers a company the directory knows before the workspace list refreshes", async () => {
     const oncreateagent = vi.fn(async () => okTarget);
     const directoryRow = {

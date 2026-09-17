@@ -135,6 +135,7 @@ const SECOND_CREATE_CARD = {
 
 function adapter(
   messaging: Partial<PlatformAdapter["messaging"]> = {},
+  identity: Record<string, unknown> = {},
 ): PlatformAdapter {
   return {
     kind: "web",
@@ -146,6 +147,11 @@ function adapter(
       fetchChannel: async () => ({ ok: false as const, reason: "unavailable" }),
       runCardAction: async () => ({ ok: false as const, reason: "unavailable" }),
       ...messaging,
+    },
+    identity: {
+      listAvatarPacks: async () => ok({ packs: [], expiresAt: Date.now() + 60_000 }),
+      updateAgentProfile: async () => ok({}),
+      ...identity,
     },
     settings: {
       getSetupStatus: async () =>
@@ -365,6 +371,108 @@ describe("DesktopApp New bot: the Cloud option", () => {
       expect(document.querySelector('[data-card-kind="create_agent"]')).toBeNull();
       expect(document.querySelector('[data-card-id="card_create_agent_1"]')).toBeNull();
       expect(document.body.textContent).not.toContain("Create an agent");
+    } finally {
+      window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    }
+  }, 30_000);
+
+  it("saves the Title on the new bot's profile, and still does after a refused first try", async () => {
+    // The create_agent sequence asks for name, handle, runtime and size —
+    // never a title. So the title the person typed is written onto the agent
+    // profile once the sequence hands back the bot's uid, exactly the way a
+    // Local bot's title is.
+    let posted = [TURNS[0]!];
+    let refuseOnce = true;
+    const runCompanyTabAction = vi.fn(async () =>
+      ok({ cardId: "card_create_agent_1", actionId: "add_agent", state: "open", channelId: "chn_acme" }),
+    );
+    const runCardAction = vi.fn(async (args: { cardId: string; actionId: string }) => {
+      if (args.cardId === "card_create_agent_1") {
+        if (refuseOnce) {
+          refuseOnce = false;
+          return ok({ cardId: args.cardId, actionId: args.actionId, state: "blocked" });
+        }
+        posted = [...posted, TURNS[1]!];
+        return ok({ cardId: args.cardId, actionId: args.actionId, state: "done" });
+      }
+      return ok({
+        cardId: args.cardId,
+        actionId: args.actionId,
+        state: "done",
+        agentChannelId: "chn_polar",
+        agentUid: "agt_polar",
+      });
+    });
+    const fetchChannel = vi.fn(async () =>
+      ok({
+        messages: posted.map((card, i) => systemMessage(`evt_${i}`, card)).reverse(),
+        nextCursor: null,
+      }),
+    );
+    const getCompanyTab = vi.fn(async (_uid: string, tab: string) =>
+      ok(tab === "team" ? teamTab(true) : { tab, companyUid: "cmp_acme", viewer: viewerOwner, sections: [] }),
+    );
+    const updateAgentProfile = vi.fn(async () => ok({}));
+
+    const opened: string[] = [];
+    const onOpen = (event: Event) => {
+      opened.push(String((event as CustomEvent).detail?.channelId ?? ""));
+    };
+    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    try {
+      mountApp(
+        adapter({ runCompanyTabAction, runCardAction, fetchChannel, getCompanyTab }, { updateAgentProfile }),
+        COMPANY_ROW,
+        { companies: [ACME_WORKSPACE] },
+      );
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-testid="chat-new-message"]')).toBeTruthy(),
+      );
+      clickAnywhere('[data-testid="chat-new-message"]');
+      await settle(10);
+      clickAnywhere('[data-testid="chat-create-new-bot"]');
+      await settle(10);
+      clickAnywhere('[data-testid="create-bot-next"]');
+      await settle(10);
+      document.querySelector<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]')!.click();
+      await settle(10);
+      clickAnywhere('[data-testid="create-bot-next"]');
+      await settle(10);
+
+      const nameField = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+      nameField.value = "Polar";
+      nameField.dispatchEvent(new Event("input", { bubbles: true }));
+      const titleField = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-title"]');
+      expect(titleField, "the cloud details step asks for a title").toBeTruthy();
+      titleField!.value = "Ad account analyst";
+      titleField!.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle(10);
+
+      // First try: the server refuses. The modal stays open with the draft —
+      // title included — so the person can simply try again.
+      clickAnywhere('[data-testid="chat-bot-create"]');
+      await vi.waitFor(
+        () => expect(document.querySelector('[data-testid="chat-create-entry-error"]')).toBeTruthy(),
+        { timeout: 10_000, interval: 50 },
+      );
+      expect(updateAgentProfile).not.toHaveBeenCalled();
+      expect(
+        document.querySelector<HTMLInputElement>('[data-testid="chat-bot-title"]')?.value,
+      ).toBe("Ad account analyst");
+
+      clickAnywhere('[data-testid="chat-bot-create"]');
+      await vi.waitFor(() => expect(opened).toContain("chn_polar"), {
+        timeout: 10_000,
+        interval: 50,
+      });
+      await vi.waitFor(
+        () => expect(updateAgentProfile).toHaveBeenCalledWith("agt_polar", { title: "Ad account analyst" }),
+        { timeout: 10_000, interval: 50 },
+      );
+      // The title is never smuggled into a card the server never asked it for.
+      for (const call of runCardAction.mock.calls) {
+        expect(call[0]).not.toHaveProperty("values.title");
+      }
     } finally {
       window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
     }

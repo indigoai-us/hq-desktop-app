@@ -1545,9 +1545,10 @@
     return { ok: true, agentUid, name: input.name };
   }
   /**
-   * The parts of the create flow `hq bot create` has no flag for — the job
+   * The parts of the create flow neither create path has a field for — the job
    * title and the avatar pick — written onto the agent profile now that the
-   * bot has a uid. Sequential: both land on the same profile document.
+   * bot has a uid. Sequential: both land on the same profile document. Local
+   * bots bring both; a cloud bot brings the title.
    */
   async function saveNewBotProfile(agentUid: string, extras: CreateBotExtras): Promise<void> {
     const title = extras.title?.trim() ?? "";
@@ -4144,13 +4145,29 @@
    * the New bot flow just collected. The card is never rendered (it is a
    * retired timeline kind) and never focused: the person stays in the New bot
    * flow and lands in the new bot's channel when it is made.
+   *
+   * The job title is not part of that sequence — no turn has a field for it —
+   * so it takes the same route it takes for a Local bot: a PATCH onto the
+   * agent profile once the bot has a uid. A retried create carries the draft
+   * again, title included, because the flow still holds it.
    */
   async function createCloudBotEntry(
     companyUid: string,
-    draft: { name: string; handle: string },
+    draft: { name: string; handle: string; title?: string },
   ): Promise<EntryPointResult> {
     const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
-    if (result.ok) navigateToEntryTarget(result.target, companyUid);
+    if (result.ok) {
+      const title = draft.title?.trim() ?? "";
+      const agentUid = result.target.agentUid?.trim() ?? "";
+      if (title && agentUid) {
+        void saveNewBotProfile(agentUid, { title });
+      } else if (title) {
+        // The bot exists; only its subtitle is missing, and nothing here
+        // names the profile to write it to.
+        console.warn("[hq-desktop] cloud bot title not saved: the create sequence returned no agent uid");
+      }
+      navigateToEntryTarget(result.target, companyUid);
+    }
     return result;
   }
 
