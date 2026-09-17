@@ -8274,17 +8274,18 @@
   }
 
   /* Horizontal inset shared by the channel header, the timeline, and the
-     composer so their left edges line up. Wide when the conversation has the
-     column to itself; pulled in when a thread or profile pane takes the
-     right-hand third, so the messages keep a readable measure. */
+     composer so their left edges line up. The column reads like a document:
+     14% of the width on each side (never under 64px), so the measure stays
+     proportional as the window grows. Pulled in when a thread or profile pane
+     takes the right-hand third, so the messages keep a readable width there. */
   .channel-header,
   .chat-stage {
-    --conv-inset: 40px;
+    --conv-inset: max(64px, 14%);
   }
 
   .channel-header[data-reply-open="true"],
   .chat-stage[data-reply-open="true"] {
-    --conv-inset: 20px;
+    --conv-inset: 24px;
   }
 
   .channel-header {
