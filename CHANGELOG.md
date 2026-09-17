@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- In a thread, the "is thinking" line for a bot now lines up with the messages above it and keeps a small gap from the reply box, instead of hugging the left edge and touching it.
 - The message column in the main window now keeps a wider minimum width on a laptop screen and stays centred with growing side margins on a wide screen, instead of always giving up a fixed share of the width to margins. Nothing changes when a thread or profile pane is open.
 - When HQ's servers are busy and ask the app to slow down, the app now waits the time it was asked to wait before trying again, instead of retrying straight away. Its background checks (bots, tasks, sync status, the channel list and the rest) are also spaced out slightly at random, so everyone's app no longer asks at exactly the same moment, and a check that was asked to slow down waits longer before the next one. In practice this means fewer "could not load" moments when a lot of people are using HQ at once.
 - The Core panel in the main window (the "Core" button in the title bar) now tells you how sync is doing: whether everything is synced, a sync is running, or sync is paused, plus when the last sync finished and a live line while files are moving. The Core dot in the title bar turns amber when something needs you and reads as busy while a sync runs.
