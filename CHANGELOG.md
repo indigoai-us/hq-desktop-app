@@ -19,6 +19,9 @@ The release moves it under the version it ships in.
 - Cloud bots can be given a Title when you create them, the same as bots that run on your Mac. The New bot Details step for a company-hosted bot now has a Title field under the name, it shows under the name in the preview, and it is saved onto the bot once the company finishes setting it up.
 - HQ no longer treats a damaged or temporarily unreadable settings file as a brand-new install. If it needs to replace a corrupt file, it keeps the original copy so its settings can be recovered.
 - If your Mac uses nvm for Node, HQ now updates the same `hq` command you run. Before, it could finish an update under HQ's bundled Node while your own command stayed on the old version.
+- If an HQ Core update fails, recovery now keeps its safety copy usable on
+  Windows, Macs, and cloud-backed folders. HQ can restore linked files and the
+  rest of the saved update tree before you try again.
 
 ## [0.10.279] — 2026-09-17
 

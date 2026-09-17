@@ -644,10 +644,21 @@
 /// capability contract, so they deliberately add no `*_MIN_HQ_CLOUD` floor
 /// constant.
 ///
-/// A desktop holding a cached 6.16.47 satisfies `~6.16.47` forever and would
+/// `~6.16.50` -> `~6.16.51`: floors the runner at the rescue snapshot-copy
+/// fixes. On Windows without symlink privilege, safety snapshots preserve file
+/// links as copied files that rollback and `--restore-snapshot` can restore;
+/// restored directory junctions compare resolved targets. `--restore-snapshot`
+/// now materializes every recorded link as well as the captured tree, rejects
+/// malformed or nested link records before restore, and keeps copied data when
+/// `chmod` or `utimes` cannot be updated. It also streams macOS `EDEADLK` cloud
+/// placeholders. These are runner bug fixes rather than a new desktop-visible
+/// capability contract, so they deliberately add no `*_MIN_HQ_CLOUD` floor
+/// constant.
+///
+/// A desktop holding a cached 6.16.50 satisfies `~6.16.50` forever and would
 /// retain the older runner; changing this requested spec is what moves npm's
 /// cache key and delivers these fixes.
-pub const HQ_CLOUD_VERSION: &str = "~6.16.50";
+pub const HQ_CLOUD_VERSION: &str = "~6.16.51";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -775,7 +786,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.16.50");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.16.51");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

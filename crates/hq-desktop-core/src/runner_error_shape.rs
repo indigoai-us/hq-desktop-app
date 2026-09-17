@@ -212,7 +212,16 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
 /// `auth-error`). No new vocabulary arm is needed, but the source-version
 /// marker moves with the verified runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.50";
+///
+/// The `~6.16.50` -> `~6.16.51` bump was re-derived from the published runner
+/// source. `SnapshotCopyError` is the one new raw `this.name` identity, but
+/// rescue catches it and emits structured snapshot-copy recovery output instead
+/// of serializing that class name to the desktop runner-error event surface.
+/// `HQ_CLOUD_IDENTITIES` therefore remains 52 with the same exclusions, and
+/// `src/bin/sync-runner-events.ts` `ERROR_TYPES` remains (`error`,
+/// `auth-error`). No new vocabulary arm is needed, but the source-version
+/// marker moves with the verified runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.16.51";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -937,7 +946,10 @@ impl PreRunnerSiteRollup {
     fn counts(&self) -> [(&'static str, u32); 2] {
         [
             (PreRunnerSite::FirstPush.as_str(), self.first_push),
-            (PreRunnerSite::FirstPushPersonal.as_str(), self.first_push_personal),
+            (
+                PreRunnerSite::FirstPushPersonal.as_str(),
+                self.first_push_personal,
+            ),
         ]
     }
 
@@ -2229,7 +2241,9 @@ fn profile_path_led(token: &str) -> bool {
 /// least one ASCII uppercase letter, and no ASCII lowercase letter.
 fn profile_all_caps_identifier(token: &str) -> bool {
     !token.is_empty()
-        && token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
         && token.bytes().any(|b| b.is_ascii_uppercase())
         && !token.bytes().any(|b| b.is_ascii_lowercase())
 }
@@ -2938,13 +2952,22 @@ mod tests {
             ),
             ("VaultAuthError session is not valid", VaultIdentity),
             // Newly covered identities — the classes the prior sample missed.
-            ("VaultNotFoundError vault entry not found for company", VaultNotFound),
-            ("VaultCredentialScopeError write prefixes omitted", VaultCredentialScope),
+            (
+                "VaultNotFoundError vault entry not found for company",
+                VaultNotFound,
+            ),
+            (
+                "VaultCredentialScopeError write prefixes omitted",
+                VaultCredentialScope,
+            ),
             (
                 "SyncManifestContractError sync-manifest contract violation",
                 SyncManifestContract,
             ),
-            ("StateStoreCorruptionError reducer state is corrupt", StateStoreCorruption),
+            (
+                "StateStoreCorruptionError reducer state is corrupt",
+                StateStoreCorruption,
+            ),
             ("RateLimited too many requests", RateLimited),
             (
                 "CognitoAuthError identity could not be established",
