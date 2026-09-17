@@ -8531,12 +8531,14 @@
 
   /* Horizontal inset shared by the channel header, the timeline, and the
      composer so their left edges line up. The column reads like a document:
-     14% of the width on each side (never under 64px), so the measure stays
-     proportional as the window grows. Pulled in when a thread or profile pane
-     takes the right-hand third, so the messages keep a readable width there. */
+     a centred column capped at 880px: the inset is whatever is left over on
+     each side, never under 40px, so the column stays wide on a laptop and the
+     margins keep growing on a wide screen (the Claude desktop model). Pulled
+     in when a thread or profile pane takes the right-hand third, so the
+     messages keep a readable width there. */
   .channel-header,
   .chat-stage {
-    --conv-inset: max(64px, 14%);
+    --conv-inset: max(40px, calc((100% - 880px) / 2));
   }
 
   .channel-header[data-reply-open="true"],
