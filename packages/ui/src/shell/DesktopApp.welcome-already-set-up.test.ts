@@ -130,8 +130,10 @@ async function mountApp(welcomeSetupOwed: boolean) {
   });
   await settle();
   // The boot pick waits for the host's answer, then the directory: real time.
-  for (let i = 0; i < 80 && onselectrow.mock.calls.length === 0; i += 1) await new Promise((r) => setTimeout(r, 100));
-  expect(onselectrow).toHaveBeenCalled();
+  // Same 8 s budget as the old 80 x 100 ms loop, but it checks every 10 ms, so
+  // it returns as soon as the pick lands instead of rounding up to 100 ms —
+  // and it reports what it was waiting for when it does time out.
+  await vi.waitFor(() => expect(onselectrow).toHaveBeenCalled(), { timeout: 8000, interval: 10 });
   return { api, onselectrow };
 }
 

@@ -226,7 +226,9 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
     )!;
     retry.click();
     await settle();
-    await new Promise((r) => setTimeout(r, 400));
+    // A positive assertion: wait for the advance instead of sleeping past the
+    // cross-fade. Same outcome, returns as soon as it lands.
+    await vi.waitFor(() => expect(readyIsActive()).toBe(true), { timeout: 2000, interval: 10 });
     await flush();
 
     expect(postCalls().length).toBeGreaterThan(firstAttempts);
@@ -240,7 +242,8 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
     await flush();
     primaryContinue().click();
     await settle();
-    await new Promise((r) => setTimeout(r, 400));
+    // Positive assertion — wait for the advance rather than sleeping past it.
+    await vi.waitFor(() => expect(readyIsActive()).toBe(true), { timeout: 2000, interval: 10 });
     await flush();
     expect(readyIsActive()).toBe(true);
   });
@@ -314,7 +317,11 @@ describe('US-002 AC4 — offline does not trap the user', () => {
     const postsBefore = postCalls().length;
     finishOffline!.click();
     await settle();
-    await new Promise((r) => setTimeout(r, 400));
+    // Positive assertion — wait for the connector-import step to come up.
+    await vi.waitFor(() => expect(connectorImportIsActive()).toBe(true), {
+      timeout: 2000,
+      interval: 10,
+    });
     await flush();
 
     // The offline path reaches the same connector-import step as an uploaded
