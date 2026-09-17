@@ -862,14 +862,46 @@ pub fn toggle_desktop_window(app: &AppHandle) {
                 .await
         {
             // Real open failure: keep first-run onboarding / sign-in reachable
-            // on `main`. show_popover_window does AppKit window ops and must
-            // run on the main thread.
+            // on `main` — but only if `main` has anything to render. Since
+            // PL-06 a signed-in person gets an empty `main`, so falling back to
+            // it would put a blank transparent window on screen instead of an
+            // error. show_popover_window does AppKit window ops and must run on
+            // the main thread.
+            let authenticated = crate::commands::auth::get_auth_state(app_clone.clone())
+                .await
+                .map(|state| state.authenticated)
+                // An unreadable session is not a signed-in one: fall back to
+                // `main`, where the sign-in prompt is still rendered.
+                .unwrap_or(false);
+            if !main_window_has_ui(
+                onboarding_window_requires_blur_suppression(&app_clone),
+                authenticated,
+            ) {
+                crate::util::logfile::log(
+                    "tray",
+                    "desktop open failed while signed in; `main` has no UI to fall back to",
+                );
+                return;
+            }
             let app_main = app_clone.clone();
             let _ = app_clone.run_on_main_thread(move || {
                 show_popover_window(&app_main);
             });
         }
     });
+}
+
+/// Whether the `main` window would render anything for the current person.
+///
+/// Since PL-06 `main` renders exactly three things: the loading dot, the
+/// onboarding / consent card, and the sign-in prompt. A signed-in person gets
+/// an empty window, so no activation path may show `main` for them — it would
+/// put a blank transparent rectangle on screen.
+///
+/// `setup_owns_main` is [`onboarding_window_requires_blur_suppression`]: first
+/// run, install / consent lifecycle states, or browser OAuth in flight.
+pub(crate) fn main_window_has_ui(setup_owns_main: bool, authenticated: bool) -> bool {
+    setup_owns_main || !authenticated
 }
 
 /// Show + focus the desktop workspace. Never hides it.
@@ -1271,6 +1303,52 @@ pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_window_has_no_ui_for_a_signed_in_person() {
+        // PL-06: the authenticated branch of App.svelte renders nothing, so
+        // showing `main` here would be a blank transparent window.
+        assert!(!main_window_has_ui(false, true));
+    }
+
+    #[test]
+    fn main_window_still_has_ui_for_onboarding_and_for_sign_in() {
+        // Setup owns `main` — the onboarding / consent card renders there even
+        // though the person already has a session (consent re-prompt, OAuth).
+        assert!(main_window_has_ui(true, true));
+        // Signed out in steady state — the sign-in prompt renders there.
+        assert!(main_window_has_ui(false, false));
+        // First run, not signed in yet.
+        assert!(main_window_has_ui(true, false));
+    }
+
+    #[test]
+    fn every_setup_owned_state_keeps_main_renderable() {
+        // `activate_primary_surface` shows `main` exactly when
+        // `onboarding_window_requires_blur_suppression` is true, i.e. when
+        // `setup_owns_main_window` is true. That branch must never be able to
+        // show an empty window, whatever the auth state is.
+        for oauth_in_flight in [false, true] {
+            for lifecycle in [
+                Some(hq_desktop_core::lifecycle::LifecycleState::NeedsInstall),
+                Some(hq_desktop_core::lifecycle::LifecycleState::InstallResume),
+                Some(hq_desktop_core::lifecycle::LifecycleState::NeedsAuthForInstall),
+                Some(hq_desktop_core::lifecycle::LifecycleState::InstalledFirstRun),
+                Some(hq_desktop_core::lifecycle::LifecycleState::InstalledLegacyUpdate),
+                Some(hq_desktop_core::lifecycle::LifecycleState::SteadyState),
+                None,
+            ] {
+                for first_run_launch in [false, true] {
+                    if setup_owns_main_window(first_run_launch, lifecycle, oauth_in_flight) {
+                        assert!(
+                            main_window_has_ui(true, true),
+                            "setup-owned main must be renderable"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     /// Baseline: a genuine click-away on a steady-state popover.
     fn plain_blur() -> BlurHideInputs {

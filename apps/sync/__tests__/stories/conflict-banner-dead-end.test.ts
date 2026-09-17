@@ -38,9 +38,18 @@ describe('conflict dead-end: actionable conflict banner', () => {
     expect(resets).toBeGreaterThanOrEqual(2);
   });
 
-  it('App passes the aggregate conflict count + company down to the popover', () => {
-    expect(app).toContain('conflictCount={syncConflictCount}');
-    expect(app).toContain('conflictCompany={syncConflictCompany}');
+  it('App still owns the aggregate conflict count + company, with no popover to hand them to', () => {
+    // PL-06: the authenticated branch renders nothing, so the props are no
+    // longer passed anywhere. The controller state they were built from is
+    // what the desktop window's Core popover reads (PL-01/PL-02), and it must
+    // survive the branch flip.
+    expect(app).toContain('let syncConflictCount = $state(0)');
+    expect(app).toContain("let syncConflictCompany = $state('')");
+    expect(app).not.toContain('conflictCount={syncConflictCount}');
+    expect(app).not.toContain('conflictCompany={syncConflictCompany}');
+    // The prop names still exist on Popover.svelte, which PL-07 deletes whole.
+    expect(popover).toContain('conflictCount');
+    expect(popover).toContain('conflictCompany');
   });
 
   it('Popover renders an actionable conflict notice in the conflict state', () => {

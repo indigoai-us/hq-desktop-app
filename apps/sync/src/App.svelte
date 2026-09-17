@@ -14,7 +14,6 @@
     requestHasHumanLabel,
   } from './lib/dmRequests';
   import SignInPrompt from './components/SignInPrompt.svelte';
-  import Popover from './components/Popover.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { transferCountDelta } from './lib/transfer-count';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from './lib/effective-total-files';
@@ -2433,44 +2432,11 @@
       onfinish={handleConsentRepromptFinish}
     />
   {:else if authenticated}
-    <Popover
-      {syncState}
-      {config}
-      progress={syncProgress}
-      fanoutTotal={syncFanoutTotal}
-      fanoutDoneCount={syncFanoutDoneCount}
-      {syncFilesProgressed}
-      {personalFilesDone}
-      {personalFilesTotal}
-      {personalFirstPushDone}
-      syncTotalFiles={effectiveTotalFiles}
-      {syncPlanTotalFiles}
-      companies={syncCompanies}
-      {workspaces}
-      cloudReachable={workspacesCloudReachable}
-      cloudError={workspacesError}
-      manifestError={workspacesManifestError}
-      {brand}
-      errorMessage={syncErrorMessage}
-      errorCompany={syncErrorCompany}
-      {conflicts}
-      {showConflictModal}
-      conflictCount={syncConflictCount}
-      conflictCompany={syncConflictCompany}
-      {messagesUnreadCount}
-      {updateAvailable}
-      {updateInstalling}
-      {updateInstallError}
-      {notificationActionRecovery}
-      {notificationActionRetrying}
-      onsync={handleSyncNow}
-      onresolve={handleResolveConflict}
-      onopen={handleOpenInEditor}
-      ondismissconflicts={handleDismissConflicts}
-      oninstallupdate={handleInstallUpdate}
-      onretrynotificationaction={handleRetryNotificationAction}
-      bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
-    />
+    <!-- PL-06: a signed-in person works in the desktop window. `main` stays a
+         hidden controller — it renders nothing here, and nothing shows it.
+         The controller itself (sync orchestration, set_tray_state, the macOS
+         unread badge, tray-menu commands, notification routing) lives in the
+         script block above and keeps running while this branch is empty. -->
   {:else}
     <SignInPrompt reauth={syncState === 'auth-error'} onsuccess={handleAuthSuccess} />
   {/if}
