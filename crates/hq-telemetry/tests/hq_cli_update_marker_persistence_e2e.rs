@@ -4,7 +4,8 @@ use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, decide_post_install, report_non_convergent_install,
     report_non_convergent_marker_unpersisted,
     reset_non_convergent_marker_unpersisted_capture_for_tests, DeliveredPrefixShim,
-    ExecutedCopyAim, InstallExecutor, ManagedBinInSettingsPath, ManagedShadowRepairOutcome,
+    ExecutedCopyAim, ExecutedCopyReaim, InstallExecutor, ManagedBinInSettingsPath,
+    ManagedShadowRepairOutcome,
     NonConvergenceKind, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
     PostInstallCoreEffects, ResolutionSource, SettingsPathRepair, SettingsPathTelemetry,
     NON_CONVERGENT_ERROR_PREFIX,
@@ -146,6 +147,7 @@ fn an_unaimed_pnpm_run_persists_no_marker() {
         hq_bin_lane: ResolutionSource::NotResolved,
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         settings_path: SettingsPathTelemetry::default(),
+        executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::Undetermined,
             home_env_present: false,
@@ -341,6 +343,86 @@ fn a_rewritten_settings_path_shadow_persists_no_marker() {
     assert_eq!(captures, 1, "it stays observable once");
 }
 
+/// HQ-DESKTOP-46 r4: a re-aim whose install CONVERGED persists NO durable
+/// marker — the re-decide takes the normal success path (marker cleared), so the
+/// deferred foreign layout that HQ just fixed in-run is never wedged.
+#[test]
+fn a_converged_re_aim_persists_no_marker() {
+    let roots = [PathBuf::from(
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain",
+    )];
+    // After the re-aim the app runs the nvm copy's own npm against its own
+    // prefix, and both re-resolve to the nvm copy at latest.
+    let ctx = PostInstallContext::npm(
+        "/Users/reviewer/.nvm/versions/node/v22.14.0/bin/hq",
+        "/Users/reviewer/.nvm/versions/node/v22.14.0/bin/hq",
+        Some("5.111.1"),
+        Some("5.111.2"),
+        "5.111.2",
+        Some("/Users/reviewer/.nvm/versions/node/v22.14.0"),
+        "/Users/reviewer/.nvm/versions/node/v22.14.0/bin/npm",
+        false,
+        Some("5.111.2"),
+    )
+    .with_managed_roots(&roots)
+    .with_executed_copy_aim(ExecutedCopyAim::Aimed)
+    .with_resolution_telemetry(ResolutionSource::SettingsPath, DeliveredPrefixShim::Present)
+    .with_executed_copy_reaim(ExecutedCopyReaim::Converged);
+    let outcome = decide_post_install(&ctx);
+    // A converged re-aim is the normal success path: no marker, marker cleared,
+    // nothing captured.
+    assert!(matches!(
+        outcome.verdict,
+        hq_desktop_core::hq_cli_update::ConvergenceVerdict::Converged
+            | hq_desktop_core::hq_cli_update::ConvergenceVerdict::RelocatedAndConverged
+    ));
+    assert_eq!(
+        outcome.record_non_convergent, None,
+        "a converged re-aim persists no durable marker"
+    );
+    assert!(outcome.clear_non_convergent);
+    assert!(outcome.capture.is_none());
+}
+
+/// HQ-DESKTOP-46 r4: a re-aim whose npm exited 0 but whose re-resolution STILL
+/// resolves a foreign copy short of `latest` keeps the base deferred-foreign
+/// decision — `executed_copy_aim = NotYetAimed` — so it persists NO durable
+/// marker and stays non-blocking and episode-bounded (never re-classified as a
+/// targeted defect that would page every retry), carrying
+/// `executed_copy_reaim = still-foreign` so the residual event self-diagnoses.
+#[test]
+fn a_still_foreign_re_aim_persists_no_marker() {
+    let roots = [PathBuf::from(
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain",
+    )];
+    let ctx = PostInstallContext::npm(
+        "/Users/reviewer/.nvm/versions/node/v22.14.0/bin/hq",
+        "/Users/reviewer/.nvm/versions/node/v22.14.0/bin/hq",
+        Some("5.111.1"),
+        Some("5.111.1"),
+        "5.111.2",
+        Some("/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/npm-global"),
+        "/Users/reviewer/Library/Application Support/Indigo HQ/toolchain/node/bin/npm",
+        false,
+        Some("5.111.2"),
+    )
+    .with_managed_roots(&roots)
+    .with_executed_copy_aim(ExecutedCopyAim::NotYetAimed)
+    .with_resolution_telemetry(ResolutionSource::SettingsPath, DeliveredPrefixShim::Present)
+    .with_executed_copy_reaim(ExecutedCopyReaim::StillForeign);
+    assert_eq!(
+        decide_post_install(&ctx).non_convergence_kind,
+        Some(NonConvergenceKind::ForeignManaged)
+    );
+    assert_eq!(decide_post_install(&ctx).record_non_convergent, None);
+    let (records, captures) = drive_success_path(&ctx);
+    assert_eq!(
+        records, 0,
+        "a still-foreign re-aim persists no durable marker"
+    );
+    assert_eq!(captures, 1, "it stays observable once");
+}
+
 /// HQ-DESKTOP-46: a settings-PATH shadow HQ could NOT repair (the managed copy
 /// was not newer, so the rewrite was refused) still classifies ForeignManaged
 /// and still persists its durable marker. The durable-marker gate flipped ONLY
@@ -411,6 +493,7 @@ fn pnpm_marker_ctx(
         hq_bin_lane: ResolutionSource::NotResolved,
         delivered_prefix_shim: DeliveredPrefixShim::Unknown,
         settings_path: SettingsPathTelemetry::default(),
+        executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
         pnpm: Some(PnpmRunDiagnostics {
             home_source: PnpmHomeSource::NestedBinDir,
             home_env_present: false,

@@ -87,7 +87,8 @@ pub use hq_desktop_core::hq_cli_update::{
     bun_install_argv, classify_install_failure, classify_install_failure_with_environment,
     classify_install_failure_with_final_attempt, cli_auto_update_enabled, cli_below_floor,
     cli_below_floor_of, cli_install_needed, cmp_semver, colocated_npm_path, decide_post_install,
-    delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for, get_local_version,
+    delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for,
+    executed_copy_reaim_gate, executed_copy_reaim_outcome, get_local_version,
     get_local_version_diagnostics, hq_cli_version_under_pnpm_root, hq_version_string, install_argv,
     install_converged, install_executor_for_first_install, install_executor_for_hq_bin,
     install_failure_detail, install_failure_detail_with_environment,
@@ -109,7 +110,8 @@ pub use hq_desktop_core::hq_cli_update::{
     report_npm_cache_setup_failure, report_unreadable_version, resolved_hq_version,
     should_auto_install, should_report_unreadable_version, suppress_for_dismissal,
     unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
-    version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, HqCliUpdateInfo,
+    version_if_hq_cli, AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
+    ExecutedCopyReaimGate, HqCliUpdateInfo,
     InstallEnvironment, InstallExecutor, InstallFailureEpisode, InstallFailureKind,
     InterpreterRecovery, LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
     ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
@@ -1412,6 +1414,8 @@ async fn install_hq_cli_update_via_pnpm(
         // pnpm never reaches the ForeignManaged arm, so no settings-PATH repair
         // is relevant; the default triple emits not-attempted / none / unknown.
         settings_path: SettingsPathTelemetry::default(),
+        // pnpm never reaches the ForeignManaged re-aim, so no re-aim ran.
+        executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
         pnpm: Some(PnpmRunDiagnostics {
             home_source,
             home_env_present,
@@ -1558,6 +1562,8 @@ async fn install_hq_cli_update_via_bun(
         // Bun never reaches the ForeignManaged arm; the default settings-PATH
         // triple emits not-attempted / none / unknown.
         settings_path: SettingsPathTelemetry::default(),
+        // Bun never reaches the ForeignManaged re-aim, so no re-aim ran.
+        executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
         pnpm: None,
     });
     log("hq-cli-update", &outcome.log_line);
@@ -2441,6 +2447,48 @@ async fn finalize_convergence(
         }
     }
 
+    // Deferred drivable foreign shadow (HQ-DESKTOP-46 r4): the app executes a
+    // drivable user-owned copy (an nvm/volta/user-npm `hq`) the pre-install
+    // resolution did not identify, so HQ aimed the install at its managed prefix
+    // and the run reads ForeignManaged + NotYetAimed. Re-aim ONE pinned install of
+    // `latest` at that copy's OWN prefix with its OWN co-located npm and re-decide
+    // against what the app now executes, so the deferred copy converges in-run
+    // instead of paging HQ-DESKTOP-46 until the next scheduled cycle. cfg-independent
+    // (mirrors the ordinary aim, which already runs on Windows): the
+    // `is_user_owned_prefix` boundary keeps HQ's managed npm off a user prefix and
+    // excludes system/Homebrew copies, so only a drivable NotYetAimed copy qualifies.
+    if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged)
+        && executed_copy_aim == ExecutedCopyAim::NotYetAimed
+    {
+        let user_aim = select_ordinary_install_aim(
+            &post_install_hq,
+            &managed_roots,
+            paths::home_dir().as_deref(),
+        );
+        if executed_copy_reaim_gate(
+            outcome.non_convergence_kind,
+            executed_copy_aim,
+            user_aim.as_ref(),
+        ) == ExecutedCopyReaimGate::Attempt
+        {
+            // gate == Attempt implies the aim is Some; keep it total anyway so a
+            // future edit cannot turn a user command into a panic.
+            if let Some(aim) = user_aim {
+                return executed_copy_reaim_and_refinalize(
+                    app,
+                    before_bin,
+                    before_version,
+                    latest,
+                    already_blocked,
+                    &managed_roots,
+                    aim,
+                    &outcome,
+                )
+                .await;
+            }
+        }
+    }
+
     log("hq-cli-update", &outcome.log_line);
     let result = apply_post_install_with_app(app, &outcome);
     // Persist the non-blocking episode key AFTER the capture (its OWN menubar key,
@@ -2723,6 +2771,199 @@ async fn settings_path_repair_and_refinalize(
     let result = apply_post_install_with_app(app, &outcome);
     // Persist the non-blocking episode key after the capture (its OWN menubar key,
     // never the durable blocking marker), so a rewritten-but-still-foreign shape
+    // reports once per `latest` rather than on every check.
+    if let Some(key) = outcome.record_nonblocking_episode.as_deref() {
+        let existing = non_convergent_episode_markers();
+        let updated = non_convergent_episode_record(&existing, key, latest);
+        if let Err(error) = record_non_convergent_episode_markers(&updated) {
+            log(
+                "hq-cli-update",
+                &format!("could not persist non-convergent episode markers: {error}"),
+            );
+        }
+    }
+    result
+}
+
+/// The npm argv and child PATH the in-run re-aim uses: a pinned global install
+/// into the executed copy's OWN prefix, run through its OWN co-located npm with
+/// that npm's bin dir FIRST on PATH (so the copy's own Node runs its own shim —
+/// the aiming PR 866 established). Pure over its inputs so the aiming is
+/// unit-testable without an install (the app crate builds only on macOS/Windows CI).
+fn executed_copy_reaim_plan(
+    aim: &UserPrefixAim,
+    latest: &str,
+    base_path: &str,
+) -> (Vec<String>, String) {
+    let argv = install_argv(Some(aim.prefix.as_str()), Some(latest));
+    let path = match Path::new(&aim.npm).parent() {
+        Some(hint) => paths::path_with_interpreter_hint(base_path, hint),
+        None => base_path.to_string(),
+    };
+    (argv, path)
+}
+
+/// In-run re-aim of a deferred drivable foreign copy (HQ-DESKTOP-46 r4). The app
+/// executes a user-owned `hq` (an nvm/volta/user-npm copy) the pre-install
+/// resolution did not identify, so HQ aimed the install at its managed prefix and
+/// the run read ForeignManaged + NotYetAimed. Run exactly ONE pinned install of
+/// `latest` into that copy's OWN prefix with its OWN co-located npm, then
+/// re-resolve against the copy the app now executes.
+///
+/// Only a CLEAN convergence — npm exited 0 AND the app now resolves `latest` — is
+/// reported as success (marker cleared, no envelope), re-decided against the aimed
+/// copy. Every other result keeps the caller's original deferred-foreign decision
+/// (`base_outcome`: ForeignManaged + NotYetAimed, non-blocking and episode-bounded),
+/// self-diagnosed by the `executed_copy_reaim` tag — so the durable-marker policy is
+/// byte-identical to today and a nonzero npm exit is never accepted as converged
+/// even if it wrote a partial manifest (mirrors the primary install path). The
+/// re-aim NEVER writes a `.claude` settings file or a shell profile and never points
+/// HQ's managed npm at a user prefix: it converges the copy the app executes.
+async fn executed_copy_reaim_and_refinalize(
+    app: &AppHandle,
+    before_bin: &str,
+    before_version: Option<&str>,
+    latest: &str,
+    already_blocked: bool,
+    managed_roots: &[PathBuf],
+    aim: UserPrefixAim,
+    base_outcome: &PostInstallOutcome,
+) -> Result<HqCliUpdateInfo, String> {
+    // The gate was proven `Attempt` by the caller; recompute it here so the
+    // outcome mapper and the gate can never disagree.
+    let gate = executed_copy_reaim_gate(
+        Some(NonConvergenceKind::ForeignManaged),
+        ExecutedCopyAim::NotYetAimed,
+        Some(&aim),
+    );
+    let (base_args, path) = executed_copy_reaim_plan(&aim, latest, &paths::child_path());
+    log(
+        "hq-cli-update",
+        &format!(
+            "re-aiming the deferred foreign copy in place (npm={}, prefix={})",
+            redact_home(&aim.npm),
+            redact_home(&aim.prefix)
+        ),
+    );
+
+    // A missing app npm cache, or a spawn error, is a re-aim that never ran.
+    let install_run = match app_npm_cache(app) {
+        Ok(npm_cache) => {
+            run_npm_install_with_retries(
+                &aim.npm,
+                &path,
+                &npm_cache,
+                Some(aim.prefix.as_str()),
+                base_args,
+            )
+            .await
+        }
+        Err((category, error)) => {
+            report_npm_cache_setup_failure(category);
+            Err(error)
+        }
+    };
+    let spawn_failed = install_run.is_err();
+    let install_exit_ok = match &install_run {
+        Ok(run) if run.output.status.success() => true,
+        Ok(run) => {
+            // Log the raw npm output locally only — never sent to telemetry.
+            log(
+                "hq-cli-update",
+                &format!(
+                    "re-aim install exited nonzero (exit {:?}); raw npm output retained locally: {}",
+                    run.output.status.code(),
+                    npm_output_detail(&run.output)
+                ),
+            );
+            false
+        }
+        Err(error) => {
+            log("hq-cli-update", &format!("re-aim install could not spawn: {error}"));
+            false
+        }
+    };
+
+    // Re-resolve what the app now executes. Convergence requires BOTH a clean npm
+    // exit AND the executed copy reading `latest`: a nonzero exit is a failed
+    // install even if a manifest was partially written, exactly as the primary
+    // install path treats it, so it can never clear the marker or report success.
+    let post_install_hq = paths::resolve_bin("hq");
+    let resolved = {
+        let hq = post_install_hq.clone();
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq))
+            .await
+            .ok()
+            .flatten()
+    };
+    let converged = install_exit_ok && install_converged(resolved.as_deref(), latest);
+
+    if converged {
+        // Clean convergence: re-decide against the aimed copy the app now executes
+        // (Aimed + a latest reading) so `decide_post_install` takes its normal
+        // success path — the durable marker is cleared and no envelope is produced.
+        let delivered_version = {
+            let prefix = aim.prefix.clone();
+            let hq = post_install_hq.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                installed_hq_cli_version_in_prefix(&prefix, &hq)
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        let executed_copy_aim = executed_copy_aim_for(
+            &post_install_hq,
+            Some(aim.prefix.as_str()),
+            &aim.npm,
+            managed_roots,
+            paths::home_dir().as_deref(),
+        );
+        let hq_bin_lane = paths::resolution_source_of_bin(&post_install_hq);
+        let delivered_prefix_shim =
+            delivered_prefix_shim_for(Some(aim.prefix.as_str()), delivered_version.as_deref());
+        let outcome = decide_post_install(
+            &PostInstallContext::npm(
+                before_bin,
+                &post_install_hq,
+                before_version,
+                resolved.as_deref(),
+                latest,
+                Some(aim.prefix.as_str()),
+                &aim.npm,
+                already_blocked,
+                delivered_version.as_deref(),
+            )
+            .with_managed_roots(managed_roots)
+            .with_executed_copy_aim(executed_copy_aim)
+            .with_resolution_telemetry(hq_bin_lane, delivered_prefix_shim)
+            .with_executed_copy_reaim(ExecutedCopyReaim::Converged),
+        );
+        log("hq-cli-update", &outcome.log_line);
+        return apply_post_install_with_app(app, &outcome);
+    }
+
+    // Not converged (a nonzero/unspawnable install, or a clean exit that still
+    // resolves a foreign copy short of `latest`): keep the caller's original
+    // deferred-foreign decision unchanged — it is still ForeignManaged +
+    // NotYetAimed, non-blocking and episode-bounded, exactly as before the re-aim —
+    // and only stamp the `executed_copy_reaim` tag on its capture so the residual
+    // event self-diagnoses. Re-classifying against the aimed prefix here would flip
+    // a still-stale copy to NpmTargeted (which pages every retry); the base decision
+    // is the intended once-per-episode foreign policy.
+    let executed_copy_reaim = if spawn_failed {
+        ExecutedCopyReaim::SpawnFailed
+    } else {
+        executed_copy_reaim_outcome(gate, install_exit_ok, converged)
+    };
+    let mut outcome = base_outcome.clone();
+    if let Some(report) = outcome.capture.as_mut() {
+        report.executed_copy_reaim = executed_copy_reaim;
+    }
+    log("hq-cli-update", &outcome.log_line);
+    let result = apply_post_install_with_app(app, &outcome);
+    // Persist the non-blocking episode key after the capture (its OWN menubar key,
+    // never the durable blocking marker), so a re-aimed-but-still-deferred shape
     // reports once per `latest` rather than on every check.
     if let Some(key) = outcome.record_nonblocking_episode.as_deref() {
         let existing = non_convergent_episode_markers();
@@ -4125,6 +4366,43 @@ mod tests {
             ),
             None,
             "a managed-root hq is driven by the managed path, not the new selector"
+        );
+    }
+
+    /// HQ-DESKTOP-46 r4: the in-run re-aim targets the executed copy's OWN prefix,
+    /// runs its OWN co-located npm, and puts that npm's bin dir FIRST on PATH — so
+    /// HQ's managed npm never touches a user prefix and the copy's own Node runs
+    /// its own shim. Pure, so it proves the aiming on every host, including the
+    /// Linux fix host where the app crate does not build.
+    #[test]
+    fn executed_copy_reaim_targets_the_executed_prefix_with_its_own_npm_first_on_path() {
+        let aim = UserPrefixAim {
+            prefix: "/Users/me/.nvm/versions/node/v22.14.0".to_string(),
+            npm: "/Users/me/.nvm/versions/node/v22.14.0/bin/npm".to_string(),
+        };
+        let base_path = "/usr/bin:/bin";
+        let (argv, path) = executed_copy_reaim_plan(&aim, "5.111.2", base_path);
+        // A pinned global install INTO the executed copy's own prefix.
+        assert_eq!(
+            argv,
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "--prefix".to_string(),
+                "/Users/me/.nvm/versions/node/v22.14.0".to_string(),
+                "@indigoai-us/hq-cli@5.111.2".to_string(),
+            ]
+        );
+        // The npm that RUNS is the copy's own co-located npm.
+        assert_eq!(aim.npm, "/Users/me/.nvm/versions/node/v22.14.0/bin/npm");
+        // Its bin dir is FIRST on PATH, so its co-located Node runs the shim.
+        assert!(
+            path.starts_with("/Users/me/.nvm/versions/node/v22.14.0/bin"),
+            "the executed copy's bin dir must be first on PATH, got {path}"
+        );
+        assert!(
+            path.contains(base_path),
+            "the base child PATH is preserved after the hint"
         );
     }
 

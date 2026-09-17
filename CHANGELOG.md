@@ -10,6 +10,12 @@ The release moves it under the version it ships in.
 
 - The Back button in Settings now closes Settings and returns you to where you were before you opened it. It used to step backwards through each Settings tab you had visited first, so leaving Settings could take several clicks.
 - You will not see a difference in daily use, but when a Core update fails, HQ now records whether it could not read a file for the safety backup, found a shortcut in the HQ folder that points outside it, or needs a newer version of Git for the update download. This does not fix the update by itself. It helps us see which cause happens most often, so we can fix that cause first instead of guessing.
+- On a Mac that runs `hq` from nvm or its own npm, HQ now updates the exact `hq`
+  you run in the same pass, instead of leaving it a version behind until the next
+  scheduled check. The earlier fix handled this when HQ could spot that copy
+  before installing; this handles the case where the copy only becomes visible
+  right after the install — which was still deferring the catch-up by up to six
+  hours and logging a warning in the meantime.
 
 ## [0.10.281] — 2026-09-17
 

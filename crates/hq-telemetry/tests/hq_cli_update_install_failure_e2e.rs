@@ -4,9 +4,10 @@ use hq_desktop_core::hq_cli_update::{
     report_install_failure, report_install_failure_episode,
     report_install_failure_with_environment, report_install_failure_with_final_attempt,
     report_non_convergent_install, report_npm_cache_setup_failure, InstallEnvironment,
-    DeliveredPrefixShim, InstallExecutor, InstallFailureEpisode, ManagedRetryOutcome,
-    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
-    NpmToolchainSource, RequestedSpecKind, ResolutionSource, SettingsPathTelemetry,
+    DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim, InstallExecutor,
+    InstallFailureEpisode, ManagedRetryOutcome, ManagedShadowRepairOutcome, MissingTargetState,
+    NonConvergenceKind, NonConvergentReport, NpmToolchainSource, RequestedSpecKind,
+    ResolutionSource, SettingsPathTelemetry,
 };
 use sentry::protocol::Value;
 use sentry::test::with_captured_events_options;
@@ -849,6 +850,8 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
             hq_bin_lane: ResolutionSource::LoginShell,
             delivered_prefix_shim: DeliveredPrefixShim::Unknown,
             settings_path: SettingsPathTelemetry::default(),
+            executed_copy_aim: ExecutedCopyAim::Undrivable,
+            executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
         })
     });
     assert_eq!(events.len(), 1);
@@ -872,6 +875,8 @@ fn non_convergent_capture_uses_closed_source_tags_and_redacts_the_home_path() {
         ("hq_bin_changed", "true"),
         ("prefix_known", "false"),
         ("non_convergence_kind", "foreign-managed"),
+        ("executed_copy_aim", "undrivable"),
+        ("executed_copy_reaim", "not-attempted"),
     ] {
         assert_eq!(event.tags.get(tag).map(String::as_str), Some(expected));
     }
